@@ -1,0 +1,15 @@
+[package]
+name = "teaql-macros"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true }
+teaql-core = { path = "../teaql-core" }

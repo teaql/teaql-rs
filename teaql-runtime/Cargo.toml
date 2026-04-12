@@ -1,0 +1,21 @@
+[package]
+name = "teaql-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+sqlx = ["dep:sqlx"]
+
+[dependencies]
+teaql-core = { path = "../teaql-core" }
+teaql-sql = { path = "../teaql-sql" }
+sqlx = { workspace = true, optional = true }
+
+[dev-dependencies]
+teaql-dialect-pg = { path = "../teaql-dialect-pg" }
+teaql-dialect-sqlite = { path = "../teaql-dialect-sqlite" }
+teaql-macros = { path = "../teaql-macros" }
+tokio = { workspace = true }

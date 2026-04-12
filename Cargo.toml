@@ -1,0 +1,26 @@
+[workspace]
+members = [
+    "teaql-core",
+    "teaql-sql",
+    "teaql-runtime",
+    "teaql-dialect-pg",
+    "teaql-dialect-sqlite", "teaql-macros",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["Philip"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+async-trait = "0.1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "sqlite", "macros", "json"] }
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "extra-traits"] }
