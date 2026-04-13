@@ -201,9 +201,10 @@ fn rust_type_to_data_type(ty: &Type) -> proc_macro2::TokenStream {
     let type_name = base_type_name(ty);
     match type_name.as_deref() {
         Some("bool") => quote! { ::teaql_core::DataType::Bool },
-        Some("i64") | Some("i32") | Some("i16") | Some("u64") | Some("u32") => {
+        Some("i64") | Some("i32") | Some("i16") => {
             quote! { ::teaql_core::DataType::I64 }
         }
+        Some("u64") | Some("u32") | Some("u16") => quote! { ::teaql_core::DataType::U64 },
         Some("f64") | Some("f32") => quote! { ::teaql_core::DataType::F64 },
         Some("String") | Some("str") => quote! { ::teaql_core::DataType::Text },
         _ => quote! { ::teaql_core::DataType::Json },

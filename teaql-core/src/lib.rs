@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 pub enum DataType {
     Bool,
     I64,
+    U64,
     F64,
     Text,
     Json,
@@ -18,6 +19,7 @@ pub enum Value {
     Null,
     Bool(bool),
     I64(i64),
+    U64(u64),
     F64(f64),
     Text(String),
     Object(BTreeMap<String, Value>),
@@ -39,6 +41,12 @@ impl From<String> for Value {
 impl From<i64> for Value {
     fn from(value: i64) -> Self {
         Self::I64(value)
+    }
+}
+
+impl From<u64> for Value {
+    fn from(value: u64) -> Self {
+        Self::U64(value)
     }
 }
 
@@ -514,7 +522,7 @@ mod tests {
     #[teaql(entity = "Order", table = "orders")]
     struct OrderRow {
         #[teaql(id)]
-        id: i64,
+        id: u64,
         #[teaql(version)]
         version: i64,
         #[teaql(column = "display_name")]
@@ -538,9 +546,9 @@ mod tests {
     #[teaql(entity = "OrderLine", table = "orderline")]
     struct OrderLineRow {
         #[teaql(id)]
-        id: i64,
+        id: u64,
         #[teaql(column = "order_id")]
-        order_id: i64,
+        order_id: u64,
         #[teaql(relation(target = "Product", local_key = "product_id", foreign_key = "id"))]
         product: Option<()>,
     }

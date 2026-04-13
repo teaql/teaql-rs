@@ -26,7 +26,7 @@ mod tests {
     fn entity() -> EntityDescriptor {
         EntityDescriptor::new("Order")
             .table_name("orders")
-            .property(PropertyDescriptor::new("id", DataType::I64).column_name("id").id().not_null())
+            .property(PropertyDescriptor::new("id", DataType::U64).column_name("id").id().not_null())
             .property(
                 PropertyDescriptor::new("version", DataType::I64)
                     .column_name("version")
@@ -39,7 +39,7 @@ mod tests {
     #[test]
     fn compiles_insert_with_postgres_placeholders() {
         let query = PostgresDialect
-            .compile_insert(&entity(), &InsertCommand::new("Order").value("id", 1_i64).value("name", "A"))
+            .compile_insert(&entity(), &InsertCommand::new("Order").value("id", 1_u64).value("name", "A"))
             .unwrap();
         assert_eq!(query.sql, "INSERT INTO \"orders\" (\"id\", \"name\") VALUES ($1, $2)");
     }
@@ -49,7 +49,7 @@ mod tests {
         let query = PostgresDialect
             .compile_update(
                 &entity(),
-                &UpdateCommand::new("Order", 1_i64)
+                &UpdateCommand::new("Order", 1_u64)
                     .expected_version(3)
                     .value("name", "B"),
             )
@@ -63,7 +63,7 @@ mod tests {
     #[test]
     fn compiles_soft_delete_with_optimistic_lock() {
         let query = PostgresDialect
-            .compile_delete(&entity(), &DeleteCommand::new("Order", 1_i64).expected_version(3))
+            .compile_delete(&entity(), &DeleteCommand::new("Order", 1_u64).expected_version(3))
             .unwrap();
         assert_eq!(
             query.sql,
@@ -74,7 +74,7 @@ mod tests {
     #[test]
     fn compiles_recover_with_optimistic_lock() {
         let query = PostgresDialect
-            .compile_recover(&entity(), &RecoverCommand::new("Order", 1_i64, -4))
+            .compile_recover(&entity(), &RecoverCommand::new("Order", 1_u64, -4))
             .unwrap();
         assert_eq!(
             query.sql,

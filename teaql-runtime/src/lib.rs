@@ -1006,6 +1006,7 @@ fn relation_bucket_key(value: &Value) -> String {
         Value::Null => "null".to_owned(),
         Value::Bool(v) => format!("b:{v}"),
         Value::I64(v) => format!("i:{v}"),
+        Value::U64(v) => format!("u:{v}"),
         Value::F64(v) => format!("f:{v}"),
         Value::Text(v) => format!("t:{v}"),
         Value::Object(_) => "o".to_owned(),
@@ -1155,6 +1156,13 @@ pub mod sqlx_support {
             Value::I64(v) => args
                 .add(*v)
                 .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
+            Value::U64(v) => {
+                let v = i64::try_from(*v).map_err(|_| {
+                    MutationExecutorError::Bind(format!("u64 value {v} exceeds i64 range"))
+                })?;
+                args.add(v)
+                    .map_err(|err| MutationExecutorError::Bind(err.to_string()))?
+            }
             Value::F64(v) => args
                 .add(*v)
                 .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
@@ -1183,6 +1191,13 @@ pub mod sqlx_support {
             Value::I64(v) => args
                 .add(*v)
                 .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
+            Value::U64(v) => {
+                let v = i64::try_from(*v).map_err(|_| {
+                    MutationExecutorError::Bind(format!("u64 value {v} exceeds i64 range"))
+                })?;
+                args.add(v)
+                    .map_err(|err| MutationExecutorError::Bind(err.to_string()))?
+            }
             Value::F64(v) => args
                 .add(*v)
                 .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
@@ -1269,7 +1284,7 @@ mod tests {
     fn entity() -> EntityDescriptor {
         EntityDescriptor::new("Order")
             .table_name("orders")
-            .property(PropertyDescriptor::new("id", DataType::I64).column_name("id").id().not_null())
+            .property(PropertyDescriptor::new("id", DataType::U64).column_name("id").id().not_null())
             .property(
                 PropertyDescriptor::new("version", DataType::I64)
                     .column_name("version")
@@ -1288,15 +1303,15 @@ mod tests {
     fn line_entity() -> EntityDescriptor {
         EntityDescriptor::new("OrderLine")
             .table_name("orderline")
-            .property(PropertyDescriptor::new("id", DataType::I64).column_name("id").id().not_null())
+            .property(PropertyDescriptor::new("id", DataType::U64).column_name("id").id().not_null())
             .property(
-                PropertyDescriptor::new("order_id", DataType::I64)
+                PropertyDescriptor::new("order_id", DataType::U64)
                     .column_name("order_id")
                     .not_null(),
             )
             .property(PropertyDescriptor::new("name", DataType::Text).column_name("name"))
             .property(
-                PropertyDescriptor::new("product_id", DataType::I64)
+                PropertyDescriptor::new("product_id", DataType::U64)
                     .column_name("product_id")
                     .not_null(),
             )
@@ -1310,7 +1325,7 @@ mod tests {
     fn product_entity() -> EntityDescriptor {
         EntityDescriptor::new("Product")
             .table_name("product")
-            .property(PropertyDescriptor::new("id", DataType::I64).column_name("id").id().not_null())
+            .property(PropertyDescriptor::new("id", DataType::U64).column_name("id").id().not_null())
             .property(PropertyDescriptor::new("name", DataType::Text).column_name("name"))
     }
 
@@ -1327,7 +1342,7 @@ mod tests {
     #[teaql(entity = "CatalogProduct", table = "catalog_product")]
     struct CatalogProductRow {
         #[teaql(id)]
-        id: i64,
+        id: u64,
         name: String,
     }
 
@@ -1429,7 +1444,7 @@ mod tests {
 
         let err = repo
             .update(
-                &UpdateCommand::new("Order", 1_i64)
+                &UpdateCommand::new("Order", 1_u64)
                     .expected_version(3)
                     .value("name", "next"),
             )
@@ -1466,7 +1481,7 @@ mod tests {
         let repo = ctx.repository::<PostgresDialect, StubExecutor>().unwrap();
         let affected = repo
             .update(
-                &UpdateCommand::new("Order", 1_i64)
+                &UpdateCommand::new("Order", 1_u64)
                     .expected_version(3)
                     .value("name", "next"),
             )
@@ -1493,7 +1508,7 @@ mod tests {
         assert_eq!(repo.select().entity, "Order");
 
         let affected = repo
-            .insert(&repo.insert_command().value("id", 1_i64).value("version", 1_i64).value("name", "n"))
+            .insert(&repo.insert_command().value("id", 1_u64).value("version", 1_i64).value("name", "n"))
             .unwrap();
         assert_eq!(affected, 1);
     }
@@ -1524,7 +1539,7 @@ mod tests {
         let compiled = repo.compile(&repo.select()).unwrap();
         assert!(compiled.sql.contains("WHERE (\"version\" = $1)"));
 
-        let insert = repo.insert_command().value("id", 1_i64).value("name", "n");
+        let insert = repo.insert_command().value("id", 1_u64).value("name", "n");
         let affected = repo.insert(&insert).unwrap();
         assert_eq!(affected, 1);
         assert_eq!(repo.relation_loads(), vec!["lines".to_owned()]);
@@ -1585,15 +1600,15 @@ mod tests {
             .resolve_repository::<PostgresDialect, StubExecutor>("Order")
             .unwrap();
         let parent_rows = vec![
-            Record::from([(String::from("id"), Value::I64(11))]),
-            Record::from([(String::from("id"), Value::I64(12))]),
+            Record::from([(String::from("id"), Value::U64(11))]),
+            Record::from([(String::from("id"), Value::U64(12))]),
         ];
 
         let query = repo.relation_query("lines", &parent_rows).unwrap();
         let compiled = repo.compile(&query).unwrap();
         assert!(compiled.sql.contains("FROM \"orderline\""));
         assert!(compiled.sql.contains("\"order_id\" IN ($1, $2)"));
-        assert_eq!(compiled.params, vec![Value::I64(11), Value::I64(12)]);
+        assert_eq!(compiled.params, vec![Value::U64(11), Value::U64(12)]);
     }
 
     #[test]
@@ -1614,18 +1629,18 @@ mod tests {
             affected: 1,
             rows: vec![
                 Record::from([
-                    (String::from("id"), Value::I64(101)),
-                    (String::from("order_id"), Value::I64(11)),
+                    (String::from("id"), Value::U64(101)),
+                    (String::from("order_id"), Value::U64(11)),
                     (String::from("name"), Value::Text(String::from("l1"))),
                 ]),
                 Record::from([
-                    (String::from("id"), Value::I64(102)),
-                    (String::from("order_id"), Value::I64(11)),
+                    (String::from("id"), Value::U64(102)),
+                    (String::from("order_id"), Value::U64(11)),
                     (String::from("name"), Value::Text(String::from("l2"))),
                 ]),
                 Record::from([
-                    (String::from("id"), Value::I64(201)),
-                    (String::from("order_id"), Value::I64(12)),
+                    (String::from("id"), Value::U64(201)),
+                    (String::from("order_id"), Value::U64(12)),
                     (String::from("name"), Value::Text(String::from("l3"))),
                 ]),
             ],
@@ -1635,8 +1650,8 @@ mod tests {
             .resolve_repository::<PostgresDialect, StubExecutor>("Order")
             .unwrap();
         let mut parents = vec![
-            Record::from([(String::from("id"), Value::I64(11))]),
-            Record::from([(String::from("id"), Value::I64(12))]),
+            Record::from([(String::from("id"), Value::U64(11))]),
+            Record::from([(String::from("id"), Value::U64(12))]),
         ];
 
         repo.enhance_relations(&mut parents).unwrap();
@@ -1671,7 +1686,7 @@ mod sqlx_integration_tests {
     fn entity() -> EntityDescriptor {
         EntityDescriptor::new("Order")
             .table_name("orders")
-            .property(PropertyDescriptor::new("id", DataType::I64).column_name("id").id().not_null())
+            .property(PropertyDescriptor::new("id", DataType::U64).column_name("id").id().not_null())
             .property(
                 PropertyDescriptor::new("version", DataType::I64)
                     .column_name("version")
@@ -1690,15 +1705,15 @@ mod sqlx_integration_tests {
     fn line_entity() -> EntityDescriptor {
         EntityDescriptor::new("OrderLine")
             .table_name("orderline")
-            .property(PropertyDescriptor::new("id", DataType::I64).column_name("id").id().not_null())
+            .property(PropertyDescriptor::new("id", DataType::U64).column_name("id").id().not_null())
             .property(
-                PropertyDescriptor::new("order_id", DataType::I64)
+                PropertyDescriptor::new("order_id", DataType::U64)
                     .column_name("order_id")
                     .not_null(),
             )
             .property(PropertyDescriptor::new("name", DataType::Text).column_name("name").not_null())
             .property(
-                PropertyDescriptor::new("product_id", DataType::I64)
+                PropertyDescriptor::new("product_id", DataType::U64)
                     .column_name("product_id")
                     .not_null(),
             )
@@ -1712,7 +1727,7 @@ mod sqlx_integration_tests {
     fn product_entity() -> EntityDescriptor {
         EntityDescriptor::new("Product")
             .table_name("product")
-            .property(PropertyDescriptor::new("id", DataType::I64).column_name("id").id().not_null())
+            .property(PropertyDescriptor::new("id", DataType::U64).column_name("id").id().not_null())
             .property(PropertyDescriptor::new("name", DataType::Text).column_name("name").not_null())
     }
 
@@ -1785,7 +1800,7 @@ mod sqlx_integration_tests {
             .compile_insert(
                 &entity,
                 &InsertCommand::new("Order")
-                    .value("id", 1_i64)
+                    .value("id", 1_u64)
                     .value("version", 1_i64)
                     .value("name", "first"),
             )
@@ -1799,7 +1814,7 @@ mod sqlx_integration_tests {
                     .project("id")
                     .project("version")
                     .project("name")
-                    .filter(Expr::eq("id", 1_i64)),
+                    .filter(Expr::eq("id", 1_u64)),
             )
             .unwrap();
         let rows = executor.fetch_all(&select).await.unwrap();
@@ -1811,7 +1826,7 @@ mod sqlx_integration_tests {
         let update = dialect
             .compile_update(
                 &entity,
-                &UpdateCommand::new("Order", 1_i64)
+                &UpdateCommand::new("Order", 1_u64)
                     .expected_version(1)
                     .value("name", "second"),
             )
@@ -1826,7 +1841,7 @@ mod sqlx_integration_tests {
         );
 
         let delete = dialect
-            .compile_delete(&entity, &DeleteCommand::new("Order", 1_i64).expected_version(2))
+            .compile_delete(&entity, &DeleteCommand::new("Order", 1_u64).expected_version(2))
             .unwrap();
         assert_eq!(executor.execute(&delete).await.unwrap(), 1);
 
@@ -1834,7 +1849,7 @@ mod sqlx_integration_tests {
         assert_eq!(after_delete[0].get("version"), Some(&Value::I64(-3)));
 
         let recover = dialect
-            .compile_recover(&entity, &RecoverCommand::new("Order", 1_i64, -3))
+            .compile_recover(&entity, &RecoverCommand::new("Order", 1_u64, -3))
             .unwrap();
         assert_eq!(executor.execute(&recover).await.unwrap(), 1);
 
