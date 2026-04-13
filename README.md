@@ -40,11 +40,58 @@ The current implementation focuses on the Rust-native core runtime:
 - `TeaqlEntity` derive support for declarative entity descriptors
 - declarative runtime assembly through `RuntimeModule` and `module!`
 - optional `sqlx` support module for PostgreSQL and SQLite execution
+- SQLite `ensure_schema` support for create-table and add-missing-column flows
+- `UserContext::ensure_sqlite_schema()` as the high-level SQLite schema entry point
 - SQLite in-memory integration tests for CRUD and relation enhancement under `--features sqlx`
+
+## SQLite schema bootstrap
+
+With the `sqlx` feature enabled, SQLite schema setup can be driven directly from `UserContext`.
+
+```rust
+use sqlx::sqlite::SqlitePoolOptions;
+use teaql_core::{DataType, EntityDescriptor, PropertyDescriptor};
+use teaql_dialect_sqlite::SqliteDialect;
+use teaql_runtime::sqlx_support::SqliteMutationExecutor;
+use teaql_runtime::{RuntimeModule, UserContext};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await?;
+
+    let order = EntityDescriptor::new("Order")
+        .table_name("orders")
+        .property(PropertyDescriptor::new("id", DataType::U64).column_name("id").id().not_null())
+        .property(
+            PropertyDescriptor::new("version", DataType::I64)
+                .column_name("version")
+                .version()
+                .not_null(),
+        )
+        .property(PropertyDescriptor::new("name", DataType::Text).column_name("name"));
+
+    let module = RuntimeModule::new().descriptor(order);
+    let mut ctx = UserContext::new().with_module(module);
+    ctx.insert_resource(SqliteDialect);
+    ctx.insert_resource(SqliteMutationExecutor::new(pool));
+
+    ctx.ensure_sqlite_schema().await?;
+    Ok(())
+}
+```
+
+Current SQLite `ensure_schema` scope:
+
+- create missing tables
+- add missing columns to existing tables
+- do not attempt destructive migrations such as drop column, type rewrite, or primary-key rebuild
 
 ## Next steps
 
 1. Validate the PostgreSQL executor against a real PostgreSQL instance.
 2. Extend value binding and decoding for JSON, timestamp, and date types.
-3. Add examples that show entity derive, module assembly, CRUD, and relation enhancement.
+3. Add examples that show entity derive, module assembly, schema bootstrap, CRUD, and relation enhancement.
 4. Decide whether a Rust-native service layer is needed above repository/runtime APIs.

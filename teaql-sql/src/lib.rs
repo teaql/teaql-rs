@@ -1,6 +1,7 @@
 use teaql_core::{
-    Aggregate, AggregateFunction, BinaryOp, DeleteCommand, EntityDescriptor, Expr, InsertCommand,
-    OrderBy, RecoverCommand, SelectQuery, SortDirection, UpdateCommand, Value,
+    Aggregate, AggregateFunction, BinaryOp, DataType, DeleteCommand, EntityDescriptor, Expr,
+    InsertCommand, OrderBy, PropertyDescriptor, RecoverCommand, SelectQuery, SortDirection,
+    UpdateCommand, Value,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +24,7 @@ pub enum SqlCompileError {
     MissingVersionProperty(String),
     EmptyMutation(String),
     InvalidRecoverVersion(i64),
+    UnsupportedSchemaType(DataType),
 }
 
 impl std::fmt::Display for SqlCompileError {
@@ -38,6 +40,9 @@ impl std::fmt::Display for SqlCompileError {
             Self::InvalidRecoverVersion(version) => {
                 write!(f, "recover requires a negative version, got {version}")
             }
+            Self::UnsupportedSchemaType(data_type) => {
+                write!(f, "unsupported schema type: {data_type:?}")
+            }
         }
     }
 }
@@ -48,6 +53,63 @@ pub trait SqlDialect {
     fn kind(&self) -> DatabaseKind;
     fn quote_ident(&self, ident: &str) -> String;
     fn placeholder(&self, index: usize) -> String;
+
+    fn schema_type_sql(
+        &self,
+        data_type: DataType,
+        _property: &PropertyDescriptor,
+    ) -> Result<&'static str, SqlCompileError> {
+        match data_type {
+            DataType::Bool => Ok("BOOLEAN"),
+            DataType::I64 | DataType::U64 => Ok("INTEGER"),
+            DataType::F64 => Ok("REAL"),
+            DataType::Text | DataType::Json | DataType::Date | DataType::Timestamp => Ok("TEXT"),
+        }
+    }
+
+    fn column_definition_sql(
+        &self,
+        property: &PropertyDescriptor,
+    ) -> Result<String, SqlCompileError> {
+        let mut parts = vec![
+            self.quote_ident(&property.column_name),
+            self.schema_type_sql(property.data_type, property)?.to_owned(),
+        ];
+
+        if property.is_id {
+            parts.push("PRIMARY KEY".to_owned());
+        }
+        if property.is_id || !property.nullable {
+            parts.push("NOT NULL".to_owned());
+        }
+
+        Ok(parts.join(" "))
+    }
+
+    fn compile_create_table(&self, entity: &EntityDescriptor) -> Result<String, SqlCompileError> {
+        let columns = entity
+            .properties
+            .iter()
+            .map(|property| self.column_definition_sql(property))
+            .collect::<Result<Vec<_>, _>>()?
+            .join(", ");
+        Ok(format!(
+            "CREATE TABLE IF NOT EXISTS {} ({columns})",
+            self.quote_ident(&entity.table_name)
+        ))
+    }
+
+    fn compile_add_column(
+        &self,
+        entity: &EntityDescriptor,
+        property: &PropertyDescriptor,
+    ) -> Result<String, SqlCompileError> {
+        Ok(format!(
+            "ALTER TABLE {} ADD COLUMN {}",
+            self.quote_ident(&entity.table_name),
+            self.column_definition_sql(property)?
+        ))
+    }
 
     fn compile_select(
         &self,

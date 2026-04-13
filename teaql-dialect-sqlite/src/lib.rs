@@ -1,4 +1,5 @@
-use teaql_sql::{DatabaseKind, SqlDialect};
+use teaql_core::{DataType, PropertyDescriptor};
+use teaql_sql::{DatabaseKind, SqlCompileError, SqlDialect};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SqliteDialect;
@@ -14,6 +15,20 @@ impl SqlDialect for SqliteDialect {
 
     fn placeholder(&self, _index: usize) -> String {
         "?".to_owned()
+    }
+
+    fn schema_type_sql(
+        &self,
+        data_type: DataType,
+        property: &PropertyDescriptor,
+    ) -> Result<&'static str, SqlCompileError> {
+        match data_type {
+            DataType::Bool => Ok("INTEGER"),
+            DataType::I64 | DataType::U64 if property.is_id => Ok("INTEGER"),
+            DataType::I64 | DataType::U64 => Ok("INTEGER"),
+            DataType::F64 => Ok("REAL"),
+            DataType::Text | DataType::Json | DataType::Date | DataType::Timestamp => Ok("TEXT"),
+        }
     }
 }
 
@@ -75,6 +90,31 @@ mod tests {
         assert_eq!(
             recover.sql,
             "UPDATE \"orders\" SET \"version\" = ? WHERE \"id\" = ? AND \"version\" = ?"
+        );
+    }
+
+    #[test]
+    fn compiles_create_table_for_sqlite() {
+        let sql = SqliteDialect.compile_create_table(&entity()).unwrap();
+        assert_eq!(
+            sql,
+            "CREATE TABLE IF NOT EXISTS \"orders\" (\"id\" INTEGER PRIMARY KEY NOT NULL, \"version\" INTEGER NOT NULL, \"name\" TEXT)"
+        );
+    }
+
+    #[test]
+    fn compiles_add_column_for_sqlite() {
+        let sql = SqliteDialect
+            .compile_add_column(
+                &entity(),
+                &PropertyDescriptor::new("created_at", DataType::Timestamp)
+                    .column_name("created_at")
+                    .not_null(),
+            )
+            .unwrap();
+        assert_eq!(
+            sql,
+            "ALTER TABLE \"orders\" ADD COLUMN \"created_at\" TEXT NOT NULL"
         );
     }
 }

@@ -50,6 +50,7 @@ impl From<SqlCompileError> for RuntimeError {
 
 pub trait MetadataStore: Send + Sync {
     fn entity(&self, name: &str) -> Option<&EntityDescriptor>;
+    fn all_entities(&self) -> Vec<&EntityDescriptor>;
 }
 
 pub trait RepositoryRegistry: Send + Sync {
@@ -109,6 +110,10 @@ impl InMemoryMetadataStore {
 impl MetadataStore for InMemoryMetadataStore {
     fn entity(&self, name: &str) -> Option<&EntityDescriptor> {
         self.entities.get(name)
+    }
+
+    fn all_entities(&self) -> Vec<&EntityDescriptor> {
+        self.entities.values().collect()
     }
 }
 
@@ -642,6 +647,14 @@ impl MetadataStore for UserContextMetadata<'_> {
     fn entity(&self, name: &str) -> Option<&EntityDescriptor> {
         self.context.entity(name)
     }
+
+    fn all_entities(&self) -> Vec<&EntityDescriptor> {
+        self.context
+            .metadata
+            .as_ref()
+            .map(|metadata| metadata.all_entities())
+            .unwrap_or_default()
+    }
 }
 
 impl UserContext {
@@ -1045,12 +1058,14 @@ pub mod sqlx_support {
     use sqlx::postgres::{PgArguments, PgPool, PgRow};
     use sqlx::sqlite::{SqliteArguments, SqlitePool, SqliteRow};
     use sqlx::{Arguments, Column, Error as SqlxError, Row, TypeInfo, ValueRef, query_with};
-    use teaql_core::{Record, Value};
-    use teaql_sql::CompiledQuery;
+    use teaql_core::{EntityDescriptor, Record, Value};
+    use teaql_dialect_sqlite::SqliteDialect;
+    use teaql_sql::{CompiledQuery, SqlCompileError, SqlDialect};
 
     #[derive(Debug)]
     pub enum MutationExecutorError {
         Sqlx(SqlxError),
+        SqlCompile(SqlCompileError),
         UnsupportedValue(&'static str),
         UnsupportedColumnType(String),
         Bind(String),
@@ -1060,6 +1075,7 @@ pub mod sqlx_support {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
                 Self::Sqlx(err) => err.fmt(f),
+                Self::SqlCompile(err) => err.fmt(f),
                 Self::UnsupportedValue(kind) => {
                     write!(f, "unsupported sqlx bind value for mutation executor: {kind}")
                 }
@@ -1076,6 +1092,12 @@ pub mod sqlx_support {
     impl From<SqlxError> for MutationExecutorError {
         fn from(value: SqlxError) -> Self {
             Self::Sqlx(value)
+        }
+    }
+
+    impl From<SqlCompileError> for MutationExecutorError {
+        fn from(value: SqlCompileError) -> Self {
+            Self::SqlCompile(value)
         }
     }
 
@@ -1121,6 +1143,30 @@ pub mod sqlx_support {
             Self { pool }
         }
 
+        pub async fn ensure_schema(
+            &self,
+            dialect: &SqliteDialect,
+            entities: &[&EntityDescriptor],
+        ) -> Result<(), MutationExecutorError> {
+            for entity in entities {
+                if !self.table_exists(&entity.table_name).await? {
+                    let sql = dialect.compile_create_table(entity)?;
+                    sqlx::query(&sql).execute(&self.pool).await?;
+                    continue;
+                }
+
+                let existing_columns = self.table_columns(&entity.table_name).await?;
+                for property in &entity.properties {
+                    if existing_columns.contains(&property.column_name) {
+                        continue;
+                    }
+                    let sql = dialect.compile_add_column(entity, property)?;
+                    sqlx::query(&sql).execute(&self.pool).await?;
+                }
+            }
+            Ok(())
+        }
+
         pub async fn execute(&self, query: &CompiledQuery) -> Result<u64, MutationExecutorError> {
             let mut args = SqliteArguments::default();
             for value in &query.params {
@@ -1140,6 +1186,53 @@ pub mod sqlx_support {
             }
             let rows = query_with(&query.sql, args).fetch_all(&self.pool).await?;
             rows.iter().map(decode_sqlite_row).collect()
+        }
+
+        async fn table_exists(&self, table_name: &str) -> Result<bool, MutationExecutorError> {
+            let exists = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = ?",
+            )
+            .bind(table_name)
+            .fetch_one(&self.pool)
+            .await?;
+            Ok(exists > 0)
+        }
+
+        async fn table_columns(
+            &self,
+            table_name: &str,
+        ) -> Result<std::collections::BTreeSet<String>, MutationExecutorError> {
+            let pragma_sql = format!("PRAGMA table_info(\"{}\")", table_name.replace('"', "\"\""));
+            let rows = sqlx::query(&pragma_sql).fetch_all(&self.pool).await?;
+            let mut columns = std::collections::BTreeSet::new();
+            for row in rows {
+                let name: String = row.try_get("name")?;
+                columns.insert(name);
+            }
+            Ok(columns)
+        }
+    }
+
+    impl super::UserContext {
+        pub async fn ensure_sqlite_schema(&self) -> Result<(), MutationExecutorError> {
+            let dialect = self
+                .get_resource::<SqliteDialect>()
+                .ok_or_else(|| MutationExecutorError::Bind("missing typed resource: SqliteDialect".to_owned()))?;
+            let executor = self
+                .get_resource::<SqliteMutationExecutor>()
+                .ok_or_else(|| {
+                    MutationExecutorError::Bind(
+                        "missing typed resource: SqliteMutationExecutor".to_owned(),
+                    )
+                })?;
+
+            let entities = self
+                .metadata
+                .as_ref()
+                .map(|metadata| metadata.all_entities())
+                .unwrap_or_default();
+
+            executor.ensure_schema(dialect, &entities).await
         }
     }
 
@@ -1781,20 +1874,10 @@ mod sqlx_integration_tests {
             .await
             .unwrap();
 
-        sqlx::query(
-            "CREATE TABLE orders (
-                id INTEGER PRIMARY KEY,
-                version INTEGER NOT NULL,
-                name TEXT NOT NULL
-            )",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
         let executor = SqliteMutationExecutor::new(pool.clone());
         let dialect = SqliteDialect;
         let entity = entity();
+        executor.ensure_schema(&dialect, &[&entity]).await.unwrap();
 
         let insert = dialect
             .compile_insert(
@@ -1867,48 +1950,34 @@ mod sqlx_integration_tests {
             .await
             .unwrap();
 
-        sqlx::query(
-            "CREATE TABLE orders (
-                id INTEGER PRIMARY KEY,
-                version INTEGER NOT NULL,
-                name TEXT NOT NULL
-            )",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        sqlx::query(
-            "CREATE TABLE orderline (
-                id INTEGER PRIMARY KEY,
-                order_id INTEGER NOT NULL,
-                name TEXT NOT NULL
-            )",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        let mutation_executor = SqliteMutationExecutor::new(pool.clone());
+        let order = entity();
+        let line = line_entity();
+        mutation_executor
+            .ensure_schema(&SqliteDialect, &[&order, &line])
+            .await
+            .unwrap();
 
         sqlx::query("INSERT INTO orders (id, version, name) VALUES (1, 1, 'o1'), (2, 1, 'o2')")
             .execute(&pool)
             .await
             .unwrap();
         sqlx::query(
-            "INSERT INTO orderline (id, order_id, name) VALUES
-                (101, 1, 'l1'),
-                (102, 1, 'l2'),
-                (201, 2, 'l3')",
+            "INSERT INTO orderline (id, order_id, product_id, name) VALUES
+                (101, 1, 1001, 'l1'),
+                (102, 1, 1002, 'l2'),
+                (201, 2, 1003, 'l3')",
         )
         .execute(&pool)
         .await
         .unwrap();
 
-        let executor = SqliteSyncExecutor::new(SqliteMutationExecutor::new(pool.clone()));
+        let executor = SqliteSyncExecutor::new(mutation_executor);
         let mut ctx = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
-                    .with_entity(entity())
-                    .with_entity(line_entity())
+                    .with_entity(order)
+                    .with_entity(line)
                     .with_entity(product_entity()),
             )
             .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
@@ -1954,38 +2023,14 @@ mod sqlx_integration_tests {
             .await
             .unwrap();
 
-        sqlx::query(
-            "CREATE TABLE orders (
-                id INTEGER PRIMARY KEY,
-                version INTEGER NOT NULL,
-                name TEXT NOT NULL
-            )",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        sqlx::query(
-            "CREATE TABLE orderline (
-                id INTEGER PRIMARY KEY,
-                order_id INTEGER NOT NULL,
-                product_id INTEGER NOT NULL,
-                name TEXT NOT NULL
-            )",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        sqlx::query(
-            "CREATE TABLE product (
-                id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL
-            )",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        let mutation_executor = SqliteMutationExecutor::new(pool.clone());
+        let order = entity();
+        let line = line_entity();
+        let product = product_entity();
+        mutation_executor
+            .ensure_schema(&SqliteDialect, &[&order, &line, &product])
+            .await
+            .unwrap();
 
         sqlx::query("INSERT INTO orders (id, version, name) VALUES (1, 1, 'o1')")
             .execute(&pool)
@@ -2008,13 +2053,13 @@ mod sqlx_integration_tests {
         .await
         .unwrap();
 
-        let executor = SqliteSyncExecutor::new(SqliteMutationExecutor::new(pool.clone()));
+        let executor = SqliteSyncExecutor::new(mutation_executor);
         let mut ctx = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
-                    .with_entity(entity())
-                    .with_entity(line_entity())
-                    .with_entity(product_entity()),
+                    .with_entity(order)
+                    .with_entity(line)
+                    .with_entity(product),
             )
             .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
             .with_repository_behavior_registry(
@@ -2055,5 +2100,85 @@ mod sqlx_integration_tests {
             }
             other => panic!("unexpected nested lines payload: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn sqlite_executor_ensure_schema_adds_missing_columns() {
+        use sqlx::Row;
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE orders (
+                id INTEGER PRIMARY KEY
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let executor = SqliteMutationExecutor::new(pool.clone());
+        let dialect = SqliteDialect;
+        let entity = entity();
+
+        executor.ensure_schema(&dialect, &[&entity]).await.unwrap();
+
+        let columns = sqlx::query("PRAGMA table_info(\"orders\")")
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.try_get::<String, _>("name").unwrap())
+            .collect::<Vec<_>>();
+
+        assert!(columns.contains(&"id".to_owned()));
+        assert!(columns.contains(&"version".to_owned()));
+        assert!(columns.contains(&"name".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn user_context_can_ensure_sqlite_schema_from_runtime_module() {
+        use sqlx::Row;
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        let module = super::RuntimeModule::new()
+            .descriptor(entity())
+            .descriptor(line_entity())
+            .descriptor(product_entity());
+        let mut ctx = super::UserContext::new().with_module(module);
+        ctx.insert_resource(SqliteDialect);
+        ctx.insert_resource(SqliteMutationExecutor::new(pool.clone()));
+
+        ctx.ensure_sqlite_schema().await.unwrap();
+
+        let tables = sqlx::query(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('orders', 'orderline', 'product') ORDER BY name",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.try_get::<String, _>("name").unwrap())
+        .collect::<Vec<_>>();
+
+        assert_eq!(
+            tables,
+            vec![
+                "orderline".to_owned(),
+                "orders".to_owned(),
+                "product".to_owned()
+            ]
+        );
     }
 }
