@@ -1,509 +1,35 @@
 extern crate self as teaql_core;
 
-use std::collections::BTreeMap;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DataType {
-    Bool,
-    I64,
-    U64,
-    F64,
-    Text,
-    Json,
-    Date,
-    Timestamp,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Value {
-    Null,
-    Bool(bool),
-    I64(i64),
-    U64(u64),
-    F64(f64),
-    Text(String),
-    Object(BTreeMap<String, Value>),
-    List(Vec<Value>),
-}
-
-impl From<&str> for Value {
-    fn from(value: &str) -> Self {
-        Self::Text(value.to_owned())
-    }
-}
-
-impl From<String> for Value {
-    fn from(value: String) -> Self {
-        Self::Text(value)
-    }
-}
-
-impl From<i64> for Value {
-    fn from(value: i64) -> Self {
-        Self::I64(value)
-    }
-}
-
-impl From<u64> for Value {
-    fn from(value: u64) -> Self {
-        Self::U64(value)
-    }
-}
-
-impl From<bool> for Value {
-    fn from(value: bool) -> Self {
-        Self::Bool(value)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PropertyDescriptor {
-    pub name: String,
-    pub data_type: DataType,
-    pub nullable: bool,
-    pub column_name: String,
-    pub is_id: bool,
-    pub is_version: bool,
-}
-
-impl PropertyDescriptor {
-    pub fn new(name: impl Into<String>, data_type: DataType) -> Self {
-        let name = name.into();
-        Self {
-            column_name: name.clone(),
-            name,
-            data_type,
-            nullable: true,
-            is_id: false,
-            is_version: false,
-        }
-    }
-
-    pub fn column_name(mut self, column_name: impl Into<String>) -> Self {
-        self.column_name = column_name.into();
-        self
-    }
-
-    pub fn not_null(mut self) -> Self {
-        self.nullable = false;
-        self
-    }
-
-    pub fn id(mut self) -> Self {
-        self.is_id = true;
-        self
-    }
-
-    pub fn version(mut self) -> Self {
-        self.is_version = true;
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RelationDescriptor {
-    pub name: String,
-    pub target_entity: String,
-    pub local_key: String,
-    pub foreign_key: String,
-    pub many: bool,
-}
-
-impl RelationDescriptor {
-    pub fn new(name: impl Into<String>, target_entity: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            target_entity: target_entity.into(),
-            local_key: "id".to_owned(),
-            foreign_key: "id".to_owned(),
-            many: false,
-        }
-    }
-
-    pub fn local_key(mut self, key: impl Into<String>) -> Self {
-        self.local_key = key.into();
-        self
-    }
-
-    pub fn foreign_key(mut self, key: impl Into<String>) -> Self {
-        self.foreign_key = key.into();
-        self
-    }
-
-    pub fn many(mut self) -> Self {
-        self.many = true;
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EntityDescriptor {
-    pub name: String,
-    pub table_name: String,
-    pub properties: Vec<PropertyDescriptor>,
-    pub relations: Vec<RelationDescriptor>,
-}
-
-impl EntityDescriptor {
-    pub fn new(name: impl Into<String>) -> Self {
-        let name = name.into();
-        Self {
-            table_name: name.to_lowercase(),
-            name,
-            properties: Vec::new(),
-            relations: Vec::new(),
-        }
-    }
-
-    pub fn table_name(mut self, table_name: impl Into<String>) -> Self {
-        self.table_name = table_name.into();
-        self
-    }
-
-    pub fn property(mut self, property: PropertyDescriptor) -> Self {
-        self.properties.push(property);
-        self
-    }
-
-    pub fn relation(mut self, relation: RelationDescriptor) -> Self {
-        self.relations.push(relation);
-        self
-    }
-
-    pub fn property_by_name(&self, name: &str) -> Option<&PropertyDescriptor> {
-        self.properties.iter().find(|property| property.name == name)
-    }
-
-    pub fn relation_by_name(&self, name: &str) -> Option<&RelationDescriptor> {
-        self.relations.iter().find(|relation| relation.name == name)
-    }
-
-    pub fn id_property(&self) -> Option<&PropertyDescriptor> {
-        self.properties.iter().find(|property| property.is_id)
-    }
-
-    pub fn version_property(&self) -> Option<&PropertyDescriptor> {
-        self.properties.iter().find(|property| property.is_version)
-    }
-
-    pub fn writable_properties(&self) -> impl Iterator<Item = &PropertyDescriptor> {
-        self.properties.iter().filter(|property| !property.is_id)
-    }
-}
-
-pub trait TeaqlEntity {
-    fn entity_descriptor() -> EntityDescriptor;
-
-    fn register_into(store: &mut impl EntityDescriptorStore) {
-        store.register_descriptor(Self::entity_descriptor());
-    }
-}
-
-pub trait EntityDescriptorStore {
-    fn register_descriptor(&mut self, descriptor: EntityDescriptor);
-}
-
-#[macro_export]
-macro_rules! register_entities {
-    ($store:expr, $($entity:ty),+ $(,)?) => {{
-        $(
-            <$entity as $crate::TeaqlEntity>::register_into($store);
-        )+
-    }};
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BinaryOp {
-    Eq,
-    Ne,
-    Gt,
-    Gte,
-    Lt,
-    Lte,
-    Like,
-    In,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Expr {
-    Column(String),
-    Value(Value),
-    Binary {
-        left: Box<Expr>,
-        op: BinaryOp,
-        right: Box<Expr>,
-    },
-    Between {
-        expr: Box<Expr>,
-        lower: Box<Expr>,
-        upper: Box<Expr>,
-    },
-    IsNull(Box<Expr>),
-    IsNotNull(Box<Expr>),
-    And(Vec<Expr>),
-    Or(Vec<Expr>),
-    Not(Box<Expr>),
-}
-
-impl Expr {
-    pub fn column(name: impl Into<String>) -> Self {
-        Self::Column(name.into())
-    }
-
-    pub fn value(value: impl Into<Value>) -> Self {
-        Self::Value(value.into())
-    }
-
-    pub fn eq(column: impl Into<String>, value: impl Into<Value>) -> Self {
-        Self::Binary {
-            left: Box::new(Self::column(column)),
-            op: BinaryOp::Eq,
-            right: Box::new(Self::value(value)),
-        }
-    }
-
-    pub fn in_list(column: impl Into<String>, values: impl IntoIterator<Item = Value>) -> Self {
-        Self::Binary {
-            left: Box::new(Self::column(column)),
-            op: BinaryOp::In,
-            right: Box::new(Self::Value(Value::List(values.into_iter().collect()))),
-        }
-    }
-
-    pub fn and(parts: impl IntoIterator<Item = Expr>) -> Self {
-        Self::And(parts.into_iter().collect())
-    }
-}
-
-impl Value {
-    pub fn object(record: Record) -> Self {
-        Self::Object(record)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SortDirection {
-    Asc,
-    Desc,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OrderBy {
-    pub field: String,
-    pub direction: SortDirection,
-}
-
-impl OrderBy {
-    pub fn asc(field: impl Into<String>) -> Self {
-        Self {
-            field: field.into(),
-            direction: SortDirection::Asc,
-        }
-    }
-
-    pub fn desc(field: impl Into<String>) -> Self {
-        Self {
-            field: field.into(),
-            direction: SortDirection::Desc,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AggregateFunction {
-    Count,
-    Sum,
-    Avg,
-    Min,
-    Max,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Aggregate {
-    pub function: AggregateFunction,
-    pub field: String,
-    pub alias: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Slice {
-    pub limit: Option<u64>,
-    pub offset: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RelationLoad {
-    pub name: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MutationKind {
-    Insert,
-    Update,
-    Delete,
-    Recover,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct InsertCommand {
-    pub entity: String,
-    pub values: Record,
-}
-
-impl InsertCommand {
-    pub fn new(entity: impl Into<String>) -> Self {
-        Self {
-            entity: entity.into(),
-            values: Record::new(),
-        }
-    }
-
-    pub fn value(mut self, field: impl Into<String>, value: impl Into<Value>) -> Self {
-        self.values.insert(field.into(), value.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct UpdateCommand {
-    pub entity: String,
-    pub id: Value,
-    pub expected_version: Option<i64>,
-    pub values: Record,
-}
-
-impl UpdateCommand {
-    pub fn new(entity: impl Into<String>, id: impl Into<Value>) -> Self {
-        Self {
-            entity: entity.into(),
-            id: id.into(),
-            expected_version: None,
-            values: Record::new(),
-        }
-    }
-
-    pub fn expected_version(mut self, version: i64) -> Self {
-        self.expected_version = Some(version);
-        self
-    }
-
-    pub fn value(mut self, field: impl Into<String>, value: impl Into<Value>) -> Self {
-        self.values.insert(field.into(), value.into());
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct DeleteCommand {
-    pub entity: String,
-    pub id: Value,
-    pub expected_version: Option<i64>,
-    pub soft_delete: bool,
-}
-
-impl DeleteCommand {
-    pub fn new(entity: impl Into<String>, id: impl Into<Value>) -> Self {
-        Self {
-            entity: entity.into(),
-            id: id.into(),
-            expected_version: None,
-            soft_delete: true,
-        }
-    }
-
-    pub fn expected_version(mut self, version: i64) -> Self {
-        self.expected_version = Some(version);
-        self
-    }
-
-    pub fn hard_delete(mut self) -> Self {
-        self.soft_delete = false;
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct RecoverCommand {
-    pub entity: String,
-    pub id: Value,
-    pub expected_version: i64,
-}
-
-impl RecoverCommand {
-    pub fn new(entity: impl Into<String>, id: impl Into<Value>, expected_version: i64) -> Self {
-        Self {
-            entity: entity.into(),
-            id: id.into(),
-            expected_version,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct SelectQuery {
-    pub entity: String,
-    pub projection: Vec<String>,
-    pub filter: Option<Expr>,
-    pub order_by: Vec<OrderBy>,
-    pub slice: Option<Slice>,
-    pub aggregates: Vec<Aggregate>,
-    pub group_by: Vec<String>,
-    pub relations: Vec<RelationLoad>,
-}
-
-impl SelectQuery {
-    pub fn new(entity: impl Into<String>) -> Self {
-        Self {
-            entity: entity.into(),
-            projection: Vec::new(),
-            filter: None,
-            order_by: Vec::new(),
-            slice: None,
-            aggregates: Vec::new(),
-            group_by: Vec::new(),
-            relations: Vec::new(),
-        }
-    }
-
-    pub fn project(mut self, field: impl Into<String>) -> Self {
-        self.projection.push(field.into());
-        self
-    }
-
-    pub fn filter(mut self, filter: Expr) -> Self {
-        self.filter = Some(filter);
-        self
-    }
-
-    pub fn order_by(mut self, order: OrderBy) -> Self {
-        self.order_by.push(order);
-        self
-    }
-
-    pub fn limit(mut self, limit: u64) -> Self {
-        let slice = self.slice.get_or_insert(Slice {
-            limit: None,
-            offset: 0,
-        });
-        slice.limit = Some(limit);
-        self
-    }
-
-    pub fn offset(mut self, offset: u64) -> Self {
-        let slice = self.slice.get_or_insert(Slice {
-            limit: None,
-            offset: 0,
-        });
-        slice.offset = offset;
-        self
-    }
-}
-
-pub type Record = BTreeMap<String, Value>;
+mod entity;
+mod expr;
+mod list;
+mod meta;
+mod mutation;
+mod naming;
+mod query;
+mod value;
+
+pub use entity::{
+    BaseEntity, BaseEntityData, Entity, EntityDescriptorStore, EntityError, IdentifiableEntity,
+    TeaqlEntity, VersionedEntity,
+};
+pub use expr::{BinaryOp, Expr};
+pub use list::SmartList;
+pub use meta::{EntityDescriptor, PropertyDescriptor, RelationDescriptor};
+pub use mutation::{DeleteCommand, InsertCommand, MutationKind, RecoverCommand, UpdateCommand};
+pub use naming::default_table_name;
+pub use query::{
+    Aggregate, AggregateFunction, OrderBy, Record, RelationLoad, SelectQuery, Slice,
+    SortDirection, record_to_json_value,
+};
+pub use value::{DataType, Value};
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+    use chrono::{NaiveDate, TimeZone, Utc};
     use teaql_macros::TeaqlEntity;
 
     #[derive(Default)]
@@ -543,6 +69,15 @@ mod tests {
 
     #[allow(dead_code)]
     #[derive(TeaqlEntity)]
+    #[teaql(entity = "Product", table = "product")]
+    struct ProductRow {
+        #[teaql(id)]
+        id: u64,
+        name: String,
+    }
+
+    #[allow(dead_code)]
+    #[derive(TeaqlEntity)]
     #[teaql(entity = "OrderLine", table = "orderline")]
     struct OrderLineRow {
         #[teaql(id)]
@@ -550,7 +85,7 @@ mod tests {
         #[teaql(column = "order_id")]
         order_id: u64,
         #[teaql(relation(target = "Product", local_key = "product_id", foreign_key = "id"))]
-        product: Option<()>,
+        product: Option<ProductRow>,
     }
 
     #[test]
@@ -575,5 +110,146 @@ mod tests {
         assert_eq!(store.descriptors.len(), 2);
         assert_eq!(store.descriptors[0].name, "Order");
         assert_eq!(store.descriptors[1].name, "OrderLine");
+    }
+
+    #[allow(dead_code)]
+    #[derive(TeaqlEntity)]
+    struct DefaultTableNameRow {
+        #[teaql(id)]
+        id: u64,
+    }
+
+    #[allow(dead_code)]
+    #[derive(TeaqlEntity)]
+    struct TypedValueRow {
+        #[teaql(id)]
+        id: u64,
+        payload: serde_json::Value,
+        birthday: NaiveDate,
+        happened_at: chrono::DateTime<Utc>,
+    }
+
+    #[allow(dead_code)]
+    #[derive(TeaqlEntity)]
+    #[teaql(entity = "OrderAggregate", table = "order_aggregate")]
+    struct OrderAggregateRow {
+        #[teaql(id)]
+        id: u64,
+        #[teaql(dynamic)]
+        dynamic: BTreeMap<String, serde_json::Value>,
+    }
+
+    #[test]
+    fn default_table_name_matches_java_sql_repository_rule() {
+        assert_eq!(default_table_name("Order"), "order_data");
+        assert_eq!(default_table_name("OrderLine"), "order_line_data");
+        assert_eq!(EntityDescriptor::new("Order").table_name, "order_data");
+        assert_eq!(EntityDescriptor::new("OrderLine").table_name, "order_line_data");
+        assert_eq!(
+            DefaultTableNameRow::entity_descriptor().table_name,
+            "default_table_name_row_data"
+        );
+    }
+
+    #[test]
+    fn derive_maps_json_date_and_timestamp_types() {
+        let descriptor = TypedValueRow::entity_descriptor();
+        assert_eq!(
+            descriptor.property_by_name("payload").map(|p| p.data_type),
+            Some(DataType::Json)
+        );
+        assert_eq!(
+            descriptor.property_by_name("birthday").map(|p| p.data_type),
+            Some(DataType::Date)
+        );
+        assert_eq!(
+            descriptor.property_by_name("happened_at").map(|p| p.data_type),
+            Some(DataType::Timestamp)
+        );
+
+        let birthday = NaiveDate::from_ymd_opt(2024, 2, 3).unwrap();
+        let happened_at = Utc.with_ymd_and_hms(2024, 2, 3, 4, 5, 6).unwrap();
+        assert_eq!(
+            Value::from(serde_json::json!({"a": 1})),
+            Value::Json(serde_json::json!({"a": 1}))
+        );
+        assert_eq!(Value::from(birthday), Value::Date(birthday));
+        assert_eq!(Value::from(happened_at), Value::Timestamp(happened_at));
+    }
+
+    #[test]
+    fn smart_list_supports_entity_ids_versions_and_records() {
+        let rows = SmartList::from(vec![
+            OrderRow {
+                id: 1,
+                version: 2,
+                name: String::from("a"),
+            },
+            OrderRow {
+                id: 3,
+                version: 4,
+                name: String::from("b"),
+            },
+        ]);
+
+        assert_eq!(rows.ids(), vec![Value::U64(1), Value::U64(3)]);
+        assert_eq!(rows.versions(), vec![2, 4]);
+
+        let records = rows.into_records();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records.data[0].get("id"), Some(&Value::U64(1)));
+        assert_eq!(records.data[1].get("version"), Some(&Value::I64(4)));
+    }
+
+    #[test]
+    fn dynamic_properties_roundtrip_into_json() {
+        let aggregate = OrderAggregateRow::from_record(Record::from([
+            (String::from("id"), Value::U64(7)),
+            (String::from("lineCount"), Value::I64(3)),
+            (String::from("amount"), Value::F64(18.5)),
+            (
+                String::from("detail"),
+                Value::Object(Record::from([(String::from("status"), Value::from("ok"))])),
+            ),
+        ]))
+        .unwrap();
+
+        assert_eq!(aggregate.dynamic.get("lineCount"), Some(&serde_json::json!(3)));
+        assert_eq!(aggregate.dynamic.get("amount"), Some(&serde_json::json!(18.5)));
+        assert_eq!(
+            aggregate.dynamic.get("detail"),
+            Some(&serde_json::json!({"status": "ok"}))
+        );
+
+        let json = aggregate.into_json();
+        assert_eq!(json["id"], serde_json::json!(7));
+        assert_eq!(json["lineCount"], serde_json::json!(3));
+        assert_eq!(json["amount"], serde_json::json!(18.5));
+        assert_eq!(json["detail"], serde_json::json!({"status": "ok"}));
+    }
+
+    #[test]
+    fn base_entity_data_roundtrips_record_and_dynamic_properties() {
+        let mut base = BaseEntityData::new()
+            .with_id(11)
+            .with_version(3)
+            .with_dynamic("lineCount", 5)
+            .with_dynamic("detail", serde_json::json!({"status": "ok"}));
+        assert_eq!(base.dynamic("lineCount"), Some(&serde_json::json!(5)));
+        base.put_dynamic("amount", 18.5);
+
+        let record = base.to_record();
+        assert_eq!(record.get("id"), Some(&Value::U64(11)));
+        assert_eq!(record.get("version"), Some(&Value::I64(3)));
+        assert_eq!(record.get("lineCount"), Some(&Value::Json(serde_json::json!(5))));
+        assert_eq!(
+            record.get("detail"),
+            Some(&Value::Json(serde_json::json!({"status": "ok"})))
+        );
+
+        let restored = BaseEntityData::from_record(&record).unwrap();
+        assert_eq!(restored.id, Some(11));
+        assert_eq!(restored.version, 3);
+        assert_eq!(restored.dynamic("amount"), Some(&serde_json::json!(18.5)));
     }
 }

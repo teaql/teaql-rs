@@ -12,10 +12,10 @@ Status labels used here:
 
 Current progress estimates:
 
-- Core runtime/kernel: `70%-80%`
-- SQLite usable path: `80%+`
-- PostgreSQL usable path: `55%-65%`
-- Full Java feature parity: `40%-50%`
+- Core runtime/kernel: `80%-85%`
+- SQLite usable path: `85%+`
+- PostgreSQL usable path: `70%-75%`
+- Full Java feature parity: `50%-60%`
 
 ## Feature Matrix
 
@@ -37,9 +37,9 @@ Current progress estimates:
 | Entity-level behavior hooks | Present | `before_select/insert/update/delete/recover` supported | MVP | Medium |
 | SQL compiler | Complete and mature | `teaql-sql` supports select/insert/update/delete/recover | MVP | Medium |
 | SQLite dialect | Present | Implemented and verified with `sqlx` integration tests | Done | Low |
-| PostgreSQL dialect | Present | Implemented, but not yet validated against a real PG instance | Partial | High |
-| SQL execution layer | Complete | `sqlx` execution path exists | MVP | Medium |
-| Result decoding | Complete | Basic types supported: `NULL/bool/i64/f64/text`; `u64` ids bind correctly | Partial | High |
+| PostgreSQL dialect | Present | Implemented and validated against a real PostgreSQL instance through Docker-backed tests | MVP | Medium |
+| SQL execution layer | Complete | `sqlx` execution path exists for SQLite and PostgreSQL | MVP | Medium |
+| Result decoding | Complete | Primitive types plus `u64`, JSON, date, and timestamp are supported | MVP | Medium |
 | `u64` id model | Java usually uses signed `Long` | Rust now uses `u64` ids while keeping `version` as `i64` | Done | Low |
 | Derive macro for entities | Java relies on reflection/metadata classes | `#[derive(TeaqlEntity)]` implemented | MVP | Medium |
 | Batch entity registration | Present via framework patterns | `register_entities!` implemented | Done | Low |
@@ -50,9 +50,13 @@ Current progress estimates:
 | Web/BaseService action entry | Java has `BaseService` | Not implemented | Not Started | Low |
 | Multi-database dialect matrix | Java supports many databases | Rust intentionally focuses on PostgreSQL and SQLite | Dropped | None |
 | Reflection-style parser registration | Java-style runtime mechanism | Not carried over into Rust | Dropped | None |
-| JSON/time/date value support | More complete in Java | Metadata types exist, but execution/binding/decoding is incomplete | Not Started | High |
-| PostgreSQL integration tests | Mature path | Not implemented yet | Not Started | High |
-| Schema migration / schema tooling | Partial capability in Java ecosystem | Not implemented | Not Started | Medium |
+| JSON/time/date value support | More complete in Java | Binding/decoding works for JSON, `NaiveDate`, and `DateTime<Utc>` | MVP | Medium |
+| PostgreSQL integration tests | Mature path | Real `sqlx` integration tests run when `TEAQL_TEST_PG_URL` is provided | MVP | Medium |
+| Schema ensure / bootstrap | Partial capability in Java ecosystem | SQLite and PostgreSQL `ensure_schema` support create-table and add-missing-column flows | MVP | Medium |
+| Base entity model | Java has `BaseEntity` | `BaseEntityData` and `BaseEntity` cover `id/version/dynamic` | MVP | Low |
+| SmartList and typed entities | Java has `SmartList<Entity>` | `SmartList<T>`, typed fetch, and typed nested relation enhancement are implemented | MVP | Medium |
+| Id generator | Java has internal id generator | `InternalIdGenerator` plus `SnowflakeIdGenerator` integrated into repository inserts | Done | Low |
+| Module/file organization | Java code is already split by concern | Rust core/runtime/macros/sql crates are now split into focused source modules | Done | Low |
 
 ## Current Strengths
 
@@ -62,22 +66,25 @@ Current progress estimates:
 - `UserContext` is present as a first-class runtime concept
 - Repository registry and behavior hooks are implemented
 - Single-level and nested relation enhancement are working
-- Entity derive macro exists and supports descriptor generation
+- Entity derive macro exists and supports descriptor generation and typed record mapping
+- `SmartList<T>` and typed nested entity loading are working
+- Dynamic-property JSON flattening is available for aggregate-style output
 - Runtime module assembly exists
 - SQLite `sqlx` integration is real and tested
+- PostgreSQL `sqlx` integration and `ensure_schema` are validated
 
 ## Most Important Gaps
 
-1. PostgreSQL real integration validation
-2. Richer value support, especially JSON and time/date types
-3. Result decoding beyond the current primitive set
-4. Optional in-memory repository for tests and simplified execution
-5. Higher-level service layer if Rust-side application APIs are needed
+1. Broader value support beyond the current primitive/JSON/date/timestamp set
+2. Optional in-memory repository for tests and simplified execution
+3. Runnable examples for schema bootstrap, CRUD, typed entities, and relations
+4. Higher-level service layer if Rust-side application APIs are needed
+5. More complete schema migration tooling beyond additive `ensure_schema`
 
 ## Suggested Next Steps
 
-1. Add PostgreSQL integration tests using an environment-provided connection string
-2. Extend value binding and decoding for JSON, timestamp, and date
+1. Add a real `examples/` directory so the current architecture is easier to run and review
+2. Extend value binding and decoding for `Uuid`, decimal, and bytes
 3. Tighten type handling so `u64` and signed integer behavior is explicit end-to-end
 4. Decide whether a Rust-native service layer is needed, or whether repository-level APIs are enough
-5. Add a real `examples/` directory so the current architecture is easier to run and review
+5. Add a real in-memory repository instead of only in-memory metadata/registry

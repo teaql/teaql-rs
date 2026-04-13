@@ -11,12 +11,20 @@ Progress tracking lives in [PROGRESS.md](./PROGRESS.md).
 
 ## Workspace layout
 
-- `teaql-core`: metadata, values, filters, ordering, aggregates, query model
-- `teaql-sql`: SQL dialect trait and AST-to-SQL compiler
-- `teaql-runtime`: `UserContext`, metadata lookup, repository boundary, repository registry, behavior registry, `RuntimeModule`, optional `sqlx` PG/SQLite executors
-- `teaql-macros`: `TeaqlEntity` derive macro for declarative metadata definitions
+- `teaql-core`: metadata, entity traits, base entity data, values, filters, ordering, aggregates, query model, and `SmartList<T>`
+- `teaql-sql`: SQL dialect trait, compiled query types, DDL helpers, and AST-to-SQL compiler
+- `teaql-runtime`: `UserContext`, metadata lookup, repository boundary, repository registry, behavior registry, id generation, `RuntimeModule`, and optional `sqlx` PG/SQLite executors
+- `teaql-macros`: `TeaqlEntity` derive macro plus attribute parsing and record/entity mapping generation
 - `teaql-dialect-pg`: PostgreSQL quoting and placeholder strategy
 - `teaql-dialect-sqlite`: SQLite quoting and placeholder strategy
+
+The large crates are now split by function instead of keeping all implementation in a single
+`lib.rs`:
+
+- `teaql-core/src`: `entity.rs`, `expr.rs`, `list.rs`, `meta.rs`, `mutation.rs`, `naming.rs`, `query.rs`, `value.rs`
+- `teaql-sql/src`: `dialect.rs`, `types.rs`
+- `teaql-runtime/src`: `context.rs`, `error.rs`, `id.rs`, `registry.rs`, `repository.rs`, `sqlx_support.rs`
+- `teaql-macros/src`: `attr.rs`, `derive_impl.rs`, `mapping.rs`, `types.rs`
 
 ## Current scope
 
@@ -38,11 +46,131 @@ The current implementation focuses on the Rust-native core runtime:
 - relation enhancement supports batch child-query generation and backfilling related records into parent records
 - nested relation enhancement supports paths like `lines.product`
 - `TeaqlEntity` derive support for declarative entity descriptors
+- typed entity mapping through `Entity` and `SmartList<T>`
+- typed nested relation enhancement through `fetch_enhanced_entities::<T>()`
 - declarative runtime assembly through `RuntimeModule` and `module!`
+- built-in `SnowflakeIdGenerator` and `UserContext`-driven id generation
+- `BaseEntityData` / `BaseEntity` for shared `id + version + dynamic` entity state
+- dynamic-property capture through `#[teaql(dynamic)]`, with JSON flattening for aggregate-style outputs
 - optional `sqlx` support module for PostgreSQL and SQLite execution
 - SQLite `ensure_schema` support for create-table and add-missing-column flows
+- PostgreSQL `ensure_schema` support with real multi-table integration validation
 - `UserContext::ensure_sqlite_schema()` as the high-level SQLite schema entry point
+- `UserContext::ensure_postgres_schema()` as the high-level PostgreSQL schema entry point
+- JSON, date, and timestamp bind/decode support in the `sqlx` execution path
 - SQLite in-memory integration tests for CRUD and relation enhancement under `--features sqlx`
+- PostgreSQL integration tests under `--features sqlx` when `TEAQL_TEST_PG_URL` is provided
+
+## Typed entities and `SmartList<T>`
+
+`TeaqlEntity` derive now generates both metadata and typed `Entity` mapping. Repository APIs can
+return either raw `Record` rows or typed `SmartList<T>` collections.
+
+```rust
+use teaql_core::{Expr, SelectQuery, SmartList, TeaqlEntity};
+
+#[derive(Clone, Debug, Default, TeaqlEntity)]
+#[teaql(entity = "CatalogProduct", table = "catalog_product_data")]
+struct CatalogProductRow {
+    #[teaql(id, column = "id")]
+    id: u64,
+    #[teaql(version, column = "version")]
+    version: i64,
+    #[teaql(column = "name")]
+    name: String,
+}
+
+fn query() -> SelectQuery {
+    SelectQuery::new("CatalogProduct").filter(Expr::eq("name", "desk"))
+}
+
+async fn fetch_products(
+    repo: &teaql_runtime::ResolvedRepository<'_>,
+) -> Result<SmartList<CatalogProductRow>, teaql_runtime::RepositoryError> {
+    repo.fetch_entities::<CatalogProductRow>(&query())
+}
+```
+
+`SmartList<T>` keeps TeaQL-style list metadata alongside the typed rows:
+
+- `data`
+- `total_count`
+- `aggregations`
+- `summary`
+
+When the entity defines `#[teaql(id)]` or `#[teaql(version)]`, `SmartList<T>` also exposes:
+
+- `ids()`
+- `versions()`
+- `into_records()`
+
+## Typed relation enhancement
+
+`fetch_enhanced_entities::<T>()` runs record-based relation enhancement first, then converts the
+result into typed nested entities.
+
+```rust
+use teaql_core::{SelectQuery, SmartList, TeaqlEntity};
+
+#[derive(Clone, Debug, Default, TeaqlEntity)]
+#[teaql(entity = "Product", table = "product_data")]
+struct ProductRow {
+    #[teaql(id, column = "id")]
+    id: u64,
+    #[teaql(version, column = "version")]
+    version: i64,
+    #[teaql(column = "name")]
+    name: String,
+}
+
+#[derive(Clone, Debug, Default, TeaqlEntity)]
+#[teaql(entity = "OrderLine", table = "order_line_data")]
+struct OrderLineRow {
+    #[teaql(id, column = "id")]
+    id: u64,
+    #[teaql(version, column = "version")]
+    version: i64,
+    #[teaql(column = "order_id")]
+    order_id: u64,
+    #[teaql(
+        relation(
+            target = "Product",
+            local_key = "product_id",
+            foreign_key = "id"
+        )
+    )]
+    product: Option<ProductRow>,
+}
+
+#[derive(Clone, Debug, Default, TeaqlEntity)]
+#[teaql(entity = "Order", table = "order_data")]
+struct OrderRow {
+    #[teaql(id, column = "id")]
+    id: u64,
+    #[teaql(version, column = "version")]
+    version: i64,
+    #[teaql(
+        relation(
+            target = "OrderLine",
+            local_key = "id",
+            foreign_key = "order_id",
+            many
+        )
+    )]
+    lines: SmartList<OrderLineRow>,
+}
+
+async fn fetch_orders(
+    repo: &teaql_runtime::ResolvedRepository<'_>,
+) -> Result<SmartList<OrderRow>, teaql_runtime::RepositoryError> {
+    repo.fetch_enhanced_entities::<OrderRow>(&SelectQuery::new("Order"))
+}
+```
+
+For nested enhancement, register relation paths from repository behavior, for example:
+
+- `lines`
+- `lines.product`
 
 ## SQLite schema bootstrap
 
@@ -91,7 +219,7 @@ Current SQLite `ensure_schema` scope:
 
 ## Next steps
 
-1. Validate the PostgreSQL executor against a real PostgreSQL instance.
-2. Extend value binding and decoding for JSON, timestamp, and date types.
-3. Add examples that show entity derive, module assembly, schema bootstrap, CRUD, and relation enhancement.
-4. Decide whether a Rust-native service layer is needed above repository/runtime APIs.
+1. Add runnable examples that show module assembly, schema bootstrap, CRUD, typed entities, and relation enhancement.
+2. Keep expanding value coverage beyond the current JSON/date/timestamp set, especially `Uuid`, decimal, and bytes.
+3. Decide whether a Rust-native service layer is needed above repository/runtime APIs.
+4. Consider a real in-memory repository for tests and simplified execution.

@@ -27,7 +27,10 @@ impl SqlDialect for SqliteDialect {
             DataType::I64 | DataType::U64 if property.is_id => Ok("INTEGER"),
             DataType::I64 | DataType::U64 => Ok("INTEGER"),
             DataType::F64 => Ok("REAL"),
-            DataType::Text | DataType::Json | DataType::Date | DataType::Timestamp => Ok("TEXT"),
+            DataType::Text => Ok("TEXT"),
+            DataType::Json => Ok("JSON"),
+            DataType::Date => Ok("DATE"),
+            DataType::Timestamp => Ok("TIMESTAMP"),
         }
     }
 }
@@ -114,7 +117,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             sql,
-            "ALTER TABLE \"orders\" ADD COLUMN \"created_at\" TEXT NOT NULL"
+            "ALTER TABLE \"orders\" ADD COLUMN \"created_at\" TIMESTAMP NOT NULL"
         );
     }
 }
