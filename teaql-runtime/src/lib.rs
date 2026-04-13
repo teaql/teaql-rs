@@ -1059,6 +1059,7 @@ pub mod sqlx_support {
     use sqlx::sqlite::{SqliteArguments, SqlitePool, SqliteRow};
     use sqlx::{Arguments, Column, Error as SqlxError, Row, TypeInfo, ValueRef, query_with};
     use teaql_core::{EntityDescriptor, Record, Value};
+    use teaql_dialect_pg::PostgresDialect;
     use teaql_dialect_sqlite::SqliteDialect;
     use teaql_sql::{CompiledQuery, SqlCompileError, SqlDialect};
 
@@ -1111,6 +1112,30 @@ pub mod sqlx_support {
             Self { pool }
         }
 
+        pub async fn ensure_schema(
+            &self,
+            dialect: &PostgresDialect,
+            entities: &[&EntityDescriptor],
+        ) -> Result<(), MutationExecutorError> {
+            for entity in entities {
+                if !self.table_exists(&entity.table_name).await? {
+                    let sql = dialect.compile_create_table(entity)?;
+                    sqlx::query(&sql).execute(&self.pool).await?;
+                    continue;
+                }
+
+                let existing_columns = self.table_columns(&entity.table_name).await?;
+                for property in &entity.properties {
+                    if existing_columns.contains(&property.column_name) {
+                        continue;
+                    }
+                    let sql = dialect.compile_add_column(entity, property)?;
+                    sqlx::query(&sql).execute(&self.pool).await?;
+                }
+            }
+            Ok(())
+        }
+
         pub async fn execute(&self, query: &CompiledQuery) -> Result<u64, MutationExecutorError> {
             let mut args = PgArguments::default();
             for value in &query.params {
@@ -1130,6 +1155,40 @@ pub mod sqlx_support {
             }
             let rows = query_with(&query.sql, args).fetch_all(&self.pool).await?;
             rows.iter().map(decode_pg_row).collect()
+        }
+
+        async fn table_exists(&self, table_name: &str) -> Result<bool, MutationExecutorError> {
+            let exists = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(1)
+                 FROM information_schema.tables
+                 WHERE table_schema = current_schema()
+                   AND table_name = $1",
+            )
+            .bind(table_name)
+            .fetch_one(&self.pool)
+            .await?;
+            Ok(exists > 0)
+        }
+
+        async fn table_columns(
+            &self,
+            table_name: &str,
+        ) -> Result<std::collections::BTreeSet<String>, MutationExecutorError> {
+            let rows = sqlx::query(
+                "SELECT column_name
+                 FROM information_schema.columns
+                 WHERE table_schema = current_schema()
+                   AND table_name = $1",
+            )
+            .bind(table_name)
+            .fetch_all(&self.pool)
+            .await?;
+            let mut columns = std::collections::BTreeSet::new();
+            for row in rows {
+                let name: String = row.try_get("column_name")?;
+                columns.insert(name);
+            }
+            Ok(columns)
         }
     }
 
@@ -1214,6 +1273,27 @@ pub mod sqlx_support {
     }
 
     impl super::UserContext {
+        pub async fn ensure_postgres_schema(&self) -> Result<(), MutationExecutorError> {
+            let dialect = self
+                .get_resource::<PostgresDialect>()
+                .ok_or_else(|| MutationExecutorError::Bind("missing typed resource: PostgresDialect".to_owned()))?;
+            let executor = self
+                .get_resource::<PgMutationExecutor>()
+                .ok_or_else(|| {
+                    MutationExecutorError::Bind(
+                        "missing typed resource: PgMutationExecutor".to_owned(),
+                    )
+                })?;
+
+            let entities = self
+                .metadata
+                .as_ref()
+                .map(|metadata| metadata.all_entities())
+                .unwrap_or_default();
+
+            executor.ensure_schema(dialect, &entities).await
+        }
+
         pub async fn ensure_sqlite_schema(&self) -> Result<(), MutationExecutorError> {
             let dialect = self
                 .get_resource::<SqliteDialect>()
@@ -1762,7 +1842,7 @@ mod tests {
 
 #[cfg(all(test, feature = "sqlx"))]
 mod sqlx_integration_tests {
-    use super::sqlx_support::{MutationExecutorError, SqliteMutationExecutor};
+    use super::sqlx_support::{MutationExecutorError, PgMutationExecutor, SqliteMutationExecutor};
     use super::{
         InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry, InMemoryRepositoryRegistry, QueryExecutor,
         RepositoryBehavior, UserContext,
@@ -1772,6 +1852,7 @@ mod sqlx_integration_tests {
         Record, SelectQuery, UpdateCommand, Value,
     };
     use teaql_dialect_sqlite::SqliteDialect;
+    use teaql_dialect_pg::PostgresDialect;
     use teaql_sql::SqlDialect;
     use tokio::runtime::Handle;
     use tokio::task::block_in_place;
@@ -2180,5 +2261,156 @@ mod sqlx_integration_tests {
                 "product".to_owned()
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn postgres_executor_ensure_schema_roundtrip_when_database_is_available() {
+        use sqlx::{PgPool, Row};
+
+        let Some(database_url) = std::env::var("TEAQL_TEST_PG_URL").ok() else {
+            return;
+        };
+
+        let pool = PgPool::connect(&database_url).await.unwrap();
+        sqlx::query("DROP TABLE IF EXISTS orderline")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE IF EXISTS orders")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let executor = PgMutationExecutor::new(pool.clone());
+        let dialect = PostgresDialect;
+        let order = entity();
+        let line = line_entity();
+
+        executor.ensure_schema(&dialect, &[&order, &line]).await.unwrap();
+
+        let tables = sqlx::query(
+            "SELECT table_name
+             FROM information_schema.tables
+             WHERE table_schema = current_schema()
+               AND table_name IN ('orders', 'orderline')
+             ORDER BY table_name",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.try_get::<String, _>("table_name").unwrap())
+        .collect::<Vec<_>>();
+        assert_eq!(tables, vec!["orderline".to_owned(), "orders".to_owned()]);
+
+        sqlx::query("DROP TABLE orderline")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE orderline (id BIGINT PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        executor.ensure_schema(&dialect, &[&line]).await.unwrap();
+
+        let columns = sqlx::query(
+            "SELECT column_name
+             FROM information_schema.columns
+             WHERE table_schema = current_schema()
+               AND table_name = 'orderline'
+             ORDER BY column_name",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.try_get::<String, _>("column_name").unwrap())
+        .collect::<Vec<_>>();
+        assert!(columns.contains(&"id".to_owned()));
+        assert!(columns.contains(&"order_id".to_owned()));
+        assert!(columns.contains(&"product_id".to_owned()));
+        assert!(columns.contains(&"name".to_owned()));
+
+        sqlx::query("DROP TABLE IF EXISTS orderline")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE IF EXISTS orders")
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn user_context_can_ensure_postgres_schema_when_database_is_available() {
+        use sqlx::{PgPool, Row};
+
+        let Some(database_url) = std::env::var("TEAQL_TEST_PG_URL").ok() else {
+            return;
+        };
+
+        let pool = PgPool::connect(&database_url).await.unwrap();
+        sqlx::query("DROP TABLE IF EXISTS product_ctx")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE IF EXISTS orderline_ctx")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE IF EXISTS orders_ctx")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let order = entity().table_name("orders_ctx");
+        let line = line_entity().table_name("orderline_ctx");
+        let product = product_entity().table_name("product_ctx");
+        let module = super::RuntimeModule::new()
+            .descriptor(order)
+            .descriptor(line)
+            .descriptor(product);
+        let mut ctx = super::UserContext::new().with_module(module);
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(PgMutationExecutor::new(pool.clone()));
+
+        ctx.ensure_postgres_schema().await.unwrap();
+
+        let tables = sqlx::query(
+            "SELECT table_name
+             FROM information_schema.tables
+             WHERE table_schema = current_schema()
+               AND table_name IN ('orders_ctx', 'orderline_ctx', 'product_ctx')
+             ORDER BY table_name",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.try_get::<String, _>("table_name").unwrap())
+        .collect::<Vec<_>>();
+
+        assert_eq!(
+            tables,
+            vec![
+                "orderline_ctx".to_owned(),
+                "orders_ctx".to_owned(),
+                "product_ctx".to_owned()
+            ]
+        );
+
+        sqlx::query("DROP TABLE IF EXISTS product_ctx")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE IF EXISTS orderline_ctx")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE IF EXISTS orders_ctx")
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 }

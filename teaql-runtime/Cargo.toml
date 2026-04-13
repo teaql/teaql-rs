@@ -7,11 +7,12 @@ authors.workspace = true
 
 [features]
 default = []
-sqlx = ["dep:sqlx", "dep:teaql-dialect-sqlite"]
+sqlx = ["dep:sqlx", "dep:teaql-dialect-sqlite", "dep:teaql-dialect-pg"]
 
 [dependencies]
 teaql-core = { path = "../teaql-core" }
 teaql-sql = { path = "../teaql-sql" }
+teaql-dialect-pg = { path = "../teaql-dialect-pg", optional = true }
 teaql-dialect-sqlite = { path = "../teaql-dialect-sqlite", optional = true }
 sqlx = { workspace = true, optional = true }
 
