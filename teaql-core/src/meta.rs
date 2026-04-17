@@ -115,7 +115,9 @@ impl EntityDescriptor {
     }
 
     pub fn property_by_name(&self, name: &str) -> Option<&PropertyDescriptor> {
-        self.properties.iter().find(|property| property.name == name)
+        self.properties
+            .iter()
+            .find(|property| property.name == name)
     }
 
     pub fn relation_by_name(&self, name: &str) -> Option<&RelationDescriptor> {

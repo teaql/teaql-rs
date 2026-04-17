@@ -110,7 +110,7 @@ impl BaseEntityData {
                 return Err(EntityError::new(
                     "BaseEntity",
                     format!("invalid id field: {other:?}"),
-                ))
+                ));
             }
         };
 
@@ -121,7 +121,7 @@ impl BaseEntityData {
                 return Err(EntityError::new(
                     "BaseEntity",
                     format!("invalid version field: {other:?}"),
-                ))
+                ));
             }
         };
 
@@ -131,7 +131,11 @@ impl BaseEntityData {
             .map(|(key, value)| (key.clone(), value.to_json_value()))
             .collect();
 
-        Ok(Self { id, version, dynamic })
+        Ok(Self {
+            id,
+            version,
+            dynamic,
+        })
     }
 }
 

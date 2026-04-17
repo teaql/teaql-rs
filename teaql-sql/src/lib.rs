@@ -34,7 +34,12 @@ mod tests {
     fn entity() -> EntityDescriptor {
         EntityDescriptor::new("Order")
             .table_name("orders")
-            .property(PropertyDescriptor::new("id", DataType::U64).column_name("id").id().not_null())
+            .property(
+                PropertyDescriptor::new("id", DataType::U64)
+                    .column_name("id")
+                    .id()
+                    .not_null(),
+            )
             .property(
                 PropertyDescriptor::new("version", DataType::I64)
                     .column_name("version")
@@ -90,7 +95,10 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(query.sql, "SELECT COUNT(\"id\") AS \"count\" FROM \"orders\"");
+        assert_eq!(
+            query.sql,
+            "SELECT COUNT(\"id\") AS \"count\" FROM \"orders\""
+        );
     }
 
     #[test]
@@ -122,7 +130,10 @@ mod tests {
         );
 
         let delete = TestDialect
-            .compile_delete(&entity(), &DeleteCommand::new("Order", 1_u64).expected_version(3))
+            .compile_delete(
+                &entity(),
+                &DeleteCommand::new("Order", 1_u64).expected_version(3),
+            )
             .unwrap();
         assert_eq!(
             delete.sql,
@@ -143,25 +154,26 @@ mod tests {
         let query = TestDialect
             .compile_select(
                 &entity(),
-                &SelectQuery::new("Order")
-                    .filter(Expr::Binary {
-                        left: Box::new(Expr::column("id")),
-                        op: BinaryOp::In,
-                        right: Box::new(Expr::Value(Value::List(vec![1_u64.into(), 2_u64.into()]))),
-                    }),
+                &SelectQuery::new("Order").filter(Expr::Binary {
+                    left: Box::new(Expr::column("id")),
+                    op: BinaryOp::In,
+                    right: Box::new(Expr::Value(Value::List(vec![1_u64.into(), 2_u64.into()]))),
+                }),
             )
             .unwrap();
-        assert_eq!(query.sql, "SELECT * FROM \"orders\" WHERE (\"id\" IN ($1, $2))");
+        assert_eq!(
+            query.sql,
+            "SELECT * FROM \"orders\" WHERE (\"id\" IN ($1, $2))"
+        );
 
         let err = TestDialect
             .compile_select(
                 &entity(),
-                &SelectQuery::new("Order")
-                    .filter(Expr::Binary {
-                        left: Box::new(Expr::column("id")),
-                        op: BinaryOp::In,
-                        right: Box::new(Expr::Value(Value::List(vec![]))),
-                    }),
+                &SelectQuery::new("Order").filter(Expr::Binary {
+                    left: Box::new(Expr::column("id")),
+                    op: BinaryOp::In,
+                    right: Box::new(Expr::Value(Value::List(vec![]))),
+                }),
             )
             .unwrap_err();
         assert!(matches!(err, SqlCompileError::EmptyInList));

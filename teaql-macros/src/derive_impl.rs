@@ -102,7 +102,10 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             quote! { .not_null() }
         };
         let id_tokens = if id {
-            id_impl = Some(identifiable_value_tokens(&field.ty, quote! { &self.#field_ident }));
+            id_impl = Some(identifiable_value_tokens(
+                &field.ty,
+                quote! { &self.#field_ident },
+            ));
             quote! { .id() }
         } else {
             quote! {}

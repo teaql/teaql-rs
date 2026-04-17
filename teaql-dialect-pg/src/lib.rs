@@ -37,13 +37,21 @@ impl SqlDialect for PostgresDialect {
 #[cfg(test)]
 mod tests {
     use super::PostgresDialect;
-    use teaql_core::{DataType, DeleteCommand, EntityDescriptor, InsertCommand, PropertyDescriptor, RecoverCommand, UpdateCommand};
+    use teaql_core::{
+        DataType, DeleteCommand, EntityDescriptor, InsertCommand, PropertyDescriptor,
+        RecoverCommand, UpdateCommand,
+    };
     use teaql_sql::SqlDialect;
 
     fn entity() -> EntityDescriptor {
         EntityDescriptor::new("Order")
             .table_name("orders")
-            .property(PropertyDescriptor::new("id", DataType::U64).column_name("id").id().not_null())
+            .property(
+                PropertyDescriptor::new("id", DataType::U64)
+                    .column_name("id")
+                    .id()
+                    .not_null(),
+            )
             .property(
                 PropertyDescriptor::new("version", DataType::I64)
                     .column_name("version")
@@ -56,9 +64,17 @@ mod tests {
     #[test]
     fn compiles_insert_with_postgres_placeholders() {
         let query = PostgresDialect
-            .compile_insert(&entity(), &InsertCommand::new("Order").value("id", 1_u64).value("name", "A"))
+            .compile_insert(
+                &entity(),
+                &InsertCommand::new("Order")
+                    .value("id", 1_u64)
+                    .value("name", "A"),
+            )
             .unwrap();
-        assert_eq!(query.sql, "INSERT INTO \"orders\" (\"id\", \"name\") VALUES ($1, $2)");
+        assert_eq!(
+            query.sql,
+            "INSERT INTO \"orders\" (\"id\", \"name\") VALUES ($1, $2)"
+        );
     }
 
     #[test]
@@ -80,7 +96,10 @@ mod tests {
     #[test]
     fn compiles_soft_delete_with_optimistic_lock() {
         let query = PostgresDialect
-            .compile_delete(&entity(), &DeleteCommand::new("Order", 1_u64).expected_version(3))
+            .compile_delete(
+                &entity(),
+                &DeleteCommand::new("Order", 1_u64).expected_version(3),
+            )
             .unwrap();
         assert_eq!(
             query.sql,

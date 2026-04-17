@@ -27,10 +27,16 @@ impl std::fmt::Display for MutationExecutorError {
             Self::Sqlx(err) => err.fmt(f),
             Self::SqlCompile(err) => err.fmt(f),
             Self::UnsupportedValue(kind) => {
-                write!(f, "unsupported sqlx bind value for mutation executor: {kind}")
+                write!(
+                    f,
+                    "unsupported sqlx bind value for mutation executor: {kind}"
+                )
             }
             Self::UnsupportedColumnType(kind) => {
-                write!(f, "unsupported sqlx column type for record decoding: {kind}")
+                write!(
+                    f,
+                    "unsupported sqlx column type for record decoding: {kind}"
+                )
             }
             Self::Bind(message) => write!(f, "sqlx bind error: {message}"),
         }
@@ -94,7 +100,10 @@ impl PgMutationExecutor {
         Ok(result.rows_affected())
     }
 
-    pub async fn fetch_all(&self, query: &CompiledQuery) -> Result<Vec<Record>, MutationExecutorError> {
+    pub async fn fetch_all(
+        &self,
+        query: &CompiledQuery,
+    ) -> Result<Vec<Record>, MutationExecutorError> {
         let mut args = PgArguments::default();
         for value in &query.params {
             bind_pg(&mut args, value)?;
@@ -181,7 +190,10 @@ impl SqliteMutationExecutor {
         Ok(result.rows_affected())
     }
 
-    pub async fn fetch_all(&self, query: &CompiledQuery) -> Result<Vec<Record>, MutationExecutorError> {
+    pub async fn fetch_all(
+        &self,
+        query: &CompiledQuery,
+    ) -> Result<Vec<Record>, MutationExecutorError> {
         let mut args = SqliteArguments::default();
         for value in &query.params {
             bind_sqlite(&mut args, value)?;
@@ -191,11 +203,12 @@ impl SqliteMutationExecutor {
     }
 
     async fn table_exists(&self, table_name: &str) -> Result<bool, MutationExecutorError> {
-        let exists =
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = ?")
-                .bind(table_name)
-                .fetch_one(&self.pool)
-                .await?;
+        let exists = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = ?",
+        )
+        .bind(table_name)
+        .fetch_one(&self.pool)
+        .await?;
         Ok(exists > 0)
     }
 
@@ -236,9 +249,13 @@ impl UserContext {
         let dialect = self.get_resource::<SqliteDialect>().ok_or_else(|| {
             MutationExecutorError::Bind("missing typed resource: SqliteDialect".to_owned())
         })?;
-        let executor = self.get_resource::<SqliteMutationExecutor>().ok_or_else(|| {
-            MutationExecutorError::Bind("missing typed resource: SqliteMutationExecutor".to_owned())
-        })?;
+        let executor = self
+            .get_resource::<SqliteMutationExecutor>()
+            .ok_or_else(|| {
+                MutationExecutorError::Bind(
+                    "missing typed resource: SqliteMutationExecutor".to_owned(),
+                )
+            })?;
 
         let entities = self
             .metadata
@@ -336,31 +353,54 @@ fn decode_pg_row(row: &PgRow) -> Result<Record, MutationExecutorError> {
     let mut record = BTreeMap::new();
     for (index, column) in row.columns().iter().enumerate() {
         let name = column.name().to_owned();
-        let raw = row.try_get_raw(index).map_err(MutationExecutorError::Sqlx)?;
+        let raw = row
+            .try_get_raw(index)
+            .map_err(MutationExecutorError::Sqlx)?;
         if raw.is_null() {
             record.insert(name, Value::Null);
             continue;
         }
         let type_name = column.type_info().name().to_ascii_uppercase();
         let value = match type_name.as_str() {
-            "BOOL" | "BOOLEAN" => Value::Bool(row.try_get(index).map_err(MutationExecutorError::Sqlx)?),
-            "INT2" => Value::I64(row.try_get::<i16, _>(index).map_err(MutationExecutorError::Sqlx)? as i64),
-            "INT4" => Value::I64(row.try_get::<i32, _>(index).map_err(MutationExecutorError::Sqlx)? as i64),
+            "BOOL" | "BOOLEAN" => {
+                Value::Bool(row.try_get(index).map_err(MutationExecutorError::Sqlx)?)
+            }
+            "INT2" => Value::I64(
+                row.try_get::<i16, _>(index)
+                    .map_err(MutationExecutorError::Sqlx)? as i64,
+            ),
+            "INT4" => Value::I64(
+                row.try_get::<i32, _>(index)
+                    .map_err(MutationExecutorError::Sqlx)? as i64,
+            ),
             "INT8" => Value::I64(row.try_get(index).map_err(MutationExecutorError::Sqlx)?),
-            "FLOAT4" => Value::F64(row.try_get::<f32, _>(index).map_err(MutationExecutorError::Sqlx)? as f64),
-            "FLOAT8" | "NUMERIC" => Value::F64(row.try_get(index).map_err(MutationExecutorError::Sqlx)?),
+            "FLOAT4" => Value::F64(
+                row.try_get::<f32, _>(index)
+                    .map_err(MutationExecutorError::Sqlx)? as f64,
+            ),
+            "FLOAT8" | "NUMERIC" => {
+                Value::F64(row.try_get(index).map_err(MutationExecutorError::Sqlx)?)
+            }
             "JSON" | "JSONB" => {
                 let Json(value) = row.try_get(index).map_err(MutationExecutorError::Sqlx)?;
                 Value::Json(value)
             }
-            "DATE" => Value::Date(row.try_get::<NaiveDate, _>(index).map_err(MutationExecutorError::Sqlx)?),
-            "TIMESTAMP" | "TIMESTAMPTZ" => {
-                Value::Timestamp(row.try_get::<DateTime<Utc>, _>(index).map_err(MutationExecutorError::Sqlx)?)
-            }
+            "DATE" => Value::Date(
+                row.try_get::<NaiveDate, _>(index)
+                    .map_err(MutationExecutorError::Sqlx)?,
+            ),
+            "TIMESTAMP" | "TIMESTAMPTZ" => Value::Timestamp(
+                row.try_get::<DateTime<Utc>, _>(index)
+                    .map_err(MutationExecutorError::Sqlx)?,
+            ),
             "TEXT" | "VARCHAR" | "BPCHAR" | "NAME" | "UUID" => {
                 Value::Text(row.try_get(index).map_err(MutationExecutorError::Sqlx)?)
             }
-            other => return Err(MutationExecutorError::UnsupportedColumnType(other.to_owned())),
+            other => {
+                return Err(MutationExecutorError::UnsupportedColumnType(
+                    other.to_owned(),
+                ));
+            }
         };
         record.insert(name, value);
     }
@@ -371,7 +411,9 @@ fn decode_sqlite_row(row: &SqliteRow) -> Result<Record, MutationExecutorError> {
     let mut record = BTreeMap::new();
     for (index, column) in row.columns().iter().enumerate() {
         let name = column.name().to_owned();
-        let raw = row.try_get_raw(index).map_err(MutationExecutorError::Sqlx)?;
+        let raw = row
+            .try_get_raw(index)
+            .map_err(MutationExecutorError::Sqlx)?;
         if raw.is_null() {
             record.insert(name, Value::Null);
             continue;
@@ -391,22 +433,33 @@ fn decode_sqlite_row(row: &SqliteRow) -> Result<Record, MutationExecutorError> {
                     MutationExecutorError::Bind(format!("invalid sqlite json value: {err}"))
                 })?)
             }
-            "DATE" => Value::Date(row.try_get::<NaiveDate, _>(index).map_err(MutationExecutorError::Sqlx)?),
-            "TIMESTAMP" | "DATETIME" => {
-                Value::Timestamp(row.try_get::<DateTime<Utc>, _>(index).map_err(MutationExecutorError::Sqlx)?)
-            }
+            "DATE" => Value::Date(
+                row.try_get::<NaiveDate, _>(index)
+                    .map_err(MutationExecutorError::Sqlx)?,
+            ),
+            "TIMESTAMP" | "DATETIME" => Value::Timestamp(
+                row.try_get::<DateTime<Utc>, _>(index)
+                    .map_err(MutationExecutorError::Sqlx)?,
+            ),
             "TEXT" | "VARCHAR" => {
                 Value::Text(row.try_get(index).map_err(MutationExecutorError::Sqlx)?)
             }
             "NULL" => infer_sqlite_dynamic_value(row, index)?,
-            other => return Err(MutationExecutorError::UnsupportedColumnType(other.to_owned())),
+            other => {
+                return Err(MutationExecutorError::UnsupportedColumnType(
+                    other.to_owned(),
+                ));
+            }
         };
         record.insert(name, value);
     }
     Ok(record)
 }
 
-fn infer_sqlite_dynamic_value(row: &SqliteRow, index: usize) -> Result<Value, MutationExecutorError> {
+fn infer_sqlite_dynamic_value(
+    row: &SqliteRow,
+    index: usize,
+) -> Result<Value, MutationExecutorError> {
     if let Ok(value) = row.try_get::<i64, _>(index) {
         return Ok(Value::I64(value));
     }
@@ -430,5 +483,7 @@ fn infer_sqlite_dynamic_value(row: &SqliteRow, index: usize) -> Result<Value, Mu
         }
         return Ok(Value::Text(value));
     }
-    Err(MutationExecutorError::UnsupportedColumnType("NULL".to_owned()))
+    Err(MutationExecutorError::UnsupportedColumnType(
+        "NULL".to_owned(),
+    ))
 }

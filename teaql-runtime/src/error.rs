@@ -75,8 +75,7 @@ where
     }
 }
 
-impl<ExecError> std::error::Error for RepositoryError<ExecError>
-where
-    ExecError: std::error::Error + 'static,
+impl<ExecError> std::error::Error for RepositoryError<ExecError> where
+    ExecError: std::error::Error + 'static
 {
 }

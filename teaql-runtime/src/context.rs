@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, HashMap};
 use teaql_core::{EntityDescriptor, Value};
 
 use crate::{
-    ContextError, InternalIdGenerator, MetadataStore, RepositoryBehavior, RepositoryBehaviorRegistry,
-    RepositoryRegistry, RuntimeError, local_id_generator,
+    ContextError, InternalIdGenerator, MetadataStore, RepositoryBehavior,
+    RepositoryBehaviorRegistry, RepositoryRegistry, RuntimeError, local_id_generator,
 };
 
 #[derive(Default)]
@@ -38,10 +38,7 @@ impl UserContext {
         self.metadata = Some(Box::new(metadata));
     }
 
-    pub fn with_repository_registry(
-        mut self,
-        registry: impl RepositoryRegistry + 'static,
-    ) -> Self {
+    pub fn with_repository_registry(mut self, registry: impl RepositoryRegistry + 'static) -> Self {
         self.repository_registry = Some(Box::new(registry));
         self
     }
@@ -73,10 +70,7 @@ impl UserContext {
         self
     }
 
-    pub fn set_internal_id_generator(
-        &mut self,
-        generator: impl InternalIdGenerator + 'static,
-    ) {
+    pub fn set_internal_id_generator(&mut self, generator: impl InternalIdGenerator + 'static) {
         self.internal_id_generator = Some(Box::new(generator));
     }
 
@@ -95,7 +89,9 @@ impl UserContext {
     }
 
     pub fn entity(&self, name: &str) -> Option<&EntityDescriptor> {
-        self.metadata.as_ref().and_then(|metadata| metadata.entity(name))
+        self.metadata
+            .as_ref()
+            .and_then(|metadata| metadata.entity(name))
     }
 
     pub fn require_entity(&self, name: &str) -> Result<&EntityDescriptor, RuntimeError> {
@@ -125,7 +121,9 @@ impl UserContext {
         T: Send + Sync + 'static,
     {
         self.get_resource::<T>()
-            .ok_or(ContextError::MissingTypedResource(std::any::type_name::<T>()))
+            .ok_or(ContextError::MissingTypedResource(
+                std::any::type_name::<T>(),
+            ))
     }
 
     pub fn insert_named_resource<T>(&mut self, name: impl Into<String>, resource: T)
@@ -173,7 +171,10 @@ impl UserContext {
         in_registry || self.entity(entity).is_some()
     }
 
-    pub fn repository_behavior(&self, entity: &str) -> Option<std::sync::Arc<dyn RepositoryBehavior>> {
+    pub fn repository_behavior(
+        &self,
+        entity: &str,
+    ) -> Option<std::sync::Arc<dyn RepositoryBehavior>> {
         self.repository_behavior_registry
             .as_ref()
             .and_then(|registry| registry.behavior(entity))

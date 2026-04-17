@@ -44,7 +44,7 @@ Current progress estimates:
 | Derive macro for entities | Java relies on reflection/metadata classes | `#[derive(TeaqlEntity)]` implemented | MVP | Medium |
 | Batch entity registration | Present via framework patterns | `register_entities!` implemented | Done | Low |
 | Declarative runtime assembly | Spring/config driven | `RuntimeModule` and `module!` implemented | MVP | Medium |
-| In-memory repository | Java has `teaql-memory` | Rust only has in-memory metadata/registry, not a real memory repository | Not Started | Medium |
+| In-memory repository | Java has `teaql-memory` | `MemoryRepository` supports query filtering/sorting/paging/projection, basic aggregates, typed `SmartList<T>`, and mutations | MVP | Medium |
 | GraphQL integration | Java has `teaql-graphql` | Not implemented | Not Started | Low |
 | Spring Boot autoconfigure | Java has `teaql-autoconfigure` | Not applicable in pure Rust rewrite | Dropped | None |
 | Web/BaseService action entry | Java has `BaseService` | Not implemented | Not Started | Low |
@@ -72,11 +72,12 @@ Current progress estimates:
 - Runtime module assembly exists
 - SQLite `sqlx` integration is real and tested
 - PostgreSQL `sqlx` integration and `ensure_schema` are validated
+- `MemoryRepository` exists for no-database tests and simplified execution
 
 ## Most Important Gaps
 
 1. Broader value support beyond the current primitive/JSON/date/timestamp set
-2. Optional in-memory repository for tests and simplified execution
+2. More complete `MemoryRepository` parity, especially relation enhancement
 3. Runnable examples for schema bootstrap, CRUD, typed entities, and relations
 4. Higher-level service layer if Rust-side application APIs are needed
 5. More complete schema migration tooling beyond additive `ensure_schema`
@@ -87,4 +88,4 @@ Current progress estimates:
 2. Extend value binding and decoding for `Uuid`, decimal, and bytes
 3. Tighten type handling so `u64` and signed integer behavior is explicit end-to-end
 4. Decide whether a Rust-native service layer is needed, or whether repository-level APIs are enough
-5. Add a real in-memory repository instead of only in-memory metadata/registry
+5. Expand `MemoryRepository` toward relation enhancement and richer query parity

@@ -178,10 +178,12 @@ where
             .map_err(RepositoryError::Executor)?;
 
         if command.expected_version.is_some() && affected == 0 {
-            return Err(RepositoryError::Runtime(RuntimeError::OptimisticLockConflict {
-                entity: command.entity.clone(),
-                id: format!("{:?}", command.id),
-            }));
+            return Err(RepositoryError::Runtime(
+                RuntimeError::OptimisticLockConflict {
+                    entity: command.entity.clone(),
+                    id: format!("{:?}", command.id),
+                },
+            ));
         }
 
         Ok(affected)
@@ -197,10 +199,12 @@ where
             .map_err(RepositoryError::Executor)?;
 
         if command.expected_version.is_some() && affected == 0 {
-            return Err(RepositoryError::Runtime(RuntimeError::OptimisticLockConflict {
-                entity: command.entity.clone(),
-                id: format!("{:?}", command.id),
-            }));
+            return Err(RepositoryError::Runtime(
+                RuntimeError::OptimisticLockConflict {
+                    entity: command.entity.clone(),
+                    id: format!("{:?}", command.id),
+                },
+            ));
         }
 
         Ok(affected)
@@ -216,10 +220,12 @@ where
             .map_err(RepositoryError::Executor)?;
 
         if affected == 0 {
-            return Err(RepositoryError::Runtime(RuntimeError::OptimisticLockConflict {
-                entity: command.entity.clone(),
-                id: format!("{:?}", command.id),
-            }));
+            return Err(RepositoryError::Runtime(
+                RuntimeError::OptimisticLockConflict {
+                    entity: command.entity.clone(),
+                    id: format!("{:?}", command.id),
+                },
+            ));
         }
 
         Ok(affected)
@@ -379,7 +385,10 @@ where
     }
 
     fn behavior(&self) -> Option<Arc<dyn RepositoryBehavior>> {
-        self.repository.metadata.context.repository_behavior(&self.entity)
+        self.repository
+            .metadata
+            .context
+            .repository_behavior(&self.entity)
     }
 
     pub fn entity(&self) -> &str {

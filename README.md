@@ -23,7 +23,7 @@ The large crates are now split by function instead of keeping all implementation
 
 - `teaql-core/src`: `entity.rs`, `expr.rs`, `list.rs`, `meta.rs`, `mutation.rs`, `naming.rs`, `query.rs`, `value.rs`
 - `teaql-sql/src`: `dialect.rs`, `types.rs`
-- `teaql-runtime/src`: `context.rs`, `error.rs`, `id.rs`, `registry.rs`, `repository.rs`, `sqlx_support.rs`
+- `teaql-runtime/src`: `context.rs`, `error.rs`, `id.rs`, `memory.rs`, `registry.rs`, `repository.rs`, `sqlx_support.rs`
 - `teaql-macros/src`: `attr.rs`, `derive_impl.rs`, `mapping.rs`, `types.rs`
 
 ## Current scope
@@ -52,6 +52,7 @@ The current implementation focuses on the Rust-native core runtime:
 - built-in `SnowflakeIdGenerator` and `UserContext`-driven id generation
 - `BaseEntityData` / `BaseEntity` for shared `id + version + dynamic` entity state
 - dynamic-property capture through `#[teaql(dynamic)]`, with JSON flattening for aggregate-style outputs
+- `MemoryRepository` for no-database tests and lightweight in-memory execution
 - optional `sqlx` support module for PostgreSQL and SQLite execution
 - SQLite `ensure_schema` support for create-table and add-missing-column flows
 - PostgreSQL `ensure_schema` support with real multi-table integration validation
@@ -222,4 +223,4 @@ Current SQLite `ensure_schema` scope:
 1. Add runnable examples that show module assembly, schema bootstrap, CRUD, typed entities, and relation enhancement.
 2. Keep expanding value coverage beyond the current JSON/date/timestamp set, especially `Uuid`, decimal, and bytes.
 3. Decide whether a Rust-native service layer is needed above repository/runtime APIs.
-4. Consider a real in-memory repository for tests and simplified execution.
+4. Expand `MemoryRepository` toward relation enhancement and richer parity with the SQL-backed path.

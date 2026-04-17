@@ -19,8 +19,8 @@ pub use meta::{EntityDescriptor, PropertyDescriptor, RelationDescriptor};
 pub use mutation::{DeleteCommand, InsertCommand, MutationKind, RecoverCommand, UpdateCommand};
 pub use naming::default_table_name;
 pub use query::{
-    Aggregate, AggregateFunction, OrderBy, Record, RelationLoad, SelectQuery, Slice,
-    SortDirection, record_to_json_value,
+    Aggregate, AggregateFunction, OrderBy, Record, RelationLoad, SelectQuery, Slice, SortDirection,
+    record_to_json_value,
 };
 pub use value::{DataType, Value};
 
@@ -44,7 +44,7 @@ mod tests {
     }
 
     #[allow(dead_code)]
-    #[derive(TeaqlEntity)]
+    #[derive(Clone, TeaqlEntity)]
     #[teaql(entity = "Order", table = "orders")]
     struct OrderRow {
         #[teaql(id)]
@@ -60,9 +60,14 @@ mod tests {
         let descriptor = OrderRow::entity_descriptor();
         assert_eq!(descriptor.name, "Order");
         assert_eq!(descriptor.table_name, "orders");
-        assert_eq!(descriptor.id_property().map(|p| p.name.as_str()), Some("id"));
         assert_eq!(
-            descriptor.property_by_name("name").map(|p| p.column_name.as_str()),
+            descriptor.id_property().map(|p| p.name.as_str()),
+            Some("id")
+        );
+        assert_eq!(
+            descriptor
+                .property_by_name("name")
+                .map(|p| p.column_name.as_str()),
             Some("display_name")
         );
     }
@@ -144,7 +149,10 @@ mod tests {
         assert_eq!(default_table_name("Order"), "order_data");
         assert_eq!(default_table_name("OrderLine"), "order_line_data");
         assert_eq!(EntityDescriptor::new("Order").table_name, "order_data");
-        assert_eq!(EntityDescriptor::new("OrderLine").table_name, "order_line_data");
+        assert_eq!(
+            EntityDescriptor::new("OrderLine").table_name,
+            "order_line_data"
+        );
         assert_eq!(
             DefaultTableNameRow::entity_descriptor().table_name,
             "default_table_name_row_data"
@@ -163,7 +171,9 @@ mod tests {
             Some(DataType::Date)
         );
         assert_eq!(
-            descriptor.property_by_name("happened_at").map(|p| p.data_type),
+            descriptor
+                .property_by_name("happened_at")
+                .map(|p| p.data_type),
             Some(DataType::Timestamp)
         );
 
@@ -202,6 +212,72 @@ mod tests {
     }
 
     #[test]
+    fn smart_list_supports_java_style_collection_helpers() {
+        let mut rows = SmartList::empty()
+            .with_total_count(10)
+            .with_aggregation("count", 2_u64)
+            .with_summary("label", "orders");
+        rows.push(OrderRow {
+            id: 1,
+            version: 2,
+            name: String::from("a"),
+        });
+        rows.extend(vec![OrderRow {
+            id: 3,
+            version: 4,
+            name: String::from("b"),
+        }]);
+
+        assert_eq!(rows.total_count_or_len(), 10);
+        assert_eq!(rows.get(1).map(|row| row.name.as_str()), Some("b"));
+        assert_eq!(rows.last().map(|row| row.id), Some(3));
+        assert_eq!(rows.aggregation("count"), Some(&Value::U64(2)));
+        assert_eq!(
+            rows.summary("label"),
+            Some(&Value::Text(String::from("orders")))
+        );
+        assert_eq!(rows.aggregation_json(), serde_json::json!({"count": 2}));
+        assert_eq!(rows.summary_json(), serde_json::json!({"label": "orders"}));
+
+        let names = rows.to_list(|row| row.name.clone());
+        assert_eq!(names, vec![String::from("a"), String::from("b")]);
+        let ids = rows.to_set(|row| row.id);
+        assert_eq!(ids.into_iter().collect::<Vec<_>>(), vec![1, 3]);
+
+        let by_id = rows.map_by_id();
+        assert_eq!(by_id.get("u:1").map(|row| row.name.as_str()), Some("a"));
+        assert_eq!(by_id.get("u:3").map(|row| row.name.as_str()), Some("b"));
+
+        let identity = rows.identity_map(|row| row.name.clone());
+        assert_eq!(identity.get("a").map(|row| row.id), Some(1));
+        let grouped = rows.group_by(|row| row.version % 2);
+        assert_eq!(grouped.get(&0).map(Vec::len), Some(2));
+
+        rows.merge_by(
+            vec![
+                OrderRow {
+                    id: 3,
+                    version: 5,
+                    name: String::from("b2"),
+                },
+                OrderRow {
+                    id: 4,
+                    version: 1,
+                    name: String::from("c"),
+                },
+            ],
+            |row| row.id,
+        );
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.map_by_id().get("u:3").map(|row| row.version), Some(5));
+
+        rows.retain(|row| row.id != 1);
+        assert_eq!(rows.ids(), vec![Value::U64(3), Value::U64(4)]);
+        assert_eq!((&rows).into_iter().count(), 2);
+        assert_eq!(rows[0].name, "b2");
+    }
+
+    #[test]
     fn dynamic_properties_roundtrip_into_json() {
         let aggregate = OrderAggregateRow::from_record(Record::from([
             (String::from("id"), Value::U64(7)),
@@ -214,8 +290,14 @@ mod tests {
         ]))
         .unwrap();
 
-        assert_eq!(aggregate.dynamic.get("lineCount"), Some(&serde_json::json!(3)));
-        assert_eq!(aggregate.dynamic.get("amount"), Some(&serde_json::json!(18.5)));
+        assert_eq!(
+            aggregate.dynamic.get("lineCount"),
+            Some(&serde_json::json!(3))
+        );
+        assert_eq!(
+            aggregate.dynamic.get("amount"),
+            Some(&serde_json::json!(18.5))
+        );
         assert_eq!(
             aggregate.dynamic.get("detail"),
             Some(&serde_json::json!({"status": "ok"}))
@@ -241,7 +323,10 @@ mod tests {
         let record = base.to_record();
         assert_eq!(record.get("id"), Some(&Value::U64(11)));
         assert_eq!(record.get("version"), Some(&Value::I64(3)));
-        assert_eq!(record.get("lineCount"), Some(&Value::Json(serde_json::json!(5))));
+        assert_eq!(
+            record.get("lineCount"),
+            Some(&Value::Json(serde_json::json!(5)))
+        );
         assert_eq!(
             record.get("detail"),
             Some(&Value::Json(serde_json::json!({"status": "ok"})))

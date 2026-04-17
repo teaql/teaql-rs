@@ -1,13 +1,15 @@
 mod context;
 mod error;
 mod id;
+mod memory;
 mod registry;
 mod repository;
 
 pub use context::UserContext;
 pub use error::{ContextError, RepositoryError, RuntimeError};
-pub use id::{InternalIdGenerator, SnowflakeIdGenerator};
 pub(crate) use id::local_id_generator;
+pub use id::{InternalIdGenerator, SnowflakeIdGenerator};
+pub use memory::{MemoryRepository, MemoryRepositoryError};
 pub use registry::{
     InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry, InMemoryRepositoryRegistry,
     MetadataStore, RepositoryBehavior, RepositoryBehaviorRegistry, RepositoryRegistry,
@@ -26,12 +28,13 @@ mod tests {
 
     use super::{
         InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry, InMemoryRepositoryRegistry,
-        InternalIdGenerator, MetadataStore, QueryExecutor, Repository, RepositoryBehavior,
-        RepositoryError, RuntimeError, RuntimeModule, UserContext,
+        InternalIdGenerator, MemoryRepository, MetadataStore, QueryExecutor, Repository,
+        RepositoryBehavior, RepositoryError, RuntimeError, RuntimeModule, UserContext,
     };
     use teaql_core::{
-        DataType, Entity, EntityDescriptor, EntityError, Expr, InsertCommand, PropertyDescriptor,
-        Record, TeaqlEntity, UpdateCommand, Value,
+        Aggregate, AggregateFunction, DataType, DeleteCommand, Entity, EntityDescriptor,
+        EntityError, Expr, InsertCommand, OrderBy, PropertyDescriptor, Record, RecoverCommand,
+        TeaqlEntity, UpdateCommand, Value,
     };
     use teaql_dialect_pg::PostgresDialect;
     use teaql_macros::TeaqlEntity as DeriveTeaqlEntity;
@@ -40,7 +43,12 @@ mod tests {
     fn entity() -> EntityDescriptor {
         EntityDescriptor::new("Order")
             .table_name("orders")
-            .property(PropertyDescriptor::new("id", DataType::U64).column_name("id").id().not_null())
+            .property(
+                PropertyDescriptor::new("id", DataType::U64)
+                    .column_name("id")
+                    .id()
+                    .not_null(),
+            )
             .property(
                 PropertyDescriptor::new("version", DataType::I64)
                     .column_name("version")
@@ -59,7 +67,12 @@ mod tests {
     fn line_entity() -> EntityDescriptor {
         EntityDescriptor::new("OrderLine")
             .table_name("orderline")
-            .property(PropertyDescriptor::new("id", DataType::U64).column_name("id").id().not_null())
+            .property(
+                PropertyDescriptor::new("id", DataType::U64)
+                    .column_name("id")
+                    .id()
+                    .not_null(),
+            )
             .property(
                 PropertyDescriptor::new("order_id", DataType::U64)
                     .column_name("order_id")
@@ -81,7 +94,12 @@ mod tests {
     fn product_entity() -> EntityDescriptor {
         EntityDescriptor::new("Product")
             .table_name("product")
-            .property(PropertyDescriptor::new("id", DataType::U64).column_name("id").id().not_null())
+            .property(
+                PropertyDescriptor::new("id", DataType::U64)
+                    .column_name("id")
+                    .id()
+                    .not_null(),
+            )
             .property(PropertyDescriptor::new("name", DataType::Text).column_name("name"))
     }
 
@@ -177,7 +195,7 @@ mod tests {
                     return Err(EntityError::new(
                         "Order",
                         format!("invalid id field: {other:?}"),
-                    ))
+                    ));
                 }
             };
             let version = match record.get("version") {
@@ -186,7 +204,7 @@ mod tests {
                     return Err(EntityError::new(
                         "Order",
                         format!("invalid version field: {other:?}"),
-                    ))
+                    ));
                 }
             };
             let name = match record.get("name") {
@@ -195,7 +213,7 @@ mod tests {
                     return Err(EntityError::new(
                         "Order",
                         format!("invalid name field: {other:?}"),
-                    ))
+                    ));
                 }
             };
             Ok(Self { id, version, name })
@@ -274,13 +292,15 @@ mod tests {
                 .ok_or_else(|| RuntimeError::Behavior("missing tenant resource".to_owned()))?;
             let version = *ctx
                 .get_named_resource::<i64>("initial_version")
-                .ok_or_else(|| RuntimeError::Behavior("missing initial_version resource".to_owned()))?;
+                .ok_or_else(|| {
+                    RuntimeError::Behavior("missing initial_version resource".to_owned())
+                })?;
             let trace_id = match ctx.local("trace_id") {
                 Some(Value::Text(value)) => value.clone(),
                 other => {
                     return Err(RuntimeError::Behavior(format!(
                         "missing trace_id local, got {other:?}"
-                    )))
+                    )));
                 }
             };
 
@@ -336,7 +356,8 @@ mod tests {
 
     #[test]
     fn module_macro_registers_entity_behavior_pairs() {
-        let ctx = UserContext::new().with_module(crate::module!(CatalogProductRow => OrderBehavior));
+        let ctx =
+            UserContext::new().with_module(crate::module!(CatalogProductRow => OrderBehavior));
         assert!(ctx.entity("CatalogProduct").is_some());
         assert!(ctx.repository_behavior("CatalogProduct").is_some());
     }
@@ -366,20 +387,28 @@ mod tests {
 
     #[test]
     fn user_context_indexes_resources_and_locals() {
-        let mut ctx = UserContext::new().with_metadata(InMemoryMetadataStore::new().with_entity(entity()));
+        let mut ctx =
+            UserContext::new().with_metadata(InMemoryMetadataStore::new().with_entity(entity()));
         ctx.insert_resource::<u64>(42);
         ctx.insert_named_resource("tenant", String::from("acme"));
         ctx.put_local("trace_id", "req-1");
 
         assert!(ctx.entity("Order").is_some());
         assert_eq!(ctx.get_resource::<u64>(), Some(&42));
-        assert_eq!(ctx.get_named_resource::<String>("tenant"), Some(&String::from("acme")));
-        assert_eq!(ctx.local("trace_id"), Some(&Value::Text("req-1".to_owned())));
+        assert_eq!(
+            ctx.get_named_resource::<String>("tenant"),
+            Some(&String::from("acme"))
+        );
+        assert_eq!(
+            ctx.local("trace_id"),
+            Some(&Value::Text("req-1".to_owned()))
+        );
     }
 
     #[test]
     fn user_context_builds_context_repository() {
-        let mut ctx = UserContext::new().with_metadata(InMemoryMetadataStore::new().with_entity(entity()));
+        let mut ctx =
+            UserContext::new().with_metadata(InMemoryMetadataStore::new().with_entity(entity()));
         ctx.insert_resource(PostgresDialect);
         ctx.insert_resource(StubExecutor {
             affected: 1,
@@ -416,7 +445,13 @@ mod tests {
         assert_eq!(repo.select().entity, "Order");
 
         let affected = repo
-            .insert(&repo.insert_command().value("id", 1_u64).value("version", 1_i64).value("name", "n"))
+            .insert(
+                &repo
+                    .insert_command()
+                    .value("id", 1_u64)
+                    .value("version", 1_i64)
+                    .value("name", "n"),
+            )
             .unwrap();
         assert_eq!(affected, 1);
     }
@@ -483,7 +518,10 @@ mod tests {
 
         assert_eq!(prepared.values.get("id"), Some(&Value::U64(42)));
         assert_eq!(prepared.values.get("version"), Some(&Value::I64(1)));
-        assert_eq!(prepared.values.get("name"), Some(&Value::Text("n".to_owned())));
+        assert_eq!(
+            prepared.values.get("name"),
+            Some(&Value::Text("n".to_owned()))
+        );
     }
 
     #[test]
@@ -508,9 +546,7 @@ mod tests {
         let repo = ctx
             .resolve_repository::<PostgresDialect, StubExecutor>("Order")
             .unwrap();
-        let prepared = repo
-            .prepare_insert_command(&repo.insert_command())
-            .unwrap();
+        let prepared = repo.prepare_insert_command(&repo.insert_command()).unwrap();
 
         assert_eq!(prepared.values.get("id"), Some(&Value::U64(99)));
         assert_eq!(prepared.values.get("version"), Some(&Value::I64(7)));
@@ -675,8 +711,12 @@ mod tests {
     #[test]
     fn resolved_repository_fetches_smart_list_of_derived_entities() {
         let mut ctx = UserContext::new()
-            .with_metadata(InMemoryMetadataStore::new().with_entity(CatalogProductRow::entity_descriptor()))
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("CatalogProduct"));
+            .with_metadata(
+                InMemoryMetadataStore::new().with_entity(CatalogProductRow::entity_descriptor()),
+            )
+            .with_repository_registry(
+                InMemoryRepositoryRegistry::new().with_entity("CatalogProduct"),
+            );
         ctx.insert_resource(PostgresDialect);
         ctx.insert_resource(StubExecutor {
             affected: 1,
@@ -706,8 +746,13 @@ mod tests {
     #[test]
     fn resolved_repository_collects_dynamic_properties_for_aggregate_output() {
         let mut ctx = UserContext::new()
-            .with_metadata(InMemoryMetadataStore::new().with_entity(OrderAggregateDynamic::entity_descriptor()))
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("OrderAggregate"));
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(OrderAggregateDynamic::entity_descriptor()),
+            )
+            .with_repository_registry(
+                InMemoryRepositoryRegistry::new().with_entity("OrderAggregate"),
+            );
         ctx.insert_resource(PostgresDialect);
         ctx.insert_resource(StubExecutor {
             affected: 1,
@@ -745,22 +790,174 @@ mod tests {
         );
     }
 
+    #[test]
+    fn memory_repository_fetches_smart_list_entities_with_query_features() {
+        let metadata = InMemoryMetadataStore::new().with_entity(entity());
+        let repository = MemoryRepository::new(metadata).with_rows(
+            "Order",
+            vec![
+                Record::from([
+                    (String::from("id"), Value::U64(1)),
+                    (String::from("version"), Value::I64(1)),
+                    (String::from("name"), Value::Text(String::from("alpha"))),
+                ]),
+                Record::from([
+                    (String::from("id"), Value::U64(2)),
+                    (String::from("version"), Value::I64(1)),
+                    (String::from("name"), Value::Text(String::from("beta"))),
+                ]),
+                Record::from([
+                    (String::from("id"), Value::U64(3)),
+                    (String::from("version"), Value::I64(1)),
+                    (String::from("name"), Value::Text(String::from("gamma"))),
+                ]),
+            ],
+        );
+
+        let query = teaql_core::SelectQuery::new("Order")
+            .filter(Expr::Binary {
+                left: Box::new(Expr::column("id")),
+                op: teaql_core::BinaryOp::Gte,
+                right: Box::new(Expr::value(2_u64)),
+            })
+            .order_by(OrderBy::desc("id"))
+            .limit(1);
+
+        let orders = repository.fetch_entities::<Order>(&query).unwrap();
+
+        assert_eq!(orders.ids(), vec![Value::U64(3)]);
+        assert_eq!(orders.versions(), vec![1]);
+        assert_eq!(orders.first().unwrap().name, "gamma");
+    }
+
+    #[test]
+    fn memory_repository_runs_aggregates() {
+        let metadata = InMemoryMetadataStore::new().with_entity(entity());
+        let repository = MemoryRepository::new(metadata).with_rows(
+            "Order",
+            vec![
+                Record::from([
+                    (String::from("id"), Value::U64(1)),
+                    (String::from("version"), Value::I64(1)),
+                    (String::from("name"), Value::Text(String::from("alpha"))),
+                ]),
+                Record::from([
+                    (String::from("id"), Value::U64(2)),
+                    (String::from("version"), Value::I64(2)),
+                    (String::from("name"), Value::Text(String::from("beta"))),
+                ]),
+            ],
+        );
+
+        let query = teaql_core::SelectQuery {
+            entity: String::from("Order"),
+            projection: Vec::new(),
+            filter: None,
+            order_by: Vec::new(),
+            slice: None,
+            aggregates: vec![
+                Aggregate {
+                    function: AggregateFunction::Count,
+                    field: String::from("id"),
+                    alias: String::from("count"),
+                },
+                Aggregate {
+                    function: AggregateFunction::Sum,
+                    field: String::from("version"),
+                    alias: String::from("versionSum"),
+                },
+            ],
+            group_by: Vec::new(),
+            relations: Vec::new(),
+        };
+
+        let rows = repository.fetch_all(&query).unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("count"), Some(&Value::U64(2)));
+        assert_eq!(rows[0].get("versionSum"), Some(&Value::U64(3)));
+    }
+
+    #[test]
+    fn memory_repository_supports_mutations_and_optimistic_locking() {
+        let metadata = InMemoryMetadataStore::new().with_entity(entity());
+        let repository = MemoryRepository::new(metadata);
+
+        repository
+            .insert(
+                &InsertCommand::new("Order")
+                    .value("id", 10_u64)
+                    .value("version", 1_i64)
+                    .value("name", "draft"),
+            )
+            .unwrap();
+        repository
+            .update(
+                &UpdateCommand::new("Order", 10_u64)
+                    .expected_version(1)
+                    .value("name", "submitted"),
+            )
+            .unwrap();
+
+        let row = repository
+            .fetch_all(&teaql_core::SelectQuery::new("Order").filter(Expr::eq("id", 10_u64)))
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(
+            row.get("name"),
+            Some(&Value::Text(String::from("submitted")))
+        );
+        assert_eq!(row.get("version"), Some(&Value::I64(2)));
+
+        let conflict = repository
+            .update(
+                &UpdateCommand::new("Order", 10_u64)
+                    .expected_version(1)
+                    .value("name", "stale"),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            conflict,
+            RepositoryError::Runtime(RuntimeError::OptimisticLockConflict { .. })
+        ));
+
+        repository
+            .delete(&DeleteCommand::new("Order", 10_u64).expected_version(2))
+            .unwrap();
+        let row = repository
+            .fetch_all(&teaql_core::SelectQuery::new("Order").filter(Expr::eq("id", 10_u64)))
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(row.get("version"), Some(&Value::I64(-3)));
+
+        repository
+            .recover(&RecoverCommand::new("Order", 10_u64, -3))
+            .unwrap();
+        let row = repository
+            .fetch_all(&teaql_core::SelectQuery::new("Order").filter(Expr::eq("id", 10_u64)))
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(row.get("version"), Some(&Value::I64(4)));
+    }
 }
 
 #[cfg(all(test, feature = "sqlx"))]
 mod sqlx_integration_tests {
-    use chrono::{NaiveDate, TimeZone, Utc};
     use super::sqlx_support::{MutationExecutorError, PgMutationExecutor, SqliteMutationExecutor};
     use super::{
-        InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry, InMemoryRepositoryRegistry, QueryExecutor,
-        RepositoryBehavior, UserContext,
+        InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry, InMemoryRepositoryRegistry,
+        QueryExecutor, RepositoryBehavior, UserContext,
     };
+    use chrono::{NaiveDate, TimeZone, Utc};
     use teaql_core::{
-        DataType, DeleteCommand, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, RecoverCommand,
-        Record, SelectQuery, UpdateCommand, Value,
+        DataType, DeleteCommand, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, Record,
+        RecoverCommand, SelectQuery, UpdateCommand, Value,
     };
-    use teaql_dialect_sqlite::SqliteDialect;
     use teaql_dialect_pg::PostgresDialect;
+    use teaql_dialect_sqlite::SqliteDialect;
     use teaql_macros::TeaqlEntity as DeriveTeaqlEntity;
     use teaql_sql::SqlDialect;
     use tokio::runtime::Handle;
@@ -769,14 +966,23 @@ mod sqlx_integration_tests {
     fn entity() -> EntityDescriptor {
         EntityDescriptor::new("Order")
             .table_name("orders")
-            .property(PropertyDescriptor::new("id", DataType::U64).column_name("id").id().not_null())
+            .property(
+                PropertyDescriptor::new("id", DataType::U64)
+                    .column_name("id")
+                    .id()
+                    .not_null(),
+            )
             .property(
                 PropertyDescriptor::new("version", DataType::I64)
                     .column_name("version")
                     .version()
                     .not_null(),
             )
-            .property(PropertyDescriptor::new("name", DataType::Text).column_name("name").not_null())
+            .property(
+                PropertyDescriptor::new("name", DataType::Text)
+                    .column_name("name")
+                    .not_null(),
+            )
             .relation(
                 teaql_core::RelationDescriptor::new("lines", "OrderLine")
                     .local_key("id")
@@ -788,13 +994,22 @@ mod sqlx_integration_tests {
     fn line_entity() -> EntityDescriptor {
         EntityDescriptor::new("OrderLine")
             .table_name("orderline")
-            .property(PropertyDescriptor::new("id", DataType::U64).column_name("id").id().not_null())
+            .property(
+                PropertyDescriptor::new("id", DataType::U64)
+                    .column_name("id")
+                    .id()
+                    .not_null(),
+            )
             .property(
                 PropertyDescriptor::new("order_id", DataType::U64)
                     .column_name("order_id")
                     .not_null(),
             )
-            .property(PropertyDescriptor::new("name", DataType::Text).column_name("name").not_null())
+            .property(
+                PropertyDescriptor::new("name", DataType::Text)
+                    .column_name("name")
+                    .not_null(),
+            )
             .property(
                 PropertyDescriptor::new("product_id", DataType::U64)
                     .column_name("product_id")
@@ -810,16 +1025,38 @@ mod sqlx_integration_tests {
     fn product_entity() -> EntityDescriptor {
         EntityDescriptor::new("Product")
             .table_name("product")
-            .property(PropertyDescriptor::new("id", DataType::U64).column_name("id").id().not_null())
-            .property(PropertyDescriptor::new("name", DataType::Text).column_name("name").not_null())
+            .property(
+                PropertyDescriptor::new("id", DataType::U64)
+                    .column_name("id")
+                    .id()
+                    .not_null(),
+            )
+            .property(
+                PropertyDescriptor::new("name", DataType::Text)
+                    .column_name("name")
+                    .not_null(),
+            )
     }
 
     fn typed_entity() -> EntityDescriptor {
         EntityDescriptor::new("TypedValue")
             .table_name("typed_value")
-            .property(PropertyDescriptor::new("id", DataType::U64).column_name("id").id().not_null())
-            .property(PropertyDescriptor::new("payload", DataType::Json).column_name("payload").not_null())
-            .property(PropertyDescriptor::new("birthday", DataType::Date).column_name("birthday").not_null())
+            .property(
+                PropertyDescriptor::new("id", DataType::U64)
+                    .column_name("id")
+                    .id()
+                    .not_null(),
+            )
+            .property(
+                PropertyDescriptor::new("payload", DataType::Json)
+                    .column_name("payload")
+                    .not_null(),
+            )
+            .property(
+                PropertyDescriptor::new("birthday", DataType::Date)
+                    .column_name("birthday")
+                    .not_null(),
+            )
             .property(
                 PropertyDescriptor::new("happened_at", DataType::Timestamp)
                     .column_name("happened_at")
@@ -971,7 +1208,10 @@ mod sqlx_integration_tests {
         );
 
         let delete = dialect
-            .compile_delete(&entity, &DeleteCommand::new("Order", 1_u64).expected_version(2))
+            .compile_delete(
+                &entity,
+                &DeleteCommand::new("Order", 1_u64).expected_version(2),
+            )
             .unwrap();
         assert_eq!(executor.execute(&delete).await.unwrap(), 1);
 
@@ -1039,7 +1279,8 @@ mod sqlx_integration_tests {
             .unwrap();
         let mut parents = repo
             .fetch_all(
-                &repo.select()
+                &repo
+                    .select()
                     .project("id")
                     .project("version")
                     .project("name")
@@ -1121,7 +1362,8 @@ mod sqlx_integration_tests {
             .unwrap();
         let mut parents = repo
             .fetch_all(
-                &repo.select()
+                &repo
+                    .select()
                     .project("id")
                     .project("version")
                     .project("name"),
@@ -1275,7 +1517,10 @@ mod sqlx_integration_tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].get("payload"), Some(&Value::Json(payload)));
         assert_eq!(rows[0].get("birthday"), Some(&Value::Date(birthday)));
-        assert_eq!(rows[0].get("happened_at"), Some(&Value::Timestamp(happened_at)));
+        assert_eq!(
+            rows[0].get("happened_at"),
+            Some(&Value::Timestamp(happened_at))
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1339,7 +1584,8 @@ mod sqlx_integration_tests {
             .unwrap();
         let rows = repo
             .fetch_enhanced_entities::<OrderAggregateRow>(
-                &repo.select()
+                &repo
+                    .select()
                     .project("id")
                     .project("version")
                     .project("name"),
@@ -1392,7 +1638,8 @@ mod sqlx_integration_tests {
             .unwrap();
         let rows = repo
             .fetch_entities::<OrderAggregateRow>(
-                &repo.select()
+                &repo
+                    .select()
                     .project("id")
                     .project("version")
                     .project("name"),
@@ -1444,7 +1691,8 @@ mod sqlx_integration_tests {
             .unwrap();
         let rows = repo
             .fetch_entities::<Order>(
-                &repo.select()
+                &repo
+                    .select()
                     .project("id")
                     .project("version")
                     .project("name"),
@@ -1499,7 +1747,8 @@ mod sqlx_integration_tests {
             .unwrap();
         let affected = repo
             .insert(
-                &repo.insert_command()
+                &repo
+                    .insert_command()
                     .value("version", 1_i64)
                     .value("name", "generated"),
             )
@@ -1508,7 +1757,8 @@ mod sqlx_integration_tests {
 
         let rows = repo
             .fetch_entities::<Order>(
-                &repo.select()
+                &repo
+                    .select()
                     .project("id")
                     .project("version")
                     .project("name")
@@ -1545,7 +1795,10 @@ mod sqlx_integration_tests {
         let order = entity();
         let line = line_entity();
 
-        executor.ensure_schema(&dialect, &[&order, &line]).await.unwrap();
+        executor
+            .ensure_schema(&dialect, &[&order, &line])
+            .await
+            .unwrap();
 
         let tables = sqlx::query(
             "SELECT table_name

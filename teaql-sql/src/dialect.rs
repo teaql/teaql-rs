@@ -30,7 +30,8 @@ pub trait SqlDialect {
     ) -> Result<String, SqlCompileError> {
         let mut parts = vec![
             self.quote_ident(&property.column_name),
-            self.schema_type_sql(property.data_type, property)?.to_owned(),
+            self.schema_type_sql(property.data_type, property)?
+                .to_owned(),
         ];
 
         if property.is_id {
@@ -77,7 +78,8 @@ pub trait SqlDialect {
             if query.projection.is_empty() {
                 "*".to_owned()
             } else {
-                query.projection
+                query
+                    .projection
                     .iter()
                     .map(|field| self.column_sql(entity, field))
                     .collect::<Result<Vec<_>, _>>()?
@@ -350,7 +352,11 @@ pub trait SqlDialect {
         })
     }
 
-    fn column_sql(&self, entity: &EntityDescriptor, field: &str) -> Result<String, SqlCompileError> {
+    fn column_sql(
+        &self,
+        entity: &EntityDescriptor,
+        field: &str,
+    ) -> Result<String, SqlCompileError> {
         let property = entity
             .property_by_name(field)
             .ok_or_else(|| SqlCompileError::UnknownField(field.to_owned()))?;

@@ -38,13 +38,21 @@ impl SqlDialect for SqliteDialect {
 #[cfg(test)]
 mod tests {
     use super::SqliteDialect;
-    use teaql_core::{DataType, DeleteCommand, EntityDescriptor, InsertCommand, PropertyDescriptor, RecoverCommand, UpdateCommand};
+    use teaql_core::{
+        DataType, DeleteCommand, EntityDescriptor, InsertCommand, PropertyDescriptor,
+        RecoverCommand, UpdateCommand,
+    };
     use teaql_sql::SqlDialect;
 
     fn entity() -> EntityDescriptor {
         EntityDescriptor::new("Order")
             .table_name("orders")
-            .property(PropertyDescriptor::new("id", DataType::U64).column_name("id").id().not_null())
+            .property(
+                PropertyDescriptor::new("id", DataType::U64)
+                    .column_name("id")
+                    .id()
+                    .not_null(),
+            )
             .property(
                 PropertyDescriptor::new("version", DataType::I64)
                     .column_name("version")
@@ -57,9 +65,17 @@ mod tests {
     #[test]
     fn compiles_insert_with_sqlite_placeholders() {
         let query = SqliteDialect
-            .compile_insert(&entity(), &InsertCommand::new("Order").value("id", 1_u64).value("name", "A"))
+            .compile_insert(
+                &entity(),
+                &InsertCommand::new("Order")
+                    .value("id", 1_u64)
+                    .value("name", "A"),
+            )
             .unwrap();
-        assert_eq!(query.sql, "INSERT INTO \"orders\" (\"id\", \"name\") VALUES (?, ?)");
+        assert_eq!(
+            query.sql,
+            "INSERT INTO \"orders\" (\"id\", \"name\") VALUES (?, ?)"
+        );
     }
 
     #[test]
@@ -81,7 +97,10 @@ mod tests {
     #[test]
     fn compiles_delete_and_recover_with_sqlite_placeholders() {
         let delete = SqliteDialect
-            .compile_delete(&entity(), &DeleteCommand::new("Order", 1_u64).expected_version(3))
+            .compile_delete(
+                &entity(),
+                &DeleteCommand::new("Order", 1_u64).expected_version(3),
+            )
             .unwrap();
         let recover = SqliteDialect
             .compile_recover(&entity(), &RecoverCommand::new("Order", 1_u64, -4))
