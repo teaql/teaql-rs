@@ -3,13 +3,14 @@ use std::slice;
 use std::sync::Arc;
 
 use teaql_core::{
-    DeleteCommand, Entity, EntityDescriptor, Expr, InsertCommand, Record, RecoverCommand,
-    SelectQuery, SmartList, UpdateCommand, Value,
+    DeleteCommand, Entity, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, Record,
+    RecoverCommand, SelectQuery, SmartList, UpdateCommand, Value,
 };
 use teaql_sql::{CompiledQuery, SqlDialect};
 
 use crate::{
-    ContextError, MetadataStore, RepositoryBehavior, RepositoryError, RuntimeError, UserContext,
+    ContextError, GraphNode, GraphOperation, MetadataStore, RepositoryBehavior, RepositoryError,
+    RuntimeError, UserContext,
 };
 
 pub trait QueryExecutor {
@@ -518,6 +519,29 @@ where
         self.repository.insert(&command)
     }
 
+    pub fn save_graph_create(
+        &self,
+        node: GraphNode,
+    ) -> Result<GraphNode, RepositoryError<E::Error>> {
+        if node.entity != self.entity {
+            return Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
+                "resolved repository {} cannot save graph root {}",
+                self.entity, node.entity
+            ))));
+        }
+        self.insert_graph_node(node)
+    }
+
+    pub fn save_graph(&self, node: GraphNode) -> Result<GraphNode, RepositoryError<E::Error>> {
+        if node.entity != self.entity {
+            return Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
+                "resolved repository {} cannot save graph root {}",
+                self.entity, node.entity
+            ))));
+        }
+        self.upsert_graph_node(node)
+    }
+
     pub fn update(&self, command: &UpdateCommand) -> Result<u64, RepositoryError<E::Error>> {
         let mut command = command.clone();
         if let Some(behavior) = self.behavior() {
@@ -546,6 +570,361 @@ where
                 .map_err(RepositoryError::Runtime)?;
         }
         self.repository.recover(&command)
+    }
+
+    fn insert_graph_node(
+        &self,
+        mut node: GraphNode,
+    ) -> Result<GraphNode, RepositoryError<E::Error>> {
+        match node.operation {
+            GraphOperation::Upsert => {}
+            GraphOperation::Reference => return Ok(node),
+            GraphOperation::Remove => {
+                self.delete_graph_node(&node)?;
+                return Ok(node);
+            }
+        }
+
+        let descriptor = self
+            .repository
+            .metadata
+            .context
+            .require_entity(&node.entity)
+            .map_err(RepositoryError::Runtime)?;
+
+        let mut one_relations = Vec::new();
+        let mut many_relations = Vec::new();
+        for (name, children) in std::mem::take(&mut node.relations) {
+            let relation = descriptor.relation_by_name(&name).ok_or_else(|| {
+                RepositoryError::Runtime(RuntimeError::MissingRelation {
+                    entity: node.entity.clone(),
+                    relation: name.clone(),
+                })
+            })?;
+            if relation.many {
+                many_relations.push((name, relation.clone(), children));
+            } else {
+                one_relations.push((name, relation.clone(), children));
+            }
+        }
+
+        for (name, relation, children) in one_relations {
+            if children.len() > 1 {
+                return Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
+                    "relation {}.{} expects one child, got {}",
+                    node.entity,
+                    name,
+                    children.len()
+                ))));
+            }
+            let mut saved_children = Vec::new();
+            for child in children {
+                ensure_relation_target(&node.entity, &name, &relation.target_entity, &child)?;
+                let child_repo = self.scoped_repository(child.entity.clone());
+                let saved_child = child_repo.insert_graph_node(child)?;
+                if relation.attach {
+                    let foreign_value = saved_child
+                        .values
+                        .get(&relation.foreign_key)
+                        .cloned()
+                        .ok_or_else(|| {
+                            RepositoryError::Runtime(RuntimeError::Graph(format!(
+                                "saved child {} missing foreign key {} for relation {}.{}",
+                                relation.target_entity, relation.foreign_key, node.entity, name
+                            )))
+                        })?;
+                    node.values
+                        .insert(relation.local_key.clone(), foreign_value);
+                }
+                saved_children.push(saved_child);
+            }
+            node.relations.insert(name, saved_children);
+        }
+
+        let command = self
+            .prepare_insert_command(&InsertCommand {
+                entity: node.entity.clone(),
+                values: node.values.clone(),
+            })
+            .map_err(RepositoryError::Runtime)?;
+        self.repository.insert(&command)?;
+        node.values = command.values;
+
+        for (name, relation, children) in many_relations {
+            let local_value = node
+                .values
+                .get(&relation.local_key)
+                .cloned()
+                .ok_or_else(|| {
+                    RepositoryError::Runtime(RuntimeError::Graph(format!(
+                        "parent {} missing local key {} for relation {}",
+                        node.entity, relation.local_key, name
+                    )))
+                })?;
+            let mut saved_children = Vec::new();
+            for mut child in children {
+                ensure_relation_target(&node.entity, &name, &relation.target_entity, &child)?;
+                if relation.attach {
+                    child
+                        .values
+                        .insert(relation.foreign_key.clone(), local_value.clone());
+                }
+                let child_repo = self.scoped_repository(child.entity.clone());
+                saved_children.push(child_repo.insert_graph_node(child)?);
+            }
+            node.relations.insert(name, saved_children);
+        }
+
+        Ok(node)
+    }
+
+    fn upsert_graph_node(
+        &self,
+        mut node: GraphNode,
+    ) -> Result<GraphNode, RepositoryError<E::Error>> {
+        match node.operation {
+            GraphOperation::Upsert => {}
+            GraphOperation::Reference => return Ok(node),
+            GraphOperation::Remove => {
+                self.delete_graph_node(&node)?;
+                return Ok(node);
+            }
+        }
+
+        let descriptor = self
+            .repository
+            .metadata
+            .context
+            .require_entity(&node.entity)
+            .map_err(RepositoryError::Runtime)?;
+        let Some(id_property) = descriptor.id_property() else {
+            return Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
+                "entity {} has no id property for graph upsert",
+                node.entity
+            ))));
+        };
+        let Some(id) = node.values.get(&id_property.name).cloned() else {
+            return self.insert_graph_node(node);
+        };
+
+        if self
+            .fetch_graph_current_row(&node.entity, &id_property.name, &id)?
+            .is_none()
+        {
+            return self.insert_graph_node(node);
+        }
+
+        let mut one_relations = Vec::new();
+        let mut many_relations = Vec::new();
+        for (name, children) in std::mem::take(&mut node.relations) {
+            let relation = descriptor.relation_by_name(&name).ok_or_else(|| {
+                RepositoryError::Runtime(RuntimeError::MissingRelation {
+                    entity: node.entity.clone(),
+                    relation: name.clone(),
+                })
+            })?;
+            if relation.many {
+                many_relations.push((name, relation.clone(), children));
+            } else {
+                one_relations.push((name, relation.clone(), children));
+            }
+        }
+
+        for (name, relation, children) in one_relations {
+            if children.len() > 1 {
+                return Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
+                    "relation {}.{} expects one child, got {}",
+                    node.entity,
+                    name,
+                    children.len()
+                ))));
+            }
+            let mut saved_children = Vec::new();
+            for child in children {
+                ensure_relation_target(&node.entity, &name, &relation.target_entity, &child)?;
+                let child_repo = self.scoped_repository(child.entity.clone());
+                let saved_child = child_repo.upsert_graph_node(child)?;
+                if relation.attach {
+                    let foreign_value = saved_child
+                        .values
+                        .get(&relation.foreign_key)
+                        .cloned()
+                        .ok_or_else(|| {
+                            RepositoryError::Runtime(RuntimeError::Graph(format!(
+                                "saved child {} missing foreign key {} for relation {}.{}",
+                                relation.target_entity, relation.foreign_key, node.entity, name
+                            )))
+                        })?;
+                    node.values
+                        .insert(relation.local_key.clone(), foreign_value);
+                }
+                saved_children.push(saved_child);
+            }
+            node.relations.insert(name, saved_children);
+        }
+
+        let update = self.graph_update_command(&node, descriptor, id_property, &id);
+        if !update.values.is_empty() || update.expected_version.is_some() {
+            self.update(&update)?;
+        }
+        if let Some(version_property) = descriptor.version_property() {
+            if let Some(expected_version) = update.expected_version {
+                node.values.insert(
+                    version_property.name.clone(),
+                    Value::I64(expected_version + 1),
+                );
+            }
+        }
+
+        for (name, relation, children) in many_relations {
+            let local_value = node
+                .values
+                .get(&relation.local_key)
+                .cloned()
+                .ok_or_else(|| {
+                    RepositoryError::Runtime(RuntimeError::Graph(format!(
+                        "parent {} missing local key {} for relation {}",
+                        node.entity, relation.local_key, name
+                    )))
+                })?;
+            let child_repo = self.scoped_repository(relation.target_entity.clone());
+            let existing_children = child_repo.fetch_graph_children(
+                &relation.target_entity,
+                &relation.foreign_key,
+                &local_value,
+            )?;
+            let child_descriptor = self
+                .repository
+                .metadata
+                .context
+                .require_entity(&relation.target_entity)
+                .map_err(RepositoryError::Runtime)?;
+            let child_id_property = child_descriptor.id_property().ok_or_else(|| {
+                RepositoryError::Runtime(RuntimeError::Graph(format!(
+                    "entity {} has no id property for graph diff",
+                    relation.target_entity
+                )))
+            })?;
+            let mut existing_by_id = BTreeMap::new();
+            for child in existing_children {
+                if let Some(id) = child.get(&child_id_property.name) {
+                    existing_by_id.insert(graph_identity_key(id), child);
+                }
+            }
+
+            let mut seen = std::collections::BTreeSet::new();
+            let mut saved_children = Vec::new();
+            for mut child in children {
+                ensure_relation_target(&node.entity, &name, &relation.target_entity, &child)?;
+                if relation.attach {
+                    child
+                        .values
+                        .insert(relation.foreign_key.clone(), local_value.clone());
+                }
+                if let Some(child_id) = child.values.get(&child_id_property.name) {
+                    seen.insert(graph_identity_key(child_id));
+                }
+                saved_children.push(child_repo.upsert_graph_node(child)?);
+            }
+
+            if relation.delete_missing {
+                for (id_key, existing) in existing_by_id {
+                    if seen.contains(&id_key) {
+                        continue;
+                    }
+                    let Some(existing_id) = existing.get(&child_id_property.name).cloned() else {
+                        continue;
+                    };
+                    let mut delete =
+                        DeleteCommand::new(relation.target_entity.clone(), existing_id);
+                    if let Some(version) = graph_record_version(&existing, child_descriptor) {
+                        delete = delete.expected_version(version);
+                    }
+                    child_repo.delete(&delete)?;
+                }
+            }
+
+            node.relations.insert(name, saved_children);
+        }
+
+        Ok(node)
+    }
+
+    fn graph_update_command(
+        &self,
+        node: &GraphNode,
+        descriptor: &EntityDescriptor,
+        id_property: &PropertyDescriptor,
+        id: &Value,
+    ) -> UpdateCommand {
+        let mut command = UpdateCommand::new(node.entity.clone(), id.clone());
+        if let Some(version_property) = descriptor.version_property() {
+            if let Some(Value::I64(version)) = node.values.get(&version_property.name) {
+                command = command.expected_version(*version);
+            }
+        }
+        for property in descriptor.properties.iter().filter(|property| {
+            !property.is_id && !property.is_version && node.values.contains_key(&property.name)
+        }) {
+            if property.name == id_property.name {
+                continue;
+            }
+            if let Some(value) = node.values.get(&property.name) {
+                command.values.insert(property.name.clone(), value.clone());
+            }
+        }
+        command
+    }
+
+    fn delete_graph_node(&self, node: &GraphNode) -> Result<u64, RepositoryError<E::Error>> {
+        let descriptor = self
+            .repository
+            .metadata
+            .context
+            .require_entity(&node.entity)
+            .map_err(RepositoryError::Runtime)?;
+        let id_property = descriptor.id_property().ok_or_else(|| {
+            RepositoryError::Runtime(RuntimeError::Graph(format!(
+                "entity {} has no id property for graph remove",
+                node.entity
+            )))
+        })?;
+        let id = node.values.get(&id_property.name).cloned().ok_or_else(|| {
+            RepositoryError::Runtime(RuntimeError::Graph(format!(
+                "remove node {} missing id property {}",
+                node.entity, id_property.name
+            )))
+        })?;
+        let mut delete = DeleteCommand::new(node.entity.clone(), id);
+        if let Some(version_property) = descriptor.version_property() {
+            if let Some(Value::I64(version)) = node.values.get(&version_property.name) {
+                delete = delete.expected_version(*version);
+            }
+        }
+        self.delete(&delete)
+    }
+
+    fn fetch_graph_current_row(
+        &self,
+        entity: &str,
+        id_property: &str,
+        id: &Value,
+    ) -> Result<Option<Record>, RepositoryError<E::Error>> {
+        let mut rows = self
+            .scoped_repository(entity.to_owned())
+            .fetch_all(&SelectQuery::new(entity).filter(Expr::eq(id_property, id.clone())))?;
+        Ok(rows.pop())
+    }
+
+    fn fetch_graph_children(
+        &self,
+        entity: &str,
+        foreign_key: &str,
+        parent_value: &Value,
+    ) -> Result<Vec<Record>, RepositoryError<E::Error>> {
+        self.scoped_repository(entity.to_owned()).fetch_all(
+            &SelectQuery::new(entity).filter(Expr::eq(foreign_key, parent_value.clone())),
+        )
     }
 
     pub fn relation_loads(&self) -> Vec<String> {
@@ -749,4 +1128,36 @@ fn relation_bucket_key(value: &Value) -> String {
         Value::Object(_) => "o".to_owned(),
         Value::List(_) => "l".to_owned(),
     }
+}
+
+fn graph_record_version(record: &Record, descriptor: &EntityDescriptor) -> Option<i64> {
+    descriptor
+        .version_property()
+        .and_then(|property| match record.get(&property.name) {
+            Some(Value::I64(version)) => Some(*version),
+            _ => None,
+        })
+}
+
+fn graph_identity_key(value: &Value) -> String {
+    match value {
+        Value::I64(value) if *value >= 0 => format!("u:{}", *value as u64),
+        Value::U64(value) => format!("u:{value}"),
+        _ => relation_bucket_key(value),
+    }
+}
+
+fn ensure_relation_target<ExecError>(
+    parent_entity: &str,
+    relation_name: &str,
+    expected_entity: &str,
+    child: &GraphNode,
+) -> Result<(), RepositoryError<ExecError>> {
+    if child.entity == expected_entity {
+        return Ok(());
+    }
+    Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
+        "relation {parent_entity}.{relation_name} expects {expected_entity}, got {}",
+        child.entity
+    ))))
 }

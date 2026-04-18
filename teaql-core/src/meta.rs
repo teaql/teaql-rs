@@ -51,6 +51,8 @@ pub struct RelationDescriptor {
     pub local_key: String,
     pub foreign_key: String,
     pub many: bool,
+    pub attach: bool,
+    pub delete_missing: bool,
 }
 
 impl RelationDescriptor {
@@ -61,6 +63,8 @@ impl RelationDescriptor {
             local_key: "id".to_owned(),
             foreign_key: "id".to_owned(),
             many: false,
+            attach: true,
+            delete_missing: true,
         }
     }
 
@@ -76,6 +80,26 @@ impl RelationDescriptor {
 
     pub fn many(mut self) -> Self {
         self.many = true;
+        self
+    }
+
+    pub fn attach(mut self) -> Self {
+        self.attach = true;
+        self
+    }
+
+    pub fn detached(mut self) -> Self {
+        self.attach = false;
+        self
+    }
+
+    pub fn delete_missing(mut self) -> Self {
+        self.delete_missing = true;
+        self
+    }
+
+    pub fn keep_missing(mut self) -> Self {
+        self.delete_missing = false;
         self
     }
 }

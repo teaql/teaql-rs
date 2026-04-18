@@ -71,12 +71,16 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             let foreign_key = relation.foreign_key.unwrap_or_else(|| "id".to_owned());
             let target = relation.target;
             let many = relation.many;
+            let attach = relation.attach;
+            let delete_missing = relation.delete_missing;
             relation_tokens.push(quote! {
                 descriptor = descriptor.relation(
                     ::teaql_core::RelationDescriptor::new(#field_name, #target)
                         .local_key(#local_key)
                         .foreign_key(#foreign_key)
                         #many
+                        #attach
+                        #delete_missing
                 );
             });
             let from_relation = from_relation_value_tokens(&field.ty, &field_name, &entity_name);

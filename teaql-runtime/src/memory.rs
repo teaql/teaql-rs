@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use teaql_core::{
-    AggregateFunction, BinaryOp, DeleteCommand, Entity, Expr, InsertCommand, Record,
+    AggregateFunction, BinaryOp, DeleteCommand, Entity, Expr, ExprFunction, InsertCommand, Record,
     RecoverCommand, SelectQuery, SmartList, SortDirection, UpdateCommand, Value,
 };
 
@@ -90,11 +90,12 @@ where
 
         apply_ordering(&mut rows, query);
         rows = apply_slice(rows, query);
-        if !query.projection.is_empty() {
+        if !query.projection.is_empty() || !query.expr_projection.is_empty() {
             rows = rows
                 .into_iter()
-                .map(|row| project_row(row, &query.projection))
-                .collect();
+                .map(|row| project_row(row, query))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(RepositoryError::Executor)?;
         }
         Ok(rows)
     }
@@ -307,12 +308,17 @@ where
 
 fn eval_filter(expr: &Expr, row: &Record) -> Result<bool, MemoryRepositoryError> {
     match expr {
-        Expr::Column(_) | Expr::Value(_) => value_truthy(&eval_value(expr, row)?),
+        Expr::Column(_) | Expr::Value(_) | Expr::Function { .. } => {
+            value_truthy(&eval_value(expr, row)?)
+        }
         Expr::Binary { left, op, right } => {
             let left = eval_value(left, row)?;
             let right = eval_value(right, row)?;
             eval_binary(&left, *op, &right)
         }
+        Expr::SubQuery { .. } => Err(MemoryRepositoryError::UnsupportedExpression(
+            "subquery filters require a SQL executor".to_owned(),
+        )),
         Expr::Between { expr, lower, upper } => {
             let value = eval_value(expr, row)?;
             let lower = eval_value(lower, row)?;
@@ -346,8 +352,43 @@ fn eval_value(expr: &Expr, row: &Record) -> Result<Value, MemoryRepositoryError>
     match expr {
         Expr::Column(column) => Ok(row.get(column).cloned().unwrap_or(Value::Null)),
         Expr::Value(value) => Ok(value.clone()),
+        Expr::Function { function, args } => eval_function(*function, args, row),
         other => Err(MemoryRepositoryError::UnsupportedExpression(format!(
             "cannot evaluate {other:?} as a scalar value"
+        ))),
+    }
+}
+
+fn eval_function(
+    function: ExprFunction,
+    args: &[Expr],
+    row: &Record,
+) -> Result<Value, MemoryRepositoryError> {
+    match function {
+        ExprFunction::Soundex => {
+            let [arg] = args else {
+                return Err(MemoryRepositoryError::UnsupportedExpression(
+                    "SOUNDEX expects exactly one argument".to_owned(),
+                ));
+            };
+            match eval_value(arg, row)? {
+                Value::Text(value) => Ok(Value::Text(soundex(&value))),
+                Value::Null => Ok(Value::Null),
+                other => Err(MemoryRepositoryError::UnsupportedExpression(format!(
+                    "SOUNDEX expects text, got {other:?}"
+                ))),
+            }
+        }
+        ExprFunction::Gbk => {
+            let [arg] = args else {
+                return Err(MemoryRepositoryError::UnsupportedExpression(
+                    "GBK expects exactly one argument".to_owned(),
+                ));
+            };
+            eval_value(arg, row)
+        }
+        other => Err(MemoryRepositoryError::UnsupportedExpression(format!(
+            "function {other:?} is only supported by SQL execution"
         ))),
     }
 }
@@ -370,10 +411,20 @@ fn eval_binary(left: &Value, op: BinaryOp, right: &Value) -> Result<bool, Memory
             (Value::Text(value), Value::Text(pattern)) => Ok(like_matches(value, pattern)),
             _ => Ok(false),
         },
-        BinaryOp::In => match right {
+        BinaryOp::NotLike => match (left, right) {
+            (Value::Text(value), Value::Text(pattern)) => Ok(!like_matches(value, pattern)),
+            _ => Ok(true),
+        },
+        BinaryOp::In | BinaryOp::InLarge => match right {
             Value::List(values) => Ok(values.iter().any(|value| values_equal(left, value))),
             _ => Err(MemoryRepositoryError::UnsupportedExpression(
                 "IN expects a list value".to_owned(),
+            )),
+        },
+        BinaryOp::NotIn | BinaryOp::NotInLarge => match right {
+            Value::List(values) => Ok(!values.iter().any(|value| values_equal(left, value))),
+            _ => Err(MemoryRepositoryError::UnsupportedExpression(
+                "NOT IN expects a list value".to_owned(),
             )),
         },
     }
@@ -423,10 +474,62 @@ fn like_matches(value: &str, pattern: &str) -> bool {
     }
 }
 
+fn soundex(value: &str) -> String {
+    let mut letters = value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphabetic())
+        .map(|ch| ch.to_ascii_uppercase());
+    let Some(first) = letters.next() else {
+        return "0000".to_owned();
+    };
+
+    let mut output = String::with_capacity(4);
+    output.push(first);
+    let mut previous_code = soundex_code(first);
+
+    for ch in letters {
+        let code = soundex_code(ch);
+        if code != '0' && code != previous_code {
+            output.push(code);
+            if output.len() == 4 {
+                return output;
+            }
+        }
+        previous_code = code;
+    }
+
+    while output.len() < 4 {
+        output.push('0');
+    }
+    output
+}
+
+fn soundex_code(ch: char) -> char {
+    match ch {
+        'B' | 'F' | 'P' | 'V' => '1',
+        'C' | 'G' | 'J' | 'K' | 'Q' | 'S' | 'X' | 'Z' => '2',
+        'D' | 'T' => '3',
+        'L' => '4',
+        'M' | 'N' => '5',
+        'R' => '6',
+        _ => '0',
+    }
+}
+
 fn apply_ordering(rows: &mut [Record], query: &SelectQuery) {
     for order in query.order_by.iter().rev() {
         rows.sort_by(|left, right| {
-            let ordering = match (left.get(&order.field), right.get(&order.field)) {
+            let left_value = if let Some(expr) = &order.expr {
+                eval_value(expr, left).ok()
+            } else {
+                left.get(&order.field).cloned()
+            };
+            let right_value = if let Some(expr) = &order.expr {
+                eval_value(expr, right).ok()
+            } else {
+                right.get(&order.field).cloned()
+            };
+            let ordering = match (left_value.as_ref(), right_value.as_ref()) {
                 (Some(left), Some(right)) => compare_values(left, right).unwrap_or(Ordering::Equal),
                 (None, Some(_)) => Ordering::Less,
                 (Some(_), None) => Ordering::Greater,
@@ -452,11 +555,19 @@ fn apply_slice(rows: Vec<Record>, query: &SelectQuery) -> Vec<Record> {
     rows.into_iter().skip(offset).take(limit).collect()
 }
 
-fn project_row(row: Record, projection: &[String]) -> Record {
-    projection
+fn project_row(row: Record, query: &SelectQuery) -> Result<Record, MemoryRepositoryError> {
+    let mut output: Record = query
+        .projection
         .iter()
         .filter_map(|field| row.get(field).cloned().map(|value| (field.clone(), value)))
-        .collect()
+        .collect();
+    for projection in &query.expr_projection {
+        output.insert(
+            projection.alias.clone(),
+            eval_value(&projection.expr, &row)?,
+        );
+    }
+    Ok(output)
 }
 
 fn aggregate_rows(
@@ -477,7 +588,7 @@ fn aggregate_rows(
         }
     }
 
-    groups
+    let rows = groups
         .into_values()
         .map(|rows| {
             let mut output = Record::new();
@@ -490,17 +601,60 @@ fn aggregate_rows(
             }
             for aggregate in &query.aggregates {
                 let value = match aggregate.function {
-                    AggregateFunction::Count => Value::U64(rows.len() as u64),
+                    AggregateFunction::Count => {
+                        if aggregate.field == "*" {
+                            Value::U64(rows.len() as u64)
+                        } else {
+                            Value::U64(
+                                rows.iter()
+                                    .filter(|row| {
+                                        !matches!(
+                                            row.get(&aggregate.field),
+                                            None | Some(Value::Null)
+                                        )
+                                    })
+                                    .count() as u64,
+                            )
+                        }
+                    }
                     AggregateFunction::Sum => numeric_sum(&rows, &aggregate.field)?,
                     AggregateFunction::Avg => numeric_avg(&rows, &aggregate.field)?,
                     AggregateFunction::Min => min_max(&rows, &aggregate.field, false)?,
                     AggregateFunction::Max => min_max(&rows, &aggregate.field, true)?,
+                    AggregateFunction::Stddev => numeric_stddev(&rows, &aggregate.field, true)?,
+                    AggregateFunction::StddevPop => numeric_stddev(&rows, &aggregate.field, false)?,
+                    AggregateFunction::VarSamp => numeric_variance(&rows, &aggregate.field, true)?,
+                    AggregateFunction::VarPop => numeric_variance(&rows, &aggregate.field, false)?,
+                    AggregateFunction::BitAnd => {
+                        bit_aggregate(&rows, &aggregate.field, BitOp::And)?
+                    }
+                    AggregateFunction::BitOr => bit_aggregate(&rows, &aggregate.field, BitOp::Or)?,
+                    AggregateFunction::BitXor => {
+                        bit_aggregate(&rows, &aggregate.field, BitOp::Xor)?
+                    }
                 };
                 output.insert(aggregate.alias.clone(), value);
             }
+            for projection in &query.expr_projection {
+                output.insert(
+                    projection.alias.clone(),
+                    eval_value(&projection.expr, &output)?,
+                );
+            }
             Ok(output)
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    if let Some(having) = &query.having {
+        rows.into_iter()
+            .filter_map(|row| match eval_filter(having, &row) {
+                Ok(true) => Some(Ok(row)),
+                Ok(false) => None,
+                Err(err) => Some(Err(err)),
+            })
+            .collect()
+    } else {
+        Ok(rows)
+    }
 }
 
 fn numeric_sum(rows: &[&Record], field: &str) -> Result<Value, MemoryRepositoryError> {
@@ -562,6 +716,89 @@ fn numeric_avg(rows: &[&Record], field: &str) -> Result<Value, MemoryRepositoryE
     } else {
         Value::F64(sum / count)
     })
+}
+
+fn numeric_values(rows: &[&Record], field: &str) -> Result<Vec<f64>, MemoryRepositoryError> {
+    rows.iter()
+        .filter_map(|row| row.get(field))
+        .filter(|value| !matches!(value, Value::Null))
+        .map(|value| match value {
+            Value::I64(value) => Ok(*value as f64),
+            Value::U64(value) => Ok(*value as f64),
+            Value::F64(value) => Ok(*value),
+            other => Err(MemoryRepositoryError::UnsupportedAggregate(format!(
+                "numeric aggregate does not support {other:?}"
+            ))),
+        })
+        .collect()
+}
+
+fn numeric_variance(
+    rows: &[&Record],
+    field: &str,
+    sample: bool,
+) -> Result<Value, MemoryRepositoryError> {
+    let values = numeric_values(rows, field)?;
+    let count = values.len();
+    if count == 0 || (sample && count < 2) {
+        return Ok(Value::Null);
+    }
+    let mean = values.iter().sum::<f64>() / count as f64;
+    let sum = values
+        .iter()
+        .map(|value| {
+            let diff = value - mean;
+            diff * diff
+        })
+        .sum::<f64>();
+    let denominator = if sample { count - 1 } else { count } as f64;
+    Ok(Value::F64(sum / denominator))
+}
+
+fn numeric_stddev(
+    rows: &[&Record],
+    field: &str,
+    sample: bool,
+) -> Result<Value, MemoryRepositoryError> {
+    Ok(match numeric_variance(rows, field, sample)? {
+        Value::F64(value) => Value::F64(value.sqrt()),
+        Value::Null => Value::Null,
+        other => other,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BitOp {
+    And,
+    Or,
+    Xor,
+}
+
+fn bit_aggregate(rows: &[&Record], field: &str, op: BitOp) -> Result<Value, MemoryRepositoryError> {
+    let mut selected: Option<i64> = None;
+    for value in rows.iter().filter_map(|row| row.get(field)) {
+        let value = match value {
+            Value::I64(value) => *value,
+            Value::U64(value) => i64::try_from(*value).map_err(|_| {
+                MemoryRepositoryError::UnsupportedAggregate(format!(
+                    "BIT aggregate u64 {value} exceeds i64 range"
+                ))
+            })?,
+            Value::Null => continue,
+            other => {
+                return Err(MemoryRepositoryError::UnsupportedAggregate(format!(
+                    "BIT aggregate does not support {other:?}"
+                )));
+            }
+        };
+        selected = Some(match (selected, op) {
+            (None, _) => value,
+            (Some(current), BitOp::And) => current & value,
+            (Some(current), BitOp::Or) => current | value,
+            (Some(current), BitOp::Xor) => current ^ value,
+        });
+    }
+    Ok(selected.map(Value::I64).unwrap_or(Value::Null))
 }
 
 fn min_max(rows: &[&Record], field: &str, max: bool) -> Result<Value, MemoryRepositoryError> {

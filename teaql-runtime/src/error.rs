@@ -6,6 +6,7 @@ pub enum RuntimeError {
     MissingEntity(String),
     SqlCompile(SqlCompileError),
     Behavior(String),
+    Graph(String),
     IdGeneration(String),
     MissingRelation { entity: String, relation: String },
     OptimisticLockConflict { entity: String, id: String },
@@ -17,6 +18,7 @@ impl std::fmt::Display for RuntimeError {
             Self::MissingEntity(entity) => write!(f, "missing entity descriptor: {entity}"),
             Self::SqlCompile(err) => err.fmt(f),
             Self::Behavior(message) => write!(f, "repository behavior error: {message}"),
+            Self::Graph(message) => write!(f, "graph write error: {message}"),
             Self::IdGeneration(message) => write!(f, "id generation error: {message}"),
             Self::MissingRelation { entity, relation } => {
                 write!(f, "missing relation {relation} on entity {entity}")

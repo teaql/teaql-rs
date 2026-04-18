@@ -4,11 +4,16 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use sqlx::postgres::{PgArguments, PgPool, PgRow};
 use sqlx::sqlite::{SqliteArguments, SqlitePool, SqliteRow};
 use sqlx::types::Json;
-use sqlx::{Arguments, Column, Error as SqlxError, Row, TypeInfo, ValueRef, query_with};
+use sqlx::{
+    Arguments, Column, Error as SqlxError, Postgres, Row, Transaction, TypeInfo, ValueRef,
+    query_with,
+};
+use std::sync::Arc;
 use teaql_core::{EntityDescriptor, Record, Value};
 use teaql_dialect_pg::PostgresDialect;
 use teaql_dialect_sqlite::SqliteDialect;
 use teaql_sql::{CompiledQuery, SqlCompileError, SqlDialect};
+use tokio::sync::Mutex;
 
 use crate::UserContext;
 
@@ -72,6 +77,10 @@ impl PgMutationExecutor {
         dialect: &PostgresDialect,
         entities: &[&EntityDescriptor],
     ) -> Result<(), MutationExecutorError> {
+        for sql in dialect.schema_setup_sqls() {
+            sqlx::query(sql).execute(&self.pool).await?;
+        }
+
         for entity in entities {
             if !self.table_exists(&entity.table_name).await? {
                 let sql = dialect.compile_create_table(entity)?;
@@ -148,6 +157,74 @@ impl PgMutationExecutor {
 }
 
 #[derive(Clone)]
+pub struct PgTransactionExecutor {
+    transaction: Arc<Mutex<Option<Transaction<'static, Postgres>>>>,
+}
+
+impl PgTransactionExecutor {
+    pub async fn begin(pool: &PgPool) -> Result<Self, MutationExecutorError> {
+        Ok(Self {
+            transaction: Arc::new(Mutex::new(Some(pool.begin().await?))),
+        })
+    }
+
+    pub async fn execute(&self, query: &CompiledQuery) -> Result<u64, MutationExecutorError> {
+        let mut transaction = self.transaction.lock().await;
+        let transaction = transaction.as_mut().ok_or_else(|| {
+            MutationExecutorError::Bind("postgres transaction is closed".to_owned())
+        })?;
+        let mut args = PgArguments::default();
+        for value in &query.params {
+            bind_pg(&mut args, value)?;
+        }
+        let result = query_with(&query.sql, args)
+            .execute(&mut **transaction)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
+    pub async fn fetch_all(
+        &self,
+        query: &CompiledQuery,
+    ) -> Result<Vec<Record>, MutationExecutorError> {
+        let mut transaction = self.transaction.lock().await;
+        let transaction = transaction.as_mut().ok_or_else(|| {
+            MutationExecutorError::Bind("postgres transaction is closed".to_owned())
+        })?;
+        let mut args = PgArguments::default();
+        for value in &query.params {
+            bind_pg(&mut args, value)?;
+        }
+        let rows = query_with(&query.sql, args)
+            .fetch_all(&mut **transaction)
+            .await?;
+        rows.iter().map(decode_pg_row).collect()
+    }
+
+    pub async fn commit(&self) -> Result<(), MutationExecutorError> {
+        let transaction = self.transaction.lock().await.take();
+        let Some(transaction) = transaction else {
+            return Err(MutationExecutorError::Bind(
+                "postgres transaction is closed".to_owned(),
+            ));
+        };
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    pub async fn rollback(&self) -> Result<(), MutationExecutorError> {
+        let transaction = self.transaction.lock().await.take();
+        let Some(transaction) = transaction else {
+            return Err(MutationExecutorError::Bind(
+                "postgres transaction is closed".to_owned(),
+            ));
+        };
+        transaction.rollback().await?;
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
 pub struct SqliteMutationExecutor {
     pool: SqlitePool,
 }
@@ -178,6 +255,21 @@ impl SqliteMutationExecutor {
                 sqlx::query(&sql).execute(&self.pool).await?;
             }
         }
+        Ok(())
+    }
+
+    pub async fn begin_transaction(&self) -> Result<(), MutationExecutorError> {
+        sqlx::query("BEGIN IMMEDIATE").execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn commit_transaction(&self) -> Result<(), MutationExecutorError> {
+        sqlx::query("COMMIT").execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn rollback_transaction(&self) -> Result<(), MutationExecutorError> {
+        sqlx::query("ROLLBACK").execute(&self.pool).await?;
         Ok(())
     }
 
@@ -303,7 +395,101 @@ fn bind_pg(args: &mut PgArguments, value: &Value) -> Result<(), MutationExecutor
             .add(*v)
             .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
         Value::Object(_) => return Err(MutationExecutorError::UnsupportedValue("object")),
-        Value::List(_) => return Err(MutationExecutorError::UnsupportedValue("list")),
+        Value::List(values) => bind_pg_list(args, values)?,
+    }
+    Ok(())
+}
+
+fn bind_pg_list(args: &mut PgArguments, values: &[Value]) -> Result<(), MutationExecutorError> {
+    let Some(first) = values.first() else {
+        return Err(MutationExecutorError::UnsupportedValue("empty list"));
+    };
+    match first {
+        Value::Bool(_) => {
+            let values = values
+                .iter()
+                .map(|value| match value {
+                    Value::Bool(value) => Ok(*value),
+                    _ => Err(MutationExecutorError::UnsupportedValue("mixed bool list")),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            args.add(values)
+                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?;
+        }
+        Value::I64(_) => {
+            let values = values
+                .iter()
+                .map(|value| match value {
+                    Value::I64(value) => Ok(*value),
+                    _ => Err(MutationExecutorError::UnsupportedValue("mixed i64 list")),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            args.add(values)
+                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?;
+        }
+        Value::U64(_) => {
+            let values = values
+                .iter()
+                .map(|value| match value {
+                    Value::U64(value) => i64::try_from(*value).map_err(|_| {
+                        MutationExecutorError::Bind(format!("u64 value {value} exceeds i64 range"))
+                    }),
+                    _ => Err(MutationExecutorError::UnsupportedValue("mixed u64 list")),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            args.add(values)
+                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?;
+        }
+        Value::F64(_) => {
+            let values = values
+                .iter()
+                .map(|value| match value {
+                    Value::F64(value) => Ok(*value),
+                    _ => Err(MutationExecutorError::UnsupportedValue("mixed f64 list")),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            args.add(values)
+                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?;
+        }
+        Value::Text(_) => {
+            let values = values
+                .iter()
+                .map(|value| match value {
+                    Value::Text(value) => Ok(value.clone()),
+                    _ => Err(MutationExecutorError::UnsupportedValue("mixed text list")),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            args.add(values)
+                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?;
+        }
+        Value::Date(_) => {
+            let values = values
+                .iter()
+                .map(|value| match value {
+                    Value::Date(value) => Ok(*value),
+                    _ => Err(MutationExecutorError::UnsupportedValue("mixed date list")),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            args.add(values)
+                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?;
+        }
+        Value::Timestamp(_) => {
+            let values = values
+                .iter()
+                .map(|value| match value {
+                    Value::Timestamp(value) => Ok(*value),
+                    _ => Err(MutationExecutorError::UnsupportedValue(
+                        "mixed timestamp list",
+                    )),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            args.add(values)
+                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?;
+        }
+        Value::Null => return Err(MutationExecutorError::UnsupportedValue("null list")),
+        Value::Json(_) => return Err(MutationExecutorError::UnsupportedValue("json list")),
+        Value::Object(_) => return Err(MutationExecutorError::UnsupportedValue("object list")),
+        Value::List(_) => return Err(MutationExecutorError::UnsupportedValue("nested list")),
     }
     Ok(())
 }

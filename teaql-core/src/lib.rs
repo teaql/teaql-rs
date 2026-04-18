@@ -13,14 +13,14 @@ pub use entity::{
     BaseEntity, BaseEntityData, Entity, EntityDescriptorStore, EntityError, IdentifiableEntity,
     TeaqlEntity, VersionedEntity,
 };
-pub use expr::{BinaryOp, Expr};
+pub use expr::{BinaryOp, Expr, ExprFunction};
 pub use list::SmartList;
 pub use meta::{EntityDescriptor, PropertyDescriptor, RelationDescriptor};
 pub use mutation::{DeleteCommand, InsertCommand, MutationKind, RecoverCommand, UpdateCommand};
 pub use naming::default_table_name;
 pub use query::{
-    Aggregate, AggregateFunction, OrderBy, Record, RelationLoad, SelectQuery, Slice, SortDirection,
-    record_to_json_value,
+    Aggregate, AggregateFunction, NamedExpr, OrderBy, Record, RelationLoad, SelectQuery, Slice,
+    SortDirection, record_to_json_value,
 };
 pub use value::{DataType, Value};
 
@@ -89,7 +89,13 @@ mod tests {
         id: u64,
         #[teaql(column = "order_id")]
         order_id: u64,
-        #[teaql(relation(target = "Product", local_key = "product_id", foreign_key = "id"))]
+        #[teaql(relation(
+            target = "Product",
+            local_key = "product_id",
+            foreign_key = "id",
+            attach = false,
+            delete_missing = false
+        ))]
         product: Option<ProductRow>,
     }
 
@@ -100,6 +106,8 @@ mod tests {
         assert_eq!(relation.target_entity, "Product");
         assert_eq!(relation.local_key, "product_id");
         assert_eq!(relation.foreign_key, "id");
+        assert!(!relation.attach);
+        assert!(!relation.delete_missing);
 
         let mut store = TestStore::default();
         OrderLineRow::register_into(&mut store);
@@ -185,6 +193,137 @@ mod tests {
         );
         assert_eq!(Value::from(birthday), Value::Date(birthday));
         assert_eq!(Value::from(happened_at), Value::Timestamp(happened_at));
+    }
+
+    #[test]
+    fn query_builders_cover_filters_sort_aggregates_and_relations() {
+        let query = SelectQuery::new("Order")
+            .projects(["id", "name"])
+            .filter(Expr::gte("version", 1_i64))
+            .and_filter(Expr::not_in_list(
+                "name",
+                vec![Value::from("archived"), Value::from("deleted")],
+            ))
+            .and_filter(Expr::in_large(
+                "id",
+                vec![Value::from(1_u64), Value::from(2_u64)],
+            ))
+            .and_filter(Expr::contain("name", "rob"))
+            .and_filter(Expr::sound_like("name", "Robert"))
+            .or_filter(Expr::is_null("name"))
+            .project_expr("nameSound", Expr::soundex(Expr::column("name")))
+            .order_desc("id")
+            .order_gbk_asc("name")
+            .group_by("name")
+            .count("total")
+            .sum("version", "versionSum")
+            .stddev("version", "versionStddev")
+            .having(Expr::gt("total", 1_i64))
+            .relation("lines")
+            .page(20, 10);
+
+        assert_eq!(query.projection, vec!["id", "name"]);
+        assert_eq!(
+            query.expr_projection,
+            vec![NamedExpr::new(
+                "nameSound",
+                Expr::soundex(Expr::column("name"))
+            )]
+        );
+        assert_eq!(
+            query.order_by,
+            vec![OrderBy::desc("id"), OrderBy::asc_gbk("name")]
+        );
+        assert_eq!(query.group_by, vec!["name"]);
+        assert_eq!(
+            query.aggregates,
+            vec![
+                Aggregate::count("total"),
+                Aggregate::sum("version", "versionSum"),
+                Aggregate::stddev("version", "versionStddev")
+            ]
+        );
+        assert_eq!(query.having, Some(Expr::gt("total", 1_i64)));
+        assert_eq!(query.relations, vec![RelationLoad::new("lines")]);
+        assert_eq!(
+            query.slice,
+            Some(Slice {
+                limit: Some(10),
+                offset: 20
+            })
+        );
+        assert!(matches!(query.filter, Some(Expr::Or(_))));
+    }
+
+    #[test]
+    fn sound_like_builds_soundex_equality() {
+        assert_eq!(
+            Expr::sound_like("name", "Robert"),
+            Expr::binary(
+                Expr::soundex(Expr::column("name")),
+                BinaryOp::Eq,
+                Expr::soundex(Expr::value("Robert"))
+            )
+        );
+    }
+
+    #[test]
+    fn java_style_string_match_builders_expand_like_patterns() {
+        assert_eq!(Expr::contain("name", "tea"), Expr::like("name", "%tea%"));
+        assert_eq!(
+            Expr::not_contain("name", "tea"),
+            Expr::not_like("name", "%tea%")
+        );
+        assert_eq!(Expr::begin_with("name", "tea"), Expr::like("name", "tea%"));
+        assert_eq!(
+            Expr::not_begin_with("name", "tea"),
+            Expr::not_like("name", "tea%")
+        );
+        assert_eq!(Expr::end_with("name", "tea"), Expr::like("name", "%tea"));
+        assert_eq!(
+            Expr::not_end_with("name", "tea"),
+            Expr::not_like("name", "%tea")
+        );
+    }
+
+    #[test]
+    fn large_in_builders_use_large_binary_ops() {
+        assert_eq!(
+            Expr::in_large("id", vec![Value::from(1_u64)]),
+            Expr::binary(
+                Expr::column("id"),
+                BinaryOp::InLarge,
+                Expr::value(Value::List(vec![Value::from(1_u64)]))
+            )
+        );
+        assert_eq!(
+            Expr::not_in_large("id", vec![Value::from(1_u64)]),
+            Expr::binary(
+                Expr::column("id"),
+                BinaryOp::NotInLarge,
+                Expr::value(Value::List(vec![Value::from(1_u64)]))
+            )
+        );
+    }
+
+    #[test]
+    fn subquery_builder_projects_requested_field() {
+        let query = SelectQuery::new("OrderLine").filter(Expr::eq("name", "line-1"));
+        let expr = Expr::in_subquery("id", OrderLineRow::entity_descriptor(), query, "order_id");
+
+        let Expr::SubQuery {
+            left,
+            op,
+            entity,
+            query,
+        } = expr
+        else {
+            panic!("expected subquery expression");
+        };
+        assert_eq!(*left, Expr::column("id"));
+        assert_eq!(op, BinaryOp::In);
+        assert_eq!(entity.name, "OrderLine");
+        assert_eq!(query.projection, vec!["order_id"]);
     }
 
     #[test]

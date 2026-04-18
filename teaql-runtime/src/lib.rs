@@ -1,5 +1,6 @@
 mod context;
 mod error;
+mod graph;
 mod id;
 mod memory;
 mod registry;
@@ -7,6 +8,7 @@ mod repository;
 
 pub use context::UserContext;
 pub use error::{ContextError, RepositoryError, RuntimeError};
+pub use graph::{GraphNode, GraphOperation};
 pub(crate) use id::local_id_generator;
 pub use id::{InternalIdGenerator, SnowflakeIdGenerator};
 pub use memory::{MemoryRepository, MemoryRepositoryError};
@@ -25,11 +27,13 @@ pub mod sqlx_support;
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::Mutex;
 
     use super::{
-        InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry, InMemoryRepositoryRegistry,
-        InternalIdGenerator, MemoryRepository, MetadataStore, QueryExecutor, Repository,
-        RepositoryBehavior, RepositoryError, RuntimeError, RuntimeModule, UserContext,
+        GraphNode, InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry,
+        InMemoryRepositoryRegistry, InternalIdGenerator, MemoryRepository, MetadataStore,
+        QueryExecutor, Repository, RepositoryBehavior, RepositoryError, RuntimeError,
+        RuntimeModule, UserContext,
     };
     use teaql_core::{
         Aggregate, AggregateFunction, DataType, DeleteCommand, Entity, EntityDescriptor,
@@ -72,6 +76,11 @@ mod tests {
                     .column_name("id")
                     .id()
                     .not_null(),
+            )
+            .property(
+                PropertyDescriptor::new("version", DataType::I64)
+                    .column_name("version")
+                    .version(),
             )
             .property(
                 PropertyDescriptor::new("order_id", DataType::U64)
@@ -324,6 +333,30 @@ mod tests {
         }
     }
 
+    struct SequentialIdGenerator {
+        next: Mutex<u64>,
+    }
+
+    impl SequentialIdGenerator {
+        fn new(next: u64) -> Self {
+            Self {
+                next: Mutex::new(next),
+            }
+        }
+    }
+
+    impl InternalIdGenerator for SequentialIdGenerator {
+        fn generate_id(&self, _entity: &str) -> Result<u64, RuntimeError> {
+            let mut next = self
+                .next
+                .lock()
+                .map_err(|err| RuntimeError::IdGeneration(err.to_string()))?;
+            let id = *next;
+            *next += 1;
+            Ok(id)
+        }
+    }
+
     #[test]
     fn metadata_store_registers_entities() {
         let store = InMemoryMetadataStore::new().with_entity(entity());
@@ -522,6 +555,49 @@ mod tests {
             prepared.values.get("name"),
             Some(&Value::Text("n".to_owned()))
         );
+    }
+
+    #[test]
+    fn resolved_repository_saves_create_graph_and_maintains_relation_keys() {
+        let mut ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(entity())
+                    .with_entity(line_entity())
+                    .with_entity(product_entity()),
+            )
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
+            .with_repository_behavior_registry(
+                InMemoryRepositoryBehaviorRegistry::new().with_behavior("Order", OrderBehavior),
+            )
+            .with_internal_id_generator(SequentialIdGenerator::new(500));
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(StubExecutor {
+            affected: 1,
+            rows: Vec::new(),
+        });
+
+        let repo = ctx
+            .resolve_repository::<PostgresDialect, StubExecutor>("Order")
+            .unwrap();
+        let graph = GraphNode::new("Order").value("name", "root").relation(
+            "lines",
+            GraphNode::new("OrderLine")
+                .value("name", "line-1")
+                .relation("product", GraphNode::new("Product").value("name", "sku-1")),
+        );
+
+        let saved = repo.save_graph_create(graph).unwrap();
+
+        assert_eq!(saved.values.get("id"), Some(&Value::U64(500)));
+        assert_eq!(saved.values.get("version"), Some(&Value::I64(1)));
+        let lines = saved.relations.get("lines").unwrap();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].values.get("id"), Some(&Value::U64(502)));
+        assert_eq!(lines[0].values.get("order_id"), Some(&Value::U64(500)));
+        assert_eq!(lines[0].values.get("product_id"), Some(&Value::U64(501)));
+        let product = lines[0].relations.get("product").unwrap();
+        assert_eq!(product[0].values.get("id"), Some(&Value::U64(501)));
     }
 
     #[test]
@@ -852,7 +928,9 @@ mod tests {
         let query = teaql_core::SelectQuery {
             entity: String::from("Order"),
             projection: Vec::new(),
+            expr_projection: Vec::new(),
             filter: None,
+            having: None,
             order_by: Vec::new(),
             slice: None,
             aggregates: vec![
@@ -876,6 +954,192 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].get("count"), Some(&Value::U64(2)));
         assert_eq!(rows[0].get("versionSum"), Some(&Value::U64(3)));
+    }
+
+    #[test]
+    fn memory_repository_runs_grouped_aggregates_and_extended_filters() {
+        let metadata = InMemoryMetadataStore::new().with_entity(entity());
+        let repository = MemoryRepository::new(metadata).with_rows(
+            "Order",
+            vec![
+                Record::from([
+                    (String::from("id"), Value::U64(1)),
+                    (String::from("version"), Value::I64(1)),
+                    (String::from("name"), Value::Text(String::from("alpha"))),
+                ]),
+                Record::from([
+                    (String::from("id"), Value::U64(2)),
+                    (String::from("version"), Value::I64(2)),
+                    (String::from("name"), Value::Text(String::from("alpha"))),
+                ]),
+                Record::from([
+                    (String::from("id"), Value::U64(3)),
+                    (String::from("version"), Value::I64(3)),
+                    (String::from("name"), Value::Text(String::from("tmp-beta"))),
+                ]),
+            ],
+        );
+
+        let rows = repository
+            .fetch_all(
+                &teaql_core::SelectQuery::new("Order")
+                    .filter(
+                        Expr::between("version", 1_i64, 3_i64)
+                            .and_expr(Expr::not_like("name", "tmp%"))
+                            .and_expr(Expr::not_in_list("name", vec![Value::from("deleted")])),
+                    )
+                    .group_by("name")
+                    .count("total")
+                    .sum("version", "versionSum"),
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("name"),
+            Some(&Value::Text(String::from("alpha")))
+        );
+        assert_eq!(rows[0].get("total"), Some(&Value::U64(2)));
+        assert_eq!(rows[0].get("versionSum"), Some(&Value::U64(3)));
+    }
+
+    #[test]
+    fn memory_repository_runs_extended_aggregates_and_having() {
+        let metadata = InMemoryMetadataStore::new().with_entity(entity());
+        let repository = MemoryRepository::new(metadata).with_rows(
+            "Order",
+            vec![
+                Record::from([
+                    (String::from("id"), Value::U64(1)),
+                    (String::from("version"), Value::I64(1)),
+                    (String::from("name"), Value::Text(String::from("alpha"))),
+                ]),
+                Record::from([
+                    (String::from("id"), Value::U64(2)),
+                    (String::from("version"), Value::I64(3)),
+                    (String::from("name"), Value::Text(String::from("alpha"))),
+                ]),
+                Record::from([
+                    (String::from("id"), Value::U64(3)),
+                    (String::from("version"), Value::I64(7)),
+                    (String::from("name"), Value::Text(String::from("beta"))),
+                ]),
+            ],
+        );
+
+        let rows = repository
+            .fetch_all(
+                &teaql_core::SelectQuery::new("Order")
+                    .group_by("name")
+                    .count("total")
+                    .stddev("version", "stddevVersion")
+                    .var_pop("version", "varPopVersion")
+                    .bit_or("version", "bitOrVersion")
+                    .having(Expr::gt("total", 1_i64)),
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("name"),
+            Some(&Value::Text(String::from("alpha")))
+        );
+        assert_eq!(rows[0].get("total"), Some(&Value::U64(2)));
+        assert_eq!(
+            rows[0].get("stddevVersion"),
+            Some(&Value::F64(2_f64.sqrt()))
+        );
+        assert_eq!(rows[0].get("varPopVersion"), Some(&Value::F64(1.0)));
+        assert_eq!(rows[0].get("bitOrVersion"), Some(&Value::I64(3)));
+    }
+
+    #[test]
+    fn memory_repository_runs_sound_like_filter() {
+        let metadata = InMemoryMetadataStore::new().with_entity(entity());
+        let repository = MemoryRepository::new(metadata).with_rows(
+            "Order",
+            vec![
+                Record::from([
+                    (String::from("id"), Value::U64(1)),
+                    (String::from("version"), Value::I64(1)),
+                    (String::from("name"), Value::Text(String::from("Robert"))),
+                ]),
+                Record::from([
+                    (String::from("id"), Value::U64(2)),
+                    (String::from("version"), Value::I64(1)),
+                    (String::from("name"), Value::Text(String::from("Rupert"))),
+                ]),
+                Record::from([
+                    (String::from("id"), Value::U64(3)),
+                    (String::from("version"), Value::I64(1)),
+                    (String::from("name"), Value::Text(String::from("Ashcraft"))),
+                ]),
+            ],
+        );
+
+        let rows = repository
+            .fetch_all(
+                &teaql_core::SelectQuery::new("Order")
+                    .filter(Expr::sound_like("name", "Robert"))
+                    .order_asc("id"),
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].get("name"), Some(&Value::Text("Robert".to_owned())));
+        assert_eq!(rows[1].get("name"), Some(&Value::Text("Rupert".to_owned())));
+    }
+
+    #[test]
+    fn memory_repository_runs_java_style_string_match_filters() {
+        let metadata = InMemoryMetadataStore::new().with_entity(entity());
+        let repository = MemoryRepository::new(metadata).with_rows(
+            "Order",
+            vec![
+                Record::from([
+                    (String::from("id"), Value::U64(1)),
+                    (String::from("version"), Value::I64(1)),
+                    (String::from("name"), Value::Text(String::from("tea-order"))),
+                ]),
+                Record::from([
+                    (String::from("id"), Value::U64(2)),
+                    (String::from("version"), Value::I64(1)),
+                    (
+                        String::from("name"),
+                        Value::Text(String::from("coffee-order")),
+                    ),
+                ]),
+                Record::from([
+                    (String::from("id"), Value::U64(3)),
+                    (String::from("version"), Value::I64(1)),
+                    (
+                        String::from("name"),
+                        Value::Text(String::from("tea-archived")),
+                    ),
+                ]),
+            ],
+        );
+
+        let rows = repository
+            .fetch_all(
+                &teaql_core::SelectQuery::new("Order")
+                    .filter(
+                        Expr::contain("name", "tea")
+                            .and_expr(Expr::begin_with("name", "tea"))
+                            .and_expr(Expr::end_with("name", "order"))
+                            .and_expr(Expr::not_contain("name", "coffee"))
+                            .and_expr(Expr::not_begin_with("name", "archived"))
+                            .and_expr(Expr::not_end_with("name", "draft")),
+                    )
+                    .order_asc("id"),
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("name"),
+            Some(&Value::Text("tea-order".to_owned()))
+        );
     }
 
     #[test]
@@ -946,10 +1210,12 @@ mod tests {
 
 #[cfg(all(test, feature = "sqlx"))]
 mod sqlx_integration_tests {
-    use super::sqlx_support::{MutationExecutorError, PgMutationExecutor, SqliteMutationExecutor};
+    use super::sqlx_support::{
+        MutationExecutorError, PgMutationExecutor, PgTransactionExecutor, SqliteMutationExecutor,
+    };
     use super::{
-        InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry, InMemoryRepositoryRegistry,
-        QueryExecutor, RepositoryBehavior, UserContext,
+        GraphNode, InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry,
+        InMemoryRepositoryRegistry, QueryExecutor, RepositoryBehavior, UserContext,
     };
     use chrono::{NaiveDate, TimeZone, Utc};
     use teaql_core::{
@@ -991,6 +1257,35 @@ mod sqlx_integration_tests {
             )
     }
 
+    fn sqlite_entity_keep_missing() -> EntityDescriptor {
+        EntityDescriptor::new("Order")
+            .table_name("orders")
+            .property(
+                PropertyDescriptor::new("id", DataType::U64)
+                    .column_name("id")
+                    .id()
+                    .not_null(),
+            )
+            .property(
+                PropertyDescriptor::new("version", DataType::I64)
+                    .column_name("version")
+                    .version()
+                    .not_null(),
+            )
+            .property(
+                PropertyDescriptor::new("name", DataType::Text)
+                    .column_name("name")
+                    .not_null(),
+            )
+            .relation(
+                teaql_core::RelationDescriptor::new("lines", "OrderLine")
+                    .local_key("id")
+                    .foreign_key("order_id")
+                    .many()
+                    .keep_missing(),
+            )
+    }
+
     fn line_entity() -> EntityDescriptor {
         EntityDescriptor::new("OrderLine")
             .table_name("orderline")
@@ -999,6 +1294,11 @@ mod sqlx_integration_tests {
                     .column_name("id")
                     .id()
                     .not_null(),
+            )
+            .property(
+                PropertyDescriptor::new("version", DataType::I64)
+                    .column_name("version")
+                    .version(),
             )
             .property(
                 PropertyDescriptor::new("order_id", DataType::U64)
@@ -1135,6 +1435,31 @@ mod sqlx_integration_tests {
     }
 
     impl QueryExecutor for SqliteSyncExecutor {
+        type Error = MutationExecutorError;
+
+        fn fetch_all(&self, query: &teaql_sql::CompiledQuery) -> Result<Vec<Record>, Self::Error> {
+            let handle = Handle::current();
+            block_in_place(|| handle.block_on(self.inner.fetch_all(query)))
+        }
+
+        fn execute(&self, query: &teaql_sql::CompiledQuery) -> Result<u64, Self::Error> {
+            let handle = Handle::current();
+            block_in_place(|| handle.block_on(self.inner.execute(query)))
+        }
+    }
+
+    #[derive(Clone)]
+    struct PgTxSyncExecutor {
+        inner: PgTransactionExecutor,
+    }
+
+    impl PgTxSyncExecutor {
+        fn new(inner: PgTransactionExecutor) -> Self {
+            Self { inner }
+        }
+    }
+
+    impl QueryExecutor for PgTxSyncExecutor {
         type Error = MutationExecutorError;
 
         fn fetch_all(&self, query: &teaql_sql::CompiledQuery) -> Result<Vec<Record>, Self::Error> {
@@ -1772,6 +2097,403 @@ mod sqlx_integration_tests {
         assert_eq!(order.name, "generated");
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sqlite_save_graph_create_inserts_nested_rows() {
+        use sqlx::{Row, sqlite::SqlitePoolOptions};
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        let mutation_executor = SqliteMutationExecutor::new(pool.clone());
+        let order = entity();
+        let line = line_entity();
+        let product = product_entity();
+        mutation_executor
+            .ensure_schema(&SqliteDialect, &[&order, &line, &product])
+            .await
+            .unwrap();
+
+        let executor = SqliteSyncExecutor::new(mutation_executor);
+        let mut ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(order)
+                    .with_entity(line)
+                    .with_entity(product),
+            )
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+        ctx.insert_resource(SqliteDialect);
+        ctx.insert_resource(executor);
+
+        let repo = ctx
+            .resolve_repository::<SqliteDialect, SqliteSyncExecutor>("Order")
+            .unwrap();
+        let graph = GraphNode::new("Order")
+            .value("id", 1_u64)
+            .value("version", 1_i64)
+            .value("name", "root")
+            .relation(
+                "lines",
+                GraphNode::new("OrderLine")
+                    .value("id", 10_u64)
+                    .value("name", "line-1")
+                    .relation(
+                        "product",
+                        GraphNode::new("Product")
+                            .value("id", 100_u64)
+                            .value("name", "sku-1"),
+                    ),
+            );
+
+        let saved = repo.save_graph_create(graph).unwrap();
+        assert_eq!(
+            saved.relations["lines"][0].values.get("order_id"),
+            Some(&Value::U64(1))
+        );
+        assert_eq!(
+            saved.relations["lines"][0].values.get("product_id"),
+            Some(&Value::U64(100))
+        );
+
+        let order_count: i64 = sqlx::query("SELECT COUNT(*) AS count FROM orders")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .try_get("count")
+            .unwrap();
+        let line = sqlx::query("SELECT order_id, product_id FROM orderline WHERE id = 10")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let product_count: i64 = sqlx::query("SELECT COUNT(*) AS count FROM product")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .try_get("count")
+            .unwrap();
+
+        assert_eq!(order_count, 1);
+        assert_eq!(line.try_get::<i64, _>("order_id").unwrap(), 1);
+        assert_eq!(line.try_get::<i64, _>("product_id").unwrap(), 100);
+        assert_eq!(product_count, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sqlite_save_graph_updates_nested_rows_and_deletes_missing_children() {
+        use sqlx::{Row, sqlite::SqlitePoolOptions};
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        let mutation_executor = SqliteMutationExecutor::new(pool.clone());
+        let order = entity();
+        let line = line_entity();
+        let product = product_entity();
+        mutation_executor
+            .ensure_schema(&SqliteDialect, &[&order, &line, &product])
+            .await
+            .unwrap();
+
+        sqlx::query("INSERT INTO orders (id, version, name) VALUES (1, 1, 'old-root')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO product (id, name) VALUES
+                (100, 'old-sku'),
+                (101, 'removed-sku')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO orderline (id, order_id, product_id, name) VALUES
+                (10, 1, 100, 'old-line'),
+                (11, 1, 101, 'removed-line')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE orderline SET version = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let executor = SqliteSyncExecutor::new(mutation_executor);
+        let mut ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(order)
+                    .with_entity(line)
+                    .with_entity(product),
+            )
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+        ctx.insert_resource(SqliteDialect);
+        ctx.insert_resource(executor);
+
+        let repo = ctx
+            .resolve_repository::<SqliteDialect, SqliteSyncExecutor>("Order")
+            .unwrap();
+        let graph = GraphNode::new("Order")
+            .value("id", 1_u64)
+            .value("version", 1_i64)
+            .value("name", "new-root")
+            .relation(
+                "lines",
+                GraphNode::new("OrderLine")
+                    .value("id", 10_u64)
+                    .value("version", 1_i64)
+                    .value("name", "new-line")
+                    .relation(
+                        "product",
+                        GraphNode::new("Product")
+                            .value("id", 100_u64)
+                            .value("name", "new-sku"),
+                    ),
+            )
+            .relation(
+                "lines",
+                GraphNode::new("OrderLine")
+                    .value("id", 12_u64)
+                    .value("version", 1_i64)
+                    .value("name", "added-line")
+                    .relation(
+                        "product",
+                        GraphNode::new("Product")
+                            .value("id", 102_u64)
+                            .value("name", "added-sku"),
+                    ),
+            );
+
+        let saved = repo.save_graph(graph).unwrap();
+        assert_eq!(saved.values.get("version"), Some(&Value::I64(2)));
+
+        let order_row = sqlx::query("SELECT version, name FROM orders WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(order_row.try_get::<i64, _>("version").unwrap(), 2);
+        assert_eq!(order_row.try_get::<String, _>("name").unwrap(), "new-root");
+
+        let updated_line =
+            sqlx::query("SELECT version, product_id, name FROM orderline WHERE id = 10")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(updated_line.try_get::<i64, _>("version").unwrap(), 2);
+        assert_eq!(updated_line.try_get::<i64, _>("product_id").unwrap(), 100);
+        assert_eq!(
+            updated_line.try_get::<String, _>("name").unwrap(),
+            "new-line"
+        );
+
+        let added_line =
+            sqlx::query("SELECT order_id, product_id, name FROM orderline WHERE id = 12")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(added_line.try_get::<i64, _>("order_id").unwrap(), 1);
+        assert_eq!(added_line.try_get::<i64, _>("product_id").unwrap(), 102);
+        assert_eq!(
+            added_line.try_get::<String, _>("name").unwrap(),
+            "added-line"
+        );
+
+        let deleted_line = sqlx::query("SELECT version FROM orderline WHERE id = 11")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(deleted_line.try_get::<i64, _>("version").unwrap(), -2);
+
+        let updated_product = sqlx::query("SELECT name FROM product WHERE id = 100")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            updated_product.try_get::<String, _>("name").unwrap(),
+            "new-sku"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sqlite_save_graph_supports_reference_remove_and_keep_missing() {
+        use sqlx::{Row, sqlite::SqlitePoolOptions};
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        let mutation_executor = SqliteMutationExecutor::new(pool.clone());
+        let order = sqlite_entity_keep_missing();
+        let line = line_entity();
+        let product = product_entity();
+        mutation_executor
+            .ensure_schema(&SqliteDialect, &[&order, &line, &product])
+            .await
+            .unwrap();
+
+        sqlx::query("INSERT INTO orders (id, version, name) VALUES (1, 1, 'root')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO product (id, name) VALUES (100, 'reference-only')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO orderline (id, version, order_id, product_id, name) VALUES
+                (10, 1, 1, 100, 'remove-me'),
+                (11, 1, 1, 100, 'keep-me')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let executor = SqliteSyncExecutor::new(mutation_executor);
+        let mut ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(order)
+                    .with_entity(line)
+                    .with_entity(product),
+            )
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+        ctx.insert_resource(SqliteDialect);
+        ctx.insert_resource(executor);
+
+        let repo = ctx
+            .resolve_repository::<SqliteDialect, SqliteSyncExecutor>("Order")
+            .unwrap();
+        let graph = GraphNode::new("Order")
+            .value("id", 1_u64)
+            .value("version", 1_i64)
+            .value("name", "root-updated")
+            .relation(
+                "lines",
+                GraphNode::new("OrderLine")
+                    .value("id", 10_u64)
+                    .value("version", 1_i64)
+                    .remove(),
+            )
+            .relation(
+                "lines",
+                GraphNode::new("OrderLine")
+                    .value("id", 12_u64)
+                    .value("version", 1_i64)
+                    .value("name", "new-reference-line")
+                    .relation(
+                        "product",
+                        GraphNode::new("Product").value("id", 100_u64).reference(),
+                    ),
+            );
+
+        repo.save_graph(graph).unwrap();
+
+        let removed = sqlx::query("SELECT version FROM orderline WHERE id = 10")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(removed.try_get::<i64, _>("version").unwrap(), -2);
+
+        let kept = sqlx::query("SELECT version, name FROM orderline WHERE id = 11")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(kept.try_get::<i64, _>("version").unwrap(), 1);
+        assert_eq!(kept.try_get::<String, _>("name").unwrap(), "keep-me");
+
+        let added = sqlx::query("SELECT product_id FROM orderline WHERE id = 12")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(added.try_get::<i64, _>("product_id").unwrap(), 100);
+
+        let product = sqlx::query("SELECT name FROM product WHERE id = 100")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            product.try_get::<String, _>("name").unwrap(),
+            "reference-only"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sqlite_graph_write_can_be_wrapped_in_transaction_and_rolled_back() {
+        use sqlx::{Row, sqlite::SqlitePoolOptions};
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        let mutation_executor = SqliteMutationExecutor::new(pool.clone());
+        let order = entity();
+        let line = line_entity();
+        let product = product_entity();
+        mutation_executor
+            .ensure_schema(&SqliteDialect, &[&order, &line, &product])
+            .await
+            .unwrap();
+
+        let executor = SqliteSyncExecutor::new(mutation_executor.clone());
+        let mut ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(order)
+                    .with_entity(line)
+                    .with_entity(product),
+            )
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+        ctx.insert_resource(SqliteDialect);
+        ctx.insert_resource(executor);
+
+        mutation_executor.begin_transaction().await.unwrap();
+
+        let repo = ctx
+            .resolve_repository::<SqliteDialect, SqliteSyncExecutor>("Order")
+            .unwrap();
+        repo.save_graph_create(
+            GraphNode::new("Order")
+                .value("id", 1_u64)
+                .value("version", 1_i64)
+                .value("name", "rollback-root")
+                .relation(
+                    "lines",
+                    GraphNode::new("OrderLine")
+                        .value("id", 10_u64)
+                        .value("version", 1_i64)
+                        .value("name", "rollback-line")
+                        .relation(
+                            "product",
+                            GraphNode::new("Product")
+                                .value("id", 100_u64)
+                                .value("name", "rollback-sku"),
+                        ),
+                ),
+        )
+        .unwrap();
+
+        mutation_executor.rollback_transaction().await.unwrap();
+
+        let count: i64 = sqlx::query("SELECT COUNT(*) AS count FROM orders")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .try_get("count")
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
     #[tokio::test]
     async fn postgres_executor_ensure_schema_roundtrip_when_database_is_available() {
         use sqlx::{PgPool, Row};
@@ -1814,6 +2536,119 @@ mod sqlx_integration_tests {
         .map(|row| row.try_get::<String, _>("table_name").unwrap())
         .collect::<Vec<_>>();
         assert_eq!(tables, vec!["orderline".to_owned(), "orders".to_owned()]);
+
+        let soundex: String = sqlx::query_scalar("SELECT soundex('Robert')")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(soundex, "R163");
+
+        sqlx::query(
+            "INSERT INTO orders (id, version, name) VALUES
+                (1, 1, 'draft'),
+                (2, 1, 'submitted'),
+                (3, 1, 'archived')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let array_bound_query = dialect
+            .compile_select(
+                &order,
+                &SelectQuery::new("Order")
+                    .filter(
+                        Expr::in_large(
+                            "id",
+                            vec![Value::from(1_u64), Value::from(2_u64), Value::from(3_u64)],
+                        )
+                        .and_expr(Expr::not_in_large("name", vec![Value::from("archived")])),
+                    )
+                    .order_asc("id"),
+            )
+            .unwrap();
+        assert_eq!(
+            array_bound_query.sql,
+            "SELECT * FROM \"orders\" WHERE ((\"id\" = ANY($1)) AND (\"name\" <> ALL($2))) ORDER BY \"id\" ASC"
+        );
+        let rows = executor.fetch_all(&array_bound_query).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].get("id"), Some(&Value::I64(1)));
+        assert_eq!(rows[1].get("id"), Some(&Value::I64(2)));
+
+        sqlx::query(
+            "INSERT INTO orderline (id, version, order_id, product_id, name) VALUES
+                (11, 1, 1, 101, 'line-1'),
+                (12, 1, 2, 102, 'line-2'),
+                (13, 1, 3, 103, 'archived-line')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let subquery = dialect
+            .compile_select(
+                &order,
+                &SelectQuery::new("Order")
+                    .filter(Expr::in_subquery(
+                        "id",
+                        line.clone(),
+                        SelectQuery::new("OrderLine").filter(Expr::contain("name", "line-")),
+                        "order_id",
+                    ))
+                    .order_asc("id"),
+            )
+            .unwrap();
+        assert_eq!(
+            subquery.sql,
+            "SELECT * FROM \"orders\" WHERE (\"id\" IN (SELECT \"order_id\" FROM \"orderline\" WHERE (\"name\" LIKE $1))) ORDER BY \"id\" ASC"
+        );
+        let rows = executor.fetch_all(&subquery).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].get("id"), Some(&Value::I64(1)));
+        assert_eq!(rows[1].get("id"), Some(&Value::I64(2)));
+
+        let projected = dialect
+            .compile_select(
+                &order,
+                &SelectQuery::new("Order")
+                    .project("id")
+                    .project_expr("nameSound", Expr::soundex(Expr::column("name")))
+                    .order_gbk_asc("name")
+                    .limit(1),
+            )
+            .unwrap();
+        assert_eq!(
+            projected.sql,
+            "SELECT \"id\", SOUNDEX(\"name\") AS \"nameSound\" FROM \"orders\" ORDER BY convert_to(\"name\", 'GBK') ASC LIMIT 1"
+        );
+        let rows = executor.fetch_all(&projected).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].contains_key("nameSound"));
+
+        let aggregate = dialect
+            .compile_select(
+                &order,
+                &SelectQuery::new("Order")
+                    .count("total")
+                    .stddev("version", "stddevVersion")
+                    .var_pop("version", "varPopVersion")
+                    .bit_or("version", "bitOrVersion")
+                    .having(Expr::binary(
+                        Expr::count_all(),
+                        teaql_core::BinaryOp::Gt,
+                        Expr::value(2_i64),
+                    )),
+            )
+            .unwrap();
+        assert_eq!(
+            aggregate.sql,
+            "SELECT COUNT(*) AS \"total\", CAST(STDDEV(\"version\") AS DOUBLE PRECISION) AS \"stddevVersion\", CAST(VAR_POP(\"version\") AS DOUBLE PRECISION) AS \"varPopVersion\", BIT_OR(\"version\") AS \"bitOrVersion\" FROM \"orders\" HAVING (COUNT(*) > $1)"
+        );
+        let rows = executor.fetch_all(&aggregate).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("total"), Some(&Value::I64(3)));
+        assert_eq!(rows[0].get("bitOrVersion"), Some(&Value::I64(1)));
 
         sqlx::query("DROP TABLE orderline")
             .execute(&pool)
@@ -1921,6 +2756,98 @@ mod sqlx_integration_tests {
             .await
             .unwrap();
         sqlx::query("DROP TABLE IF EXISTS orders_ctx")
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn postgres_graph_write_transaction_rolls_back_when_database_is_available() {
+        use sqlx::{PgPool, Row};
+
+        let Some(database_url) = std::env::var("TEAQL_TEST_PG_URL").ok() else {
+            return;
+        };
+
+        let pool = PgPool::connect(&database_url).await.unwrap();
+        sqlx::query("DROP TABLE IF EXISTS orderline_tx")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE IF EXISTS product_tx")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE IF EXISTS orders_tx")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let order = entity().table_name("orders_tx");
+        let line = line_entity().table_name("orderline_tx");
+        let product = product_entity().table_name("product_tx");
+        let schema_executor = PgMutationExecutor::new(pool.clone());
+        schema_executor
+            .ensure_schema(&PostgresDialect, &[&order, &line, &product])
+            .await
+            .unwrap();
+
+        let tx_executor = PgTransactionExecutor::begin(&pool).await.unwrap();
+        let sync_executor = PgTxSyncExecutor::new(tx_executor.clone());
+        let mut ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(order)
+                    .with_entity(line)
+                    .with_entity(product),
+            )
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(sync_executor);
+
+        let repo = ctx
+            .resolve_repository::<PostgresDialect, PgTxSyncExecutor>("Order")
+            .unwrap();
+        repo.save_graph_create(
+            GraphNode::new("Order")
+                .value("id", 1_u64)
+                .value("version", 1_i64)
+                .value("name", "pg-rollback-root")
+                .relation(
+                    "lines",
+                    GraphNode::new("OrderLine")
+                        .value("id", 10_u64)
+                        .value("version", 1_i64)
+                        .value("name", "pg-rollback-line")
+                        .relation(
+                            "product",
+                            GraphNode::new("Product")
+                                .value("id", 100_u64)
+                                .value("name", "pg-rollback-sku"),
+                        ),
+                ),
+        )
+        .unwrap();
+
+        tx_executor.rollback().await.unwrap();
+
+        let count: i64 = sqlx::query("SELECT COUNT(*) AS count FROM orders_tx")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .try_get("count")
+            .unwrap();
+        assert_eq!(count, 0);
+
+        sqlx::query("DROP TABLE IF EXISTS orderline_tx")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE IF EXISTS product_tx")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE IF EXISTS orders_tx")
             .execute(&pool)
             .await
             .unwrap();

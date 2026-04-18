@@ -1,5 +1,5 @@
 use teaql_core::{
-    Aggregate, AggregateFunction, BinaryOp, DataType, DeleteCommand, EntityDescriptor, Expr,
+    AggregateFunction, BinaryOp, DataType, DeleteCommand, EntityDescriptor, Expr, ExprFunction,
     InsertCommand, OrderBy, PropertyDescriptor, RecoverCommand, SelectQuery, SortDirection,
     UpdateCommand, Value,
 };
@@ -10,6 +10,10 @@ pub trait SqlDialect {
     fn kind(&self) -> DatabaseKind;
     fn quote_ident(&self, ident: &str) -> String;
     fn placeholder(&self, index: usize) -> String;
+
+    fn schema_setup_sqls(&self) -> &'static [&'static str] {
+        &[]
+    }
 
     fn schema_type_sql(
         &self,
@@ -74,29 +78,30 @@ pub trait SqlDialect {
         entity: &EntityDescriptor,
         query: &SelectQuery,
     ) -> Result<CompiledQuery, SqlCompileError> {
+        let mut params = Vec::new();
+        let sql = self.compile_select_sql(entity, query, &mut params)?;
+        Ok(CompiledQuery { sql, params })
+    }
+
+    fn compile_select_sql(
+        &self,
+        entity: &EntityDescriptor,
+        query: &SelectQuery,
+        params: &mut Vec<Value>,
+    ) -> Result<String, SqlCompileError> {
         let projection = if query.aggregates.is_empty() {
-            if query.projection.is_empty() {
-                "*".to_owned()
-            } else {
-                query
-                    .projection
-                    .iter()
-                    .map(|field| self.column_sql(entity, field))
-                    .collect::<Result<Vec<_>, _>>()?
-                    .join(", ")
-            }
+            self.select_projection(entity, query, params)?
         } else {
-            self.aggregate_projection(entity, &query.aggregates)?
+            self.aggregate_projection(entity, query, params)?
         };
 
-        let mut params = Vec::new();
         let mut sql = format!(
             "SELECT {projection} FROM {}",
             self.quote_ident(&entity.table_name)
         );
 
         if let Some(filter) = &query.filter {
-            let where_sql = self.compile_expr(entity, filter, &mut params)?;
+            let where_sql = self.compile_expr(entity, filter, params)?;
             sql.push_str(" WHERE ");
             sql.push_str(&where_sql);
         }
@@ -112,11 +117,17 @@ pub trait SqlDialect {
             sql.push_str(&group_by);
         }
 
+        if let Some(having) = &query.having {
+            let having_sql = self.compile_expr(entity, having, params)?;
+            sql.push_str(" HAVING ");
+            sql.push_str(&having_sql);
+        }
+
         if !query.order_by.is_empty() {
             let order_by = query
                 .order_by
                 .iter()
-                .map(|order| self.order_by_sql(entity, order))
+                .map(|order| self.order_by_sql(entity, order, params))
                 .collect::<Result<Vec<_>, _>>()?
                 .join(", ");
             sql.push_str(" ORDER BY ");
@@ -132,7 +143,7 @@ pub trait SqlDialect {
             }
         }
 
-        Ok(CompiledQuery { sql, params })
+        Ok(sql)
     }
 
     fn compile_insert(
@@ -367,8 +378,13 @@ pub trait SqlDialect {
         &self,
         entity: &EntityDescriptor,
         order_by: &OrderBy,
+        params: &mut Vec<Value>,
     ) -> Result<String, SqlCompileError> {
-        let field = self.column_sql(entity, &order_by.field)?;
+        let field = if let Some(expr) = &order_by.expr {
+            self.compile_expr(entity, expr, params)?
+        } else {
+            self.column_sql(entity, &order_by.field)?
+        };
         let direction = match order_by.direction {
             SortDirection::Asc => "ASC",
             SortDirection::Desc => "DESC",
@@ -376,29 +392,95 @@ pub trait SqlDialect {
         Ok(format!("{field} {direction}"))
     }
 
+    fn select_projection(
+        &self,
+        entity: &EntityDescriptor,
+        query: &SelectQuery,
+        params: &mut Vec<Value>,
+    ) -> Result<String, SqlCompileError> {
+        if query.projection.is_empty() && query.expr_projection.is_empty() {
+            return Ok("*".to_owned());
+        }
+        let mut parts = query
+            .projection
+            .iter()
+            .map(|field| self.column_sql(entity, field))
+            .collect::<Result<Vec<_>, _>>()?;
+        for projection in &query.expr_projection {
+            let expr = self.compile_expr(entity, &projection.expr, params)?;
+            parts.push(format!("{expr} AS {}", self.quote_ident(&projection.alias)));
+        }
+        Ok(parts.join(", "))
+    }
+
     fn aggregate_projection(
         &self,
         entity: &EntityDescriptor,
-        aggregates: &[Aggregate],
+        query: &SelectQuery,
+        params: &mut Vec<Value>,
     ) -> Result<String, SqlCompileError> {
-        aggregates
-            .iter()
-            .map(|aggregate| {
-                let function = match aggregate.function {
-                    AggregateFunction::Count => "COUNT",
-                    AggregateFunction::Sum => "SUM",
-                    AggregateFunction::Avg => "AVG",
-                    AggregateFunction::Min => "MIN",
-                    AggregateFunction::Max => "MAX",
-                };
-                let field = self.column_sql(entity, &aggregate.field)?;
-                Ok(format!(
-                    "{function}({field}) AS {}",
-                    self.quote_ident(&aggregate.alias)
-                ))
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .map(|parts| parts.join(", "))
+        let mut parts = Vec::new();
+        for field in query.group_by.iter().chain(query.projection.iter()) {
+            let column = self.column_sql(entity, field)?;
+            if !parts.contains(&column) {
+                parts.push(column);
+            }
+        }
+        for projection in &query.expr_projection {
+            let expr = self.compile_expr(entity, &projection.expr, params)?;
+            let aliased = format!("{expr} AS {}", self.quote_ident(&projection.alias));
+            if !parts.contains(&aliased) {
+                parts.push(aliased);
+            }
+        }
+        parts.extend(
+            query
+                .aggregates
+                .iter()
+                .map(|aggregate| {
+                    let field = if aggregate.function == AggregateFunction::Count
+                        && aggregate.field == "*"
+                    {
+                        "*".to_owned()
+                    } else {
+                        self.column_sql(entity, &aggregate.field)?
+                    };
+                    let call = self.aggregate_call_sql(aggregate.function, &field);
+                    Ok(format!("{call} AS {}", self.quote_ident(&aggregate.alias)))
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        Ok(parts.join(", "))
+    }
+
+    fn aggregate_call_sql(&self, function: AggregateFunction, field: &str) -> String {
+        let function_sql = self.aggregate_function_sql(function);
+        let call = format!("{function_sql}({field})");
+        match function {
+            AggregateFunction::Avg
+            | AggregateFunction::Stddev
+            | AggregateFunction::StddevPop
+            | AggregateFunction::VarSamp
+            | AggregateFunction::VarPop => format!("CAST({call} AS DOUBLE PRECISION)"),
+            _ => call,
+        }
+    }
+
+    fn aggregate_function_sql(&self, function: AggregateFunction) -> &'static str {
+        match function {
+            AggregateFunction::Count => "COUNT",
+            AggregateFunction::Sum => "SUM",
+            AggregateFunction::Avg => "AVG",
+            AggregateFunction::Min => "MIN",
+            AggregateFunction::Max => "MAX",
+            AggregateFunction::Stddev => "STDDEV",
+            AggregateFunction::StddevPop => "STDDEV_POP",
+            AggregateFunction::VarSamp => "VAR_SAMP",
+            AggregateFunction::VarPop => "VAR_POP",
+            AggregateFunction::BitAnd => "BIT_AND",
+            AggregateFunction::BitOr => "BIT_OR",
+            AggregateFunction::BitXor => "BIT_XOR",
+        }
     }
 
     fn compile_expr(
@@ -413,9 +495,15 @@ pub trait SqlDialect {
                 params.push(value.clone());
                 Ok(self.placeholder(params.len()))
             }
+            Expr::Function { function, args } => {
+                self.compile_function(entity, *function, args, params)
+            }
             Expr::Binary { left, op, right } => {
-                if *op == BinaryOp::In {
-                    return self.compile_in(entity, left, right, params);
+                if matches!(
+                    op,
+                    BinaryOp::In | BinaryOp::NotIn | BinaryOp::InLarge | BinaryOp::NotInLarge
+                ) {
+                    return self.compile_in(entity, left, *op, right, params);
                 }
                 let lhs = self.compile_expr(entity, left, params)?;
                 let rhs = self.compile_expr(entity, right, params)?;
@@ -427,10 +515,19 @@ pub trait SqlDialect {
                     BinaryOp::Lt => "<",
                     BinaryOp::Lte => "<=",
                     BinaryOp::Like => "LIKE",
-                    BinaryOp::In => unreachable!(),
+                    BinaryOp::NotLike => "NOT LIKE",
+                    BinaryOp::In | BinaryOp::NotIn | BinaryOp::InLarge | BinaryOp::NotInLarge => {
+                        unreachable!()
+                    }
                 };
                 Ok(format!("({lhs} {op} {rhs})"))
             }
+            Expr::SubQuery {
+                left,
+                op,
+                entity: sub_entity,
+                query,
+            } => self.compile_subquery(entity, left, *op, sub_entity, query, params),
             Expr::Between { expr, lower, upper } => {
                 let expr = self.compile_expr(entity, expr, params)?;
                 let lower = self.compile_expr(entity, lower, params)?;
@@ -454,6 +551,129 @@ pub trait SqlDialect {
         }
     }
 
+    fn compile_function(
+        &self,
+        entity: &EntityDescriptor,
+        function: ExprFunction,
+        args: &[Expr],
+        params: &mut Vec<Value>,
+    ) -> Result<String, SqlCompileError> {
+        match function {
+            ExprFunction::Soundex => {
+                let [arg] = args else {
+                    return Err(SqlCompileError::InvalidFunctionArguments(
+                        "SOUNDEX expects exactly one argument".to_owned(),
+                    ));
+                };
+                let arg = self.compile_expr(entity, arg, params)?;
+                Ok(format!("SOUNDEX({arg})"))
+            }
+            ExprFunction::Gbk => {
+                let [arg] = args else {
+                    return Err(SqlCompileError::InvalidFunctionArguments(
+                        "GBK expects exactly one argument".to_owned(),
+                    ));
+                };
+                let arg = self.compile_expr(entity, arg, params)?;
+                Ok(format!("convert_to({arg}, 'GBK')"))
+            }
+            ExprFunction::Count if args.is_empty() => Ok("COUNT(*)".to_owned()),
+            ExprFunction::Count => self.compile_single_arg_function(entity, "COUNT", args, params),
+            ExprFunction::Sum => self.compile_single_arg_function(entity, "SUM", args, params),
+            ExprFunction::Avg => self.compile_single_arg_function_cast(
+                entity,
+                "AVG",
+                args,
+                "DOUBLE PRECISION",
+                params,
+            ),
+            ExprFunction::Min => self.compile_single_arg_function(entity, "MIN", args, params),
+            ExprFunction::Max => self.compile_single_arg_function(entity, "MAX", args, params),
+            ExprFunction::Stddev => self.compile_single_arg_function_cast(
+                entity,
+                "STDDEV",
+                args,
+                "DOUBLE PRECISION",
+                params,
+            ),
+            ExprFunction::StddevPop => self.compile_single_arg_function_cast(
+                entity,
+                "STDDEV_POP",
+                args,
+                "DOUBLE PRECISION",
+                params,
+            ),
+            ExprFunction::VarSamp => self.compile_single_arg_function_cast(
+                entity,
+                "VAR_SAMP",
+                args,
+                "DOUBLE PRECISION",
+                params,
+            ),
+            ExprFunction::VarPop => self.compile_single_arg_function_cast(
+                entity,
+                "VAR_POP",
+                args,
+                "DOUBLE PRECISION",
+                params,
+            ),
+            ExprFunction::BitAnd => {
+                self.compile_single_arg_function(entity, "BIT_AND", args, params)
+            }
+            ExprFunction::BitOr => self.compile_single_arg_function(entity, "BIT_OR", args, params),
+            ExprFunction::BitXor => {
+                self.compile_single_arg_function(entity, "BIT_XOR", args, params)
+            }
+        }
+    }
+
+    fn compile_single_arg_function(
+        &self,
+        entity: &EntityDescriptor,
+        function: &str,
+        args: &[Expr],
+        params: &mut Vec<Value>,
+    ) -> Result<String, SqlCompileError> {
+        let [arg] = args else {
+            return Err(SqlCompileError::InvalidFunctionArguments(format!(
+                "{function} expects exactly one argument"
+            )));
+        };
+        let arg = self.compile_expr(entity, arg, params)?;
+        Ok(format!("{function}({arg})"))
+    }
+
+    fn compile_single_arg_function_cast(
+        &self,
+        entity: &EntityDescriptor,
+        function: &str,
+        args: &[Expr],
+        cast_type: &str,
+        params: &mut Vec<Value>,
+    ) -> Result<String, SqlCompileError> {
+        let call = self.compile_single_arg_function(entity, function, args, params)?;
+        Ok(format!("CAST({call} AS {cast_type})"))
+    }
+
+    fn compile_subquery(
+        &self,
+        entity: &EntityDescriptor,
+        left: &Expr,
+        op: BinaryOp,
+        sub_entity: &EntityDescriptor,
+        query: &SelectQuery,
+        params: &mut Vec<Value>,
+    ) -> Result<String, SqlCompileError> {
+        let lhs = self.compile_expr(entity, left, params)?;
+        let operator = match op {
+            BinaryOp::In | BinaryOp::InLarge => "IN",
+            BinaryOp::NotIn | BinaryOp::NotInLarge => "NOT IN",
+            _ => return Err(SqlCompileError::InvalidSubQueryOperator(format!("{op:?}"))),
+        };
+        let subquery = self.compile_select_sql(sub_entity, query, params)?;
+        Ok(format!("({lhs} {operator} ({subquery}))"))
+    }
+
     fn compile_joined(
         &self,
         entity: &EntityDescriptor,
@@ -472,10 +692,16 @@ pub trait SqlDialect {
         &self,
         entity: &EntityDescriptor,
         left: &Expr,
+        op: BinaryOp,
         right: &Expr,
         params: &mut Vec<Value>,
     ) -> Result<String, SqlCompileError> {
         let lhs = self.compile_expr(entity, left, params)?;
+        let operator = match op {
+            BinaryOp::In | BinaryOp::InLarge => "IN",
+            BinaryOp::NotIn | BinaryOp::NotInLarge => "NOT IN",
+            _ => unreachable!(),
+        };
         match right {
             Expr::Value(Value::List(values)) => {
                 if values.is_empty() {
@@ -486,11 +712,11 @@ pub trait SqlDialect {
                     params.push(value.clone());
                     placeholders.push(self.placeholder(params.len()));
                 }
-                Ok(format!("({lhs} IN ({}))", placeholders.join(", ")))
+                Ok(format!("({lhs} {operator} ({}))", placeholders.join(", ")))
             }
             _ => {
                 let rhs = self.compile_expr(entity, right, params)?;
-                Ok(format!("({lhs} IN ({rhs}))"))
+                Ok(format!("({lhs} {operator} ({rhs}))"))
             }
         }
     }

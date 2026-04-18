@@ -21,6 +21,8 @@ pub enum SqlCompileError {
     EmptyMutation(String),
     InvalidRecoverVersion(i64),
     UnsupportedSchemaType(DataType),
+    InvalidFunctionArguments(String),
+    InvalidSubQueryOperator(String),
 }
 
 impl std::fmt::Display for SqlCompileError {
@@ -38,6 +40,10 @@ impl std::fmt::Display for SqlCompileError {
             }
             Self::UnsupportedSchemaType(data_type) => {
                 write!(f, "unsupported schema type: {data_type:?}")
+            }
+            Self::InvalidFunctionArguments(message) => write!(f, "{message}"),
+            Self::InvalidSubQueryOperator(operator) => {
+                write!(f, "subquery does not support operator: {operator}")
             }
         }
     }

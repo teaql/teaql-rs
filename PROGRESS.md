@@ -22,7 +22,7 @@ Current progress estimates:
 | Capability | Java TeaQL | Rust `teaql-rs` current state | Status | Next Priority |
 |---|---|---|---|---|
 | Core entity metadata | Complete | `EntityDescriptor/PropertyDescriptor/RelationDescriptor` exists in `teaql-core` | Done | Low |
-| Query DSL | Complete and richer | `Expr/OrderBy/Aggregate/SelectQuery` covers basic filter/sort/page/aggregate | MVP | Medium |
+| Query DSL | Complete and richer | `Expr/OrderBy/Aggregate/SelectQuery` now has richer builders for predicates, projections, expression projections, expression/function sorting, pagination, relations, extended aggregates, `HAVING`, Java-style string match builders, PG array-bound `IN_LARGE`/`NOT_IN_LARGE`, subquery filters, and `soundlike`/`SOUNDEX` | MVP+ | Medium |
 | Repository abstraction | Complete | `Repository/ContextRepository/ResolvedRepository` implemented | Done | Low |
 | Insert/update/delete | Complete | Supported | Done | Low |
 | Optimistic lock | Complete | Supported, `version` remains `i64` | Done | Low |
@@ -35,7 +35,7 @@ Current progress estimates:
 | UserContext | Core concept | Implemented as runtime resource index and request-scope store | Done | Medium |
 | RepositoryRegistry | Present | In-memory registry implemented | MVP | Low |
 | Entity-level behavior hooks | Present | `before_select/insert/update/delete/recover` supported | MVP | Medium |
-| SQL compiler | Complete and mature | `teaql-sql` supports select/insert/update/delete/recover | MVP | Medium |
+| SQL compiler | Complete and mature | `teaql-sql` supports select/insert/update/delete/recover, grouped aggregates, `COUNT(*)`, and extended predicates | MVP+ | Medium |
 | SQLite dialect | Present | Implemented and verified with `sqlx` integration tests | Done | Low |
 | PostgreSQL dialect | Present | Implemented and validated against a real PostgreSQL instance through Docker-backed tests | MVP | Medium |
 | SQL execution layer | Complete | `sqlx` execution path exists for SQLite and PostgreSQL | MVP | Medium |
@@ -56,12 +56,18 @@ Current progress estimates:
 | Base entity model | Java has `BaseEntity` | `BaseEntityData` and `BaseEntity` cover `id/version/dynamic` | MVP | Low |
 | SmartList and typed entities | Java has `SmartList<Entity>` | `SmartList<T>`, typed fetch, and typed nested relation enhancement are implemented | MVP | Medium |
 | Id generator | Java has internal id generator | `InternalIdGenerator` plus `SnowflakeIdGenerator` integrated into repository inserts | Done | Low |
+| Multi-level create graph write | Java has `saveGraph` | `GraphNode` and `save_graph_create()` support nested create writes and relation-key maintenance | MVP | Medium |
+| Multi-level update graph diff | Java reloads and merges graph updates | `save_graph()` supports parent update, child merge, child insert, and missing-child soft delete | MVP | High |
+| Graph entity state semantics | Java has new/reference/remove/deleted status concepts | `GraphOperation::{Upsert, Reference, Remove}` covers first-pass upsert/reference/delete semantics | MVP | High |
+| Attach relation metadata | Java uses attach/reverse relation metadata | `RelationDescriptor` supports `attach/detached` and `delete_missing/keep_missing`; derive supports `attach = false` and `delete_missing = false` | MVP | Medium |
+| Graph write transaction boundary | Java runs through repository/service transaction facilities | SQLite rollback helpers and PostgreSQL connection-scoped transaction executor are verified with graph-write rollback | MVP | Medium |
 | Module/file organization | Java code is already split by concern | Rust core/runtime/macros/sql crates are now split into focused source modules | Done | Low |
 
 ## Current Strengths
 
 - Core metadata model is in place
 - Query AST and SQL compilation are usable
+- Query builders now cover common predicates, sorting, pagination, relation loads, and aggregate construction
 - CRUD, optimistic lock, soft delete, and recover are implemented
 - `UserContext` is present as a first-class runtime concept
 - Repository registry and behavior hooks are implemented
@@ -73,19 +79,28 @@ Current progress estimates:
 - SQLite `sqlx` integration is real and tested
 - PostgreSQL `sqlx` integration and `ensure_schema` are validated
 - `MemoryRepository` exists for no-database tests and simplified execution
+- Create-graph writes can persist nested rows and maintain foreign keys in SQLite
+- Graph upsert can update nested rows and soft-delete missing children in SQLite
+- Graph writes now support reference-only nodes, explicit remove nodes, and keep-missing relation metadata
+- SQLite graph writes can be wrapped in an explicit transaction and rolled back
+- PostgreSQL graph writes can be wrapped in a connection-scoped transaction and rolled back
+- SQL and memory paths both support grouped aggregates and extended predicates
 
 ## Most Important Gaps
 
-1. Broader value support beyond the current primitive/JSON/date/timestamp set
-2. More complete `MemoryRepository` parity, especially relation enhancement
-3. Runnable examples for schema bootstrap, CRUD, typed entities, and relations
-4. Higher-level service layer if Rust-side application APIs are needed
-5. More complete schema migration tooling beyond additive `ensure_schema`
+1. Richer Java-style reload/merge semantics, including explicit reference validation and more status transitions
+2. Typed entity graph extraction so callers do not need to manually build `GraphNode`
+3. Broader value support beyond the current primitive/JSON/date/timestamp set
+4. More complete `MemoryRepository` parity, especially relation enhancement
+5. Runnable examples for schema bootstrap, CRUD, typed entities, graph writes, and relations
+6. Higher-level service layer if Rust-side application APIs are needed
+7. More complete schema migration tooling beyond additive `ensure_schema`
 
 ## Suggested Next Steps
 
-1. Add a real `examples/` directory so the current architecture is easier to run and review
-2. Extend value binding and decoding for `Uuid`, decimal, and bytes
-3. Tighten type handling so `u64` and signed integer behavior is explicit end-to-end
-4. Decide whether a Rust-native service layer is needed, or whether repository-level APIs are enough
-5. Expand `MemoryRepository` toward relation enhancement and richer query parity
+1. Add typed entity graph extraction so `save_graph()` can be driven from typed entities
+2. Add a real `examples/` directory so the current architecture is easier to run and review
+3. Extend value binding and decoding for `Uuid`, decimal, and bytes
+4. Tighten type handling so `u64` and signed integer behavior is explicit end-to-end
+5. Decide whether a Rust-native service layer is needed, or whether repository-level APIs are enough
+6. Expand `MemoryRepository` toward relation enhancement and richer query parity

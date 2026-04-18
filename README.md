@@ -33,6 +33,12 @@ The current implementation focuses on the Rust-native core runtime:
 - entity and relation descriptors
 - query projection, filter, sort, group-by, limit, offset
 - aggregate projection
+- richer query builders for expressions, projections, sort, pagination, relation loads, and aggregates
+- extended predicates including `between`, `is null`, `is not null`, Java-style `contain`/`begin_with`/`end_with`, `not like`, `not in`, and `soundlike` through `SOUNDEX`
+- grouped aggregate SQL and memory execution, including `COUNT(*)`
+- PostgreSQL `IN_LARGE`/`NOT_IN_LARGE` compile to array binds with `ANY`/`ALL`
+- subquery filters can compile `field IN (SELECT ...)` / `field NOT IN (SELECT ...)`
+- expression projections, expression/function ordering, extended aggregates, and `HAVING`
 - PostgreSQL and SQLite placeholder differences
 - insert, update, delete, and recover command models
 - optimistic locking through `id + version` predicates on update/delete/recover
@@ -48,6 +54,12 @@ The current implementation focuses on the Rust-native core runtime:
 - `TeaqlEntity` derive support for declarative entity descriptors
 - typed entity mapping through `Entity` and `SmartList<T>`
 - typed nested relation enhancement through `fetch_enhanced_entities::<T>()`
+- first-pass create-graph write path through `GraphNode` and `save_graph_create()`
+- graph upsert path through `save_graph()`, including parent update, child merge, child insert, and missing-child soft delete
+- graph write state hints: `Upsert`, `Reference`, and `Remove`
+- relation metadata for graph writes: `attach/detached` and `delete_missing/keep_missing`
+- SQLite transaction boundary helpers for graph-write wrapping and rollback testing
+- PostgreSQL connection-scoped transaction executor for graph-write wrapping and rollback testing
 - declarative runtime assembly through `RuntimeModule` and `module!`
 - built-in `SnowflakeIdGenerator` and `UserContext`-driven id generation
 - `BaseEntityData` / `BaseEntity` for shared `id + version + dynamic` entity state
@@ -60,6 +72,10 @@ The current implementation focuses on the Rust-native core runtime:
 - `UserContext::ensure_postgres_schema()` as the high-level PostgreSQL schema entry point
 - JSON, date, and timestamp bind/decode support in the `sqlx` execution path
 - SQLite in-memory integration tests for CRUD and relation enhancement under `--features sqlx`
+- SQLite integration coverage for nested create-graph writes
+- SQLite integration coverage for nested graph update diff
+- SQLite integration coverage for reference-only nodes, explicit remove, keep-missing relation metadata, and transaction rollback
+- PostgreSQL integration coverage for graph-write transaction rollback when `TEAQL_TEST_PG_URL` is provided
 - PostgreSQL integration tests under `--features sqlx` when `TEAQL_TEST_PG_URL` is provided
 
 ## Typed entities and `SmartList<T>`
@@ -221,6 +237,7 @@ Current SQLite `ensure_schema` scope:
 ## Next steps
 
 1. Add runnable examples that show module assembly, schema bootstrap, CRUD, typed entities, and relation enhancement.
-2. Keep expanding value coverage beyond the current JSON/date/timestamp set, especially `Uuid`, decimal, and bytes.
-3. Decide whether a Rust-native service layer is needed above repository/runtime APIs.
-4. Expand `MemoryRepository` toward relation enhancement and richer parity with the SQL-backed path.
+2. Expand graph writes toward richer Java-style reload/merge semantics and typed graph extraction.
+3. Keep expanding value coverage beyond the current JSON/date/timestamp set, especially `Uuid`, decimal, and bytes.
+4. Decide whether a Rust-native service layer is needed above repository/runtime APIs.
+5. Expand `MemoryRepository` toward relation enhancement and richer parity with the SQL-backed path.

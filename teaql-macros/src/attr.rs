@@ -55,6 +55,8 @@ pub struct ParsedRelation {
     pub local_key: Option<String>,
     pub foreign_key: Option<String>,
     pub many: proc_macro2::TokenStream,
+    pub attach: proc_macro2::TokenStream,
+    pub delete_missing: proc_macro2::TokenStream,
 }
 
 pub fn parse_field_attrs(attrs: &[syn::Attribute]) -> ParsedFieldAttrs {
@@ -89,6 +91,16 @@ pub fn parse_field_attrs(attrs: &[syn::Attribute]) -> ParsedFieldAttrs {
                         relation.foreign_key = Some(parse_string_expr(&value.parse::<Expr>()?));
                     } else if nested.path.is_ident("many") {
                         relation.many = quote! { .many() };
+                    } else if nested.path.is_ident("attach") {
+                        let value = nested.value()?;
+                        if !parse_bool_expr(&value.parse::<Expr>()?) {
+                            relation.attach = quote! { .detached() };
+                        }
+                    } else if nested.path.is_ident("delete_missing") {
+                        let value = nested.value()?;
+                        if !parse_bool_expr(&value.parse::<Expr>()?) {
+                            relation.delete_missing = quote! { .keep_missing() };
+                        }
                     }
                     Ok(())
                 })?;
@@ -108,5 +120,15 @@ fn parse_string_expr(expr: &Expr) -> String {
             _ => panic!("expected string literal"),
         },
         _ => panic!("expected string literal"),
+    }
+}
+
+fn parse_bool_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::Lit(expr_lit) => match &expr_lit.lit {
+            Lit::Bool(value) => value.value,
+            _ => panic!("expected bool literal"),
+        },
+        _ => panic!("expected bool literal"),
     }
 }
