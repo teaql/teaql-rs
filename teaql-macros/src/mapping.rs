@@ -73,6 +73,10 @@ pub fn decode_value_tokens(
             match #value_expr {
                 ::teaql_core::Value::F64(v) => *v,
                 ::teaql_core::Value::I64(v) => *v as f64,
+                ::teaql_core::Value::Decimal(v) => {
+                    use rust_decimal::prelude::ToPrimitive;
+                    v.to_f64().ok_or_else(|| ::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: decimal out of f64 range", #field_name)))?
+                },
                 other => return Err(::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: {:?}", #field_name, other))),
             }
         },

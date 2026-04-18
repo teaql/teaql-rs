@@ -22,7 +22,7 @@ Current progress estimates:
 | Capability | Java TeaQL | Rust `teaql-rs` current state | Status | Next Priority |
 |---|---|---|---|---|
 | Core entity metadata | Complete | `EntityDescriptor/PropertyDescriptor/RelationDescriptor` exists in `teaql-core` | Done | Low |
-| Query DSL | Complete and richer | `Expr/OrderBy/Aggregate/SelectQuery` now has richer builders for predicates, projections, expression projections, expression/function sorting, pagination, relations, extended aggregates, `HAVING`, Java-style string match builders, PG array-bound `IN_LARGE`/`NOT_IN_LARGE`, subquery filters, and `soundlike`/`SOUNDEX` | MVP+ | Medium |
+| Query DSL | Complete and richer | `Expr/OrderBy/Aggregate/SelectQuery` now has richer builders for predicates, projections, expression projections, expression/function sorting, pagination, relations, extended aggregates, `HAVING`, Java-style string match builders, PG array-bound `IN_LARGE`/`NOT_IN_LARGE`, subquery filters, and `soundlike`/`SOUNDEX`; decimal aggregate results use `Value::Decimal` instead of lossy `f64` | MVP+ | Medium |
 | Repository abstraction | Complete | `Repository/ContextRepository/ResolvedRepository` implemented | Done | Low |
 | Insert/update/delete | Complete | Supported | Done | Low |
 | Optimistic lock | Complete | Supported, `version` remains `i64` | Done | Low |
@@ -35,16 +35,16 @@ Current progress estimates:
 | UserContext | Core concept | Implemented as runtime resource index and request-scope store | Done | Medium |
 | RepositoryRegistry | Present | In-memory registry implemented | MVP | Low |
 | Entity-level behavior hooks | Present | `before_select/insert/update/delete/recover` supported | MVP | Medium |
-| SQL compiler | Complete and mature | `teaql-sql` supports select/insert/update/delete/recover, grouped aggregates, `COUNT(*)`, and extended predicates | MVP+ | Medium |
+| SQL compiler | Complete and mature | `teaql-sql` supports select/insert/update/delete/recover, grouped and extended aggregates, `COUNT(*)`, expression projection/sort, `HAVING`, and extended predicates | MVP+ | Medium |
 | SQLite dialect | Present | Implemented and verified with `sqlx` integration tests | Done | Low |
 | PostgreSQL dialect | Present | Implemented and validated against a real PostgreSQL instance through Docker-backed tests | MVP | Medium |
 | SQL execution layer | Complete | `sqlx` execution path exists for SQLite and PostgreSQL | MVP | Medium |
-| Result decoding | Complete | Primitive types plus `u64`, JSON, date, and timestamp are supported | MVP | Medium |
+| Result decoding | Complete | Primitive types plus `u64`, Decimal/NUMERIC, JSON, date, and timestamp are supported | MVP | Medium |
 | `u64` id model | Java usually uses signed `Long` | Rust now uses `u64` ids while keeping `version` as `i64` | Done | Low |
 | Derive macro for entities | Java relies on reflection/metadata classes | `#[derive(TeaqlEntity)]` implemented | MVP | Medium |
 | Batch entity registration | Present via framework patterns | `register_entities!` implemented | Done | Low |
 | Declarative runtime assembly | Spring/config driven | `RuntimeModule` and `module!` implemented | MVP | Medium |
-| In-memory repository | Java has `teaql-memory` | `MemoryRepository` supports query filtering/sorting/paging/projection, basic aggregates, typed `SmartList<T>`, and mutations | MVP | Medium |
+| In-memory repository | Java has `teaql-memory` | `MemoryRepository` supports query filtering/sorting/paging/projection, extended aggregates with Decimal results, typed `SmartList<T>`, and mutations | MVP | Medium |
 | GraphQL integration | Java has `teaql-graphql` | Not implemented | Not Started | Low |
 | Spring Boot autoconfigure | Java has `teaql-autoconfigure` | Not applicable in pure Rust rewrite | Dropped | None |
 | Web/BaseService action entry | Java has `BaseService` | Not implemented | Not Started | Low |
@@ -67,7 +67,7 @@ Current progress estimates:
 
 - Core metadata model is in place
 - Query AST and SQL compilation are usable
-- Query builders now cover common predicates, sorting, pagination, relation loads, and aggregate construction
+- Query builders now cover common predicates, sorting, pagination, relation loads, aggregate construction, expression projection/sort, subqueries, and `HAVING`
 - CRUD, optimistic lock, soft delete, and recover are implemented
 - `UserContext` is present as a first-class runtime concept
 - Repository registry and behavior hooks are implemented
@@ -84,7 +84,7 @@ Current progress estimates:
 - Graph writes now support reference-only nodes, explicit remove nodes, and keep-missing relation metadata
 - SQLite graph writes can be wrapped in an explicit transaction and rolled back
 - PostgreSQL graph writes can be wrapped in a connection-scoped transaction and rolled back
-- SQL and memory paths both support grouped aggregates and extended predicates
+- SQL and memory paths both support grouped/extended aggregates, Decimal aggregate output, and extended predicates
 
 ## Most Important Gaps
 

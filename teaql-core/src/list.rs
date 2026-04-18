@@ -307,6 +307,7 @@ fn id_key(value: &Value) -> String {
         Value::I64(value) => format!("i:{value}"),
         Value::U64(value) => format!("u:{value}"),
         Value::F64(value) => format!("f:{value}"),
+        Value::Decimal(value) => format!("d:{value}"),
         Value::Text(value) => format!("t:{value}"),
         Value::Json(value) => format!("j:{value}"),
         Value::Date(value) => format!("d:{value}"),

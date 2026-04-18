@@ -354,7 +354,7 @@ mod tests {
 
         assert_eq!(
             query.sql,
-            "SELECT \"name\", SOUNDEX(\"name\") AS \"nameSound\", CAST(STDDEV(\"version\") AS DOUBLE PRECISION) AS \"stddevVersion\", CAST(STDDEV_POP(\"version\") AS DOUBLE PRECISION) AS \"stddevPopVersion\", CAST(VAR_SAMP(\"version\") AS DOUBLE PRECISION) AS \"varSampVersion\", CAST(VAR_POP(\"version\") AS DOUBLE PRECISION) AS \"varPopVersion\", BIT_AND(\"version\") AS \"bitAndVersion\", BIT_OR(\"version\") AS \"bitOrVersion\", BIT_XOR(\"version\") AS \"bitXorVersion\" FROM \"orders\" GROUP BY \"name\" HAVING (COUNT(*) > $1) ORDER BY convert_to(\"name\", 'GBK') ASC"
+            "SELECT \"name\", SOUNDEX(\"name\") AS \"nameSound\", STDDEV(\"version\") AS \"stddevVersion\", STDDEV_POP(\"version\") AS \"stddevPopVersion\", VAR_SAMP(\"version\") AS \"varSampVersion\", VAR_POP(\"version\") AS \"varPopVersion\", BIT_AND(\"version\") AS \"bitAndVersion\", BIT_OR(\"version\") AS \"bitOrVersion\", BIT_XOR(\"version\") AS \"bitXorVersion\" FROM \"orders\" GROUP BY \"name\" HAVING (COUNT(*) > $1) ORDER BY convert_to(\"name\", 'GBK') ASC"
         );
         assert_eq!(query.params, vec![Value::I64(1)]);
     }

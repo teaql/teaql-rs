@@ -36,7 +36,7 @@ mod tests {
         RuntimeModule, UserContext,
     };
     use teaql_core::{
-        Aggregate, AggregateFunction, DataType, DeleteCommand, Entity, EntityDescriptor,
+        Aggregate, AggregateFunction, DataType, Decimal, DeleteCommand, Entity, EntityDescriptor,
         EntityError, Expr, InsertCommand, OrderBy, PropertyDescriptor, Record, RecoverCommand,
         TeaqlEntity, UpdateCommand, Value,
     };
@@ -1046,10 +1046,15 @@ mod tests {
         );
         assert_eq!(rows[0].get("total"), Some(&Value::U64(2)));
         assert_eq!(
-            rows[0].get("stddevVersion"),
-            Some(&Value::F64(2_f64.sqrt()))
+            rows[0].get("stddevVersion").map(Value::to_json_value),
+            Some(serde_json::Value::String(
+                "1.4142135623730951454746218583".to_owned()
+            ))
         );
-        assert_eq!(rows[0].get("varPopVersion"), Some(&Value::F64(1.0)));
+        assert_eq!(
+            rows[0].get("varPopVersion"),
+            Some(&Value::Decimal(Decimal::ONE))
+        );
         assert_eq!(rows[0].get("bitOrVersion"), Some(&Value::I64(3)));
     }
 
@@ -2643,11 +2648,19 @@ mod sqlx_integration_tests {
             .unwrap();
         assert_eq!(
             aggregate.sql,
-            "SELECT COUNT(*) AS \"total\", CAST(STDDEV(\"version\") AS DOUBLE PRECISION) AS \"stddevVersion\", CAST(VAR_POP(\"version\") AS DOUBLE PRECISION) AS \"varPopVersion\", BIT_OR(\"version\") AS \"bitOrVersion\" FROM \"orders\" HAVING (COUNT(*) > $1)"
+            "SELECT COUNT(*) AS \"total\", STDDEV(\"version\") AS \"stddevVersion\", VAR_POP(\"version\") AS \"varPopVersion\", BIT_OR(\"version\") AS \"bitOrVersion\" FROM \"orders\" HAVING (COUNT(*) > $1)"
         );
         let rows = executor.fetch_all(&aggregate).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].get("total"), Some(&Value::I64(3)));
+        assert!(matches!(
+            rows[0].get("stddevVersion"),
+            Some(Value::Decimal(_))
+        ));
+        assert!(matches!(
+            rows[0].get("varPopVersion"),
+            Some(Value::Decimal(_))
+        ));
         assert_eq!(rows[0].get("bitOrVersion"), Some(&Value::I64(1)));
 
         sqlx::query("DROP TABLE orderline")

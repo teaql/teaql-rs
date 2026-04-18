@@ -2,6 +2,8 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
 use teaql_core::{
     AggregateFunction, BinaryOp, DeleteCommand, Entity, Expr, ExprFunction, InsertCommand, Record,
     RecoverCommand, SelectQuery, SmartList, SortDirection, UpdateCommand, Value,
@@ -455,6 +457,7 @@ fn compare_values(left: &Value, right: &Value) -> Option<Ordering> {
         (Value::I64(left), Value::U64(right)) if *left >= 0 => Some((*left as u64).cmp(right)),
         (Value::U64(left), Value::I64(right)) if *right >= 0 => Some(left.cmp(&(*right as u64))),
         (Value::F64(left), Value::F64(right)) => left.partial_cmp(right),
+        (Value::Decimal(left), Value::Decimal(right)) => Some(left.cmp(right)),
         (Value::Text(left), Value::Text(right)) => Some(left.cmp(right)),
         (Value::Date(left), Value::Date(right)) => Some(left.cmp(right)),
         (Value::Timestamp(left), Value::Timestamp(right)) => Some(left.cmp(right)),
@@ -658,16 +661,26 @@ fn aggregate_rows(
 }
 
 fn numeric_sum(rows: &[&Record], field: &str) -> Result<Value, MemoryRepositoryError> {
-    let mut float_sum = 0.0;
+    let mut decimal_sum = Decimal::ZERO;
     let mut integer_sum: i128 = 0;
-    let mut saw_float = false;
+    let mut saw_decimal = false;
     for value in rows.iter().filter_map(|row| row.get(field)) {
         match value {
-            Value::I64(value) => integer_sum += i128::from(*value),
-            Value::U64(value) => integer_sum += i128::from(*value),
+            Value::I64(value) => {
+                integer_sum += i128::from(*value);
+                decimal_sum += Decimal::from(*value);
+            }
+            Value::U64(value) => {
+                integer_sum += i128::from(*value);
+                decimal_sum += Decimal::from(*value);
+            }
             Value::F64(value) => {
-                saw_float = true;
-                float_sum += *value;
+                saw_decimal = true;
+                decimal_sum += decimal_from_f64(*value);
+            }
+            Value::Decimal(value) => {
+                saw_decimal = true;
+                decimal_sum += *value;
             }
             Value::Null => {}
             other => {
@@ -677,8 +690,8 @@ fn numeric_sum(rows: &[&Record], field: &str) -> Result<Value, MemoryRepositoryE
             }
         }
     }
-    if saw_float {
-        Ok(Value::F64(float_sum + integer_sum as f64))
+    if saw_decimal {
+        Ok(Value::Decimal(decimal_sum))
     } else if integer_sum >= 0 {
         Ok(Value::U64(integer_sum as u64))
     } else {
@@ -687,21 +700,25 @@ fn numeric_sum(rows: &[&Record], field: &str) -> Result<Value, MemoryRepositoryE
 }
 
 fn numeric_avg(rows: &[&Record], field: &str) -> Result<Value, MemoryRepositoryError> {
-    let mut sum = 0.0;
-    let mut count = 0.0;
+    let mut sum = Decimal::ZERO;
+    let mut count: u64 = 0;
     for value in rows.iter().filter_map(|row| row.get(field)) {
         match value {
             Value::I64(value) => {
-                sum += *value as f64;
-                count += 1.0;
+                sum += Decimal::from(*value);
+                count += 1;
             }
             Value::U64(value) => {
-                sum += *value as f64;
-                count += 1.0;
+                sum += Decimal::from(*value);
+                count += 1;
             }
             Value::F64(value) => {
+                sum += decimal_from_f64(*value);
+                count += 1;
+            }
+            Value::Decimal(value) => {
                 sum += *value;
-                count += 1.0;
+                count += 1;
             }
             Value::Null => {}
             other => {
@@ -711,11 +728,15 @@ fn numeric_avg(rows: &[&Record], field: &str) -> Result<Value, MemoryRepositoryE
             }
         }
     }
-    Ok(if count == 0.0 {
+    Ok(if count == 0 {
         Value::Null
     } else {
-        Value::F64(sum / count)
+        Value::Decimal(sum / Decimal::from(count))
     })
+}
+
+fn decimal_from_f64(value: f64) -> Decimal {
+    Decimal::from_f64_retain(value).unwrap_or(Decimal::ZERO)
 }
 
 fn numeric_values(rows: &[&Record], field: &str) -> Result<Vec<f64>, MemoryRepositoryError> {
@@ -726,6 +747,11 @@ fn numeric_values(rows: &[&Record], field: &str) -> Result<Vec<f64>, MemoryRepos
             Value::I64(value) => Ok(*value as f64),
             Value::U64(value) => Ok(*value as f64),
             Value::F64(value) => Ok(*value),
+            Value::Decimal(value) => value.to_f64().ok_or_else(|| {
+                MemoryRepositoryError::UnsupportedAggregate(format!(
+                    "cannot convert decimal {value} to f64 for statistical aggregate"
+                ))
+            }),
             other => Err(MemoryRepositoryError::UnsupportedAggregate(format!(
                 "numeric aggregate does not support {other:?}"
             ))),
@@ -752,7 +778,7 @@ fn numeric_variance(
         })
         .sum::<f64>();
     let denominator = if sample { count - 1 } else { count } as f64;
-    Ok(Value::F64(sum / denominator))
+    Ok(Value::Decimal(decimal_from_f64(sum / denominator)))
 }
 
 fn numeric_stddev(
@@ -761,7 +787,9 @@ fn numeric_stddev(
     sample: bool,
 ) -> Result<Value, MemoryRepositoryError> {
     Ok(match numeric_variance(rows, field, sample)? {
-        Value::F64(value) => Value::F64(value.sqrt()),
+        Value::Decimal(value) => {
+            Value::Decimal(decimal_from_f64(value.to_f64().unwrap_or(0.0).sqrt()))
+        }
         Value::Null => Value::Null,
         other => other,
     })
@@ -831,6 +859,7 @@ fn value_key(value: &Value) -> String {
         Value::I64(value) => format!("i:{value}"),
         Value::U64(value) => format!("u:{value}"),
         Value::F64(value) => format!("f:{value}"),
+        Value::Decimal(value) => format!("d:{value}"),
         Value::Text(value) => format!("t:{value}"),
         Value::Json(value) => format!("j:{value}"),
         Value::Date(value) => format!("d:{value}"),

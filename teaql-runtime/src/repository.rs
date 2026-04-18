@@ -1121,6 +1121,7 @@ fn relation_bucket_key(value: &Value) -> String {
         Value::I64(v) => format!("i:{v}"),
         Value::U64(v) => format!("u:{v}"),
         Value::F64(v) => format!("f:{v}"),
+        Value::Decimal(v) => format!("d:{v}"),
         Value::Text(v) => format!("t:{v}"),
         Value::Json(v) => format!("j:{v}"),
         Value::Date(v) => format!("d:{v}"),

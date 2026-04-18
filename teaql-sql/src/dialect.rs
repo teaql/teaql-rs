@@ -455,15 +455,7 @@ pub trait SqlDialect {
 
     fn aggregate_call_sql(&self, function: AggregateFunction, field: &str) -> String {
         let function_sql = self.aggregate_function_sql(function);
-        let call = format!("{function_sql}({field})");
-        match function {
-            AggregateFunction::Avg
-            | AggregateFunction::Stddev
-            | AggregateFunction::StddevPop
-            | AggregateFunction::VarSamp
-            | AggregateFunction::VarPop => format!("CAST({call} AS DOUBLE PRECISION)"),
-            _ => call,
-        }
+        format!("{function_sql}({field})")
     }
 
     fn aggregate_function_sql(&self, function: AggregateFunction) -> &'static str {
@@ -580,43 +572,21 @@ pub trait SqlDialect {
             ExprFunction::Count if args.is_empty() => Ok("COUNT(*)".to_owned()),
             ExprFunction::Count => self.compile_single_arg_function(entity, "COUNT", args, params),
             ExprFunction::Sum => self.compile_single_arg_function(entity, "SUM", args, params),
-            ExprFunction::Avg => self.compile_single_arg_function_cast(
-                entity,
-                "AVG",
-                args,
-                "DOUBLE PRECISION",
-                params,
-            ),
+            ExprFunction::Avg => self.compile_single_arg_function(entity, "AVG", args, params),
             ExprFunction::Min => self.compile_single_arg_function(entity, "MIN", args, params),
             ExprFunction::Max => self.compile_single_arg_function(entity, "MAX", args, params),
-            ExprFunction::Stddev => self.compile_single_arg_function_cast(
-                entity,
-                "STDDEV",
-                args,
-                "DOUBLE PRECISION",
-                params,
-            ),
-            ExprFunction::StddevPop => self.compile_single_arg_function_cast(
-                entity,
-                "STDDEV_POP",
-                args,
-                "DOUBLE PRECISION",
-                params,
-            ),
-            ExprFunction::VarSamp => self.compile_single_arg_function_cast(
-                entity,
-                "VAR_SAMP",
-                args,
-                "DOUBLE PRECISION",
-                params,
-            ),
-            ExprFunction::VarPop => self.compile_single_arg_function_cast(
-                entity,
-                "VAR_POP",
-                args,
-                "DOUBLE PRECISION",
-                params,
-            ),
+            ExprFunction::Stddev => {
+                self.compile_single_arg_function(entity, "STDDEV", args, params)
+            }
+            ExprFunction::StddevPop => {
+                self.compile_single_arg_function(entity, "STDDEV_POP", args, params)
+            }
+            ExprFunction::VarSamp => {
+                self.compile_single_arg_function(entity, "VAR_SAMP", args, params)
+            }
+            ExprFunction::VarPop => {
+                self.compile_single_arg_function(entity, "VAR_POP", args, params)
+            }
             ExprFunction::BitAnd => {
                 self.compile_single_arg_function(entity, "BIT_AND", args, params)
             }
@@ -641,18 +611,6 @@ pub trait SqlDialect {
         };
         let arg = self.compile_expr(entity, arg, params)?;
         Ok(format!("{function}({arg})"))
-    }
-
-    fn compile_single_arg_function_cast(
-        &self,
-        entity: &EntityDescriptor,
-        function: &str,
-        args: &[Expr],
-        cast_type: &str,
-        params: &mut Vec<Value>,
-    ) -> Result<String, SqlCompileError> {
-        let call = self.compile_single_arg_function(entity, function, args, params)?;
-        Ok(format!("CAST({call} AS {cast_type})"))
     }
 
     fn compile_subquery(

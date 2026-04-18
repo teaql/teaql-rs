@@ -22,7 +22,7 @@ pub use query::{
     Aggregate, AggregateFunction, NamedExpr, OrderBy, Record, RelationLoad, SelectQuery, Slice,
     SortDirection, record_to_json_value,
 };
-pub use value::{DataType, Value};
+pub use value::{DataType, Decimal, Value};
 
 #[cfg(test)]
 mod tests {

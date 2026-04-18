@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use rust_decimal::Decimal;
 use sqlx::postgres::{PgArguments, PgPool, PgRow};
 use sqlx::sqlite::{SqliteArguments, SqlitePool, SqliteRow};
 use sqlx::types::Json;
@@ -382,6 +383,9 @@ fn bind_pg(args: &mut PgArguments, value: &Value) -> Result<(), MutationExecutor
         Value::F64(v) => args
             .add(*v)
             .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
+        Value::Decimal(v) => args
+            .add(*v)
+            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
         Value::Text(v) => args
             .add(v.clone())
             .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
@@ -446,6 +450,19 @@ fn bind_pg_list(args: &mut PgArguments, values: &[Value]) -> Result<(), Mutation
                 .map(|value| match value {
                     Value::F64(value) => Ok(*value),
                     _ => Err(MutationExecutorError::UnsupportedValue("mixed f64 list")),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            args.add(values)
+                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?;
+        }
+        Value::Decimal(_) => {
+            let values = values
+                .iter()
+                .map(|value| match value {
+                    Value::Decimal(value) => Ok(*value),
+                    _ => Err(MutationExecutorError::UnsupportedValue(
+                        "mixed decimal list",
+                    )),
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             args.add(values)
@@ -517,6 +534,9 @@ fn bind_sqlite(args: &mut SqliteArguments<'_>, value: &Value) -> Result<(), Muta
         Value::F64(v) => args
             .add(*v)
             .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
+        Value::Decimal(v) => args
+            .add(v.to_string())
+            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
         Value::Text(v) => args
             .add(v.clone())
             .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
@@ -564,9 +584,11 @@ fn decode_pg_row(row: &PgRow) -> Result<Record, MutationExecutorError> {
                 row.try_get::<f32, _>(index)
                     .map_err(MutationExecutorError::Sqlx)? as f64,
             ),
-            "FLOAT8" | "NUMERIC" => {
-                Value::F64(row.try_get(index).map_err(MutationExecutorError::Sqlx)?)
-            }
+            "FLOAT8" => Value::F64(row.try_get(index).map_err(MutationExecutorError::Sqlx)?),
+            "NUMERIC" => Value::Decimal(
+                row.try_get::<Decimal, _>(index)
+                    .map_err(MutationExecutorError::Sqlx)?,
+            ),
             "JSON" | "JSONB" => {
                 let Json(value) = row.try_get(index).map_err(MutationExecutorError::Sqlx)?;
                 Value::Json(value)

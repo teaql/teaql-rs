@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, NaiveDate, Utc};
+pub use rust_decimal::Decimal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataType {
@@ -21,6 +22,7 @@ pub enum Value {
     I64(i64),
     U64(u64),
     F64(f64),
+    Decimal(Decimal),
     Text(String),
     Json(serde_json::Value),
     Date(NaiveDate),
@@ -59,6 +61,12 @@ impl From<bool> for Value {
     }
 }
 
+impl From<Decimal> for Value {
+    fn from(value: Decimal) -> Self {
+        Self::Decimal(value)
+    }
+}
+
 impl From<serde_json::Value> for Value {
     fn from(value: serde_json::Value) -> Self {
         Self::Json(value)
@@ -91,6 +99,7 @@ impl Value {
             Self::F64(value) => serde_json::Number::from_f64(*value)
                 .map(serde_json::Value::Number)
                 .unwrap_or(serde_json::Value::Null),
+            Self::Decimal(value) => serde_json::Value::String(value.to_string()),
             Self::Text(value) => serde_json::Value::String(value.clone()),
             Self::Json(value) => value.clone(),
             Self::Date(value) => serde_json::Value::String(value.to_string()),

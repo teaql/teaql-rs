@@ -36,6 +36,7 @@ The current implementation focuses on the Rust-native core runtime:
 - richer query builders for expressions, projections, sort, pagination, relation loads, and aggregates
 - extended predicates including `between`, `is null`, `is not null`, Java-style `contain`/`begin_with`/`end_with`, `not like`, `not in`, and `soundlike` through `SOUNDEX`
 - grouped aggregate SQL and memory execution, including `COUNT(*)`
+- aggregate decimal results use `Value::Decimal`/PostgreSQL `NUMERIC` instead of lossy `f64`
 - PostgreSQL `IN_LARGE`/`NOT_IN_LARGE` compile to array binds with `ANY`/`ALL`
 - subquery filters can compile `field IN (SELECT ...)` / `field NOT IN (SELECT ...)`
 - expression projections, expression/function ordering, extended aggregates, and `HAVING`

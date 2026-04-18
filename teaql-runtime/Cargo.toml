@@ -12,6 +12,7 @@ sqlx = ["dep:sqlx", "dep:tokio", "dep:teaql-dialect-sqlite", "dep:teaql-dialect-
 [dependencies]
 chrono = { workspace = true }
 serde_json = { workspace = true }
+rust_decimal = { workspace = true }
 teaql-core = { path = "../teaql-core" }
 teaql-sql = { path = "../teaql-sql" }
 teaql-dialect-pg = { path = "../teaql-dialect-pg", optional = true }
