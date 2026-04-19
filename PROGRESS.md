@@ -12,17 +12,17 @@ Status labels used here:
 
 Current progress estimates:
 
-- Core runtime/kernel: `80%-85%`
-- SQLite usable path: `85%+`
-- PostgreSQL usable path: `70%-75%`
-- Full Java feature parity: `50%-60%`
+- Core runtime/kernel: `85%-90%`
+- SQLite usable path: `85%-90%`
+- PostgreSQL usable path: `85%-90%`
+- Full Java feature parity: `60%-65%`
 
 ## Feature Matrix
 
 | Capability | Java TeaQL | Rust `teaql-rs` current state | Status | Next Priority |
 |---|---|---|---|---|
 | Core entity metadata | Complete | `EntityDescriptor/PropertyDescriptor/RelationDescriptor` exists in `teaql-core` | Done | Low |
-| Query DSL | Complete and richer | `Expr/OrderBy/Aggregate/SelectQuery` now has richer builders for predicates, projections, expression projections, expression/function sorting, pagination, relations, extended aggregates, `HAVING`, Java-style string match builders, PG array-bound `IN_LARGE`/`NOT_IN_LARGE`, subquery filters, and `soundlike`/`SOUNDEX`; decimal aggregate results use `Value::Decimal` instead of lossy `f64` | MVP+ | Medium |
+| Query DSL | Complete and richer | `Expr/OrderBy/Aggregate/SelectQuery` now covers core predicates, Java-style string match builders, `soundlike`/`SOUNDEX`, PG array-bound `IN_LARGE`/`NOT_IN_LARGE`, subquery filters, projections, expression projections, expression/function sorting, pagination, extended aggregates, and `HAVING`; decimal aggregate results use `Value::Decimal` instead of lossy `f64` | MVP+ | Medium |
 | Repository abstraction | Complete | `Repository/ContextRepository/ResolvedRepository` implemented | Done | Low |
 | Insert/update/delete | Complete | Supported | Done | Low |
 | Optimistic lock | Complete | Supported, `version` remains `i64` | Done | Low |
@@ -35,11 +35,11 @@ Current progress estimates:
 | UserContext | Core concept | Implemented as runtime resource index and request-scope store | Done | Medium |
 | RepositoryRegistry | Present | In-memory registry implemented | MVP | Low |
 | Entity-level behavior hooks | Present | `before_select/insert/update/delete/recover` supported | MVP | Medium |
-| SQL compiler | Complete and mature | `teaql-sql` supports select/insert/update/delete/recover, grouped and extended aggregates, `COUNT(*)`, expression projection/sort, `HAVING`, and extended predicates | MVP+ | Medium |
+| SQL compiler | Complete and mature | `teaql-sql` supports select/insert/update/delete/recover, grouped and extended aggregates, `COUNT(*)`, expression projection/sort, `HAVING`, subquery filters, and extended predicates | MVP+ | Medium |
 | SQLite dialect | Present | Implemented and verified with `sqlx` integration tests | Done | Low |
-| PostgreSQL dialect | Present | Implemented and validated against a real PostgreSQL instance through Docker-backed tests | MVP | Medium |
-| SQL execution layer | Complete | `sqlx` execution path exists for SQLite and PostgreSQL | MVP | Medium |
-| Result decoding | Complete | Primitive types plus `u64`, Decimal/NUMERIC, JSON, date, and timestamp are supported | MVP | Medium |
+| PostgreSQL dialect | Present | Implemented and validated against a real PostgreSQL instance through Docker-backed tests, including custom `soundex`, array-bound large IN, subqueries, extended aggregates, Decimal/NUMERIC decoding, and `teaql_id_space` id generation | MVP+ | Medium |
+| SQL execution layer | Complete | `sqlx` execution path exists for SQLite and PostgreSQL, with explicit SQLite transaction helpers and PostgreSQL transaction executor | MVP+ | Medium |
+| Result decoding | Complete | Primitive types plus `u64`, Decimal/NUMERIC, JSON, date, and timestamp are supported | MVP+ | Medium |
 | `u64` id model | Java usually uses signed `Long` | Rust now uses `u64` ids while keeping `version` as `i64` | Done | Low |
 | Derive macro for entities | Java relies on reflection/metadata classes | `#[derive(TeaqlEntity)]` implemented | MVP | Medium |
 | Batch entity registration | Present via framework patterns | `register_entities!` implemented | Done | Low |
@@ -51,14 +51,14 @@ Current progress estimates:
 | Multi-database dialect matrix | Java supports many databases | Rust intentionally focuses on PostgreSQL and SQLite | Dropped | None |
 | Reflection-style parser registration | Java-style runtime mechanism | Not carried over into Rust | Dropped | None |
 | JSON/time/date value support | More complete in Java | Binding/decoding works for JSON, `NaiveDate`, and `DateTime<Utc>` | MVP | Medium |
-| PostgreSQL integration tests | Mature path | Real `sqlx` integration tests run when `TEAQL_TEST_PG_URL` is provided | MVP | Medium |
-| Schema ensure / bootstrap | Partial capability in Java ecosystem | SQLite and PostgreSQL `ensure_schema` support create-table and add-missing-column flows | MVP | Medium |
+| PostgreSQL integration tests | Mature path | Real `sqlx` integration tests run when `TEAQL_TEST_PG_URL` is provided; query, graph transaction, id-space generation, and extended aggregate paths are Docker-validated | MVP+ | Medium |
+| Schema ensure / bootstrap | Partial capability in Java ecosystem | SQLite and PostgreSQL `ensure_schema` support create-table and add-missing-column flows; PostgreSQL also installs the custom `soundex(text)` helper and both SQLx schema paths create `teaql_id_space` | MVP+ | Medium |
 | Base entity model | Java has `BaseEntity` | `BaseEntityData` and `BaseEntity` cover `id/version/dynamic` | MVP | Low |
 | SmartList and typed entities | Java has `SmartList<Entity>` | `SmartList<T>`, typed fetch, and typed nested relation enhancement are implemented | MVP | Medium |
-| Id generator | Java has internal id generator | `InternalIdGenerator` plus `SnowflakeIdGenerator` integrated into repository inserts | Done | Low |
-| Multi-level create graph write | Java has `saveGraph` | `GraphNode` and `save_graph_create()` support nested create writes and relation-key maintenance | MVP | Medium |
-| Multi-level update graph diff | Java reloads and merges graph updates | `save_graph()` supports parent update, child merge, child insert, and missing-child soft delete | MVP | High |
-| Graph entity state semantics | Java has new/reference/remove/deleted status concepts | `GraphOperation::{Upsert, Reference, Remove}` covers first-pass upsert/reference/delete semantics | MVP | High |
+| Id generator | Java has internal id generator and SQL `teaql_id_space` fallback | `InternalIdGenerator`, `SnowflakeIdGenerator`, and SQLx-backed `PgIdSpaceGenerator`/`SqliteIdSpaceGenerator` are integrated with repository insert preparation | Done | Low |
+| Multi-level create graph write | Java has `saveGraph` | `GraphNode` and `save_graph_create()` support nested create writes and relation-key maintenance | MVP+ | Medium |
+| Multi-level update graph diff | Java reloads and merges graph updates | `save_graph()` supports parent update, child merge, child insert, missing-child soft delete, reference-only nodes, explicit remove nodes, and keep-missing relation metadata | MVP+ | High |
+| Graph entity state semantics | Java has new/reference/remove/deleted status concepts | `GraphOperation::{Upsert, Reference, Remove}` covers first-pass upsert/reference/remove semantics | MVP+ | High |
 | Attach relation metadata | Java uses attach/reverse relation metadata | `RelationDescriptor` supports `attach/detached` and `delete_missing/keep_missing`; derive supports `attach = false` and `delete_missing = false` | MVP | Medium |
 | Graph write transaction boundary | Java runs through repository/service transaction facilities | SQLite rollback helpers and PostgreSQL connection-scoped transaction executor are verified with graph-write rollback | MVP | Medium |
 | Module/file organization | Java code is already split by concern | Rust core/runtime/macros/sql crates are now split into focused source modules | Done | Low |
@@ -66,8 +66,9 @@ Current progress estimates:
 ## Current Strengths
 
 - Core metadata model is in place
-- Query AST and SQL compilation are usable
-- Query builders now cover common predicates, sorting, pagination, relation loads, aggregate construction, expression projection/sort, subqueries, and `HAVING`
+- Query AST and SQL compilation are now broad enough for most core Java-style querying
+- Query builders cover common predicates, Java-style string matching, `soundlike`, large-IN, subqueries, sorting, pagination, relation loads, aggregate construction, expression projection/sort, and `HAVING`
+- Decimal/NUMERIC aggregate output avoids lossy `f64` conversion for SQL aggregate results
 - CRUD, optimistic lock, soft delete, and recover are implemented
 - `UserContext` is present as a first-class runtime concept
 - Repository registry and behavior hooks are implemented
@@ -77,7 +78,8 @@ Current progress estimates:
 - Dynamic-property JSON flattening is available for aggregate-style output
 - Runtime module assembly exists
 - SQLite `sqlx` integration is real and tested
-- PostgreSQL `sqlx` integration and `ensure_schema` are validated
+- PostgreSQL `sqlx` integration and `ensure_schema` are validated, including custom `soundex(text)` bootstrap
+- Java-style `teaql_id_space` id generation is available for PostgreSQL and SQLite SQLx paths
 - `MemoryRepository` exists for no-database tests and simplified execution
 - Create-graph writes can persist nested rows and maintain foreign keys in SQLite
 - Graph upsert can update nested rows and soft-delete missing children in SQLite
@@ -85,22 +87,23 @@ Current progress estimates:
 - SQLite graph writes can be wrapped in an explicit transaction and rolled back
 - PostgreSQL graph writes can be wrapped in a connection-scoped transaction and rolled back
 - SQL and memory paths both support grouped/extended aggregates, Decimal aggregate output, and extended predicates
+- PostgreSQL query paths are validated for array-bound large IN, subqueries, expression projection/function ordering, extended aggregates, grouped aggregates, bit aggregates, and `HAVING`
 
 ## Most Important Gaps
 
-1. Richer Java-style reload/merge semantics, including explicit reference validation and more status transitions
-2. Typed entity graph extraction so callers do not need to manually build `GraphNode`
-3. Broader value support beyond the current primitive/JSON/date/timestamp set
-4. More complete `MemoryRepository` parity, especially relation enhancement
-5. Runnable examples for schema bootstrap, CRUD, typed entities, graph writes, and relations
+1. Typed entity graph extraction so callers do not need to manually build `GraphNode`
+2. Richer Java-style reload/merge semantics, including stricter reference validation and more status transitions
+3. More complete `MemoryRepository` parity for relation enhancement and subquery execution
+4. Runnable examples for schema bootstrap, CRUD, typed entities, graph writes, and relations
+5. Broader value support beyond the current primitive/Decimal/JSON/date/timestamp set, especially `Uuid` and bytes
 6. Higher-level service layer if Rust-side application APIs are needed
 7. More complete schema migration tooling beyond additive `ensure_schema`
 
 ## Suggested Next Steps
 
-1. Add typed entity graph extraction so `save_graph()` can be driven from typed entities
-2. Add a real `examples/` directory so the current architecture is easier to run and review
-3. Extend value binding and decoding for `Uuid`, decimal, and bytes
-4. Tighten type handling so `u64` and signed integer behavior is explicit end-to-end
-5. Decide whether a Rust-native service layer is needed, or whether repository-level APIs are enough
-6. Expand `MemoryRepository` toward relation enhancement and richer query parity
+1. Add typed entity graph extraction so `save_graph()` can be driven from typed entities instead of manually assembled `GraphNode`
+2. Add a real `examples/` directory covering schema bootstrap, CRUD, typed entity fetch, relation enhancement, graph writes, and PG query features
+3. Expand `MemoryRepository` toward relation enhancement and richer query parity, especially subqueries
+4. Extend value binding and decoding for `Uuid` and bytes
+5. Tighten type handling so `u64`, signed integer, and Decimal behavior is explicit end-to-end
+6. Decide whether a Rust-native service layer is needed, or whether repository-level APIs are enough

@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::future::Future;
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use rust_decimal::Decimal;
@@ -16,7 +17,9 @@ use teaql_dialect_sqlite::SqliteDialect;
 use teaql_sql::{CompiledQuery, SqlCompileError, SqlDialect};
 use tokio::sync::Mutex;
 
-use crate::UserContext;
+use crate::{InternalIdGenerator, RuntimeError, UserContext};
+
+pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";
 
 #[derive(Debug)]
 pub enum MutationExecutorError {
@@ -81,6 +84,7 @@ impl PgMutationExecutor {
         for sql in dialect.schema_setup_sqls() {
             sqlx::query(sql).execute(&self.pool).await?;
         }
+        self.ensure_id_space_table(DEFAULT_ID_SPACE_TABLE).await?;
 
         for entity in entities {
             if !self.table_exists(&entity.table_name).await? {
@@ -98,6 +102,18 @@ impl PgMutationExecutor {
                 sqlx::query(&sql).execute(&self.pool).await?;
             }
         }
+        Ok(())
+    }
+
+    pub async fn ensure_id_space_table(
+        &self,
+        table_name: &str,
+    ) -> Result<(), MutationExecutorError> {
+        let sql = format!(
+            "CREATE TABLE IF NOT EXISTS {} (type_name VARCHAR(100) PRIMARY KEY, current_level BIGINT NOT NULL)",
+            quote_ident(table_name)
+        );
+        sqlx::query(&sql).execute(&self.pool).await?;
         Ok(())
     }
 
@@ -240,6 +256,8 @@ impl SqliteMutationExecutor {
         dialect: &SqliteDialect,
         entities: &[&EntityDescriptor],
     ) -> Result<(), MutationExecutorError> {
+        self.ensure_id_space_table(DEFAULT_ID_SPACE_TABLE).await?;
+
         for entity in entities {
             if !self.table_exists(&entity.table_name).await? {
                 let sql = dialect.compile_create_table(entity)?;
@@ -256,6 +274,18 @@ impl SqliteMutationExecutor {
                 sqlx::query(&sql).execute(&self.pool).await?;
             }
         }
+        Ok(())
+    }
+
+    pub async fn ensure_id_space_table(
+        &self,
+        table_name: &str,
+    ) -> Result<(), MutationExecutorError> {
+        let sql = format!(
+            "CREATE TABLE IF NOT EXISTS {} (type_name VARCHAR(100) PRIMARY KEY, current_level BIGINT NOT NULL)",
+            quote_ident(table_name)
+        );
+        sqlx::query(&sql).execute(&self.pool).await?;
         Ok(())
     }
 
@@ -358,6 +388,139 @@ impl UserContext {
 
         executor.ensure_schema(dialect, &entities).await
     }
+}
+
+#[derive(Clone)]
+pub struct PgIdSpaceGenerator {
+    pool: PgPool,
+    table_name: String,
+}
+
+impl PgIdSpaceGenerator {
+    pub fn new(pool: PgPool) -> Self {
+        Self {
+            pool,
+            table_name: DEFAULT_ID_SPACE_TABLE.to_owned(),
+        }
+    }
+
+    pub fn with_table_name(mut self, table_name: impl Into<String>) -> Self {
+        self.table_name = table_name.into();
+        self
+    }
+
+    pub async fn ensure_table(&self) -> Result<(), MutationExecutorError> {
+        PgMutationExecutor::new(self.pool.clone())
+            .ensure_id_space_table(&self.table_name)
+            .await
+    }
+
+    pub async fn next_id(&self, entity: &str) -> Result<u64, MutationExecutorError> {
+        self.ensure_table().await?;
+        let sql = format!(
+            "INSERT INTO {} (type_name, current_level) VALUES ($1, 1) \
+             ON CONFLICT (type_name) DO UPDATE \
+             SET current_level = {}.current_level + 1 \
+             RETURNING current_level",
+            quote_ident(&self.table_name),
+            quote_ident(&self.table_name)
+        );
+        let id: i64 = sqlx::query_scalar(&sql)
+            .bind(entity)
+            .fetch_one(&self.pool)
+            .await?;
+        u64::try_from(id).map_err(|_| {
+            MutationExecutorError::Bind(format!("generated id {id} cannot be represented as u64"))
+        })
+    }
+}
+
+impl InternalIdGenerator for PgIdSpaceGenerator {
+    fn generate_id(&self, entity: &str) -> Result<u64, RuntimeError> {
+        let generator = self.clone();
+        let entity = entity.to_owned();
+        block_on_id_generation(async move { generator.next_id(&entity).await })
+    }
+}
+
+#[derive(Clone)]
+pub struct SqliteIdSpaceGenerator {
+    pool: SqlitePool,
+    table_name: String,
+}
+
+impl SqliteIdSpaceGenerator {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self {
+            pool,
+            table_name: DEFAULT_ID_SPACE_TABLE.to_owned(),
+        }
+    }
+
+    pub fn with_table_name(mut self, table_name: impl Into<String>) -> Self {
+        self.table_name = table_name.into();
+        self
+    }
+
+    pub async fn ensure_table(&self) -> Result<(), MutationExecutorError> {
+        SqliteMutationExecutor::new(self.pool.clone())
+            .ensure_id_space_table(&self.table_name)
+            .await
+    }
+
+    pub async fn next_id(&self, entity: &str) -> Result<u64, MutationExecutorError> {
+        self.ensure_table().await?;
+        let sql = format!(
+            "INSERT INTO {} (type_name, current_level) VALUES (?, 1) \
+             ON CONFLICT (type_name) DO UPDATE \
+             SET current_level = current_level + 1 \
+             RETURNING current_level",
+            quote_ident(&self.table_name)
+        );
+        let id: i64 = sqlx::query_scalar(&sql)
+            .bind(entity)
+            .fetch_one(&self.pool)
+            .await?;
+        u64::try_from(id).map_err(|_| {
+            MutationExecutorError::Bind(format!("generated id {id} cannot be represented as u64"))
+        })
+    }
+}
+
+impl InternalIdGenerator for SqliteIdSpaceGenerator {
+    fn generate_id(&self, entity: &str) -> Result<u64, RuntimeError> {
+        let generator = self.clone();
+        let entity = entity.to_owned();
+        block_on_id_generation(async move { generator.next_id(&entity).await })
+    }
+}
+
+fn block_on_id_generation<F>(future: F) -> Result<u64, RuntimeError>
+where
+    F: Future<Output = Result<u64, MutationExecutorError>> + Send + 'static,
+{
+    let result = if tokio::runtime::Handle::try_current().is_ok() {
+        std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?
+                .block_on(future)
+        })
+        .join()
+        .map_err(|_| RuntimeError::IdGeneration("id generation thread panicked".to_owned()))?
+    } else {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|err| RuntimeError::IdGeneration(err.to_string()))?
+            .block_on(future)
+    };
+    result.map_err(|err| RuntimeError::IdGeneration(err.to_string()))
+}
+
+fn quote_ident(ident: &str) -> String {
+    format!("\"{}\"", ident.replace('"', "\"\""))
 }
 
 fn bind_pg(args: &mut PgArguments, value: &Value) -> Result<(), MutationExecutorError> {

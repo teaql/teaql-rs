@@ -62,13 +62,13 @@ The current implementation focuses on the Rust-native core runtime:
 - SQLite transaction boundary helpers for graph-write wrapping and rollback testing
 - PostgreSQL connection-scoped transaction executor for graph-write wrapping and rollback testing
 - declarative runtime assembly through `RuntimeModule` and `module!`
-- built-in `SnowflakeIdGenerator` and `UserContext`-driven id generation
+- built-in `SnowflakeIdGenerator`, SQLx `teaql_id_space` generators for PostgreSQL/SQLite, and `UserContext`-driven id generation
 - `BaseEntityData` / `BaseEntity` for shared `id + version + dynamic` entity state
 - dynamic-property capture through `#[teaql(dynamic)]`, with JSON flattening for aggregate-style outputs
 - `MemoryRepository` for no-database tests and lightweight in-memory execution
 - optional `sqlx` support module for PostgreSQL and SQLite execution
 - SQLite `ensure_schema` support for create-table and add-missing-column flows
-- PostgreSQL `ensure_schema` support with real multi-table integration validation
+- PostgreSQL `ensure_schema` support with real multi-table integration validation, including `soundex(text)` and `teaql_id_space` bootstrap
 - `UserContext::ensure_sqlite_schema()` as the high-level SQLite schema entry point
 - `UserContext::ensure_postgres_schema()` as the high-level PostgreSQL schema entry point
 - JSON, date, and timestamp bind/decode support in the `sqlx` execution path

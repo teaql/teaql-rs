@@ -1216,7 +1216,8 @@ mod tests {
 #[cfg(all(test, feature = "sqlx"))]
 mod sqlx_integration_tests {
     use super::sqlx_support::{
-        MutationExecutorError, PgMutationExecutor, PgTransactionExecutor, SqliteMutationExecutor,
+        MutationExecutorError, PgIdSpaceGenerator, PgMutationExecutor, PgTransactionExecutor,
+        SqliteMutationExecutor,
     };
     use super::{
         GraphNode, InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry,
@@ -1224,8 +1225,8 @@ mod sqlx_integration_tests {
     };
     use chrono::{NaiveDate, TimeZone, Utc};
     use teaql_core::{
-        DataType, DeleteCommand, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, Record,
-        RecoverCommand, SelectQuery, UpdateCommand, Value,
+        DataType, Decimal, DeleteCommand, EntityDescriptor, Expr, InsertCommand,
+        PropertyDescriptor, Record, RecoverCommand, SelectQuery, UpdateCommand, Value,
     };
     use teaql_dialect_pg::PostgresDialect;
     use teaql_dialect_sqlite::SqliteDialect;
@@ -1440,6 +1441,31 @@ mod sqlx_integration_tests {
     }
 
     impl QueryExecutor for SqliteSyncExecutor {
+        type Error = MutationExecutorError;
+
+        fn fetch_all(&self, query: &teaql_sql::CompiledQuery) -> Result<Vec<Record>, Self::Error> {
+            let handle = Handle::current();
+            block_in_place(|| handle.block_on(self.inner.fetch_all(query)))
+        }
+
+        fn execute(&self, query: &teaql_sql::CompiledQuery) -> Result<u64, Self::Error> {
+            let handle = Handle::current();
+            block_in_place(|| handle.block_on(self.inner.execute(query)))
+        }
+    }
+
+    #[derive(Clone)]
+    struct PgSyncExecutor {
+        inner: PgMutationExecutor,
+    }
+
+    impl PgSyncExecutor {
+        fn new(inner: PgMutationExecutor) -> Self {
+            Self { inner }
+        }
+    }
+
+    impl QueryExecutor for PgSyncExecutor {
         type Error = MutationExecutorError;
 
         fn fetch_all(&self, query: &teaql_sql::CompiledQuery) -> Result<Vec<Record>, Self::Error> {
@@ -2697,6 +2723,199 @@ mod sqlx_integration_tests {
             .await
             .unwrap();
         sqlx::query("DROP TABLE IF EXISTS orders")
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn postgres_id_space_generator_prepares_repository_insert_when_database_is_available() {
+        use sqlx::{PgPool, Row};
+
+        let Some(database_url) = std::env::var("TEAQL_TEST_PG_URL").ok() else {
+            return;
+        };
+
+        let pool = PgPool::connect(&database_url).await.unwrap();
+        sqlx::query("DROP TABLE IF EXISTS orders_idgen")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE IF EXISTS teaql_id_space")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let order = entity().table_name("orders_idgen");
+        let executor = PgMutationExecutor::new(pool.clone());
+        executor
+            .ensure_schema(&PostgresDialect, &[&order])
+            .await
+            .unwrap();
+
+        let mut ctx = UserContext::new()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(order))
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
+            .with_internal_id_generator(PgIdSpaceGenerator::new(pool.clone()));
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(PgSyncExecutor::new(executor));
+
+        let repo = ctx
+            .resolve_repository::<PostgresDialect, PgSyncExecutor>("Order")
+            .unwrap();
+        repo.insert(
+            &repo
+                .insert_command()
+                .value("version", 1_i64)
+                .value("name", "generated-1"),
+        )
+        .unwrap();
+        repo.insert(
+            &repo
+                .insert_command()
+                .value("version", 1_i64)
+                .value("name", "generated-2"),
+        )
+        .unwrap();
+
+        let ids = sqlx::query("SELECT id FROM orders_idgen ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.try_get::<i64, _>("id").unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec![1, 2]);
+
+        let current: i64 = sqlx::query_scalar(
+            "SELECT current_level FROM teaql_id_space WHERE type_name = 'Order'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(current, 2);
+
+        sqlx::query("DROP TABLE IF EXISTS orders_idgen")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE IF EXISTS teaql_id_space")
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_executor_runs_extended_aggregates_when_database_is_available() {
+        use sqlx::PgPool;
+
+        let Some(database_url) = std::env::var("TEAQL_TEST_PG_URL").ok() else {
+            return;
+        };
+
+        let pool = PgPool::connect(&database_url).await.unwrap();
+        sqlx::query("DROP TABLE IF EXISTS orders_agg")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let order = entity().table_name("orders_agg");
+        let executor = PgMutationExecutor::new(pool.clone());
+        let dialect = PostgresDialect;
+        executor.ensure_schema(&dialect, &[&order]).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO orders_agg (id, version, name) VALUES
+                (1, 1, 'A'),
+                (2, 2, 'A'),
+                (3, 3, 'B'),
+                (4, 4, 'B')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let aggregate = dialect
+            .compile_select(
+                &order,
+                &SelectQuery::new("Order")
+                    .count("total")
+                    .count_field("version", "versionCount")
+                    .sum("version", "sumVersion")
+                    .avg("version", "avgVersion")
+                    .min("version", "minVersion")
+                    .max("version", "maxVersion")
+                    .stddev("version", "stddevVersion")
+                    .stddev_pop("version", "stddevPopVersion")
+                    .var_samp("version", "varSampVersion")
+                    .var_pop("version", "varPopVersion")
+                    .bit_and("version", "bitAndVersion")
+                    .bit_or("version", "bitOrVersion")
+                    .bit_xor("version", "bitXorVersion")
+                    .having(Expr::binary(
+                        Expr::count_all(),
+                        teaql_core::BinaryOp::Gt,
+                        Expr::value(3_i64),
+                    )),
+            )
+            .unwrap();
+        let rows = executor.fetch_all(&aggregate).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.get("total"), Some(&Value::I64(4)));
+        assert_eq!(row.get("versionCount"), Some(&Value::I64(4)));
+        assert_eq!(
+            row.get("sumVersion"),
+            Some(&Value::Decimal(Decimal::new(10, 0)))
+        );
+        assert_eq!(
+            row.get("avgVersion"),
+            Some(&Value::Decimal(Decimal::new(25, 1)))
+        );
+        assert_eq!(row.get("minVersion"), Some(&Value::I64(1)));
+        assert_eq!(row.get("maxVersion"), Some(&Value::I64(4)));
+        assert!(matches!(row.get("stddevVersion"), Some(Value::Decimal(_))));
+        assert!(matches!(
+            row.get("stddevPopVersion"),
+            Some(Value::Decimal(_))
+        ));
+        assert!(matches!(row.get("varSampVersion"), Some(Value::Decimal(_))));
+        assert!(matches!(row.get("varPopVersion"), Some(Value::Decimal(_))));
+        assert_eq!(row.get("bitAndVersion"), Some(&Value::I64(0)));
+        assert_eq!(row.get("bitOrVersion"), Some(&Value::I64(7)));
+        assert_eq!(row.get("bitXorVersion"), Some(&Value::I64(4)));
+
+        let grouped = dialect
+            .compile_select(
+                &order,
+                &SelectQuery::new("Order")
+                    .group_by("name")
+                    .count("total")
+                    .sum("version", "sumVersion")
+                    .having(Expr::binary(
+                        Expr::count_all(),
+                        teaql_core::BinaryOp::Gt,
+                        Expr::value(1_i64),
+                    ))
+                    .order_asc("name"),
+            )
+            .unwrap();
+        let rows = executor.fetch_all(&grouped).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].get("name"), Some(&Value::Text("A".to_owned())));
+        assert_eq!(rows[0].get("total"), Some(&Value::I64(2)));
+        assert_eq!(
+            rows[0].get("sumVersion"),
+            Some(&Value::Decimal(Decimal::new(3, 0)))
+        );
+        assert_eq!(rows[1].get("name"), Some(&Value::Text("B".to_owned())));
+        assert_eq!(rows[1].get("total"), Some(&Value::I64(2)));
+        assert_eq!(
+            rows[1].get("sumVersion"),
+            Some(&Value::Decimal(Decimal::new(7, 0)))
+        );
+
+        sqlx::query("DROP TABLE IF EXISTS orders_agg")
             .execute(&pool)
             .await
             .unwrap();
