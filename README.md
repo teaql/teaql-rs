@@ -57,6 +57,7 @@ The current implementation focuses on the Rust-native core runtime:
 - typed nested relation enhancement through `fetch_enhanced_entities::<T>()`
 - first-pass create-graph write path through `GraphNode` and `save_graph_create()`
 - graph upsert path through `save_graph()`, including parent update, child merge, child insert, and missing-child soft delete
+- typed entity graph extraction through `graph_node_from_entity()`, `save_entity_graph_create()`, and `save_entity_graph()`
 - graph write state hints: `Upsert`, `Reference`, and `Remove`
 - relation metadata for graph writes: `attach/detached` and `delete_missing/keep_missing`
 - SQLite transaction boundary helpers for graph-write wrapping and rollback testing

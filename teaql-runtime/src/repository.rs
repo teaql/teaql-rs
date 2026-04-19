@@ -419,7 +419,9 @@ where
             .context
             .require_entity(&command.entity)?;
         if let Some(id_property) = entity.id_property() {
-            if !command.values.contains_key(&id_property.name) {
+            let needs_id = !command.values.contains_key(&id_property.name)
+                || matches!(command.values.get(&id_property.name), Some(Value::Null));
+            if needs_id {
                 let id = self.repository.metadata.context.next_id(&command.entity)?;
                 command
                     .values
@@ -532,6 +534,19 @@ where
         self.insert_graph_node(node)
     }
 
+    pub fn save_entity_graph_create<T>(
+        &self,
+        entity: T,
+    ) -> Result<GraphNode, RepositoryError<E::Error>>
+    where
+        T: Entity,
+    {
+        let node = self
+            .graph_node_from_entity(entity)
+            .map_err(RepositoryError::Runtime)?;
+        self.save_graph_create(node)
+    }
+
     pub fn save_graph(&self, node: GraphNode) -> Result<GraphNode, RepositoryError<E::Error>> {
         if node.entity != self.entity {
             return Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
@@ -540,6 +555,30 @@ where
             ))));
         }
         self.upsert_graph_node(node)
+    }
+
+    pub fn save_entity_graph<T>(&self, entity: T) -> Result<GraphNode, RepositoryError<E::Error>>
+    where
+        T: Entity,
+    {
+        let node = self
+            .graph_node_from_entity(entity)
+            .map_err(RepositoryError::Runtime)?;
+        self.save_graph(node)
+    }
+
+    pub fn graph_node_from_entity<T>(&self, entity: T) -> Result<GraphNode, RuntimeError>
+    where
+        T: Entity,
+    {
+        let descriptor = T::entity_descriptor();
+        if descriptor.name != self.entity {
+            return Err(RuntimeError::Graph(format!(
+                "resolved repository {} cannot extract graph root {}",
+                self.entity, descriptor.name
+            )));
+        }
+        self.graph_node_from_record(&descriptor.name, entity.into_record())
     }
 
     pub fn update(&self, command: &UpdateCommand) -> Result<u64, RepositoryError<E::Error>> {
@@ -703,7 +742,12 @@ where
                 node.entity
             ))));
         };
-        let Some(id) = node.values.get(&id_property.name).cloned() else {
+        let Some(id) = node
+            .values
+            .get(&id_property.name)
+            .filter(|value| !matches!(value, Value::Null))
+            .cloned()
+        else {
             return self.insert_graph_node(node);
         };
 
@@ -845,6 +889,53 @@ where
             }
 
             node.relations.insert(name, saved_children);
+        }
+
+        Ok(node)
+    }
+
+    fn graph_node_from_record(
+        &self,
+        entity: &str,
+        record: Record,
+    ) -> Result<GraphNode, RuntimeError> {
+        let descriptor = self.repository.metadata.context.require_entity(entity)?;
+        let mut node = GraphNode::new(entity);
+
+        for (field, value) in record {
+            let Some(relation) = descriptor.relation_by_name(&field) else {
+                node.values.insert(field, value);
+                continue;
+            };
+
+            match value {
+                Value::Null => {
+                    node.relations.entry(field).or_default();
+                }
+                Value::Object(record) => {
+                    let child = self.graph_node_from_record(&relation.target_entity, record)?;
+                    node.relations.entry(field).or_default().push(child);
+                }
+                Value::List(values) => {
+                    let children = node.relations.entry(field.clone()).or_default();
+                    for value in values {
+                        let Value::Object(record) = value else {
+                            return Err(RuntimeError::Graph(format!(
+                                "relation {}.{} expects object children, got {:?}",
+                                entity, field, value
+                            )));
+                        };
+                        children
+                            .push(self.graph_node_from_record(&relation.target_entity, record)?);
+                    }
+                }
+                other => {
+                    return Err(RuntimeError::Graph(format!(
+                        "relation {}.{} expects object/list/null, got {:?}",
+                        entity, field, other
+                    )));
+                }
+            }
         }
 
         Ok(node)

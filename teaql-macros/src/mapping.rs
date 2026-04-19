@@ -245,6 +245,41 @@ pub fn identifiable_value_tokens(
     value_expr: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     let type_name = base_type_name(ty);
+    if is_option(ty) {
+        return match type_name.as_deref() {
+            Some("u64") | Some("u32") | Some("u16") => {
+                quote! {
+                    match #value_expr {
+                        Some(value) => ::teaql_core::Value::U64((*value).into()),
+                        None => ::teaql_core::Value::Null,
+                    }
+                }
+            }
+            Some("i64") | Some("i32") | Some("i16") => {
+                quote! {
+                    match #value_expr {
+                        Some(value) => ::teaql_core::Value::I64((*value).into()),
+                        None => ::teaql_core::Value::Null,
+                    }
+                }
+            }
+            Some("String") => {
+                quote! {
+                    match #value_expr {
+                        Some(value) => ::teaql_core::Value::Text(value.clone()),
+                        None => ::teaql_core::Value::Null,
+                    }
+                }
+            }
+            _ => quote! {
+                match #value_expr {
+                    Some(value) => value.clone().into(),
+                    None => ::teaql_core::Value::Null,
+                }
+            },
+        };
+    }
+
     match type_name.as_deref() {
         Some("u64") | Some("u32") | Some("u16") => {
             quote! { ::teaql_core::Value::U64((*#value_expr).into()) }

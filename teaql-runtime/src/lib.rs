@@ -182,6 +182,40 @@ mod tests {
         name: String,
     }
 
+    #[derive(Debug, PartialEq, DeriveTeaqlEntity)]
+    #[teaql(entity = "Product", table = "product")]
+    struct TypedGraphProduct {
+        #[teaql(id)]
+        id: Option<u64>,
+        name: String,
+    }
+
+    #[derive(Debug, PartialEq, DeriveTeaqlEntity)]
+    #[teaql(entity = "OrderLine", table = "orderline")]
+    struct TypedGraphLine {
+        #[teaql(id)]
+        id: Option<u64>,
+        #[teaql(column = "order_id")]
+        order_id: Option<u64>,
+        name: String,
+        #[teaql(column = "product_id")]
+        product_id: Option<u64>,
+        #[teaql(relation(target = "Product", local_key = "product_id", foreign_key = "id"))]
+        product: Option<TypedGraphProduct>,
+    }
+
+    #[derive(Debug, PartialEq, DeriveTeaqlEntity)]
+    #[teaql(entity = "Order", table = "orders")]
+    struct TypedGraphOrder {
+        #[teaql(id)]
+        id: Option<u64>,
+        #[teaql(version)]
+        version: i64,
+        name: String,
+        #[teaql(relation(target = "OrderLine", local_key = "id", foreign_key = "order_id", many))]
+        lines: teaql_core::SmartList<TypedGraphLine>,
+    }
+
     #[derive(Debug, PartialEq, Eq)]
     struct OrderEntity {
         id: u64,
@@ -598,6 +632,120 @@ mod tests {
         assert_eq!(lines[0].values.get("product_id"), Some(&Value::U64(501)));
         let product = lines[0].relations.get("product").unwrap();
         assert_eq!(product[0].values.get("id"), Some(&Value::U64(501)));
+    }
+
+    #[test]
+    fn resolved_repository_extracts_and_saves_typed_entity_graph() {
+        let mut ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(entity())
+                    .with_entity(line_entity())
+                    .with_entity(product_entity()),
+            )
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
+            .with_internal_id_generator(SequentialIdGenerator::new(700));
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(StubExecutor {
+            affected: 1,
+            rows: Vec::new(),
+        });
+
+        let repo = ctx
+            .resolve_repository::<PostgresDialect, StubExecutor>("Order")
+            .unwrap();
+        let order = TypedGraphOrder {
+            id: None,
+            version: 1,
+            name: "typed-root".to_owned(),
+            lines: teaql_core::SmartList::from(vec![TypedGraphLine {
+                id: None,
+                order_id: None,
+                name: "typed-line".to_owned(),
+                product_id: None,
+                product: Some(TypedGraphProduct {
+                    id: None,
+                    name: "typed-product".to_owned(),
+                }),
+            }]),
+        };
+
+        let extracted = repo.graph_node_from_entity(order).unwrap();
+        assert_eq!(extracted.entity, "Order");
+        assert_eq!(
+            extracted.values.get("name"),
+            Some(&Value::Text("typed-root".to_owned()))
+        );
+        assert_eq!(extracted.values.get("id"), Some(&Value::Null));
+        assert_eq!(extracted.relations["lines"].len(), 1);
+        assert_eq!(
+            extracted.relations["lines"][0].values.get("name"),
+            Some(&Value::Text("typed-line".to_owned()))
+        );
+        assert_eq!(
+            extracted.relations["lines"][0].relations["product"].len(),
+            1
+        );
+
+        let saved = repo.save_graph_create(extracted).unwrap();
+        assert_eq!(saved.values.get("id"), Some(&Value::U64(700)));
+        let lines = saved.relations.get("lines").unwrap();
+        assert_eq!(lines[0].values.get("id"), Some(&Value::U64(702)));
+        assert_eq!(lines[0].values.get("order_id"), Some(&Value::U64(700)));
+        assert_eq!(lines[0].values.get("product_id"), Some(&Value::U64(701)));
+        assert_eq!(
+            lines[0].relations["product"][0].values.get("id"),
+            Some(&Value::U64(701))
+        );
+    }
+
+    #[test]
+    fn resolved_repository_saves_typed_entity_graph_directly() {
+        let mut ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(entity())
+                    .with_entity(line_entity())
+                    .with_entity(product_entity()),
+            )
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
+            .with_internal_id_generator(SequentialIdGenerator::new(800));
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(StubExecutor {
+            affected: 1,
+            rows: Vec::new(),
+        });
+
+        let repo = ctx
+            .resolve_repository::<PostgresDialect, StubExecutor>("Order")
+            .unwrap();
+        let saved = repo
+            .save_entity_graph_create(TypedGraphOrder {
+                id: None,
+                version: 1,
+                name: "typed-direct".to_owned(),
+                lines: teaql_core::SmartList::from(vec![TypedGraphLine {
+                    id: None,
+                    order_id: None,
+                    name: "typed-line".to_owned(),
+                    product_id: None,
+                    product: Some(TypedGraphProduct {
+                        id: None,
+                        name: "typed-product".to_owned(),
+                    }),
+                }]),
+            })
+            .unwrap();
+
+        assert_eq!(saved.values.get("id"), Some(&Value::U64(800)));
+        assert_eq!(
+            saved.relations["lines"][0].values.get("order_id"),
+            Some(&Value::U64(800))
+        );
+        assert_eq!(
+            saved.relations["lines"][0].values.get("product_id"),
+            Some(&Value::U64(801))
+        );
     }
 
     #[test]
@@ -2210,6 +2358,89 @@ mod sqlx_integration_tests {
         assert_eq!(line.try_get::<i64, _>("order_id").unwrap(), 1);
         assert_eq!(line.try_get::<i64, _>("product_id").unwrap(), 100);
         assert_eq!(product_count, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sqlite_save_typed_entity_graph_create_inserts_nested_rows() {
+        use sqlx::{Row, sqlite::SqlitePoolOptions};
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        let mutation_executor = SqliteMutationExecutor::new(pool.clone());
+        let order = entity();
+        let line = line_entity();
+        let product = product_entity();
+        mutation_executor
+            .ensure_schema(&SqliteDialect, &[&order, &line, &product])
+            .await
+            .unwrap();
+
+        let executor = SqliteSyncExecutor::new(mutation_executor);
+        let mut ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(order)
+                    .with_entity(line)
+                    .with_entity(product),
+            )
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+        ctx.insert_resource(SqliteDialect);
+        ctx.insert_resource(executor);
+
+        let repo = ctx
+            .resolve_repository::<SqliteDialect, SqliteSyncExecutor>("Order")
+            .unwrap();
+        let saved = repo
+            .save_entity_graph_create(OrderAggregateRow {
+                id: 2,
+                version: 1,
+                name: "typed-root".to_owned(),
+                lines: teaql_core::SmartList::from(vec![OrderLineEntityRow {
+                    id: 20,
+                    order_id: 0,
+                    name: "typed-line".to_owned(),
+                    product_id: 200,
+                    product: Some(ProductEntityRow {
+                        id: 200,
+                        name: "typed-sku".to_owned(),
+                    }),
+                }]),
+            })
+            .unwrap();
+
+        assert_eq!(saved.values.get("id"), Some(&Value::U64(2)));
+        assert_eq!(
+            saved.relations["lines"][0].values.get("order_id"),
+            Some(&Value::U64(2))
+        );
+        assert_eq!(
+            saved.relations["lines"][0].values.get("product_id"),
+            Some(&Value::U64(200))
+        );
+
+        let order_count: i64 = sqlx::query("SELECT COUNT(*) AS count FROM orders")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .try_get("count")
+            .unwrap();
+        let line = sqlx::query("SELECT order_id, product_id FROM orderline WHERE id = 20")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let product_name: String = sqlx::query_scalar("SELECT name FROM product WHERE id = 200")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(order_count, 1);
+        assert_eq!(line.try_get::<i64, _>("order_id").unwrap(), 2);
+        assert_eq!(line.try_get::<i64, _>("product_id").unwrap(), 200);
+        assert_eq!(product_name, "typed-sku");
     }
 
     #[tokio::test(flavor = "multi_thread")]
