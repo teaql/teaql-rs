@@ -12,7 +12,8 @@ pub use context::UserContext;
 pub use error::{ContextError, RepositoryError, RuntimeError};
 pub use event::{EntityEvent, EntityEventKind, EntityEventSink, InMemoryEntityEventSink};
 pub use graph::{
-    GraphMutationKind, GraphMutationPlan, GraphMutationPlanItem, GraphNode, GraphOperation,
+    GraphMutationBatch, GraphMutationKind, GraphMutationPlan, GraphMutationPlanItem, GraphNode,
+    GraphOperation, sorted_update_fields,
 };
 pub(crate) use id::local_id_generator;
 pub use id::{InternalIdGenerator, SnowflakeIdGenerator};
@@ -680,11 +681,11 @@ mod tests {
         assert_eq!(saved.values.get("version"), Some(&Value::I64(1)));
         let lines = saved.relations.get("lines").unwrap();
         assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0].values.get("id"), Some(&Value::U64(502)));
+        assert_eq!(lines[0].values.get("id"), Some(&Value::U64(501)));
         assert_eq!(lines[0].values.get("order_id"), Some(&Value::U64(500)));
-        assert_eq!(lines[0].values.get("product_id"), Some(&Value::U64(501)));
+        assert_eq!(lines[0].values.get("product_id"), Some(&Value::U64(502)));
         let product = lines[0].relations.get("product").unwrap();
-        assert_eq!(product[0].values.get("id"), Some(&Value::U64(501)));
+        assert_eq!(product[0].values.get("id"), Some(&Value::U64(502)));
     }
 
     #[test]
@@ -743,12 +744,12 @@ mod tests {
         let saved = repo.save_graph(extracted).unwrap();
         assert_eq!(saved.values.get("id"), Some(&Value::U64(700)));
         let lines = saved.relations.get("lines").unwrap();
-        assert_eq!(lines[0].values.get("id"), Some(&Value::U64(702)));
+        assert_eq!(lines[0].values.get("id"), Some(&Value::U64(701)));
         assert_eq!(lines[0].values.get("order_id"), Some(&Value::U64(700)));
-        assert_eq!(lines[0].values.get("product_id"), Some(&Value::U64(701)));
+        assert_eq!(lines[0].values.get("product_id"), Some(&Value::U64(702)));
         assert_eq!(
             lines[0].relations["product"][0].values.get("id"),
-            Some(&Value::U64(701))
+            Some(&Value::U64(702))
         );
     }
 
@@ -797,7 +798,7 @@ mod tests {
         );
         assert_eq!(
             saved.relations["lines"][0].values.get("product_id"),
-            Some(&Value::U64(801))
+            Some(&Value::U64(802))
         );
     }
 
@@ -1025,7 +1026,7 @@ mod tests {
         assert_eq!(events.len(), 3);
         assert_eq!(events[0].kind, EntityEventKind::Updated);
         assert_eq!(events[0].entity, "Order");
-        assert_eq!(events[1].kind, EntityEventKind::Created);
+        assert_eq!(events[1].kind, EntityEventKind::Updated);
         assert_eq!(events[1].entity, "OrderLine");
         assert_eq!(events[1].values.get("order_id"), Some(&Value::U64(1)));
         assert_eq!(events[2].kind, EntityEventKind::Deleted);
@@ -1041,7 +1042,8 @@ mod tests {
                     .with_entity(line_entity())
                     .with_entity(product_entity()),
             )
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
+            .with_internal_id_generator(SequentialIdGenerator::new(500));
         ctx.insert_resource(PostgresDialect);
         ctx.insert_resource(StubExecutor {
             affected: 1,
@@ -1052,20 +1054,37 @@ mod tests {
             ])],
         });
 
-        let repo = ctx
-            .resolve_repository::<PostgresDialect, StubExecutor>("Order")
-            .unwrap();
-        let plan = repo
-            .plan_graph(
-                &GraphNode::new("Order")
+        let plan = ctx
+            .plan_for_save_graph::<PostgresDialect, StubExecutor>(
+                GraphNode::new("Order")
                     .value("id", 1_u64)
                     .value("version", 1_i64)
                     .value("name", "updated")
                     .relation(
                         "lines",
                         GraphNode::new("OrderLine")
-                            .value("name", "new-line")
+                            .value("name", "new-line-a")
                             .value("product_id", 2_u64),
+                    )
+                    .relation(
+                        "lines",
+                        GraphNode::new("OrderLine")
+                            .value("name", "new-line-b")
+                            .value("product_id", 2_u64),
+                    )
+                    .relation(
+                        "lines",
+                        GraphNode::new("OrderLine")
+                            .value("id", 5_u64)
+                            .value("version", 1_i64)
+                            .value("name", "same-update-a"),
+                    )
+                    .relation(
+                        "lines",
+                        GraphNode::new("OrderLine")
+                            .value("id", 6_u64)
+                            .value("version", 1_i64)
+                            .value("name", "same-update-b"),
                     )
                     .relation(
                         "lines",
@@ -1085,7 +1104,11 @@ mod tests {
         );
         assert_eq!(
             counts.get(&("OrderLine".to_owned(), GraphMutationKind::Create)),
-            Some(&1)
+            Some(&2)
+        );
+        assert_eq!(
+            counts.get(&("OrderLine".to_owned(), GraphMutationKind::Update)),
+            Some(&2)
         );
         assert_eq!(
             counts.get(&("OrderLine".to_owned(), GraphMutationKind::Delete)),
@@ -1095,6 +1118,30 @@ mod tests {
             counts.get(&("OrderLine".to_owned(), GraphMutationKind::Reference)),
             Some(&1)
         );
+        let create_batch = plan
+            .batches
+            .iter()
+            .find(|batch| batch.entity == "OrderLine" && batch.kind == GraphMutationKind::Create)
+            .unwrap();
+        assert_eq!(create_batch.items.len(), 2);
+        assert_eq!(
+            create_batch.items[0].values.get("id"),
+            Some(&Value::U64(500))
+        );
+        assert_eq!(
+            create_batch.items[1].values.get("id"),
+            Some(&Value::U64(501))
+        );
+        let update_batch = plan
+            .batches
+            .iter()
+            .find(|batch| {
+                batch.entity == "OrderLine"
+                    && batch.kind == GraphMutationKind::Update
+                    && batch.update_fields == vec!["name".to_owned()]
+            })
+            .unwrap();
+        assert_eq!(update_batch.items.len(), 2);
     }
 
     #[test]
@@ -1682,10 +1729,10 @@ mod tests {
 mod sqlx_integration_tests {
     use super::sqlx_support::{
         MutationExecutorError, PgIdSpaceGenerator, PgMutationExecutor, PgTransactionExecutor,
-        SqliteMutationExecutor,
+        SqliteIdSpaceGenerator, SqliteMutationExecutor,
     };
     use super::{
-        GraphNode, GraphTransactionBoundary, InMemoryMetadataStore,
+        GraphMutationKind, GraphNode, GraphTransactionBoundary, InMemoryMetadataStore,
         InMemoryRepositoryBehaviorRegistry, InMemoryRepositoryRegistry, QueryExecutor,
         RepositoryBehavior, UserContext,
     };
@@ -2634,7 +2681,7 @@ mod sqlx_integration_tests {
 
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
-            .connect("sqlite::memory:")
+            .connect("sqlite::memory:?cache=shared")
             .await
             .unwrap();
 
@@ -2793,6 +2840,157 @@ mod sqlx_integration_tests {
         assert_eq!(line.try_get::<i64, _>("order_id").unwrap(), 2);
         assert_eq!(line.try_get::<i64, _>("product_id").unwrap(), 200);
         assert_eq!(product_name, "typed-sku");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sqlite_plan_for_save_graph_assigns_ids_and_batches_before_execution() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let db_path = std::env::temp_dir().join(format!(
+            "teaql-plan-{}-{}.db",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let db_url = format!("sqlite://{}?mode=rwc", db_path.display());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&db_url)
+            .await
+            .unwrap();
+
+        let mutation_executor = SqliteMutationExecutor::new(pool.clone());
+        let order = entity();
+        let line = line_entity();
+        let product = product_entity();
+        mutation_executor
+            .ensure_schema(&SqliteDialect, &[&order, &line, &product])
+            .await
+            .unwrap();
+
+        sqlx::query("INSERT INTO orders (id, version, name) VALUES (100, 1, 'existing')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO orderline (id, version, order_id, product_id, name) VALUES
+                (200, 1, 100, 301, 'line-a'),
+                (201, 1, 100, 302, 'line-b')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let seeded_lines: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM orderline")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(seeded_lines, 2);
+
+        let executor = SqliteSyncExecutor::new(mutation_executor);
+        let mut ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(order)
+                    .with_entity(line)
+                    .with_entity(product),
+            )
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
+            .with_internal_id_generator(SqliteIdSpaceGenerator::new(pool.clone()));
+        ctx.insert_resource(SqliteDialect);
+        ctx.insert_resource(executor);
+
+        let graph = GraphNode::new("Order")
+            .value("id", 100_u64)
+            .value("version", 1_i64)
+            .value("name", "existing-updated")
+            .relation(
+                "lines",
+                GraphNode::new("OrderLine")
+                    .value("name", "new-line-a")
+                    .value("product_id", 401_u64),
+            )
+            .relation(
+                "lines",
+                GraphNode::new("OrderLine")
+                    .value("name", "new-line-b")
+                    .value("product_id", 402_u64),
+            )
+            .relation(
+                "lines",
+                GraphNode::new("OrderLine")
+                    .value("id", 200_u64)
+                    .value("version", 1_i64)
+                    .value("name", "line-a-updated"),
+            )
+            .relation(
+                "lines",
+                GraphNode::new("OrderLine")
+                    .value("id", 201_u64)
+                    .value("version", 1_i64)
+                    .value("name", "line-b-updated"),
+            );
+
+        let plan = ctx
+            .plan_for_save_graph::<SqliteDialect, SqliteSyncExecutor>(graph)
+            .unwrap();
+        let counts = plan.grouped_counts();
+        assert_eq!(
+            counts.get(&("Order".to_owned(), GraphMutationKind::Update)),
+            Some(&1)
+        );
+        assert_eq!(
+            counts.get(&("OrderLine".to_owned(), GraphMutationKind::Create)),
+            Some(&2)
+        );
+        assert_eq!(
+            counts.get(&("OrderLine".to_owned(), GraphMutationKind::Update)),
+            Some(&2)
+        );
+
+        let create_batch = plan
+            .batches
+            .iter()
+            .find(|batch| batch.entity == "OrderLine" && batch.kind == GraphMutationKind::Create)
+            .unwrap();
+        assert_eq!(create_batch.items.len(), 2);
+        assert_eq!(create_batch.items[0].values.get("id"), Some(&Value::U64(1)));
+        assert_eq!(create_batch.items[1].values.get("id"), Some(&Value::U64(2)));
+
+        let update_batch = plan
+            .batches
+            .iter()
+            .find(|batch| {
+                batch.entity == "OrderLine"
+                    && batch.kind == GraphMutationKind::Update
+                    && batch.update_fields == vec!["name".to_owned()]
+            })
+            .unwrap();
+        assert_eq!(update_batch.items.len(), 2);
+
+        let repo = ctx
+            .resolve_repository::<SqliteDialect, SqliteSyncExecutor>("Order")
+            .unwrap();
+        let saved = repo.execute_graph_plan(plan).unwrap();
+        let lines = saved.relations.get("lines").unwrap();
+        assert_eq!(lines.len(), 4);
+
+        let generated_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM orderline WHERE id IN (1, 2) AND order_id = 100",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(generated_count, 2);
+        let updated_name: String = sqlx::query_scalar("SELECT name FROM orderline WHERE id = 200")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(updated_name, "line-a-updated");
+        pool.close().await;
+        let _ = std::fs::remove_file(db_path);
     }
 
     #[tokio::test(flavor = "multi_thread")]

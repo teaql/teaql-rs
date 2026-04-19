@@ -63,6 +63,8 @@ The current implementation focuses on the Rust-native core runtime:
 - unified graph write path through `GraphNode` and `save_graph()`, covering create and upsert requests
 - graph upsert path through `save_graph()`, including parent update, child merge, child insert, and missing-child soft delete
 - graph writes build a `GraphMutationPlan` classified by entity type and operation before execution
+- graph planning is available through `UserContext::plan_for_save_graph()` for debugging
+- graph planning assigns missing create ids before batching; creates/deletes merge by entity type, updates merge only when the updated field set is identical
 - `save_graph()` requires a transactional executor and rolls back the graph write when any planned operation fails
 - typed entity graph extraction through `graph_node_from_entity()` and `save_entity_graph()`
 - graph write state hints: `Upsert`, `Reference`, and `Remove`

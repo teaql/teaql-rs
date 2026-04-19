@@ -60,7 +60,7 @@ Current progress estimates:
 | Id generator | Java has internal id generator and SQL `teaql_id_space` fallback | `InternalIdGenerator`, `SnowflakeIdGenerator`, and SQLx-backed `PgIdSpaceGenerator`/`SqliteIdSpaceGenerator` are integrated with repository insert preparation | Done | Low |
 | Multi-level create graph write | Java has `saveGraph` | `save_graph()` and `save_entity_graph()` support nested create writes and relation-key maintenance | MVP+ | Medium |
 | Multi-level update graph diff | Java reloads and merges graph updates | The same `save_graph()` and `save_entity_graph()` APIs support parent update, child merge, child insert, missing-child soft delete, reference-only nodes, explicit remove nodes, keep-missing relation metadata, duplicate child-id rejection, and reference reload validation | MVP+ | High |
-| Graph mutation planning | Java classifies mixed entity states before persistence | `GraphMutationPlan` classifies mixed graph requests by entity type and operation (`Create/Update/Delete/Reference`) before execution | MVP | Medium |
+| Graph mutation planning | Java classifies mixed entity states before persistence | `GraphMutationPlan` classifies mixed graph requests by entity type and operation (`Create/Update/Delete/Reference`) before execution; `UserContext::plan_for_save_graph()` exposes the plan for debugging; missing create ids are assigned before batching, creates/deletes merge by entity type, and updates merge only when updated fields match exactly | MVP | Medium |
 | Graph entity state semantics | Java has new/reference/remove/deleted status concepts | `GraphOperation::{Upsert, Reference, Remove}` covers first-pass upsert/reference/remove semantics; reference/remove now validate existence, deleted state, child-relation conflicts, and reference version conflicts | MVP+ | High |
 | Attach relation metadata | Java uses attach/reverse relation metadata | `RelationDescriptor` supports `attach/detached` and `delete_missing/keep_missing`; derive supports `attach = false` and `delete_missing = false` | MVP | Medium |
 | Graph write transaction boundary | Java runs through repository/service transaction facilities | `save_graph()` now requires a transactional executor; SQLite auto transaction rollback and PostgreSQL connection-scoped transaction rollback are verified | MVP+ | Medium |
@@ -93,6 +93,7 @@ Current progress estimates:
 - Graph upsert can update nested rows and soft-delete missing children in SQLite
 - Graph writes now support validated reference-only nodes, explicit remove nodes, keep-missing relation metadata, duplicate child-id rejection, and stricter state-transition conflicts
 - Graph writes are classified into mutation plans by entity and operation before execution
+- `UserContext::plan_for_save_graph()` exposes graph plans for debugging, including generated create ids and merge batches
 - SQLite graph writes are automatically wrapped in a transaction and rolled back on failure
 - PostgreSQL graph writes can be wrapped in a connection-scoped transaction and rolled back
 - SQL and memory paths both support grouped/extended aggregates, Decimal aggregate output, and extended predicates

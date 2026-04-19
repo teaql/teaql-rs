@@ -11,7 +11,7 @@ use teaql_sql::{CompiledQuery, SqlDialect};
 use crate::{
     CheckObjectStatus, ContextError, EntityEvent, GraphMutationKind, GraphMutationPlan, GraphNode,
     GraphOperation, MetadataStore, RepositoryBehavior, RepositoryError, RuntimeError, UserContext,
-    clear_record_status, mark_record_status,
+    clear_record_status, mark_record_status, sorted_update_fields,
 };
 
 pub trait QueryExecutor {
@@ -333,6 +333,20 @@ impl UserContext {
             repository: self.repository::<D, E>()?,
         })
     }
+
+    pub fn plan_for_save_graph<D, E>(
+        &self,
+        node: GraphNode,
+    ) -> Result<GraphMutationPlan, RepositoryError<E::Error>>
+    where
+        D: SqlDialect + Send + Sync + 'static,
+        E: QueryExecutor + Send + Sync + 'static,
+    {
+        let repository = self
+            .resolve_repository::<D, E>(node.entity.clone())
+            .map_err(|err| RepositoryError::Runtime(RuntimeError::Graph(err.to_string())))?;
+        repository.plan_graph(node)
+    }
 }
 
 impl<'a, D, E> ContextRepository<'a, D, E>
@@ -585,8 +599,9 @@ where
                 "save_graph requires a transactional executor".to_owned(),
             )));
         }
-        let _plan = self.plan_graph(&node)?;
-        let result = self.upsert_graph_node(node);
+        let result = self
+            .plan_graph(node)
+            .and_then(|plan| self.execute_graph_plan(plan));
         match result {
             Ok(saved) => {
                 if matches!(boundary, GraphTransactionBoundary::Started) {
@@ -621,7 +636,7 @@ where
 
     pub fn plan_graph(
         &self,
-        node: &GraphNode,
+        node: GraphNode,
     ) -> Result<GraphMutationPlan, RepositoryError<E::Error>> {
         if node.entity != self.entity {
             return Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
@@ -629,9 +644,24 @@ where
                 self.entity, node.entity
             ))));
         }
+        let mut node = node;
         let mut plan = GraphMutationPlan::default();
-        self.collect_graph_plan(node, &mut plan)?;
+        self.collect_graph_plan(&mut node, &mut plan)?;
+        plan.planned_root = Some(node);
+        plan.rebuild_batches();
         Ok(plan)
+    }
+
+    pub fn execute_graph_plan(
+        &self,
+        plan: GraphMutationPlan,
+    ) -> Result<GraphNode, RepositoryError<E::Error>> {
+        let Some(root) = plan.planned_root else {
+            return Err(RepositoryError::Runtime(RuntimeError::Graph(
+                "graph mutation plan has no planned root".to_owned(),
+            )));
+        };
+        self.upsert_graph_node(root)
     }
 
     pub fn graph_node_from_entity<T>(&self, entity: T) -> Result<GraphNode, RuntimeError>
@@ -650,16 +680,26 @@ where
 
     fn collect_graph_plan(
         &self,
-        node: &GraphNode,
+        node: &mut GraphNode,
         plan: &mut GraphMutationPlan,
     ) -> Result<(), RepositoryError<E::Error>> {
         match node.operation {
             GraphOperation::Reference => {
-                plan.push(node.entity.clone(), GraphMutationKind::Reference);
+                plan.push(
+                    node.entity.clone(),
+                    GraphMutationKind::Reference,
+                    node.values.clone(),
+                    Vec::new(),
+                );
                 return Ok(());
             }
             GraphOperation::Remove => {
-                plan.push(node.entity.clone(), GraphMutationKind::Delete);
+                plan.push(
+                    node.entity.clone(),
+                    GraphMutationKind::Delete,
+                    node.values.clone(),
+                    Vec::new(),
+                );
                 return Ok(());
             }
             GraphOperation::Upsert => {}
@@ -671,18 +711,45 @@ where
             .context
             .require_entity(&node.entity)
             .map_err(RepositoryError::Runtime)?;
-        let id_property = descriptor.id_property();
-        let id = id_property.and_then(|property| {
+        let id_property = descriptor.id_property().cloned();
+        let id = id_property.as_ref().and_then(|property| {
             node.values
                 .get(&property.name)
                 .filter(|value| !matches!(value, Value::Null))
                 .cloned()
         });
-        let is_update = match (id_property, id.as_ref()) {
+        let is_update = match (id_property.as_ref(), id.as_ref()) {
             (Some(id_property), Some(id)) => self
                 .fetch_graph_current_row(&node.entity, &id_property.name, id)?
                 .is_some(),
             _ => false,
+        };
+        if !is_update {
+            if let Some(id_property) = id_property.as_ref() {
+                let needs_id = !node.values.contains_key(&id_property.name)
+                    || matches!(node.values.get(&id_property.name), Some(Value::Null));
+                if needs_id {
+                    let id = self
+                        .repository
+                        .metadata
+                        .context
+                        .next_id(&node.entity)
+                        .map_err(RepositoryError::Runtime)?;
+                    node.values.insert(id_property.name.clone(), Value::U64(id));
+                }
+            }
+        }
+        let update_fields = if is_update {
+            let mut excluded = Vec::new();
+            if let Some(id_property) = id_property.as_ref() {
+                excluded.push(id_property.name.clone());
+            }
+            if let Some(version_property) = descriptor.version_property() {
+                excluded.push(version_property.name.clone());
+            }
+            sorted_update_fields(&node.values, excluded)
+        } else {
+            Vec::new()
         };
         plan.push(
             node.entity.clone(),
@@ -691,9 +758,11 @@ where
             } else {
                 GraphMutationKind::Create
             },
+            node.values.clone(),
+            update_fields,
         );
 
-        for (name, children) in &node.relations {
+        for (name, children) in &mut node.relations {
             let relation = descriptor.relation_by_name(name).ok_or_else(|| {
                 RepositoryError::Runtime(RuntimeError::MissingRelation {
                     entity: node.entity.clone(),
