@@ -13,7 +13,7 @@ Progress tracking lives in [PROGRESS.md](./PROGRESS.md).
 
 - `teaql-core`: metadata, entity traits, base entity data, values, filters, ordering, aggregates, query model, and `SmartList<T>`
 - `teaql-sql`: SQL dialect trait, compiled query types, DDL helpers, and AST-to-SQL compiler
-- `teaql-runtime`: `UserContext`, metadata lookup, repository boundary, repository registry, behavior registry, id generation, `RuntimeModule`, and optional `sqlx` PG/SQLite executors
+- `teaql-runtime`: `UserContext`, metadata lookup, repository boundary, repository registry, behavior registry, checker registry, entity event sink, id generation, `RuntimeModule`, and optional `sqlx` PG/SQLite executors
 - `teaql-macros`: `TeaqlEntity` derive macro plus attribute parsing and record/entity mapping generation
 - `teaql-dialect-pg`: PostgreSQL quoting and placeholder strategy
 - `teaql-dialect-sqlite`: SQLite quoting and placeholder strategy
@@ -23,7 +23,7 @@ The large crates are now split by function instead of keeping all implementation
 
 - `teaql-core/src`: `entity.rs`, `expr.rs`, `list.rs`, `meta.rs`, `mutation.rs`, `naming.rs`, `query.rs`, `value.rs`
 - `teaql-sql/src`: `dialect.rs`, `types.rs`
-- `teaql-runtime/src`: `context.rs`, `error.rs`, `id.rs`, `memory.rs`, `registry.rs`, `repository.rs`, `sqlx_support.rs`
+- `teaql-runtime/src`: `checker.rs`, `context.rs`, `error.rs`, `event.rs`, `id.rs`, `memory.rs`, `registry.rs`, `repository.rs`, `sqlx_support.rs`
 - `teaql-macros/src`: `attr.rs`, `derive_impl.rs`, `mapping.rs`, `types.rs`
 
 ## Current scope
@@ -50,15 +50,21 @@ The current implementation focuses on the Rust-native core runtime:
 - `UserContext` can assemble a repository from registered dialect and executor resources, making it the main runtime entry point
 - `UserContext` can also resolve repositories by entity type through `RepositoryRegistry`
 - per-entity `RepositoryBehavior` hooks can mutate queries/commands and expose relation-load plans
+- Java-style checker infrastructure through `Checker`, `CheckResult`, `ObjectLocation`, object status, and `CheckerRegistry`
+- repository insert/update preparation invokes the single `UserContext::check_and_fix_record()` path and lets checkers distinguish create/update by object status
+- Java-style entity mutation events through `EntityEvent`, `EntityEventKind`, and `EntityEventSink`
+- `UserContext` can dispatch created/updated/deleted/recovered events from ordinary repository mutations and graph writes
 - relation preload plans can now be resolved from behavior hooks and converted into child batch queries from parent rows
 - relation enhancement supports batch child-query generation and backfilling related records into parent records
 - nested relation enhancement supports paths like `lines.product`
 - `TeaqlEntity` derive support for declarative entity descriptors
 - typed entity mapping through `Entity` and `SmartList<T>`
 - typed nested relation enhancement through `fetch_enhanced_entities::<T>()`
-- first-pass create-graph write path through `GraphNode` and `save_graph_create()`
+- unified graph write path through `GraphNode` and `save_graph()`, covering create and upsert requests
 - graph upsert path through `save_graph()`, including parent update, child merge, child insert, and missing-child soft delete
-- typed entity graph extraction through `graph_node_from_entity()`, `save_entity_graph_create()`, and `save_entity_graph()`
+- graph writes build a `GraphMutationPlan` classified by entity type and operation before execution
+- `save_graph()` requires a transactional executor and rolls back the graph write when any planned operation fails
+- typed entity graph extraction through `graph_node_from_entity()` and `save_entity_graph()`
 - graph write state hints: `Upsert`, `Reference`, and `Remove`
 - stricter graph state semantics: reference nodes validate existence/version/deleted state, remove nodes validate existence, and many-relation merge rejects duplicate child ids
 - relation metadata for graph writes: `attach/detached` and `delete_missing/keep_missing`
@@ -258,7 +264,7 @@ TEAQL_TEST_PG_URL=postgres://postgres:postgres@127.0.0.1:55440/teaql_examples \
 Current examples cover:
 
 - SQLite schema bootstrap, CRUD, optimistic lock delete/recover, and typed entity fetch
-- SQLite typed entity graph writes through `save_entity_graph_create()`
+- SQLite typed entity graph writes through `save_entity_graph()`
 - SQLite relation enhancement through `fetch_enhanced_entities::<T>()`
 - PostgreSQL `soundlike`/`SOUNDEX`, array-bound large IN, expression projection/sort, extended aggregates, and `HAVING`
 

@@ -1,5 +1,7 @@
+mod checker;
 mod context;
 mod error;
+mod event;
 mod graph;
 mod id;
 mod memory;
@@ -8,7 +10,10 @@ mod repository;
 
 pub use context::UserContext;
 pub use error::{ContextError, RepositoryError, RuntimeError};
-pub use graph::{GraphNode, GraphOperation};
+pub use event::{EntityEvent, EntityEventKind, EntityEventSink, InMemoryEntityEventSink};
+pub use graph::{
+    GraphMutationKind, GraphMutationPlan, GraphMutationPlanItem, GraphNode, GraphOperation,
+};
 pub(crate) use id::local_id_generator;
 pub use id::{InternalIdGenerator, SnowflakeIdGenerator};
 pub use memory::{MemoryRepository, MemoryRepositoryError};
@@ -18,7 +23,8 @@ pub use registry::{
     RuntimeModule,
 };
 pub use repository::{
-    ContextRepository, QueryExecutor, RelationLoadPlan, Repository, ResolvedRepository,
+    ContextRepository, GraphTransactionBoundary, QueryExecutor, RelationLoadPlan, Repository,
+    ResolvedRepository,
 };
 
 #[cfg(feature = "sqlx")]
@@ -27,13 +33,15 @@ pub mod sqlx_support;
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     use super::{
-        GraphNode, InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry,
+        CHECK_OBJECT_STATUS_FIELD, CheckObjectStatus, CheckResults, Checker, EntityEvent,
+        EntityEventKind, EntityEventSink, GraphMutationKind, GraphNode, GraphTransactionBoundary,
+        InMemoryCheckerRegistry, InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry,
         InMemoryRepositoryRegistry, InternalIdGenerator, MemoryRepository, MetadataStore,
-        QueryExecutor, Repository, RepositoryBehavior, RepositoryError, RuntimeError,
-        RuntimeModule, UserContext,
+        ObjectLocation, QueryExecutor, Repository, RepositoryBehavior, RepositoryError,
+        RuntimeError, RuntimeModule, UserContext,
     };
     use teaql_core::{
         Aggregate, AggregateFunction, DataType, Decimal, DeleteCommand, Entity, EntityDescriptor,
@@ -292,6 +300,10 @@ mod tests {
         fn execute(&self, _query: &CompiledQuery) -> Result<u64, Self::Error> {
             Ok(self.affected)
         }
+
+        fn begin_transaction(&self) -> Result<GraphTransactionBoundary, Self::Error> {
+            Ok(GraphTransactionBoundary::Started)
+        }
     }
 
     impl RepositoryBehavior for OrderBehavior {
@@ -322,6 +334,11 @@ mod tests {
     }
 
     struct ContextAwareOrderBehavior;
+    struct OrderChecker;
+    #[derive(Clone)]
+    struct RecordingEventSink {
+        events: Arc<Mutex<Vec<EntityEvent>>>,
+    }
 
     impl RepositoryBehavior for ContextAwareOrderBehavior {
         fn before_insert(
@@ -355,6 +372,42 @@ mod tests {
                 .values
                 .entry("version".to_owned())
                 .or_insert(Value::I64(version));
+            Ok(())
+        }
+    }
+
+    impl Checker for OrderChecker {
+        fn entity(&self) -> &str {
+            "Order"
+        }
+
+        fn check_and_fix(
+            &self,
+            _ctx: &UserContext,
+            record: &mut Record,
+            location: &ObjectLocation,
+            results: &mut CheckResults,
+        ) {
+            let status = CheckObjectStatus::from_record(record);
+            if status.is_create() {
+                self.required(record, "name", location, results);
+                record.entry("version".to_owned()).or_insert(Value::I64(1));
+            }
+            if status.is_update()
+                && record.get("name") == Some(&Value::Text("graph-update".to_owned()))
+            {
+                record.insert(
+                    "name".to_owned(),
+                    Value::Text("graph-update-checked".to_owned()),
+                );
+            }
+            self.min_string_length(record, "name", 3, location, results);
+        }
+    }
+
+    impl EntityEventSink for RecordingEventSink {
+        fn on_event(&self, _ctx: &UserContext, event: &EntityEvent) -> Result<(), RuntimeError> {
+            self.events.lock().unwrap().push(event.clone());
             Ok(())
         }
     }
@@ -621,7 +674,7 @@ mod tests {
                 .relation("product", GraphNode::new("Product").value("name", "sku-1")),
         );
 
-        let saved = repo.save_graph_create(graph).unwrap();
+        let saved = repo.save_graph(graph).unwrap();
 
         assert_eq!(saved.values.get("id"), Some(&Value::U64(500)));
         assert_eq!(saved.values.get("version"), Some(&Value::I64(1)));
@@ -687,7 +740,7 @@ mod tests {
             1
         );
 
-        let saved = repo.save_graph_create(extracted).unwrap();
+        let saved = repo.save_graph(extracted).unwrap();
         assert_eq!(saved.values.get("id"), Some(&Value::U64(700)));
         let lines = saved.relations.get("lines").unwrap();
         assert_eq!(lines[0].values.get("id"), Some(&Value::U64(702)));
@@ -720,7 +773,7 @@ mod tests {
             .resolve_repository::<PostgresDialect, StubExecutor>("Order")
             .unwrap();
         let saved = repo
-            .save_entity_graph_create(TypedGraphOrder {
+            .save_entity_graph(TypedGraphOrder {
                 id: None,
                 version: 1,
                 name: "typed-direct".to_owned(),
@@ -777,6 +830,270 @@ mod tests {
         assert_eq!(
             prepared.values.get("name"),
             Some(&Value::Text("acme:req-9".to_owned()))
+        );
+    }
+
+    #[test]
+    fn checker_registry_validates_and_fixes_insert_commands() {
+        let mut ctx = UserContext::new()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
+            .with_checker_registry(InMemoryCheckerRegistry::new().with_checker(OrderChecker))
+            .with_internal_id_generator(FixedIdGenerator(77));
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(StubExecutor {
+            affected: 1,
+            rows: Vec::new(),
+        });
+
+        let repo = ctx
+            .resolve_repository::<PostgresDialect, StubExecutor>("Order")
+            .unwrap();
+        let prepared = repo
+            .prepare_insert_command(&repo.insert_command().value("name", "valid"))
+            .unwrap();
+
+        assert_eq!(prepared.values.get("id"), Some(&Value::U64(77)));
+        assert_eq!(prepared.values.get("version"), Some(&Value::I64(1)));
+        assert!(!prepared.values.contains_key(CHECK_OBJECT_STATUS_FIELD));
+
+        let error = repo
+            .prepare_insert_command(&repo.insert_command().value("name", "no"))
+            .unwrap_err();
+        match error {
+            RuntimeError::Check(results) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].location.to_string(), "name");
+            }
+            other => panic!("unexpected checker error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn checker_registry_validates_update_commands_without_required_insert_checks() {
+        let mut ctx = UserContext::new()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
+            .with_checker_registry(InMemoryCheckerRegistry::new().with_checker(OrderChecker));
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(StubExecutor {
+            affected: 1,
+            rows: Vec::new(),
+        });
+
+        let repo = ctx
+            .resolve_repository::<PostgresDialect, StubExecutor>("Order")
+            .unwrap();
+        repo.update(&repo.update_command(1_u64).value("version", 1_i64))
+            .unwrap();
+
+        let error = repo
+            .update(&repo.update_command(1_u64).value("name", "no"))
+            .unwrap_err();
+        match error {
+            RepositoryError::Runtime(RuntimeError::Check(results)) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].location.to_string(), "name");
+            }
+            other => panic!("unexpected checker error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn checker_registry_merges_graph_update_fixes_by_object_status() {
+        let mut ctx = UserContext::new()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
+            .with_checker_registry(InMemoryCheckerRegistry::new().with_checker(OrderChecker));
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(StubExecutor {
+            affected: 1,
+            rows: vec![Record::from([
+                ("id".to_owned(), Value::U64(1)),
+                ("version".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::Text("old".to_owned())),
+            ])],
+        });
+
+        let repo = ctx
+            .resolve_repository::<PostgresDialect, StubExecutor>("Order")
+            .unwrap();
+        let saved = repo
+            .save_graph(
+                GraphNode::new("Order")
+                    .value("id", 1_u64)
+                    .value("version", 1_i64)
+                    .value("name", "graph-update"),
+            )
+            .unwrap();
+
+        assert_eq!(
+            saved.values.get("name"),
+            Some(&Value::Text("graph-update-checked".to_owned()))
+        );
+        assert_eq!(saved.values.get("version"), Some(&Value::I64(2)));
+        assert!(!saved.values.contains_key(CHECK_OBJECT_STATUS_FIELD));
+    }
+
+    #[test]
+    fn user_context_event_sink_receives_repository_mutation_events() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut ctx = UserContext::new()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
+            .with_internal_id_generator(FixedIdGenerator(88))
+            .with_event_sink(RecordingEventSink {
+                events: events.clone(),
+            });
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(StubExecutor {
+            affected: 1,
+            rows: Vec::new(),
+        });
+
+        let repo = ctx
+            .resolve_repository::<PostgresDialect, StubExecutor>("Order")
+            .unwrap();
+        repo.insert(&repo.insert_command().value("name", "created"))
+            .unwrap();
+        repo.update(
+            &repo
+                .update_command(88_u64)
+                .expected_version(1)
+                .value("name", "updated"),
+        )
+        .unwrap();
+        repo.delete(&repo.delete_command(88_u64).expected_version(2))
+            .unwrap();
+        repo.recover(&repo.recover_command(88_u64, -3)).unwrap();
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0].kind, EntityEventKind::Created);
+        assert_eq!(events[0].entity, "Order");
+        assert_eq!(events[0].values.get("id"), Some(&Value::U64(88)));
+        assert_eq!(events[1].kind, EntityEventKind::Updated);
+        assert_eq!(events[1].values.get("id"), Some(&Value::U64(88)));
+        assert_eq!(events[1].values.get("version"), Some(&Value::I64(2)));
+        assert_eq!(events[1].updated_fields, vec!["name".to_owned()]);
+        assert_eq!(events[2].kind, EntityEventKind::Deleted);
+        assert_eq!(events[3].kind, EntityEventKind::Recovered);
+    }
+
+    #[test]
+    fn user_context_event_sink_receives_mixed_graph_mutation_events() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(entity())
+                    .with_entity(line_entity())
+                    .with_entity(product_entity()),
+            )
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
+            .with_event_sink(RecordingEventSink {
+                events: events.clone(),
+            });
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(StubExecutor {
+            affected: 1,
+            rows: vec![Record::from([
+                ("id".to_owned(), Value::U64(1)),
+                ("version".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::Text("old".to_owned())),
+            ])],
+        });
+
+        let repo = ctx
+            .resolve_repository::<PostgresDialect, StubExecutor>("Order")
+            .unwrap();
+        repo.save_graph(
+            GraphNode::new("Order")
+                .value("id", 1_u64)
+                .value("version", 1_i64)
+                .value("name", "updated")
+                .relation(
+                    "lines",
+                    GraphNode::new("OrderLine")
+                        .value("name", "line")
+                        .value("product_id", 3_u64),
+                ),
+        )
+        .unwrap();
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].kind, EntityEventKind::Updated);
+        assert_eq!(events[0].entity, "Order");
+        assert_eq!(events[1].kind, EntityEventKind::Created);
+        assert_eq!(events[1].entity, "OrderLine");
+        assert_eq!(events[1].values.get("order_id"), Some(&Value::U64(1)));
+        assert_eq!(events[2].kind, EntityEventKind::Deleted);
+        assert_eq!(events[2].entity, "OrderLine");
+    }
+
+    #[test]
+    fn save_graph_builds_plan_grouped_by_entity_and_operation() {
+        let mut ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(entity())
+                    .with_entity(line_entity())
+                    .with_entity(product_entity()),
+            )
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(StubExecutor {
+            affected: 1,
+            rows: vec![Record::from([
+                ("id".to_owned(), Value::U64(1)),
+                ("version".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::Text("old".to_owned())),
+            ])],
+        });
+
+        let repo = ctx
+            .resolve_repository::<PostgresDialect, StubExecutor>("Order")
+            .unwrap();
+        let plan = repo
+            .plan_graph(
+                &GraphNode::new("Order")
+                    .value("id", 1_u64)
+                    .value("version", 1_i64)
+                    .value("name", "updated")
+                    .relation(
+                        "lines",
+                        GraphNode::new("OrderLine")
+                            .value("name", "new-line")
+                            .value("product_id", 2_u64),
+                    )
+                    .relation(
+                        "lines",
+                        GraphNode::new("OrderLine").value("id", 3_u64).remove(),
+                    )
+                    .relation(
+                        "lines",
+                        GraphNode::new("OrderLine").value("id", 4_u64).reference(),
+                    ),
+            )
+            .unwrap();
+        let counts = plan.grouped_counts();
+
+        assert_eq!(
+            counts.get(&("Order".to_owned(), GraphMutationKind::Update)),
+            Some(&1)
+        );
+        assert_eq!(
+            counts.get(&("OrderLine".to_owned(), GraphMutationKind::Create)),
+            Some(&1)
+        );
+        assert_eq!(
+            counts.get(&("OrderLine".to_owned(), GraphMutationKind::Delete)),
+            Some(&1)
+        );
+        assert_eq!(
+            counts.get(&("OrderLine".to_owned(), GraphMutationKind::Reference)),
+            Some(&1)
         );
     }
 
@@ -1368,8 +1685,9 @@ mod sqlx_integration_tests {
         SqliteMutationExecutor,
     };
     use super::{
-        GraphNode, InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry,
-        InMemoryRepositoryRegistry, QueryExecutor, RepositoryBehavior, UserContext,
+        GraphNode, GraphTransactionBoundary, InMemoryMetadataStore,
+        InMemoryRepositoryBehaviorRegistry, InMemoryRepositoryRegistry, QueryExecutor,
+        RepositoryBehavior, UserContext,
     };
     use chrono::{NaiveDate, TimeZone, Utc};
     use teaql_core::{
@@ -1605,6 +1923,22 @@ mod sqlx_integration_tests {
             let handle = Handle::current();
             block_in_place(|| handle.block_on(self.inner.execute(query)))
         }
+
+        fn begin_transaction(&self) -> Result<GraphTransactionBoundary, Self::Error> {
+            let handle = Handle::current();
+            block_in_place(|| handle.block_on(self.inner.begin_transaction()))?;
+            Ok(GraphTransactionBoundary::Started)
+        }
+
+        fn commit_transaction(&self) -> Result<(), Self::Error> {
+            let handle = Handle::current();
+            block_in_place(|| handle.block_on(self.inner.commit_transaction()))
+        }
+
+        fn rollback_transaction(&self) -> Result<(), Self::Error> {
+            let handle = Handle::current();
+            block_in_place(|| handle.block_on(self.inner.rollback_transaction()))
+        }
     }
 
     #[derive(Clone)]
@@ -1654,6 +1988,15 @@ mod sqlx_integration_tests {
         fn execute(&self, query: &teaql_sql::CompiledQuery) -> Result<u64, Self::Error> {
             let handle = Handle::current();
             block_in_place(|| handle.block_on(self.inner.execute(query)))
+        }
+
+        fn begin_transaction(&self) -> Result<GraphTransactionBoundary, Self::Error> {
+            Ok(GraphTransactionBoundary::AlreadyActive)
+        }
+
+        fn rollback_transaction(&self) -> Result<(), Self::Error> {
+            let handle = Handle::current();
+            block_in_place(|| handle.block_on(self.inner.rollback()))
         }
     }
 
@@ -2286,7 +2629,7 @@ mod sqlx_integration_tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn sqlite_save_graph_create_inserts_nested_rows() {
+    async fn sqlite_save_graph_inserts_nested_rows() {
         use sqlx::{Row, sqlite::SqlitePoolOptions};
 
         let pool = SqlitePoolOptions::new()
@@ -2336,7 +2679,7 @@ mod sqlx_integration_tests {
                     ),
             );
 
-        let saved = repo.save_graph_create(graph).unwrap();
+        let saved = repo.save_graph(graph).unwrap();
         assert_eq!(
             saved.relations["lines"][0].values.get("order_id"),
             Some(&Value::U64(1))
@@ -2404,7 +2747,7 @@ mod sqlx_integration_tests {
             .resolve_repository::<SqliteDialect, SqliteSyncExecutor>("Order")
             .unwrap();
         let saved = repo
-            .save_entity_graph_create(OrderAggregateRow {
+            .save_entity_graph(OrderAggregateRow {
                 id: 2,
                 version: 1,
                 name: "typed-root".to_owned(),
@@ -2833,13 +3176,12 @@ mod sqlx_integration_tests {
         );
         assert!(format!("{remove_with_child:?}").contains("cannot contain child relations"));
 
-        let create_remove =
-            repo.save_graph_create(GraphNode::new("Order").value("id", 1_u64).remove());
-        assert!(format!("{create_remove:?}").contains("create graph cannot remove node"));
+        let remove = repo.save_graph(GraphNode::new("Order").value("id", 999_u64).remove());
+        assert!(format!("{remove:?}").contains("does not exist"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn sqlite_graph_write_can_be_wrapped_in_transaction_and_rolled_back() {
+    async fn sqlite_graph_write_rolls_back_all_batches_on_failure() {
         use sqlx::{Row, sqlite::SqlitePoolOptions};
 
         let pool = SqlitePoolOptions::new()
@@ -2869,12 +3211,10 @@ mod sqlx_integration_tests {
         ctx.insert_resource(SqliteDialect);
         ctx.insert_resource(executor);
 
-        mutation_executor.begin_transaction().await.unwrap();
-
         let repo = ctx
             .resolve_repository::<SqliteDialect, SqliteSyncExecutor>("Order")
             .unwrap();
-        repo.save_graph_create(
+        let error = repo.save_graph(
             GraphNode::new("Order")
                 .value("id", 1_u64)
                 .value("version", 1_i64)
@@ -2885,17 +3225,14 @@ mod sqlx_integration_tests {
                         .value("id", 10_u64)
                         .value("version", 1_i64)
                         .value("name", "rollback-line")
+                        .value("product_id", 999_u64)
                         .relation(
                             "product",
-                            GraphNode::new("Product")
-                                .value("id", 100_u64)
-                                .value("name", "rollback-sku"),
+                            GraphNode::new("Product").value("id", 999_u64).reference(),
                         ),
                 ),
-        )
-        .unwrap();
-
-        mutation_executor.rollback_transaction().await.unwrap();
+        );
+        assert!(format!("{error:?}").contains("does not exist"));
 
         let count: i64 = sqlx::query("SELECT COUNT(*) AS count FROM orders")
             .fetch_one(&pool)
@@ -3421,7 +3758,7 @@ mod sqlx_integration_tests {
         let repo = ctx
             .resolve_repository::<PostgresDialect, PgTxSyncExecutor>("Order")
             .unwrap();
-        repo.save_graph_create(
+        repo.save_graph(
             GraphNode::new("Order")
                 .value("id", 1_u64)
                 .value("version", 1_i64)
@@ -3466,3 +3803,8 @@ mod sqlx_integration_tests {
             .unwrap();
     }
 }
+pub use checker::{
+    CHECK_OBJECT_STATUS_FIELD, CheckObjectStatus, CheckResult, CheckResults, CheckRule, Checker,
+    CheckerRegistry, InMemoryCheckerRegistry, LocationSegment, ObjectLocation, clear_record_status,
+    mark_record_status,
+};

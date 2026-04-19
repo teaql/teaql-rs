@@ -9,8 +9,9 @@ use teaql_core::{
 use teaql_sql::{CompiledQuery, SqlDialect};
 
 use crate::{
-    ContextError, GraphNode, GraphOperation, MetadataStore, RepositoryBehavior, RepositoryError,
-    RuntimeError, UserContext,
+    CheckObjectStatus, ContextError, EntityEvent, GraphMutationKind, GraphMutationPlan, GraphNode,
+    GraphOperation, MetadataStore, RepositoryBehavior, RepositoryError, RuntimeError, UserContext,
+    clear_record_status, mark_record_status,
 };
 
 pub trait QueryExecutor {
@@ -18,6 +19,25 @@ pub trait QueryExecutor {
 
     fn fetch_all(&self, query: &CompiledQuery) -> Result<Vec<Record>, Self::Error>;
     fn execute(&self, query: &CompiledQuery) -> Result<u64, Self::Error>;
+
+    fn begin_transaction(&self) -> Result<GraphTransactionBoundary, Self::Error> {
+        Ok(GraphTransactionBoundary::Unsupported)
+    }
+
+    fn commit_transaction(&self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn rollback_transaction(&self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphTransactionBoundary {
+    Started,
+    AlreadyActive,
+    Unsupported,
 }
 
 pub struct Repository<'a, D, M, E> {
@@ -428,12 +448,39 @@ where
                     .insert(id_property.name.clone(), Value::U64(id));
             }
         }
+        mark_record_status(&mut command.values, CheckObjectStatus::Create);
+        let check_result = self
+            .repository
+            .metadata
+            .context
+            .check_and_fix_record(&command.entity, &mut command.values);
+        clear_record_status(&mut command.values);
+        check_result?;
 
         Ok(command)
     }
 
     pub fn update_command(&self, id: impl Into<Value>) -> UpdateCommand {
         UpdateCommand::new(self.entity.clone(), id)
+    }
+
+    pub fn prepare_update_command(
+        &self,
+        command: &UpdateCommand,
+    ) -> Result<UpdateCommand, RuntimeError> {
+        let mut command = command.clone();
+        if let Some(behavior) = self.behavior() {
+            behavior.before_update(self.repository.metadata.context, &mut command)?;
+        }
+        mark_record_status(&mut command.values, CheckObjectStatus::Update);
+        let check_result = self
+            .repository
+            .metadata
+            .context
+            .check_and_fix_record(&command.entity, &mut command.values);
+        clear_record_status(&mut command.values);
+        check_result?;
+        Ok(command)
     }
 
     pub fn delete_command(&self, id: impl Into<Value>) -> DeleteCommand {
@@ -518,33 +565,7 @@ where
         let command = self
             .prepare_insert_command(command)
             .map_err(RepositoryError::Runtime)?;
-        self.repository.insert(&command)
-    }
-
-    pub fn save_graph_create(
-        &self,
-        node: GraphNode,
-    ) -> Result<GraphNode, RepositoryError<E::Error>> {
-        if node.entity != self.entity {
-            return Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
-                "resolved repository {} cannot save graph root {}",
-                self.entity, node.entity
-            ))));
-        }
-        self.insert_graph_node(node)
-    }
-
-    pub fn save_entity_graph_create<T>(
-        &self,
-        entity: T,
-    ) -> Result<GraphNode, RepositoryError<E::Error>>
-    where
-        T: Entity,
-    {
-        let node = self
-            .graph_node_from_entity(entity)
-            .map_err(RepositoryError::Runtime)?;
-        self.save_graph_create(node)
+        self.execute_prepared_insert(command)
     }
 
     pub fn save_graph(&self, node: GraphNode) -> Result<GraphNode, RepositoryError<E::Error>> {
@@ -554,7 +575,38 @@ where
                 self.entity, node.entity
             ))));
         }
-        self.upsert_graph_node(node)
+        let boundary = self
+            .repository
+            .executor
+            .begin_transaction()
+            .map_err(RepositoryError::Executor)?;
+        if matches!(boundary, GraphTransactionBoundary::Unsupported) {
+            return Err(RepositoryError::Runtime(RuntimeError::Graph(
+                "save_graph requires a transactional executor".to_owned(),
+            )));
+        }
+        let _plan = self.plan_graph(&node)?;
+        let result = self.upsert_graph_node(node);
+        match result {
+            Ok(saved) => {
+                if matches!(boundary, GraphTransactionBoundary::Started) {
+                    self.repository
+                        .executor
+                        .commit_transaction()
+                        .map_err(RepositoryError::Executor)?;
+                }
+                Ok(saved)
+            }
+            Err(err) => {
+                if !matches!(boundary, GraphTransactionBoundary::Unsupported) {
+                    self.repository
+                        .executor
+                        .rollback_transaction()
+                        .map_err(RepositoryError::Executor)?;
+                }
+                Err(err)
+            }
+        }
     }
 
     pub fn save_entity_graph<T>(&self, entity: T) -> Result<GraphNode, RepositoryError<E::Error>>
@@ -565,6 +617,21 @@ where
             .graph_node_from_entity(entity)
             .map_err(RepositoryError::Runtime)?;
         self.save_graph(node)
+    }
+
+    pub fn plan_graph(
+        &self,
+        node: &GraphNode,
+    ) -> Result<GraphMutationPlan, RepositoryError<E::Error>> {
+        if node.entity != self.entity {
+            return Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
+                "resolved repository {} cannot plan graph root {}",
+                self.entity, node.entity
+            ))));
+        }
+        let mut plan = GraphMutationPlan::default();
+        self.collect_graph_plan(node, &mut plan)?;
+        Ok(plan)
     }
 
     pub fn graph_node_from_entity<T>(&self, entity: T) -> Result<GraphNode, RuntimeError>
@@ -581,14 +648,72 @@ where
         self.graph_node_from_record(&descriptor.name, entity.into_record())
     }
 
-    pub fn update(&self, command: &UpdateCommand) -> Result<u64, RepositoryError<E::Error>> {
-        let mut command = command.clone();
-        if let Some(behavior) = self.behavior() {
-            behavior
-                .before_update(self.repository.metadata.context, &mut command)
-                .map_err(RepositoryError::Runtime)?;
+    fn collect_graph_plan(
+        &self,
+        node: &GraphNode,
+        plan: &mut GraphMutationPlan,
+    ) -> Result<(), RepositoryError<E::Error>> {
+        match node.operation {
+            GraphOperation::Reference => {
+                plan.push(node.entity.clone(), GraphMutationKind::Reference);
+                return Ok(());
+            }
+            GraphOperation::Remove => {
+                plan.push(node.entity.clone(), GraphMutationKind::Delete);
+                return Ok(());
+            }
+            GraphOperation::Upsert => {}
         }
-        self.repository.update(&command)
+
+        let descriptor = self
+            .repository
+            .metadata
+            .context
+            .require_entity(&node.entity)
+            .map_err(RepositoryError::Runtime)?;
+        let id_property = descriptor.id_property();
+        let id = id_property.and_then(|property| {
+            node.values
+                .get(&property.name)
+                .filter(|value| !matches!(value, Value::Null))
+                .cloned()
+        });
+        let is_update = match (id_property, id.as_ref()) {
+            (Some(id_property), Some(id)) => self
+                .fetch_graph_current_row(&node.entity, &id_property.name, id)?
+                .is_some(),
+            _ => false,
+        };
+        plan.push(
+            node.entity.clone(),
+            if is_update {
+                GraphMutationKind::Update
+            } else {
+                GraphMutationKind::Create
+            },
+        );
+
+        for (name, children) in &node.relations {
+            let relation = descriptor.relation_by_name(name).ok_or_else(|| {
+                RepositoryError::Runtime(RuntimeError::MissingRelation {
+                    entity: node.entity.clone(),
+                    relation: name.clone(),
+                })
+            })?;
+            let child_repo = self.scoped_repository(relation.target_entity.clone());
+            for child in children {
+                ensure_relation_target(&node.entity, name, &relation.target_entity, child)?;
+                child_repo.collect_graph_plan(child, plan)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn update(&self, command: &UpdateCommand) -> Result<u64, RepositoryError<E::Error>> {
+        let command = self
+            .prepare_update_command(command)
+            .map_err(RepositoryError::Runtime)?;
+        self.execute_prepared_update(command)
     }
 
     pub fn delete(&self, command: &DeleteCommand) -> Result<u64, RepositoryError<E::Error>> {
@@ -598,7 +723,14 @@ where
                 .before_delete(self.repository.metadata.context, &mut command)
                 .map_err(RepositoryError::Runtime)?;
         }
-        self.repository.delete(&command)
+        let affected = self.repository.delete(&command)?;
+        self.emit_event(EntityEvent::deleted(
+            command.entity,
+            command.id,
+            command.expected_version,
+        ))
+        .map_err(RepositoryError::Runtime)?;
+        Ok(affected)
     }
 
     pub fn recover(&self, command: &RecoverCommand) -> Result<u64, RepositoryError<E::Error>> {
@@ -608,7 +740,49 @@ where
                 .before_recover(self.repository.metadata.context, &mut command)
                 .map_err(RepositoryError::Runtime)?;
         }
-        self.repository.recover(&command)
+        let affected = self.repository.recover(&command)?;
+        self.emit_event(EntityEvent::recovered(
+            command.entity,
+            command.id,
+            command.expected_version,
+        ))
+        .map_err(RepositoryError::Runtime)?;
+        Ok(affected)
+    }
+
+    fn emit_event(&self, event: EntityEvent) -> Result<(), RuntimeError> {
+        self.repository.metadata.context.send_event(event)
+    }
+
+    fn execute_prepared_insert(
+        &self,
+        command: InsertCommand,
+    ) -> Result<u64, RepositoryError<E::Error>> {
+        let affected = self.repository.insert(&command)?;
+        self.emit_event(EntityEvent::created(command.entity, command.values))
+            .map_err(RepositoryError::Runtime)?;
+        Ok(affected)
+    }
+
+    fn execute_prepared_update(
+        &self,
+        command: UpdateCommand,
+    ) -> Result<u64, RepositoryError<E::Error>> {
+        let affected = self.repository.update(&command)?;
+        let updated_fields = command.values.keys().cloned().collect();
+        let mut values = command.values.clone();
+        values.insert("id".to_owned(), command.id.clone());
+        if let Some(version) = command.expected_version {
+            values.insert("version".to_owned(), Value::I64(version + 1));
+        }
+        self.emit_event(EntityEvent {
+            kind: crate::EntityEventKind::Updated,
+            entity: command.entity,
+            values,
+            updated_fields,
+        })
+        .map_err(RepositoryError::Runtime)?;
+        Ok(affected)
     }
 
     fn insert_graph_node(
@@ -688,7 +862,7 @@ where
                 values: node.values.clone(),
             })
             .map_err(RepositoryError::Runtime)?;
-        self.repository.insert(&command)?;
+        self.execute_prepared_insert(command.clone())?;
         node.values = command.values;
 
         for (name, relation, children) in many_relations {
@@ -812,14 +986,20 @@ where
 
         let update = self.graph_update_command(&node, descriptor, id_property, &id);
         if !update.values.is_empty() || update.expected_version.is_some() {
-            self.update(&update)?;
-        }
-        if let Some(version_property) = descriptor.version_property() {
-            if let Some(expected_version) = update.expected_version {
-                node.values.insert(
-                    version_property.name.clone(),
-                    Value::I64(expected_version + 1),
-                );
+            let prepared_update = self
+                .prepare_update_command(&update)
+                .map_err(RepositoryError::Runtime)?;
+            self.execute_prepared_update(prepared_update.clone())?;
+            for (field, value) in &prepared_update.values {
+                node.values.insert(field.clone(), value.clone());
+            }
+            if let Some(version_property) = descriptor.version_property() {
+                if let Some(expected_version) = prepared_update.expected_version {
+                    node.values.insert(
+                        version_property.name.clone(),
+                        Value::I64(expected_version + 1),
+                    );
+                }
             }
         }
 

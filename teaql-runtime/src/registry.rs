@@ -6,7 +6,10 @@ use teaql_core::{
     SelectQuery, TeaqlEntity, UpdateCommand,
 };
 
-use crate::{RuntimeError, UserContext};
+use crate::{
+    Checker, EntityEventSink, InMemoryCheckerRegistry, InMemoryEntityEventSink, RuntimeError,
+    UserContext,
+};
 
 pub trait MetadataStore: Send + Sync {
     fn entity(&self, name: &str) -> Option<&EntityDescriptor>;
@@ -169,6 +172,8 @@ pub struct RuntimeModule {
     metadata: InMemoryMetadataStore,
     repositories: InMemoryRepositoryRegistry,
     behaviors: InMemoryRepositoryBehaviorRegistry,
+    checkers: InMemoryCheckerRegistry,
+    event_sinks: InMemoryEntityEventSink,
 }
 
 impl RuntimeModule {
@@ -211,10 +216,22 @@ impl RuntimeModule {
         self
     }
 
+    pub fn checker(mut self, checker: impl Checker + 'static) -> Self {
+        self.checkers.register(checker);
+        self
+    }
+
+    pub fn event_sink(mut self, sink: impl EntityEventSink + 'static) -> Self {
+        self.event_sinks.register(sink);
+        self
+    }
+
     pub fn apply_to(self, ctx: &mut UserContext) {
         ctx.set_metadata(self.metadata);
         ctx.set_repository_registry(self.repositories);
         ctx.set_repository_behavior_registry(self.behaviors);
+        ctx.set_checker_registry(self.checkers);
+        ctx.set_event_sink(self.event_sinks);
     }
 
     pub fn into_context(self) -> UserContext {

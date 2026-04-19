@@ -1,11 +1,15 @@
 use teaql_core::EntityError;
 use teaql_sql::SqlCompileError;
 
+use crate::CheckResult;
+
 #[derive(Debug)]
 pub enum RuntimeError {
     MissingEntity(String),
     SqlCompile(SqlCompileError),
     Behavior(String),
+    Event(String),
+    Check(Vec<CheckResult>),
     Graph(String),
     IdGeneration(String),
     MissingRelation { entity: String, relation: String },
@@ -18,6 +22,15 @@ impl std::fmt::Display for RuntimeError {
             Self::MissingEntity(entity) => write!(f, "missing entity descriptor: {entity}"),
             Self::SqlCompile(err) => err.fmt(f),
             Self::Behavior(message) => write!(f, "repository behavior error: {message}"),
+            Self::Event(message) => write!(f, "entity event error: {message}"),
+            Self::Check(results) => {
+                let messages = results
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                write!(f, "check failed: {messages}")
+            }
             Self::Graph(message) => write!(f, "graph write error: {message}"),
             Self::IdGeneration(message) => write!(f, "id generation error: {message}"),
             Self::MissingRelation { entity, relation } => {

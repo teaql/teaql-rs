@@ -9,6 +9,50 @@ pub enum GraphOperation {
     Remove,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GraphMutationKind {
+    Create,
+    Update,
+    Delete,
+    Reference,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphMutationPlanItem {
+    pub entity: String,
+    pub kind: GraphMutationKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GraphMutationPlan {
+    pub items: Vec<GraphMutationPlanItem>,
+}
+
+impl GraphMutationPlan {
+    pub fn push(&mut self, entity: impl Into<String>, kind: GraphMutationKind) {
+        self.items.push(GraphMutationPlanItem {
+            entity: entity.into(),
+            kind,
+        });
+    }
+
+    pub fn grouped_counts(&self) -> BTreeMap<(String, GraphMutationKind), usize> {
+        let mut counts = BTreeMap::new();
+        for item in &self.items {
+            *counts.entry((item.entity.clone(), item.kind)).or_insert(0) += 1;
+        }
+        counts
+    }
+
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphNode {
     pub entity: String,

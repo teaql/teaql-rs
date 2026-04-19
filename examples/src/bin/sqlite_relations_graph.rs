@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = sqlite_context(executor);
     let repo = ctx.resolve_repository::<SqliteDialect, SqliteSyncExecutor>("Order")?;
 
-    repo.save_entity_graph_create(Order {
+    repo.save_entity_graph(Order {
         id: 1,
         version: 1,
         name: "graph-order".to_owned(),

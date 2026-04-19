@@ -35,6 +35,8 @@ Current progress estimates:
 | UserContext | Core concept | Implemented as runtime resource index and request-scope store | Done | Medium |
 | RepositoryRegistry | Present | In-memory registry implemented | MVP | Low |
 | Entity-level behavior hooks | Present | `before_select/insert/update/delete/recover` supported | MVP | Medium |
+| Checker infrastructure | Java has `Checker`, `CheckResult`, `ObjectLocation`, and `checkAndFix` through `UserContext` | `Checker`, `CheckResult`, `ObjectLocation`, object status, and `CheckerRegistry` are implemented; insert/update paths invoke the same `UserContext::check_and_fix_record()` entry and checkers distinguish create/update by object status | MVP | Medium |
+| Entity mutation events | Java has `io.teaql.data.event` and `UserContext.sendEvent` | `EntityEventKind::{Created, Updated, Deleted, Recovered}`, `EntityEvent`, and `EntityEventSink` are implemented; ordinary repository writes and mixed graph writes dispatch events through `UserContext` | MVP | Medium |
 | SQL compiler | Complete and mature | `teaql-sql` supports select/insert/update/delete/recover, grouped and extended aggregates, `COUNT(*)`, expression projection/sort, `HAVING`, subquery filters, and extended predicates | MVP+ | Medium |
 | SQLite dialect | Present | Implemented and verified with `sqlx` integration tests | Done | Low |
 | PostgreSQL dialect | Present | Implemented and validated against a real PostgreSQL instance through Docker-backed tests, including custom `soundex`, array-bound large IN, subqueries, extended aggregates, Decimal/NUMERIC decoding, and `teaql_id_space` id generation | MVP+ | Medium |
@@ -56,11 +58,12 @@ Current progress estimates:
 | Base entity model | Java has `BaseEntity` | `BaseEntityData` and `BaseEntity` cover `id/version/dynamic` | MVP | Low |
 | SmartList and typed entities | Java has `SmartList<Entity>` | `SmartList<T>`, typed fetch, typed nested relation enhancement, and typed entity graph extraction are implemented | MVP+ | Medium |
 | Id generator | Java has internal id generator and SQL `teaql_id_space` fallback | `InternalIdGenerator`, `SnowflakeIdGenerator`, and SQLx-backed `PgIdSpaceGenerator`/`SqliteIdSpaceGenerator` are integrated with repository insert preparation | Done | Low |
-| Multi-level create graph write | Java has `saveGraph` | `GraphNode`, `save_graph_create()`, and `save_entity_graph_create()` support nested create writes and relation-key maintenance | MVP+ | Medium |
-| Multi-level update graph diff | Java reloads and merges graph updates | `save_graph()` and `save_entity_graph()` support parent update, child merge, child insert, missing-child soft delete, reference-only nodes, explicit remove nodes, keep-missing relation metadata, duplicate child-id rejection, and reference reload validation | MVP+ | High |
+| Multi-level create graph write | Java has `saveGraph` | `save_graph()` and `save_entity_graph()` support nested create writes and relation-key maintenance | MVP+ | Medium |
+| Multi-level update graph diff | Java reloads and merges graph updates | The same `save_graph()` and `save_entity_graph()` APIs support parent update, child merge, child insert, missing-child soft delete, reference-only nodes, explicit remove nodes, keep-missing relation metadata, duplicate child-id rejection, and reference reload validation | MVP+ | High |
+| Graph mutation planning | Java classifies mixed entity states before persistence | `GraphMutationPlan` classifies mixed graph requests by entity type and operation (`Create/Update/Delete/Reference`) before execution | MVP | Medium |
 | Graph entity state semantics | Java has new/reference/remove/deleted status concepts | `GraphOperation::{Upsert, Reference, Remove}` covers first-pass upsert/reference/remove semantics; reference/remove now validate existence, deleted state, child-relation conflicts, and reference version conflicts | MVP+ | High |
 | Attach relation metadata | Java uses attach/reverse relation metadata | `RelationDescriptor` supports `attach/detached` and `delete_missing/keep_missing`; derive supports `attach = false` and `delete_missing = false` | MVP | Medium |
-| Graph write transaction boundary | Java runs through repository/service transaction facilities | SQLite rollback helpers and PostgreSQL connection-scoped transaction executor are verified with graph-write rollback | MVP | Medium |
+| Graph write transaction boundary | Java runs through repository/service transaction facilities | `save_graph()` now requires a transactional executor; SQLite auto transaction rollback and PostgreSQL connection-scoped transaction rollback are verified | MVP+ | Medium |
 | Module/file organization | Java code is already split by concern | Rust core/runtime/macros/sql crates are now split into focused source modules | Done | Low |
 
 ## Current Strengths
@@ -73,6 +76,8 @@ Current progress estimates:
 - CRUD, optimistic lock, soft delete, and recover are implemented
 - `UserContext` is present as a first-class runtime concept
 - Repository registry and behavior hooks are implemented
+- Java-style checker registration is implemented with a single object-status-driven check/fix entry
+- Java-style mutation event dispatch is available through `UserContext`
 - Single-level and nested relation enhancement are working
 - Entity derive macro exists and supports descriptor generation and typed record mapping
 - `SmartList<T>` and typed nested entity loading are working
@@ -87,7 +92,8 @@ Current progress estimates:
 - Create-graph writes can persist nested rows and maintain foreign keys in SQLite from either `GraphNode` or typed entities
 - Graph upsert can update nested rows and soft-delete missing children in SQLite
 - Graph writes now support validated reference-only nodes, explicit remove nodes, keep-missing relation metadata, duplicate child-id rejection, and stricter state-transition conflicts
-- SQLite graph writes can be wrapped in an explicit transaction and rolled back
+- Graph writes are classified into mutation plans by entity and operation before execution
+- SQLite graph writes are automatically wrapped in a transaction and rolled back on failure
 - PostgreSQL graph writes can be wrapped in a connection-scoped transaction and rolled back
 - SQL and memory paths both support grouped/extended aggregates, Decimal aggregate output, and extended predicates
 - PostgreSQL query paths are validated for array-bound large IN, subqueries, expression projection/function ordering, extended aggregates, grouped aggregates, bit aggregates, and `HAVING`
@@ -95,12 +101,16 @@ Current progress estimates:
 ## Most Important Gaps
 
 1. More complete `MemoryRepository` parity for relation enhancement and subquery execution
-2. Broader value support beyond the current primitive/Decimal/JSON/date/timestamp set, especially `Uuid` and bytes
-3. Higher-level service layer if Rust-side application APIs are needed
-4. More complete schema migration tooling beyond additive `ensure_schema`
+2. Typed checker generation and richer Java-style validation semantics such as translated messages, Java status mapping, and nested typed object locations
+3. Richer event payloads for old/new values and typed entity snapshots, matching Java `BaseEntity` property-change details
+4. Broader value support beyond the current primitive/Decimal/JSON/date/timestamp set, especially `Uuid` and bytes
+5. Higher-level service layer if Rust-side application APIs are needed
+6. More complete schema migration tooling beyond additive `ensure_schema`
 
 ## Suggested Next Steps
 
 1. Expand `MemoryRepository` toward relation enhancement and richer query parity, especially subqueries
-2. Extend value binding and decoding for `Uuid` and bytes
-3. Decide whether a Rust-native service layer is needed, or whether repository-level APIs are enough
+2. Add derive/helper support for typed entity checkers so common validation can be registered without hand-written `Record` access
+3. Expand event payloads if consumers need old/new property values instead of changed-field names plus final values
+4. Extend value binding and decoding for `Uuid` and bytes
+5. Decide whether a Rust-native service layer is needed, or whether repository-level APIs are enough

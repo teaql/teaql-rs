@@ -1,11 +1,12 @@
 use std::any::{Any, TypeId};
 use std::collections::{BTreeMap, HashMap};
 
-use teaql_core::{EntityDescriptor, Value};
+use teaql_core::{EntityDescriptor, Record, Value};
 
 use crate::{
-    ContextError, InternalIdGenerator, MetadataStore, RepositoryBehavior,
-    RepositoryBehaviorRegistry, RepositoryRegistry, RuntimeError, local_id_generator,
+    CheckResults, CheckerRegistry, ContextError, EntityEvent, EntityEventSink, InternalIdGenerator,
+    MetadataStore, ObjectLocation, RepositoryBehavior, RepositoryBehaviorRegistry,
+    RepositoryRegistry, RuntimeError, local_id_generator,
 };
 
 #[derive(Default)]
@@ -13,6 +14,8 @@ pub struct UserContext {
     pub(crate) metadata: Option<Box<dyn MetadataStore>>,
     pub(crate) repository_registry: Option<Box<dyn RepositoryRegistry>>,
     pub(crate) repository_behavior_registry: Option<Box<dyn RepositoryBehaviorRegistry>>,
+    pub(crate) checker_registry: Option<Box<dyn CheckerRegistry>>,
+    pub(crate) event_sink: Option<Box<dyn EntityEventSink>>,
     pub(crate) internal_id_generator: Option<Box<dyn InternalIdGenerator>>,
     typed_resources: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
     named_resources: BTreeMap<String, Box<dyn Any + Send + Sync>>,
@@ -60,6 +63,24 @@ impl UserContext {
         registry: impl RepositoryBehaviorRegistry + 'static,
     ) {
         self.repository_behavior_registry = Some(Box::new(registry));
+    }
+
+    pub fn with_checker_registry(mut self, registry: impl CheckerRegistry + 'static) -> Self {
+        self.checker_registry = Some(Box::new(registry));
+        self
+    }
+
+    pub fn set_checker_registry(&mut self, registry: impl CheckerRegistry + 'static) {
+        self.checker_registry = Some(Box::new(registry));
+    }
+
+    pub fn with_event_sink(mut self, sink: impl EntityEventSink + 'static) -> Self {
+        self.event_sink = Some(Box::new(sink));
+        self
+    }
+
+    pub fn set_event_sink(&mut self, sink: impl EntityEventSink + 'static) {
+        self.event_sink = Some(Box::new(sink));
     }
 
     pub fn with_internal_id_generator(
@@ -178,5 +199,49 @@ impl UserContext {
         self.repository_behavior_registry
             .as_ref()
             .and_then(|registry| registry.behavior(entity))
+    }
+
+    pub fn has_checker(&self, entity: &str) -> bool {
+        self.checker_registry
+            .as_ref()
+            .and_then(|registry| registry.checker(entity))
+            .is_some()
+    }
+
+    pub fn check_and_fix_record(
+        &self,
+        entity: &str,
+        record: &mut Record,
+    ) -> Result<(), RuntimeError> {
+        self.check_and_fix_record_at(entity, record, &ObjectLocation::root())
+    }
+
+    pub fn check_and_fix_record_at(
+        &self,
+        entity: &str,
+        record: &mut Record,
+        location: &ObjectLocation,
+    ) -> Result<(), RuntimeError> {
+        let Some(checker) = self
+            .checker_registry
+            .as_ref()
+            .and_then(|registry| registry.checker(entity))
+        else {
+            return Ok(());
+        };
+        let mut results = CheckResults::new();
+        checker.check_and_fix(self, record, location, &mut results);
+        if results.is_empty() {
+            Ok(())
+        } else {
+            Err(RuntimeError::Check(results))
+        }
+    }
+
+    pub fn send_event(&self, event: EntityEvent) -> Result<(), RuntimeError> {
+        let Some(sink) = self.event_sink.as_ref() else {
+            return Ok(());
+        };
+        sink.on_event(self, &event)
     }
 }
