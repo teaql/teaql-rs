@@ -5,6 +5,7 @@ members = [
     "teaql-runtime",
     "teaql-dialect-pg",
     "teaql-dialect-sqlite", "teaql-macros",
+    "examples",
 ]
 resolver = "2"
 

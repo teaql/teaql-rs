@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
 use chrono::{DateTime, NaiveDate, Utc};
 pub use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataType {
@@ -9,6 +11,7 @@ pub enum DataType {
     I64,
     U64,
     F64,
+    Decimal,
     Text,
     Json,
     Date,
@@ -49,9 +52,45 @@ impl From<i64> for Value {
     }
 }
 
+impl From<i32> for Value {
+    fn from(value: i32) -> Self {
+        Self::I64(i64::from(value))
+    }
+}
+
+impl From<i16> for Value {
+    fn from(value: i16) -> Self {
+        Self::I64(i64::from(value))
+    }
+}
+
 impl From<u64> for Value {
     fn from(value: u64) -> Self {
         Self::U64(value)
+    }
+}
+
+impl From<u32> for Value {
+    fn from(value: u32) -> Self {
+        Self::U64(u64::from(value))
+    }
+}
+
+impl From<u16> for Value {
+    fn from(value: u16) -> Self {
+        Self::U64(u64::from(value))
+    }
+}
+
+impl From<f64> for Value {
+    fn from(value: f64) -> Self {
+        Self::F64(value)
+    }
+}
+
+impl From<f32> for Value {
+    fn from(value: f32) -> Self {
+        Self::F64(f64::from(value))
     }
 }
 
@@ -88,6 +127,34 @@ impl From<DateTime<Utc>> for Value {
 impl Value {
     pub fn object(record: crate::Record) -> Self {
         Self::Object(record)
+    }
+
+    pub fn try_i64(&self) -> Option<i64> {
+        match self {
+            Self::I64(value) => Some(*value),
+            Self::U64(value) => i64::try_from(*value).ok(),
+            Self::Decimal(value) => value.to_i64(),
+            _ => None,
+        }
+    }
+
+    pub fn try_u64(&self) -> Option<u64> {
+        match self {
+            Self::U64(value) => Some(*value),
+            Self::I64(value) => u64::try_from(*value).ok(),
+            Self::Decimal(value) => value.to_u64(),
+            _ => None,
+        }
+    }
+
+    pub fn try_decimal(&self) -> Option<Decimal> {
+        match self {
+            Self::Decimal(value) => Some(*value),
+            Self::I64(value) => Some(Decimal::from(*value)),
+            Self::U64(value) => Some(Decimal::from(*value)),
+            Self::Text(value) => Decimal::from_str(value).ok(),
+            _ => None,
+        }
     }
 
     pub fn to_json_value(&self) -> serde_json::Value {

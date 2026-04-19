@@ -37,6 +37,7 @@ The current implementation focuses on the Rust-native core runtime:
 - extended predicates including `between`, `is null`, `is not null`, Java-style `contain`/`begin_with`/`end_with`, `not like`, `not in`, and `soundlike` through `SOUNDEX`
 - grouped aggregate SQL and memory execution, including `COUNT(*)`
 - aggregate decimal results use `Value::Decimal`/PostgreSQL `NUMERIC` instead of lossy `f64`
+- `u64`, signed integers, and Decimal now have explicit checked conversion behavior in entity mapping and SQLx bind/decode paths
 - PostgreSQL `IN_LARGE`/`NOT_IN_LARGE` compile to array binds with `ANY`/`ALL`
 - subquery filters can compile `field IN (SELECT ...)` / `field NOT IN (SELECT ...)`
 - expression projections, expression/function ordering, extended aggregates, and `HAVING`
@@ -59,6 +60,7 @@ The current implementation focuses on the Rust-native core runtime:
 - graph upsert path through `save_graph()`, including parent update, child merge, child insert, and missing-child soft delete
 - typed entity graph extraction through `graph_node_from_entity()`, `save_entity_graph_create()`, and `save_entity_graph()`
 - graph write state hints: `Upsert`, `Reference`, and `Remove`
+- stricter graph state semantics: reference nodes validate existence/version/deleted state, remove nodes validate existence, and many-relation merge rejects duplicate child ids
 - relation metadata for graph writes: `attach/detached` and `delete_missing/keep_missing`
 - SQLite transaction boundary helpers for graph-write wrapping and rollback testing
 - PostgreSQL connection-scoped transaction executor for graph-write wrapping and rollback testing
@@ -72,7 +74,7 @@ The current implementation focuses on the Rust-native core runtime:
 - PostgreSQL `ensure_schema` support with real multi-table integration validation, including `soundex(text)` and `teaql_id_space` bootstrap
 - `UserContext::ensure_sqlite_schema()` as the high-level SQLite schema entry point
 - `UserContext::ensure_postgres_schema()` as the high-level PostgreSQL schema entry point
-- JSON, date, and timestamp bind/decode support in the `sqlx` execution path
+- JSON, Decimal, date, and timestamp bind/decode support in the `sqlx` execution path
 - SQLite in-memory integration tests for CRUD and relation enhancement under `--features sqlx`
 - SQLite integration coverage for nested create-graph writes
 - SQLite integration coverage for nested graph update diff
@@ -236,10 +238,33 @@ Current SQLite `ensure_schema` scope:
 - add missing columns to existing tables
 - do not attempt destructive migrations such as drop column, type rewrite, or primary-key rebuild
 
+## Examples
+
+Runnable examples live in the `teaql-examples` workspace package:
+
+```bash
+cargo run -p teaql-examples --bin sqlite_schema_crud
+cargo run -p teaql-examples --bin sqlite_relations_graph
+```
+
+The PostgreSQL example uses real schema bootstrap and PG query features. Set
+`TEAQL_TEST_PG_URL` before running it:
+
+```bash
+TEAQL_TEST_PG_URL=postgres://postgres:postgres@127.0.0.1:55440/teaql_examples \
+  cargo run -p teaql-examples --bin pg_query_features
+```
+
+Current examples cover:
+
+- SQLite schema bootstrap, CRUD, optimistic lock delete/recover, and typed entity fetch
+- SQLite typed entity graph writes through `save_entity_graph_create()`
+- SQLite relation enhancement through `fetch_enhanced_entities::<T>()`
+- PostgreSQL `soundlike`/`SOUNDEX`, array-bound large IN, expression projection/sort, extended aggregates, and `HAVING`
+
 ## Next steps
 
-1. Add runnable examples that show module assembly, schema bootstrap, CRUD, typed entities, and relation enhancement.
-2. Expand graph writes toward richer Java-style reload/merge semantics and typed graph extraction.
-3. Keep expanding value coverage beyond the current JSON/date/timestamp set, especially `Uuid`, decimal, and bytes.
-4. Decide whether a Rust-native service layer is needed above repository/runtime APIs.
-5. Expand `MemoryRepository` toward relation enhancement and richer parity with the SQL-backed path.
+1. Expand graph writes toward richer Java-style reload/merge semantics and typed graph extraction.
+2. Keep expanding value coverage beyond the current JSON/date/timestamp set, especially `Uuid`, decimal, and bytes.
+3. Decide whether a Rust-native service layer is needed above repository/runtime APIs.
+4. Expand `MemoryRepository` toward relation enhancement and richer parity with the SQL-backed path.

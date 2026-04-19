@@ -617,10 +617,12 @@ where
     ) -> Result<GraphNode, RepositoryError<E::Error>> {
         match node.operation {
             GraphOperation::Upsert => {}
-            GraphOperation::Reference => return Ok(node),
+            GraphOperation::Reference => return self.validate_reference_node(node),
             GraphOperation::Remove => {
-                self.delete_graph_node(&node)?;
-                return Ok(node);
+                return Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
+                    "create graph cannot remove node {}",
+                    node.entity
+                ))));
             }
         }
 
@@ -723,8 +725,9 @@ where
     ) -> Result<GraphNode, RepositoryError<E::Error>> {
         match node.operation {
             GraphOperation::Upsert => {}
-            GraphOperation::Reference => return Ok(node),
+            GraphOperation::Reference => return self.validate_reference_node(node),
             GraphOperation::Remove => {
+                self.validate_remove_node(&node)?;
                 self.delete_graph_node(&node)?;
                 return Ok(node);
             }
@@ -860,13 +863,23 @@ where
             let mut saved_children = Vec::new();
             for mut child in children {
                 ensure_relation_target(&node.entity, &name, &relation.target_entity, &child)?;
-                if relation.attach {
+                if relation.attach && child.operation != GraphOperation::Reference {
                     child
                         .values
                         .insert(relation.foreign_key.clone(), local_value.clone());
                 }
-                if let Some(child_id) = child.values.get(&child_id_property.name) {
-                    seen.insert(graph_identity_key(child_id));
+                if let Some(child_id) = child
+                    .values
+                    .get(&child_id_property.name)
+                    .filter(|value| !matches!(value, Value::Null))
+                {
+                    let key = graph_identity_key(child_id);
+                    if !seen.insert(key.clone()) {
+                        return Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
+                            "duplicate child id {key} in relation {}.{}",
+                            node.entity, name
+                        ))));
+                    }
                 }
                 saved_children.push(child_repo.upsert_graph_node(child)?);
             }
@@ -892,6 +905,151 @@ where
         }
 
         Ok(node)
+    }
+
+    fn validate_reference_node(
+        &self,
+        node: GraphNode,
+    ) -> Result<GraphNode, RepositoryError<E::Error>> {
+        if !node.relations.is_empty() {
+            return Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
+                "reference node {} cannot contain child relations",
+                node.entity
+            ))));
+        }
+        let descriptor = self
+            .repository
+            .metadata
+            .context
+            .require_entity(&node.entity)
+            .map_err(RepositoryError::Runtime)?;
+        let id_property = descriptor.id_property().ok_or_else(|| {
+            RepositoryError::Runtime(RuntimeError::Graph(format!(
+                "entity {} has no id property for graph reference",
+                node.entity
+            )))
+        })?;
+        let id = node
+            .values
+            .get(&id_property.name)
+            .filter(|value| !matches!(value, Value::Null))
+            .cloned()
+            .ok_or_else(|| {
+                RepositoryError::Runtime(RuntimeError::Graph(format!(
+                    "reference node {} missing id property {}",
+                    node.entity, id_property.name
+                )))
+            })?;
+
+        for field in node.values.keys() {
+            if field == &id_property.name {
+                continue;
+            }
+            if descriptor
+                .version_property()
+                .map(|property| field == &property.name)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            return Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
+                "reference node {} cannot carry mutable field {}",
+                node.entity, field
+            ))));
+        }
+
+        let current = self
+            .fetch_graph_current_row(&node.entity, &id_property.name, &id)?
+            .ok_or_else(|| {
+                RepositoryError::Runtime(RuntimeError::Graph(format!(
+                    "reference node {}({}) does not exist",
+                    node.entity,
+                    graph_identity_key(&id)
+                )))
+            })?;
+
+        if let Some(version_property) = descriptor.version_property() {
+            if let Some(Value::I64(existing_version)) = current.get(&version_property.name) {
+                if *existing_version < 0 {
+                    return Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
+                        "reference node {}({}) is deleted",
+                        node.entity,
+                        graph_identity_key(&id)
+                    ))));
+                }
+                if let Some(Value::I64(expected_version)) = node.values.get(&version_property.name)
+                {
+                    if expected_version != existing_version {
+                        return Err(RepositoryError::Runtime(
+                            RuntimeError::OptimisticLockConflict {
+                                entity: node.entity,
+                                id: graph_identity_key(&id),
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+
+        Ok(GraphNode {
+            entity: node.entity,
+            values: current,
+            relations: BTreeMap::new(),
+            operation: GraphOperation::Reference,
+        })
+    }
+
+    fn validate_remove_node(&self, node: &GraphNode) -> Result<(), RepositoryError<E::Error>> {
+        if !node.relations.is_empty() {
+            return Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
+                "remove node {} cannot contain child relations",
+                node.entity
+            ))));
+        }
+        let descriptor = self
+            .repository
+            .metadata
+            .context
+            .require_entity(&node.entity)
+            .map_err(RepositoryError::Runtime)?;
+        let id_property = descriptor.id_property().ok_or_else(|| {
+            RepositoryError::Runtime(RuntimeError::Graph(format!(
+                "entity {} has no id property for graph remove",
+                node.entity
+            )))
+        })?;
+        let id = node
+            .values
+            .get(&id_property.name)
+            .filter(|value| !matches!(value, Value::Null))
+            .cloned()
+            .ok_or_else(|| {
+                RepositoryError::Runtime(RuntimeError::Graph(format!(
+                    "remove node {} missing id property {}",
+                    node.entity, id_property.name
+                )))
+            })?;
+        let current = self
+            .fetch_graph_current_row(&node.entity, &id_property.name, &id)?
+            .ok_or_else(|| {
+                RepositoryError::Runtime(RuntimeError::Graph(format!(
+                    "remove node {}({}) does not exist",
+                    node.entity,
+                    graph_identity_key(&id)
+                )))
+            })?;
+        if let Some(version_property) = descriptor.version_property() {
+            if let Some(Value::I64(existing_version)) = current.get(&version_property.name) {
+                if *existing_version < 0 {
+                    return Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
+                        "remove node {}({}) is already deleted",
+                        node.entity,
+                        graph_identity_key(&id)
+                    ))));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn graph_node_from_record(

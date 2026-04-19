@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::future::Future;
+use std::str::FromStr;
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use rust_decimal::Decimal;
@@ -20,6 +21,7 @@ use tokio::sync::Mutex;
 use crate::{InternalIdGenerator, RuntimeError, UserContext};
 
 pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";
+const SQLITE_DECIMAL_PREFIX: &str = "__teaql_decimal__:";
 
 #[derive(Debug)]
 pub enum MutationExecutorError {
@@ -698,7 +700,7 @@ fn bind_sqlite(args: &mut SqliteArguments<'_>, value: &Value) -> Result<(), Muta
             .add(*v)
             .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
         Value::Decimal(v) => args
-            .add(v.to_string())
+            .add(format!("{SQLITE_DECIMAL_PREFIX}{v}"))
             .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
         Value::Text(v) => args
             .add(v.clone())
@@ -795,9 +797,10 @@ fn decode_sqlite_row(row: &SqliteRow) -> Result<Record, MutationExecutorError> {
             "INTEGER" | "INT8" | "INT4" | "INT2" => {
                 Value::I64(row.try_get(index).map_err(MutationExecutorError::Sqlx)?)
             }
-            "REAL" | "FLOAT" | "DOUBLE" | "NUMERIC" => {
+            "REAL" | "FLOAT" | "DOUBLE" => {
                 Value::F64(row.try_get(index).map_err(MutationExecutorError::Sqlx)?)
             }
+            "NUMERIC" | "DECIMAL" => decode_sqlite_decimal(row, index)?,
             "JSON" => {
                 let raw: String = row.try_get(index).map_err(MutationExecutorError::Sqlx)?;
                 Value::Json(serde_json::from_str(&raw).map_err(|err| {
@@ -812,9 +815,7 @@ fn decode_sqlite_row(row: &SqliteRow) -> Result<Record, MutationExecutorError> {
                 row.try_get::<DateTime<Utc>, _>(index)
                     .map_err(MutationExecutorError::Sqlx)?,
             ),
-            "TEXT" | "VARCHAR" => {
-                Value::Text(row.try_get(index).map_err(MutationExecutorError::Sqlx)?)
-            }
+            "TEXT" | "VARCHAR" => decode_sqlite_text(row, index)?,
             "NULL" => infer_sqlite_dynamic_value(row, index)?,
             other => {
                 return Err(MutationExecutorError::UnsupportedColumnType(
@@ -825,6 +826,37 @@ fn decode_sqlite_row(row: &SqliteRow) -> Result<Record, MutationExecutorError> {
         record.insert(name, value);
     }
     Ok(record)
+}
+
+fn decode_sqlite_text(row: &SqliteRow, index: usize) -> Result<Value, MutationExecutorError> {
+    let value: String = row.try_get(index).map_err(MutationExecutorError::Sqlx)?;
+    if let Some(decimal) = value.strip_prefix(SQLITE_DECIMAL_PREFIX) {
+        return Decimal::from_str(decimal)
+            .map(Value::Decimal)
+            .map_err(|err| MutationExecutorError::Bind(format!("invalid sqlite decimal: {err}")));
+    }
+    Ok(Value::Text(value))
+}
+
+fn decode_sqlite_decimal(row: &SqliteRow, index: usize) -> Result<Value, MutationExecutorError> {
+    if let Ok(value) = row.try_get::<String, _>(index) {
+        if let Some(decimal) = value.strip_prefix(SQLITE_DECIMAL_PREFIX) {
+            return Decimal::from_str(decimal)
+                .map(Value::Decimal)
+                .map_err(|err| {
+                    MutationExecutorError::Bind(format!("invalid sqlite decimal: {err}"))
+                });
+        }
+        return Decimal::from_str(&value)
+            .map(Value::Decimal)
+            .map_err(|err| MutationExecutorError::Bind(format!("invalid sqlite decimal: {err}")));
+    }
+    if let Ok(value) = row.try_get::<i64, _>(index) {
+        return Ok(Value::Decimal(Decimal::from(value)));
+    }
+    Err(MutationExecutorError::UnsupportedColumnType(
+        "NUMERIC".to_owned(),
+    ))
 }
 
 fn infer_sqlite_dynamic_value(
@@ -838,6 +870,13 @@ fn infer_sqlite_dynamic_value(
         return Ok(Value::F64(value));
     }
     if let Ok(value) = row.try_get::<String, _>(index) {
+        if let Some(decimal) = value.strip_prefix(SQLITE_DECIMAL_PREFIX) {
+            return Decimal::from_str(decimal)
+                .map(Value::Decimal)
+                .map_err(|err| {
+                    MutationExecutorError::Bind(format!("invalid sqlite decimal: {err}"))
+                });
+        }
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&value) {
             if !matches!(json, serde_json::Value::String(_)) {
                 return Ok(Value::Json(json));

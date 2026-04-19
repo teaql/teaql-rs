@@ -30,6 +30,7 @@ impl SqlDialect for PostgresDialect {
             DataType::Bool => Ok("BOOLEAN"),
             DataType::I64 | DataType::U64 => Ok("BIGINT"),
             DataType::F64 => Ok("DOUBLE PRECISION"),
+            DataType::Decimal => Ok("NUMERIC"),
             DataType::Text => Ok("TEXT"),
             DataType::Json => Ok("JSONB"),
             DataType::Date => Ok("DATE"),
@@ -298,5 +299,13 @@ mod tests {
             sql,
             "ALTER TABLE \"orders\" ADD COLUMN \"payload\" JSONB NOT NULL"
         );
+
+        let sql = PostgresDialect
+            .compile_add_column(
+                &entity(),
+                &PropertyDescriptor::new("amount", DataType::Decimal).column_name("amount"),
+            )
+            .unwrap();
+        assert_eq!(sql, "ALTER TABLE \"orders\" ADD COLUMN \"amount\" NUMERIC");
     }
 }

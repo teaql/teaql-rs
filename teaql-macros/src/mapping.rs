@@ -46,26 +46,54 @@ pub fn decode_value_tokens(
         Some("i64") => quote! {
             match #value_expr {
                 ::teaql_core::Value::I64(v) => *v,
+                ::teaql_core::Value::U64(v) => i64::try_from(*v)
+                    .map_err(|_| ::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: u64 out of i64 range", #field_name)))?,
+                other => return Err(::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: {:?}", #field_name, other))),
+            }
+        },
+        Some("i16") => quote! {
+            match #value_expr {
+                ::teaql_core::Value::I64(v) => i16::try_from(*v)
+                    .map_err(|_| ::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: i64 out of i16 range", #field_name)))?,
+                ::teaql_core::Value::U64(v) => i16::try_from(*v)
+                    .map_err(|_| ::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: u64 out of i16 range", #field_name)))?,
                 other => return Err(::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: {:?}", #field_name, other))),
             }
         },
         Some("i32") => quote! {
             match #value_expr {
-                ::teaql_core::Value::I64(v) => *v as i32,
+                ::teaql_core::Value::I64(v) => i32::try_from(*v)
+                    .map_err(|_| ::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: i64 out of i32 range", #field_name)))?,
+                ::teaql_core::Value::U64(v) => i32::try_from(*v)
+                    .map_err(|_| ::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: u64 out of i32 range", #field_name)))?,
                 other => return Err(::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: {:?}", #field_name, other))),
             }
         },
         Some("u64") => quote! {
             match #value_expr {
                 ::teaql_core::Value::U64(v) => *v,
-                ::teaql_core::Value::I64(v) if *v >= 0 => *v as u64,
+                ::teaql_core::Value::I64(v) => u64::try_from(*v)
+                    .map_err(|_| ::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: negative i64 cannot map to u64", #field_name)))?,
+                ::teaql_core::Value::Decimal(v) => ::teaql_core::Value::Decimal(*v).try_u64()
+                    .ok_or_else(|| ::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: decimal cannot map exactly to u64", #field_name)))?,
+                other => return Err(::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: {:?}", #field_name, other))),
+            }
+        },
+        Some("u16") => quote! {
+            match #value_expr {
+                ::teaql_core::Value::U64(v) => u16::try_from(*v)
+                    .map_err(|_| ::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: u64 out of u16 range", #field_name)))?,
+                ::teaql_core::Value::I64(v) => u16::try_from(*v)
+                    .map_err(|_| ::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: i64 out of u16 range", #field_name)))?,
                 other => return Err(::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: {:?}", #field_name, other))),
             }
         },
         Some("u32") => quote! {
             match #value_expr {
-                ::teaql_core::Value::U64(v) => *v as u32,
-                ::teaql_core::Value::I64(v) if *v >= 0 => *v as u32,
+                ::teaql_core::Value::U64(v) => u32::try_from(*v)
+                    .map_err(|_| ::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: u64 out of u32 range", #field_name)))?,
+                ::teaql_core::Value::I64(v) => u32::try_from(*v)
+                    .map_err(|_| ::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: i64 out of u32 range", #field_name)))?,
                 other => return Err(::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: {:?}", #field_name, other))),
             }
         },
@@ -74,9 +102,29 @@ pub fn decode_value_tokens(
                 ::teaql_core::Value::F64(v) => *v,
                 ::teaql_core::Value::I64(v) => *v as f64,
                 ::teaql_core::Value::Decimal(v) => {
-                    use rust_decimal::prelude::ToPrimitive;
-                    v.to_f64().ok_or_else(|| ::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: decimal out of f64 range", #field_name)))?
+                    v.to_string().parse::<f64>().map_err(|_| ::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: decimal out of f64 range", #field_name)))?
                 },
+                other => return Err(::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: {:?}", #field_name, other))),
+            }
+        },
+        Some("f32") => quote! {
+            match #value_expr {
+                ::teaql_core::Value::F64(v) => {
+                    if *v < f32::MIN as f64 || *v > f32::MAX as f64 {
+                        return Err(::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: f64 out of f32 range", #field_name)));
+                    }
+                    *v as f32
+                },
+                ::teaql_core::Value::I64(v) => *v as f32,
+                ::teaql_core::Value::U64(v) => *v as f32,
+                other => return Err(::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: {:?}", #field_name, other))),
+            }
+        },
+        Some("Decimal") => quote! {
+            match #value_expr {
+                ::teaql_core::Value::Decimal(v) => *v,
+                ::teaql_core::Value::I64(v) => ::teaql_core::Decimal::from(*v),
+                ::teaql_core::Value::U64(v) => ::teaql_core::Decimal::from(*v),
                 other => return Err(::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: {:?}", #field_name, other))),
             }
         },

@@ -27,6 +27,7 @@ impl SqlDialect for SqliteDialect {
             DataType::I64 | DataType::U64 if property.is_id => Ok("INTEGER"),
             DataType::I64 | DataType::U64 => Ok("INTEGER"),
             DataType::F64 => Ok("REAL"),
+            DataType::Decimal => Ok("NUMERIC"),
             DataType::Text => Ok("TEXT"),
             DataType::Json => Ok("JSON"),
             DataType::Date => Ok("DATE"),
@@ -138,5 +139,13 @@ mod tests {
             sql,
             "ALTER TABLE \"orders\" ADD COLUMN \"created_at\" TIMESTAMP NOT NULL"
         );
+
+        let sql = SqliteDialect
+            .compile_add_column(
+                &entity(),
+                &PropertyDescriptor::new("amount", DataType::Decimal).column_name("amount"),
+            )
+            .unwrap();
+        assert_eq!(sql, "ALTER TABLE \"orders\" ADD COLUMN \"amount\" NUMERIC");
     }
 }

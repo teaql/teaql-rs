@@ -55,6 +55,17 @@ mod tests {
         name: String,
     }
 
+    #[allow(dead_code)]
+    #[derive(Debug, TeaqlEntity)]
+    #[teaql(entity = "TypedNumber", table = "typed_number")]
+    struct TypedNumberRow {
+        #[teaql(id)]
+        id: u64,
+        signed: i32,
+        unsigned: u32,
+        amount: Decimal,
+    }
+
     #[test]
     fn derive_entity_descriptor() {
         let descriptor = OrderRow::entity_descriptor();
@@ -69,6 +80,53 @@ mod tests {
                 .property_by_name("name")
                 .map(|p| p.column_name.as_str()),
             Some("display_name")
+        );
+    }
+
+    #[test]
+    fn derive_maps_checked_integer_and_decimal_fields() {
+        let descriptor = TypedNumberRow::entity_descriptor();
+        assert_eq!(
+            descriptor.property_by_name("amount").map(|p| p.data_type),
+            Some(DataType::Decimal)
+        );
+
+        let row = TypedNumberRow::from_record(Record::from([
+            ("id".to_owned(), Value::I64(7)),
+            ("signed".to_owned(), Value::I64(2_147_483_647)),
+            ("unsigned".to_owned(), Value::U64(4_294_967_295)),
+            ("amount".to_owned(), Value::Decimal(Decimal::new(12345, 2))),
+        ]))
+        .unwrap();
+        assert_eq!(row.id, 7);
+        assert_eq!(row.signed, i32::MAX);
+        assert_eq!(row.unsigned, u32::MAX);
+        assert_eq!(row.amount, Decimal::new(12345, 2));
+
+        let signed_overflow = TypedNumberRow::from_record(Record::from([
+            ("id".to_owned(), Value::U64(1)),
+            ("signed".to_owned(), Value::I64(i64::from(i32::MAX) + 1)),
+            ("unsigned".to_owned(), Value::U64(1)),
+            ("amount".to_owned(), Value::Decimal(Decimal::ONE)),
+        ]));
+        assert!(
+            signed_overflow
+                .unwrap_err()
+                .message
+                .contains("out of i32 range")
+        );
+
+        let unsigned_negative = TypedNumberRow::from_record(Record::from([
+            ("id".to_owned(), Value::U64(1)),
+            ("signed".to_owned(), Value::I64(1)),
+            ("unsigned".to_owned(), Value::I64(-1)),
+            ("amount".to_owned(), Value::Decimal(Decimal::ONE)),
+        ]));
+        assert!(
+            unsigned_negative
+                .unwrap_err()
+                .message
+                .contains("out of u32 range")
         );
     }
 

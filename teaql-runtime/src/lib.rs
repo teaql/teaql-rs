@@ -1507,6 +1507,11 @@ mod sqlx_integration_tests {
                     .not_null(),
             )
             .property(
+                PropertyDescriptor::new("amount", DataType::Decimal)
+                    .column_name("amount")
+                    .not_null(),
+            )
+            .property(
                 PropertyDescriptor::new("birthday", DataType::Date)
                     .column_name("birthday")
                     .not_null(),
@@ -1976,7 +1981,7 @@ mod sqlx_integration_tests {
     }
 
     #[tokio::test]
-    async fn sqlite_executor_roundtrips_json_date_and_timestamp() {
+    async fn sqlite_executor_roundtrips_json_decimal_date_and_timestamp() {
         use sqlx::sqlite::SqlitePoolOptions;
 
         let pool = SqlitePoolOptions::new()
@@ -1993,6 +1998,7 @@ mod sqlx_integration_tests {
         let birthday = NaiveDate::from_ymd_opt(2024, 2, 3).unwrap();
         let happened_at = Utc.with_ymd_and_hms(2024, 2, 3, 4, 5, 6).unwrap();
         let payload = serde_json::json!({"name": "teaql", "count": 2});
+        let amount = Decimal::new(12345, 2);
 
         let insert = dialect
             .compile_insert(
@@ -2000,6 +2006,7 @@ mod sqlx_integration_tests {
                 &InsertCommand::new("TypedValue")
                     .value("id", 1_u64)
                     .value("payload", payload.clone())
+                    .value("amount", amount)
                     .value("birthday", birthday)
                     .value("happened_at", happened_at),
             )
@@ -2012,6 +2019,7 @@ mod sqlx_integration_tests {
                 &SelectQuery::new("TypedValue")
                     .project("id")
                     .project("payload")
+                    .project("amount")
                     .project("birthday")
                     .project("happened_at")
                     .filter(Expr::eq("id", 1_u64)),
@@ -2020,6 +2028,7 @@ mod sqlx_integration_tests {
         let rows = executor.fetch_all(&select).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].get("payload"), Some(&Value::Json(payload)));
+        assert_eq!(rows[0].get("amount"), Some(&Value::Decimal(amount)));
         assert_eq!(rows[0].get("birthday"), Some(&Value::Date(birthday)));
         assert_eq!(
             rows[0].get("happened_at"),
@@ -2657,7 +2666,13 @@ mod sqlx_integration_tests {
                     ),
             );
 
-        repo.save_graph(graph).unwrap();
+        let saved = repo.save_graph(graph).unwrap();
+        assert_eq!(
+            saved.relations["lines"][1].relations["product"][0]
+                .values
+                .get("name"),
+            Some(&Value::Text("reference-only".to_owned()))
+        );
 
         let removed = sqlx::query("SELECT version FROM orderline WHERE id = 10")
             .fetch_one(&pool)
@@ -2686,6 +2701,141 @@ mod sqlx_integration_tests {
             product.try_get::<String, _>("name").unwrap(),
             "reference-only"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sqlite_save_graph_rejects_invalid_reference_and_state_transitions() {
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        let mutation_executor = SqliteMutationExecutor::new(pool.clone());
+        let order = entity();
+        let line = line_entity();
+        let product = product_entity();
+        mutation_executor
+            .ensure_schema(&SqliteDialect, &[&order, &line, &product])
+            .await
+            .unwrap();
+
+        sqlx::query("INSERT INTO orders (id, version, name) VALUES (1, 1, 'root')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO product (id, name) VALUES (100, 'valid-reference')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO orderline (id, version, order_id, product_id, name) VALUES
+                (10, 1, 1, 100, 'line-10')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let executor = SqliteSyncExecutor::new(mutation_executor);
+        let mut ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(order)
+                    .with_entity(line)
+                    .with_entity(product),
+            )
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+        ctx.insert_resource(SqliteDialect);
+        ctx.insert_resource(executor);
+
+        let repo = ctx
+            .resolve_repository::<SqliteDialect, SqliteSyncExecutor>("Order")
+            .unwrap();
+
+        let missing_reference = repo.save_graph(
+            GraphNode::new("Order").value("id", 1_u64).relation(
+                "lines",
+                GraphNode::new("OrderLine")
+                    .value("id", 12_u64)
+                    .value("version", 1_i64)
+                    .value("name", "bad-reference")
+                    .relation(
+                        "product",
+                        GraphNode::new("Product").value("id", 999_u64).reference(),
+                    ),
+            ),
+        );
+        assert!(format!("{missing_reference:?}").contains("does not exist"));
+
+        let mutable_reference = repo.save_graph(
+            GraphNode::new("Order").value("id", 1_u64).relation(
+                "lines",
+                GraphNode::new("OrderLine")
+                    .value("id", 12_u64)
+                    .value("version", 1_i64)
+                    .value("name", "mutable-reference")
+                    .relation(
+                        "product",
+                        GraphNode::new("Product")
+                            .value("id", 100_u64)
+                            .value("name", "should-not-mutate")
+                            .reference(),
+                    ),
+            ),
+        );
+        assert!(format!("{mutable_reference:?}").contains("cannot carry mutable field"));
+
+        let duplicate_child = repo.save_graph(
+            GraphNode::new("Order")
+                .value("id", 1_u64)
+                .relation(
+                    "lines",
+                    GraphNode::new("OrderLine")
+                        .value("id", 10_u64)
+                        .value("version", 1_i64)
+                        .reference(),
+                )
+                .relation(
+                    "lines",
+                    GraphNode::new("OrderLine")
+                        .value("id", 10_u64)
+                        .value("version", 1_i64)
+                        .reference(),
+                ),
+        );
+        assert!(format!("{duplicate_child:?}").contains("duplicate child id"));
+
+        let reference_version_conflict = repo.save_graph(
+            GraphNode::new("Order").value("id", 1_u64).relation(
+                "lines",
+                GraphNode::new("OrderLine")
+                    .value("id", 10_u64)
+                    .value("version", 2_i64)
+                    .reference(),
+            ),
+        );
+        assert!(format!("{reference_version_conflict:?}").contains("OptimisticLockConflict"));
+
+        let remove_with_child = repo.save_graph(
+            GraphNode::new("Order").value("id", 1_u64).relation(
+                "lines",
+                GraphNode::new("OrderLine")
+                    .value("id", 10_u64)
+                    .value("version", 1_i64)
+                    .relation(
+                        "product",
+                        GraphNode::new("Product").value("id", 100_u64).reference(),
+                    )
+                    .remove(),
+            ),
+        );
+        assert!(format!("{remove_with_child:?}").contains("cannot contain child relations"));
+
+        let create_remove =
+            repo.save_graph_create(GraphNode::new("Order").value("id", 1_u64).remove());
+        assert!(format!("{create_remove:?}").contains("create graph cannot remove node"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
