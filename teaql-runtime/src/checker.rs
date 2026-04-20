@@ -200,7 +200,7 @@ impl CheckResult {
 impl std::fmt::Display for CheckResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.message {
-            Some(message) => write!(f, "{}: {message}", self.location),
+            Some(message) => write!(f, "{message}"),
             None => write!(f, "{}: {:?}", self.location, self.rule),
         }
     }

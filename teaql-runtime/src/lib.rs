@@ -4,6 +4,7 @@ mod error;
 mod event;
 mod graph;
 mod id;
+mod language;
 mod memory;
 mod registry;
 mod repository;
@@ -17,6 +18,9 @@ pub use graph::{
 };
 pub(crate) use id::local_id_generator;
 pub use id::{InternalIdGenerator, SnowflakeIdGenerator};
+pub use language::{
+    BuiltinTranslator, Language, MessageTranslator, translate_check_result, translate_location,
+};
 pub use memory::{MemoryRepository, MemoryRepositoryError};
 pub use registry::{
     InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry, InMemoryRepositoryRegistry,
@@ -40,9 +44,9 @@ mod tests {
         CHECK_OBJECT_STATUS_FIELD, CheckObjectStatus, CheckResults, Checker, EntityEvent,
         EntityEventKind, EntityEventSink, GraphMutationKind, GraphNode, GraphTransactionBoundary,
         InMemoryCheckerRegistry, InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry,
-        InMemoryRepositoryRegistry, InternalIdGenerator, MemoryRepository, MetadataStore,
+        InMemoryRepositoryRegistry, InternalIdGenerator, Language, MemoryRepository, MetadataStore,
         ObjectLocation, QueryExecutor, Repository, RepositoryBehavior, RepositoryError,
-        RuntimeError, RuntimeModule, UserContext,
+        RuntimeError, RuntimeModule, UserContext, translate_check_result,
     };
     use teaql_core::{
         Aggregate, AggregateFunction, DataType, Decimal, DeleteCommand, Entity, EntityDescriptor,
@@ -898,6 +902,68 @@ mod tests {
             }
             other => panic!("unexpected checker error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn built_in_language_translators_cover_fifteen_languages() {
+        assert_eq!(Language::ALL.len(), 15);
+        let result = super::CheckResult::required(ObjectLocation::hash_root("name"));
+        let messages = Language::ALL
+            .iter()
+            .map(|language| translate_check_result(*language, &result))
+            .collect::<Vec<_>>();
+
+        assert!(messages.iter().all(|message| !message.is_empty()));
+        assert!(messages.iter().any(|message| message.contains("required")));
+        assert!(messages.iter().any(|message| message.contains("必填")));
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("obligatoire"))
+        );
+        assert_eq!(Language::from_code("zh-CN"), Some(Language::Chinese));
+        assert_eq!(
+            Language::from_code("zh-TW"),
+            Some(Language::TraditionalChinese)
+        );
+    }
+
+    #[test]
+    fn user_context_language_switch_translates_checker_errors() {
+        let mut ctx = UserContext::new()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
+            .with_checker_registry(InMemoryCheckerRegistry::new().with_checker(OrderChecker))
+            .with_internal_id_generator(FixedIdGenerator(77))
+            .with_language(Language::Chinese);
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(StubExecutor {
+            affected: 1,
+            rows: Vec::new(),
+        });
+
+        let repo = ctx
+            .resolve_repository::<PostgresDialect, StubExecutor>("Order")
+            .unwrap();
+        let error = repo
+            .prepare_insert_command(&repo.insert_command())
+            .unwrap_err();
+        match error {
+            RuntimeError::Check(results) => {
+                assert_eq!(results.len(), 1);
+                assert!(
+                    results[0]
+                        .message
+                        .as_ref()
+                        .is_some_and(|message| message.contains("必填"))
+                );
+            }
+            other => panic!("unexpected checker error: {other:?}"),
+        }
+
+        let mut ctx = UserContext::new().with_language(Language::English);
+        ctx.set_language_code("es").unwrap();
+        assert_eq!(ctx.language(), Language::Spanish);
     }
 
     #[test]

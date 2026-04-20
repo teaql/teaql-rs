@@ -52,6 +52,7 @@ The current implementation focuses on the Rust-native core runtime:
 - per-entity `RepositoryBehavior` hooks can mutate queries/commands and expose relation-load plans
 - Java-style checker infrastructure through `Checker`, `CheckResult`, `ObjectLocation`, object status, and `CheckerRegistry`
 - repository insert/update preparation invokes the single `UserContext::check_and_fix_record()` path and lets checkers distinguish create/update by object status
+- Java-style natural-language checker message translation with 15 built-in languages and `UserContext` language switching
 - Java-style entity mutation events through `EntityEvent`, `EntityEventKind`, and `EntityEventSink`
 - `UserContext` can dispatch created/updated/deleted/recovered events from ordinary repository mutations and graph writes
 - relation preload plans can now be resolved from behavior hooks and converted into child batch queries from parent rows

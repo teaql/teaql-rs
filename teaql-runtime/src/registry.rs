@@ -7,8 +7,8 @@ use teaql_core::{
 };
 
 use crate::{
-    Checker, EntityEventSink, InMemoryCheckerRegistry, InMemoryEntityEventSink, RuntimeError,
-    UserContext,
+    Checker, EntityEventSink, InMemoryCheckerRegistry, InMemoryEntityEventSink, Language,
+    RuntimeError, UserContext,
 };
 
 pub trait MetadataStore: Send + Sync {
@@ -174,6 +174,7 @@ pub struct RuntimeModule {
     behaviors: InMemoryRepositoryBehaviorRegistry,
     checkers: InMemoryCheckerRegistry,
     event_sinks: InMemoryEntityEventSink,
+    language: Option<Language>,
 }
 
 impl RuntimeModule {
@@ -226,12 +227,20 @@ impl RuntimeModule {
         self
     }
 
+    pub fn language(mut self, language: Language) -> Self {
+        self.language = Some(language);
+        self
+    }
+
     pub fn apply_to(self, ctx: &mut UserContext) {
         ctx.set_metadata(self.metadata);
         ctx.set_repository_registry(self.repositories);
         ctx.set_repository_behavior_registry(self.behaviors);
         ctx.set_checker_registry(self.checkers);
         ctx.set_event_sink(self.event_sinks);
+        if let Some(language) = self.language {
+            ctx.set_language(language);
+        }
     }
 
     pub fn into_context(self) -> UserContext {

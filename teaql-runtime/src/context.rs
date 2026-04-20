@@ -5,8 +5,8 @@ use teaql_core::{EntityDescriptor, Record, Value};
 
 use crate::{
     CheckResults, CheckerRegistry, ContextError, EntityEvent, EntityEventSink, InternalIdGenerator,
-    MetadataStore, ObjectLocation, RepositoryBehavior, RepositoryBehaviorRegistry,
-    RepositoryRegistry, RuntimeError, local_id_generator,
+    Language, MetadataStore, ObjectLocation, RepositoryBehavior, RepositoryBehaviorRegistry,
+    RepositoryRegistry, RuntimeError, local_id_generator, translate_check_result,
 };
 
 #[derive(Default)]
@@ -17,6 +17,7 @@ pub struct UserContext {
     pub(crate) checker_registry: Option<Box<dyn CheckerRegistry>>,
     pub(crate) event_sink: Option<Box<dyn EntityEventSink>>,
     pub(crate) internal_id_generator: Option<Box<dyn InternalIdGenerator>>,
+    language: Language,
     typed_resources: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
     named_resources: BTreeMap<String, Box<dyn Any + Send + Sync>>,
     locals: BTreeMap<String, Value>,
@@ -93,6 +94,29 @@ impl UserContext {
 
     pub fn set_internal_id_generator(&mut self, generator: impl InternalIdGenerator + 'static) {
         self.internal_id_generator = Some(Box::new(generator));
+    }
+
+    pub fn with_language(mut self, language: Language) -> Self {
+        self.language = language;
+        self
+    }
+
+    pub fn set_language(&mut self, language: Language) {
+        self.language = language;
+    }
+
+    pub fn language(&self) -> Language {
+        self.language
+    }
+
+    pub fn set_language_code(&mut self, code: &str) -> Result<(), RuntimeError> {
+        let Some(language) = Language::from_code(code) else {
+            return Err(RuntimeError::Language(format!(
+                "unsupported language code: {code}"
+            )));
+        };
+        self.language = language;
+        Ok(())
     }
 
     pub fn generate_id(&self, entity: &str) -> Result<Option<u64>, RuntimeError> {
@@ -234,7 +258,14 @@ impl UserContext {
         if results.is_empty() {
             Ok(())
         } else {
+            self.translate_check_results(&mut results);
             Err(RuntimeError::Check(results))
+        }
+    }
+
+    pub fn translate_check_results(&self, results: &mut CheckResults) {
+        for result in results {
+            result.message = Some(translate_check_result(self.language, result));
         }
     }
 

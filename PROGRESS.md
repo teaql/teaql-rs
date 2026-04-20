@@ -36,6 +36,7 @@ Current progress estimates:
 | RepositoryRegistry | Present | In-memory registry implemented | MVP | Low |
 | Entity-level behavior hooks | Present | `before_select/insert/update/delete/recover` supported | MVP | Medium |
 | Checker infrastructure | Java has `Checker`, `CheckResult`, `ObjectLocation`, and `checkAndFix` through `UserContext` | `Checker`, `CheckResult`, `ObjectLocation`, object status, and `CheckerRegistry` are implemented; insert/update paths invoke the same `UserContext::check_and_fix_record()` entry and checkers distinguish create/update by object status | MVP | Medium |
+| Language translation | Java has `io.teaql.data.language` translators | `Language`, `BuiltinTranslator`, and `UserContext` language switching support 15 built-in languages for checker message translation | MVP | Medium |
 | Entity mutation events | Java has `io.teaql.data.event` and `UserContext.sendEvent` | `EntityEventKind::{Created, Updated, Deleted, Recovered}`, `EntityEvent`, and `EntityEventSink` are implemented; ordinary repository writes and mixed graph writes dispatch events through `UserContext` | MVP | Medium |
 | SQL compiler | Complete and mature | `teaql-sql` supports select/insert/update/delete/recover, grouped and extended aggregates, `COUNT(*)`, expression projection/sort, `HAVING`, subquery filters, and extended predicates | MVP+ | Medium |
 | SQLite dialect | Present | Implemented and verified with `sqlx` integration tests | Done | Low |
@@ -77,6 +78,7 @@ Current progress estimates:
 - `UserContext` is present as a first-class runtime concept
 - Repository registry and behavior hooks are implemented
 - Java-style checker registration is implemented with a single object-status-driven check/fix entry
+- Checker failures can be translated through `UserContext` into 15 built-in languages
 - Java-style mutation event dispatch is available through `UserContext`
 - Single-level and nested relation enhancement are working
 - Entity derive macro exists and supports descriptor generation and typed record mapping
@@ -102,11 +104,12 @@ Current progress estimates:
 ## Most Important Gaps
 
 1. More complete `MemoryRepository` parity for relation enhancement and subquery execution
-2. Typed checker generation and richer Java-style validation semantics such as translated messages, Java status mapping, and nested typed object locations
-3. Richer event payloads for old/new values and typed entity snapshots, matching Java `BaseEntity` property-change details
-4. Broader value support beyond the current primitive/Decimal/JSON/date/timestamp set, especially `Uuid` and bytes
-5. Higher-level service layer if Rust-side application APIs are needed
-6. More complete schema migration tooling beyond additive `ensure_schema`
+2. Typed checker generation and richer Java-style validation semantics such as Java status mapping and nested typed object locations
+3. Richer language translation payloads such as domain-specific property labels instead of field-name title casing
+4. Richer event payloads for old/new values and typed entity snapshots, matching Java `BaseEntity` property-change details
+5. Broader value support beyond the current primitive/Decimal/JSON/date/timestamp set, especially `Uuid` and bytes
+6. Higher-level service layer if Rust-side application APIs are needed
+7. More complete schema migration tooling beyond additive `ensure_schema`
 
 ## Suggested Next Steps
 
