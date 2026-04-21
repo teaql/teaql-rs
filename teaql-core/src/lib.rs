@@ -10,6 +10,7 @@ mod query;
 mod safe_expression;
 mod value;
 mod web;
+mod xls;
 
 pub use entity::{
     BaseEntity, BaseEntityData, Entity, EntityDescriptorStore, EntityError, IdentifiableEntity,
@@ -27,6 +28,7 @@ pub use query::{
 pub use safe_expression::{SafeExpression, TeaqlEmpty};
 pub use value::{DataType, Decimal, Value};
 pub use web::{ACTION_LIST_KEY, STYLE_KEY, WEB_RESPONSE_VERSION, WebAction, WebResponse, WebStyle};
+pub use xls::{XlsBlock, XlsBlockBuildContext, XlsPage, XlsWorkbook};
 
 #[cfg(test)]
 mod tests {
@@ -633,6 +635,63 @@ mod tests {
         assert_eq!(failed["status"], serde_json::json!("NO"));
         assert_eq!(failed["message"], serde_json::json!("bad request"));
         assert_eq!(failed["version"], serde_json::json!("1.001"));
+    }
+
+    #[test]
+    fn xls_block_context_matches_java_navigation_model() {
+        let context = XlsBlockBuildContext::new("orders", 2, 3);
+        let header = context
+            .to_block("Order No")
+            .add_property("bold", true)
+            .span(2, 1);
+        let next = context.next().to_block("Amount");
+        let next_line = context.next_line().to_block("SO-1");
+        let new_line = context.new_line().to_block("reset-left");
+
+        assert_eq!(header.page, "orders");
+        assert_eq!(
+            (header.left, header.top, header.right, header.bottom),
+            (2, 3, 3, 3)
+        );
+        assert_eq!(header.width(), 2);
+        assert_eq!(header.height(), 1);
+        assert!(header.contains(3, 3));
+        assert!(!header.contains(4, 3));
+        assert_eq!((next.left, next.top), (3, 3));
+        assert_eq!((next_line.left, next_line.top), (2, 4));
+        assert_eq!((new_line.left, new_line.top), (0, 4));
+        assert_eq!(
+            header.properties.get("bold"),
+            Some(&serde_json::json!(true))
+        );
+    }
+
+    #[test]
+    fn xls_workbook_groups_pages_and_blocks_as_json_payload() {
+        let style = XlsBlock::new("orders", 0, 0, serde_json::Value::Null)
+            .add_property("backgroundColor", "#ffeecc");
+        let title = XlsBlock::new("orders", 0, 0, "Orders")
+            .style(style)
+            .span(3, 1);
+        let page = XlsPage::new("orders").add_block(title);
+        let workbook = XlsWorkbook::new().add_page(page);
+
+        assert!(workbook.page("orders").is_some());
+        assert_eq!(
+            workbook
+                .page("orders")
+                .and_then(|page| page.block_at(1, 0))
+                .map(|block| block.value.clone()),
+            Some(serde_json::json!("Orders"))
+        );
+
+        let json = workbook.to_json_value();
+        assert_eq!(json["pages"][0]["name"], serde_json::json!("orders"));
+        assert_eq!(json["pages"][0]["blocks"][0]["right"], serde_json::json!(2));
+        assert_eq!(
+            json["pages"][0]["blocks"][0]["styleReferBlock"]["properties"]["backgroundColor"],
+            serde_json::json!("#ffeecc")
+        );
     }
 
     #[test]

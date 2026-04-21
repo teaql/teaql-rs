@@ -60,6 +60,7 @@ Current progress estimates:
 | SmartList and typed entities | Java has `SmartList<Entity>` | `SmartList<T>`, typed fetch, typed nested relation enhancement, and typed entity graph extraction are implemented | MVP+ | Medium |
 | Safe value expressions | Java has null-safe `io.teaql.data.value.Expression` chains | `SafeExpression` supports null-safe `apply`, defaulting, empty checks, callbacks, `BaseEntity` id/version helpers, and `SmartList` size/first/get helpers | MVP | Medium |
 | Web API helpers | Java has `io.teaql.data.web` for server-driven style/action payloads | `WebStyle`, `WebAction`, and `WebResponse` provide framework-neutral JSON payload helpers and can bind style/action metadata into `BaseEntityData`, typed `BaseEntity`, or records | MVP | Medium |
+| Simplified Excel model | Java has `io.teaql.data.xls.Block` and `BlockBuildContext` | `XlsBlock`, `XlsBlockBuildContext`, `XlsPage`, and `XlsWorkbook` model page coordinates, merged regions, values, properties, style references, and JSON payloads without binding to a concrete Excel writer | MVP | Medium |
 | Id generator | Java has internal id generator and SQL `teaql_id_space` fallback | `InternalIdGenerator`, `SnowflakeIdGenerator`, and SQLx-backed `PgIdSpaceGenerator`/`SqliteIdSpaceGenerator` are integrated with repository insert preparation | Done | Low |
 | Multi-level create graph write | Java has `saveGraph` | `save_graph()` and `save_entity_graph()` support nested create writes and relation-key maintenance | MVP+ | Medium |
 | Multi-level update graph diff | Java reloads and merges graph updates | The same `save_graph()` and `save_entity_graph()` APIs support parent update, child merge, child insert, missing-child soft delete, reference-only nodes, explicit remove nodes, keep-missing relation metadata, duplicate child-id rejection, and reference reload validation | MVP+ | High |
@@ -87,6 +88,7 @@ Current progress estimates:
 - `SmartList<T>` and typed nested entity loading are working
 - Java-style null-safe `SafeExpression` chains are available for typed values, `BaseEntity`, and `SmartList`
 - Java-style web payload helpers can attach style/action metadata and wrap entity/list data for frontend APIs
+- Java-style simplified Excel blocks can describe sheet/page cells, spans, properties, and style references as JSON-ready payloads
 - Typed entity graphs can now be extracted from derived entities and passed directly into graph saves
 - Dynamic-property JSON flattening is available for aggregate-style output
 - Runtime module assembly exists
@@ -113,9 +115,10 @@ Current progress estimates:
 4. Richer event payloads for old/new values and typed entity snapshots, matching Java `BaseEntity` property-change details
 5. Repository/runtime integrations for `SafeExpression` helpers that need side effects, such as Java-style save/update expression chains
 6. Full Java-style web view rendering/template support beyond the current framework-neutral style/action/response payload helpers
-7. Broader value support beyond the current primitive/Decimal/JSON/date/timestamp set, especially `Uuid` and bytes
-8. Higher-level service layer if Rust-side application APIs are needed
-9. More complete schema migration tooling beyond additive `ensure_schema`
+7. Concrete Excel reader/writer integration on top of the current framework-neutral XLS block model
+8. Broader value support beyond the current primitive/Decimal/JSON/date/timestamp set, especially `Uuid` and bytes
+9. Higher-level service layer if Rust-side application APIs are needed
+10. More complete schema migration tooling beyond additive `ensure_schema`
 
 ## Suggested Next Steps
 
