@@ -34,6 +34,8 @@ The current implementation focuses on the Rust-native core runtime:
 - query projection, filter, sort, group-by, limit, offset
 - aggregate projection
 - richer query builders for expressions, projections, sort, pagination, relation loads, and aggregates
+- Java-style null-safe value expressions through `SafeExpression`, including `apply`, `or_else`, empty checks, callbacks, `BaseEntity` id/version helpers, and `SmartList` size/first/get helpers
+- Java-style web API payload helpers through `WebStyle`, `WebAction`, and `WebResponse` for server-controlled display metadata and frontend response data
 - extended predicates including `between`, `is null`, `is not null`, Java-style `contain`/`begin_with`/`end_with`, `not like`, `not in`, and `soundlike` through `SOUNDEX`
 - grouped aggregate SQL and memory execution, including `COUNT(*)`
 - aggregate decimal results use `Value::Decimal`/PostgreSQL `NUMERIC` instead of lossy `f64`

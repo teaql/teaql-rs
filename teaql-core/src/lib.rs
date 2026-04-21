@@ -7,7 +7,9 @@ mod meta;
 mod mutation;
 mod naming;
 mod query;
+mod safe_expression;
 mod value;
+mod web;
 
 pub use entity::{
     BaseEntity, BaseEntityData, Entity, EntityDescriptorStore, EntityError, IdentifiableEntity,
@@ -22,7 +24,9 @@ pub use query::{
     Aggregate, AggregateFunction, NamedExpr, OrderBy, Record, RelationLoad, SelectQuery, Slice,
     SortDirection, record_to_json_value,
 };
+pub use safe_expression::{SafeExpression, TeaqlEmpty};
 pub use value::{DataType, Decimal, Value};
+pub use web::{ACTION_LIST_KEY, STYLE_KEY, WEB_RESPONSE_VERSION, WebAction, WebResponse, WebStyle};
 
 #[cfg(test)]
 mod tests {
@@ -472,6 +476,163 @@ mod tests {
         assert_eq!(rows.ids(), vec![Value::U64(3), Value::U64(4)]);
         assert_eq!((&rows).into_iter().count(), 2);
         assert_eq!(rows[0].name, "b2");
+    }
+
+    #[derive(Clone)]
+    struct SafeExpressionEntity {
+        base: BaseEntityData,
+        name: String,
+        lines: SmartList<OrderRow>,
+    }
+
+    impl TeaqlEntity for SafeExpressionEntity {
+        fn entity_descriptor() -> EntityDescriptor {
+            EntityDescriptor::new("SafeExpressionEntity")
+        }
+    }
+
+    impl Entity for SafeExpressionEntity {
+        fn from_record(_record: Record) -> Result<Self, EntityError> {
+            unimplemented!("test helper does not need record mapping")
+        }
+
+        fn into_record(self) -> Record {
+            Record::new()
+        }
+    }
+
+    impl BaseEntity for SafeExpressionEntity {
+        fn base(&self) -> &BaseEntityData {
+            &self.base
+        }
+
+        fn base_mut(&mut self) -> &mut BaseEntityData {
+            &mut self.base
+        }
+    }
+
+    #[test]
+    fn safe_expression_supports_null_safe_chaining_and_defaults() {
+        let entity = SafeExpressionEntity {
+            base: BaseEntityData::new().with_id(7).with_version(3),
+            name: "demo".to_owned(),
+            lines: SmartList::from(vec![OrderRow {
+                id: 11,
+                version: 1,
+                name: "line".to_owned(),
+            }]),
+        };
+
+        let expr = SafeExpression::value(entity);
+        assert_eq!(expr.clone().entity_id().eval(), Some(7));
+        assert_eq!(expr.clone().entity_version().eval(), Some(3));
+        assert_eq!(
+            expr.clone()
+                .apply(|entity| entity.name)
+                .or_else("x".to_owned()),
+            "demo"
+        );
+        assert_eq!(
+            expr.clone()
+                .apply(|entity| entity.lines)
+                .first()
+                .apply(|line| line.id)
+                .eval(),
+            Some(11)
+        );
+        assert!(
+            expr.clone()
+                .apply(|entity| entity.lines)
+                .get(4)
+                .apply(|line| line.id)
+                .is_null()
+        );
+        assert_eq!(
+            expr.clone().apply(|entity| entity.lines).size().or_else(0),
+            1
+        );
+    }
+
+    #[test]
+    fn safe_expression_exposes_java_style_empty_and_callbacks() {
+        let empty = SafeExpression::value(String::new());
+        assert!(empty.is_empty());
+        assert_eq!(empty.or_else("fallback".to_owned()), String::new());
+
+        let missing = SafeExpression::new((), |_| None::<String>);
+        assert!(missing.is_null());
+        assert_eq!(missing.or_else("fallback".to_owned()), "fallback");
+
+        let mut saw_null = false;
+        missing.when_is_null(|| {
+            saw_null = true;
+        });
+        assert!(saw_null);
+
+        let value = SafeExpression::value("teaql".to_owned());
+        let mut captured = String::new();
+        value.when_not_empty(|text| {
+            captured = text;
+        });
+        assert_eq!(captured, "teaql");
+    }
+
+    #[test]
+    fn web_style_and_action_bind_frontend_metadata() {
+        let mut base = BaseEntityData::new();
+        WebStyle::with_background_color("#ffeecc")
+            .font_color("#111111")
+            .bind_base(&mut base);
+        WebAction::view_web_action().bind_base(&mut base);
+        WebAction::modify_web_action("EDIT", "/orders/1/edit").bind_base(&mut base);
+
+        assert_eq!(
+            base.dynamic(STYLE_KEY)
+                .and_then(|value| value.get("backgroundColor")),
+            Some(&serde_json::json!("#ffeecc"))
+        );
+        assert_eq!(
+            base.dynamic(STYLE_KEY).and_then(|value| value.get("color")),
+            Some(&serde_json::json!("#111111"))
+        );
+
+        let actions = base
+            .dynamic(ACTION_LIST_KEY)
+            .and_then(serde_json::Value::as_array)
+            .unwrap();
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[0]["execute"], serde_json::json!("switchview"));
+        assert_eq!(actions[0]["target"], serde_json::json!("detail"));
+        assert_eq!(actions[1]["name"], serde_json::json!("EDIT"));
+        assert_eq!(
+            actions[1]["requestURL"],
+            serde_json::json!("/orders/1/edit")
+        );
+    }
+
+    #[test]
+    fn web_response_wraps_entity_and_list_payloads() {
+        let entity = OrderRow {
+            id: 7,
+            version: 2,
+            name: "order".to_owned(),
+        };
+        let response = WebResponse::from_entity(&entity);
+        assert_eq!(response.result_code, 0);
+        assert_eq!(response.status.as_deref(), Some("YES"));
+        assert_eq!(response.record_count, 1);
+        assert_eq!(response.version, WEB_RESPONSE_VERSION);
+        assert_eq!(response.data[0]["id"], serde_json::json!(7));
+
+        let list = SmartList::from(vec![entity]).with_total_count(99);
+        let response = WebResponse::from_smart_list(list);
+        assert_eq!(response.record_count, 99);
+        assert_eq!(response.data.len(), 1);
+
+        let failed = WebResponse::fail("bad request").to_json_value();
+        assert_eq!(failed["status"], serde_json::json!("NO"));
+        assert_eq!(failed["message"], serde_json::json!("bad request"));
+        assert_eq!(failed["version"], serde_json::json!("1.001"));
     }
 
     #[test]
