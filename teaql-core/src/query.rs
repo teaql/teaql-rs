@@ -167,14 +167,25 @@ pub struct Slice {
     pub offset: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RelationLoad {
     pub name: String,
+    pub query: Option<Box<SelectQuery>>,
 }
 
 impl RelationLoad {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into() }
+        Self {
+            name: name.into(),
+            query: None,
+        }
+    }
+
+    pub fn with_query(name: impl Into<String>, query: SelectQuery) -> Self {
+        Self {
+            name: name.into(),
+            query: Some(Box::new(query)),
+        }
     }
 }
 
@@ -358,6 +369,11 @@ impl SelectQuery {
 
     pub fn relation(mut self, name: impl Into<String>) -> Self {
         self.relations.push(RelationLoad::new(name));
+        self
+    }
+
+    pub fn relation_query(mut self, name: impl Into<String>, query: SelectQuery) -> Self {
+        self.relations.push(RelationLoad::with_query(name, query));
         self
     }
 

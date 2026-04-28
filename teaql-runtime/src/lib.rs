@@ -2356,6 +2356,103 @@ mod sqlx_integration_tests {
         }
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sqlite_executor_enhances_query_relation_with_child_query() {
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        let mutation_executor = SqliteMutationExecutor::new(pool.clone());
+        let order = entity();
+        let line = line_entity();
+        let product = product_entity();
+        mutation_executor
+            .ensure_schema(&SqliteDialect, &[&order, &line, &product])
+            .await
+            .unwrap();
+
+        sqlx::query("INSERT INTO orders (id, version, name) VALUES (1, 1, 'o1')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO orderline (id, order_id, product_id, name) VALUES
+                (101, 1, 1001, 'keep'),
+                (102, 1, 1002, 'drop')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO product (id, name) VALUES
+                (1001, 'p1'),
+                (1002, 'p2')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let executor = SqliteSyncExecutor::new(mutation_executor);
+        let mut ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(order)
+                    .with_entity(line)
+                    .with_entity(product),
+            )
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+        ctx.insert_resource(SqliteDialect);
+        ctx.insert_resource(executor);
+
+        let repo = ctx
+            .resolve_repository::<SqliteDialect, SqliteSyncExecutor>("Order")
+            .unwrap();
+        let query = repo.select().relation_query(
+            "lines",
+            SelectQuery::new("OrderLine")
+                .project("name")
+                .filter(Expr::eq("name", "keep"))
+                .order_desc("id")
+                .page(0, 10)
+                .relation_query("product", SelectQuery::new("Product").project("name")),
+        );
+        let mut parents = repo
+            .fetch_all(
+                &repo
+                    .select()
+                    .project("id")
+                    .project("version")
+                    .project("name"),
+            )
+            .unwrap();
+
+        repo.enhance_query_relations(&mut parents, &query).unwrap();
+
+        match parents[0].get("lines") {
+            Some(Value::List(lines)) => {
+                assert_eq!(lines.len(), 1);
+                let Value::Object(line) = &lines[0] else {
+                    panic!("unexpected line payload: {:?}", lines[0]);
+                };
+                assert_eq!(line.get("name"), Some(&Value::Text("keep".to_owned())));
+                assert_eq!(line.get("order_id"), Some(&Value::I64(1)));
+                assert_eq!(line.get("product_id"), Some(&Value::I64(1001)));
+                match line.get("product") {
+                    Some(Value::Object(product)) => {
+                        assert_eq!(product.get("name"), Some(&Value::Text("p1".to_owned())));
+                        assert_eq!(product.get("id"), Some(&Value::I64(1001)));
+                    }
+                    other => panic!("unexpected product payload: {other:?}"),
+                }
+            }
+            other => panic!("unexpected query relation payload: {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn sqlite_executor_ensure_schema_adds_missing_columns() {
         use sqlx::Row;

@@ -284,6 +284,12 @@ mod tests {
             .stddev("version", "versionStddev")
             .having(Expr::gt("total", 1_i64))
             .relation("lines")
+            .relation_query(
+                "customer",
+                SelectQuery::new("Customer")
+                    .project("name")
+                    .filter(Expr::eq("status", "active")),
+            )
             .page(20, 10);
 
         assert_eq!(query.projection, vec!["id", "name"]);
@@ -308,7 +314,18 @@ mod tests {
             ]
         );
         assert_eq!(query.having, Some(Expr::gt("total", 1_i64)));
-        assert_eq!(query.relations, vec![RelationLoad::new("lines")]);
+        assert_eq!(
+            query.relations,
+            vec![
+                RelationLoad::new("lines"),
+                RelationLoad::with_query(
+                    "customer",
+                    SelectQuery::new("Customer")
+                        .project("name")
+                        .filter(Expr::eq("status", "active")),
+                )
+            ]
+        );
         assert_eq!(
             query.slice,
             Some(Slice {

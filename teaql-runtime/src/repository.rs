@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use teaql_core::{
     DeleteCommand, Entity, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, Record,
-    RecoverCommand, SelectQuery, SmartList, UpdateCommand, Value,
+    RecoverCommand, RelationLoad, SelectQuery, SmartList, UpdateCommand, Value,
 };
 use teaql_sql::{CompiledQuery, SqlDialect};
 
@@ -57,7 +57,7 @@ pub struct ResolvedRepository<'a, D, E> {
     repository: ContextRepository<'a, D, E>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RelationLoadPlan {
     pub parent_entity: String,
     pub relation_name: String,
@@ -66,6 +66,7 @@ pub struct RelationLoadPlan {
     pub local_key: String,
     pub foreign_key: String,
     pub many: bool,
+    pub query: Option<SelectQuery>,
     pub children: Vec<RelationLoadPlan>,
 }
 
@@ -567,6 +568,7 @@ where
         }
 
         let mut rows = self.repository.fetch_all(&query)?;
+        self.enhance_query_relations(&mut rows, &query)?;
         self.enhance_relations(&mut rows)?;
         rows.into_iter()
             .map(T::from_record)
@@ -1462,6 +1464,20 @@ where
         Ok(())
     }
 
+    pub fn enhance_query_relations(
+        &self,
+        parent_rows: &mut [Record],
+        query: &SelectQuery,
+    ) -> Result<(), RepositoryError<E::Error>> {
+        let plans = self
+            .build_relation_plans_from_loads(&query.entity, &query.relations)
+            .map_err(RepositoryError::Runtime)?;
+        for plan in plans {
+            self.enhance_plan(parent_rows, &plan)?;
+        }
+        Ok(())
+    }
+
     fn build_relation_plans(
         &self,
         entity: &str,
@@ -1500,6 +1516,45 @@ where
                     local_key: relation.local_key.clone(),
                     foreign_key: relation.foreign_key.clone(),
                     many: relation.many,
+                    query: None,
+                    children,
+                })
+            })
+            .collect()
+    }
+
+    fn build_relation_plans_from_loads(
+        &self,
+        entity: &str,
+        loads: &[RelationLoad],
+    ) -> Result<Vec<RelationLoadPlan>, RuntimeError> {
+        let descriptor = self.repository.metadata.context.require_entity(entity)?;
+        loads
+            .iter()
+            .map(|load| {
+                let relation = descriptor.relation_by_name(&load.name).ok_or_else(|| {
+                    RuntimeError::MissingRelation {
+                        entity: entity.to_owned(),
+                        relation: load.name.clone(),
+                    }
+                })?;
+                let relation_query = load.query.as_deref().cloned();
+                let child_loads = relation_query
+                    .as_ref()
+                    .map(|query| query.relations.as_slice())
+                    .unwrap_or_default();
+                let child_repo = self.scoped_repository(relation.target_entity.clone());
+                let children = child_repo
+                    .build_relation_plans_from_loads(&relation.target_entity, child_loads)?;
+                Ok(RelationLoadPlan {
+                    parent_entity: entity.to_owned(),
+                    relation_name: relation.name.clone(),
+                    path: relation.name.clone(),
+                    target_entity: relation.target_entity.clone(),
+                    local_key: relation.local_key.clone(),
+                    foreign_key: relation.foreign_key.clone(),
+                    many: relation.many,
+                    query: relation_query,
                     children,
                 })
             })
@@ -1566,9 +1621,17 @@ where
             .filter_map(|row| row.get(&plan.local_key).cloned())
             .collect::<Vec<_>>();
 
-        let mut query = SelectQuery::new(plan.target_entity.clone());
+        let mut query = plan
+            .query
+            .clone()
+            .unwrap_or_else(|| SelectQuery::new(plan.target_entity.clone()));
+        query.entity = plan.target_entity.clone();
+        ensure_projection(&mut query, &plan.foreign_key);
+        for child in &plan.children {
+            ensure_projection(&mut query, &child.local_key);
+        }
         if !ids.is_empty() {
-            query = query.filter(Expr::in_list(plan.foreign_key.clone(), ids));
+            query = query.and_filter(Expr::in_list(plan.foreign_key.clone(), ids));
         }
         query
     }
@@ -1626,6 +1689,17 @@ fn relation_bucket_key(value: &Value) -> String {
         Value::Timestamp(v) => format!("ts:{}", v.to_rfc3339()),
         Value::Object(_) => "o".to_owned(),
         Value::List(_) => "l".to_owned(),
+    }
+}
+
+fn ensure_projection(query: &mut SelectQuery, field: &str) {
+    if !query.projection.is_empty()
+        && !query
+            .projection
+            .iter()
+            .any(|projection| projection == field)
+    {
+        query.projection.push(field.to_owned());
     }
 }
 
