@@ -148,7 +148,7 @@ mod tests {
         #[teaql(id)]
         id: u64,
         #[teaql(dynamic)]
-        dynamic: BTreeMap<String, serde_json::Value>,
+        dynamic: BTreeMap<String, Value>,
     }
 
     #[derive(Debug, PartialEq, DeriveTeaqlEntity)]
@@ -1426,14 +1426,8 @@ mod tests {
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows.data[0].id, 1);
-        assert_eq!(
-            rows.data[0].dynamic.get("lineCount"),
-            Some(&serde_json::json!(3))
-        );
-        assert_eq!(
-            rows.data[0].dynamic.get("amount"),
-            Some(&serde_json::json!(18.5))
-        );
+        assert_eq!(rows.data[0].dynamic.get("lineCount"), Some(&Value::I64(3)));
+        assert_eq!(rows.data[0].dynamic.get("amount"), Some(&Value::F64(18.5)));
         assert_eq!(
             rows.into_vec().into_iter().next().unwrap().into_json(),
             serde_json::json!({

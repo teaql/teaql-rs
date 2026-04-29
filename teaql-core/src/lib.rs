@@ -240,7 +240,7 @@ mod tests {
         #[teaql(id)]
         id: u64,
         #[teaql(dynamic)]
-        dynamic: BTreeMap<String, serde_json::Value>,
+        dynamic: BTreeMap<String, Value>,
     }
 
     #[test]
@@ -634,18 +634,22 @@ mod tests {
 
         assert_eq!(
             base.dynamic(STYLE_KEY)
-                .and_then(|value| value.get("backgroundColor")),
-            Some(&serde_json::json!("#ffeecc"))
+                .map(Value::to_json_value)
+                .and_then(|value| value.get("backgroundColor").cloned()),
+            Some(serde_json::json!("#ffeecc"))
         );
         assert_eq!(
-            base.dynamic(STYLE_KEY).and_then(|value| value.get("color")),
-            Some(&serde_json::json!("#111111"))
+            base.dynamic(STYLE_KEY)
+                .map(Value::to_json_value)
+                .and_then(|value| value.get("color").cloned()),
+            Some(serde_json::json!("#111111"))
         );
 
-        let actions = base
+        let actions_value = base
             .dynamic(ACTION_LIST_KEY)
-            .and_then(serde_json::Value::as_array)
+            .map(Value::to_json_value)
             .unwrap();
+        let actions = actions_value.as_array().unwrap();
         assert_eq!(actions.len(), 2);
         assert_eq!(actions[0]["execute"], serde_json::json!("switchview"));
         assert_eq!(actions[0]["target"], serde_json::json!("detail"));
@@ -751,17 +755,14 @@ mod tests {
         ]))
         .unwrap();
 
-        assert_eq!(
-            aggregate.dynamic.get("lineCount"),
-            Some(&serde_json::json!(3))
-        );
-        assert_eq!(
-            aggregate.dynamic.get("amount"),
-            Some(&serde_json::json!(18.5))
-        );
+        assert_eq!(aggregate.dynamic.get("lineCount"), Some(&Value::I64(3)));
+        assert_eq!(aggregate.dynamic.get("amount"), Some(&Value::F64(18.5)));
         assert_eq!(
             aggregate.dynamic.get("detail"),
-            Some(&serde_json::json!({"status": "ok"}))
+            Some(&Value::Object(Record::from([(
+                String::from("status"),
+                Value::Text(String::from("ok")),
+            )])))
         );
 
         let json = aggregate.into_json();
@@ -778,16 +779,15 @@ mod tests {
             .with_version(3)
             .with_dynamic("lineCount", 5)
             .with_dynamic("detail", serde_json::json!({"status": "ok"}));
-        assert_eq!(base.dynamic("lineCount"), Some(&serde_json::json!(5)));
+        assert_eq!(base.dynamic("lineCount"), Some(&Value::I64(5)));
+        assert_eq!(base.dynamic_i64("lineCount"), Some(5));
         base.put_dynamic("amount", 18.5);
+        assert_eq!(base.dynamic_f64("amount"), Some(18.5));
 
         let record = base.to_record();
         assert_eq!(record.get("id"), Some(&Value::U64(11)));
         assert_eq!(record.get("version"), Some(&Value::I64(3)));
-        assert_eq!(
-            record.get("lineCount"),
-            Some(&Value::Json(serde_json::json!(5)))
-        );
+        assert_eq!(record.get("lineCount"), Some(&Value::I64(5)));
         assert_eq!(
             record.get("detail"),
             Some(&Value::Json(serde_json::json!({"status": "ok"})))
@@ -796,6 +796,7 @@ mod tests {
         let restored = BaseEntityData::from_record(&record).unwrap();
         assert_eq!(restored.id, Some(11));
         assert_eq!(restored.version, 3);
-        assert_eq!(restored.dynamic("amount"), Some(&serde_json::json!(18.5)));
+        assert_eq!(restored.dynamic("amount"), Some(&Value::F64(18.5)));
+        assert_eq!(restored.dynamic_f64("amount"), Some(18.5));
     }
 }

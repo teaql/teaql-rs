@@ -54,13 +54,13 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                     record
                         .iter()
                         .filter(|(key, _)| !known_fields.contains(&key.as_str()))
-                        .map(|(key, value)| (key.clone(), value.to_json_value()))
+                        .map(|(key, value)| (key.clone(), value.clone()))
                         .collect()
                 }
             });
             into_record_fields.push(quote! {
                 for (key, value) in self.#field_ident {
-                    record.insert(key, ::teaql_core::Value::Json(value));
+                    record.insert(key, value);
                 }
             });
             continue;

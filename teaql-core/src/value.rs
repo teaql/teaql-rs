@@ -157,6 +157,44 @@ impl Value {
         }
     }
 
+    pub fn try_f64(&self) -> Option<f64> {
+        match self {
+            Self::F64(value) => Some(*value),
+            Self::I64(value) => Some(*value as f64),
+            Self::U64(value) => Some(*value as f64),
+            Self::Decimal(value) => value.to_f64(),
+            _ => None,
+        }
+    }
+
+    pub fn try_text(&self) -> Option<&str> {
+        match self {
+            Self::Text(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    pub fn try_bool(&self) -> Option<bool> {
+        match self {
+            Self::Bool(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    pub fn try_date(&self) -> Option<NaiveDate> {
+        match self {
+            Self::Date(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    pub fn try_timestamp(&self) -> Option<DateTime<Utc>> {
+        match self {
+            Self::Timestamp(value) => Some(*value),
+            _ => None,
+        }
+    }
+
     pub fn to_json_value(&self) -> serde_json::Value {
         match self {
             Self::Null => serde_json::Value::Null,

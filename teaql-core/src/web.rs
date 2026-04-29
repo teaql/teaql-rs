@@ -387,19 +387,22 @@ impl WebResponse {
 }
 
 fn append_action(
-    dynamic: &mut std::collections::BTreeMap<String, serde_json::Value>,
+    dynamic: &mut std::collections::BTreeMap<String, Value>,
     action: serde_json::Value,
 ) {
     match dynamic.get_mut(ACTION_LIST_KEY) {
-        Some(serde_json::Value::Array(actions)) => actions.push(action),
+        Some(Value::Json(serde_json::Value::Array(actions))) => actions.push(action),
         Some(existing) => {
-            let previous = std::mem::take(existing);
-            *existing = serde_json::Value::Array(vec![previous, action]);
+            let previous = std::mem::replace(existing, Value::Null);
+            *existing = Value::Json(serde_json::Value::Array(vec![
+                previous.to_json_value(),
+                action,
+            ]));
         }
         None => {
             dynamic.insert(
                 ACTION_LIST_KEY.to_owned(),
-                serde_json::Value::Array(vec![action]),
+                Value::Json(serde_json::Value::Array(vec![action])),
             );
         }
     }

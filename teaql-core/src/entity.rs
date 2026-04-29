@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::{EntityDescriptor, Record, Value, record_to_json_value};
+use crate::{Decimal, EntityDescriptor, Record, Value, record_to_json_value};
 
 pub trait TeaqlEntity {
     fn entity_descriptor() -> EntityDescriptor;
@@ -42,11 +42,11 @@ pub trait Entity: TeaqlEntity + Sized {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct BaseEntityData {
     pub id: Option<u64>,
     pub version: i64,
-    pub dynamic: BTreeMap<String, serde_json::Value>,
+    pub dynamic: BTreeMap<String, Value>,
 }
 
 impl BaseEntityData {
@@ -64,28 +64,48 @@ impl BaseEntityData {
         self
     }
 
-    pub fn with_dynamic(
-        mut self,
-        key: impl Into<String>,
-        value: impl Into<serde_json::Value>,
-    ) -> Self {
+    pub fn with_dynamic(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
         self.dynamic.insert(key.into(), value.into());
         self
     }
 
-    pub fn dynamic(&self, key: &str) -> Option<&serde_json::Value> {
+    pub fn dynamic(&self, key: &str) -> Option<&Value> {
         self.dynamic.get(key)
+    }
+
+    pub fn dynamic_i64(&self, key: &str) -> Option<i64> {
+        self.dynamic(key).and_then(Value::try_i64)
+    }
+
+    pub fn dynamic_u64(&self, key: &str) -> Option<u64> {
+        self.dynamic(key).and_then(Value::try_u64)
+    }
+
+    pub fn dynamic_decimal(&self, key: &str) -> Option<Decimal> {
+        self.dynamic(key).and_then(Value::try_decimal)
+    }
+
+    pub fn dynamic_f64(&self, key: &str) -> Option<f64> {
+        self.dynamic(key).and_then(Value::try_f64)
+    }
+
+    pub fn dynamic_text(&self, key: &str) -> Option<&str> {
+        self.dynamic(key).and_then(Value::try_text)
+    }
+
+    pub fn dynamic_bool(&self, key: &str) -> Option<bool> {
+        self.dynamic(key).and_then(Value::try_bool)
     }
 
     pub fn put_dynamic(
         &mut self,
         key: impl Into<String>,
-        value: impl Into<serde_json::Value>,
-    ) -> Option<serde_json::Value> {
+        value: impl Into<Value>,
+    ) -> Option<Value> {
         self.dynamic.insert(key.into(), value.into())
     }
 
-    pub fn remove_dynamic(&mut self, key: &str) -> Option<serde_json::Value> {
+    pub fn remove_dynamic(&mut self, key: &str) -> Option<Value> {
         self.dynamic.remove(key)
     }
 
@@ -96,7 +116,7 @@ impl BaseEntityData {
         }
         record.insert("version".to_owned(), Value::I64(self.version));
         for (key, value) in &self.dynamic {
-            record.insert(key.clone(), Value::Json(value.clone()));
+            record.insert(key.clone(), value.clone());
         }
         record
     }
@@ -128,7 +148,7 @@ impl BaseEntityData {
         let dynamic = record
             .iter()
             .filter(|(key, _)| key.as_str() != "id" && key.as_str() != "version")
-            .map(|(key, value)| (key.clone(), value.to_json_value()))
+            .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
 
         Ok(Self {
@@ -159,15 +179,35 @@ pub trait BaseEntity: Entity {
         self.base_mut().version = version;
     }
 
-    fn dynamic(&self, key: &str) -> Option<&serde_json::Value> {
+    fn dynamic(&self, key: &str) -> Option<&Value> {
         self.base().dynamic(key)
     }
 
-    fn put_dynamic(
-        &mut self,
-        key: impl Into<String>,
-        value: impl Into<serde_json::Value>,
-    ) -> Option<serde_json::Value> {
+    fn dynamic_i64(&self, key: &str) -> Option<i64> {
+        self.base().dynamic_i64(key)
+    }
+
+    fn dynamic_u64(&self, key: &str) -> Option<u64> {
+        self.base().dynamic_u64(key)
+    }
+
+    fn dynamic_decimal(&self, key: &str) -> Option<Decimal> {
+        self.base().dynamic_decimal(key)
+    }
+
+    fn dynamic_f64(&self, key: &str) -> Option<f64> {
+        self.base().dynamic_f64(key)
+    }
+
+    fn dynamic_text(&self, key: &str) -> Option<&str> {
+        self.base().dynamic_text(key)
+    }
+
+    fn dynamic_bool(&self, key: &str) -> Option<bool> {
+        self.base().dynamic_bool(key)
+    }
+
+    fn put_dynamic(&mut self, key: impl Into<String>, value: impl Into<Value>) -> Option<Value> {
         self.base_mut().put_dynamic(key, value)
     }
 }
