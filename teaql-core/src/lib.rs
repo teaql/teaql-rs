@@ -136,6 +136,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn derive_allows_partial_projected_records() {
+        let row = OrderRow::from_record(Record::from([(
+            "name".to_owned(),
+            Value::Text("projected".to_owned()),
+        )]))
+        .unwrap();
+        assert_eq!(row.id, 0);
+        assert_eq!(row.version, 0);
+        assert_eq!(row.name, "projected");
+
+        let nulls = OrderRow::from_record(Record::from([
+            ("id".to_owned(), Value::Null),
+            ("version".to_owned(), Value::Null),
+            ("name".to_owned(), Value::Null),
+        ]))
+        .unwrap();
+        assert_eq!(nulls.id, 0);
+        assert_eq!(nulls.version, 0);
+        assert_eq!(nulls.name, "");
+
+        match OrderRow::from_record(Record::from([("name".to_owned(), Value::U64(1))])) {
+            Ok(_) => panic!("wrong field type should fail"),
+            Err(err) => assert!(err.message.contains("invalid field name")),
+        }
+    }
+
     #[allow(dead_code)]
     #[derive(TeaqlEntity)]
     #[teaql(entity = "Product", table = "product")]

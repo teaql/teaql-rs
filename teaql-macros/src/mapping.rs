@@ -22,11 +22,19 @@ pub fn from_record_value_tokens(
     }
 
     let value_expr = quote! {
-        record.get(#field_name).ok_or_else(|| {
-            ::teaql_core::EntityError::new(#entity_name, format!("missing field: {}", #field_name))
-        })?
+        match record.get(#field_name) {
+            Some(::teaql_core::Value::Null) | None => {
+                return Ok(::core::default::Default::default());
+            }
+            Some(value) => value,
+        }
     };
-    decode_value_tokens(ty, value_expr, field_name, entity_name)
+    let decoded = decode_value_tokens(ty, value_expr, field_name, entity_name);
+    quote! {
+        (|| -> Result<_, ::teaql_core::EntityError> {
+            Ok(#decoded)
+        })()?
+    }
 }
 
 pub fn decode_value_tokens(
