@@ -190,6 +190,91 @@ impl RelationLoad {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct RelationAggregate {
+    pub relation_name: String,
+    pub alias: String,
+    pub query: SelectQuery,
+    pub single_result: bool,
+}
+
+impl RelationAggregate {
+    pub fn new(
+        relation_name: impl Into<String>,
+        alias: impl Into<String>,
+        query: SelectQuery,
+        single_result: bool,
+    ) -> Self {
+        Self {
+            relation_name: relation_name.into(),
+            alias: alias.into(),
+            query,
+            single_result,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawSqlProjection {
+    pub property_name: String,
+    pub raw_sql_segment: String,
+}
+
+impl RawSqlProjection {
+    pub fn new(property_name: impl Into<String>, raw_sql_segment: impl Into<String>) -> Self {
+        Self {
+            property_name: property_name.into(),
+            raw_sql_segment: raw_sql_segment.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObjectGroupBy {
+    pub property_name: String,
+    pub storage_field: String,
+    pub query: SelectQuery,
+}
+
+impl ObjectGroupBy {
+    pub fn new(
+        property_name: impl Into<String>,
+        storage_field: impl Into<String>,
+        query: SelectQuery,
+    ) -> Self {
+        Self {
+            property_name: property_name.into(),
+            storage_field: storage_field.into(),
+            query,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AggregationCacheOptions {
+    pub enabled: bool,
+    pub cache_expired_millis: u64,
+    pub propagate: bool,
+    pub propagate_cache_expired_millis: u64,
+}
+
+impl AggregationCacheOptions {
+    pub fn enabled(cache_expired_millis: u64) -> Self {
+        Self {
+            enabled: true,
+            cache_expired_millis,
+            propagate: false,
+            propagate_cache_expired_millis: 0,
+        }
+    }
+
+    pub fn propagate(mut self, cache_expired_millis: u64) -> Self {
+        self.propagate = true;
+        self.propagate_cache_expired_millis = cache_expired_millis;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct SelectQuery {
     pub entity: String,
     pub projection: Vec<String>,
@@ -201,6 +286,15 @@ pub struct SelectQuery {
     pub aggregates: Vec<Aggregate>,
     pub group_by: Vec<String>,
     pub relations: Vec<RelationLoad>,
+    pub aggregation_cache: Option<AggregationCacheOptions>,
+    pub comment: Option<String>,
+    pub raw_sql: Option<String>,
+    pub raw_sql_search_criteria: Vec<String>,
+    pub json_expr: Option<String>,
+    pub dynamic_properties: Vec<RawSqlProjection>,
+    pub raw_projections: Vec<RawSqlProjection>,
+    pub object_group_bys: Vec<ObjectGroupBy>,
+    pub child_enhancements: Vec<SelectQuery>,
 }
 
 impl SelectQuery {
@@ -216,6 +310,15 @@ impl SelectQuery {
             aggregates: Vec::new(),
             group_by: Vec::new(),
             relations: Vec::new(),
+            aggregation_cache: None,
+            comment: None,
+            raw_sql: None,
+            raw_sql_search_criteria: Vec::new(),
+            json_expr: None,
+            dynamic_properties: Vec::new(),
+            raw_projections: Vec::new(),
+            object_group_bys: Vec::new(),
+            child_enhancements: Vec::new(),
         }
     }
 
@@ -231,6 +334,26 @@ impl SelectQuery {
 
     pub fn project_expr(mut self, alias: impl Into<String>, expr: Expr) -> Self {
         self.expr_projection.push(NamedExpr::new(alias, expr));
+        self
+    }
+
+    pub fn project_raw(
+        mut self,
+        alias: impl Into<String>,
+        raw_sql_segment: impl Into<String>,
+    ) -> Self {
+        self.raw_projections
+            .push(RawSqlProjection::new(alias, raw_sql_segment));
+        self
+    }
+
+    pub fn dynamic_property_raw(
+        mut self,
+        alias: impl Into<String>,
+        raw_sql_segment: impl Into<String>,
+    ) -> Self {
+        self.dynamic_properties
+            .push(RawSqlProjection::new(alias, raw_sql_segment));
         self
     }
 
@@ -365,6 +488,60 @@ impl SelectQuery {
 
     pub fn bit_xor(self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.aggregate(Aggregate::bit_xor(field, alias))
+    }
+
+    pub fn enable_aggregation_cache(self) -> Self {
+        self.enable_aggregation_cache_for(0)
+    }
+
+    pub fn enable_aggregation_cache_for(mut self, cache_expired_millis: u64) -> Self {
+        self.aggregation_cache = Some(AggregationCacheOptions::enabled(cache_expired_millis));
+        self
+    }
+
+    pub fn propagate_aggregation_cache(mut self, cache_expired_millis: u64) -> Self {
+        self.aggregation_cache = Some(
+            self.aggregation_cache
+                .unwrap_or_else(|| AggregationCacheOptions::enabled(0))
+                .propagate(cache_expired_millis),
+        );
+        self
+    }
+
+    pub fn comment(mut self, comment: impl Into<String>) -> Self {
+        self.comment = Some(comment.into());
+        self
+    }
+
+    pub fn raw_sql(mut self, raw_sql: impl Into<String>) -> Self {
+        self.raw_sql = Some(raw_sql.into());
+        self
+    }
+
+    pub fn raw_sql_search_criteria(mut self, raw_sql: impl Into<String>) -> Self {
+        self.raw_sql_search_criteria.push(raw_sql.into());
+        self
+    }
+
+    pub fn json_expr(mut self, json_expr: impl Into<String>) -> Self {
+        self.json_expr = Some(json_expr.into());
+        self
+    }
+
+    pub fn object_group_by(
+        mut self,
+        property_name: impl Into<String>,
+        storage_field: impl Into<String>,
+        query: SelectQuery,
+    ) -> Self {
+        self.object_group_bys
+            .push(ObjectGroupBy::new(property_name, storage_field, query));
+        self
+    }
+
+    pub fn child_enhancement(mut self, query: SelectQuery) -> Self {
+        self.child_enhancements.push(query);
+        self
     }
 
     pub fn relation(mut self, name: impl Into<String>) -> Self {

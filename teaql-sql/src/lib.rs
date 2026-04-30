@@ -299,6 +299,61 @@ mod tests {
     }
 
     #[test]
+    fn compiles_property_to_property_filters() {
+        let query = TestDialect
+            .compile_select(
+                &entity(),
+                &SelectQuery::new("Order").filter(Expr::compare_columns(
+                    "version",
+                    BinaryOp::Gte,
+                    "id",
+                )),
+            )
+            .unwrap();
+
+        assert_eq!(
+            query.sql,
+            "SELECT * FROM \"orders\" WHERE (\"version\" >= \"id\")"
+        );
+        assert!(query.params.is_empty());
+    }
+
+    #[test]
+    fn compiles_raw_escape_hatches_and_dynamic_properties() {
+        let query = TestDialect
+            .compile_select(
+                &entity(),
+                &SelectQuery::new("Order")
+                    .comment("audit")
+                    .project("id")
+                    .project_raw("name", "upper(name)")
+                    .dynamic_property_raw("score", "42")
+                    .raw_sql_search_criteria("name <> ''")
+                    .json_expr("payload @> '{\"active\":true}'"),
+            )
+            .unwrap();
+
+        assert_eq!(
+            query.sql,
+            "/* audit */ SELECT \"id\", upper(name) AS \"name\", 42 AS \"score\" FROM \"orders\" WHERE name <> '' AND payload @> '{\"active\":true}'"
+        );
+    }
+
+    #[test]
+    fn compiles_raw_sql_override_with_comment() {
+        let query = TestDialect
+            .compile_select(
+                &entity(),
+                &SelectQuery::new("Order")
+                    .comment("manual")
+                    .raw_sql("SELECT 1 AS id"),
+            )
+            .unwrap();
+
+        assert_eq!(query.sql, "/* manual */ SELECT 1 AS id");
+    }
+
+    #[test]
     fn compiles_subquery_expression_and_appends_params_in_order() {
         let query = TestDialect
             .compile_select(
