@@ -1,10 +1,12 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::slice;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use teaql_core::{
-    DeleteCommand, Entity, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, Record,
-    RecoverCommand, RelationLoad, SelectQuery, SmartList, UpdateCommand, Value,
+    Aggregate, AggregationCacheOptions, DeleteCommand, Entity, EntityDescriptor, Expr,
+    InsertCommand, ObjectGroupBy, PropertyDescriptor, Record, RecoverCommand, RelationAggregate,
+    RelationLoad, SelectQuery, SmartList, UpdateCommand, Value,
 };
 use teaql_sql::{CompiledQuery, SqlDialect};
 
@@ -13,6 +15,94 @@ use crate::{
     GraphOperation, MetadataStore, RepositoryBehavior, RepositoryError, RuntimeError, UserContext,
     clear_record_status, mark_record_status, sorted_update_fields,
 };
+
+#[derive(Debug, Default)]
+pub struct InMemoryAggregationCache {
+    namespace: String,
+    entries: Mutex<HashMap<String, AggregationCacheEntry>>,
+}
+
+pub trait AggregationCacheBackend: Send + Sync {
+    fn namespace(&self) -> &str;
+    fn get(&self, key: &str, max_age_millis: u64) -> Option<Vec<Record>>;
+    fn put(&self, key: String, rows: Vec<Record>);
+    fn invalidate_namespace(&self, namespace: &str);
+}
+
+#[derive(Debug, Clone)]
+struct AggregationCacheEntry {
+    stored_at: Instant,
+    rows: Vec<Record>,
+}
+
+impl InMemoryAggregationCache {
+    pub fn with_namespace(namespace: impl Into<String>) -> Self {
+        Self {
+            namespace: namespace.into(),
+            entries: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+}
+
+impl AggregationCacheBackend for InMemoryAggregationCache {
+    fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    fn get(&self, key: &str, max_age_millis: u64) -> Option<Vec<Record>> {
+        let entries = self.entries.lock().ok()?;
+        let entry = entries.get(key)?;
+        if max_age_millis == 0 || entry.stored_at.elapsed() <= Duration::from_millis(max_age_millis)
+        {
+            Some(entry.rows.clone())
+        } else {
+            None
+        }
+    }
+
+    fn put(&self, key: String, rows: Vec<Record>) {
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.insert(
+                key,
+                AggregationCacheEntry {
+                    stored_at: Instant::now(),
+                    rows,
+                },
+            );
+        }
+    }
+
+    fn invalidate_namespace(&self, namespace: &str) {
+        if let Ok(mut entries) = self.entries.lock() {
+            let prefix = format!("{namespace}::");
+            entries.retain(|key, _| !key.starts_with(&prefix));
+        }
+    }
+}
+
+impl InMemoryAggregationCache {
+    pub fn get(&self, key: &str, max_age_millis: u64) -> Option<Vec<Record>> {
+        AggregationCacheBackend::get(self, key, max_age_millis)
+    }
+
+    pub fn put(&self, key: String, rows: Vec<Record>) {
+        AggregationCacheBackend::put(self, key, rows);
+    }
+
+    pub fn clear(&self) {
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.clear();
+        }
+    }
+
+    pub fn invalidate_namespace(&self, namespace: &str) {
+        AggregationCacheBackend::invalidate_namespace(self, namespace);
+    }
+}
 
 pub trait QueryExecutor {
     type Error: std::error::Error + Send + Sync + 'static;
@@ -395,19 +485,44 @@ where
     }
 
     pub fn insert(&self, command: &InsertCommand) -> Result<u64, RepositoryError<E::Error>> {
-        self.repository().insert(command)
+        let affected = self.repository().insert(command)?;
+        self.invalidate_aggregation_cache_for(&command.entity);
+        Ok(affected)
     }
 
     pub fn update(&self, command: &UpdateCommand) -> Result<u64, RepositoryError<E::Error>> {
-        self.repository().update(command)
+        let affected = self.repository().update(command)?;
+        self.invalidate_aggregation_cache_for(&command.entity);
+        Ok(affected)
     }
 
     pub fn delete(&self, command: &DeleteCommand) -> Result<u64, RepositoryError<E::Error>> {
-        self.repository().delete(command)
+        let affected = self.repository().delete(command)?;
+        self.invalidate_aggregation_cache_for(&command.entity);
+        Ok(affected)
     }
 
     pub fn recover(&self, command: &RecoverCommand) -> Result<u64, RepositoryError<E::Error>> {
-        self.repository().recover(command)
+        let affected = self.repository().recover(command)?;
+        self.invalidate_aggregation_cache_for(&command.entity);
+        Ok(affected)
+    }
+
+    fn invalidate_aggregation_cache_for(&self, entity: &str) {
+        if let Some(cache) = self
+            .metadata
+            .context
+            .get_resource::<Arc<dyn AggregationCacheBackend>>()
+        {
+            invalidate_aggregation_cache_namespace(cache.as_ref(), entity);
+        }
+        if let Some(cache) = self
+            .metadata
+            .context
+            .get_resource::<InMemoryAggregationCache>()
+        {
+            invalidate_aggregation_cache_namespace(cache, entity);
+        }
     }
 }
 
@@ -521,7 +636,81 @@ where
                 .before_select(self.repository.metadata.context, &mut query)
                 .map_err(RepositoryError::Runtime)?;
         }
-        self.repository.fetch_all(&query)
+        let mut rows = self.fetch_prepared_query(&query)?;
+        self.enhance_object_group_bys(&mut rows, &query.object_group_bys)?;
+        self.enhance_child_queries(&mut rows, &query.child_enhancements)?;
+        Ok(rows)
+    }
+
+    fn fetch_prepared_query(
+        &self,
+        query: &SelectQuery,
+    ) -> Result<Vec<Record>, RepositoryError<E::Error>> {
+        let compiled = self
+            .repository
+            .compile(query)
+            .map_err(RepositoryError::Runtime)?;
+        if let Some(options) = query.aggregation_cache.filter(|options| options.enabled) {
+            if let Some(cache) = self
+                .repository
+                .metadata
+                .context
+                .get_resource::<Arc<dyn AggregationCacheBackend>>()
+            {
+                return self.fetch_prepared_query_with_cache(
+                    query,
+                    &compiled,
+                    options,
+                    cache.as_ref(),
+                );
+            }
+            if let Some(cache) = self
+                .repository
+                .metadata
+                .context
+                .get_resource::<InMemoryAggregationCache>()
+            {
+                return self.fetch_prepared_query_with_cache(query, &compiled, options, cache);
+            }
+        }
+        self.repository
+            .executor
+            .fetch_all(&compiled)
+            .map_err(RepositoryError::Executor)
+    }
+
+    fn fetch_prepared_query_with_cache(
+        &self,
+        query: &SelectQuery,
+        compiled: &CompiledQuery,
+        options: AggregationCacheOptions,
+        cache: &dyn AggregationCacheBackend,
+    ) -> Result<Vec<Record>, RepositoryError<E::Error>> {
+        let key = aggregation_cache_key(
+            cache.namespace(),
+            &aggregation_cache_namespace(&query.entity),
+            compiled,
+        );
+        if let Some(rows) = cache.get(&key, options.cache_expired_millis) {
+            return Ok(rows);
+        }
+        let rows = self
+            .repository
+            .executor
+            .fetch_all(compiled)
+            .map_err(RepositoryError::Executor)?;
+        cache.put(key, rows.clone());
+        Ok(rows)
+    }
+
+    pub fn fetch_all_with_relation_aggregates(
+        &self,
+        query: &SelectQuery,
+        relation_aggregates: &[RelationAggregate],
+    ) -> Result<Vec<Record>, RepositoryError<E::Error>> {
+        let mut rows = self.fetch_all(query)?;
+        self.enhance_relation_aggregates(&mut rows, relation_aggregates, query.aggregation_cache)?;
+        Ok(rows)
     }
 
     pub fn fetch_smart_list(
@@ -535,6 +724,15 @@ where
                 .map_err(RepositoryError::Runtime)?;
         }
         self.repository.fetch_smart_list(&query)
+    }
+
+    pub fn fetch_smart_list_with_relation_aggregates(
+        &self,
+        query: &SelectQuery,
+        relation_aggregates: &[RelationAggregate],
+    ) -> Result<SmartList<Record>, RepositoryError<E::Error>> {
+        self.fetch_all_with_relation_aggregates(query, relation_aggregates)
+            .map(SmartList::from)
     }
 
     pub fn fetch_entities<T>(
@@ -551,6 +749,48 @@ where
                 .map_err(RepositoryError::Runtime)?;
         }
         self.repository.fetch_entities(&query)
+    }
+
+    pub fn fetch_entities_with_relation_aggregates<T>(
+        &self,
+        query: &SelectQuery,
+        relation_aggregates: &[RelationAggregate],
+    ) -> Result<SmartList<T>, RepositoryError<E::Error>>
+    where
+        T: Entity,
+    {
+        self.fetch_all_with_relation_aggregates(query, relation_aggregates)?
+            .into_iter()
+            .map(T::from_record)
+            .collect::<Result<Vec<_>, _>>()
+            .map(SmartList::from)
+            .map_err(RepositoryError::Entity)
+    }
+
+    pub fn fetch_enhanced_entities_with_relation_aggregates<T>(
+        &self,
+        query: &SelectQuery,
+        relation_aggregates: &[RelationAggregate],
+    ) -> Result<SmartList<T>, RepositoryError<E::Error>>
+    where
+        T: Entity,
+    {
+        let mut query = query.clone();
+        if let Some(behavior) = self.query_behavior(&query.entity) {
+            behavior
+                .before_select(self.repository.metadata.context, &mut query)
+                .map_err(RepositoryError::Runtime)?;
+        }
+
+        let mut rows = self.repository.fetch_all(&query)?;
+        self.enhance_relation_aggregates(&mut rows, relation_aggregates, query.aggregation_cache)?;
+        self.enhance_query_relations(&mut rows, &query)?;
+        self.enhance_relations(&mut rows)?;
+        rows.into_iter()
+            .map(T::from_record)
+            .collect::<Result<Vec<_>, _>>()
+            .map(SmartList::from)
+            .map_err(RepositoryError::Entity)
     }
 
     pub fn fetch_enhanced_entities<T>(
@@ -1478,6 +1718,165 @@ where
         Ok(())
     }
 
+    pub fn enhance_relation_aggregates(
+        &self,
+        parent_rows: &mut [Record],
+        relation_aggregates: &[RelationAggregate],
+        parent_cache_options: Option<teaql_core::AggregationCacheOptions>,
+    ) -> Result<(), RepositoryError<E::Error>> {
+        for aggregate in relation_aggregates {
+            self.enhance_relation_aggregate(parent_rows, aggregate, parent_cache_options)?;
+        }
+        Ok(())
+    }
+
+    pub fn enhance_object_group_bys(
+        &self,
+        rows: &mut [Record],
+        object_group_bys: &[ObjectGroupBy],
+    ) -> Result<(), RepositoryError<E::Error>> {
+        for group_by in object_group_bys {
+            let ids = rows
+                .iter()
+                .filter_map(|row| row.get(&group_by.storage_field).cloned())
+                .collect::<Vec<_>>();
+            if ids.is_empty() {
+                continue;
+            }
+            let mut query = group_by.query.clone();
+            ensure_projection(&mut query, "id");
+            query = query.and_filter(Expr::in_list("id", ids));
+            let object_rows = self
+                .scoped_repository(query.entity.clone())
+                .fetch_all(&query)?
+                .into_iter()
+                .filter_map(|row| {
+                    row.get("id")
+                        .cloned()
+                        .map(|id| (relation_bucket_key(&id), row))
+                })
+                .collect::<BTreeMap<_, _>>();
+            for row in rows.iter_mut() {
+                if let Some(key) = row.get(&group_by.storage_field).map(relation_bucket_key) {
+                    let value = object_rows
+                        .get(&key)
+                        .cloned()
+                        .map(Value::object)
+                        .unwrap_or(Value::Null);
+                    row.insert(group_by.property_name.clone(), value);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn enhance_child_queries(
+        &self,
+        rows: &mut [Record],
+        child_queries: &[SelectQuery],
+    ) -> Result<(), RepositoryError<E::Error>> {
+        for child_query in child_queries {
+            let ids = rows
+                .iter()
+                .filter_map(|row| row.get("id").cloned())
+                .collect::<Vec<_>>();
+            if ids.is_empty() {
+                continue;
+            }
+            let mut query = child_query.clone();
+            ensure_projection(&mut query, "id");
+            query = query.and_filter(Expr::in_list("id", ids));
+            let child_rows = self
+                .scoped_repository(query.entity.clone())
+                .fetch_all(&query)?
+                .into_iter()
+                .filter_map(|row| {
+                    row.get("id")
+                        .cloned()
+                        .map(|id| (relation_bucket_key(&id), row))
+                })
+                .collect::<BTreeMap<_, _>>();
+            for row in rows.iter_mut() {
+                if let Some(key) = row.get("id").map(relation_bucket_key) {
+                    if let Some(child) = child_rows.get(&key) {
+                        row.extend(child.clone());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn enhance_relation_aggregate(
+        &self,
+        parent_rows: &mut [Record],
+        aggregate: &RelationAggregate,
+        parent_cache_options: Option<teaql_core::AggregationCacheOptions>,
+    ) -> Result<(), RepositoryError<E::Error>> {
+        let plan = self
+            .build_relation_plans_from_loads(
+                &self.entity,
+                &[RelationLoad::with_query(
+                    aggregate.relation_name.clone(),
+                    aggregate.query.clone(),
+                )],
+            )
+            .map_err(RepositoryError::Runtime)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                RepositoryError::Runtime(RuntimeError::MissingRelation {
+                    entity: self.entity.clone(),
+                    relation: aggregate.relation_name.clone(),
+                })
+            })?;
+
+        let ids = parent_rows
+            .iter()
+            .filter_map(|row| row.get(&plan.local_key).cloned())
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            attach_empty_relation_aggregate(parent_rows, &aggregate.alias, aggregate.single_result);
+            return Ok(());
+        }
+
+        let child_repo = self.scoped_repository(plan.target_entity.clone());
+        let mut query = aggregate.query.clone();
+        query.entity = plan.target_entity.clone();
+        if query.aggregation_cache.is_none() {
+            if let Some(options) = parent_cache_options.filter(|options| options.propagate) {
+                query.aggregation_cache = Some(teaql_core::AggregationCacheOptions::enabled(
+                    options.propagate_cache_expired_millis,
+                ));
+            }
+        }
+        query.projection.clear();
+        query.expr_projection.clear();
+        query.order_by.clear();
+        query.slice = None;
+        query.relations.clear();
+        if query.aggregates.is_empty() {
+            let alias = if aggregate.single_result {
+                aggregate.alias.clone()
+            } else {
+                "count".to_owned()
+            };
+            query = query.aggregate(Aggregate::count(alias));
+        }
+        if !query
+            .group_by
+            .iter()
+            .any(|field| field == &plan.foreign_key)
+        {
+            query = query.group_by(plan.foreign_key.clone());
+        }
+        query = query.and_filter(Expr::in_list(plan.foreign_key.clone(), ids));
+
+        let aggregate_rows = child_repo.fetch_all(&query)?;
+        attach_relation_aggregate_rows(parent_rows, &plan, aggregate, aggregate_rows);
+        Ok(())
+    }
+
     fn build_relation_plans(
         &self,
         entity: &str,
@@ -1692,6 +2091,26 @@ fn relation_bucket_key(value: &Value) -> String {
     }
 }
 
+fn aggregation_cache_namespace(entity: &str) -> String {
+    format!("entity:{entity}")
+}
+
+fn invalidate_aggregation_cache_namespace(cache: &dyn AggregationCacheBackend, entity: &str) {
+    let namespace = format!(
+        "{}::{}",
+        cache.namespace(),
+        aggregation_cache_namespace(entity)
+    );
+    cache.invalidate_namespace(&namespace);
+}
+
+fn aggregation_cache_key(cache_namespace: &str, query_namespace: &str, query: &CompiledQuery) -> String {
+    format!(
+        "{cache_namespace}::{query_namespace}::{}::{:?}",
+        query.sql, query.params
+    )
+}
+
 fn ensure_projection(query: &mut SelectQuery, field: &str) {
     if !query.projection.is_empty()
         && !query
@@ -1700,6 +2119,67 @@ fn ensure_projection(query: &mut SelectQuery, field: &str) {
             .any(|projection| projection == field)
     {
         query.projection.push(field.to_owned());
+    }
+}
+
+fn attach_empty_relation_aggregate(parent_rows: &mut [Record], alias: &str, single_result: bool) {
+    let value = if single_result {
+        Value::U64(0)
+    } else {
+        Value::List(Vec::new())
+    };
+    for parent in parent_rows {
+        parent.insert(alias.to_owned(), value.clone());
+    }
+}
+
+fn attach_relation_aggregate_rows(
+    parent_rows: &mut [Record],
+    plan: &RelationLoadPlan,
+    aggregate: &RelationAggregate,
+    aggregate_rows: Vec<Record>,
+) {
+    let mut buckets: BTreeMap<String, Vec<Record>> = BTreeMap::new();
+    for mut row in aggregate_rows {
+        if let Some(key) = row.remove(&plan.foreign_key) {
+            buckets
+                .entry(relation_bucket_key(&key))
+                .or_default()
+                .push(row);
+        }
+    }
+
+    for parent in parent_rows {
+        let value = parent
+            .get(&plan.local_key)
+            .and_then(|local_value| buckets.get(&relation_bucket_key(local_value)))
+            .map(|rows| relation_aggregate_value(rows, aggregate.single_result))
+            .unwrap_or_else(|| {
+                if aggregate.single_result {
+                    Value::U64(0)
+                } else {
+                    Value::List(Vec::new())
+                }
+            });
+        parent.insert(aggregate.alias.clone(), value);
+    }
+}
+
+fn relation_aggregate_value(rows: &[Record], single_result: bool) -> Value {
+    if single_result {
+        rows.first()
+            .map(single_relation_aggregate_value)
+            .unwrap_or(Value::U64(0))
+    } else {
+        Value::List(rows.iter().cloned().map(Value::object).collect())
+    }
+}
+
+fn single_relation_aggregate_value(row: &Record) -> Value {
+    if row.len() == 1 {
+        row.values().next().cloned().unwrap_or(Value::Null)
+    } else {
+        Value::object(row.clone())
     }
 }
 

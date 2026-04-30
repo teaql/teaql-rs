@@ -28,8 +28,8 @@ pub use registry::{
     RuntimeModule,
 };
 pub use repository::{
-    ContextRepository, GraphTransactionBoundary, QueryExecutor, RelationLoadPlan, Repository,
-    ResolvedRepository,
+    AggregationCacheBackend, ContextRepository, GraphTransactionBoundary, InMemoryAggregationCache,
+    QueryExecutor, RelationLoadPlan, Repository, ResolvedRepository,
 };
 
 #[cfg(feature = "sqlx")]
@@ -37,21 +37,22 @@ pub mod sqlx_support;
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, VecDeque};
     use std::sync::{Arc, Mutex};
 
     use super::{
-        CHECK_OBJECT_STATUS_FIELD, CheckObjectStatus, CheckResults, Checker, EntityEvent,
-        EntityEventKind, EntityEventSink, GraphMutationKind, GraphNode, GraphTransactionBoundary,
-        InMemoryCheckerRegistry, InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry,
-        InMemoryRepositoryRegistry, InternalIdGenerator, Language, MemoryRepository, MetadataStore,
-        ObjectLocation, QueryExecutor, Repository, RepositoryBehavior, RepositoryError,
-        RuntimeError, RuntimeModule, UserContext, translate_check_result,
+        AggregationCacheBackend, CHECK_OBJECT_STATUS_FIELD, CheckObjectStatus, CheckResults,
+        Checker, EntityEvent, EntityEventKind, EntityEventSink, GraphMutationKind, GraphNode,
+        GraphTransactionBoundary, InMemoryAggregationCache, InMemoryCheckerRegistry, InMemoryMetadataStore,
+        InMemoryRepositoryBehaviorRegistry, InMemoryRepositoryRegistry, InternalIdGenerator,
+        Language, MemoryRepository, MetadataStore, ObjectLocation, QueryExecutor, Repository,
+        RepositoryBehavior, RepositoryError, RuntimeError, RuntimeModule, UserContext,
+        translate_check_result,
     };
     use teaql_core::{
-        Aggregate, AggregateFunction, DataType, Decimal, DeleteCommand, Entity, EntityDescriptor,
-        EntityError, Expr, InsertCommand, OrderBy, PropertyDescriptor, Record, RecoverCommand,
-        TeaqlEntity, UpdateCommand, Value,
+        Aggregate, AggregateFunction, BinaryOp, DataType, Decimal, DeleteCommand, Entity,
+        EntityDescriptor, EntityError, Expr, InsertCommand, OrderBy, PropertyDescriptor, Record,
+        RecoverCommand, RelationAggregate, SelectQuery, TeaqlEntity, UpdateCommand, Value,
     };
     use teaql_dialect_pg::PostgresDialect;
     use teaql_macros::TeaqlEntity as DeriveTeaqlEntity;
@@ -129,6 +130,13 @@ mod tests {
     struct StubExecutor {
         affected: u64,
         rows: Vec<Record>,
+    }
+
+    #[derive(Debug, Default)]
+    struct QueueExecutor {
+        affected: u64,
+        rows: Mutex<VecDeque<Vec<Record>>>,
+        queries: Mutex<Vec<String>>,
     }
 
     struct OrderBehavior;
@@ -308,6 +316,19 @@ mod tests {
 
         fn begin_transaction(&self) -> Result<GraphTransactionBoundary, Self::Error> {
             Ok(GraphTransactionBoundary::Started)
+        }
+    }
+
+    impl QueryExecutor for QueueExecutor {
+        type Error = StubError;
+
+        fn fetch_all(&self, query: &CompiledQuery) -> Result<Vec<Record>, Self::Error> {
+            self.queries.lock().unwrap().push(query.sql.clone());
+            Ok(self.rows.lock().unwrap().pop_front().unwrap_or_default())
+        }
+
+        fn execute(&self, _query: &CompiledQuery) -> Result<u64, Self::Error> {
+            Ok(self.affected)
         }
     }
 
@@ -1439,6 +1460,212 @@ mod tests {
     }
 
     #[test]
+    fn resolved_repository_executes_relation_aggregates_into_dynamic_properties() {
+        let executor = QueueExecutor {
+            affected: 1,
+            rows: Mutex::new(VecDeque::from([
+                vec![
+                    Record::from([
+                        (String::from("id"), Value::U64(1)),
+                        (String::from("version"), Value::I64(1)),
+                        (String::from("name"), Value::Text(String::from("first"))),
+                    ]),
+                    Record::from([
+                        (String::from("id"), Value::U64(2)),
+                        (String::from("version"), Value::I64(1)),
+                        (String::from("name"), Value::Text(String::from("second"))),
+                    ]),
+                ],
+                vec![Record::from([
+                    (String::from("order_id"), Value::U64(1)),
+                    (String::from("lineCount"), Value::I64(3)),
+                ])],
+            ])),
+            queries: Mutex::new(Vec::new()),
+        };
+        let mut ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(entity())
+                    .with_entity(line_entity()),
+            )
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(executor);
+
+        let repo = ctx
+            .resolve_repository::<PostgresDialect, QueueExecutor>("Order")
+            .unwrap();
+        let rows = repo
+            .fetch_all_with_relation_aggregates(
+                &repo
+                    .select()
+                    .project("id")
+                    .project("version")
+                    .project("name"),
+                &[RelationAggregate::new(
+                    "lines",
+                    "lineCount",
+                    SelectQuery::new("OrderLine"),
+                    true,
+                )],
+            )
+            .unwrap();
+
+        assert_eq!(rows[0].get("lineCount"), Some(&Value::I64(3)));
+        assert_eq!(rows[1].get("lineCount"), Some(&Value::U64(0)));
+
+        let executor = ctx.get_resource::<QueueExecutor>().unwrap();
+        let queries = executor.queries.lock().unwrap();
+        assert_eq!(queries.len(), 2);
+        assert_eq!(
+            queries[1],
+            "SELECT \"order_id\", COUNT(*) AS \"lineCount\" FROM \"orderline\" WHERE (\"order_id\" IN ($1, $2)) GROUP BY \"order_id\""
+        );
+    }
+
+    #[test]
+    fn resolved_repository_uses_aggregation_cache_when_resource_is_registered() {
+        let executor = QueueExecutor {
+            affected: 1,
+            rows: Mutex::new(VecDeque::from([vec![Record::from([(
+                String::from("count"),
+                Value::I64(2),
+            )])]])),
+            queries: Mutex::new(Vec::new()),
+        };
+        let mut ctx = UserContext::new()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(executor);
+        ctx.insert_resource(InMemoryAggregationCache::default());
+
+        let repo = ctx
+            .resolve_repository::<PostgresDialect, QueueExecutor>("Order")
+            .unwrap();
+        let query = repo
+            .select()
+            .count("count")
+            .enable_aggregation_cache_for(60_000);
+
+        let first = repo.fetch_all(&query).unwrap();
+        let second = repo.fetch_all(&query).unwrap();
+
+        assert_eq!(first, second);
+        let executor = ctx.get_resource::<QueueExecutor>().unwrap();
+        assert_eq!(executor.queries.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn aggregation_cache_is_namespaced_and_invalidated_after_write() {
+        let executor = QueueExecutor {
+            affected: 1,
+            rows: Mutex::new(VecDeque::from([
+                vec![Record::from([(String::from("count"), Value::I64(2))])],
+                vec![Record::from([(String::from("count"), Value::I64(3))])],
+            ])),
+            queries: Mutex::new(Vec::new()),
+        };
+        let mut ctx = UserContext::new()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(executor);
+        ctx.insert_resource(
+            Arc::new(InMemoryAggregationCache::with_namespace("tenant-a"))
+                as Arc<dyn AggregationCacheBackend>,
+        );
+
+        let repo = ctx
+            .resolve_repository::<PostgresDialect, QueueExecutor>("Order")
+            .unwrap();
+        let query = repo
+            .select()
+            .count("count")
+            .enable_aggregation_cache_for(60_000);
+
+        let first = repo.fetch_all(&query).unwrap();
+        let cached = repo.fetch_all(&query).unwrap();
+        repo.insert(
+            &InsertCommand::new("Order")
+                .value("id", 9_u64)
+                .value("version", 1_i64)
+                .value("name", "new"),
+        )
+        .unwrap();
+        let refreshed = repo.fetch_all(&query).unwrap();
+
+        assert_eq!(first, cached);
+        assert_ne!(cached, refreshed);
+        let executor = ctx.get_resource::<QueueExecutor>().unwrap();
+        assert_eq!(executor.queries.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn aggregation_cache_propagates_to_relation_aggregates() {
+        let parent_rows = vec![
+            Record::from([
+                (String::from("id"), Value::U64(1)),
+                (String::from("version"), Value::I64(1)),
+                (String::from("name"), Value::Text(String::from("first"))),
+            ]),
+            Record::from([
+                (String::from("id"), Value::U64(2)),
+                (String::from("version"), Value::I64(1)),
+                (String::from("name"), Value::Text(String::from("second"))),
+            ]),
+        ];
+        let aggregate_rows = vec![Record::from([
+            (String::from("order_id"), Value::U64(1)),
+            (String::from("lineCount"), Value::I64(3)),
+        ])];
+        let executor = QueueExecutor {
+            affected: 1,
+            rows: Mutex::new(VecDeque::from([parent_rows, aggregate_rows])),
+            queries: Mutex::new(Vec::new()),
+        };
+        let mut ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(entity())
+                    .with_entity(line_entity()),
+            )
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(executor);
+        ctx.insert_resource(InMemoryAggregationCache::default());
+
+        let repo = ctx
+            .resolve_repository::<PostgresDialect, QueueExecutor>("Order")
+            .unwrap();
+        let query = repo
+            .select()
+            .project("id")
+            .project("version")
+            .project("name")
+            .enable_aggregation_cache_for(60_000)
+            .propagate_aggregation_cache(60_000);
+        let aggregate = RelationAggregate::new(
+            "lines",
+            "lineCount",
+            SelectQuery::new("OrderLine"),
+            true,
+        );
+
+        let first = repo
+            .fetch_all_with_relation_aggregates(&query, &[aggregate.clone()])
+            .unwrap();
+        let second = repo
+            .fetch_all_with_relation_aggregates(&query, &[aggregate])
+            .unwrap();
+
+        assert_eq!(first, second);
+        let executor = ctx.get_resource::<QueueExecutor>().unwrap();
+        assert_eq!(executor.queries.lock().unwrap().len(), 2);
+    }
+
+    #[test]
     fn memory_repository_fetches_smart_list_entities_with_query_features() {
         let metadata = InMemoryMetadataStore::new().with_entity(entity());
         let repository = MemoryRepository::new(metadata).with_rows(
@@ -1519,6 +1746,15 @@ mod tests {
             ],
             group_by: Vec::new(),
             relations: Vec::new(),
+            aggregation_cache: None,
+            comment: None,
+            raw_sql: None,
+            raw_sql_search_criteria: Vec::new(),
+            json_expr: None,
+            dynamic_properties: Vec::new(),
+            raw_projections: Vec::new(),
+            object_group_bys: Vec::new(),
+            child_enhancements: Vec::new(),
         };
 
         let rows = repository.fetch_all(&query).unwrap();
@@ -1717,6 +1953,37 @@ mod tests {
             rows[0].get("name"),
             Some(&Value::Text("tea-order".to_owned()))
         );
+    }
+
+    #[test]
+    fn memory_repository_runs_property_to_property_filters() {
+        let metadata = InMemoryMetadataStore::new().with_entity(entity());
+        let repository = MemoryRepository::new(metadata).with_rows(
+            "Order",
+            vec![
+                Record::from([
+                    (String::from("id"), Value::U64(1)),
+                    (String::from("version"), Value::I64(2)),
+                    (String::from("name"), Value::Text(String::from("keep"))),
+                ]),
+                Record::from([
+                    (String::from("id"), Value::U64(2)),
+                    (String::from("version"), Value::I64(1)),
+                    (String::from("name"), Value::Text(String::from("skip"))),
+                ]),
+            ],
+        );
+
+        let rows = repository
+            .fetch_all(
+                &teaql_core::SelectQuery::new("Order")
+                    .filter(Expr::compare_columns("version", BinaryOp::Gte, "id"))
+                    .order_asc("id"),
+            )
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("name"), Some(&Value::Text("keep".to_owned())));
     }
 
     #[test]
