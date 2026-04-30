@@ -9,7 +9,7 @@ mod memory;
 mod registry;
 mod repository;
 
-pub use context::UserContext;
+pub use context::{SqlLogEntry, SqlLogOperation, SqlLogOptions, UserContext};
 pub use error::{ContextError, RepositoryError, RuntimeError};
 pub use event::{EntityEvent, EntityEventKind, EntityEventSink, InMemoryEntityEventSink};
 pub use graph::{
@@ -43,11 +43,11 @@ mod tests {
     use super::{
         AggregationCacheBackend, CHECK_OBJECT_STATUS_FIELD, CheckObjectStatus, CheckResults,
         Checker, EntityEvent, EntityEventKind, EntityEventSink, GraphMutationKind, GraphNode,
-        GraphTransactionBoundary, InMemoryAggregationCache, InMemoryCheckerRegistry, InMemoryMetadataStore,
-        InMemoryRepositoryBehaviorRegistry, InMemoryRepositoryRegistry, InternalIdGenerator,
-        Language, MemoryRepository, MetadataStore, ObjectLocation, QueryExecutor, Repository,
-        RepositoryBehavior, RepositoryError, RuntimeError, RuntimeModule, UserContext,
-        translate_check_result,
+        GraphTransactionBoundary, InMemoryAggregationCache, InMemoryCheckerRegistry,
+        InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry, InMemoryRepositoryRegistry,
+        InternalIdGenerator, Language, MemoryRepository, MetadataStore, ObjectLocation,
+        QueryExecutor, Repository, RepositoryBehavior, RepositoryError, RuntimeError,
+        RuntimeModule, SqlLogOperation, SqlLogOptions, UserContext, translate_check_result,
     };
     use teaql_core::{
         Aggregate, AggregateFunction, BinaryOp, DataType, Decimal, DeleteCommand, Entity,
@@ -330,6 +330,53 @@ mod tests {
         fn execute(&self, _query: &CompiledQuery) -> Result<u64, Self::Error> {
             Ok(self.affected)
         }
+    }
+
+    #[test]
+    fn user_context_records_configured_sql_logs() {
+        let mut ctx = UserContext::new()
+            .with_module(crate::module!(Order))
+            .with_sql_log_options(SqlLogOptions::select_only());
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(StubExecutor {
+            affected: 1,
+            rows: Vec::new(),
+        });
+
+        {
+            let repo = ctx
+                .resolve_repository::<PostgresDialect, StubExecutor>("Order")
+                .unwrap();
+            repo.fetch_all(&SelectQuery::new("Order").filter(Expr::eq("name", "Bob's Shop")))
+                .unwrap();
+            repo.insert(&InsertCommand::new("Order").value("name", "created"))
+                .unwrap();
+        }
+
+        let logs = ctx.sql_logs();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].operation, SqlLogOperation::Select);
+        assert_eq!(
+            logs[0].debug_sql,
+            "SELECT * FROM \"orders\" WHERE (\"name\" = 'Bob''s Shop')"
+        );
+
+        ctx.set_sql_log_options(SqlLogOptions::mutation_only());
+        ctx.clear_sql_logs();
+        ctx.resolve_repository::<PostgresDialect, StubExecutor>("Order")
+            .unwrap()
+            .update(
+                &UpdateCommand::new("Order", 1_u64)
+                    .value("name", "updated")
+                    .expected_version(1),
+            )
+            .unwrap();
+
+        let logs = ctx.sql_logs();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].operation, SqlLogOperation::Update);
+        assert!(logs[0].debug_sql.contains("UPDATE \"orders\" SET"));
+        assert!(logs[0].debug_sql.contains("'updated'"));
     }
 
     impl RepositoryBehavior for OrderBehavior {
@@ -1646,12 +1693,8 @@ mod tests {
             .project("name")
             .enable_aggregation_cache_for(60_000)
             .propagate_aggregation_cache(60_000);
-        let aggregate = RelationAggregate::new(
-            "lines",
-            "lineCount",
-            SelectQuery::new("OrderLine"),
-            true,
-        );
+        let aggregate =
+            RelationAggregate::new("lines", "lineCount", SelectQuery::new("OrderLine"), true);
 
         let first = repo
             .fetch_all_with_relation_aggregates(&query, &[aggregate.clone()])
@@ -2260,6 +2303,53 @@ mod sqlx_integration_tests {
         #[teaql(version)]
         version: i64,
         name: String,
+    }
+
+    #[test]
+    fn user_context_records_configured_sql_logs() {
+        let mut ctx = UserContext::new()
+            .with_module(crate::module!(Order))
+            .with_sql_log_options(SqlLogOptions::select_only());
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(StubExecutor {
+            affected: 1,
+            rows: Vec::new(),
+        });
+
+        {
+            let repo = ctx
+                .resolve_repository::<PostgresDialect, StubExecutor>("Order")
+                .unwrap();
+            repo.fetch_all(&SelectQuery::new("Order").filter(Expr::eq("name", "Bob's Shop")))
+                .unwrap();
+            repo.insert(&InsertCommand::new("Order").value("name", "created"))
+                .unwrap();
+        }
+
+        let logs = ctx.sql_logs();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].operation, SqlLogOperation::Select);
+        assert_eq!(
+            logs[0].debug_sql,
+            "SELECT * FROM \"orders\" WHERE (\"name\" = 'Bob''s Shop')"
+        );
+
+        ctx.set_sql_log_options(SqlLogOptions::mutation_only());
+        ctx.clear_sql_logs();
+        ctx.resolve_repository::<PostgresDialect, StubExecutor>("Order")
+            .unwrap()
+            .update(
+                &UpdateCommand::new("Order", 1_u64)
+                    .value("name", "updated")
+                    .expected_version(1),
+            )
+            .unwrap();
+
+        let logs = ctx.sql_logs();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].operation, SqlLogOperation::Update);
+        assert!(logs[0].debug_sql.contains("UPDATE \"orders\" SET"));
+        assert!(logs[0].debug_sql.contains("'updated'"));
     }
 
     impl RepositoryBehavior for OrderBehavior {

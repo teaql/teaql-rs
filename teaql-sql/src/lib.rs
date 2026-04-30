@@ -358,4 +358,34 @@ mod tests {
         );
         assert_eq!(query.params, vec![Value::I64(1)]);
     }
+
+    #[test]
+    fn renders_postgres_debug_sql_with_inlined_params() {
+        let query = CompiledQuery {
+            sql: "SELECT * FROM \"orders\" WHERE ((\"name\" = $1) AND (\"id\" = ANY($2)) AND ('$3' = '$3'))".to_owned(),
+            params: vec![
+                Value::from("Bob's Shop"),
+                Value::List(vec![Value::from(1_u64), Value::from(2_u64)]),
+            ],
+        };
+
+        assert_eq!(
+            query.debug_sql(crate::DatabaseKind::PostgreSql),
+            "SELECT * FROM \"orders\" WHERE ((\"name\" = 'Bob''s Shop') AND (\"id\" = ANY(ARRAY[1, 2])) AND ('$3' = '$3'))"
+        );
+    }
+
+    #[test]
+    fn renders_sqlite_debug_sql_with_inlined_params() {
+        let query = CompiledQuery {
+            sql: "UPDATE \"orders\" SET \"name\" = ? WHERE ((\"id\" = ?) AND ('?' = '?'))"
+                .to_owned(),
+            params: vec![Value::from("Alice's Shop"), Value::from(7_u64)],
+        };
+
+        assert_eq!(
+            query.debug_sql(crate::DatabaseKind::Sqlite),
+            "UPDATE \"orders\" SET \"name\" = 'Alice''s Shop' WHERE ((\"id\" = 7) AND ('?' = '?'))"
+        );
+    }
 }

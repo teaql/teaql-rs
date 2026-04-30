@@ -12,8 +12,8 @@ use teaql_sql::{CompiledQuery, SqlDialect};
 
 use crate::{
     CheckObjectStatus, ContextError, EntityEvent, GraphMutationKind, GraphMutationPlan, GraphNode,
-    GraphOperation, MetadataStore, RepositoryBehavior, RepositoryError, RuntimeError, UserContext,
-    clear_record_status, mark_record_status, sorted_update_fields,
+    GraphOperation, MetadataStore, RepositoryBehavior, RepositoryError, RuntimeError,
+    SqlLogOperation, UserContext, clear_record_status, mark_record_status, sorted_update_fields,
 };
 
 #[derive(Debug, Default)]
@@ -454,7 +454,11 @@ where
     }
 
     pub fn fetch_all(&self, query: &SelectQuery) -> Result<Vec<Record>, RepositoryError<E::Error>> {
-        self.repository().fetch_all(query)
+        let compiled = self.compile(query).map_err(RepositoryError::Runtime)?;
+        self.log_sql(SqlLogOperation::Select, &compiled);
+        self.executor
+            .fetch_all(&compiled)
+            .map_err(RepositoryError::Executor)
     }
 
     pub fn fetch_smart_list(
@@ -485,27 +489,95 @@ where
     }
 
     pub fn insert(&self, command: &InsertCommand) -> Result<u64, RepositoryError<E::Error>> {
-        let affected = self.repository().insert(command)?;
+        let compiled = self
+            .repository()
+            .compile_insert(command)
+            .map_err(RepositoryError::Runtime)?;
+        self.log_sql(SqlLogOperation::Insert, &compiled);
+        let affected = self
+            .executor
+            .execute(&compiled)
+            .map_err(RepositoryError::Executor)?;
         self.invalidate_aggregation_cache_for(&command.entity);
         Ok(affected)
     }
 
     pub fn update(&self, command: &UpdateCommand) -> Result<u64, RepositoryError<E::Error>> {
-        let affected = self.repository().update(command)?;
-        self.invalidate_aggregation_cache_for(&command.entity);
+        let affected = self.execute_mutation(
+            SqlLogOperation::Update,
+            &command.entity,
+            self.repository()
+                .compile_update(command)
+                .map_err(RepositoryError::Runtime)?,
+        )?;
+        if command.expected_version.is_some() && affected == 0 {
+            return Err(RepositoryError::Runtime(
+                RuntimeError::OptimisticLockConflict {
+                    entity: command.entity.clone(),
+                    id: format!("{:?}", command.id),
+                },
+            ));
+        }
         Ok(affected)
     }
 
     pub fn delete(&self, command: &DeleteCommand) -> Result<u64, RepositoryError<E::Error>> {
-        let affected = self.repository().delete(command)?;
-        self.invalidate_aggregation_cache_for(&command.entity);
+        let affected = self.execute_mutation(
+            SqlLogOperation::Delete,
+            &command.entity,
+            self.repository()
+                .compile_delete(command)
+                .map_err(RepositoryError::Runtime)?,
+        )?;
+        if command.expected_version.is_some() && affected == 0 {
+            return Err(RepositoryError::Runtime(
+                RuntimeError::OptimisticLockConflict {
+                    entity: command.entity.clone(),
+                    id: format!("{:?}", command.id),
+                },
+            ));
+        }
         Ok(affected)
     }
 
     pub fn recover(&self, command: &RecoverCommand) -> Result<u64, RepositoryError<E::Error>> {
-        let affected = self.repository().recover(command)?;
-        self.invalidate_aggregation_cache_for(&command.entity);
+        let affected = self.execute_mutation(
+            SqlLogOperation::Recover,
+            &command.entity,
+            self.repository()
+                .compile_recover(command)
+                .map_err(RepositoryError::Runtime)?,
+        )?;
+        if affected == 0 {
+            return Err(RepositoryError::Runtime(
+                RuntimeError::OptimisticLockConflict {
+                    entity: command.entity.clone(),
+                    id: format!("{:?}", command.id),
+                },
+            ));
+        }
         Ok(affected)
+    }
+
+    fn execute_mutation(
+        &self,
+        operation: SqlLogOperation,
+        entity: &str,
+        compiled: CompiledQuery,
+    ) -> Result<u64, RepositoryError<E::Error>> {
+        self.log_sql(operation, &compiled);
+        let affected = self
+            .executor
+            .execute(&compiled)
+            .map_err(RepositoryError::Executor)?;
+        self.invalidate_aggregation_cache_for(entity);
+        Ok(affected)
+    }
+
+    fn log_sql(&self, operation: SqlLogOperation, compiled: &CompiledQuery) {
+        self.metadata
+            .context
+            .record_sql_log(operation, compiled, self.dialect.kind());
     }
 
     fn invalidate_aggregation_cache_for(&self, entity: &str) {
@@ -673,6 +745,7 @@ where
                 return self.fetch_prepared_query_with_cache(query, &compiled, options, cache);
             }
         }
+        self.repository.log_sql(SqlLogOperation::Select, &compiled);
         self.repository
             .executor
             .fetch_all(&compiled)
@@ -694,6 +767,7 @@ where
         if let Some(rows) = cache.get(&key, options.cache_expired_millis) {
             return Ok(rows);
         }
+        self.repository.log_sql(SqlLogOperation::Select, compiled);
         let rows = self
             .repository
             .executor
@@ -2104,7 +2178,11 @@ fn invalidate_aggregation_cache_namespace(cache: &dyn AggregationCacheBackend, e
     cache.invalidate_namespace(&namespace);
 }
 
-fn aggregation_cache_key(cache_namespace: &str, query_namespace: &str, query: &CompiledQuery) -> String {
+fn aggregation_cache_key(
+    cache_namespace: &str,
+    query_namespace: &str,
+    query: &CompiledQuery,
+) -> String {
     format!(
         "{cache_namespace}::{query_namespace}::{}::{:?}",
         query.sql, query.params
