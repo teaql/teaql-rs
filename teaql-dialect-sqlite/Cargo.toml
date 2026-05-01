@@ -4,10 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+description.workspace = true
+repository.workspace = true
 
 [dependencies]
-teaql-core = { path = "../teaql-core" }
-teaql-sql = { path = "../teaql-sql" }
+teaql-core = { path = "../teaql-core", version = "0.7.0" }
+teaql-sql = { path = "../teaql-sql", version = "0.7.0" }
 
 [dev-dependencies]
-teaql-core = { path = "../teaql-core" }
+teaql-core = { path = "../teaql-core", version = "0.7.0" }
