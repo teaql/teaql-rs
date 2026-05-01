@@ -9,8 +9,8 @@ repository.workspace = true
 readme = "README.md"
 
 [dependencies]
-teaql-core = { path = "../teaql-core", version = "0.7.0" }
-teaql-sql = { path = "../teaql-sql", version = "0.7.0" }
+teaql-core = { path = "../teaql-core", version = "0.7.1" }
+teaql-sql = { path = "../teaql-sql", version = "0.7.1" }
 
 [dev-dependencies]
-teaql-core = { path = "../teaql-core", version = "0.7.0" }
+teaql-core = { path = "../teaql-core", version = "0.7.1" }
