@@ -1,13 +1,79 @@
 use std::any::{Any, TypeId};
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Mutex;
 
 use teaql_core::{EntityDescriptor, Record, Value};
+use teaql_sql::{CompiledQuery, DatabaseKind};
 
 use crate::{
     CheckResults, CheckerRegistry, ContextError, EntityEvent, EntityEventSink, InternalIdGenerator,
     Language, MetadataStore, ObjectLocation, RepositoryBehavior, RepositoryBehaviorRegistry,
     RepositoryRegistry, RuntimeError, local_id_generator, translate_check_result,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlLogOperation {
+    Select,
+    Insert,
+    Update,
+    Delete,
+    Recover,
+}
+
+impl SqlLogOperation {
+    pub fn is_select(self) -> bool {
+        matches!(self, Self::Select)
+    }
+
+    pub fn is_mutation(self) -> bool {
+        !self.is_select()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SqlLogOptions {
+    pub select: bool,
+    pub mutation: bool,
+}
+
+impl SqlLogOptions {
+    pub fn select_only() -> Self {
+        Self {
+            select: true,
+            mutation: false,
+        }
+    }
+
+    pub fn mutation_only() -> Self {
+        Self {
+            select: false,
+            mutation: true,
+        }
+    }
+
+    pub fn all() -> Self {
+        Self {
+            select: true,
+            mutation: true,
+        }
+    }
+
+    pub fn enabled_for(self, operation: SqlLogOperation) -> bool {
+        if operation.is_select() {
+            self.select
+        } else {
+            self.mutation
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SqlLogEntry {
+    pub operation: SqlLogOperation,
+    pub sql: String,
+    pub params: Vec<Value>,
+    pub debug_sql: String,
+}
 
 #[derive(Default)]
 pub struct UserContext {
@@ -21,6 +87,8 @@ pub struct UserContext {
     typed_resources: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
     named_resources: BTreeMap<String, Box<dyn Any + Send + Sync>>,
     locals: BTreeMap<String, Value>,
+    sql_log_options: SqlLogOptions,
+    sql_log_entries: Mutex<Vec<SqlLogEntry>>,
 }
 
 impl UserContext {
@@ -103,6 +171,68 @@ impl UserContext {
 
     pub fn set_language(&mut self, language: Language) {
         self.language = language;
+    }
+
+    pub fn with_sql_log_options(mut self, options: SqlLogOptions) -> Self {
+        self.sql_log_options = options;
+        self
+    }
+
+    pub fn set_sql_log_options(&mut self, options: SqlLogOptions) {
+        self.sql_log_options = options;
+    }
+
+    pub fn enable_select_sql_log(&mut self) {
+        self.sql_log_options.select = true;
+    }
+
+    pub fn enable_mutation_sql_log(&mut self) {
+        self.sql_log_options.mutation = true;
+    }
+
+    pub fn enable_all_sql_log(&mut self) {
+        self.sql_log_options = SqlLogOptions::all();
+    }
+
+    pub fn disable_sql_log(&mut self) {
+        self.sql_log_options = SqlLogOptions::default();
+        self.clear_sql_logs();
+    }
+
+    pub fn sql_log_options(&self) -> SqlLogOptions {
+        self.sql_log_options
+    }
+
+    pub fn sql_logs(&self) -> Vec<SqlLogEntry> {
+        self.sql_log_entries
+            .lock()
+            .map(|entries| entries.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn clear_sql_logs(&self) {
+        if let Ok(mut entries) = self.sql_log_entries.lock() {
+            entries.clear();
+        }
+    }
+
+    pub(crate) fn record_sql_log(
+        &self,
+        operation: SqlLogOperation,
+        query: &CompiledQuery,
+        database_kind: DatabaseKind,
+    ) {
+        if !self.sql_log_options.enabled_for(operation) {
+            return;
+        }
+        if let Ok(mut entries) = self.sql_log_entries.lock() {
+            entries.push(SqlLogEntry {
+                operation,
+                sql: query.sql.clone(),
+                params: query.params.clone(),
+                debug_sql: query.debug_sql(database_kind),
+            });
+        }
     }
 
     pub fn language(&self) -> Language {

@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+description.workspace = true
+repository.workspace = true
+readme = "README.md"
 
 [features]
 default = []
@@ -13,15 +16,15 @@ sqlx = ["dep:sqlx", "dep:tokio", "dep:teaql-dialect-sqlite", "dep:teaql-dialect-
 chrono = { workspace = true }
 serde_json = { workspace = true }
 rust_decimal = { workspace = true }
-teaql-core = { path = "../teaql-core" }
-teaql-sql = { path = "../teaql-sql" }
-teaql-dialect-pg = { path = "../teaql-dialect-pg", optional = true }
-teaql-dialect-sqlite = { path = "../teaql-dialect-sqlite", optional = true }
+teaql-core = { path = "../teaql-core", version = "0.7.1" }
+teaql-sql = { path = "../teaql-sql", version = "0.7.1" }
+teaql-dialect-pg = { path = "../teaql-dialect-pg", version = "0.7.1", optional = true }
+teaql-dialect-sqlite = { path = "../teaql-dialect-sqlite", version = "0.7.1", optional = true }
 sqlx = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
-teaql-dialect-pg = { path = "../teaql-dialect-pg" }
-teaql-dialect-sqlite = { path = "../teaql-dialect-sqlite" }
-teaql-macros = { path = "../teaql-macros" }
+teaql-dialect-pg = { path = "../teaql-dialect-pg", version = "0.7.1" }
+teaql-dialect-sqlite = { path = "../teaql-dialect-sqlite", version = "0.7.1" }
+teaql-macros = { path = "../teaql-macros", version = "0.7.1" }
 tokio = { workspace = true }

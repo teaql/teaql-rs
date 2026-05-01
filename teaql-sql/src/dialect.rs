@@ -6,6 +6,16 @@ use teaql_core::{
 
 use crate::{CompiledQuery, DatabaseKind, SqlCompileError};
 
+fn with_comment(sql: String, comment: Option<&str>) -> String {
+    match comment {
+        Some(comment) if !comment.is_empty() => {
+            let escaped = comment.replace("*/", "* /");
+            format!("/* {escaped} */ {sql}")
+        }
+        _ => sql,
+    }
+}
+
 pub trait SqlDialect {
     fn kind(&self) -> DatabaseKind;
     fn quote_ident(&self, ident: &str) -> String;
@@ -90,6 +100,10 @@ pub trait SqlDialect {
         query: &SelectQuery,
         params: &mut Vec<Value>,
     ) -> Result<String, SqlCompileError> {
+        if let Some(raw_sql) = &query.raw_sql {
+            return Ok(with_comment(raw_sql.clone(), query.comment.as_deref()));
+        }
+
         let projection = if query.aggregates.is_empty() {
             self.select_projection(entity, query, params)?
         } else {
@@ -101,10 +115,17 @@ pub trait SqlDialect {
             self.quote_ident(&entity.table_name)
         );
 
+        let mut where_parts = Vec::new();
         if let Some(filter) = &query.filter {
-            let where_sql = self.compile_expr(entity, filter, params)?;
+            where_parts.push(self.compile_expr(entity, filter, params)?);
+        }
+        where_parts.extend(query.raw_sql_search_criteria.iter().cloned());
+        if let Some(json_expr) = &query.json_expr {
+            where_parts.push(json_expr.clone());
+        }
+        if !where_parts.is_empty() {
             sql.push_str(" WHERE ");
-            sql.push_str(&where_sql);
+            sql.push_str(&where_parts.join(" AND "));
         }
 
         if !query.group_by.is_empty() {
@@ -144,7 +165,7 @@ pub trait SqlDialect {
             }
         }
 
-        Ok(sql)
+        Ok(with_comment(sql, query.comment.as_deref()))
     }
 
     fn compile_insert(
@@ -399,7 +420,11 @@ pub trait SqlDialect {
         query: &SelectQuery,
         params: &mut Vec<Value>,
     ) -> Result<String, SqlCompileError> {
-        if query.projection.is_empty() && query.expr_projection.is_empty() {
+        if query.projection.is_empty()
+            && query.expr_projection.is_empty()
+            && query.raw_projections.is_empty()
+            && query.dynamic_properties.is_empty()
+        {
             return Ok("*".to_owned());
         }
         let mut parts = query
@@ -410,6 +435,17 @@ pub trait SqlDialect {
         for projection in &query.expr_projection {
             let expr = self.compile_expr(entity, &projection.expr, params)?;
             parts.push(format!("{expr} AS {}", self.quote_ident(&projection.alias)));
+        }
+        for projection in query
+            .raw_projections
+            .iter()
+            .chain(query.dynamic_properties.iter())
+        {
+            parts.push(format!(
+                "{} AS {}",
+                projection.raw_sql_segment,
+                self.quote_ident(&projection.property_name)
+            ));
         }
         Ok(parts.join(", "))
     }
@@ -430,6 +466,20 @@ pub trait SqlDialect {
         for projection in &query.expr_projection {
             let expr = self.compile_expr(entity, &projection.expr, params)?;
             let aliased = format!("{expr} AS {}", self.quote_ident(&projection.alias));
+            if !parts.contains(&aliased) {
+                parts.push(aliased);
+            }
+        }
+        for projection in query
+            .raw_projections
+            .iter()
+            .chain(query.dynamic_properties.iter())
+        {
+            let aliased = format!(
+                "{} AS {}",
+                projection.raw_sql_segment,
+                self.quote_ident(&projection.property_name)
+            );
             if !parts.contains(&aliased) {
                 parts.push(aliased);
             }

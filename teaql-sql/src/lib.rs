@@ -299,6 +299,61 @@ mod tests {
     }
 
     #[test]
+    fn compiles_property_to_property_filters() {
+        let query = TestDialect
+            .compile_select(
+                &entity(),
+                &SelectQuery::new("Order").filter(Expr::compare_columns(
+                    "version",
+                    BinaryOp::Gte,
+                    "id",
+                )),
+            )
+            .unwrap();
+
+        assert_eq!(
+            query.sql,
+            "SELECT * FROM \"orders\" WHERE (\"version\" >= \"id\")"
+        );
+        assert!(query.params.is_empty());
+    }
+
+    #[test]
+    fn compiles_raw_escape_hatches_and_dynamic_properties() {
+        let query = TestDialect
+            .compile_select(
+                &entity(),
+                &SelectQuery::new("Order")
+                    .comment("audit")
+                    .project("id")
+                    .project_raw("name", "upper(name)")
+                    .dynamic_property_raw("score", "42")
+                    .raw_sql_search_criteria("name <> ''")
+                    .json_expr("payload @> '{\"active\":true}'"),
+            )
+            .unwrap();
+
+        assert_eq!(
+            query.sql,
+            "/* audit */ SELECT \"id\", upper(name) AS \"name\", 42 AS \"score\" FROM \"orders\" WHERE name <> '' AND payload @> '{\"active\":true}'"
+        );
+    }
+
+    #[test]
+    fn compiles_raw_sql_override_with_comment() {
+        let query = TestDialect
+            .compile_select(
+                &entity(),
+                &SelectQuery::new("Order")
+                    .comment("manual")
+                    .raw_sql("SELECT 1 AS id"),
+            )
+            .unwrap();
+
+        assert_eq!(query.sql, "/* manual */ SELECT 1 AS id");
+    }
+
+    #[test]
     fn compiles_subquery_expression_and_appends_params_in_order() {
         let query = TestDialect
             .compile_select(
@@ -357,5 +412,35 @@ mod tests {
             "SELECT \"name\", SOUNDEX(\"name\") AS \"nameSound\", STDDEV(\"version\") AS \"stddevVersion\", STDDEV_POP(\"version\") AS \"stddevPopVersion\", VAR_SAMP(\"version\") AS \"varSampVersion\", VAR_POP(\"version\") AS \"varPopVersion\", BIT_AND(\"version\") AS \"bitAndVersion\", BIT_OR(\"version\") AS \"bitOrVersion\", BIT_XOR(\"version\") AS \"bitXorVersion\" FROM \"orders\" GROUP BY \"name\" HAVING (COUNT(*) > $1) ORDER BY convert_to(\"name\", 'GBK') ASC"
         );
         assert_eq!(query.params, vec![Value::I64(1)]);
+    }
+
+    #[test]
+    fn renders_postgres_debug_sql_with_inlined_params() {
+        let query = CompiledQuery {
+            sql: "SELECT * FROM \"orders\" WHERE ((\"name\" = $1) AND (\"id\" = ANY($2)) AND ('$3' = '$3'))".to_owned(),
+            params: vec![
+                Value::from("Bob's Shop"),
+                Value::List(vec![Value::from(1_u64), Value::from(2_u64)]),
+            ],
+        };
+
+        assert_eq!(
+            query.debug_sql(crate::DatabaseKind::PostgreSql),
+            "SELECT * FROM \"orders\" WHERE ((\"name\" = 'Bob''s Shop') AND (\"id\" = ANY(ARRAY[1, 2])) AND ('$3' = '$3'))"
+        );
+    }
+
+    #[test]
+    fn renders_sqlite_debug_sql_with_inlined_params() {
+        let query = CompiledQuery {
+            sql: "UPDATE \"orders\" SET \"name\" = ? WHERE ((\"id\" = ?) AND ('?' = '?'))"
+                .to_owned(),
+            params: vec![Value::from("Alice's Shop"), Value::from(7_u64)],
+        };
+
+        assert_eq!(
+            query.debug_sql(crate::DatabaseKind::Sqlite),
+            "UPDATE \"orders\" SET \"name\" = 'Alice''s Shop' WHERE ((\"id\" = 7) AND ('?' = '?'))"
+        );
     }
 }

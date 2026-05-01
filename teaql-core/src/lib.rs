@@ -22,8 +22,9 @@ pub use meta::{EntityDescriptor, PropertyDescriptor, RelationDescriptor};
 pub use mutation::{DeleteCommand, InsertCommand, MutationKind, RecoverCommand, UpdateCommand};
 pub use naming::default_table_name;
 pub use query::{
-    Aggregate, AggregateFunction, NamedExpr, OrderBy, Record, RelationLoad, SelectQuery, Slice,
-    SortDirection, record_to_json_value,
+    Aggregate, AggregateFunction, AggregationCacheOptions, NamedExpr, ObjectGroupBy, OrderBy,
+    RawSqlProjection, Record, RelationAggregate, RelationLoad, SelectQuery, Slice, SortDirection,
+    record_to_json_value,
 };
 pub use safe_expression::{SafeExpression, TeaqlEmpty};
 pub use value::{DataType, Decimal, Value};
@@ -301,6 +302,11 @@ mod tests {
             ))
             .and_filter(Expr::contain("name", "rob"))
             .and_filter(Expr::sound_like("name", "Robert"))
+            .and_filter(Expr::compare_columns(
+                "updated_at",
+                BinaryOp::Gte,
+                "created_at",
+            ))
             .or_filter(Expr::is_null("name"))
             .project_expr("nameSound", Expr::soundex(Expr::column("name")))
             .order_desc("id")
@@ -309,6 +315,8 @@ mod tests {
             .count("total")
             .sum("version", "versionSum")
             .stddev("version", "versionStddev")
+            .enable_aggregation_cache_for(1_000)
+            .propagate_aggregation_cache(2_000)
             .having(Expr::gt("total", 1_i64))
             .relation("lines")
             .relation_query(
@@ -340,6 +348,15 @@ mod tests {
                 Aggregate::stddev("version", "versionStddev")
             ]
         );
+        assert_eq!(
+            query.aggregation_cache,
+            Some(AggregationCacheOptions {
+                enabled: true,
+                cache_expired_millis: 1_000,
+                propagate: true,
+                propagate_cache_expired_millis: 2_000,
+            })
+        );
         assert_eq!(query.having, Some(Expr::gt("total", 1_i64)));
         assert_eq!(
             query.relations,
@@ -361,6 +378,18 @@ mod tests {
             })
         );
         assert!(matches!(query.filter, Some(Expr::Or(_))));
+    }
+
+    #[test]
+    fn compare_columns_builds_property_to_property_filter() {
+        assert_eq!(
+            Expr::compare_columns("updated_at", BinaryOp::Gte, "created_at"),
+            Expr::Binary {
+                left: Box::new(Expr::Column("updated_at".to_owned())),
+                op: BinaryOp::Gte,
+                right: Box::new(Expr::Column("created_at".to_owned())),
+            }
+        );
     }
 
     #[test]

@@ -221,6 +221,14 @@ impl Expr {
         }
     }
 
+    pub fn compare_columns(
+        left_column: impl Into<String>,
+        op: BinaryOp,
+        right_column: impl Into<String>,
+    ) -> Self {
+        Self::binary(Self::column(left_column), op, Self::column(right_column))
+    }
+
     pub fn in_list(column: impl Into<String>, values: impl IntoIterator<Item = Value>) -> Self {
         Self::binary(
             Self::column(column),
