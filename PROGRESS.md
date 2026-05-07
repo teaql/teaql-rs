@@ -68,7 +68,7 @@ Current progress estimates:
 | Graph entity state semantics | Java has new/reference/remove/deleted status concepts | `GraphOperation::{Upsert, Reference, Remove}` covers first-pass upsert/reference/remove semantics; reference/remove now validate existence, deleted state, child-relation conflicts, and reference version conflicts | MVP+ | High |
 | Attach relation metadata | Java uses attach/reverse relation metadata | `RelationDescriptor` supports `attach/detached` and `delete_missing/keep_missing`; derive supports `attach = false` and `delete_missing = false` | MVP | Medium |
 | Graph write transaction boundary | Java runs through repository/service transaction facilities | `save_graph()` now requires a transactional executor; SQLite auto transaction rollback and PostgreSQL connection-scoped transaction rollback are verified | MVP+ | Medium |
-| Module/file organization | Java code is already split by concern | Rust core/runtime/macros/sql crates are now split into focused source modules | Done | Low |
+| Module/file organization | Java code is already split by concern | Rust core/runtime/macros/sql crates are split into focused source modules; the runtime repository layer is now a `repository/` module with separate cache, executor, base repository, context repository, resolved repository, graph, relation, and helper modules | Done | Low |
 
 ## Current Strengths
 
@@ -106,6 +106,7 @@ Current progress estimates:
 - PostgreSQL graph writes can be wrapped in a connection-scoped transaction and rolled back
 - SQL and memory paths both support grouped/extended aggregates, Decimal aggregate output, and extended predicates
 - PostgreSQL query paths are validated for array-bound large IN, subqueries, expression projection/function ordering, extended aggregates, grouped aggregates, bit aggregates, and `HAVING`
+- Runtime repository code is split by responsibility under `teaql-runtime/src/repository/`, keeping public exports stable while separating cache, executor, base/context/resolved repository APIs, graph writes, relation enhancement, and shared helpers
 
 ## Most Important Gaps
 

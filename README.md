@@ -23,7 +23,8 @@ The large crates are now split by function instead of keeping all implementation
 
 - `teaql-core/src`: `entity.rs`, `expr.rs`, `list.rs`, `meta.rs`, `mutation.rs`, `naming.rs`, `query.rs`, `value.rs`
 - `teaql-sql/src`: `dialect.rs`, `types.rs`
-- `teaql-runtime/src`: `checker.rs`, `context.rs`, `error.rs`, `event.rs`, `id.rs`, `memory.rs`, `registry.rs`, `repository.rs`, `sqlx_support.rs`
+- `teaql-runtime/src`: `checker.rs`, `context.rs`, `error.rs`, `event.rs`, `graph.rs`, `id.rs`, `memory.rs`, `registry.rs`, `repository/`, `sqlx_support.rs`
+- `teaql-runtime/src/repository`: `base.rs`, `cache.rs`, `context.rs`, `executor.rs`, `graph.rs`, `helpers.rs`, `relation.rs`, `resolved.rs`, `types.rs`
 - `teaql-macros/src`: `attr.rs`, `derive_impl.rs`, `mapping.rs`, `types.rs`
 
 ## Current scope

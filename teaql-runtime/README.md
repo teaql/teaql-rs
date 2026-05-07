@@ -18,6 +18,20 @@ behaviors, checkers, events, and graph writes through `UserContext`.
 - schema bootstrap helpers for SQLite and PostgreSQL
 - SQL debug logging options on `UserContext`
 
+## Source Layout
+
+The repository layer is split by concern under `src/repository/`:
+
+- `types.rs`: public repository structs and relation load plan types
+- `executor.rs`: `QueryExecutor` and graph transaction boundary types
+- `cache.rs`: aggregation cache traits and in-memory cache
+- `base.rs`: metadata-backed `Repository` compile and CRUD helpers
+- `context.rs`: `UserContext` repository assembly and context repository logging/cache invalidation
+- `resolved.rs`: entity-scoped repository query and mutation entry points
+- `graph.rs`: graph planning, graph save execution, and graph node validation
+- `relation.rs`: relation plans, relation enhancement, child queries, and relation aggregates
+- `helpers.rs`: shared bucket keys, cache keys, projection helpers, and graph relation validation
+
 ## Example
 
 ```rust
