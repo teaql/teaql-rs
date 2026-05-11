@@ -87,7 +87,7 @@ pub(super) fn attach_relation_aggregate_rows(
     for mut row in aggregate_rows {
         if let Some(key) = row.remove(&plan.foreign_key) {
             buckets
-                .entry(relation_bucket_key(&key))
+                .entry(graph_identity_key(&key))
                 .or_default()
                 .push(row);
         }
@@ -96,7 +96,7 @@ pub(super) fn attach_relation_aggregate_rows(
     for parent in parent_rows {
         let value = parent
             .get(&plan.local_key)
-            .and_then(|local_value| buckets.get(&relation_bucket_key(local_value)))
+            .and_then(|local_value| buckets.get(&graph_identity_key(local_value)))
             .map(|rows| relation_aggregate_value(rows, aggregate.single_result))
             .unwrap_or_else(|| {
                 if aggregate.single_result {

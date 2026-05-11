@@ -1578,6 +1578,66 @@ mod tests {
     }
 
     #[test]
+    fn resolved_repository_maps_relation_aggregate_storage_key_to_property_key() {
+        let mut line = line_entity();
+        line.properties
+            .iter_mut()
+            .find(|property| property.name == "order_id")
+            .unwrap()
+            .column_name = "order_ref".to_owned();
+        let executor = QueueExecutor {
+            affected: 1,
+            rows: Mutex::new(VecDeque::from([
+                vec![Record::from([
+                    (String::from("id"), Value::U64(1)),
+                    (String::from("version"), Value::I64(1)),
+                    (String::from("name"), Value::Text(String::from("first"))),
+                ])],
+                vec![Record::from([
+                    (String::from("order_ref"), Value::I64(1)),
+                    (String::from("lineCount"), Value::I64(3)),
+                ])],
+            ])),
+            queries: Mutex::new(Vec::new()),
+        };
+        let mut ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(entity())
+                    .with_entity(line),
+            )
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(executor);
+
+        let repo = ctx
+            .resolve_repository::<PostgresDialect, QueueExecutor>("Order")
+            .unwrap();
+        let rows = repo
+            .fetch_all_with_relation_aggregates(
+                &repo
+                    .select()
+                    .project("id")
+                    .project("version")
+                    .project("name"),
+                &[RelationAggregate::new(
+                    "lines",
+                    "lineCount",
+                    SelectQuery::new("OrderLine"),
+                    true,
+                )],
+            )
+            .unwrap();
+
+        assert_eq!(rows[0].get("lineCount"), Some(&Value::I64(3)));
+        let executor = ctx.get_resource::<QueueExecutor>().unwrap();
+        assert_eq!(
+            executor.queries.lock().unwrap()[1],
+            "SELECT \"order_ref\", COUNT(*) AS \"lineCount\" FROM \"orderline\" WHERE (\"order_ref\" IN ($1)) GROUP BY \"order_ref\""
+        );
+    }
+
+    #[test]
     fn resolved_repository_uses_aggregation_cache_when_resource_is_registered() {
         let executor = QueueExecutor {
             affected: 1,

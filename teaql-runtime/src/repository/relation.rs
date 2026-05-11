@@ -101,11 +101,11 @@ where
                 .filter_map(|row| {
                     row.get("id")
                         .cloned()
-                        .map(|id| (relation_bucket_key(&id), row))
+                        .map(|id| (graph_identity_key(&id), row))
                 })
                 .collect::<BTreeMap<_, _>>();
             for row in rows.iter_mut() {
-                if let Some(key) = row.get(&group_by.storage_field).map(relation_bucket_key) {
+                if let Some(key) = row.get(&group_by.storage_field).map(graph_identity_key) {
                     let value = object_rows
                         .get(&key)
                         .cloned()
@@ -141,11 +141,11 @@ where
                 .filter_map(|row| {
                     row.get("id")
                         .cloned()
-                        .map(|id| (relation_bucket_key(&id), row))
+                        .map(|id| (graph_identity_key(&id), row))
                 })
                 .collect::<BTreeMap<_, _>>();
             for row in rows.iter_mut() {
-                if let Some(key) = row.get("id").map(relation_bucket_key) {
+                if let Some(key) = row.get("id").map(graph_identity_key) {
                     if let Some(child) = child_rows.get(&key) {
                         row.extend(child.clone());
                     }
@@ -220,7 +220,30 @@ where
         }
         query = query.and_filter(Expr::in_list(plan.foreign_key.clone(), ids));
 
-        let aggregate_rows = child_repo.fetch_all(&query)?;
+        let mut aggregate_rows = child_repo.fetch_all(&query)?;
+        let foreign_key_column = self
+            .repository
+            .metadata
+            .context
+            .entity(&plan.target_entity)
+            .and_then(|descriptor| {
+                descriptor
+                    .properties
+                    .iter()
+                    .find(|property| property.name == plan.foreign_key)
+                    .map(|property| property.column_name.clone())
+            });
+        if let Some(foreign_key_column) =
+            foreign_key_column.filter(|column| column != &plan.foreign_key)
+        {
+            for row in &mut aggregate_rows {
+                if !row.contains_key(&plan.foreign_key) {
+                    if let Some(value) = row.remove(&foreign_key_column) {
+                        row.insert(plan.foreign_key.clone(), value);
+                    }
+                }
+            }
+        }
         attach_relation_aggregate_rows(parent_rows, &plan, aggregate, aggregate_rows);
         Ok(())
     }
@@ -393,7 +416,7 @@ where
         for child in child_rows {
             if let Some(key) = child.get(&plan.foreign_key) {
                 buckets
-                    .entry(relation_bucket_key(key))
+                    .entry(graph_identity_key(key))
                     .or_default()
                     .push(child);
             }
@@ -403,7 +426,7 @@ where
             let Some(local_value) = parent.get(&plan.local_key) else {
                 continue;
             };
-            let bucket_key = relation_bucket_key(local_value);
+            let bucket_key = graph_identity_key(local_value);
             let related = buckets.get(&bucket_key).cloned().unwrap_or_default();
             let related = if let Some(inverse_relation) = &inverse_relation {
                 let mut parent_object = parent.clone();
