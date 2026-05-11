@@ -2,14 +2,16 @@ use std::any::{Any, TypeId};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 
-use teaql_core::{EntityDescriptor, Record, Value};
-use teaql_sql::{CompiledQuery, DatabaseKind};
+use teaql_core::{EntityDescriptor, Record, UpdateCommand, Value};
+use teaql_sql::{CompiledQuery, DatabaseKind, SqlDialect};
 
 use crate::{
-    CheckResults, CheckerRegistry, ContextError, EntityEvent, EntityEventSink, InternalIdGenerator,
-    Language, MetadataStore, ObjectLocation, RepositoryBehavior, RepositoryBehaviorRegistry,
-    RepositoryRegistry, RuntimeError, local_id_generator, translate_check_result,
+    CheckResults, CheckerRegistry, ContextError, EntityEvent, EntityEventSink, GraphNode,
+    InternalIdGenerator, Language, MetadataStore, ObjectLocation, RepositoryBehavior,
+    RepositoryBehaviorRegistry, RepositoryRegistry, RuntimeError, local_id_generator,
+    translate_check_result,
 };
+use crate::{EntityRoot, QueryExecutor, RepositoryError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SqlLogOperation {
@@ -87,6 +89,8 @@ pub struct UserContext {
     typed_resources: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
     named_resources: BTreeMap<String, Box<dyn Any + Send + Sync>>,
     locals: BTreeMap<String, Value>,
+    pub(crate) initial_graphs: Vec<GraphNode>,
+    entity_root: EntityRoot,
     sql_log_options: SqlLogOptions,
     sql_log_entries: Mutex<Vec<SqlLogEntry>>,
 }
@@ -99,6 +103,18 @@ impl UserContext {
     pub fn with_module(mut self, module: crate::RuntimeModule) -> Self {
         module.apply_to(&mut self);
         self
+    }
+
+    pub fn entity_root(&self) -> EntityRoot {
+        self.entity_root.clone()
+    }
+
+    pub fn initial_graphs(&self) -> &[GraphNode] {
+        &self.initial_graphs
+    }
+
+    pub fn set_initial_graphs(&mut self, graphs: Vec<GraphNode>) {
+        self.initial_graphs = graphs;
     }
 
     pub fn with_metadata(mut self, metadata: impl MetadataStore + 'static) -> Self {
@@ -404,5 +420,46 @@ impl UserContext {
             return Ok(());
         };
         sink.on_event(self, &event)
+    }
+
+    pub fn commit_changes<D, E>(&self) -> Result<(), RepositoryError<E::Error>>
+    where
+        D: SqlDialect + Send + Sync + 'static,
+        E: QueryExecutor + Send + Sync + 'static,
+    {
+        let dialect = self.require_resource::<D>().map_err(|err| {
+            RepositoryError::Runtime(RuntimeError::Graph(format!(
+                "cannot commit changes without dialect: {err}"
+            )))
+        })?;
+        let executor = self.require_resource::<E>().map_err(|err| {
+            RepositoryError::Runtime(RuntimeError::Graph(format!(
+                "cannot commit changes without executor: {err}"
+            )))
+        })?;
+        let change_set = self.entity_root.current_change_set();
+
+        for (key, changes) in change_set.changes() {
+            if changes.is_empty() {
+                continue;
+            }
+            let entity = self
+                .require_entity(&key.entity)
+                .map_err(RepositoryError::Runtime)?;
+            let mut command = UpdateCommand::new(&key.entity, key.id.clone());
+            for (field, value) in changes {
+                command = command.value(field.clone(), value.clone());
+            }
+            let query = dialect
+                .compile_update(entity, &command)
+                .map_err(RuntimeError::from)
+                .map_err(RepositoryError::Runtime)?;
+            executor
+                .execute(&query)
+                .map_err(RepositoryError::Executor)?;
+        }
+
+        self.entity_root.clear_current_change_set();
+        Ok(())
     }
 }

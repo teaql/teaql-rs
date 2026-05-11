@@ -12,7 +12,9 @@ use sqlx::{
     query_with,
 };
 use std::sync::Arc;
-use teaql_core::{EntityDescriptor, Record, Value};
+use teaql_core::{
+    EntityDescriptor, Expr, InsertCommand, Record, SelectQuery, UpdateCommand, Value,
+};
 use teaql_dialect_pg::PostgresDialect;
 use teaql_dialect_sqlite::SqliteDialect;
 use teaql_sql::{CompiledQuery, SqlCompileError, SqlDialect};
@@ -173,6 +175,46 @@ impl PgMutationExecutor {
         }
         Ok(columns)
     }
+}
+
+async fn ensure_initial_graphs_postgres(
+    executor: &PgMutationExecutor,
+    dialect: &PostgresDialect,
+    ctx: &UserContext,
+) -> Result<(), MutationExecutorError> {
+    for graph in ctx.initial_graphs() {
+        let entity = ctx.entity(&graph.entity).ok_or_else(|| {
+            MutationExecutorError::Bind(format!("missing entity: {}", graph.entity))
+        })?;
+        if initial_graph_exists_postgres(executor, dialect, entity, graph).await? {
+            if let Some(query) = compile_initial_graph_update(dialect, entity, graph)? {
+                executor.execute(&query).await?;
+            }
+        } else {
+            let query = compile_initial_graph_insert(dialect, entity, graph)?;
+            executor.execute(&query).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn initial_graph_exists_postgres(
+    executor: &PgMutationExecutor,
+    dialect: &PostgresDialect,
+    entity: &EntityDescriptor,
+    graph: &crate::GraphNode,
+) -> Result<bool, MutationExecutorError> {
+    let Some(id) = graph.values.get("id") else {
+        return Ok(false);
+    };
+    let query = dialect.compile_select(
+        entity,
+        &SelectQuery::new(&graph.entity)
+            .project("id")
+            .filter(Expr::eq("id", id.clone()))
+            .limit(1),
+    )?;
+    Ok(!executor.fetch_all(&query).await?.is_empty())
 }
 
 #[derive(Clone)]
@@ -352,6 +394,80 @@ impl SqliteMutationExecutor {
     }
 }
 
+async fn ensure_initial_graphs_sqlite(
+    executor: &SqliteMutationExecutor,
+    dialect: &SqliteDialect,
+    ctx: &UserContext,
+) -> Result<(), MutationExecutorError> {
+    for graph in ctx.initial_graphs() {
+        let entity = ctx.entity(&graph.entity).ok_or_else(|| {
+            MutationExecutorError::Bind(format!("missing entity: {}", graph.entity))
+        })?;
+        if initial_graph_exists_sqlite(executor, dialect, entity, graph).await? {
+            if let Some(query) = compile_initial_graph_update(dialect, entity, graph)? {
+                executor.execute(&query).await?;
+            }
+        } else {
+            let query = compile_initial_graph_insert(dialect, entity, graph)?;
+            executor.execute(&query).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn initial_graph_exists_sqlite(
+    executor: &SqliteMutationExecutor,
+    dialect: &SqliteDialect,
+    entity: &EntityDescriptor,
+    graph: &crate::GraphNode,
+) -> Result<bool, MutationExecutorError> {
+    let Some(id) = graph.values.get("id") else {
+        return Ok(false);
+    };
+    let query = dialect.compile_select(
+        entity,
+        &SelectQuery::new(&graph.entity)
+            .project("id")
+            .filter(Expr::eq("id", id.clone()))
+            .limit(1),
+    )?;
+    Ok(!executor.fetch_all(&query).await?.is_empty())
+}
+
+fn compile_initial_graph_insert(
+    dialect: &impl SqlDialect,
+    entity: &EntityDescriptor,
+    graph: &crate::GraphNode,
+) -> Result<CompiledQuery, MutationExecutorError> {
+    let mut command = InsertCommand::new(&graph.entity);
+    for (field, value) in &graph.values {
+        command = command.value(field.clone(), value.clone());
+    }
+    dialect.compile_insert(entity, &command).map_err(Into::into)
+}
+
+fn compile_initial_graph_update(
+    dialect: &impl SqlDialect,
+    entity: &EntityDescriptor,
+    graph: &crate::GraphNode,
+) -> Result<Option<CompiledQuery>, MutationExecutorError> {
+    let Some(id) = graph.values.get("id") else {
+        return Ok(None);
+    };
+    let mut command = UpdateCommand::new(&graph.entity, id.clone());
+    for (field, value) in &graph.values {
+        if field == "id" {
+            continue;
+        }
+        command = command.value(field.clone(), value.clone());
+    }
+    match dialect.compile_update(entity, &command) {
+        Ok(query) => Ok(Some(query)),
+        Err(SqlCompileError::EmptyMutation(_)) => Ok(None),
+        Err(err) => Err(err.into()),
+    }
+}
+
 impl UserContext {
     pub async fn ensure_postgres_schema(&self) -> Result<(), MutationExecutorError> {
         let dialect = self.get_resource::<PostgresDialect>().ok_or_else(|| {
@@ -367,7 +483,8 @@ impl UserContext {
             .map(|metadata| metadata.all_entities())
             .unwrap_or_default();
 
-        executor.ensure_schema(dialect, &entities).await
+        executor.ensure_schema(dialect, &entities).await?;
+        ensure_initial_graphs_postgres(executor, dialect, self).await
     }
 
     pub async fn ensure_sqlite_schema(&self) -> Result<(), MutationExecutorError> {
@@ -388,7 +505,8 @@ impl UserContext {
             .map(|metadata| metadata.all_entities())
             .unwrap_or_default();
 
-        executor.ensure_schema(dialect, &entities).await
+        executor.ensure_schema(dialect, &entities).await?;
+        ensure_initial_graphs_sqlite(executor, dialect, self).await
     }
 }
 

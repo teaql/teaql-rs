@@ -1,5 +1,6 @@
 mod checker;
 mod context;
+mod entity_runtime;
 mod error;
 mod event;
 mod graph;
@@ -10,6 +11,7 @@ mod registry;
 mod repository;
 
 pub use context::{SqlLogEntry, SqlLogOperation, SqlLogOptions, UserContext};
+pub use entity_runtime::{ChangeSetStack, EntityChangeSet, EntityKey, EntityRoot, RootContext};
 pub use error::{ContextError, RepositoryError, RuntimeError};
 pub use event::{EntityEvent, EntityEventKind, EntityEventSink, InMemoryEntityEventSink};
 pub use graph::{
@@ -57,6 +59,8 @@ mod tests {
     use teaql_dialect_pg::PostgresDialect;
     use teaql_macros::TeaqlEntity as DeriveTeaqlEntity;
     use teaql_sql::CompiledQuery;
+
+    const ORDER_DEFAULT_PROJECTION: &str = "\"id\", \"version\", \"name\"";
 
     fn entity() -> EntityDescriptor {
         EntityDescriptor::new("Order")
@@ -358,7 +362,9 @@ mod tests {
         assert_eq!(logs[0].operation, SqlLogOperation::Select);
         assert_eq!(
             logs[0].debug_sql,
-            "SELECT * FROM \"orders\" WHERE (\"name\" = 'Bob''s Shop')"
+            format!(
+                "SELECT {ORDER_DEFAULT_PROJECTION} FROM \"orders\" WHERE (\"name\" = 'Bob''s Shop')"
+            )
         );
 
         ctx.set_sql_log_options(SqlLogOptions::mutation_only());
@@ -2118,6 +2124,8 @@ mod sqlx_integration_tests {
     use tokio::runtime::Handle;
     use tokio::task::block_in_place;
 
+    const ORDER_DEFAULT_PROJECTION: &str = "\"id\", \"version\", \"name\"";
+
     fn entity() -> EntityDescriptor {
         EntityDescriptor::new("Order")
             .table_name("orders")
@@ -2810,11 +2818,22 @@ mod sqlx_integration_tests {
         let module = super::RuntimeModule::new()
             .descriptor(entity())
             .descriptor(line_entity())
-            .descriptor(product_entity());
+            .descriptor(product_entity())
+            .initial_graph(
+                GraphNode::new("Order")
+                    .value("id", 1_u64)
+                    .value("version", 1_i64)
+                    .value("name", "seed-order"),
+            );
         let mut ctx = super::UserContext::new().with_module(module);
         ctx.insert_resource(SqliteDialect);
         ctx.insert_resource(SqliteMutationExecutor::new(pool.clone()));
 
+        ctx.ensure_sqlite_schema().await.unwrap();
+        sqlx::query("UPDATE orders SET name = 'stale-seed-order' WHERE id = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
         ctx.ensure_sqlite_schema().await.unwrap();
 
         let tables = sqlx::query(
@@ -2835,6 +2854,13 @@ mod sqlx_integration_tests {
                 "product".to_owned()
             ]
         );
+
+        let seed_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(1) FROM orders WHERE id = 1 AND name = 'seed-order'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(seed_count, 1);
     }
 
     #[tokio::test]
@@ -3983,7 +4009,9 @@ mod sqlx_integration_tests {
             .unwrap();
         assert_eq!(
             array_bound_query.sql,
-            "SELECT * FROM \"orders\" WHERE ((\"id\" = ANY($1)) AND (\"name\" <> ALL($2))) ORDER BY \"id\" ASC"
+            format!(
+                "SELECT {ORDER_DEFAULT_PROJECTION} FROM \"orders\" WHERE ((\"id\" = ANY($1)) AND (\"name\" <> ALL($2))) ORDER BY \"id\" ASC"
+            )
         );
         let rows = executor.fetch_all(&array_bound_query).await.unwrap();
         assert_eq!(rows.len(), 2);
@@ -4015,7 +4043,9 @@ mod sqlx_integration_tests {
             .unwrap();
         assert_eq!(
             subquery.sql,
-            "SELECT * FROM \"orders\" WHERE (\"id\" IN (SELECT \"order_id\" FROM \"orderline\" WHERE (\"name\" LIKE $1))) ORDER BY \"id\" ASC"
+            format!(
+                "SELECT {ORDER_DEFAULT_PROJECTION} FROM \"orders\" WHERE (\"id\" IN (SELECT \"order_id\" FROM \"orderline\" WHERE (\"name\" LIKE $1))) ORDER BY \"id\" ASC"
+            )
         );
         let rows = executor.fetch_all(&subquery).await.unwrap();
         assert_eq!(rows.len(), 2);

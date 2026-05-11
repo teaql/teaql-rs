@@ -7,8 +7,8 @@ use teaql_core::{
 };
 
 use crate::{
-    Checker, EntityEventSink, InMemoryCheckerRegistry, InMemoryEntityEventSink, Language,
-    RuntimeError, UserContext,
+    Checker, EntityEventSink, GraphNode, InMemoryCheckerRegistry, InMemoryEntityEventSink,
+    Language, RuntimeError, UserContext,
 };
 
 pub trait MetadataStore: Send + Sync {
@@ -175,6 +175,7 @@ pub struct RuntimeModule {
     checkers: InMemoryCheckerRegistry,
     event_sinks: InMemoryEntityEventSink,
     language: Option<Language>,
+    initial_graphs: Vec<GraphNode>,
 }
 
 impl RuntimeModule {
@@ -232,12 +233,23 @@ impl RuntimeModule {
         self
     }
 
+    pub fn initial_graph(mut self, graph: GraphNode) -> Self {
+        self.initial_graphs.push(graph);
+        self
+    }
+
+    pub fn initial_graphs(mut self, graphs: impl IntoIterator<Item = GraphNode>) -> Self {
+        self.initial_graphs.extend(graphs);
+        self
+    }
+
     pub fn apply_to(self, ctx: &mut UserContext) {
         ctx.set_metadata(self.metadata);
         ctx.set_repository_registry(self.repositories);
         ctx.set_repository_behavior_registry(self.behaviors);
         ctx.set_checker_registry(self.checkers);
         ctx.set_event_sink(self.event_sinks);
+        ctx.set_initial_graphs(self.initial_graphs);
         if let Some(language) = self.language {
             ctx.set_language(language);
         }

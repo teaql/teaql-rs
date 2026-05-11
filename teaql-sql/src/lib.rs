@@ -30,6 +30,8 @@ mod tests {
         }
     }
 
+    const ORDER_DEFAULT_PROJECTION: &str = "\"id\", \"version\", \"name\"";
+
     fn entity() -> EntityDescriptor {
         EntityDescriptor::new("Order")
             .table_name("orders")
@@ -150,7 +152,9 @@ mod tests {
         assert_eq!(
             query,
             CompiledQuery {
-                sql: "SELECT * FROM \"orders\" WHERE (SOUNDEX(\"name\") = SOUNDEX($1))".to_owned(),
+                sql: format!(
+                    "SELECT {ORDER_DEFAULT_PROJECTION} FROM \"orders\" WHERE (SOUNDEX(\"name\") = SOUNDEX($1))"
+                ),
                 params: vec![Value::from("Robert")],
             }
         );
@@ -174,7 +178,9 @@ mod tests {
 
         assert_eq!(
             query.sql,
-            "SELECT * FROM \"orders\" WHERE ((\"name\" LIKE $1) AND (\"name\" LIKE $2) AND (\"name\" LIKE $3) AND (\"name\" NOT LIKE $4) AND (\"name\" NOT LIKE $5) AND (\"name\" NOT LIKE $6))"
+            format!(
+                "SELECT {ORDER_DEFAULT_PROJECTION} FROM \"orders\" WHERE ((\"name\" LIKE $1) AND (\"name\" LIKE $2) AND (\"name\" LIKE $3) AND (\"name\" NOT LIKE $4) AND (\"name\" NOT LIKE $5) AND (\"name\" NOT LIKE $6))"
+            )
         );
         assert_eq!(
             query.params,
@@ -256,7 +262,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             query.sql,
-            "SELECT * FROM \"orders\" WHERE (\"id\" IN ($1, $2))"
+            format!("SELECT {ORDER_DEFAULT_PROJECTION} FROM \"orders\" WHERE (\"id\" IN ($1, $2))")
         );
 
         let err = TestDialect
@@ -286,7 +292,9 @@ mod tests {
 
         assert_eq!(
             query.sql,
-            "SELECT * FROM \"orders\" WHERE ((\"id\" IN ($1, $2)) AND (\"name\" NOT IN ($3)))"
+            format!(
+                "SELECT {ORDER_DEFAULT_PROJECTION} FROM \"orders\" WHERE ((\"id\" IN ($1, $2)) AND (\"name\" NOT IN ($3)))"
+            )
         );
         assert_eq!(
             query.params,
@@ -313,7 +321,9 @@ mod tests {
 
         assert_eq!(
             query.sql,
-            "SELECT * FROM \"orders\" WHERE (\"version\" >= \"id\")"
+            format!(
+                "SELECT {ORDER_DEFAULT_PROJECTION} FROM \"orders\" WHERE (\"version\" >= \"id\")"
+            )
         );
         assert!(query.params.is_empty());
     }
@@ -375,7 +385,9 @@ mod tests {
 
         assert_eq!(
             query.sql,
-            "SELECT * FROM \"orders\" WHERE ((\"id\" IN (SELECT \"order_id\" FROM \"orderline\" WHERE (\"name\" = $1) ORDER BY \"id\" ASC LIMIT 10)) AND (\"name\" = $2))"
+            format!(
+                "SELECT {ORDER_DEFAULT_PROJECTION} FROM \"orders\" WHERE ((\"id\" IN (SELECT \"order_id\" FROM \"orderline\" WHERE (\"name\" = $1) ORDER BY \"id\" ASC LIMIT 10)) AND (\"name\" = $2))"
+            )
         );
         assert_eq!(
             query.params,

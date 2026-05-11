@@ -46,6 +46,7 @@ pub struct ParsedFieldAttrs {
     pub id: bool,
     pub version: bool,
     pub dynamic: bool,
+    pub skip: bool,
     pub relation: Option<ParsedRelation>,
 }
 
@@ -74,6 +75,8 @@ pub fn parse_field_attrs(attrs: &[syn::Attribute]) -> ParsedFieldAttrs {
                 parsed.version = true;
             } else if meta.path.is_ident("dynamic") {
                 parsed.dynamic = true;
+            } else if meta.path.is_ident("skip") {
+                parsed.skip = true;
             } else if meta.path.is_ident("column") {
                 let value = meta.value()?;
                 parsed.column = Some(parse_string_expr(&value.parse::<Expr>()?));

@@ -420,17 +420,36 @@ pub trait SqlDialect {
         query: &SelectQuery,
         params: &mut Vec<Value>,
     ) -> Result<String, SqlCompileError> {
+        let property_projection = |property: &PropertyDescriptor| {
+            let column = self.quote_ident(&property.column_name);
+            if property.column_name == property.name {
+                column
+            } else {
+                format!("{column} AS {}", self.quote_ident(&property.name))
+            }
+        };
+
         if query.projection.is_empty()
             && query.expr_projection.is_empty()
             && query.raw_projections.is_empty()
             && query.dynamic_properties.is_empty()
         {
-            return Ok("*".to_owned());
+            return Ok(entity
+                .properties
+                .iter()
+                .map(property_projection)
+                .collect::<Vec<_>>()
+                .join(", "));
         }
         let mut parts = query
             .projection
             .iter()
-            .map(|field| self.column_sql(entity, field))
+            .map(|field| {
+                let property = entity
+                    .property_by_name(field)
+                    .ok_or_else(|| SqlCompileError::UnknownField(field.to_owned()))?;
+                Ok(property_projection(property))
+            })
             .collect::<Result<Vec<_>, _>>()?;
         for projection in &query.expr_projection {
             let expr = self.compile_expr(entity, &projection.expr, params)?;

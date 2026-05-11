@@ -33,7 +33,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         .filter_map(|field| {
             let field_ident = field.ident.as_ref()?;
             let parsed = parse_field_attrs(&field.attrs);
-            if parsed.dynamic {
+            if parsed.dynamic || parsed.skip {
                 None
             } else {
                 Some(field_ident.to_string())
@@ -45,6 +45,13 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         let field_ident = field.ident.expect("named field");
         let field_name = field_ident.to_string();
         let parsed = parse_field_attrs(&field.attrs);
+
+        if parsed.skip {
+            from_record_fields.push(quote! {
+                #field_ident: Default::default()
+            });
+            continue;
+        }
 
         if parsed.dynamic {
             let known_field_names = explicit_field_names.clone();
