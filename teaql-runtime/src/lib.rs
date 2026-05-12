@@ -44,8 +44,8 @@ mod tests {
 
     use super::{
         AggregationCacheBackend, CHECK_OBJECT_STATUS_FIELD, CheckObjectStatus, CheckResults,
-        Checker, EntityEvent, EntityEventKind, EntityEventSink, GraphMutationKind, GraphNode,
-        GraphTransactionBoundary, InMemoryAggregationCache, InMemoryCheckerRegistry,
+        CheckRule, Checker, EntityEvent, EntityEventKind, EntityEventSink, GraphMutationKind,
+        GraphNode, GraphTransactionBoundary, InMemoryAggregationCache, InMemoryCheckerRegistry,
         InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry, InMemoryRepositoryRegistry,
         InternalIdGenerator, Language, MemoryRepository, MetadataStore, ObjectLocation,
         QueryExecutor, Repository, RepositoryBehavior, RepositoryError, RuntimeError,
@@ -976,6 +976,45 @@ mod tests {
             }
             other => panic!("unexpected checker error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn checker_registry_reports_nested_create_locations_and_fixes_records() {
+        let ctx = UserContext::new()
+            .with_checker_registry(InMemoryCheckerRegistry::new().with_checker(OrderChecker));
+
+        let mut child = Record::from([
+            (String::from("id"), Value::U64(10)),
+            (
+                String::from(CHECK_OBJECT_STATUS_FIELD),
+                Value::from(CheckObjectStatus::Create),
+            ),
+        ]);
+        let error = ctx
+            .check_and_fix_record_at(
+                "Order",
+                &mut child,
+                &ObjectLocation::hash_root("lines").element(0),
+            )
+            .unwrap_err();
+
+        assert_eq!(child.get("version"), Some(&Value::I64(1)));
+        match error {
+            RuntimeError::Check(results) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].rule, CheckRule::Required);
+                assert_eq!(results[0].location.to_string(), "lines[0].name");
+            }
+            other => panic!("unexpected checker error: {other:?}"),
+        }
+
+        child.insert("name".to_owned(), Value::Text("valid child".to_owned()));
+        ctx.check_and_fix_record_at(
+            "Order",
+            &mut child,
+            &ObjectLocation::hash_root("lines").element(0),
+        )
+        .unwrap();
     }
 
     #[test]
