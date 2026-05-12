@@ -12,8 +12,8 @@ Status labels used here:
 
 Current progress estimates:
 
-- Core runtime/kernel: `90%`
-- SQLite usable path: `85%-90%`
+- Core runtime/kernel: `91%`
+- SQLite usable path: `90%`
 - PostgreSQL usable path: `85%-90%`
 - Full Java feature parity: `60%-65%`
 
@@ -32,6 +32,7 @@ Current progress estimates:
 | Relation preload planning | Complete | Relation load plans support nested paths like `lines.product` | Done | Medium |
 | Single-level relation enhancement | Complete | Supported and verified | Done | Low |
 | Multi-level relation enhancement | Complete | Recursive enhancement implemented and tested on SQLite | MVP | Medium |
+| Relation aggregate enhancement | Java can attach relation counts/statistics to parent objects | `RelationAggregate` supports single count/statistic values and grouped statistic rows; runtime normalizes signed/unsigned id keys and maps storage column names back to entity property keys before attaching aggregate results | MVP+ | Medium |
 | UserContext | Core concept | Implemented as runtime resource index and request-scope store | Done | Medium |
 | RepositoryRegistry | Present | In-memory registry implemented | MVP | Low |
 | Entity-level behavior hooks | Present | `before_select/insert/update/delete/recover` supported | MVP | Medium |
@@ -69,6 +70,7 @@ Current progress estimates:
 | Attach relation metadata | Java uses attach/reverse relation metadata | `RelationDescriptor` supports `attach/detached` and `delete_missing/keep_missing`; derive supports `attach = false` and `delete_missing = false` | MVP | Medium |
 | Graph write transaction boundary | Java runs through repository/service transaction facilities | `save_graph()` now requires a transactional executor; SQLite auto transaction rollback and PostgreSQL connection-scoped transaction rollback are verified | MVP+ | Medium |
 | Module/file organization | Java code is already split by concern | Rust core/runtime/macros/sql crates are split into focused source modules; the runtime repository layer is now a `repository/` module with separate cache, executor, base repository, context repository, resolved repository, graph, relation, and helper modules | Done | Low |
+| Published crates | Java artifacts are released through Maven-style repositories | `teaql-core`, `teaql-sql`, `teaql-dialect-pg`, `teaql-dialect-sqlite`, `teaql-macros`, and `teaql-runtime` are published on crates.io as `0.7.4` | Done | Low |
 
 ## Current Strengths
 
@@ -84,6 +86,7 @@ Current progress estimates:
 - Checker failures can be translated through `UserContext` into 15 built-in languages
 - Java-style mutation event dispatch is available through `UserContext`
 - Single-level and nested relation enhancement are working
+- Relation aggregate enhancement can attach relation counts/statistics even when database column names differ from entity property names
 - Entity derive macro exists and supports descriptor generation and typed record mapping
 - `SmartList<T>` and typed nested entity loading are working
 - Java-style null-safe `SafeExpression` chains are available for typed values, `BaseEntity`, and `SmartList`
@@ -106,6 +109,7 @@ Current progress estimates:
 - PostgreSQL graph writes can be wrapped in a connection-scoped transaction and rolled back
 - SQL and memory paths both support grouped/extended aggregates, Decimal aggregate output, and extended predicates
 - PostgreSQL query paths are validated for array-bound large IN, subqueries, expression projection/function ordering, extended aggregates, grouped aggregates, bit aggregates, and `HAVING`
+- Generated `Q` API validation in an external SQLite crate covers complex object commit, DDD-style subtrait method dispatch, JSON serialization, JSON-expression search, simple aggregates, and relation aggregate statistics
 - Runtime repository code is split by responsibility under `teaql-runtime/src/repository/`, keeping public exports stable while separating cache, executor, base/context/resolved repository APIs, graph writes, relation enhancement, and shared helpers
 
 ## Most Important Gaps
@@ -128,3 +132,10 @@ Current progress estimates:
 3. Expand event payloads if consumers need old/new property values instead of changed-field names plus final values
 4. Extend value binding and decoding for `Uuid` and bytes
 5. Decide whether a Rust-native service layer is needed, or whether repository-level APIs are enough
+
+## Latest Validation Snapshot
+
+- `teaql-runtime` `0.7.4` fixes relation aggregate attachment when grouped SQL rows expose storage column names such as `platform` while the runtime relation key is the entity property such as `platform_id`.
+- Relation/object enhancement now uses graph identity keys so nonnegative `I64` ids decoded from SQL and application-side `U64` ids match consistently.
+- Verified with `cargo test -p teaql-runtime --features sqlx`: 66 tests passed.
+- Verified externally with generated `crm-erp-service` high-level `Q` APIs against SQLite: 14 tests passed, including complex object commit, JSON serialization, `find_with_json_expr`, and simple-to-complex statistics.

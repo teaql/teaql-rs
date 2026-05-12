@@ -9,6 +9,8 @@ Pure Rust rewrite of TeaQL with a narrowed scope:
 
 Progress tracking lives in [PROGRESS.md](./PROGRESS.md).
 
+Current published release: `0.7.4`.
+
 ## Workspace layout
 
 - `teaql-core`: metadata, entity traits, base entity data, values, filters, ordering, aggregates, query model, and `SmartList<T>`
@@ -62,6 +64,7 @@ The current implementation focuses on the Rust-native core runtime:
 - relation preload plans can now be resolved from behavior hooks and converted into child batch queries from parent rows
 - relation enhancement supports batch child-query generation and backfilling related records into parent records
 - nested relation enhancement supports paths like `lines.product`
+- relation aggregate enhancement supports count/statistic properties on parent rows, including cases where the database column name differs from the entity property name
 - `TeaqlEntity` derive support for declarative entity descriptors
 - typed entity mapping through `Entity` and `SmartList<T>`
 - typed nested relation enhancement through `fetch_enhanced_entities::<T>()`
@@ -92,6 +95,7 @@ The current implementation focuses on the Rust-native core runtime:
 - SQLite integration coverage for nested create-graph writes
 - SQLite integration coverage for nested graph update diff
 - SQLite integration coverage for reference-only nodes, explicit remove, keep-missing relation metadata, and transaction rollback
+- SQLite relation aggregate coverage through generated high-level `Q` APIs in an external generated service crate
 - PostgreSQL integration coverage for graph-write transaction rollback when `TEAQL_TEST_PG_URL` is provided
 - PostgreSQL integration tests under `--features sqlx` when `TEAQL_TEST_PG_URL` is provided
 
@@ -274,10 +278,11 @@ Current examples cover:
 - SQLite typed entity graph writes through `save_entity_graph()`
 - SQLite relation enhancement through `fetch_enhanced_entities::<T>()`
 - PostgreSQL `soundlike`/`SOUNDEX`, array-bound large IN, expression projection/sort, extended aggregates, and `HAVING`
+- Generated-service validation with high-level `Q` APIs covers complex object commit, subtrait-style DDD methods, JSON serialization, JSON-expression search, and simple-to-relation statistics against SQLite
 
 ## Next steps
 
-1. Expand graph writes toward richer Java-style reload/merge semantics and typed graph extraction.
-2. Keep expanding value coverage beyond the current JSON/date/timestamp set, especially `Uuid`, decimal, and bytes.
-3. Decide whether a Rust-native service layer is needed above repository/runtime APIs.
-4. Expand `MemoryRepository` toward relation enhancement and richer parity with the SQL-backed path.
+1. Expand `MemoryRepository` toward relation enhancement and richer parity with the SQL-backed path.
+2. Add typed checker generation and richer Java-style validation semantics.
+3. Keep expanding value coverage beyond the current JSON/date/timestamp/Decimal set, especially `Uuid` and bytes.
+4. Decide whether a Rust-native service layer is needed above repository/runtime APIs.
