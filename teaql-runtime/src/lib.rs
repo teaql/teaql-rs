@@ -13,7 +13,9 @@ mod repository;
 pub use context::{SqlLogEntry, SqlLogOperation, SqlLogOptions, UserContext};
 pub use entity_runtime::{ChangeSetStack, EntityChangeSet, EntityKey, EntityRoot, RootContext};
 pub use error::{ContextError, RepositoryError, RuntimeError};
-pub use event::{EntityEvent, EntityEventKind, EntityEventSink, InMemoryEntityEventSink};
+pub use event::{
+    EntityEvent, EntityEventKind, EntityEventSink, EntityPropertyChange, InMemoryEntityEventSink,
+};
 pub use graph::{
     GraphMutationBatch, GraphMutationKind, GraphMutationPlan, GraphMutationPlanItem, GraphNode,
     GraphOperation, sorted_update_fields,
@@ -1128,7 +1130,11 @@ mod tests {
         ctx.insert_resource(PostgresDialect);
         ctx.insert_resource(StubExecutor {
             affected: 1,
-            rows: Vec::new(),
+            rows: vec![Record::from([
+                ("id".to_owned(), Value::U64(88)),
+                ("version".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::Text("old".to_owned())),
+            ])],
         });
 
         let repo = ctx
@@ -1156,8 +1162,49 @@ mod tests {
         assert_eq!(events[1].values.get("id"), Some(&Value::U64(88)));
         assert_eq!(events[1].values.get("version"), Some(&Value::I64(2)));
         assert_eq!(events[1].updated_fields, vec!["name".to_owned()]);
+        assert_eq!(
+            events[1]
+                .old_values
+                .as_ref()
+                .and_then(|values| values.get("name")),
+            Some(&Value::Text("old".to_owned()))
+        );
+        assert_eq!(
+            events[1]
+                .new_values
+                .as_ref()
+                .and_then(|values| values.get("name")),
+            Some(&Value::Text("updated".to_owned()))
+        );
+        assert_eq!(events[1].changes.len(), 1);
+        assert_eq!(events[1].changes[0].field, "name");
+        assert_eq!(
+            events[1].changes[0].old_value,
+            Some(Value::Text("old".to_owned()))
+        );
+        assert_eq!(
+            events[1].changes[0].new_value,
+            Some(Value::Text("updated".to_owned()))
+        );
         assert_eq!(events[2].kind, EntityEventKind::Deleted);
+        assert!(events[2].old_values.is_some());
+        assert!(events[2].new_values.is_none());
         assert_eq!(events[3].kind, EntityEventKind::Recovered);
+        assert_eq!(
+            events[3]
+                .old_values
+                .as_ref()
+                .and_then(|values| values.get("version")),
+            Some(&Value::I64(1))
+        );
+        assert_eq!(
+            events[3]
+                .new_values
+                .as_ref()
+                .and_then(|values| values.get("version")),
+            Some(&Value::I64(4))
+        );
+        assert_eq!(events[3].changes[0].field, "version");
     }
 
     #[test]

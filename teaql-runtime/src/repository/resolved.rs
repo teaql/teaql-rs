@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use teaql_core::{
-    AggregationCacheOptions, DeleteCommand, Entity, InsertCommand, Record, RecoverCommand,
+    AggregationCacheOptions, DeleteCommand, Entity, Expr, InsertCommand, Record, RecoverCommand,
     RelationAggregate, SelectQuery, SmartList, UpdateCommand, Value,
 };
 use teaql_sql::{CompiledQuery, SqlDialect};
@@ -330,11 +330,13 @@ where
                 .before_delete(self.repository.metadata.context, &mut command)
                 .map_err(RepositoryError::Runtime)?;
         }
+        let old_values = self.fetch_current_event_row(&command.entity, &command.id)?;
         let affected = self.repository.delete(&command)?;
-        self.emit_event(EntityEvent::deleted(
+        self.emit_event(EntityEvent::deleted_with_old_values(
             command.entity,
             command.id,
             command.expected_version,
+            old_values,
         ))
         .map_err(RepositoryError::Runtime)?;
         Ok(affected)
@@ -347,11 +349,13 @@ where
                 .before_recover(self.repository.metadata.context, &mut command)
                 .map_err(RepositoryError::Runtime)?;
         }
+        let old_values = self.fetch_current_event_row(&command.entity, &command.id)?;
         let affected = self.repository.recover(&command)?;
-        self.emit_event(EntityEvent::recovered(
+        self.emit_event(EntityEvent::recovered_with_old_values(
             command.entity,
             command.id,
             command.expected_version,
+            old_values,
         ))
         .map_err(RepositoryError::Runtime)?;
         Ok(affected)
@@ -375,6 +379,7 @@ where
         &self,
         command: UpdateCommand,
     ) -> Result<u64, RepositoryError<E::Error>> {
+        let old_values = self.fetch_current_event_row(&command.entity, &command.id)?;
         let affected = self.repository.update(&command)?;
         let updated_fields = command.values.keys().cloned().collect();
         let mut values = command.values.clone();
@@ -382,15 +387,44 @@ where
         if let Some(version) = command.expected_version {
             values.insert("version".to_owned(), Value::I64(version + 1));
         }
-        self.emit_event(EntityEvent {
-            kind: crate::EntityEventKind::Updated,
-            entity: command.entity,
+        let mut new_values = old_values.clone().unwrap_or_default();
+        for (field, value) in &values {
+            new_values.insert(field.clone(), value.clone());
+        }
+        self.emit_event(EntityEvent::updated_with_old_values(
+            command.entity,
             values,
+            old_values,
+            new_values,
             updated_fields,
-        })
+        ))
         .map_err(RepositoryError::Runtime)?;
         Ok(affected)
     }
+
+    fn fetch_current_event_row(
+        &self,
+        entity: &str,
+        id: &Value,
+    ) -> Result<Option<Record>, RepositoryError<E::Error>> {
+        if self.repository.metadata.context.event_sink.is_none() {
+            return Ok(None);
+        }
+        let descriptor = self
+            .repository
+            .metadata
+            .context
+            .require_entity(entity)
+            .map_err(RepositoryError::Runtime)?;
+        let Some(id_property) = descriptor.id_property() else {
+            return Ok(None);
+        };
+        let mut rows = self.fetch_all(
+            &SelectQuery::new(entity).filter(Expr::eq(id_property.name.clone(), id.clone())),
+        )?;
+        Ok(rows.pop())
+    }
+
     pub(super) fn scoped_repository(&self, entity: String) -> ResolvedRepository<'a, D, E> {
         ResolvedRepository {
             entity,
