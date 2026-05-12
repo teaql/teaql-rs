@@ -1,15 +1,70 @@
 # teaql-rs
 
-Pure Rust rewrite of TeaQL with a narrowed scope:
+TeaQL is a DDD-oriented data runtime for applications that want generated,
+typed domain APIs instead of hand-written repository boilerplate.
+
+The Rust workspace provides the runtime pieces: entity metadata, a query AST,
+SQL compilation, relation enhancement, graph writes, checkers, mutation events,
+and PostgreSQL/SQLite executors. The sibling `teaql-code-gen` project can turn a
+compact domain model into a typed Rust service crate with entity structs,
+`Q::merchants()`-style query builders, behavior/checker hooks, and graph-save
+entrypoints.
+
+TeaQL is not trying to be a general replacement for Diesel, SeaORM, or direct
+`sqlx` use:
+
+- use TeaQL when the domain model is central, relation graphs matter, and you
+  want generated high-level APIs that resemble the Java TeaQL style;
+- use Diesel or SeaORM when you want a conventional Rust ORM with a broad
+  ecosystem;
+- use `sqlx` directly when explicit SQL is the right abstraction and generated
+  domain APIs would get in the way.
+
+The Rust rewrite keeps the scope deliberately narrow:
 
 - PostgreSQL and SQLite only
 - Rust-native metadata and query AST
 - SQL compiler and runtime separated from web/framework concerns
-- Compatibility with the Java implementation is not a goal
+- compatibility with every Java implementation detail is not a goal, but the
+  high-level TeaQL programming model is being carried over where it is useful
 
 Progress tracking lives in [PROGRESS.md](./PROGRESS.md).
 
 Current published release: `0.7.4`.
+
+## Try It
+
+The quickest demo uses SQLite in memory and needs no database server:
+
+```bash
+cargo run -p teaql-examples --bin sqlite_relations_graph
+```
+
+It bootstraps the schema, saves an `Order` graph with nested `OrderLine` and
+`Product` objects, reloads the relation path `lines.product`, and prints the
+typed result.
+
+For a smaller schema/bootstrap and CRUD path:
+
+```bash
+cargo run -p teaql-examples --bin sqlite_schema_crud
+```
+
+For generated-service style APIs, use `teaql-code-gen` to generate a service
+crate and write application code against `Q`:
+
+```rust
+use crm_erp_service::Q;
+
+let platforms = Q::platforms()
+    .select_merchant_list_with(
+        Q::merchants()
+            .select_name()
+            .which_names_contain("TeaQL"),
+    )
+    .execute_for_list(&ctx)
+    .await?;
+```
 
 ## Workspace layout
 
