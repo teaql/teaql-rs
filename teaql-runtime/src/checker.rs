@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
-use teaql_core::{Record, Value};
+use teaql_core::{Entity, Record, Value};
 
 use crate::UserContext;
 
@@ -266,6 +267,132 @@ pub trait Checker: Send + Sync {
                     value.clone(),
                 ));
             }
+        }
+    }
+}
+
+pub trait TypedChecker<T>: Send + Sync
+where
+    T: Entity,
+{
+    fn check_and_fix_typed(
+        &self,
+        ctx: &UserContext,
+        entity: &mut T,
+        status: CheckObjectStatus,
+        location: &ObjectLocation,
+        results: &mut CheckResults,
+    );
+
+    fn required_option<V>(
+        &self,
+        value: Option<&V>,
+        field: &str,
+        location: &ObjectLocation,
+        results: &mut CheckResults,
+    ) {
+        if value.is_none() {
+            results.push(CheckResult::required(location.clone().member(field)));
+        }
+    }
+
+    fn required_text(
+        &self,
+        value: &str,
+        field: &str,
+        location: &ObjectLocation,
+        results: &mut CheckResults,
+    ) {
+        if value.trim().is_empty() {
+            results.push(CheckResult::required(location.clone().member(field)));
+        }
+    }
+
+    fn min_string_length(
+        &self,
+        value: &str,
+        field: &str,
+        min_len: usize,
+        location: &ObjectLocation,
+        results: &mut CheckResults,
+    ) {
+        if value.chars().count() < min_len {
+            results.push(CheckResult::min_str(
+                location.clone().member(field),
+                min_len as u64,
+                value.to_owned(),
+            ));
+        }
+    }
+
+    fn max_string_length(
+        &self,
+        value: &str,
+        field: &str,
+        max_len: usize,
+        location: &ObjectLocation,
+        results: &mut CheckResults,
+    ) {
+        if value.chars().count() > max_len {
+            results.push(CheckResult::max_str(
+                location.clone().member(field),
+                max_len as u64,
+                value.to_owned(),
+            ));
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TypedEntityChecker<T, C> {
+    entity_name: String,
+    checker: C,
+    marker: PhantomData<T>,
+}
+
+impl<T, C> TypedEntityChecker<T, C>
+where
+    T: Entity,
+{
+    pub fn new(checker: C) -> Self {
+        Self {
+            entity_name: T::entity_descriptor().name,
+            checker,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<T, C> Checker for TypedEntityChecker<T, C>
+where
+    T: Entity + Send + Sync,
+    C: TypedChecker<T>,
+{
+    fn entity(&self) -> &str {
+        &self.entity_name
+    }
+
+    fn check_and_fix(
+        &self,
+        ctx: &UserContext,
+        record: &mut Record,
+        location: &ObjectLocation,
+        results: &mut CheckResults,
+    ) {
+        let status = CheckObjectStatus::from_record(record);
+        let status_value = record.get(CHECK_OBJECT_STATUS_FIELD).cloned();
+        let mut entity = match T::from_record(record.clone()) {
+            Ok(entity) => entity,
+            Err(err) => {
+                results.push(CheckResult::required(location.clone()).with_message(err.to_string()));
+                return;
+            }
+        };
+        self.checker
+            .check_and_fix_typed(ctx, &mut entity, status, location, results);
+        *record = entity.into_record();
+        if let Some(status_value) = status_value {
+            record.insert(CHECK_OBJECT_STATUS_FIELD.to_owned(), status_value);
         }
     }
 }

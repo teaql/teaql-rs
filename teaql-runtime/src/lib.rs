@@ -51,7 +51,8 @@ mod tests {
         InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry, InMemoryRepositoryRegistry,
         InternalIdGenerator, Language, MemoryRepository, MetadataStore, ObjectLocation,
         QueryExecutor, Repository, RepositoryBehavior, RepositoryError, RuntimeError,
-        RuntimeModule, SqlLogOperation, SqlLogOptions, UserContext, translate_check_result,
+        RuntimeModule, SqlLogOperation, SqlLogOptions, TypedChecker, TypedEntityChecker,
+        UserContext, translate_check_result,
     };
     use teaql_core::{
         Aggregate, AggregateFunction, BinaryOp, DataType, Decimal, DeleteCommand, Entity,
@@ -416,6 +417,7 @@ mod tests {
 
     struct ContextAwareOrderBehavior;
     struct OrderChecker;
+    struct TypedOrderChecker;
     #[derive(Clone)]
     struct RecordingEventSink {
         events: Arc<Mutex<Vec<EntityEvent>>>,
@@ -483,6 +485,25 @@ mod tests {
                 );
             }
             self.min_string_length(record, "name", 3, location, results);
+        }
+    }
+
+    impl TypedChecker<Order> for TypedOrderChecker {
+        fn check_and_fix_typed(
+            &self,
+            _ctx: &UserContext,
+            entity: &mut Order,
+            status: CheckObjectStatus,
+            location: &ObjectLocation,
+            results: &mut CheckResults,
+        ) {
+            if status.is_create() {
+                self.required_text(&entity.name, "name", location, results);
+            }
+            self.min_string_length(&entity.name, "name", 3, location, results);
+            if entity.name == "fix" {
+                entity.name = "fixed".to_owned();
+            }
         }
     }
 
@@ -947,6 +968,56 @@ mod tests {
                 assert_eq!(results[0].location.to_string(), "name");
             }
             other => panic!("unexpected checker error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn typed_checker_validates_and_fixes_derived_entities_without_record_access() {
+        let mut ctx = UserContext::new()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(Order::entity_descriptor()))
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
+            .with_checker_registry(
+                InMemoryCheckerRegistry::new()
+                    .with_checker(TypedEntityChecker::<Order, _>::new(TypedOrderChecker)),
+            )
+            .with_internal_id_generator(FixedIdGenerator(79));
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(StubExecutor {
+            affected: 1,
+            rows: Vec::new(),
+        });
+
+        let repo = ctx
+            .resolve_repository::<PostgresDialect, StubExecutor>("Order")
+            .unwrap();
+        let prepared = repo
+            .prepare_insert_command(
+                &repo
+                    .insert_command()
+                    .value("name", "fix")
+                    .value("version", 1_i64),
+            )
+            .unwrap();
+        assert_eq!(
+            prepared.values.get("name"),
+            Some(&Value::Text("fixed".to_owned()))
+        );
+        assert_eq!(prepared.values.get("id"), Some(&Value::U64(79)));
+        assert!(!prepared.values.contains_key(CHECK_OBJECT_STATUS_FIELD));
+
+        let error = repo
+            .prepare_insert_command(&repo.insert_command().value("version", 1_i64))
+            .unwrap_err();
+        match error {
+            RuntimeError::Check(results) => {
+                assert!(
+                    results
+                        .iter()
+                        .any(|result| result.rule == CheckRule::Required
+                            && result.location.to_string() == "name")
+                );
+            }
+            other => panic!("unexpected typed checker error: {other:?}"),
         }
     }
 
@@ -4646,6 +4717,6 @@ mod sqlx_integration_tests {
 }
 pub use checker::{
     CHECK_OBJECT_STATUS_FIELD, CheckObjectStatus, CheckResult, CheckResults, CheckRule, Checker,
-    CheckerRegistry, InMemoryCheckerRegistry, LocationSegment, ObjectLocation, clear_record_status,
-    mark_record_status,
+    CheckerRegistry, InMemoryCheckerRegistry, LocationSegment, ObjectLocation, TypedChecker,
+    TypedEntityChecker, clear_record_status, mark_record_status,
 };
