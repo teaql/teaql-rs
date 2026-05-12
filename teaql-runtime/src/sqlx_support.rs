@@ -4,17 +4,19 @@ use std::str::FromStr;
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use rust_decimal::Decimal;
+use sqlx::mysql::{MySqlArguments, MySqlPool, MySqlRow};
 use sqlx::postgres::{PgArguments, PgPool, PgRow};
 use sqlx::sqlite::{SqliteArguments, SqlitePool, SqliteRow};
 use sqlx::types::Json;
 use sqlx::{
-    Arguments, Column, Error as SqlxError, Postgres, Row, Transaction, TypeInfo, ValueRef,
+    Arguments, Column, Error as SqlxError, MySql, Postgres, Row, Transaction, TypeInfo, ValueRef,
     query_with,
 };
 use std::sync::Arc;
 use teaql_core::{
     EntityDescriptor, Expr, InsertCommand, Record, SelectQuery, UpdateCommand, Value,
 };
+use teaql_dialect_mysql::MysqlDialect;
 use teaql_dialect_pg::PostgresDialect;
 use teaql_dialect_sqlite::SqliteDialect;
 use teaql_sql::{CompiledQuery, SqlCompileError, SqlDialect};
@@ -286,6 +288,218 @@ impl PgTransactionExecutor {
 }
 
 #[derive(Clone)]
+pub struct MysqlMutationExecutor {
+    pool: MySqlPool,
+}
+
+impl MysqlMutationExecutor {
+    pub fn new(pool: MySqlPool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn ensure_schema(
+        &self,
+        dialect: &MysqlDialect,
+        entities: &[&EntityDescriptor],
+    ) -> Result<(), MutationExecutorError> {
+        self.ensure_id_space_table(DEFAULT_ID_SPACE_TABLE).await?;
+
+        for entity in entities {
+            if !self.table_exists(&entity.table_name).await? {
+                let sql = dialect.compile_create_table(entity)?;
+                sqlx::query(&sql).execute(&self.pool).await?;
+                continue;
+            }
+
+            let existing_columns = self.table_columns(&entity.table_name).await?;
+            for property in &entity.properties {
+                if existing_columns.contains(&property.column_name) {
+                    continue;
+                }
+                let sql = dialect.compile_add_column(entity, property)?;
+                sqlx::query(&sql).execute(&self.pool).await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn ensure_id_space_table(
+        &self,
+        table_name: &str,
+    ) -> Result<(), MutationExecutorError> {
+        let sql = format!(
+            "CREATE TABLE IF NOT EXISTS {} (type_name VARCHAR(100) PRIMARY KEY, current_level BIGINT NOT NULL)",
+            mysql_quote_ident(table_name)
+        );
+        sqlx::query(&sql).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn execute(&self, query: &CompiledQuery) -> Result<u64, MutationExecutorError> {
+        let mut args = MySqlArguments::default();
+        for value in &query.params {
+            bind_mysql(&mut args, value)?;
+        }
+        let result = query_with(&query.sql, args).execute(&self.pool).await?;
+        Ok(result.rows_affected())
+    }
+
+    pub async fn fetch_all(
+        &self,
+        query: &CompiledQuery,
+    ) -> Result<Vec<Record>, MutationExecutorError> {
+        let mut args = MySqlArguments::default();
+        for value in &query.params {
+            bind_mysql(&mut args, value)?;
+        }
+        let rows = query_with(&query.sql, args).fetch_all(&self.pool).await?;
+        rows.iter().map(decode_mysql_row).collect()
+    }
+
+    async fn table_exists(&self, table_name: &str) -> Result<bool, MutationExecutorError> {
+        let exists = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(1)
+             FROM information_schema.tables
+             WHERE table_schema = DATABASE()
+               AND table_name = ?",
+        )
+        .bind(table_name)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists > 0)
+    }
+
+    async fn table_columns(
+        &self,
+        table_name: &str,
+    ) -> Result<std::collections::BTreeSet<String>, MutationExecutorError> {
+        let rows = sqlx::query(
+            "SELECT CAST(column_name AS CHAR) AS column_name
+             FROM information_schema.columns
+             WHERE table_schema = DATABASE()
+               AND table_name = ?",
+        )
+        .bind(table_name)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut columns = std::collections::BTreeSet::new();
+        for row in rows {
+            let name: String = row.try_get("column_name")?;
+            columns.insert(name);
+        }
+        Ok(columns)
+    }
+}
+
+async fn ensure_initial_graphs_mysql(
+    executor: &MysqlMutationExecutor,
+    dialect: &MysqlDialect,
+    ctx: &UserContext,
+) -> Result<(), MutationExecutorError> {
+    for graph in ctx.initial_graphs() {
+        let entity = ctx.entity(&graph.entity).ok_or_else(|| {
+            MutationExecutorError::Bind(format!("missing entity: {}", graph.entity))
+        })?;
+        if initial_graph_exists_mysql(executor, dialect, entity, graph).await? {
+            if let Some(query) = compile_initial_graph_update(dialect, entity, graph)? {
+                executor.execute(&query).await?;
+            }
+        } else {
+            let query = compile_initial_graph_insert(dialect, entity, graph)?;
+            executor.execute(&query).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn initial_graph_exists_mysql(
+    executor: &MysqlMutationExecutor,
+    dialect: &MysqlDialect,
+    entity: &EntityDescriptor,
+    graph: &crate::GraphNode,
+) -> Result<bool, MutationExecutorError> {
+    let Some(id) = graph.values.get("id") else {
+        return Ok(false);
+    };
+    let query = dialect.compile_select(
+        entity,
+        &SelectQuery::new(&graph.entity)
+            .project("id")
+            .filter(Expr::eq("id", id.clone()))
+            .limit(1),
+    )?;
+    Ok(!executor.fetch_all(&query).await?.is_empty())
+}
+
+#[derive(Clone)]
+pub struct MysqlTransactionExecutor {
+    transaction: Arc<Mutex<Option<Transaction<'static, MySql>>>>,
+}
+
+impl MysqlTransactionExecutor {
+    pub async fn begin(pool: &MySqlPool) -> Result<Self, MutationExecutorError> {
+        Ok(Self {
+            transaction: Arc::new(Mutex::new(Some(pool.begin().await?))),
+        })
+    }
+
+    pub async fn execute(&self, query: &CompiledQuery) -> Result<u64, MutationExecutorError> {
+        let mut transaction = self.transaction.lock().await;
+        let transaction = transaction
+            .as_mut()
+            .ok_or_else(|| MutationExecutorError::Bind("mysql transaction is closed".to_owned()))?;
+        let mut args = MySqlArguments::default();
+        for value in &query.params {
+            bind_mysql(&mut args, value)?;
+        }
+        let result = query_with(&query.sql, args)
+            .execute(&mut **transaction)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
+    pub async fn fetch_all(
+        &self,
+        query: &CompiledQuery,
+    ) -> Result<Vec<Record>, MutationExecutorError> {
+        let mut transaction = self.transaction.lock().await;
+        let transaction = transaction
+            .as_mut()
+            .ok_or_else(|| MutationExecutorError::Bind("mysql transaction is closed".to_owned()))?;
+        let mut args = MySqlArguments::default();
+        for value in &query.params {
+            bind_mysql(&mut args, value)?;
+        }
+        let rows = query_with(&query.sql, args)
+            .fetch_all(&mut **transaction)
+            .await?;
+        rows.iter().map(decode_mysql_row).collect()
+    }
+
+    pub async fn commit(&self) -> Result<(), MutationExecutorError> {
+        let transaction = self.transaction.lock().await.take();
+        let Some(transaction) = transaction else {
+            return Err(MutationExecutorError::Bind(
+                "mysql transaction is closed".to_owned(),
+            ));
+        };
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    pub async fn rollback(&self) -> Result<(), MutationExecutorError> {
+        let transaction = self.transaction.lock().await.take();
+        let Some(transaction) = transaction else {
+            return Err(MutationExecutorError::Bind(
+                "mysql transaction is closed".to_owned(),
+            ));
+        };
+        transaction.rollback().await?;
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
 pub struct SqliteMutationExecutor {
     pool: SqlitePool,
 }
@@ -508,6 +722,28 @@ impl UserContext {
         executor.ensure_schema(dialect, &entities).await?;
         ensure_initial_graphs_sqlite(executor, dialect, self).await
     }
+
+    pub async fn ensure_mysql_schema(&self) -> Result<(), MutationExecutorError> {
+        let dialect = self.get_resource::<MysqlDialect>().ok_or_else(|| {
+            MutationExecutorError::Bind("missing typed resource: MysqlDialect".to_owned())
+        })?;
+        let executor = self
+            .get_resource::<MysqlMutationExecutor>()
+            .ok_or_else(|| {
+                MutationExecutorError::Bind(
+                    "missing typed resource: MysqlMutationExecutor".to_owned(),
+                )
+            })?;
+
+        let entities = self
+            .metadata
+            .as_ref()
+            .map(|metadata| metadata.all_entities())
+            .unwrap_or_default();
+
+        executor.ensure_schema(dialect, &entities).await?;
+        ensure_initial_graphs_mysql(executor, dialect, self).await
+    }
 }
 
 #[derive(Clone)]
@@ -556,6 +792,55 @@ impl PgIdSpaceGenerator {
 }
 
 impl InternalIdGenerator for PgIdSpaceGenerator {
+    fn generate_id(&self, entity: &str) -> Result<u64, RuntimeError> {
+        let generator = self.clone();
+        let entity = entity.to_owned();
+        block_on_id_generation(async move { generator.next_id(&entity).await })
+    }
+}
+
+#[derive(Clone)]
+pub struct MysqlIdSpaceGenerator {
+    pool: MySqlPool,
+    table_name: String,
+}
+
+impl MysqlIdSpaceGenerator {
+    pub fn new(pool: MySqlPool) -> Self {
+        Self {
+            pool,
+            table_name: DEFAULT_ID_SPACE_TABLE.to_owned(),
+        }
+    }
+
+    pub fn with_table_name(mut self, table_name: impl Into<String>) -> Self {
+        self.table_name = table_name.into();
+        self
+    }
+
+    pub async fn ensure_table(&self) -> Result<(), MutationExecutorError> {
+        MysqlMutationExecutor::new(self.pool.clone())
+            .ensure_id_space_table(&self.table_name)
+            .await
+    }
+
+    pub async fn next_id(&self, entity: &str) -> Result<u64, MutationExecutorError> {
+        self.ensure_table().await?;
+        let sql = format!(
+            "INSERT INTO {} (type_name, current_level) VALUES (?, LAST_INSERT_ID(1)) \
+             ON DUPLICATE KEY UPDATE current_level = LAST_INSERT_ID(current_level + 1)",
+            mysql_quote_ident(&self.table_name)
+        );
+        let mut conn = self.pool.acquire().await?;
+        sqlx::query(&sql).bind(entity).execute(&mut *conn).await?;
+        let id: u64 = sqlx::query_scalar("SELECT LAST_INSERT_ID()")
+            .fetch_one(&mut *conn)
+            .await?;
+        Ok(id)
+    }
+}
+
+impl InternalIdGenerator for MysqlIdSpaceGenerator {
     fn generate_id(&self, entity: &str) -> Result<u64, RuntimeError> {
         let generator = self.clone();
         let entity = entity.to_owned();
@@ -634,6 +919,10 @@ where
 
 fn quote_ident(ident: &str) -> String {
     format!("\"{}\"", ident.replace('"', "\"\""))
+}
+
+fn mysql_quote_ident(ident: &str) -> String {
+    format!("`{}`", ident.replace('`', "``"))
 }
 
 fn bind_pg(args: &mut PgArguments, value: &Value) -> Result<(), MutationExecutorError> {
@@ -787,6 +1076,50 @@ fn bind_pg_list(args: &mut PgArguments, values: &[Value]) -> Result<(), Mutation
     Ok(())
 }
 
+fn bind_mysql(args: &mut MySqlArguments, value: &Value) -> Result<(), MutationExecutorError> {
+    match value {
+        Value::Null => {
+            let v: Option<String> = None;
+            args.add(v)
+                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?;
+        }
+        Value::Bool(v) => args
+            .add(*v)
+            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
+        Value::I64(v) => args
+            .add(*v)
+            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
+        Value::U64(v) => {
+            let v = i64::try_from(*v).map_err(|_| {
+                MutationExecutorError::Bind(format!("u64 value {v} exceeds i64 range"))
+            })?;
+            args.add(v)
+                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?
+        }
+        Value::F64(v) => args
+            .add(*v)
+            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
+        Value::Decimal(v) => args
+            .add(*v)
+            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
+        Value::Text(v) => args
+            .add(v.clone())
+            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
+        Value::Json(v) => args
+            .add(Json(v.clone()))
+            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
+        Value::Date(v) => args
+            .add(*v)
+            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
+        Value::Timestamp(v) => args
+            .add(v.naive_utc())
+            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
+        Value::Object(_) => return Err(MutationExecutorError::UnsupportedValue("object")),
+        Value::List(_) => return Err(MutationExecutorError::UnsupportedValue("list")),
+    }
+    Ok(())
+}
+
 fn bind_sqlite(args: &mut SqliteArguments<'_>, value: &Value) -> Result<(), MutationExecutorError> {
     match value {
         Value::Null => {
@@ -889,6 +1222,85 @@ fn decode_pg_row(row: &PgRow) -> Result<Record, MutationExecutorError> {
         record.insert(name, value);
     }
     Ok(record)
+}
+
+fn decode_mysql_row(row: &MySqlRow) -> Result<Record, MutationExecutorError> {
+    let mut record = BTreeMap::new();
+    for (index, column) in row.columns().iter().enumerate() {
+        let name = column.name().to_owned();
+        let raw = row
+            .try_get_raw(index)
+            .map_err(MutationExecutorError::Sqlx)?;
+        if raw.is_null() {
+            record.insert(name, Value::Null);
+            continue;
+        }
+        let type_name = column.type_info().name().to_ascii_uppercase();
+        let value = match type_name.as_str() {
+            "BOOL" | "BOOLEAN" => {
+                Value::Bool(row.try_get(index).map_err(MutationExecutorError::Sqlx)?)
+            }
+            "TINYINT" => {
+                let value: i8 = row.try_get(index).map_err(MutationExecutorError::Sqlx)?;
+                match value {
+                    0 => Value::Bool(false),
+                    1 => Value::Bool(true),
+                    _ => Value::I64(value as i64),
+                }
+            }
+            "SMALLINT" | "SHORT" => Value::I64(
+                row.try_get::<i16, _>(index)
+                    .map_err(MutationExecutorError::Sqlx)? as i64,
+            ),
+            "INT" | "INTEGER" | "MEDIUMINT" | "LONG" => Value::I64(
+                row.try_get::<i32, _>(index)
+                    .map_err(MutationExecutorError::Sqlx)? as i64,
+            ),
+            "BIGINT" | "LONGLONG" | "BIGINT UNSIGNED" | "UNSIGNED BIGINT" => {
+                decode_mysql_bigint(row, index)?
+            }
+            "FLOAT" => Value::F64(
+                row.try_get::<f32, _>(index)
+                    .map_err(MutationExecutorError::Sqlx)? as f64,
+            ),
+            "DOUBLE" => Value::F64(row.try_get(index).map_err(MutationExecutorError::Sqlx)?),
+            "DECIMAL" | "NEWDECIMAL" => Value::Decimal(
+                row.try_get::<Decimal, _>(index)
+                    .map_err(MutationExecutorError::Sqlx)?,
+            ),
+            "JSON" => {
+                let Json(value) = row.try_get(index).map_err(MutationExecutorError::Sqlx)?;
+                Value::Json(value)
+            }
+            "DATE" => Value::Date(
+                row.try_get::<NaiveDate, _>(index)
+                    .map_err(MutationExecutorError::Sqlx)?,
+            ),
+            "DATETIME" | "TIMESTAMP" => {
+                let value: NaiveDateTime =
+                    row.try_get(index).map_err(MutationExecutorError::Sqlx)?;
+                Value::Timestamp(Utc.from_utc_datetime(&value))
+            }
+            "TEXT" | "VARCHAR" | "CHAR" | "VAR_STRING" | "STRING" => {
+                Value::Text(row.try_get(index).map_err(MutationExecutorError::Sqlx)?)
+            }
+            other => {
+                return Err(MutationExecutorError::UnsupportedColumnType(
+                    other.to_owned(),
+                ));
+            }
+        };
+        record.insert(name, value);
+    }
+    Ok(record)
+}
+
+fn decode_mysql_bigint(row: &MySqlRow, index: usize) -> Result<Value, MutationExecutorError> {
+    if let Ok(value) = row.try_get::<i64, _>(index) {
+        return Ok(Value::I64(value));
+    }
+    let value: u64 = row.try_get(index).map_err(MutationExecutorError::Sqlx)?;
+    Ok(Value::U64(value))
 }
 
 fn decode_sqlite_row(row: &SqliteRow) -> Result<Record, MutationExecutorError> {

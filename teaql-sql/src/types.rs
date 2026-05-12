@@ -4,6 +4,7 @@ use teaql_core::{DataType, Value};
 pub enum DatabaseKind {
     PostgreSql,
     Sqlite,
+    MySql,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -17,6 +18,7 @@ impl CompiledQuery {
         match kind {
             DatabaseKind::PostgreSql => replace_postgres_placeholders(&self.sql, &self.params),
             DatabaseKind::Sqlite => replace_sqlite_placeholders(&self.sql, &self.params),
+            DatabaseKind::MySql => replace_sqlite_placeholders(&self.sql, &self.params),
         }
     }
 }

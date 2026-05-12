@@ -64,7 +64,6 @@ mod tests {
     use teaql_sql::CompiledQuery;
 
     const ORDER_DEFAULT_PROJECTION: &str = "\"id\", \"version\", \"name\"";
-
     fn entity() -> EntityDescriptor {
         EntityDescriptor::new("Order")
             .table_name("orders")
@@ -2321,7 +2320,8 @@ mod tests {
 #[cfg(all(test, feature = "sqlx"))]
 mod sqlx_integration_tests {
     use super::sqlx_support::{
-        MutationExecutorError, PgIdSpaceGenerator, PgMutationExecutor, PgTransactionExecutor,
+        MutationExecutorError, MysqlIdSpaceGenerator, MysqlMutationExecutor,
+        MysqlTransactionExecutor, PgIdSpaceGenerator, PgMutationExecutor, PgTransactionExecutor,
         SqliteIdSpaceGenerator, SqliteMutationExecutor,
     };
     use super::{
@@ -2334,6 +2334,7 @@ mod sqlx_integration_tests {
         DataType, Decimal, DeleteCommand, EntityDescriptor, Expr, InsertCommand,
         PropertyDescriptor, Record, RecoverCommand, SelectQuery, UpdateCommand, Value,
     };
+    use teaql_dialect_mysql::MysqlDialect;
     use teaql_dialect_pg::PostgresDialect;
     use teaql_dialect_sqlite::SqliteDialect;
     use teaql_macros::TeaqlEntity as DeriveTeaqlEntity;
@@ -2342,6 +2343,53 @@ mod sqlx_integration_tests {
     use tokio::task::block_in_place;
 
     const ORDER_DEFAULT_PROJECTION: &str = "\"id\", \"version\", \"name\"";
+    const REMOTE_MYSQL_BOOTSTRAP_URL: &str =
+        "mysql://root:3holubKzzMhtC22sfIJ4u1hLNemvzux6@t420.doublechaintech.cn:23306";
+    const REMOTE_MYSQL_DATABASE_NAME: &str = "teaql_test";
+    const REMOTE_MYSQL_DATABASE_URL: &str =
+        "mysql://root:3holubKzzMhtC22sfIJ4u1hLNemvzux6@t420.doublechaintech.cn:23306/teaql_test";
+
+    fn mysql_test_urls() -> Option<(Option<String>, String)> {
+        std::env::var("TEAQL_TEST_MYSQL_URL")
+            .ok()
+            .map(|url| (None, url))
+            .or_else(|| {
+                (std::env::var("TEAQL_TEST_MYSQL_REMOTE").ok().as_deref() == Some("1")).then(|| {
+                    (
+                        Some(REMOTE_MYSQL_BOOTSTRAP_URL.to_owned()),
+                        REMOTE_MYSQL_DATABASE_URL.to_owned(),
+                    )
+                })
+            })
+    }
+
+    async fn mysql_test_pool() -> Option<sqlx::MySqlPool> {
+        let Some((bootstrap_url, database_url)) = mysql_test_urls() else {
+            return None;
+        };
+
+        if let Some(bootstrap_url) = bootstrap_url {
+            let bootstrap_pool = sqlx::MySqlPool::connect(&bootstrap_url).await.unwrap();
+            sqlx::query(&format!(
+                "CREATE DATABASE IF NOT EXISTS `{REMOTE_MYSQL_DATABASE_NAME}`"
+            ))
+            .execute(&bootstrap_pool)
+            .await
+            .unwrap();
+            bootstrap_pool.close().await;
+        }
+
+        Some(sqlx::MySqlPool::connect(&database_url).await.unwrap())
+    }
+
+    async fn drop_mysql_tables(pool: &sqlx::MySqlPool, tables: &[&str]) {
+        for table in tables {
+            sqlx::query(&format!("DROP TABLE IF EXISTS `{table}`"))
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+    }
 
     fn entity() -> EntityDescriptor {
         EntityDescriptor::new("Order")
@@ -2605,6 +2653,70 @@ mod sqlx_integration_tests {
         fn execute(&self, query: &teaql_sql::CompiledQuery) -> Result<u64, Self::Error> {
             let handle = Handle::current();
             block_in_place(|| handle.block_on(self.inner.execute(query)))
+        }
+    }
+
+    #[derive(Clone)]
+    struct MysqlSyncExecutor {
+        inner: MysqlMutationExecutor,
+    }
+
+    impl MysqlSyncExecutor {
+        fn new(inner: MysqlMutationExecutor) -> Self {
+            Self { inner }
+        }
+    }
+
+    impl QueryExecutor for MysqlSyncExecutor {
+        type Error = MutationExecutorError;
+
+        fn fetch_all(&self, query: &teaql_sql::CompiledQuery) -> Result<Vec<Record>, Self::Error> {
+            let handle = Handle::current();
+            block_in_place(|| handle.block_on(self.inner.fetch_all(query)))
+        }
+
+        fn execute(&self, query: &teaql_sql::CompiledQuery) -> Result<u64, Self::Error> {
+            let handle = Handle::current();
+            block_in_place(|| handle.block_on(self.inner.execute(query)))
+        }
+    }
+
+    #[derive(Clone)]
+    struct MysqlTxSyncExecutor {
+        inner: MysqlTransactionExecutor,
+    }
+
+    impl MysqlTxSyncExecutor {
+        fn new(inner: MysqlTransactionExecutor) -> Self {
+            Self { inner }
+        }
+    }
+
+    impl QueryExecutor for MysqlTxSyncExecutor {
+        type Error = MutationExecutorError;
+
+        fn fetch_all(&self, query: &teaql_sql::CompiledQuery) -> Result<Vec<Record>, Self::Error> {
+            let handle = Handle::current();
+            block_in_place(|| handle.block_on(self.inner.fetch_all(query)))
+        }
+
+        fn execute(&self, query: &teaql_sql::CompiledQuery) -> Result<u64, Self::Error> {
+            let handle = Handle::current();
+            block_in_place(|| handle.block_on(self.inner.execute(query)))
+        }
+
+        fn begin_transaction(&self) -> Result<GraphTransactionBoundary, Self::Error> {
+            Ok(GraphTransactionBoundary::AlreadyActive)
+        }
+
+        fn commit_transaction(&self) -> Result<(), Self::Error> {
+            let handle = Handle::current();
+            block_in_place(|| handle.block_on(self.inner.commit()))
+        }
+
+        fn rollback_transaction(&self) -> Result<(), Self::Error> {
+            let handle = Handle::current();
+            block_in_place(|| handle.block_on(self.inner.rollback()))
         }
     }
 
@@ -4149,6 +4261,626 @@ mod sqlx_integration_tests {
             .try_get("count")
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mysql_executor_ensure_schema_roundtrip_when_database_is_available() {
+        use sqlx::{MySqlPool, Row};
+
+        let Some((bootstrap_url, database_url)) = mysql_test_urls() else {
+            return;
+        };
+
+        if let Some(bootstrap_url) = bootstrap_url {
+            let bootstrap_pool = MySqlPool::connect(&bootstrap_url).await.unwrap();
+            sqlx::query(&format!(
+                "CREATE DATABASE IF NOT EXISTS `{REMOTE_MYSQL_DATABASE_NAME}`"
+            ))
+            .execute(&bootstrap_pool)
+            .await
+            .unwrap();
+            bootstrap_pool.close().await;
+        }
+
+        let pool = MySqlPool::connect(&database_url).await.unwrap();
+        for table in [
+            "teaql_mysql_orderline",
+            "teaql_mysql_orders",
+            "teaql_mysql_orders_idgen",
+            "teaql_mysql_id_space",
+        ] {
+            sqlx::query(&format!("DROP TABLE IF EXISTS `{table}`"))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        let executor = MysqlMutationExecutor::new(pool.clone());
+        let dialect = MysqlDialect;
+        let order = entity().table_name("teaql_mysql_orders");
+        let line = line_entity().table_name("teaql_mysql_orderline");
+
+        executor
+            .ensure_schema(&dialect, &[&order, &line])
+            .await
+            .unwrap();
+
+        let tables = sqlx::query(
+            "SELECT CAST(table_name AS CHAR) AS table_name
+             FROM information_schema.tables
+             WHERE table_schema = DATABASE()
+               AND table_name IN ('teaql_mysql_orders', 'teaql_mysql_orderline')
+             ORDER BY table_name",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.try_get::<String, _>("table_name").unwrap())
+        .collect::<Vec<_>>();
+        assert_eq!(
+            tables,
+            vec![
+                "teaql_mysql_orderline".to_owned(),
+                "teaql_mysql_orders".to_owned()
+            ]
+        );
+
+        let insert = dialect
+            .compile_insert(
+                &order,
+                &InsertCommand::new("Order")
+                    .value("id", 1_u64)
+                    .value("version", 1_i64)
+                    .value("name", "first"),
+            )
+            .unwrap();
+        assert_eq!(executor.execute(&insert).await.unwrap(), 1);
+
+        let select = dialect
+            .compile_select(
+                &order,
+                &SelectQuery::new("Order")
+                    .project("id")
+                    .project("version")
+                    .project("name")
+                    .filter(Expr::eq("id", 1_u64)),
+            )
+            .unwrap();
+        let rows = executor.fetch_all(&select).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("id"), Some(&Value::I64(1)));
+        assert_eq!(rows[0].get("version"), Some(&Value::I64(1)));
+        assert_eq!(rows[0].get("name"), Some(&Value::Text("first".to_owned())));
+
+        let update = dialect
+            .compile_update(
+                &order,
+                &UpdateCommand::new("Order", 1_u64)
+                    .expected_version(1)
+                    .value("name", "second"),
+            )
+            .unwrap();
+        assert_eq!(executor.execute(&update).await.unwrap(), 1);
+
+        let after_update = executor.fetch_all(&select).await.unwrap();
+        assert_eq!(after_update[0].get("version"), Some(&Value::I64(2)));
+        assert_eq!(
+            after_update[0].get("name"),
+            Some(&Value::Text("second".to_owned()))
+        );
+
+        let delete = dialect
+            .compile_delete(
+                &order,
+                &DeleteCommand::new("Order", 1_u64).expected_version(2),
+            )
+            .unwrap();
+        assert_eq!(executor.execute(&delete).await.unwrap(), 1);
+
+        let after_delete = executor.fetch_all(&select).await.unwrap();
+        assert_eq!(after_delete[0].get("version"), Some(&Value::I64(-3)));
+
+        let recover = dialect
+            .compile_recover(&order, &RecoverCommand::new("Order", 1_u64, -3))
+            .unwrap();
+        assert_eq!(executor.execute(&recover).await.unwrap(), 1);
+
+        sqlx::query("DROP TABLE teaql_mysql_orderline")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE teaql_mysql_orderline (id BIGINT PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        executor.ensure_schema(&dialect, &[&line]).await.unwrap();
+        let columns = sqlx::query(
+            "SELECT CAST(column_name AS CHAR) AS column_name
+             FROM information_schema.columns
+             WHERE table_schema = DATABASE()
+               AND table_name = 'teaql_mysql_orderline'
+             ORDER BY column_name",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.try_get::<String, _>("column_name").unwrap())
+        .collect::<Vec<_>>();
+        assert!(columns.contains(&"id".to_owned()));
+        assert!(columns.contains(&"order_id".to_owned()));
+        assert!(columns.contains(&"product_id".to_owned()));
+        assert!(columns.contains(&"name".to_owned()));
+
+        let order_idgen = entity().table_name("teaql_mysql_orders_idgen");
+        let idgen_executor = MysqlMutationExecutor::new(pool.clone());
+        idgen_executor
+            .ensure_schema(&dialect, &[&order_idgen])
+            .await
+            .unwrap();
+
+        let mut ctx = UserContext::new()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(order_idgen))
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
+            .with_internal_id_generator(
+                MysqlIdSpaceGenerator::new(pool.clone()).with_table_name("teaql_mysql_id_space"),
+            );
+        ctx.insert_resource(MysqlDialect);
+        ctx.insert_resource(MysqlSyncExecutor::new(idgen_executor));
+
+        let repo = ctx
+            .resolve_repository::<MysqlDialect, MysqlSyncExecutor>("Order")
+            .unwrap();
+        repo.insert(
+            &repo
+                .insert_command()
+                .value("version", 1_i64)
+                .value("name", "generated-1"),
+        )
+        .unwrap();
+        repo.insert(
+            &repo
+                .insert_command()
+                .value("version", 1_i64)
+                .value("name", "generated-2"),
+        )
+        .unwrap();
+
+        let ids = sqlx::query("SELECT id FROM teaql_mysql_orders_idgen ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.try_get::<i64, _>("id").unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec![1, 2]);
+
+        let current: i64 = sqlx::query_scalar(
+            "SELECT current_level FROM teaql_mysql_id_space WHERE type_name = 'Order'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(current, 2);
+
+        for table in [
+            "teaql_mysql_orderline",
+            "teaql_mysql_orders",
+            "teaql_mysql_orders_idgen",
+            "teaql_mysql_id_space",
+        ] {
+            sqlx::query(&format!("DROP TABLE IF EXISTS `{table}`"))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mysql_executor_covers_relations_graph_queries_types_and_context_when_database_is_available()
+     {
+        let Some(pool) = mysql_test_pool().await else {
+            return;
+        };
+        let tables = [
+            "teaql_mysql_ext_product",
+            "teaql_mysql_ext_orderline",
+            "teaql_mysql_ext_orders",
+            "teaql_mysql_ext_typed",
+            "teaql_mysql_ext_ctx_product",
+            "teaql_mysql_ext_ctx_orderline",
+            "teaql_mysql_ext_ctx_orders",
+            "teaql_mysql_ext_ctx_id_space",
+            "teaql_mysql_ext_rollback_product",
+            "teaql_mysql_ext_rollback_orderline",
+            "teaql_mysql_ext_rollback_orders",
+        ];
+        drop_mysql_tables(&pool, &tables).await;
+
+        let dialect = MysqlDialect;
+        let order = entity().table_name("teaql_mysql_ext_orders");
+        let line = line_entity().table_name("teaql_mysql_ext_orderline");
+        let product = product_entity().table_name("teaql_mysql_ext_product");
+        let typed = typed_entity().table_name("teaql_mysql_ext_typed");
+        let mutation_executor = MysqlMutationExecutor::new(pool.clone());
+        mutation_executor
+            .ensure_schema(&dialect, &[&order, &line, &product, &typed])
+            .await
+            .unwrap();
+
+        sqlx::query(
+            "INSERT INTO teaql_mysql_ext_orders (id, version, name) VALUES
+                (1, 1, 'A'),
+                (2, 2, 'A'),
+                (3, 3, 'B'),
+                (4, 4, 'B')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO teaql_mysql_ext_product (id, name) VALUES
+                (1001, 'p1'),
+                (1002, 'p2'),
+                (1003, 'p3')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO teaql_mysql_ext_orderline (id, version, order_id, product_id, name) VALUES
+                (101, 1, 1, 1001, 'keep'),
+                (102, 1, 1, 1002, 'drop'),
+                (201, 1, 2, 1003, 'keep-second'),
+                (301, 1, 3, 1003, 'archived-line')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let executor = MysqlSyncExecutor::new(mutation_executor.clone());
+        let mut relation_ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(order.clone())
+                    .with_entity(line.clone())
+                    .with_entity(product.clone()),
+            )
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
+            .with_repository_behavior_registry(
+                InMemoryRepositoryBehaviorRegistry::new().with_behavior("Order", OrderBehavior),
+            );
+        relation_ctx.insert_resource(MysqlDialect);
+        relation_ctx.insert_resource(executor.clone());
+
+        let repo = relation_ctx
+            .resolve_repository::<MysqlDialect, MysqlSyncExecutor>("Order")
+            .unwrap();
+        let mut parents = repo
+            .fetch_all(
+                &repo
+                    .select()
+                    .project("id")
+                    .project("version")
+                    .project("name")
+                    .order_by(teaql_core::OrderBy::asc("id")),
+            )
+            .unwrap();
+        repo.enhance_relations(&mut parents).unwrap();
+        assert_eq!(parents.len(), 4);
+        match parents[0].get("lines") {
+            Some(Value::List(lines)) => assert_eq!(lines.len(), 2),
+            other => panic!("unexpected first lines payload: {other:?}"),
+        }
+        match parents[1].get("lines") {
+            Some(Value::List(lines)) => assert_eq!(lines.len(), 1),
+            other => panic!("unexpected second lines payload: {other:?}"),
+        }
+
+        let query = repo.select().relation_query(
+            "lines",
+            SelectQuery::new("OrderLine")
+                .project("name")
+                .filter(Expr::contain("name", "keep"))
+                .order_desc("id")
+                .page(0, 10)
+                .relation_query("product", SelectQuery::new("Product").project("name")),
+        );
+        let mut queried_parents = repo
+            .fetch_all(
+                &repo
+                    .select()
+                    .project("id")
+                    .project("version")
+                    .project("name")
+                    .filter(Expr::eq("id", 1_u64)),
+            )
+            .unwrap();
+        repo.enhance_query_relations(&mut queried_parents, &query)
+            .unwrap();
+        match queried_parents[0].get("lines") {
+            Some(Value::List(lines)) => {
+                assert_eq!(lines.len(), 1);
+                let Value::Object(line_record) = &lines[0] else {
+                    panic!("unexpected line payload: {:?}", lines[0]);
+                };
+                assert_eq!(
+                    line_record.get("name"),
+                    Some(&Value::Text("keep".to_owned()))
+                );
+                match line_record.get("product") {
+                    Some(Value::Object(product_record)) => {
+                        assert_eq!(
+                            product_record.get("name"),
+                            Some(&Value::Text("p1".to_owned()))
+                        );
+                    }
+                    other => panic!("unexpected product payload: {other:?}"),
+                }
+            }
+            other => panic!("unexpected query relation payload: {other:?}"),
+        }
+
+        let subquery = dialect
+            .compile_select(
+                &order,
+                &SelectQuery::new("Order")
+                    .filter(Expr::in_subquery(
+                        "id",
+                        line.clone(),
+                        SelectQuery::new("OrderLine").filter(Expr::contain("name", "keep")),
+                        "order_id",
+                    ))
+                    .order_asc("id"),
+            )
+            .unwrap();
+        let subquery_rows = mutation_executor.fetch_all(&subquery).await.unwrap();
+        assert_eq!(subquery_rows.len(), 2);
+        assert_eq!(subquery_rows[0].get("id"), Some(&Value::I64(1)));
+        assert_eq!(subquery_rows[1].get("id"), Some(&Value::I64(2)));
+
+        let aggregate = dialect
+            .compile_select(
+                &order,
+                &SelectQuery::new("Order")
+                    .count("total")
+                    .sum("version", "sumVersion")
+                    .avg("version", "avgVersion")
+                    .min("version", "minVersion")
+                    .max("version", "maxVersion")
+                    .stddev("version", "stddevVersion")
+                    .var_pop("version", "varPopVersion")
+                    .bit_or("version", "bitOrVersion")
+                    .having(Expr::binary(
+                        Expr::count_all(),
+                        teaql_core::BinaryOp::Gt,
+                        Expr::value(3_i64),
+                    )),
+            )
+            .unwrap();
+        let aggregate_rows = mutation_executor.fetch_all(&aggregate).await.unwrap();
+        assert_eq!(aggregate_rows.len(), 1);
+        let aggregate_row = &aggregate_rows[0];
+        assert!(matches!(
+            aggregate_row.get("total"),
+            Some(Value::I64(4) | Value::U64(4))
+        ));
+        assert_eq!(
+            aggregate_row.get("sumVersion"),
+            Some(&Value::Decimal(Decimal::new(10, 0)))
+        );
+        assert_eq!(aggregate_row.get("minVersion"), Some(&Value::I64(1)));
+        assert_eq!(aggregate_row.get("maxVersion"), Some(&Value::I64(4)));
+        assert!(matches!(
+            aggregate_row.get("stddevVersion"),
+            Some(Value::Decimal(_) | Value::F64(_))
+        ));
+        assert!(matches!(
+            aggregate_row.get("varPopVersion"),
+            Some(Value::Decimal(_) | Value::F64(_))
+        ));
+        assert!(matches!(
+            aggregate_row.get("bitOrVersion"),
+            Some(Value::I64(7) | Value::U64(7))
+        ));
+
+        let grouped = dialect
+            .compile_select(
+                &order,
+                &SelectQuery::new("Order")
+                    .group_by("name")
+                    .count("total")
+                    .sum("version", "sumVersion")
+                    .having(Expr::binary(
+                        Expr::count_all(),
+                        teaql_core::BinaryOp::Gt,
+                        Expr::value(1_i64),
+                    ))
+                    .order_asc("name"),
+            )
+            .unwrap();
+        let grouped_rows = mutation_executor.fetch_all(&grouped).await.unwrap();
+        assert_eq!(grouped_rows.len(), 2);
+        assert_eq!(
+            grouped_rows[0].get("name"),
+            Some(&Value::Text("A".to_owned()))
+        );
+        assert!(matches!(
+            grouped_rows[0].get("total"),
+            Some(Value::I64(2) | Value::U64(2))
+        ));
+        assert_eq!(
+            grouped_rows[0].get("sumVersion"),
+            Some(&Value::Decimal(Decimal::new(3, 0)))
+        );
+
+        let birthday = NaiveDate::from_ymd_opt(2024, 2, 3).unwrap();
+        let happened_at = Utc.with_ymd_and_hms(2024, 2, 3, 4, 5, 6).unwrap();
+        let payload = serde_json::json!({"name": "teaql", "count": 2});
+        let amount = Decimal::new(12345, 2);
+        let insert_typed = dialect
+            .compile_insert(
+                &typed,
+                &InsertCommand::new("TypedValue")
+                    .value("id", 1_u64)
+                    .value("payload", payload.clone())
+                    .value("amount", amount)
+                    .value("birthday", birthday)
+                    .value("happened_at", happened_at),
+            )
+            .unwrap();
+        assert_eq!(mutation_executor.execute(&insert_typed).await.unwrap(), 1);
+        let select_typed = dialect
+            .compile_select(
+                &typed,
+                &SelectQuery::new("TypedValue")
+                    .project("payload")
+                    .project("amount")
+                    .project("birthday")
+                    .project("happened_at")
+                    .filter(Expr::eq("id", 1_u64)),
+            )
+            .unwrap();
+        let typed_rows = mutation_executor.fetch_all(&select_typed).await.unwrap();
+        assert_eq!(typed_rows[0].get("payload"), Some(&Value::Json(payload)));
+        assert_eq!(typed_rows[0].get("amount"), Some(&Value::Decimal(amount)));
+        assert_eq!(typed_rows[0].get("birthday"), Some(&Value::Date(birthday)));
+        assert_eq!(
+            typed_rows[0].get("happened_at"),
+            Some(&Value::Timestamp(happened_at))
+        );
+
+        let ctx_order = entity().table_name("teaql_mysql_ext_ctx_orders");
+        let ctx_line = line_entity().table_name("teaql_mysql_ext_ctx_orderline");
+        let ctx_product = product_entity().table_name("teaql_mysql_ext_ctx_product");
+        let module = super::RuntimeModule::new()
+            .descriptor(ctx_order.clone())
+            .descriptor(ctx_line)
+            .descriptor(ctx_product)
+            .initial_graph(
+                GraphNode::new("Order")
+                    .value("id", 1_u64)
+                    .value("version", 1_i64)
+                    .value("name", "seed-order"),
+            );
+        let mut ctx = UserContext::new()
+            .with_module(module)
+            .with_internal_id_generator(
+                MysqlIdSpaceGenerator::new(pool.clone())
+                    .with_table_name("teaql_mysql_ext_ctx_id_space"),
+            );
+        ctx.insert_resource(MysqlDialect);
+        ctx.insert_resource(MysqlMutationExecutor::new(pool.clone()));
+        ctx.ensure_mysql_schema().await.unwrap();
+        sqlx::query("UPDATE teaql_mysql_ext_ctx_orders SET name = 'stale-seed-order' WHERE id = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+        ctx.ensure_mysql_schema().await.unwrap();
+        let seed_name: String =
+            sqlx::query_scalar("SELECT name FROM teaql_mysql_ext_ctx_orders WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(seed_name, "seed-order");
+
+        let tx_order = entity().table_name("teaql_mysql_ext_rollback_orders");
+        let tx_line = line_entity().table_name("teaql_mysql_ext_rollback_orderline");
+        let tx_product = product_entity().table_name("teaql_mysql_ext_rollback_product");
+        let tx_schema_executor = MysqlMutationExecutor::new(pool.clone());
+        tx_schema_executor
+            .ensure_schema(&dialect, &[&tx_order, &tx_line, &tx_product])
+            .await
+            .unwrap();
+        let tx_executor =
+            MysqlTxSyncExecutor::new(MysqlTransactionExecutor::begin(&pool).await.unwrap());
+        let mut tx_ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(tx_order.clone())
+                    .with_entity(tx_line.clone())
+                    .with_entity(tx_product.clone()),
+            )
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+        tx_ctx.insert_resource(MysqlDialect);
+        tx_ctx.insert_resource(tx_executor.clone());
+        let tx_repo = tx_ctx
+            .resolve_repository::<MysqlDialect, MysqlTxSyncExecutor>("Order")
+            .unwrap();
+        let saved = tx_repo
+            .save_graph(
+                GraphNode::new("Order")
+                    .value("id", 10_u64)
+                    .value("version", 1_i64)
+                    .value("name", "tx-root")
+                    .relation(
+                        "lines",
+                        GraphNode::new("OrderLine")
+                            .value("id", 20_u64)
+                            .value("version", 1_i64)
+                            .value("name", "tx-line")
+                            .relation(
+                                "product",
+                                GraphNode::new("Product")
+                                    .value("id", 30_u64)
+                                    .value("name", "tx-product"),
+                            ),
+                    ),
+            )
+            .unwrap();
+        assert_eq!(saved.values.get("version"), Some(&Value::I64(1)));
+        tx_executor.inner.commit().await.unwrap();
+        let committed_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM teaql_mysql_ext_rollback_orders WHERE id = 10",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(committed_count, 1);
+
+        let rollback_tx = MysqlTransactionExecutor::begin(&pool).await.unwrap();
+        let mut rollback_ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(tx_order)
+                    .with_entity(tx_line)
+                    .with_entity(tx_product),
+            )
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+        rollback_ctx.insert_resource(MysqlDialect);
+        rollback_ctx.insert_resource(MysqlTxSyncExecutor::new(rollback_tx));
+        let rollback_repo = rollback_ctx
+            .resolve_repository::<MysqlDialect, MysqlTxSyncExecutor>("Order")
+            .unwrap();
+        let error = rollback_repo.save_graph(
+            GraphNode::new("Order")
+                .value("id", 11_u64)
+                .value("version", 1_i64)
+                .value("name", "rollback-root")
+                .relation(
+                    "lines",
+                    GraphNode::new("OrderLine")
+                        .value("id", 21_u64)
+                        .value("version", 1_i64)
+                        .value("name", "rollback-line")
+                        .relation(
+                            "product",
+                            GraphNode::new("Product").value("id", 999_u64).reference(),
+                        ),
+                ),
+        );
+        assert!(format!("{error:?}").contains("does not exist"));
+        let rolled_back_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM teaql_mysql_ext_rollback_orders WHERE id = 11",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rolled_back_count, 0);
+
+        drop_mysql_tables(&pool, &tables).await;
     }
 
     #[tokio::test]

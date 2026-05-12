@@ -10,7 +10,7 @@ readme = "README.md"
 
 [features]
 default = []
-sqlx = ["dep:sqlx", "dep:tokio", "dep:teaql-dialect-sqlite", "dep:teaql-dialect-pg"]
+sqlx = ["dep:sqlx", "dep:tokio", "dep:teaql-dialect-sqlite", "dep:teaql-dialect-pg", "dep:teaql-dialect-mysql"]
 
 [dependencies]
 chrono = { workspace = true }
@@ -20,11 +20,13 @@ teaql-core = { path = "../teaql-core", version = "0.7.4" }
 teaql-sql = { path = "../teaql-sql", version = "0.7.4" }
 teaql-dialect-pg = { path = "../teaql-dialect-pg", version = "0.7.4", optional = true }
 teaql-dialect-sqlite = { path = "../teaql-dialect-sqlite", version = "0.7.4", optional = true }
+teaql-dialect-mysql = { path = "../teaql-dialect-mysql", version = "0.7.4", optional = true }
 sqlx = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 teaql-dialect-pg = { path = "../teaql-dialect-pg", version = "0.7.4" }
 teaql-dialect-sqlite = { path = "../teaql-dialect-sqlite", version = "0.7.4" }
+teaql-dialect-mysql = { path = "../teaql-dialect-mysql", version = "0.7.4" }
 teaql-macros = { path = "../teaql-macros", version = "0.7.4" }
 tokio = { workspace = true }
