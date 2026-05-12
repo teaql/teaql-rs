@@ -4371,7 +4371,7 @@ mod sqlx_integration_tests {
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("DROP TABLE IF EXISTS teaql_id_space")
+        sqlx::query("DROP TABLE IF EXISTS teaql_id_space_idgen")
             .execute(&pool)
             .await
             .unwrap();
@@ -4386,7 +4386,9 @@ mod sqlx_integration_tests {
         let mut ctx = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(order))
             .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
-            .with_internal_id_generator(PgIdSpaceGenerator::new(pool.clone()));
+            .with_internal_id_generator(
+                PgIdSpaceGenerator::new(pool.clone()).with_table_name("teaql_id_space_idgen"),
+            );
         ctx.insert_resource(PostgresDialect);
         ctx.insert_resource(PgSyncExecutor::new(executor));
 
@@ -4418,7 +4420,7 @@ mod sqlx_integration_tests {
         assert_eq!(ids, vec![1, 2]);
 
         let current: i64 = sqlx::query_scalar(
-            "SELECT current_level FROM teaql_id_space WHERE type_name = 'Order'",
+            "SELECT current_level FROM teaql_id_space_idgen WHERE type_name = 'Order'",
         )
         .fetch_one(&pool)
         .await
@@ -4429,7 +4431,7 @@ mod sqlx_integration_tests {
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("DROP TABLE IF EXISTS teaql_id_space")
+        sqlx::query("DROP TABLE IF EXISTS teaql_id_space_idgen")
             .execute(&pool)
             .await
             .unwrap();

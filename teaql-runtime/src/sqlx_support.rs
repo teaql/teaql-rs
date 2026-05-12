@@ -620,15 +620,8 @@ where
     F: Future<Output = Result<u64, MutationExecutorError>> + Send + 'static,
 {
     let result = if tokio::runtime::Handle::try_current().is_ok() {
-        std::thread::spawn(move || {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?
-                .block_on(future)
-        })
-        .join()
-        .map_err(|_| RuntimeError::IdGeneration("id generation thread panicked".to_owned()))?
+        let handle = tokio::runtime::Handle::current();
+        tokio::task::block_in_place(|| handle.block_on(future))
     } else {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
