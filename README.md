@@ -32,6 +32,9 @@ Progress tracking lives in [PROGRESS.md](./PROGRESS.md).
 
 Current published release: `0.7.4`.
 
+For a longer design narrative aimed at technical readers, see
+[Building a DDD Data Runtime with Generated Typed Queries in Rust](./docs/hacker-news-teaql-ddd-data-runtime.md).
+
 ## Try It
 
 The quickest demo uses SQLite in memory and needs no database server:
