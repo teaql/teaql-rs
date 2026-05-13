@@ -3,9 +3,9 @@ members = [
     "teaql-core",
     "teaql-sql",
     "teaql-runtime",
-    "teaql-dialect-pg",
-    "teaql-dialect-sqlite",
-    "teaql-dialect-mysql",
+    "teaql-provider-sqlx-postgres",
+    "teaql-provider-sqlx-sqlite",
+    "teaql-provider-sqlx-mysql",
     "teaql-macros",
     "examples",
 ]

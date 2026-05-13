@@ -1,9 +1,8 @@
 use teaql_core::{SelectQuery, SmartList};
-use teaql_dialect_sqlite::SqliteDialect;
 use teaql_examples::{
     Order, OrderLine, Product, SqliteSyncExecutor, reset_sqlite_schema, sqlite_context,
 };
-use teaql_runtime::sqlx_support::SqliteMutationExecutor;
+use teaql_provider_sqlx_sqlite::{SqliteDialect, SqliteMutationExecutor};
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

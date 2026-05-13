@@ -1,20 +1,19 @@
 [package]
-name = "teaql-runtime"
+name = "teaql-provider-sqlx-postgres"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description.workspace = true
+description = "PostgreSQL SQLx provider adapter for TeaQL runtime"
 repository.workspace = true
 readme = "README.md"
 
 [dependencies]
 chrono = { workspace = true }
-serde_json = { workspace = true }
 rust_decimal = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "json", "chrono", "rust_decimal"] }
 teaql-core = { path = "../teaql-core", version = "0.7.4" }
+teaql-runtime = { path = "../teaql-runtime", version = "0.7.4" }
 teaql-sql = { path = "../teaql-sql", version = "0.7.4" }
-
-[dev-dependencies]
-teaql-macros = { path = "../teaql-macros", version = "0.7.4" }
 tokio = { workspace = true }

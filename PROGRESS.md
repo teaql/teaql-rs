@@ -70,7 +70,7 @@ Current progress estimates:
 | Attach relation metadata | Java uses attach/reverse relation metadata | `RelationDescriptor` supports `attach/detached` and `delete_missing/keep_missing`; derive supports `attach = false` and `delete_missing = false` | MVP | Medium |
 | Graph write transaction boundary | Java runs through repository/service transaction facilities | `save_graph()` now requires a transactional executor; SQLite auto transaction rollback and PostgreSQL connection-scoped transaction rollback are verified | MVP+ | Medium |
 | Module/file organization | Java code is already split by concern | Rust core/runtime/macros/sql crates are split into focused source modules; the runtime repository layer is now a `repository/` module with separate cache, executor, base repository, context repository, resolved repository, graph, relation, and helper modules | Done | Low |
-| Published crates | Java artifacts are released through Maven-style repositories | `teaql-core`, `teaql-sql`, `teaql-dialect-pg`, `teaql-dialect-sqlite`, `teaql-macros`, and `teaql-runtime` are published on crates.io as `0.7.4` | Done | Low |
+| Published crates | Java artifacts are released through Maven-style repositories | `teaql-core`, `teaql-sql`, `teaql-runtime`, `teaql-macros`, and database-specific SQLx provider crates are the intended published crate set | Done | Low |
 
 ## Current Strengths
 
@@ -137,5 +137,7 @@ Current progress estimates:
 
 - `teaql-runtime` `0.7.4` fixes relation aggregate attachment when grouped SQL rows expose storage column names such as `platform` while the runtime relation key is the entity property such as `platform_id`.
 - Relation/object enhancement now uses graph identity keys so nonnegative `I64` ids decoded from SQL and application-side `U64` ids match consistently.
-- Verified with `cargo test -p teaql-runtime --features sqlx`: 66 tests passed.
+- SQLx runtime support has been split into per-database provider crates:
+  `teaql-provider-sqlx-postgres`, `teaql-provider-sqlx-sqlite`, and
+  `teaql-provider-sqlx-mysql`.
 - Verified externally with generated `crm-erp-service` high-level `Q` APIs against SQLite: 14 tests passed, including complex object commit, JSON serialization, `find_with_json_expr`, and simple-to-complex statistics.

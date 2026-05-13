@@ -70,17 +70,21 @@ let platforms = Q::platforms()
 
 - `teaql-core`: metadata, entity traits, base entity data, values, filters, ordering, aggregates, query model, and `SmartList<T>`
 - `teaql-sql`: SQL dialect trait, compiled query types, DDL helpers, and AST-to-SQL compiler
-- `teaql-runtime`: `UserContext`, metadata lookup, repository boundary, repository registry, behavior registry, checker registry, entity event sink, id generation, `RuntimeModule`, and optional `sqlx` PG/SQLite executors
+- `teaql-runtime`: minimal runtime mechanism, `UserContext`, metadata lookup, repository boundary, repository registry, behavior registry, checker registry, entity event sink, id generation, `RuntimeModule`, and in-memory execution
+- `teaql-provider-sqlx-postgres`: PostgreSQL SQLx adapter, schema bootstrap, transaction wrapper, row decoding, and ID-space generator
+- `teaql-provider-sqlx-sqlite`: SQLite SQLx adapter, schema bootstrap, transaction wrapper, row decoding, and ID-space generator
+- `teaql-provider-sqlx-mysql`: MySQL SQLx adapter, schema bootstrap, transaction wrapper, row decoding, and ID-space generator
 - `teaql-macros`: `TeaqlEntity` derive macro plus attribute parsing and record/entity mapping generation
-- `teaql-dialect-pg`: PostgreSQL quoting and placeholder strategy
-- `teaql-dialect-sqlite`: SQLite quoting and placeholder strategy
 
 The large crates are now split by function instead of keeping all implementation in a single
 `lib.rs`:
 
 - `teaql-core/src`: `entity.rs`, `expr.rs`, `list.rs`, `meta.rs`, `mutation.rs`, `naming.rs`, `query.rs`, `value.rs`
 - `teaql-sql/src`: `dialect.rs`, `types.rs`
-- `teaql-runtime/src`: `checker.rs`, `context.rs`, `error.rs`, `event.rs`, `graph.rs`, `id.rs`, `memory.rs`, `registry.rs`, `repository/`, `sqlx_support.rs`
+- `teaql-runtime/src`: `checker.rs`, `context.rs`, `error.rs`, `event.rs`, `graph.rs`, `id.rs`, `memory.rs`, `registry.rs`, `repository/`
+- `teaql-provider-sqlx-postgres/src`: PostgreSQL SQLx provider adapter
+- `teaql-provider-sqlx-sqlite/src`: SQLite SQLx provider adapter
+- `teaql-provider-sqlx-mysql/src`: MySQL SQLx provider adapter
 - `teaql-runtime/src/repository`: `base.rs`, `cache.rs`, `context.rs`, `executor.rs`, `graph.rs`, `helpers.rs`, `relation.rs`, `resolved.rs`, `types.rs`
 - `teaql-macros/src`: `attr.rs`, `derive_impl.rs`, `mapping.rs`, `types.rs`
 
@@ -133,26 +137,24 @@ The current implementation focuses on the Rust-native core runtime:
 - graph write state hints: `Upsert`, `Reference`, and `Remove`
 - stricter graph state semantics: reference nodes validate existence/version/deleted state, remove nodes validate existence, and many-relation merge rejects duplicate child ids
 - relation metadata for graph writes: `attach/detached` and `delete_missing/keep_missing`
-- SQLite transaction boundary helpers for graph-write wrapping and rollback testing
-- PostgreSQL connection-scoped transaction executor for graph-write wrapping and rollback testing
+- SQLx transaction boundary helpers for graph-write wrapping and rollback testing live in the per-database provider crates
 - declarative runtime assembly through `RuntimeModule` and `module!`
-- built-in `SnowflakeIdGenerator`, SQLx `teaql_id_space` generators for PostgreSQL/SQLite, and `UserContext`-driven id generation
+- built-in `SnowflakeIdGenerator` and `UserContext`-driven id generation; SQLx `teaql_id_space` generators live in the per-database provider crates
 - `BaseEntityData` / `BaseEntity` for shared `id + version + dynamic` entity state
 - dynamic-property capture through `#[teaql(dynamic)]`, with JSON flattening for aggregate-style outputs
 - `MemoryRepository` for no-database tests and lightweight in-memory execution
-- optional `sqlx` support module for PostgreSQL and SQLite execution
-- SQLite `ensure_schema` support for create-table and add-missing-column flows
-- PostgreSQL `ensure_schema` support with real multi-table integration validation, including `soundex(text)` and `teaql_id_space` bootstrap
-- `UserContext::ensure_sqlite_schema()` as the high-level SQLite schema entry point
-- `UserContext::ensure_postgres_schema()` as the high-level PostgreSQL schema entry point
-- JSON, Decimal, date, and timestamp bind/decode support in the `sqlx` execution path
-- SQLite in-memory integration tests for CRUD and relation enhancement under `--features sqlx`
+- SQLx PostgreSQL, SQLite, and MySQL execution moved to per-database provider crates
+- SQLite `ensure_schema` support for create-table and add-missing-column flows in `teaql-provider-sqlx-sqlite`
+- PostgreSQL `ensure_schema` support with real multi-table integration validation, including `soundex(text)` and `teaql_id_space` bootstrap, in `teaql-provider-sqlx-postgres`
+- `UserContext::ensure_schema()` as the database-neutral schema entry point after a provider is registered
+- JSON, Decimal, date, and timestamp bind/decode support in the per-database SQLx providers
+- SQLite in-memory integration tests for CRUD and relation enhancement in the SQLx provider
 - SQLite integration coverage for nested create-graph writes
 - SQLite integration coverage for nested graph update diff
 - SQLite integration coverage for reference-only nodes, explicit remove, keep-missing relation metadata, and transaction rollback
 - SQLite relation aggregate coverage through generated high-level `Q` APIs in an external generated service crate
 - PostgreSQL integration coverage for graph-write transaction rollback when `TEAQL_TEST_PG_URL` is provided
-- PostgreSQL integration tests under `--features sqlx` when `TEAQL_TEST_PG_URL` is provided
+- PostgreSQL integration tests in the SQLx provider when `TEAQL_TEST_PG_URL` is provided
 
 ## Typed entities and `SmartList<T>`
 
@@ -265,46 +267,50 @@ For nested enhancement, register relation paths from repository behavior, for ex
 - `lines`
 - `lines.product`
 
-## SQLite schema bootstrap
+## SQLx provider schema bootstrap
 
-With the `sqlx` feature enabled, SQLite schema setup can be driven directly from `UserContext`.
+Schema setup is implemented by the selected SQLx provider, but exposed through
+the database-neutral runtime entry point:
 
 ```rust
-use sqlx::sqlite::SqlitePoolOptions;
-use teaql_core::{DataType, EntityDescriptor, PropertyDescriptor};
-use teaql_dialect_sqlite::SqliteDialect;
-use teaql_runtime::sqlx_support::SqliteMutationExecutor;
-use teaql_runtime::{RuntimeModule, UserContext};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:")
-        .await?;
-
-    let order = EntityDescriptor::new("Order")
-        .table_name("orders")
-        .property(PropertyDescriptor::new("id", DataType::U64).column_name("id").id().not_null())
-        .property(
-            PropertyDescriptor::new("version", DataType::I64)
-                .column_name("version")
-                .version()
-                .not_null(),
-        )
-        .property(PropertyDescriptor::new("name", DataType::Text).column_name("name"));
-
-    let module = RuntimeModule::new().descriptor(order);
-    let mut ctx = UserContext::new().with_module(module);
-    ctx.insert_resource(SqliteDialect);
-    ctx.insert_resource(SqliteMutationExecutor::new(pool));
-
-    ctx.ensure_sqlite_schema().await?;
-    Ok(())
-}
+ctx.ensure_schema().await?;
 ```
 
-Current SQLite `ensure_schema` scope:
+Each database provider exposes a registration helper that installs its dialect,
+executor, and schema provider into `UserContext`.
+
+PostgreSQL:
+
+```rust
+use teaql_provider_sqlx_postgres::{
+    PgMutationExecutor, PostgresProviderExt,
+};
+
+ctx.use_postgres_provider(PgMutationExecutor::new(pg_pool));
+ctx.ensure_schema().await?;
+```
+
+SQLite:
+
+```rust
+use teaql_provider_sqlx_sqlite::{SqliteMutationExecutor, SqliteProviderExt};
+
+ctx.use_sqlite_provider(SqliteMutationExecutor::new(sqlite_pool));
+ctx.ensure_schema().await?;
+```
+
+MySQL:
+
+```rust
+use teaql_provider_sqlx_mysql::{
+    MysqlMutationExecutor, MysqlProviderExt,
+};
+
+ctx.use_mysql_provider(MysqlMutationExecutor::new(mysql_pool));
+ctx.ensure_schema().await?;
+```
+
+Current `ensure_schema` scope:
 
 - create missing tables
 - add missing columns to existing tables

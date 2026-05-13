@@ -1,9 +1,12 @@
 use teaql_core::{Record, SmartList, TeaqlEntity};
-use teaql_dialect_pg::PostgresDialect;
-use teaql_dialect_sqlite::SqliteDialect;
 use teaql_macros::TeaqlEntity;
-use teaql_runtime::sqlx_support::{
-    MutationExecutorError, PgMutationExecutor, SqliteMutationExecutor,
+use teaql_provider_sqlx_postgres::{
+    MutationExecutorError as PgMutationExecutorError, PgMutationExecutor, PostgresDialect,
+    PostgresProviderExt,
+};
+use teaql_provider_sqlx_sqlite::{
+    MutationExecutorError as SqliteMutationExecutorError, SqliteDialect, SqliteMutationExecutor,
+    SqliteProviderExt,
 };
 use teaql_runtime::{
     GraphTransactionBoundary, InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry,
@@ -66,7 +69,7 @@ impl SqliteSyncExecutor {
 }
 
 impl QueryExecutor for SqliteSyncExecutor {
-    type Error = MutationExecutorError;
+    type Error = SqliteMutationExecutorError;
 
     fn fetch_all(&self, query: &teaql_sql::CompiledQuery) -> Result<Vec<Record>, Self::Error> {
         let handle = Handle::current();
@@ -107,7 +110,7 @@ impl PgSyncExecutor {
 }
 
 impl QueryExecutor for PgSyncExecutor {
-    type Error = MutationExecutorError;
+    type Error = PgMutationExecutorError;
 
     fn fetch_all(&self, query: &teaql_sql::CompiledQuery) -> Result<Vec<Record>, Self::Error> {
         let handle = Handle::current();
@@ -147,7 +150,7 @@ pub fn sqlite_context(executor: SqliteMutationExecutor) -> UserContext {
         .with_metadata(metadata())
         .with_repository_registry(repository_registry())
         .with_repository_behavior_registry(behavior_registry());
-    ctx.insert_resource(SqliteDialect);
+    ctx.use_sqlite_provider(executor.clone());
     ctx.insert_resource(SqliteSyncExecutor::new(executor));
     ctx
 }
@@ -157,7 +160,7 @@ pub fn postgres_context(executor: PgMutationExecutor) -> UserContext {
         .with_metadata(metadata())
         .with_repository_registry(repository_registry())
         .with_repository_behavior_registry(behavior_registry());
-    ctx.insert_resource(PostgresDialect);
+    ctx.use_postgres_provider(executor.clone());
     ctx.insert_resource(PgSyncExecutor::new(executor));
     ctx
 }
@@ -165,7 +168,7 @@ pub fn postgres_context(executor: PgMutationExecutor) -> UserContext {
 pub async fn reset_sqlite_schema(
     pool: &sqlx::SqlitePool,
     executor: &SqliteMutationExecutor,
-) -> Result<(), MutationExecutorError> {
+) -> Result<(), SqliteMutationExecutorError> {
     sqlx::query("DROP TABLE IF EXISTS example_orderline")
         .execute(pool)
         .await?;
@@ -190,7 +193,7 @@ pub async fn reset_sqlite_schema(
 pub async fn reset_postgres_schema(
     pool: &sqlx::PgPool,
     executor: &PgMutationExecutor,
-) -> Result<(), MutationExecutorError> {
+) -> Result<(), PgMutationExecutorError> {
     sqlx::query("DROP TABLE IF EXISTS example_orderline")
         .execute(pool)
         .await?;

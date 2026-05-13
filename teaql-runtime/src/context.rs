@@ -1,5 +1,7 @@
 use std::any::{Any, TypeId};
 use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Mutex;
 
 use teaql_core::{EntityDescriptor, Record, UpdateCommand, Value};
@@ -77,6 +79,13 @@ pub struct SqlLogEntry {
     pub debug_sql: String,
 }
 
+pub trait SchemaProvider: Send + Sync {
+    fn ensure_schema<'a>(
+        &'a self,
+        ctx: &'a UserContext,
+    ) -> Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'a>>;
+}
+
 #[derive(Default)]
 pub struct UserContext {
     pub(crate) metadata: Option<Box<dyn MetadataStore>>,
@@ -85,6 +94,7 @@ pub struct UserContext {
     pub(crate) checker_registry: Option<Box<dyn CheckerRegistry>>,
     pub(crate) event_sink: Option<Box<dyn EntityEventSink>>,
     pub(crate) internal_id_generator: Option<Box<dyn InternalIdGenerator>>,
+    schema_provider: Option<Box<dyn SchemaProvider>>,
     language: Language,
     typed_resources: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
     named_resources: BTreeMap<String, Box<dyn Any + Send + Sync>>,
@@ -178,6 +188,23 @@ impl UserContext {
 
     pub fn set_internal_id_generator(&mut self, generator: impl InternalIdGenerator + 'static) {
         self.internal_id_generator = Some(Box::new(generator));
+    }
+
+    pub fn with_schema_provider(mut self, provider: impl SchemaProvider + 'static) -> Self {
+        self.schema_provider = Some(Box::new(provider));
+        self
+    }
+
+    pub fn set_schema_provider(&mut self, provider: impl SchemaProvider + 'static) {
+        self.schema_provider = Some(Box::new(provider));
+    }
+
+    pub async fn ensure_schema(&self) -> Result<(), RuntimeError> {
+        let provider = self
+            .schema_provider
+            .as_ref()
+            .ok_or_else(|| RuntimeError::Schema("missing schema provider".to_owned()))?;
+        provider.ensure_schema(self).await
     }
 
     pub fn with_language(mut self, language: Language) -> Self {
@@ -283,6 +310,13 @@ impl UserContext {
         self.metadata
             .as_ref()
             .and_then(|metadata| metadata.entity(name))
+    }
+
+    pub fn all_entities(&self) -> Vec<&EntityDescriptor> {
+        self.metadata
+            .as_ref()
+            .map(|metadata| metadata.all_entities())
+            .unwrap_or_default()
     }
 
     pub fn require_entity(&self, name: &str) -> Result<&EntityDescriptor, RuntimeError> {

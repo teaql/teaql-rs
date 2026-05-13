@@ -1,21 +1,20 @@
 # teaql-runtime
 
-Runtime repository and graph persistence layer for TeaQL Rust.
+Minimal runtime repository and graph persistence layer for TeaQL Rust.
 
-`teaql-runtime` connects TeaQL metadata, dialects, executors, repositories,
-behaviors, checkers, events, and graph writes through `UserContext`.
+`teaql-runtime` owns TeaQL's runtime concepts: metadata lookup, repository
+assembly, behaviors, checkers, events, graph planning, and in-memory execution.
+Database execution is supplied by provider crates.
 
 ## What It Provides
 
-- `UserContext` for metadata, resources, request locals, and runtime options
+- `UserContext` for metadata, typed resources, request locals, and runtime options
 - repository registry and behavior registry
 - memory repository for tests and lightweight execution
 - checker registry and translated validation results
 - entity event sink support
 - graph save planning and execution
 - typed entity graph extraction
-- optional `sqlx` support for PostgreSQL and SQLite
-- schema bootstrap helpers for SQLite and PostgreSQL
 - SQL debug logging options on `UserContext`
 
 ## Source Layout
@@ -38,8 +37,8 @@ The repository layer is split by concern under `src/repository/`:
 use teaql_runtime::{InMemoryMetadataStore, UserContext};
 
 let mut ctx = UserContext::new()
-    .with_metadata_store(InMemoryMetadataStore::default())
-    .enable_all_sql_log();
+    .with_metadata(InMemoryMetadataStore::default());
+ctx.enable_all_sql_log();
 
 let logs = ctx.sql_logs();
 assert!(logs.is_empty());
@@ -54,9 +53,36 @@ let ctx = UserContext::new()
     .with_repository_registry(my_domain::repository_registry());
 ```
 
-Enable the `sqlx` feature when using the built-in PostgreSQL or SQLite
-executors:
+Database, cache, message, search, AI, and filesystem integrations live outside
+this crate as runtime providers/adapters. For SQLx-backed databases, choose one
+database-specific provider crate:
 
 ```toml
-teaql-runtime = { version = "0.7", features = ["sqlx"] }
+teaql-runtime = "0.7"
+teaql-provider-sqlx-postgres = "0.7"
+teaql-provider-sqlx-sqlite = "0.7"
+teaql-provider-sqlx-mysql = "0.7"
 ```
+
+Provider crates expose a small registration helper. Runtime code registers
+whichever provider the application selected, then calls the database-neutral
+schema entry point:
+
+```rust
+use teaql_provider_sqlx_postgres::{PgMutationExecutor, PostgresProviderExt};
+use teaql_runtime::{RuntimeError, UserContext};
+
+let mut ctx = UserContext::new()
+    .with_module(my_domain::module())
+    .with_repository_registry(my_domain::repository_registry());
+
+ctx.use_postgres_provider(PgMutationExecutor::new(pg_pool));
+ctx.ensure_schema().await?;
+```
+
+The provider-specific helpers remain available for low-level use, but
+application code should prefer `ctx.ensure_schema().await?` once a provider is
+registered.
+
+`teaql-runtime` itself no longer has a `sqlx` feature and no longer exports
+`sqlx_support`.

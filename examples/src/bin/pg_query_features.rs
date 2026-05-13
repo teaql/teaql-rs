@@ -1,7 +1,6 @@
 use teaql_core::{BinaryOp, Expr, SelectQuery, TeaqlEntity, Value};
-use teaql_dialect_pg::PostgresDialect;
 use teaql_examples::{Order, PgSyncExecutor, postgres_context, reset_postgres_schema};
-use teaql_runtime::sqlx_support::PgMutationExecutor;
+use teaql_provider_sqlx_postgres::{PgMutationExecutor, PostgresDialect};
 use teaql_sql::SqlDialect;
 
 #[tokio::main(flavor = "multi_thread")]
