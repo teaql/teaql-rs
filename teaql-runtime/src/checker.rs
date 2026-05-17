@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use teaql_core::{Entity, Record, Value};
+use teaql_core::{Entity, Record, TeaqlEntity, Value};
 
 use crate::UserContext;
 
@@ -425,5 +425,96 @@ impl InMemoryCheckerRegistry {
 impl CheckerRegistry for InMemoryCheckerRegistry {
     fn checker(&self, entity: &str) -> Option<Arc<dyn Checker>> {
         self.checkers.get(entity).cloned()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TypedChecker & TypedEntityChecker
+// ---------------------------------------------------------------------------
+
+/// Typed version of [`Checker`] that works with concrete entity types (`T`)
+/// instead of generic [`Record`]s.
+///
+/// Implement this trait for per-entity checker logic structs, then wrap
+/// them in [`TypedEntityChecker`] so they satisfy the [`Checker`] trait
+/// expected by [`InMemoryCheckerRegistry`].
+pub trait TypedChecker<T>: Send + Sync {
+    fn check_and_fix_typed(
+        &self,
+        ctx: &UserContext,
+        entity: &mut T,
+        status: CheckObjectStatus,
+        location: &ObjectLocation,
+        results: &mut CheckResults,
+    );
+}
+
+/// Adapter that turns a [`TypedChecker<T>`] into a [`Checker`].
+///
+/// On [`Checker::check_and_fix`], it:
+/// 1. Extracts [`CheckObjectStatus`] from the `Record`.
+/// 2. Deserializes the `Record` into `T` via [`Entity::from_record`].
+/// 3. Delegates to [`TypedChecker::check_and_fix_typed`].
+/// 4. Serializes the (possibly mutated) `T` back into the `Record`
+///    via [`Entity::into_record`].
+pub struct TypedEntityChecker<T, C> {
+    checker: C,
+    entity_name: String,
+    _marker: std::marker::PhantomData<fn() -> T>,
+}
+
+impl<T, C> TypedEntityChecker<T, C>
+where
+    T: TeaqlEntity,
+{
+    /// Create a new `TypedEntityChecker` wrapping `checker`.
+    pub fn new(checker: C) -> Self {
+        let entity_name = T::entity_descriptor().name.clone();
+        Self {
+            checker,
+            entity_name,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<T, C> Checker for TypedEntityChecker<T, C>
+where
+    T: Entity + TeaqlEntity + Send + Sync + Clone,
+    C: TypedChecker<T>,
+{
+    fn entity(&self) -> &str {
+        &self.entity_name
+    }
+
+    fn check_and_fix(
+        &self,
+        ctx: &UserContext,
+        record: &mut Record,
+        location: &ObjectLocation,
+        results: &mut CheckResults,
+    ) {
+        let status = CheckObjectStatus::from_record(record);
+        // Take ownership of the record (replace with empty) so we can
+        // call T::from_record which consumes the Record.
+        let owned_record = std::mem::take(record);
+        match T::from_record(owned_record) {
+            Ok(mut entity) => {
+                self.checker
+                    .check_and_fix_typed(ctx, &mut entity, status, location, results);
+                // Write mutated entity back into the original record slot.
+                *record = entity.into_record();
+            }
+            Err(_e) => {
+                // If deserialization fails, re-build an empty record so
+                // the caller always sees a valid (though empty) Record.
+                *record = Record::default();
+                // Push a generic error result.
+                results.push(CheckResult::new(
+                    CheckRule::Required,
+                    location.clone(),
+                ));
+            }
+        }
     }
 }
