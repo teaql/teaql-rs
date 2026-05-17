@@ -6,13 +6,14 @@ members = [
     "teaql-provider-sqlx-postgres",
     "teaql-provider-sqlx-sqlite",
     "teaql-provider-sqlx-mysql",
+    "teaql-provider-rusqlite",
     "teaql-macros",
     "examples",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.7.4"
+version = "0.7.5"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["Philip"]
@@ -28,6 +29,7 @@ thiserror = "2"
 async-trait = "0.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "sqlite", "mysql", "macros", "json", "chrono", "rust_decimal"] }
+rusqlite = { version = "0.32", features = ["bundled", "column_decltype"] }
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full", "extra-traits"] }

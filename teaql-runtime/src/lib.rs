@@ -42,14 +42,14 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::{
-        AggregationCacheBackend, CHECK_OBJECT_STATUS_FIELD, CheckObjectStatus, CheckResults,
-        CheckRule, Checker, EntityEvent, EntityEventKind, EntityEventSink, GraphMutationKind,
-        GraphNode, GraphTransactionBoundary, InMemoryAggregationCache, InMemoryCheckerRegistry,
-        InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry, InMemoryRepositoryRegistry,
-        InternalIdGenerator, Language, MemoryRepository, MetadataStore, ObjectLocation,
-        QueryExecutor, Repository, RepositoryBehavior, RepositoryError, RuntimeError,
-        RuntimeModule, SqlLogOperation, SqlLogOptions, TypedChecker, TypedEntityChecker,
-        UserContext, translate_check_result,
+        AggregationCacheBackend, CHECK_OBJECT_STATUS_FIELD, CheckObjectStatus, CheckResult,
+        CheckResults, CheckRule, Checker, EntityEvent, EntityEventKind, EntityEventSink,
+        GraphMutationKind, GraphNode, GraphTransactionBoundary, InMemoryAggregationCache,
+        InMemoryCheckerRegistry, InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry,
+        InMemoryRepositoryRegistry, InternalIdGenerator, Language, MemoryRepository, MetadataStore,
+        ObjectLocation, QueryExecutor, Repository, RepositoryBehavior, RepositoryError,
+        RuntimeError, RuntimeModule, SqlLogOperation, SqlLogOptions, TypedChecker,
+        TypedEntityChecker, UserContext, translate_check_result,
     };
     use teaql_core::{
         Aggregate, AggregateFunction, BinaryOp, DataType, Decimal, DeleteCommand, Entity,
@@ -230,7 +230,7 @@ mod tests {
         lines: teaql_core::SmartList<OrderLineEntityRow>,
     }
 
-    #[derive(Debug, PartialEq, DeriveTeaqlEntity)]
+    #[derive(Debug, Clone, PartialEq, DeriveTeaqlEntity)]
     #[teaql(entity = "Order", table = "orders")]
     struct Order {
         #[teaql(id)]
@@ -528,9 +528,17 @@ mod tests {
             results: &mut CheckResults,
         ) {
             if status.is_create() {
-                self.required_text(&entity.name, "name", location, results);
+                if entity.name.is_empty() {
+                    results.push(CheckResult::required(location.clone().member("name")));
+                }
             }
-            self.min_string_length(&entity.name, "name", 3, location, results);
+            if entity.name.chars().count() < 3 {
+                results.push(CheckResult::min_str(
+                    location.clone().member("name"),
+                    3,
+                    entity.name.clone(),
+                ));
+            }
             if entity.name == "fix" {
                 entity.name = "fixed".to_owned();
             }

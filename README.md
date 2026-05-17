@@ -74,6 +74,7 @@ let platforms = Q::platforms()
 - `teaql-provider-sqlx-postgres`: PostgreSQL SQLx adapter, schema bootstrap, transaction wrapper, row decoding, and ID-space generator
 - `teaql-provider-sqlx-sqlite`: SQLite SQLx adapter, schema bootstrap, transaction wrapper, row decoding, and ID-space generator
 - `teaql-provider-sqlx-mysql`: MySQL SQLx adapter, schema bootstrap, transaction wrapper, row decoding, and ID-space generator
+- `teaql-provider-rusqlite`: synchronous SQLite adapter for embedded and multi-architecture deployments such as routers, robots, and appliance controllers
 - `teaql-macros`: `TeaqlEntity` derive macro plus attribute parsing and record/entity mapping generation
 
 The large crates are now split by function instead of keeping all implementation in a single
@@ -85,6 +86,7 @@ The large crates are now split by function instead of keeping all implementation
 - `teaql-provider-sqlx-postgres/src`: PostgreSQL SQLx provider adapter
 - `teaql-provider-sqlx-sqlite/src`: SQLite SQLx provider adapter
 - `teaql-provider-sqlx-mysql/src`: MySQL SQLx provider adapter
+- `teaql-provider-rusqlite/src`: synchronous rusqlite provider adapter
 - `teaql-runtime/src/repository`: `base.rs`, `cache.rs`, `context.rs`, `executor.rs`, `graph.rs`, `helpers.rs`, `relation.rs`, `resolved.rs`, `types.rs`
 - `teaql-macros/src`: `attr.rs`, `derive_impl.rs`, `mapping.rs`, `types.rs`
 
@@ -307,6 +309,17 @@ use teaql_provider_sqlx_mysql::{
 };
 
 ctx.use_mysql_provider(MysqlMutationExecutor::new(mysql_pool));
+ctx.ensure_schema().await?;
+```
+
+rusqlite:
+
+```rust
+use rusqlite::Connection;
+use teaql_provider_rusqlite::{RusqliteMutationExecutor, RusqliteProviderExt};
+
+let executor = RusqliteMutationExecutor::new(Connection::open("app.db")?);
+ctx.use_rusqlite_provider(executor);
 ctx.ensure_schema().await?;
 ```
 

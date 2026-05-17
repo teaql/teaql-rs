@@ -270,8 +270,6 @@ pub trait Checker: Send + Sync {
     }
 }
 
-
-
 pub trait CheckerRegistry: Send + Sync {
     fn checker(&self, entity: &str) -> Option<Arc<dyn Checker>>;
 }
@@ -385,10 +383,7 @@ where
                 // the caller always sees a valid (though empty) Record.
                 *record = Record::default();
                 // Push a generic error result.
-                results.push(CheckResult::new(
-                    CheckRule::Required,
-                    location.clone(),
-                ));
+                results.push(CheckResult::new(CheckRule::Required, location.clone()));
             }
         }
     }

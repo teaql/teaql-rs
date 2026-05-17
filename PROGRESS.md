@@ -140,4 +140,7 @@ Current progress estimates:
 - SQLx runtime support has been split into per-database provider crates:
   `teaql-provider-sqlx-postgres`, `teaql-provider-sqlx-sqlite`, and
   `teaql-provider-sqlx-mysql`.
+- Added `teaql-provider-rusqlite` for synchronous SQLite deployments on
+  embedded and multi-architecture devices where a smaller dependency and runtime
+  footprint is useful.
 - Verified externally with generated `crm-erp-service` high-level `Q` APIs against SQLite: 14 tests passed, including complex object commit, JSON serialization, `find_with_json_expr`, and simple-to-complex statistics.
