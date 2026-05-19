@@ -360,7 +360,7 @@ mod tests {
                     .project_raw("name", "upper(name)")
                     .dynamic_property_raw("score", "42")
                     .raw_sql_search_criteria("name <> ''")
-                    .json_expr("payload @> '{\"active\":true}'"),
+                    .raw_sql_search_criteria("payload @> '{\"active\":true}'"),
             )
             .unwrap();
 

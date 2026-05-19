@@ -2066,7 +2066,6 @@ mod tests {
             comment: None,
             raw_sql: None,
             raw_sql_search_criteria: Vec::new(),
-            json_expr: None,
             dynamic_properties: Vec::new(),
             raw_projections: Vec::new(),
             object_group_bys: Vec::new(),

@@ -161,9 +161,6 @@ pub trait SqlDialect {
             where_parts.push(self.compile_expr(entity, filter, params)?);
         }
         where_parts.extend(query.raw_sql_search_criteria.iter().cloned());
-        if let Some(json_expr) = &query.json_expr {
-            where_parts.push(json_expr.clone());
-        }
         if !where_parts.is_empty() {
             sql.push_str(" WHERE ");
             sql.push_str(&where_parts.join(" AND "));

@@ -290,7 +290,6 @@ pub struct SelectQuery {
     pub comment: Option<String>,
     pub raw_sql: Option<String>,
     pub raw_sql_search_criteria: Vec<String>,
-    pub json_expr: Option<String>,
     pub dynamic_properties: Vec<RawSqlProjection>,
     pub raw_projections: Vec<RawSqlProjection>,
     pub object_group_bys: Vec<ObjectGroupBy>,
@@ -314,7 +313,6 @@ impl SelectQuery {
             comment: None,
             raw_sql: None,
             raw_sql_search_criteria: Vec::new(),
-            json_expr: None,
             dynamic_properties: Vec::new(),
             raw_projections: Vec::new(),
             object_group_bys: Vec::new(),
@@ -520,11 +518,6 @@ impl SelectQuery {
 
     pub fn raw_sql_search_criteria(mut self, raw_sql: impl Into<String>) -> Self {
         self.raw_sql_search_criteria.push(raw_sql.into());
-        self
-    }
-
-    pub fn json_expr(mut self, json_expr: impl Into<String>) -> Self {
-        self.json_expr = Some(json_expr.into());
         self
     }
 
