@@ -533,11 +533,6 @@ fn decode_sqlite_text(value: &[u8], column: &ColumnInfo) -> Result<Value, Mutati
 }
 
 fn infer_sqlite_text(value: &str) -> Result<Value, MutationExecutorError> {
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(value) {
-        if !matches!(json, serde_json::Value::String(_)) {
-            return Ok(Value::Json(json));
-        }
-    }
     if let Ok(date) = NaiveDate::parse_from_str(value, "%Y-%m-%d") {
         return Ok(Value::Date(date));
     }
@@ -600,10 +595,7 @@ mod tests {
                     .value("name", "A"),
             )
             .unwrap();
-        assert_eq!(
-            insert.sql,
-            "INSERT INTO orders (id, name) VALUES (?, ?)"
-        );
+        assert_eq!(insert.sql, "INSERT INTO orders (id, name) VALUES (?, ?)");
 
         let update = RusqliteDialect
             .compile_update(
@@ -677,6 +669,43 @@ mod tests {
         assert_eq!(rows[0].get("id"), Some(&Value::I64(1)));
         assert_eq!(rows[0].get("version"), Some(&Value::I64(1)));
         assert_eq!(rows[0].get("name"), Some(&Value::Text("draft".to_owned())));
+    }
+
+    #[test]
+    fn rusqlite_executor_parses_json_only_for_json_columns() {
+        let executor = RusqliteMutationExecutor::new(Connection::open_in_memory().unwrap());
+
+        executor
+            .execute(&CompiledQuery {
+                sql: "CREATE TABLE payloads (text_payload TEXT, json_payload JSON)".to_owned(),
+                params: Vec::new(),
+            })
+            .unwrap();
+        executor
+            .execute(&CompiledQuery {
+                sql: "INSERT INTO payloads (text_payload, json_payload) VALUES (?, ?)".to_owned(),
+                params: vec![
+                    Value::Text("{\"active\":true}".to_owned()),
+                    Value::Json(serde_json::json!({"active": true})),
+                ],
+            })
+            .unwrap();
+
+        let rows = executor
+            .fetch_all(&CompiledQuery {
+                sql: "SELECT text_payload, json_payload FROM payloads".to_owned(),
+                params: Vec::new(),
+            })
+            .unwrap();
+
+        assert_eq!(
+            rows[0].get("text_payload"),
+            Some(&Value::Text("{\"active\":true}".to_owned()))
+        );
+        assert_eq!(
+            rows[0].get("json_payload"),
+            Some(&Value::Json(serde_json::json!({"active": true})))
+        );
     }
 
     #[test]

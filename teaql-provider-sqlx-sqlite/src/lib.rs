@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
@@ -180,8 +180,11 @@ impl SqliteMutationExecutor {
         for value in &query.params {
             bind_sqlite(&mut args, value)?;
         }
+        let json_columns = self.json_columns_for_query(&query.sql).await?;
         let rows = query_with(&query.sql, args).fetch_all(&self.pool).await?;
-        rows.iter().map(decode_sqlite_row).collect()
+        rows.iter()
+            .map(|row| decode_sqlite_row(row, &json_columns))
+            .collect()
     }
 
     async fn table_exists(&self, table_name: &str) -> Result<bool, MutationExecutorError> {
@@ -204,6 +207,26 @@ impl SqliteMutationExecutor {
         for row in rows {
             let name: String = row.try_get("name")?;
             columns.insert(name);
+        }
+        Ok(columns)
+    }
+
+    async fn json_columns_for_query(
+        &self,
+        sql: &str,
+    ) -> Result<BTreeSet<String>, MutationExecutorError> {
+        let Some(table_name) = select_table_name(sql) else {
+            return Ok(BTreeSet::new());
+        };
+        let pragma_sql = format!("PRAGMA table_info(\"{}\")", table_name.replace('"', "\"\""));
+        let rows = sqlx::query(&pragma_sql).fetch_all(&self.pool).await?;
+        let mut columns = BTreeSet::new();
+        for row in rows {
+            let name: String = row.try_get("name")?;
+            let ty: String = row.try_get("type")?;
+            if declared_sqlite_type(&ty).as_deref() == Some("JSON") {
+                columns.insert(name);
+            }
         }
         Ok(columns)
     }
@@ -459,7 +482,10 @@ fn bind_sqlite(args: &mut SqliteArguments<'_>, value: &Value) -> Result<(), Muta
     Ok(())
 }
 
-fn decode_sqlite_row(row: &SqliteRow) -> Result<Record, MutationExecutorError> {
+fn decode_sqlite_row(
+    row: &SqliteRow,
+    json_columns: &BTreeSet<String>,
+) -> Result<Record, MutationExecutorError> {
     let mut record = BTreeMap::new();
     for (index, column) in row.columns().iter().enumerate() {
         let name = column.name().to_owned();
@@ -468,6 +494,14 @@ fn decode_sqlite_row(row: &SqliteRow) -> Result<Record, MutationExecutorError> {
             .map_err(MutationExecutorError::Sqlx)?;
         if raw.is_null() {
             record.insert(name, Value::Null);
+            continue;
+        }
+        if json_columns.contains(&name) {
+            let raw: String = row.try_get(index).map_err(MutationExecutorError::Sqlx)?;
+            let value = Value::Json(serde_json::from_str(&raw).map_err(|err| {
+                MutationExecutorError::Bind(format!("invalid sqlite json value: {err}"))
+            })?);
+            record.insert(name, value);
             continue;
         }
         let type_name = column.type_info().name().to_ascii_uppercase();
@@ -505,6 +539,30 @@ fn decode_sqlite_row(row: &SqliteRow) -> Result<Record, MutationExecutorError> {
         record.insert(name, value);
     }
     Ok(record)
+}
+
+fn select_table_name(sql: &str) -> Option<String> {
+    let mut tokens = sql.split_whitespace();
+    while let Some(token) = tokens.next() {
+        if token.eq_ignore_ascii_case("from") {
+            return tokens.next().map(clean_sqlite_identifier);
+        }
+    }
+    None
+}
+
+fn clean_sqlite_identifier(token: &str) -> String {
+    token
+        .trim_matches(|ch: char| matches!(ch, '"' | '`' | '[' | ']' | ',' | ';'))
+        .to_owned()
+}
+
+fn declared_sqlite_type(value: &str) -> Option<String> {
+    value
+        .split('(')
+        .next()
+        .map(|value| value.trim().to_ascii_uppercase())
+        .filter(|value| !value.is_empty())
 }
 
 fn decode_sqlite_text(row: &SqliteRow, index: usize) -> Result<Value, MutationExecutorError> {
@@ -556,11 +614,6 @@ fn infer_sqlite_dynamic_value(
                     MutationExecutorError::Bind(format!("invalid sqlite decimal: {err}"))
                 });
         }
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&value) {
-            if !matches!(json, serde_json::Value::String(_)) {
-                return Ok(Value::Json(json));
-            }
-        }
         if let Ok(date) = NaiveDate::parse_from_str(&value, "%Y-%m-%d") {
             return Ok(Value::Date(date));
         }
@@ -610,10 +663,7 @@ mod tests {
                     .value("name", "A"),
             )
             .unwrap();
-        assert_eq!(
-            insert.sql,
-            "INSERT INTO orders (id, name) VALUES (?, ?)"
-        );
+        assert_eq!(insert.sql, "INSERT INTO orders (id, name) VALUES (?, ?)");
 
         let update = SqliteDialect
             .compile_update(
@@ -688,5 +738,52 @@ mod tests {
         assert_eq!(rows[0].get("id"), Some(&Value::I64(1)));
         assert_eq!(rows[0].get("version"), Some(&Value::I64(1)));
         assert_eq!(rows[0].get("name"), Some(&Value::Text("draft".to_owned())));
+    }
+
+    #[tokio::test]
+    async fn sqlite_executor_parses_json_only_for_json_columns() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let executor = SqliteMutationExecutor::new(pool);
+
+        executor
+            .execute(&CompiledQuery {
+                sql: "CREATE TABLE payloads (text_payload TEXT, json_payload JSON)".to_owned(),
+                params: Vec::new(),
+            })
+            .await
+            .unwrap();
+        executor
+            .execute(&CompiledQuery {
+                sql: "INSERT INTO payloads (text_payload, json_payload) VALUES (?, ?)".to_owned(),
+                params: vec![
+                    Value::Text("{\"active\":true}".to_owned()),
+                    Value::Json(serde_json::json!({"active": true})),
+                ],
+            })
+            .await
+            .unwrap();
+
+        let json_columns = executor
+            .json_columns_for_query("SELECT text_payload, json_payload FROM payloads")
+            .await
+            .unwrap();
+        assert!(json_columns.contains("json_payload"));
+
+        let rows = executor
+            .fetch_all(&CompiledQuery {
+                sql: "SELECT text_payload, json_payload FROM payloads".to_owned(),
+                params: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            rows[0].get("text_payload"),
+            Some(&Value::Text("{\"active\":true}".to_owned()))
+        );
+        assert_eq!(
+            rows[0].get("json_payload"),
+            Some(&Value::Json(serde_json::json!({"active": true})))
+        );
     }
 }
