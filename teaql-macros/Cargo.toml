@@ -15,4 +15,4 @@ proc-macro = true
 proc-macro2 = { workspace = true }
 quote = { workspace = true }
 syn = { workspace = true }
-teaql-core = { path = "../teaql-core", version = "0.7.5" }
+teaql-core = { path = "../teaql-core", version = "0.7.6" }

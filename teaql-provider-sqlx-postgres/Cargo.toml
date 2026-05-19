@@ -13,7 +13,7 @@ chrono = { workspace = true }
 rust_decimal = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "json", "chrono", "rust_decimal"] }
-teaql-core = { path = "../teaql-core", version = "0.7.5" }
-teaql-runtime = { path = "../teaql-runtime", version = "0.7.5" }
-teaql-sql = { path = "../teaql-sql", version = "0.7.5" }
+teaql-core = { path = "../teaql-core", version = "0.7.6" }
+teaql-runtime = { path = "../teaql-runtime", version = "0.7.6" }
+teaql-sql = { path = "../teaql-sql", version = "0.7.6" }
 tokio = { workspace = true }
