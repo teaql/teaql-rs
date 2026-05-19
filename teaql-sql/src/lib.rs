@@ -1,7 +1,7 @@
 mod dialect;
 mod types;
 
-pub use dialect::SqlDialect;
+pub use dialect::{SqlDialect, quote_identifier_if_needed};
 pub use types::{CompiledQuery, DatabaseKind, SqlCompileError};
 
 #[cfg(test)]
@@ -48,6 +48,27 @@ mod tests {
                     .not_null(),
             )
             .property(PropertyDescriptor::new("name", DataType::Text).column_name("name"))
+    }
+
+    #[test]
+    fn quotes_identifiers_only_when_needed() {
+        assert_eq!(
+            crate::quote_identifier_if_needed("stock_item_data", '"'),
+            "stock_item_data"
+        );
+        assert_eq!(
+            crate::quote_identifier_if_needed("select", '"'),
+            "\"select\""
+        );
+        assert_eq!(crate::quote_identifier_if_needed("order", '`'), "`order`");
+        assert_eq!(
+            crate::quote_identifier_if_needed("has space", '"'),
+            "\"has space\""
+        );
+        assert_eq!(
+            crate::quote_identifier_if_needed("\"already_wrapped\"", '"'),
+            "\"already_wrapped\""
+        );
     }
 
     fn line_entity() -> EntityDescriptor {

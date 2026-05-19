@@ -12,7 +12,9 @@ use teaql_core::{
     SelectQuery, UpdateCommand, Value,
 };
 use teaql_runtime::{GraphNode, InternalIdGenerator, RuntimeError, SchemaProvider, UserContext};
-use teaql_sql::{CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect};
+use teaql_sql::{
+    CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, quote_identifier_if_needed,
+};
 use tokio::sync::Mutex;
 
 pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";
@@ -28,7 +30,7 @@ impl SqlDialect for PostgresDialect {
     }
 
     fn quote_ident(&self, ident: &str) -> String {
-        format!("\"{}\"", ident.replace('"', "\"\""))
+        quote_ident(ident)
     }
 
     fn placeholder(&self, index: usize) -> String {
@@ -598,7 +600,7 @@ where
 }
 
 fn quote_ident(ident: &str) -> String {
-    format!("\"{}\"", ident.replace('"', "\"\""))
+    quote_identifier_if_needed(ident, '"')
 }
 
 fn bind_pg(args: &mut PgArguments, value: &Value) -> Result<(), MutationExecutorError> {
@@ -847,7 +849,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             insert.sql,
-            "INSERT INTO \"orders\" (\"id\", \"name\") VALUES ($1, $2)"
+            "INSERT INTO orders (id, name) VALUES ($1, $2)"
         );
 
         let update = PostgresDialect
@@ -860,7 +862,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             update.sql,
-            "UPDATE \"orders\" SET \"name\" = $1, \"version\" = $2 WHERE \"id\" = $3 AND \"version\" = $4"
+            "UPDATE orders SET name = $1, version = $2 WHERE id = $3 AND version = $4"
         );
 
         let delete = PostgresDialect
@@ -874,11 +876,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             delete.sql,
-            "UPDATE \"orders\" SET \"version\" = $1 WHERE \"id\" = $2 AND \"version\" = $3"
+            "UPDATE orders SET version = $1 WHERE id = $2 AND version = $3"
         );
         assert_eq!(
             recover.sql,
-            "UPDATE \"orders\" SET \"version\" = $1 WHERE \"id\" = $2 AND \"version\" = $3"
+            "UPDATE orders SET version = $1 WHERE id = $2 AND version = $3"
         );
     }
 
@@ -887,7 +889,7 @@ mod tests {
         let create = PostgresDialect.compile_create_table(&entity()).unwrap();
         assert_eq!(
             create,
-            "CREATE TABLE IF NOT EXISTS \"orders\" (\"id\" BIGINT PRIMARY KEY NOT NULL, \"version\" BIGINT NOT NULL, \"name\" TEXT)"
+            "CREATE TABLE IF NOT EXISTS orders (id BIGINT PRIMARY KEY NOT NULL, version BIGINT NOT NULL, name TEXT)"
         );
         assert!(
             PostgresDialect
@@ -909,7 +911,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             query.sql,
-            "SELECT \"id\", \"version\", \"name\" FROM \"orders\" WHERE (\"id\" = ANY($1)) ORDER BY \"id\" ASC"
+            "SELECT id, version, name FROM orders WHERE (id = ANY($1)) ORDER BY id ASC"
         );
         assert_eq!(
             query.params,

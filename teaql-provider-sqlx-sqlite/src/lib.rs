@@ -11,7 +11,9 @@ use teaql_core::{
     UpdateCommand, Value,
 };
 use teaql_runtime::{GraphNode, InternalIdGenerator, RuntimeError, SchemaProvider, UserContext};
-use teaql_sql::{CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect};
+use teaql_sql::{
+    CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, quote_identifier_if_needed,
+};
 
 pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";
 use sqlx::sqlite::{SqliteArguments, SqlitePool, SqliteRow};
@@ -27,7 +29,7 @@ impl SqlDialect for SqliteDialect {
     }
 
     fn quote_ident(&self, ident: &str) -> String {
-        format!("\"{}\"", ident.replace('"', "\"\""))
+        quote_ident(ident)
     }
 
     fn placeholder(&self, _index: usize) -> String {
@@ -410,7 +412,7 @@ where
 }
 
 fn quote_ident(ident: &str) -> String {
-    format!("\"{}\"", ident.replace('"', "\"\""))
+    quote_identifier_if_needed(ident, '"')
 }
 
 fn bind_sqlite(args: &mut SqliteArguments<'_>, value: &Value) -> Result<(), MutationExecutorError> {
@@ -610,7 +612,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             insert.sql,
-            "INSERT INTO \"orders\" (\"id\", \"name\") VALUES (?, ?)"
+            "INSERT INTO orders (id, name) VALUES (?, ?)"
         );
 
         let update = SqliteDialect
@@ -623,7 +625,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             update.sql,
-            "UPDATE \"orders\" SET \"name\" = ?, \"version\" = ? WHERE \"id\" = ? AND \"version\" = ?"
+            "UPDATE orders SET name = ?, version = ? WHERE id = ? AND version = ?"
         );
 
         let delete = SqliteDialect
@@ -637,17 +639,17 @@ mod tests {
             .unwrap();
         assert_eq!(
             delete.sql,
-            "UPDATE \"orders\" SET \"version\" = ? WHERE \"id\" = ? AND \"version\" = ?"
+            "UPDATE orders SET version = ? WHERE id = ? AND version = ?"
         );
         assert_eq!(
             recover.sql,
-            "UPDATE \"orders\" SET \"version\" = ? WHERE \"id\" = ? AND \"version\" = ?"
+            "UPDATE orders SET version = ? WHERE id = ? AND version = ?"
         );
 
         let create = SqliteDialect.compile_create_table(&entity()).unwrap();
         assert_eq!(
             create,
-            "CREATE TABLE IF NOT EXISTS \"orders\" (\"id\" INTEGER PRIMARY KEY NOT NULL, \"version\" INTEGER NOT NULL, \"name\" TEXT)"
+            "CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY NOT NULL, version INTEGER NOT NULL, name TEXT)"
         );
     }
 

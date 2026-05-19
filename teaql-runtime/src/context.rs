@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Mutex;
+use std::time::{Duration, SystemTime};
 
 use teaql_core::{EntityDescriptor, Record, UpdateCommand, Value};
 use teaql_sql::{CompiledQuery, DatabaseKind, SqlDialect};
@@ -77,6 +78,14 @@ pub struct SqlLogEntry {
     pub sql: String,
     pub params: Vec<Value>,
     pub debug_sql: String,
+    pub pretty_sql: String,
+    pub started_at: SystemTime,
+    pub ended_at: SystemTime,
+    pub elapsed: Duration,
+    pub result_count: Option<usize>,
+    pub result_type: Option<String>,
+    pub affected_rows: Option<u64>,
+    pub result_summary: String,
 }
 
 pub trait SchemaProvider: Send + Sync {
@@ -264,16 +273,36 @@ impl UserContext {
         operation: SqlLogOperation,
         query: &CompiledQuery,
         database_kind: DatabaseKind,
+        started_at: SystemTime,
+        ended_at: SystemTime,
+        elapsed: Duration,
+        result_count: Option<usize>,
+        result_type: Option<String>,
+        affected_rows: Option<u64>,
     ) {
         if !self.sql_log_options.enabled_for(operation) {
             return;
         }
+        let debug_sql = query.debug_sql(database_kind);
         if let Ok(mut entries) = self.sql_log_entries.lock() {
             entries.push(SqlLogEntry {
                 operation,
                 sql: query.sql.clone(),
                 params: query.params.clone(),
-                debug_sql: query.debug_sql(database_kind),
+                pretty_sql: pretty_sql(&debug_sql),
+                debug_sql,
+                started_at,
+                ended_at,
+                elapsed,
+                result_summary: sql_result_summary(
+                    operation,
+                    result_count,
+                    result_type.as_deref(),
+                    affected_rows,
+                ),
+                result_count,
+                result_type,
+                affected_rows,
             });
         }
     }
@@ -496,4 +525,41 @@ impl UserContext {
         self.entity_root.clear_current_change_set();
         Ok(())
     }
+}
+
+fn sql_result_summary(
+    operation: SqlLogOperation,
+    result_count: Option<usize>,
+    result_type: Option<&str>,
+    affected_rows: Option<u64>,
+) -> String {
+    match operation {
+        SqlLogOperation::Select => {
+            let count = result_count.unwrap_or(0);
+            match result_type {
+                Some(result_type) => format!("{count} x {result_type}"),
+                None => format!("{count} rows"),
+            }
+        }
+        _ => format!("{} rows affected", affected_rows.unwrap_or(0)),
+    }
+}
+
+fn pretty_sql(sql: &str) -> String {
+    let mut pretty = sql.to_owned();
+    for keyword in [
+        " FROM ",
+        " WHERE ",
+        " GROUP BY ",
+        " HAVING ",
+        " ORDER BY ",
+        " LIMIT ",
+        " OFFSET ",
+        " RETURNING ",
+    ] {
+        pretty = pretty.replace(keyword, &format!("\n{}", keyword.trim_start()));
+    }
+    pretty
+        .replace(" AND ", "\n  AND ")
+        .replace(" OR ", "\n  OR ")
 }

@@ -16,7 +16,9 @@ use teaql_runtime::{
     GraphNode, GraphTransactionBoundary, InternalIdGenerator, QueryExecutor, RuntimeError,
     SchemaProvider, UserContext,
 };
-use teaql_sql::{CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect};
+use teaql_sql::{
+    CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, quote_identifier_if_needed,
+};
 
 pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";
 
@@ -433,7 +435,7 @@ impl InternalIdGenerator for RusqliteIdSpaceGenerator {
 }
 
 fn quote_ident(ident: &str) -> String {
-    format!("\"{}\"", ident.replace('"', "\"\""))
+    quote_identifier_if_needed(ident, '"')
 }
 
 fn bind_values(values: &[Value]) -> Result<Vec<SqliteValue>, MutationExecutorError> {
@@ -600,7 +602,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             insert.sql,
-            "INSERT INTO \"orders\" (\"id\", \"name\") VALUES (?, ?)"
+            "INSERT INTO orders (id, name) VALUES (?, ?)"
         );
 
         let update = RusqliteDialect
@@ -613,7 +615,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             update.sql,
-            "UPDATE \"orders\" SET \"name\" = ?, \"version\" = ? WHERE \"id\" = ? AND \"version\" = ?"
+            "UPDATE orders SET name = ?, version = ? WHERE id = ? AND version = ?"
         );
 
         let delete = RusqliteDialect
@@ -627,17 +629,17 @@ mod tests {
             .unwrap();
         assert_eq!(
             delete.sql,
-            "UPDATE \"orders\" SET \"version\" = ? WHERE \"id\" = ? AND \"version\" = ?"
+            "UPDATE orders SET version = ? WHERE id = ? AND version = ?"
         );
         assert_eq!(
             recover.sql,
-            "UPDATE \"orders\" SET \"version\" = ? WHERE \"id\" = ? AND \"version\" = ?"
+            "UPDATE orders SET version = ? WHERE id = ? AND version = ?"
         );
 
         let create = RusqliteDialect.compile_create_table(&entity()).unwrap();
         assert_eq!(
             create,
-            "CREATE TABLE IF NOT EXISTS \"orders\" (\"id\" INTEGER PRIMARY KEY NOT NULL, \"version\" INTEGER NOT NULL, \"name\" TEXT)"
+            "CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY NOT NULL, version INTEGER NOT NULL, name TEXT)"
         );
     }
 

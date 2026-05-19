@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::{Instant, SystemTime};
 
 use teaql_core::{
     DeleteCommand, Entity, InsertCommand, Record, RecoverCommand, SelectQuery, SmartList,
@@ -84,10 +85,22 @@ where
 
     pub fn fetch_all(&self, query: &SelectQuery) -> Result<Vec<Record>, RepositoryError<E::Error>> {
         let compiled = self.compile(query).map_err(RepositoryError::Runtime)?;
-        self.log_sql(SqlLogOperation::Select, &compiled);
-        self.executor
+        let started_at = SystemTime::now();
+        let started = Instant::now();
+        let rows = self
+            .executor
             .fetch_all(&compiled)
-            .map_err(RepositoryError::Executor)
+            .map_err(RepositoryError::Executor)?;
+        self.log_sql_result(
+            SqlLogOperation::Select,
+            &compiled,
+            started_at,
+            started,
+            Some(rows.len()),
+            Some(query.entity.clone()),
+            None,
+        );
+        Ok(rows)
     }
 
     pub fn fetch_smart_list(
@@ -122,11 +135,21 @@ where
             .repository()
             .compile_insert(command)
             .map_err(RepositoryError::Runtime)?;
-        self.log_sql(SqlLogOperation::Insert, &compiled);
+        let started_at = SystemTime::now();
+        let started = Instant::now();
         let affected = self
             .executor
             .execute(&compiled)
             .map_err(RepositoryError::Executor)?;
+        self.log_sql_result(
+            SqlLogOperation::Insert,
+            &compiled,
+            started_at,
+            started,
+            None,
+            None,
+            Some(affected),
+        );
         self.invalidate_aggregation_cache_for(&command.entity);
         Ok(affected)
     }
@@ -194,19 +217,46 @@ where
         entity: &str,
         compiled: CompiledQuery,
     ) -> Result<u64, RepositoryError<E::Error>> {
-        self.log_sql(operation, &compiled);
+        let started_at = SystemTime::now();
+        let started = Instant::now();
         let affected = self
             .executor
             .execute(&compiled)
             .map_err(RepositoryError::Executor)?;
+        self.log_sql_result(
+            operation,
+            &compiled,
+            started_at,
+            started,
+            None,
+            None,
+            Some(affected),
+        );
         self.invalidate_aggregation_cache_for(entity);
         Ok(affected)
     }
 
-    pub(super) fn log_sql(&self, operation: SqlLogOperation, compiled: &CompiledQuery) {
-        self.metadata
-            .context
-            .record_sql_log(operation, compiled, self.dialect.kind());
+    pub(super) fn log_sql_result(
+        &self,
+        operation: SqlLogOperation,
+        compiled: &CompiledQuery,
+        started_at: SystemTime,
+        started: Instant,
+        result_count: Option<usize>,
+        result_type: Option<String>,
+        affected_rows: Option<u64>,
+    ) {
+        self.metadata.context.record_sql_log(
+            operation,
+            compiled,
+            self.dialect.kind(),
+            started_at,
+            SystemTime::now(),
+            started.elapsed(),
+            result_count,
+            result_type,
+            affected_rows,
+        );
     }
 
     pub(super) fn invalidate_aggregation_cache_for(&self, entity: &str) {

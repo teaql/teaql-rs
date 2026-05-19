@@ -6,6 +6,47 @@ use teaql_core::{
 
 use crate::{CompiledQuery, DatabaseKind, SqlCompileError};
 
+const SQL_KEYWORDS: &[&str] = &[
+    "all", "alter", "and", "as", "asc", "between", "by", "case", "create", "delete", "desc",
+    "distinct", "drop", "exists", "false", "from", "group", "having", "in", "insert", "into", "is",
+    "join", "like", "limit", "not", "null", "offset", "on", "or", "order", "select", "set",
+    "table", "true", "type", "union", "update", "values", "where",
+];
+
+pub fn quote_identifier_if_needed(ident: &str, quote: char) -> String {
+    if is_wrapped_identifier(ident) {
+        return ident.to_owned();
+    }
+    if needs_quoted_identifier(ident) {
+        let quote_string = quote.to_string();
+        let escaped = ident.replace(quote, &(quote_string.clone() + &quote_string));
+        return format!("{quote}{escaped}{quote}");
+    }
+    ident.to_owned()
+}
+
+fn is_wrapped_identifier(ident: &str) -> bool {
+    (ident.starts_with('"') && ident.ends_with('"'))
+        || (ident.starts_with('`') && ident.ends_with('`'))
+        || (ident.starts_with('[') && ident.ends_with(']'))
+}
+
+fn needs_quoted_identifier(ident: &str) -> bool {
+    if ident.is_empty()
+        || SQL_KEYWORDS
+            .binary_search(&ident.to_ascii_lowercase().as_str())
+            .is_ok()
+    {
+        return true;
+    }
+    let mut chars = ident.chars();
+    match chars.next() {
+        Some(first) if first == '_' || first.is_ascii_alphabetic() => {}
+        _ => return true,
+    }
+    chars.any(|ch| ch != '_' && !ch.is_ascii_alphanumeric())
+}
+
 fn with_comment(sql: String, comment: Option<&str>) -> String {
     match comment {
         Some(comment) if !comment.is_empty() => {

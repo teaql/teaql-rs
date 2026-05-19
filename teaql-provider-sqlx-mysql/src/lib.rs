@@ -12,7 +12,9 @@ use teaql_core::{
     UpdateCommand, Value,
 };
 use teaql_runtime::{GraphNode, InternalIdGenerator, RuntimeError, SchemaProvider, UserContext};
-use teaql_sql::{CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect};
+use teaql_sql::{
+    CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, quote_identifier_if_needed,
+};
 use tokio::sync::Mutex;
 
 pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";
@@ -28,7 +30,7 @@ impl SqlDialect for MysqlDialect {
     }
 
     fn quote_ident(&self, ident: &str) -> String {
-        format!("`{}`", ident.replace('`', "``"))
+        mysql_quote_ident(ident)
     }
 
     fn placeholder(&self, _index: usize) -> String {
@@ -468,7 +470,7 @@ where
 }
 
 fn mysql_quote_ident(ident: &str) -> String {
-    format!("`{}`", ident.replace('`', "``"))
+    quote_identifier_if_needed(ident, '`')
 }
 
 fn bind_mysql(args: &mut MySqlArguments, value: &Value) -> Result<(), MutationExecutorError> {
@@ -629,7 +631,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             insert.sql,
-            "INSERT INTO `orders` (`id`, `name`) VALUES (?, ?)"
+            "INSERT INTO orders (id, name) VALUES (?, ?)"
         );
 
         let update = MysqlDialect
@@ -642,7 +644,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             update.sql,
-            "UPDATE `orders` SET `name` = ?, `version` = ? WHERE `id` = ? AND `version` = ?"
+            "UPDATE orders SET name = ?, version = ? WHERE id = ? AND version = ?"
         );
 
         let delete = MysqlDialect
@@ -656,11 +658,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             delete.sql,
-            "UPDATE `orders` SET `version` = ? WHERE `id` = ? AND `version` = ?"
+            "UPDATE orders SET version = ? WHERE id = ? AND version = ?"
         );
         assert_eq!(
             recover.sql,
-            "UPDATE `orders` SET `version` = ? WHERE `id` = ? AND `version` = ?"
+            "UPDATE orders SET version = ? WHERE id = ? AND version = ?"
         );
     }
 
@@ -669,7 +671,7 @@ mod tests {
         let create = MysqlDialect.compile_create_table(&entity()).unwrap();
         assert_eq!(
             create,
-            "CREATE TABLE IF NOT EXISTS `orders` (`id` BIGINT PRIMARY KEY NOT NULL, `version` BIGINT NOT NULL, `name` TEXT)"
+            "CREATE TABLE IF NOT EXISTS orders (id BIGINT PRIMARY KEY NOT NULL, version BIGINT NOT NULL, name TEXT)"
         );
 
         let json = MysqlDialect
@@ -682,7 +684,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             json,
-            "ALTER TABLE `orders` ADD COLUMN `payload` JSON NOT NULL"
+            "ALTER TABLE orders ADD COLUMN payload JSON NOT NULL"
         );
 
         let decimal = MysqlDialect
@@ -693,7 +695,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             decimal,
-            "ALTER TABLE `orders` ADD COLUMN `amount` DECIMAL(38, 10)"
+            "ALTER TABLE orders ADD COLUMN amount DECIMAL(38, 10)"
         );
     }
 }

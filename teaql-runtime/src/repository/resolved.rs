@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::{Instant, SystemTime};
 
 use teaql_core::{
     AggregationCacheOptions, DeleteCommand, Entity, Expr, InsertCommand, Record, RecoverCommand,
@@ -163,11 +164,23 @@ where
                 return self.fetch_prepared_query_with_cache(query, &compiled, options, cache);
             }
         }
-        self.repository.log_sql(SqlLogOperation::Select, &compiled);
-        self.repository
+        let started_at = SystemTime::now();
+        let started = Instant::now();
+        let rows = self
+            .repository
             .executor
             .fetch_all(&compiled)
-            .map_err(RepositoryError::Executor)
+            .map_err(RepositoryError::Executor)?;
+        self.repository.log_sql_result(
+            SqlLogOperation::Select,
+            &compiled,
+            started_at,
+            started,
+            Some(rows.len()),
+            Some(query.entity.clone()),
+            None,
+        );
+        Ok(rows)
     }
 
     fn fetch_prepared_query_with_cache(
@@ -185,12 +198,22 @@ where
         if let Some(rows) = cache.get(&key, options.cache_expired_millis) {
             return Ok(rows);
         }
-        self.repository.log_sql(SqlLogOperation::Select, compiled);
+        let started_at = SystemTime::now();
+        let started = Instant::now();
         let rows = self
             .repository
             .executor
             .fetch_all(compiled)
             .map_err(RepositoryError::Executor)?;
+        self.repository.log_sql_result(
+            SqlLogOperation::Select,
+            compiled,
+            started_at,
+            started,
+            Some(rows.len()),
+            Some(query.entity.clone()),
+            None,
+        );
         cache.put(key, rows.clone());
         Ok(rows)
     }
