@@ -2,10 +2,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use rust_decimal::Decimal;
-use sqlx::{Arguments, Column, Error as SqlxError, Row, TypeInfo, ValueRef, query_with};
+use sqlx::{
+    Arguments, Column, Error as SqlxError, Row, Sqlite, TypeInfo, ValueRef, pool::PoolConnection,
+    query_with, sqlite::SqliteConnection,
+};
 use teaql_core::{
     DataType, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, Record, SelectQuery,
     UpdateCommand, Value,
@@ -17,6 +21,7 @@ use teaql_sql::{
 
 pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";
 use sqlx::sqlite::{SqliteArguments, SqlitePool, SqliteRow};
+use tokio::sync::Mutex;
 
 const SQLITE_DECIMAL_PREFIX: &str = "__teaql_decimal__:";
 
@@ -103,11 +108,15 @@ impl From<SqlCompileError> for MutationExecutorError {
 #[derive(Clone)]
 pub struct SqliteMutationExecutor {
     pool: SqlitePool,
+    transaction: Arc<Mutex<Option<PoolConnection<Sqlite>>>>,
 }
 
 impl SqliteMutationExecutor {
     pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            transaction: Arc::new(Mutex::new(None)),
+        }
     }
 
     pub async fn ensure_schema(
@@ -149,17 +158,32 @@ impl SqliteMutationExecutor {
     }
 
     pub async fn begin_transaction(&self) -> Result<(), MutationExecutorError> {
-        sqlx::query("BEGIN IMMEDIATE").execute(&self.pool).await?;
+        let mut transaction = self.transaction.lock().await;
+        if transaction.is_some() {
+            return Ok(());
+        }
+
+        let mut connection = self.pool.acquire().await?;
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *connection)
+            .await?;
+        *transaction = Some(connection);
         Ok(())
     }
 
     pub async fn commit_transaction(&self) -> Result<(), MutationExecutorError> {
-        sqlx::query("COMMIT").execute(&self.pool).await?;
+        let Some(mut connection) = self.transaction.lock().await.take() else {
+            return Ok(());
+        };
+        sqlx::query("COMMIT").execute(&mut *connection).await?;
         Ok(())
     }
 
     pub async fn rollback_transaction(&self) -> Result<(), MutationExecutorError> {
-        sqlx::query("ROLLBACK").execute(&self.pool).await?;
+        let Some(mut connection) = self.transaction.lock().await.take() else {
+            return Ok(());
+        };
+        sqlx::query("ROLLBACK").execute(&mut *connection).await?;
         Ok(())
     }
 
@@ -168,7 +192,13 @@ impl SqliteMutationExecutor {
         for value in &query.params {
             bind_sqlite(&mut args, value)?;
         }
-        let result = query_with(&query.sql, args).execute(&self.pool).await?;
+        let result = if let Some(connection) = self.transaction.lock().await.as_mut() {
+            query_with(&query.sql, args)
+                .execute(&mut **connection)
+                .await?
+        } else {
+            query_with(&query.sql, args).execute(&self.pool).await?
+        };
         Ok(result.rows_affected())
     }
 
@@ -180,8 +210,19 @@ impl SqliteMutationExecutor {
         for value in &query.params {
             bind_sqlite(&mut args, value)?;
         }
-        let json_columns = self.json_columns_for_query(&query.sql).await?;
-        let rows = query_with(&query.sql, args).fetch_all(&self.pool).await?;
+        let mut transaction = self.transaction.lock().await;
+        let (json_columns, rows) = if let Some(connection) = transaction.as_mut() {
+            let json_columns =
+                json_columns_for_query_on_connection(&query.sql, &mut **connection).await?;
+            let rows = query_with(&query.sql, args)
+                .fetch_all(&mut **connection)
+                .await?;
+            (json_columns, rows)
+        } else {
+            let json_columns = self.json_columns_for_query(&query.sql).await?;
+            let rows = query_with(&query.sql, args).fetch_all(&self.pool).await?;
+            (json_columns, rows)
+        };
         rows.iter()
             .map(|row| decode_sqlite_row(row, &json_columns))
             .collect()
@@ -218,18 +259,38 @@ impl SqliteMutationExecutor {
         let Some(table_name) = select_table_name(sql) else {
             return Ok(BTreeSet::new());
         };
-        let pragma_sql = format!("PRAGMA table_info(\"{}\")", table_name.replace('"', "\"\""));
-        let rows = sqlx::query(&pragma_sql).fetch_all(&self.pool).await?;
-        let mut columns = BTreeSet::new();
-        for row in rows {
-            let name: String = row.try_get("name")?;
-            let ty: String = row.try_get("type")?;
-            if declared_sqlite_type(&ty).as_deref() == Some("JSON") {
-                columns.insert(name);
-            }
-        }
-        Ok(columns)
+        json_columns_for_table(&self.pool, &table_name).await
     }
+}
+
+async fn json_columns_for_query_on_connection(
+    sql: &str,
+    connection: &mut SqliteConnection,
+) -> Result<BTreeSet<String>, MutationExecutorError> {
+    let Some(table_name) = select_table_name(sql) else {
+        return Ok(BTreeSet::new());
+    };
+    json_columns_for_table(connection, &table_name).await
+}
+
+async fn json_columns_for_table<'e, E>(
+    executor: E,
+    table_name: &str,
+) -> Result<BTreeSet<String>, MutationExecutorError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let pragma_sql = format!("PRAGMA table_info(\"{}\")", table_name.replace('"', "\"\""));
+    let rows = sqlx::query(&pragma_sql).fetch_all(executor).await?;
+    let mut columns = BTreeSet::new();
+    for row in rows {
+        let name: String = row.try_get("name")?;
+        let ty: String = row.try_get("type")?;
+        if declared_sqlite_type(&ty).as_deref() == Some("JSON") {
+            columns.insert(name);
+        }
+    }
+    Ok(columns)
 }
 
 async fn ensure_initial_graphs_sqlite(
@@ -633,6 +694,9 @@ fn infer_sqlite_dynamic_value(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use teaql_core::{DeleteCommand, RecoverCommand};
 
     fn entity() -> EntityDescriptor {
@@ -785,5 +849,64 @@ mod tests {
             rows[0].get("json_payload"),
             Some(&Value::Json(serde_json::json!({"active": true})))
         );
+    }
+
+    #[tokio::test]
+    async fn sqlite_transaction_reuses_one_connection_from_pool() {
+        let path = temp_sqlite_path();
+        let options = SqliteConnectOptions::from_str(path.to_str().unwrap())
+            .unwrap()
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(2)
+            .connect_with(options)
+            .await
+            .unwrap();
+        let executor = SqliteMutationExecutor::new(pool.clone());
+
+        executor
+            .execute(&CompiledQuery {
+                sql: "CREATE TABLE payloads (id INTEGER PRIMARY KEY, json_payload JSON)".to_owned(),
+                params: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        executor.begin_transaction().await.unwrap();
+        executor
+            .execute(&CompiledQuery {
+                sql: "INSERT INTO payloads (id, json_payload) VALUES (?, ?)".to_owned(),
+                params: vec![
+                    Value::I64(1),
+                    Value::Json(serde_json::json!({"active": true})),
+                ],
+            })
+            .await
+            .unwrap();
+        let rows = executor
+            .fetch_all(&CompiledQuery {
+                sql: "SELECT id, json_payload FROM payloads WHERE id = ?".to_owned(),
+                params: vec![Value::I64(1)],
+            })
+            .await
+            .unwrap();
+        executor.commit_transaction().await.unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("json_payload"),
+            Some(&Value::Json(serde_json::json!({"active": true})))
+        );
+
+        pool.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn temp_sqlite_path() -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("teaql-sqlite-transaction-{suffix}.db"))
     }
 }
