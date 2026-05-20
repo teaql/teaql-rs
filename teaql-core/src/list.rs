@@ -10,6 +10,7 @@ pub struct SmartList<T> {
     pub total_count: Option<u64>,
     pub aggregations: Record,
     pub summary: Record,
+    pub facets: BTreeMap<String, SmartList<Record>>,
 }
 
 impl<T> SmartList<T> {
@@ -23,6 +24,7 @@ impl<T> SmartList<T> {
             total_count: None,
             aggregations: Record::new(),
             summary: Record::new(),
+            facets: BTreeMap::new(),
         }
     }
 
@@ -39,6 +41,15 @@ impl<T> SmartList<T> {
     pub fn with_summary(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
         self.summary.insert(key.into(), value.into());
         self
+    }
+
+    pub fn with_facet(mut self, key: impl Into<String>, facet: SmartList<Record>) -> Self {
+        self.facets.insert(key.into(), facet);
+        self
+    }
+
+    pub fn add_facet(&mut self, key: impl Into<String>, facet: SmartList<Record>) {
+        self.facets.insert(key.into(), facet);
     }
 
     pub fn push(&mut self, value: T) {
@@ -130,6 +141,7 @@ impl<T> SmartList<T> {
             total_count: self.total_count,
             aggregations: self.aggregations,
             summary: self.summary,
+            facets: self.facets,
         }
     }
 
@@ -203,6 +215,7 @@ impl<T> SmartList<T> {
             total_count: self.total_count,
             aggregations: self.aggregations,
             summary: self.summary,
+            facets: self.facets,
         }
     }
 }
