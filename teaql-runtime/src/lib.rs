@@ -897,6 +897,20 @@ mod tests {
             prepared.values.get("name"),
             Some(&Value::Text("n".to_owned()))
         );
+
+        let prepared_zero_version = repo
+            .prepare_insert_command(
+                &repo
+                    .insert_command()
+                    .value("id", 0_u64)
+                    .value("version", 0_i64)
+                    .value("name", "zero-version"),
+            )
+            .unwrap();
+        assert_eq!(
+            prepared_zero_version.values.get("version"),
+            Some(&Value::I64(1))
+        );
     }
 
     #[test]
@@ -936,6 +950,7 @@ mod tests {
         let lines = saved.relations.get("lines").unwrap();
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].values.get("id"), Some(&Value::U64(501)));
+        assert_eq!(lines[0].values.get("version"), Some(&Value::I64(1)));
         assert_eq!(lines[0].values.get("order_id"), Some(&Value::U64(500)));
         assert_eq!(lines[0].values.get("product_id"), Some(&Value::U64(502)));
         let product = lines[0].relations.get("product").unwrap();
@@ -964,7 +979,7 @@ mod tests {
             .unwrap();
         let order = TypedGraphOrder {
             id: 0,
-            version: 1,
+            version: 0,
             name: "typed-root".to_owned(),
             lines: teaql_core::SmartList::from(vec![TypedGraphLine {
                 id: 0,
@@ -997,8 +1012,10 @@ mod tests {
 
         let saved = repo.save_graph(extracted).unwrap();
         assert_eq!(saved.values.get("id"), Some(&Value::U64(700)));
+        assert_eq!(saved.values.get("version"), Some(&Value::I64(1)));
         let lines = saved.relations.get("lines").unwrap();
         assert_eq!(lines[0].values.get("id"), Some(&Value::U64(701)));
+        assert_eq!(lines[0].values.get("version"), Some(&Value::I64(1)));
         assert_eq!(lines[0].values.get("order_id"), Some(&Value::U64(700)));
         assert_eq!(lines[0].values.get("product_id"), Some(&Value::U64(702)));
         assert_eq!(
@@ -1030,7 +1047,7 @@ mod tests {
         let saved = repo
             .save_entity_graph(TypedGraphOrder {
                 id: 0,
-                version: 1,
+                version: 0,
                 name: "typed-direct".to_owned(),
                 lines: teaql_core::SmartList::from(vec![TypedGraphLine {
                     id: 0,
@@ -1046,6 +1063,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(saved.values.get("id"), Some(&Value::U64(800)));
+        assert_eq!(saved.values.get("version"), Some(&Value::I64(1)));
         assert_eq!(
             saved.relations["lines"][0].values.get("order_id"),
             Some(&Value::U64(800))

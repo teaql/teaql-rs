@@ -136,6 +136,29 @@ pub(super) fn graph_record_version(record: &Record, descriptor: &EntityDescripto
         })
 }
 
+pub(super) fn ensure_initial_version(record: &mut Record, descriptor: &EntityDescriptor) {
+    if let Some(version_property) = descriptor.version_property() {
+        let needs_version = match record.get(&version_property.name) {
+            None | Some(Value::Null) | Some(Value::I64(0)) | Some(Value::U64(0)) => true,
+            _ => false,
+        };
+        if needs_version {
+            record.insert(version_property.name.clone(), Value::I64(1));
+        }
+    }
+}
+
+pub(super) fn is_unassigned_id(value: Option<&Value>) -> bool {
+    matches!(
+        value,
+        None | Some(Value::Null) | Some(Value::U64(0)) | Some(Value::I64(0))
+    )
+}
+
+pub(super) fn is_unassigned_id_value(value: &Value) -> bool {
+    matches!(value, Value::Null | Value::U64(0) | Value::I64(0))
+}
+
 pub(super) fn graph_identity_key(value: &Value) -> String {
     match value {
         Value::I64(value) if *value >= 0 => format!("u:{}", *value as u64),

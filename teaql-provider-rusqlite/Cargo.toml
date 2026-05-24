@@ -13,6 +13,6 @@ chrono = { workspace = true }
 rusqlite = { workspace = true }
 rust_decimal = { workspace = true }
 serde_json = { workspace = true }
-teaql-core = { path = "../teaql-core", version = "0.7.9" }
-teaql-runtime = { path = "../teaql-runtime", version = "0.7.9" }
-teaql-sql = { path = "../teaql-sql", version = "0.7.9" }
+teaql-core = { path = "../teaql-core", version = "0.8.0" }
+teaql-runtime = { path = "../teaql-runtime", version = "0.8.0" }
+teaql-sql = { path = "../teaql-sql", version = "0.8.0" }

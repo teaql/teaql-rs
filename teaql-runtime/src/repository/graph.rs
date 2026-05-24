@@ -177,6 +177,7 @@ where
                     node.values.insert(id_property.name.clone(), Value::U64(id));
                 }
             }
+            ensure_initial_version(&mut node.values, descriptor);
         }
         let update_fields = if is_update {
             let mut excluded = Vec::new();
@@ -354,7 +355,7 @@ where
         let Some(id) = node
             .values
             .get(&id_property.name)
-            .filter(|value| !matches!(value, Value::Null))
+            .filter(|value| !is_unassigned_id_value(value))
             .cloned()
         else {
             return self.insert_graph_node(node);
@@ -792,8 +793,4 @@ where
             &SelectQuery::new(entity).filter(Expr::eq(foreign_key, parent_value.clone())),
         )
     }
-}
-
-fn is_unassigned_id_value(value: &Value) -> bool {
-    matches!(value, Value::Null | Value::U64(0) | Value::I64(0))
 }

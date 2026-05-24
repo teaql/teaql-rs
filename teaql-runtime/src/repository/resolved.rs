@@ -109,6 +109,7 @@ where
                     .insert(id_property.name.clone(), Value::U64(id));
             }
         }
+        ensure_initial_version(&mut command.values, entity);
         mark_record_status(&mut command.values, CheckObjectStatus::Create);
         let check_result = self
             .repository
@@ -487,11 +488,4 @@ where
             },
         }
     }
-}
-
-fn is_unassigned_id(value: Option<&Value>) -> bool {
-    matches!(
-        value,
-        None | Some(Value::Null) | Some(Value::U64(0)) | Some(Value::I64(0))
-    )
 }
