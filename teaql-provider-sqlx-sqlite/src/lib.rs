@@ -153,7 +153,11 @@ impl SqliteMutationExecutor {
             "CREATE TABLE IF NOT EXISTS {} (type_name VARCHAR(100) PRIMARY KEY, current_level BIGINT NOT NULL)",
             quote_ident(table_name)
         );
-        sqlx::query(&sql).execute(&self.pool).await?;
+        if let Some(connection) = self.transaction.lock().await.as_mut() {
+            sqlx::query(&sql).execute(&mut **connection).await?;
+        } else {
+            sqlx::query(&sql).execute(&self.pool).await?;
+        }
         Ok(())
     }
 
@@ -420,6 +424,7 @@ pub trait SqliteProviderExt {
 impl SqliteProviderExt for UserContext {
     fn use_sqlite_provider(&mut self, executor: SqliteMutationExecutor) -> &mut Self {
         self.insert_resource(SqliteDialect);
+        self.set_internal_id_generator(SqliteIdSpaceGenerator::from_executor(&executor));
         self.insert_resource(executor);
         self.set_schema_provider(SqliteSchemaProvider);
         self
@@ -429,6 +434,7 @@ impl SqliteProviderExt for UserContext {
 #[derive(Clone)]
 pub struct SqliteIdSpaceGenerator {
     pool: SqlitePool,
+    transaction: Arc<Mutex<Option<PoolConnection<Sqlite>>>>,
     table_name: String,
 }
 
@@ -436,6 +442,15 @@ impl SqliteIdSpaceGenerator {
     pub fn new(pool: SqlitePool) -> Self {
         Self {
             pool,
+            transaction: Arc::new(Mutex::new(None)),
+            table_name: DEFAULT_ID_SPACE_TABLE.to_owned(),
+        }
+    }
+
+    pub fn from_executor(executor: &SqliteMutationExecutor) -> Self {
+        Self {
+            pool: executor.pool.clone(),
+            transaction: executor.transaction.clone(),
             table_name: DEFAULT_ID_SPACE_TABLE.to_owned(),
         }
     }
@@ -446,7 +461,10 @@ impl SqliteIdSpaceGenerator {
     }
 
     pub async fn ensure_table(&self) -> Result<(), MutationExecutorError> {
-        SqliteMutationExecutor::new(self.pool.clone())
+        SqliteMutationExecutor {
+            pool: self.pool.clone(),
+            transaction: self.transaction.clone(),
+        }
             .ensure_id_space_table(&self.table_name)
             .await
     }
@@ -460,10 +478,18 @@ impl SqliteIdSpaceGenerator {
              RETURNING current_level",
             quote_ident(&self.table_name)
         );
-        let id: i64 = sqlx::query_scalar(&sql)
-            .bind(entity)
-            .fetch_one(&self.pool)
-            .await?;
+        let mut transaction = self.transaction.lock().await;
+        let id: i64 = if let Some(connection) = transaction.as_mut() {
+            sqlx::query_scalar(&sql)
+                .bind(entity)
+                .fetch_one(&mut **connection)
+                .await?
+        } else {
+            sqlx::query_scalar(&sql)
+                .bind(entity)
+                .fetch_one(&self.pool)
+                .await?
+        };
         u64::try_from(id).map_err(|_| {
             MutationExecutorError::Bind(format!("generated id {id} cannot be represented as u64"))
         })
@@ -897,6 +923,46 @@ mod tests {
             rows[0].get("json_payload"),
             Some(&Value::Json(serde_json::json!({"active": true})))
         );
+
+        pool.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn sqlite_id_generation_uses_active_transaction_connection() {
+        let path = temp_sqlite_path();
+        let options = SqliteConnectOptions::from_str(path.to_str().unwrap())
+            .unwrap()
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(2)
+            .connect_with(options)
+            .await
+            .unwrap();
+        let executor = SqliteMutationExecutor::new(pool.clone());
+        let generator = SqliteIdSpaceGenerator::from_executor(&executor);
+
+        executor
+            .execute(&CompiledQuery {
+                sql: "CREATE TABLE payloads (id INTEGER PRIMARY KEY, name TEXT)".to_owned(),
+                params: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        executor.begin_transaction().await.unwrap();
+        executor
+            .execute(&CompiledQuery {
+                sql: "INSERT INTO payloads (id, name) VALUES (?, ?)".to_owned(),
+                params: vec![Value::I64(1), Value::Text("inside-tx".to_owned())],
+            })
+            .await
+            .unwrap();
+
+        let id = generator.next_id("Order").await.unwrap();
+        executor.commit_transaction().await.unwrap();
+
+        assert_eq!(id, 1);
 
         pool.close().await;
         let _ = std::fs::remove_file(path);
