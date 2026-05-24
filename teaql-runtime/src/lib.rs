@@ -244,7 +244,7 @@ mod tests {
     #[teaql(entity = "Product", table = "product")]
     struct TypedGraphProduct {
         #[teaql(id)]
-        id: Option<u64>,
+        id: u64,
         name: String,
     }
 
@@ -252,7 +252,7 @@ mod tests {
     #[teaql(entity = "OrderLine", table = "orderline")]
     struct TypedGraphLine {
         #[teaql(id)]
-        id: Option<u64>,
+        id: u64,
         #[teaql(column = "order_id")]
         order_id: Option<u64>,
         name: String,
@@ -266,7 +266,7 @@ mod tests {
     #[teaql(entity = "Order", table = "orders")]
     struct TypedGraphOrder {
         #[teaql(id)]
-        id: Option<u64>,
+        id: u64,
         #[teaql(version)]
         version: i64,
         name: String,
@@ -888,7 +888,7 @@ mod tests {
             .unwrap();
 
         let prepared = repo
-            .prepare_insert_command(&repo.insert_command().value("name", "n"))
+            .prepare_insert_command(&repo.insert_command().value("id", 0_u64).value("name", "n"))
             .unwrap();
 
         assert_eq!(prepared.values.get("id"), Some(&Value::U64(42)));
@@ -963,16 +963,16 @@ mod tests {
             .resolve_repository::<PostgresDialect, StubExecutor>("Order")
             .unwrap();
         let order = TypedGraphOrder {
-            id: None,
+            id: 0,
             version: 1,
             name: "typed-root".to_owned(),
             lines: teaql_core::SmartList::from(vec![TypedGraphLine {
-                id: None,
+                id: 0,
                 order_id: None,
                 name: "typed-line".to_owned(),
                 product_id: None,
                 product: Some(TypedGraphProduct {
-                    id: None,
+                    id: 0,
                     name: "typed-product".to_owned(),
                 }),
             }]),
@@ -984,7 +984,7 @@ mod tests {
             extracted.values.get("name"),
             Some(&Value::Text("typed-root".to_owned()))
         );
-        assert_eq!(extracted.values.get("id"), Some(&Value::Null));
+        assert_eq!(extracted.values.get("id"), Some(&Value::U64(0)));
         assert_eq!(extracted.relations["lines"].len(), 1);
         assert_eq!(
             extracted.relations["lines"][0].values.get("name"),
@@ -1029,16 +1029,16 @@ mod tests {
             .unwrap();
         let saved = repo
             .save_entity_graph(TypedGraphOrder {
-                id: None,
+                id: 0,
                 version: 1,
                 name: "typed-direct".to_owned(),
                 lines: teaql_core::SmartList::from(vec![TypedGraphLine {
-                    id: None,
+                    id: 0,
                     order_id: None,
                     name: "typed-line".to_owned(),
                     product_id: None,
                     product: Some(TypedGraphProduct {
-                        id: None,
+                        id: 0,
                         name: "typed-product".to_owned(),
                     }),
                 }]),

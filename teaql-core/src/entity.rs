@@ -44,7 +44,7 @@ pub trait Entity: TeaqlEntity + Sized {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct BaseEntityData {
-    pub id: Option<u64>,
+    pub id: u64,
     pub version: i64,
     pub dynamic: BTreeMap<String, Value>,
 }
@@ -55,7 +55,7 @@ impl BaseEntityData {
     }
 
     pub fn with_id(mut self, id: u64) -> Self {
-        self.id = Some(id);
+        self.id = id;
         self
     }
 
@@ -111,9 +111,7 @@ impl BaseEntityData {
 
     pub fn to_record(&self) -> Record {
         let mut record = Record::new();
-        if let Some(id) = self.id {
-            record.insert("id".to_owned(), Value::U64(id));
-        }
+        record.insert("id".to_owned(), Value::U64(self.id));
         record.insert("version".to_owned(), Value::I64(self.version));
         for (key, value) in &self.dynamic {
             record.insert(key.clone(), value.clone());
@@ -123,9 +121,9 @@ impl BaseEntityData {
 
     pub fn from_record(record: &Record) -> Result<Self, EntityError> {
         let id = match record.get("id") {
-            Some(Value::U64(v)) => Some(*v),
-            Some(Value::I64(v)) if *v >= 0 => Some(*v as u64),
-            Some(Value::Null) | None => None,
+            Some(Value::U64(v)) => *v,
+            Some(Value::I64(v)) if *v >= 0 => *v as u64,
+            Some(Value::Null) | None => 0,
             other => {
                 return Err(EntityError::new(
                     "BaseEntity",
@@ -163,12 +161,12 @@ pub trait BaseEntity: Entity {
     fn base(&self) -> &BaseEntityData;
     fn base_mut(&mut self) -> &mut BaseEntityData;
 
-    fn id(&self) -> Option<u64> {
+    fn id(&self) -> u64 {
         self.base().id
     }
 
     fn set_id(&mut self, id: u64) {
-        self.base_mut().id = Some(id);
+        self.base_mut().id = id;
     }
 
     fn version_value(&self) -> i64 {

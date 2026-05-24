@@ -823,7 +823,7 @@ mod tests {
         );
 
         let restored = BaseEntityData::from_record(&record).unwrap();
-        assert_eq!(restored.id, Some(11));
+        assert_eq!(restored.id, 11);
         assert_eq!(restored.version, 3);
         assert_eq!(restored.dynamic("amount"), Some(&Value::F64(18.5)));
         assert_eq!(restored.dynamic_f64("amount"), Some(18.5));

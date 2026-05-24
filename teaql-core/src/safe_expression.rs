@@ -186,7 +186,7 @@ where
     E: BaseEntity + Clone + 'static,
 {
     pub fn entity_id(self) -> SafeExpression<R, u64> {
-        self.apply_optional(|entity| entity.id())
+        self.apply(|entity| entity.id())
     }
 
     pub fn entity_version(self) -> SafeExpression<R, i64> {

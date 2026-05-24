@@ -151,7 +151,7 @@ where
         let id = id_property.as_ref().and_then(|property| {
             node.values
                 .get(&property.name)
-                .filter(|value| !matches!(value, Value::Null))
+                .filter(|value| !is_unassigned_id_value(value))
                 .cloned()
         });
         let is_update = match (id_property.as_ref(), id.as_ref()) {
@@ -163,7 +163,10 @@ where
         if !is_update {
             if let Some(id_property) = id_property.as_ref() {
                 let needs_id = !node.values.contains_key(&id_property.name)
-                    || matches!(node.values.get(&id_property.name), Some(Value::Null));
+                    || node
+                        .values
+                        .get(&id_property.name)
+                        .is_some_and(is_unassigned_id_value);
                 if needs_id {
                     let id = self
                         .repository
@@ -480,7 +483,7 @@ where
                 if let Some(child_id) = child
                     .values
                     .get(&child_id_property.name)
-                    .filter(|value| !matches!(value, Value::Null))
+                    .filter(|value| !is_unassigned_id_value(value))
                 {
                     let key = graph_identity_key(child_id);
                     if !seen.insert(key.clone()) {
@@ -541,7 +544,7 @@ where
         let id = node
             .values
             .get(&id_property.name)
-            .filter(|value| !matches!(value, Value::Null))
+            .filter(|value| !is_unassigned_id_value(value))
             .cloned()
             .ok_or_else(|| {
                 RepositoryError::Runtime(RuntimeError::Graph(format!(
@@ -630,7 +633,7 @@ where
         let id = node
             .values
             .get(&id_property.name)
-            .filter(|value| !matches!(value, Value::Null))
+            .filter(|value| !is_unassigned_id_value(value))
             .cloned()
             .ok_or_else(|| {
                 RepositoryError::Runtime(RuntimeError::Graph(format!(
@@ -747,12 +750,17 @@ where
                 node.entity
             )))
         })?;
-        let id = node.values.get(&id_property.name).cloned().ok_or_else(|| {
-            RepositoryError::Runtime(RuntimeError::Graph(format!(
-                "remove node {} missing id property {}",
-                node.entity, id_property.name
-            )))
-        })?;
+        let id = node
+            .values
+            .get(&id_property.name)
+            .filter(|value| !is_unassigned_id_value(value))
+            .cloned()
+            .ok_or_else(|| {
+                RepositoryError::Runtime(RuntimeError::Graph(format!(
+                    "remove node {} missing id property {}",
+                    node.entity, id_property.name
+                )))
+            })?;
         let mut delete = DeleteCommand::new(node.entity.clone(), id);
         if let Some(version_property) = descriptor.version_property() {
             if let Some(Value::I64(version)) = node.values.get(&version_property.name) {
@@ -784,4 +792,8 @@ where
             &SelectQuery::new(entity).filter(Expr::eq(foreign_key, parent_value.clone())),
         )
     }
+}
+
+fn is_unassigned_id_value(value: &Value) -> bool {
+    matches!(value, Value::Null | Value::U64(0) | Value::I64(0))
 }

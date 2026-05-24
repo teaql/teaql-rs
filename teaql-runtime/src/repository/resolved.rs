@@ -101,7 +101,7 @@ where
             .require_entity(&command.entity)?;
         if let Some(id_property) = entity.id_property() {
             let needs_id = !command.values.contains_key(&id_property.name)
-                || matches!(command.values.get(&id_property.name), Some(Value::Null));
+                || is_unassigned_id(command.values.get(&id_property.name));
             if needs_id {
                 let id = self.repository.metadata.context.next_id(&command.entity)?;
                 command
@@ -487,4 +487,11 @@ where
             },
         }
     }
+}
+
+fn is_unassigned_id(value: Option<&Value>) -> bool {
+    matches!(
+        value,
+        None | Some(Value::Null) | Some(Value::U64(0)) | Some(Value::I64(0))
+    )
 }
