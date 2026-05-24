@@ -11,8 +11,8 @@ use teaql_sql::{CompiledQuery, DatabaseKind, SqlDialect};
 use crate::{
     CheckResults, CheckerRegistry, ContextError, EntityEvent, EntityEventSink, GraphNode,
     InternalIdGenerator, Language, MetadataStore, ObjectLocation, RepositoryBehavior,
-    RepositoryBehaviorRegistry, RepositoryRegistry, RuntimeError, local_id_generator,
-    translate_check_result,
+    RepositoryBehaviorRegistry, RepositoryRegistry, RequestPolicy, RuntimeError,
+    local_id_generator, translate_check_result,
 };
 use crate::{EntityRoot, QueryExecutor, RepositoryError};
 
@@ -42,6 +42,13 @@ pub struct SqlLogOptions {
 }
 
 impl SqlLogOptions {
+    pub fn disabled() -> Self {
+        Self {
+            select: false,
+            mutation: false,
+        }
+    }
+
     pub fn select_only() -> Self {
         Self {
             select: true,
@@ -95,11 +102,11 @@ pub trait SchemaProvider: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'a>>;
 }
 
-#[derive(Default)]
 pub struct UserContext {
     pub(crate) metadata: Option<Box<dyn MetadataStore>>,
     pub(crate) repository_registry: Option<Box<dyn RepositoryRegistry>>,
     pub(crate) repository_behavior_registry: Option<Box<dyn RepositoryBehaviorRegistry>>,
+    pub(crate) request_policy: Option<Box<dyn RequestPolicy>>,
     pub(crate) checker_registry: Option<Box<dyn CheckerRegistry>>,
     pub(crate) event_sink: Option<Box<dyn EntityEventSink>>,
     pub(crate) internal_id_generator: Option<Box<dyn InternalIdGenerator>>,
@@ -112,6 +119,29 @@ pub struct UserContext {
     entity_root: EntityRoot,
     sql_log_options: SqlLogOptions,
     sql_log_entries: Mutex<Vec<SqlLogEntry>>,
+}
+
+impl Default for UserContext {
+    fn default() -> Self {
+        Self {
+            metadata: None,
+            repository_registry: None,
+            repository_behavior_registry: None,
+            request_policy: None,
+            checker_registry: None,
+            event_sink: None,
+            internal_id_generator: None,
+            schema_provider: None,
+            language: Language::default(),
+            typed_resources: HashMap::new(),
+            named_resources: BTreeMap::new(),
+            locals: BTreeMap::new(),
+            initial_graphs: Vec::new(),
+            entity_root: EntityRoot::default(),
+            sql_log_options: SqlLogOptions::all(),
+            sql_log_entries: Mutex::new(Vec::new()),
+        }
+    }
 }
 
 impl UserContext {
@@ -167,6 +197,19 @@ impl UserContext {
         registry: impl RepositoryBehaviorRegistry + 'static,
     ) {
         self.repository_behavior_registry = Some(Box::new(registry));
+    }
+
+    pub fn with_request_policy(mut self, policy: impl RequestPolicy + 'static) -> Self {
+        self.request_policy = Some(Box::new(policy));
+        self
+    }
+
+    pub fn set_request_policy(&mut self, policy: impl RequestPolicy + 'static) {
+        self.request_policy = Some(Box::new(policy));
+    }
+
+    pub fn clear_request_policy(&mut self) {
+        self.request_policy = None;
     }
 
     pub fn with_checker_registry(mut self, registry: impl CheckerRegistry + 'static) -> Self {
@@ -247,7 +290,7 @@ impl UserContext {
     }
 
     pub fn disable_sql_log(&mut self) {
-        self.sql_log_options = SqlLogOptions::default();
+        self.sql_log_options = SqlLogOptions::disabled();
         self.clear_sql_logs();
     }
 

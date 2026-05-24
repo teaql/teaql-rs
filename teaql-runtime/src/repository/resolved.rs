@@ -45,6 +45,45 @@ where
         InsertCommand::new(self.entity.clone())
     }
 
+    fn enforce_insert_policy(&self, command: &mut InsertCommand) -> Result<(), RuntimeError> {
+        if let Some(policy) = self.repository.metadata.context.request_policy.as_ref() {
+            policy.enforce_insert(self.repository.metadata.context, command)?;
+        }
+        Ok(())
+    }
+
+    fn enforce_update_policy(&self, command: &mut UpdateCommand) -> Result<(), RuntimeError> {
+        if let Some(policy) = self.repository.metadata.context.request_policy.as_ref() {
+            policy.enforce_update(self.repository.metadata.context, command)?;
+        }
+        Ok(())
+    }
+
+    fn enforce_delete_policy(&self, command: &mut DeleteCommand) -> Result<(), RuntimeError> {
+        if let Some(policy) = self.repository.metadata.context.request_policy.as_ref() {
+            policy.enforce_delete(self.repository.metadata.context, command)?;
+        }
+        Ok(())
+    }
+
+    fn enforce_recover_policy(&self, command: &mut RecoverCommand) -> Result<(), RuntimeError> {
+        if let Some(policy) = self.repository.metadata.context.request_policy.as_ref() {
+            policy.enforce_recover(self.repository.metadata.context, command)?;
+        }
+        Ok(())
+    }
+
+    fn prepare_select_query(&self, query: &SelectQuery) -> Result<SelectQuery, RuntimeError> {
+        let mut query = query.clone();
+        if let Some(behavior) = self.query_behavior(&query.entity) {
+            behavior.before_select(self.repository.metadata.context, &mut query)?;
+        }
+        if let Some(policy) = self.repository.metadata.context.request_policy.as_ref() {
+            policy.enforce_select(self.repository.metadata.context, &mut query)?;
+        }
+        Ok(query)
+    }
+
     pub fn prepare_insert_command(
         &self,
         command: &InsertCommand,
@@ -53,6 +92,7 @@ where
         if let Some(behavior) = self.behavior() {
             behavior.before_insert(self.repository.metadata.context, &mut command)?;
         }
+        self.enforce_insert_policy(&mut command)?;
 
         let entity = self
             .repository
@@ -93,6 +133,7 @@ where
         if let Some(behavior) = self.behavior() {
             behavior.before_update(self.repository.metadata.context, &mut command)?;
         }
+        self.enforce_update_policy(&mut command)?;
         mark_record_status(&mut command.values, CheckObjectStatus::Update);
         let check_result = self
             .repository
@@ -113,20 +154,14 @@ where
     }
 
     pub fn compile(&self, query: &SelectQuery) -> Result<CompiledQuery, RuntimeError> {
-        let mut query = query.clone();
-        if let Some(behavior) = self.query_behavior(&query.entity) {
-            behavior.before_select(self.repository.metadata.context, &mut query)?;
-        }
+        let query = self.prepare_select_query(query)?;
         self.repository.compile(&query)
     }
 
     pub fn fetch_all(&self, query: &SelectQuery) -> Result<Vec<Record>, RepositoryError<E::Error>> {
-        let mut query = query.clone();
-        if let Some(behavior) = self.query_behavior(&query.entity) {
-            behavior
-                .before_select(self.repository.metadata.context, &mut query)
-                .map_err(RepositoryError::Runtime)?;
-        }
+        let query = self
+            .prepare_select_query(query)
+            .map_err(RepositoryError::Runtime)?;
         let mut rows = self.fetch_prepared_query(&query)?;
         self.enhance_object_group_bys(&mut rows, &query.object_group_bys)?;
         self.enhance_child_queries(&mut rows, &query.child_enhancements)?;
@@ -232,12 +267,9 @@ where
         &self,
         query: &SelectQuery,
     ) -> Result<SmartList<Record>, RepositoryError<E::Error>> {
-        let mut query = query.clone();
-        if let Some(behavior) = self.query_behavior(&query.entity) {
-            behavior
-                .before_select(self.repository.metadata.context, &mut query)
-                .map_err(RepositoryError::Runtime)?;
-        }
+        let query = self
+            .prepare_select_query(query)
+            .map_err(RepositoryError::Runtime)?;
         self.repository.fetch_smart_list(&query)
     }
 
@@ -257,12 +289,9 @@ where
     where
         T: Entity,
     {
-        let mut query = query.clone();
-        if let Some(behavior) = self.query_behavior(&query.entity) {
-            behavior
-                .before_select(self.repository.metadata.context, &mut query)
-                .map_err(RepositoryError::Runtime)?;
-        }
+        let query = self
+            .prepare_select_query(query)
+            .map_err(RepositoryError::Runtime)?;
         self.repository.fetch_entities(&query)
     }
 
@@ -290,12 +319,9 @@ where
     where
         T: Entity,
     {
-        let mut query = query.clone();
-        if let Some(behavior) = self.query_behavior(&query.entity) {
-            behavior
-                .before_select(self.repository.metadata.context, &mut query)
-                .map_err(RepositoryError::Runtime)?;
-        }
+        let query = self
+            .prepare_select_query(query)
+            .map_err(RepositoryError::Runtime)?;
 
         let mut rows = self.repository.fetch_all(&query)?;
         self.enhance_relation_aggregates(&mut rows, relation_aggregates, query.aggregation_cache)?;
@@ -315,12 +341,9 @@ where
     where
         T: Entity,
     {
-        let mut query = query.clone();
-        if let Some(behavior) = self.query_behavior(&query.entity) {
-            behavior
-                .before_select(self.repository.metadata.context, &mut query)
-                .map_err(RepositoryError::Runtime)?;
-        }
+        let query = self
+            .prepare_select_query(query)
+            .map_err(RepositoryError::Runtime)?;
 
         let mut rows = self.repository.fetch_all(&query)?;
         self.enhance_query_relations(&mut rows, &query)?;
@@ -353,6 +376,8 @@ where
                 .before_delete(self.repository.metadata.context, &mut command)
                 .map_err(RepositoryError::Runtime)?;
         }
+        self.enforce_delete_policy(&mut command)
+            .map_err(RepositoryError::Runtime)?;
         let old_values = self.fetch_current_event_row(&command.entity, &command.id)?;
         let affected = self.repository.delete(&command)?;
         self.emit_event(EntityEvent::deleted_with_old_values(
@@ -372,6 +397,8 @@ where
                 .before_recover(self.repository.metadata.context, &mut command)
                 .map_err(RepositoryError::Runtime)?;
         }
+        self.enforce_recover_policy(&mut command)
+            .map_err(RepositoryError::Runtime)?;
         let old_values = self.fetch_current_event_row(&command.entity, &command.id)?;
         let affected = self.repository.recover(&command)?;
         self.emit_event(EntityEvent::recovered_with_old_values(

@@ -9,6 +9,7 @@ pub enum RuntimeError {
     SqlCompile(SqlCompileError),
     Behavior(String),
     Event(String),
+    Policy(String),
     Check(Vec<CheckResult>),
     Graph(String),
     IdGeneration(String),
@@ -25,6 +26,7 @@ impl std::fmt::Display for RuntimeError {
             Self::SqlCompile(err) => err.fmt(f),
             Self::Behavior(message) => write!(f, "repository behavior error: {message}"),
             Self::Event(message) => write!(f, "entity event error: {message}"),
+            Self::Policy(message) => write!(f, "request policy error: {message}"),
             Self::Check(results) => {
                 let messages = results
                     .iter()

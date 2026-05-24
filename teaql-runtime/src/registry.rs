@@ -20,6 +20,48 @@ pub trait RepositoryRegistry: Send + Sync {
     fn contains(&self, entity: &str) -> bool;
 }
 
+pub trait RequestPolicy: Send + Sync {
+    fn enforce_select(
+        &self,
+        _ctx: &UserContext,
+        _query: &mut SelectQuery,
+    ) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
+    fn enforce_insert(
+        &self,
+        _ctx: &UserContext,
+        _command: &mut InsertCommand,
+    ) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
+    fn enforce_update(
+        &self,
+        _ctx: &UserContext,
+        _command: &mut UpdateCommand,
+    ) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
+    fn enforce_delete(
+        &self,
+        _ctx: &UserContext,
+        _command: &mut DeleteCommand,
+    ) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
+    fn enforce_recover(
+        &self,
+        _ctx: &UserContext,
+        _command: &mut RecoverCommand,
+    ) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+}
+
 pub trait RepositoryBehavior: Send + Sync {
     fn before_select(
         &self,

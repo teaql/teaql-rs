@@ -29,7 +29,7 @@ pub use memory::{MemoryRepository, MemoryRepositoryError};
 pub use registry::{
     InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry, InMemoryRepositoryRegistry,
     MetadataStore, RepositoryBehavior, RepositoryBehaviorRegistry, RepositoryRegistry,
-    RuntimeModule,
+    RequestPolicy, RuntimeModule,
 };
 pub use repository::{
     AggregationCacheBackend, ContextRepository, GraphTransactionBoundary, InMemoryAggregationCache,
@@ -48,7 +48,7 @@ mod tests {
         InMemoryCheckerRegistry, InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry,
         InMemoryRepositoryRegistry, InternalIdGenerator, Language, MemoryRepository, MetadataStore,
         ObjectLocation, QueryExecutor, Repository, RepositoryBehavior, RepositoryError,
-        RuntimeError, RuntimeModule, SqlLogOperation, SqlLogOptions, TypedChecker,
+        RequestPolicy, RuntimeError, RuntimeModule, SqlLogOperation, SqlLogOptions, TypedChecker,
         TypedEntityChecker, UserContext, translate_check_result,
     };
     use teaql_core::{
@@ -430,6 +430,37 @@ mod tests {
         assert!(logs[0].debug_sql.contains("'updated'"));
     }
 
+    #[test]
+    fn user_context_records_all_sql_logs_by_default() {
+        let mut ctx = UserContext::new().with_module(crate::module!(Order));
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(StubExecutor {
+            affected: 1,
+            rows: Vec::new(),
+        });
+
+        {
+            let repo = ctx
+                .resolve_repository::<PostgresDialect, StubExecutor>("Order")
+                .unwrap();
+            repo.fetch_all(&SelectQuery::new("Order")).unwrap();
+            repo.insert(&InsertCommand::new("Order").value("name", "created"))
+                .unwrap();
+        }
+
+        let logs = ctx.sql_logs();
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0].operation, SqlLogOperation::Select);
+        assert_eq!(logs[1].operation, SqlLogOperation::Insert);
+
+        ctx.disable_sql_log();
+        ctx.resolve_repository::<PostgresDialect, StubExecutor>("Order")
+            .unwrap()
+            .fetch_all(&SelectQuery::new("Order"))
+            .unwrap();
+        assert!(ctx.sql_logs().is_empty());
+    }
+
     impl RepositoryBehavior for OrderBehavior {
         fn before_select(
             &self,
@@ -458,6 +489,7 @@ mod tests {
     }
 
     struct ContextAwareOrderBehavior;
+    struct TenantRequestPolicy;
     struct OrderChecker;
     struct TypedOrderChecker;
     #[derive(Clone)]
@@ -497,6 +529,43 @@ mod tests {
                 .values
                 .entry("version".to_owned())
                 .or_insert(Value::I64(version));
+            Ok(())
+        }
+    }
+
+    impl RequestPolicy for TenantRequestPolicy {
+        fn enforce_select(
+            &self,
+            ctx: &UserContext,
+            query: &mut SelectQuery,
+        ) -> Result<(), RuntimeError> {
+            if query.entity == "Order" {
+                let tenant_id = ctx
+                    .get_named_resource::<u64>("tenant_id")
+                    .copied()
+                    .ok_or_else(|| RuntimeError::Policy("missing tenant_id".to_owned()))?;
+                query.filter = Some(match query.filter.take() {
+                    Some(filter) => filter.and_expr(Expr::eq("id", tenant_id)),
+                    None => Expr::eq("id", tenant_id),
+                });
+            }
+            Ok(())
+        }
+
+        fn enforce_insert(
+            &self,
+            ctx: &UserContext,
+            command: &mut InsertCommand,
+        ) -> Result<(), RuntimeError> {
+            if command.entity == "Order" {
+                let tenant_id = ctx
+                    .get_named_resource::<u64>("tenant_id")
+                    .copied()
+                    .ok_or_else(|| RuntimeError::Policy("missing tenant_id".to_owned()))?;
+                command
+                    .values
+                    .insert("version".to_owned(), Value::I64(tenant_id as i64));
+            }
             Ok(())
         }
     }
@@ -758,6 +827,40 @@ mod tests {
         let affected = repo.insert(&insert).unwrap();
         assert_eq!(affected, 1);
         assert_eq!(repo.relation_loads(), vec!["lines".to_owned()]);
+    }
+
+    #[test]
+    fn resolved_repository_applies_request_policy_after_behavior_hooks() {
+        let mut ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(entity())
+                    .with_entity(line_entity())
+                    .with_entity(product_entity()),
+            )
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
+            .with_repository_behavior_registry(
+                InMemoryRepositoryBehaviorRegistry::new().with_behavior("Order", OrderBehavior),
+            )
+            .with_request_policy(TenantRequestPolicy);
+        ctx.insert_named_resource("tenant_id", 9_u64);
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(StubExecutor {
+            affected: 1,
+            rows: Vec::new(),
+        });
+
+        let repo = ctx
+            .resolve_repository::<PostgresDialect, StubExecutor>("Order")
+            .unwrap();
+
+        let compiled = repo.compile(&repo.select()).unwrap();
+        assert!(compiled.sql.contains("\"version\" = $1"));
+        assert!(compiled.sql.contains("\"id\" = $2"));
+
+        let insert = repo.insert_command().value("id", 1_u64).value("name", "n");
+        let command = repo.prepare_insert_command(&insert).unwrap();
+        assert_eq!(command.values.get("version"), Some(&Value::I64(9)));
     }
 
     #[test]

@@ -9,6 +9,7 @@ Database execution is supplied by provider crates.
 ## What It Provides
 
 - `UserContext` for metadata, typed resources, request locals, and runtime options
+- request policy hooks for platform-level security, observability, and resource limits
 - repository registry and behavior registry
 - memory repository for tests and lightweight execution
 - checker registry and translated validation results
@@ -31,6 +32,19 @@ The repository layer is split by concern under `src/repository/`:
 - `relation.rs`: relation plans, relation enhancement, child queries, and relation aggregates
 - `helpers.rs`: shared bucket keys, cache keys, projection helpers, and graph relation validation
 
+## Request Policy and Repository Behavior
+
+`RequestPolicy` is the platform-level boundary. It runs on `ResolvedRepository`
+select and mutation entry points before SQL is compiled or executed, and it is
+intended for tenant isolation, permission enforcement, raw SQL control,
+observability, and infrastructure protection.
+
+`RepositoryBehavior` remains entity-scoped. Use it for domain-specific behavior
+such as default relation loading or entity-specific command enrichment.
+
+The runtime applies entity behavior first and request policy last, so platform
+policy remains the final enforcement point before repository execution.
+
 ## Example
 
 ```rust
@@ -38,11 +52,14 @@ use teaql_runtime::{InMemoryMetadataStore, UserContext};
 
 let mut ctx = UserContext::new()
     .with_metadata(InMemoryMetadataStore::default());
-ctx.enable_all_sql_log();
 
 let logs = ctx.sql_logs();
 assert!(logs.is_empty());
 ```
+
+SQL execution logging is enabled for select and mutation statements by default.
+Use `ctx.disable_sql_log()` to turn it off, or `ctx.set_sql_log_options(...)`
+to restrict which operations are recorded.
 
 With generated code, applications typically register a generated runtime module
 and then use generated entity/request helpers:
