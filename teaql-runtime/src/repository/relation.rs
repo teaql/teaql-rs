@@ -455,7 +455,10 @@ where
                                 list.push(Value::object(parent_object.clone()));
                             }
                         } else {
-                            child.insert(inverse_relation.clone(), Value::object(parent_object.clone()));
+                            child.insert(
+                                inverse_relation.clone(),
+                                Value::object(parent_object.clone()),
+                            );
                         }
                         child
                     })

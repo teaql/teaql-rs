@@ -466,8 +466,8 @@ impl SqliteIdSpaceGenerator {
             pool: self.pool.clone(),
             transaction: self.transaction.clone(),
         }
-            .ensure_id_space_table(&self.table_name)
-            .await
+        .ensure_id_space_table(&self.table_name)
+        .await
     }
 
     pub async fn next_id(&self, entity: &str) -> Result<u64, MutationExecutorError> {
@@ -509,17 +509,27 @@ fn block_on_id_generation<F>(future: F) -> Result<u64, RuntimeError>
 where
     F: Future<Output = Result<u64, MutationExecutorError>> + Send + 'static,
 {
-    let result = if tokio::runtime::Handle::try_current().is_ok() {
-        let handle = tokio::runtime::Handle::current();
-        tokio::task::block_in_place(|| handle.block_on(future))
+    if tokio::runtime::Handle::try_current().is_ok() {
+        std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|err| RuntimeError::IdGeneration(err.to_string()))?
+                .block_on(future)
+                .map_err(|err| RuntimeError::IdGeneration(err.to_string()))
+        })
+        .join()
+        .map_err(|_| {
+            RuntimeError::IdGeneration("sqlite id generation thread panicked".to_owned())
+        })?
     } else {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|err| RuntimeError::IdGeneration(err.to_string()))?
             .block_on(future)
-    };
-    result.map_err(|err| RuntimeError::IdGeneration(err.to_string()))
+            .map_err(|err| RuntimeError::IdGeneration(err.to_string()))
+    }
 }
 
 fn quote_ident(ident: &str) -> String {
@@ -991,6 +1001,27 @@ mod tests {
 
         let id = generator.next_id("Order").await.unwrap();
         executor.commit_transaction().await.unwrap();
+
+        assert_eq!(id, 1);
+
+        pool.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn sqlite_id_generation_does_not_require_multithread_runtime() {
+        let path = temp_sqlite_path();
+        let options = SqliteConnectOptions::from_str(path.to_str().unwrap())
+            .unwrap()
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        let generator = SqliteIdSpaceGenerator::new(pool.clone());
+
+        let id = generator.generate_id("Order").unwrap();
 
         assert_eq!(id, 1);
 

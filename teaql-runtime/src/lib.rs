@@ -224,6 +224,47 @@ mod tests {
     }
 
     #[derive(Debug, PartialEq, DeriveTeaqlEntity)]
+    #[teaql(entity = "OrderLine", table = "orderline")]
+    struct ProductLineEntityRow {
+        #[teaql(id)]
+        id: u64,
+        #[teaql(column = "order_id")]
+        order_id: u64,
+        name: String,
+        #[teaql(column = "product_id")]
+        product_id: u64,
+    }
+
+    #[derive(Debug, PartialEq, DeriveTeaqlEntity)]
+    #[teaql(entity = "Product", table = "product")]
+    struct ProductWithLinesEntityRow {
+        #[teaql(id)]
+        id: u64,
+        name: String,
+        #[teaql(relation(
+            target = "OrderLine",
+            local_key = "id",
+            foreign_key = "product_id",
+            many
+        ))]
+        lines: teaql_core::SmartList<ProductLineEntityRow>,
+    }
+
+    #[derive(Debug, PartialEq, DeriveTeaqlEntity)]
+    #[teaql(entity = "OrderLine", table = "orderline")]
+    struct OrderLineWithProductEntityRow {
+        #[teaql(id)]
+        id: u64,
+        #[teaql(column = "order_id")]
+        order_id: u64,
+        name: String,
+        #[teaql(column = "product_id")]
+        product_id: u64,
+        #[teaql(relation(target = "Product", local_key = "product_id", foreign_key = "id"))]
+        product: Option<ProductWithLinesEntityRow>,
+    }
+
+    #[derive(Debug, PartialEq, DeriveTeaqlEntity)]
     #[teaql(entity = "Order", table = "orders")]
     struct OrderAggregateRow {
         #[teaql(id)]
@@ -1706,6 +1747,47 @@ mod tests {
             Some(Value::List(lines)) => assert_eq!(lines.len(), 1),
             other => panic!("unexpected lines payload: {other:?}"),
         }
+    }
+
+    #[test]
+    fn relation_enhancement_wraps_inverse_many_relation_as_list() {
+        let mut ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(OrderLineWithProductEntityRow::entity_descriptor())
+                    .with_entity(ProductWithLinesEntityRow::entity_descriptor()),
+            )
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("OrderLine"));
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(QueueExecutor {
+            affected: 1,
+            rows: Mutex::new(VecDeque::from([
+                vec![Record::from([
+                    (String::from("id"), Value::U64(11)),
+                    (String::from("order_id"), Value::U64(7)),
+                    (String::from("name"), Value::Text(String::from("line"))),
+                    (String::from("product_id"), Value::U64(101)),
+                ])],
+                vec![Record::from([
+                    (String::from("id"), Value::U64(101)),
+                    (String::from("name"), Value::Text(String::from("sku"))),
+                ])],
+            ])),
+            queries: Mutex::new(Vec::new()),
+        });
+
+        let repo = ctx
+            .resolve_repository::<PostgresDialect, QueueExecutor>("OrderLine")
+            .unwrap();
+        let rows = repo
+            .fetch_enhanced_entities::<OrderLineWithProductEntityRow>(
+                &SelectQuery::new("OrderLine").relation("product"),
+            )
+            .unwrap();
+
+        let product = rows.data[0].product.as_ref().unwrap();
+        assert_eq!(product.lines.data.len(), 1);
+        assert_eq!(product.lines.data[0].id, 11);
     }
 
     #[test]
