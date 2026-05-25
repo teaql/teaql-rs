@@ -2556,6 +2556,27 @@ mod tests {
             matches!(err, RuntimeError::Schema(message) if message == "missing schema provider")
         );
     }
+
+    #[test]
+    fn user_context_stores_and_exposes_user_identifier() {
+        let mut ctx = UserContext::new();
+        assert_eq!(ctx.user_identifier(), None);
+
+        ctx.set_user_identifier("user-123");
+        assert_eq!(ctx.user_identifier(), Some("user-123"));
+
+        let ctx2 = UserContext::new().with_user_identifier("user-456");
+        assert_eq!(ctx2.user_identifier(), Some("user-456"));
+
+        let mut ctx3 = UserContext::new();
+        ctx3.set_user_identifier_option(Some("user-789".to_owned()));
+        assert_eq!(ctx3.user_identifier(), Some("user-789"));
+        ctx3.set_user_identifier_option(None);
+        assert_eq!(ctx3.user_identifier(), None);
+
+        let ctx4 = UserContext::new().with_user_identifier_option(Some("user-abc".to_owned()));
+        assert_eq!(ctx4.user_identifier(), Some("user-abc"));
+    }
 }
 
 pub use checker::{

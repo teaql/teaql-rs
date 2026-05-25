@@ -119,6 +119,7 @@ pub struct UserContext {
     entity_root: EntityRoot,
     sql_log_options: SqlLogOptions,
     sql_log_entries: Mutex<Vec<SqlLogEntry>>,
+    user_identifier: Option<String>,
 }
 
 impl Default for UserContext {
@@ -140,6 +141,7 @@ impl Default for UserContext {
             entity_root: EntityRoot::default(),
             sql_log_options: SqlLogOptions::all(),
             sql_log_entries: Mutex::new(Vec::new()),
+            user_identifier: None,
         }
     }
 }
@@ -147,6 +149,28 @@ impl Default for UserContext {
 impl UserContext {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn user_identifier(&self) -> Option<&str> {
+        self.user_identifier.as_deref()
+    }
+
+    pub fn set_user_identifier(&mut self, user_identifier: impl Into<String>) {
+        self.user_identifier = Some(user_identifier.into());
+    }
+
+    pub fn with_user_identifier(mut self, user_identifier: impl Into<String>) -> Self {
+        self.user_identifier = Some(user_identifier.into());
+        self
+    }
+
+    pub fn set_user_identifier_option(&mut self, user_identifier: Option<String>) {
+        self.user_identifier = user_identifier;
+    }
+
+    pub fn with_user_identifier_option(mut self, user_identifier: Option<String>) -> Self {
+        self.user_identifier = user_identifier;
+        self
     }
 
     pub fn with_module(mut self, module: crate::RuntimeModule) -> Self {
