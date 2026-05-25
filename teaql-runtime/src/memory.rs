@@ -5,8 +5,9 @@ use std::sync::{Arc, Mutex};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 use teaql_core::{
-    AggregateFunction, BinaryOp, DeleteCommand, Entity, Expr, ExprFunction, InsertCommand, Record,
-    RecoverCommand, SelectQuery, SmartList, SortDirection, UpdateCommand, Value,
+    Aggregate, AggregateFunction, BinaryOp, DeleteCommand, Entity, Expr, ExprFunction,
+    InsertCommand, Record, RecoverCommand, RelationAggregate, SelectQuery, SmartList, SortDirection,
+    UpdateCommand, Value,
 };
 
 use crate::{InMemoryMetadataStore, MetadataStore, RepositoryError, RuntimeError};
@@ -122,6 +123,161 @@ where
             .collect::<Result<Vec<_>, _>>()
             .map(SmartList::from)
             .map_err(RepositoryError::Entity)
+    }
+
+    pub fn fetch_all_with_relation_aggregates(
+        &self,
+        query: &SelectQuery,
+        relation_aggregates: &[RelationAggregate],
+    ) -> Result<Vec<Record>, RepositoryError<MemoryRepositoryError>> {
+        let mut rows = self.fetch_all(query)?;
+        self.enhance_relation_aggregates(&query.entity, &mut rows, relation_aggregates)?;
+        Ok(rows)
+    }
+
+    pub fn fetch_smart_list_with_relation_aggregates(
+        &self,
+        query: &SelectQuery,
+        relation_aggregates: &[RelationAggregate],
+    ) -> Result<SmartList<Record>, RepositoryError<MemoryRepositoryError>> {
+        self.fetch_all_with_relation_aggregates(query, relation_aggregates)
+            .map(SmartList::from)
+    }
+
+    pub fn fetch_entities_with_relation_aggregates<T>(
+        &self,
+        query: &SelectQuery,
+        relation_aggregates: &[RelationAggregate],
+    ) -> Result<SmartList<T>, RepositoryError<MemoryRepositoryError>>
+    where
+        T: Entity,
+    {
+        self.fetch_all_with_relation_aggregates(query, relation_aggregates)?
+            .into_iter()
+            .map(T::from_record)
+            .collect::<Result<Vec<_>, _>>()
+            .map(SmartList::from)
+            .map_err(RepositoryError::Entity)
+    }
+
+    pub fn enhance_relation_aggregates(
+        &self,
+        parent_entity: &str,
+        parent_rows: &mut [Record],
+        relation_aggregates: &[RelationAggregate],
+    ) -> Result<(), RepositoryError<MemoryRepositoryError>> {
+        for aggregate in relation_aggregates {
+            self.enhance_relation_aggregate(parent_entity, parent_rows, aggregate)?;
+        }
+        Ok(())
+    }
+
+    fn enhance_relation_aggregate(
+        &self,
+        parent_entity: &str,
+        parent_rows: &mut [Record],
+        aggregate: &RelationAggregate,
+    ) -> Result<(), RepositoryError<MemoryRepositoryError>> {
+        let descriptor = self
+            .metadata
+            .entity(parent_entity)
+            .ok_or_else(|| {
+                RepositoryError::Runtime(RuntimeError::MissingEntity(parent_entity.to_owned()))
+            })?;
+
+        let relation = descriptor
+            .relation_by_name(&aggregate.relation_name)
+            .ok_or_else(|| {
+                RepositoryError::Runtime(RuntimeError::MissingRelation {
+                    entity: parent_entity.to_owned(),
+                    relation: aggregate.relation_name.clone(),
+                })
+            })?;
+
+        let ids = parent_rows
+            .iter()
+            .filter_map(|row| row.get(&relation.local_key).cloned())
+            .collect::<Vec<_>>();
+
+        if ids.is_empty() {
+            let value = if aggregate.single_result {
+                Value::U64(0)
+            } else {
+                Value::List(Vec::new())
+            };
+            for parent in parent_rows.iter_mut() {
+                parent.insert(aggregate.alias.clone(), value.clone());
+            }
+            return Ok(());
+        }
+
+        let mut query = aggregate.query.clone();
+        query.entity = relation.target_entity.clone();
+        query.projection.clear();
+        query.expr_projection.clear();
+        query.order_by.clear();
+        query.slice = None;
+        query.relations.clear();
+        if query.aggregates.is_empty() {
+            let alias = if aggregate.single_result {
+                aggregate.alias.clone()
+            } else {
+                "count".to_owned()
+            };
+            query = query.aggregate(Aggregate::count(alias));
+        }
+        if !query
+            .group_by
+            .iter()
+            .any(|field| field == &relation.foreign_key)
+        {
+            query = query.group_by(relation.foreign_key.clone());
+        }
+        query = query.and_filter(Expr::in_list(relation.foreign_key.clone(), ids));
+
+        let aggregate_rows = self.fetch_all(&query)?;
+
+        let mut buckets: BTreeMap<String, Vec<Record>> = BTreeMap::new();
+        for mut row in aggregate_rows {
+            if let Some(key) = row.remove(&relation.foreign_key) {
+                let bucket_key = local_graph_identity_key(&key);
+                buckets
+                    .entry(bucket_key)
+                    .or_default()
+                    .push(row);
+            }
+        }
+
+        for parent in parent_rows {
+            let value = parent
+                .get(&relation.local_key)
+                .and_then(|local_value| buckets.get(&local_graph_identity_key(local_value)))
+                .map(|rows| {
+                    if aggregate.single_result {
+                        rows.first()
+                            .map(|row| {
+                                if row.len() == 1 {
+                                    row.values().next().cloned().unwrap_or(Value::Null)
+                                } else {
+                                    Value::object(row.clone())
+                                }
+                            })
+                            .unwrap_or(Value::U64(0))
+                    } else {
+                        Value::List(rows.iter().cloned().map(Value::object).collect())
+                    }
+                })
+                .unwrap_or_else(|| {
+                    if aggregate.single_result {
+                        Value::U64(0)
+                    } else {
+                        Value::List(Vec::new())
+                    }
+                });
+            parent.insert(aggregate.alias.clone(), value);
+        }
+
+        Ok(())
     }
 
     pub fn insert(
@@ -875,3 +1031,22 @@ fn read_i64(value: Option<&Value>) -> Option<i64> {
         _ => None,
     }
 }
+
+fn local_graph_identity_key(value: &Value) -> String {
+    match value {
+        Value::I64(val) if *val >= 0 => format!("u:{}", *val as u64),
+        Value::U64(val) => format!("u:{val}"),
+        Value::Null => "null".to_owned(),
+        Value::Bool(v) => format!("b:{v}"),
+        Value::I64(v) => format!("i:{v}"),
+        Value::F64(v) => format!("f:{v}"),
+        Value::Decimal(v) => format!("d:{v}"),
+        Value::Text(v) => format!("t:{v}"),
+        Value::Json(v) => format!("j:{v}"),
+        Value::Date(v) => format!("d:{v}"),
+        Value::Timestamp(v) => format!("ts:{}", v.to_rfc3339()),
+        Value::Object(_) => "o".to_owned(),
+        Value::List(_) => "l".to_owned(),
+    }
+}
+

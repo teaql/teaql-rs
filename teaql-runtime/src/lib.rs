@@ -2143,6 +2143,68 @@ mod tests {
     }
 
     #[test]
+    fn memory_repository_runs_relation_aggregates() {
+        let metadata = InMemoryMetadataStore::new()
+            .with_entity(entity())
+            .with_entity(line_entity());
+
+        let repository = MemoryRepository::new(metadata)
+            .with_rows(
+                "Order",
+                vec![
+                    Record::from([
+                        (String::from("id"), Value::U64(1)),
+                        (String::from("version"), Value::I64(1)),
+                        (String::from("name"), Value::Text(String::from("first"))),
+                    ]),
+                    Record::from([
+                        (String::from("id"), Value::U64(2)),
+                        (String::from("version"), Value::I64(1)),
+                        (String::from("name"), Value::Text(String::from("second"))),
+                    ]),
+                ],
+            )
+            .with_rows(
+                "OrderLine",
+                vec![
+                    Record::from([
+                        (String::from("id"), Value::U64(10)),
+                        (String::from("version"), Value::I64(1)),
+                        (String::from("order_id"), Value::U64(1)),
+                        (String::from("name"), Value::Text(String::from("line1"))),
+                    ]),
+                    Record::from([
+                        (String::from("id"), Value::U64(11)),
+                        (String::from("version"), Value::I64(1)),
+                        (String::from("order_id"), Value::U64(1)),
+                        (String::from("name"), Value::Text(String::from("line2"))),
+                    ]),
+                    Record::from([
+                        (String::from("id"), Value::U64(12)),
+                        (String::from("version"), Value::I64(1)),
+                        (String::from("order_id"), Value::U64(2)),
+                        (String::from("name"), Value::Text(String::from("line3"))),
+                    ]),
+                ],
+            );
+
+        let query = SelectQuery::new("Order").project("id").project("name");
+        let aggregate = RelationAggregate::new("lines", "lineCount", SelectQuery::new("OrderLine"), true);
+
+        let rows = repository
+            .fetch_all_with_relation_aggregates(&query, &[aggregate])
+            .unwrap();
+
+        assert_eq!(rows.len(), 2);
+
+        let first_order = rows.iter().find(|r| r.get("id") == Some(&Value::U64(1))).unwrap();
+        assert_eq!(first_order.get("lineCount"), Some(&Value::U64(2)));
+
+        let second_order = rows.iter().find(|r| r.get("id") == Some(&Value::U64(2))).unwrap();
+        assert_eq!(second_order.get("lineCount"), Some(&Value::U64(1)));
+    }
+
+    #[test]
     fn memory_repository_runs_aggregates() {
         let metadata = InMemoryMetadataStore::new().with_entity(entity());
         let repository = MemoryRepository::new(metadata).with_rows(
