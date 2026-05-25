@@ -6,7 +6,7 @@ use teaql_provider_sqlx_sqlite::{SqliteDialect, SqliteMutationExecutor};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
-        .connect("sqlite::memory:")
+        .connect("sqlite::memory:?cache=shared")
         .await?;
     let executor = SqliteMutationExecutor::new(pool.clone());
     reset_sqlite_schema(&pool, &executor).await?;

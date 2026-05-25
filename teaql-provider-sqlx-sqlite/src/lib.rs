@@ -795,7 +795,7 @@ mod tests {
 
     #[tokio::test]
     async fn sqlite_executor_ensures_schema_and_roundtrips_rows() {
-        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared").await.unwrap();
         let executor = SqliteMutationExecutor::new(pool);
         let entity = entity();
         let mut ctx = UserContext::new()
@@ -832,7 +832,7 @@ mod tests {
 
     #[tokio::test]
     async fn sqlite_executor_parses_json_only_for_json_columns() {
-        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared").await.unwrap();
         let executor = SqliteMutationExecutor::new(pool);
 
         executor
