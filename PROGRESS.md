@@ -12,10 +12,10 @@ Status labels used here:
 
 Current progress estimates:
 
-- Core runtime/kernel: `91%`
-- SQLite usable path: `90%`
-- PostgreSQL usable path: `85%-90%`
-- Full Java feature parity: `60%-65%`
+- Core runtime/kernel: `94%`
+- SQLite usable path: `93%`
+- PostgreSQL usable path: `90%-93%`
+- Full Java feature parity: `67%-70%`
 
 ## Feature Matrix
 
@@ -32,7 +32,7 @@ Current progress estimates:
 | Relation preload planning | Complete | Relation load plans support nested paths like `lines.product` | Done | Medium |
 | Single-level relation enhancement | Complete | Supported and verified | Done | Low |
 | Multi-level relation enhancement | Complete | Recursive enhancement implemented and tested on SQLite | MVP | Medium |
-| Relation aggregate enhancement | Java can attach relation counts/statistics to parent objects | `RelationAggregate` supports single count/statistic values and grouped statistic rows; runtime normalizes signed/unsigned id keys and maps storage column names back to entity property keys before attaching aggregate results | MVP+ | Medium |
+| Relation aggregate enhancement | Java can attach relation counts/statistics to parent objects | `RelationAggregate` supports single count/statistic values and grouped statistic rows; runtime normalizes signed/unsigned id keys and maps storage column names back to entity property keys before attaching aggregate results; fully supported in both SQL backends and MemoryRepository | Done | Low |
 | UserContext | Core concept | Implemented as runtime resource index and request-scope store | Done | Medium |
 | RepositoryRegistry | Present | In-memory registry implemented | MVP | Low |
 | Entity-level behavior hooks | Present | `before_select/insert/update/delete/recover` supported | MVP | Medium |
@@ -48,7 +48,7 @@ Current progress estimates:
 | Derive macro for entities | Java relies on reflection/metadata classes | `#[derive(TeaqlEntity)]` implemented | MVP | Medium |
 | Batch entity registration | Present via framework patterns | `register_entities!` implemented | Done | Low |
 | Declarative runtime assembly | Spring/config driven | `RuntimeModule` and `module!` implemented | MVP | Medium |
-| In-memory repository | Java has `teaql-memory` | `MemoryRepository` supports query filtering/sorting/paging/projection, extended aggregates with Decimal results, typed `SmartList<T>`, and mutations | MVP | Medium |
+| In-memory repository | Java has `teaql-memory` | `MemoryRepository` supports query filtering/sorting/paging/projection, extended aggregates with Decimal results, typed `SmartList<T>`, mutations, and relation aggregate/statistics count roll-up | Done | Low |
 | GraphQL integration | Java has `teaql-graphql` | Not implemented | Not Started | Low |
 | Spring Boot autoconfigure | Java has `teaql-autoconfigure` | Not applicable in pure Rust rewrite | Dropped | None |
 | Web/BaseService action entry | Java has `BaseService` | Not implemented | Not Started | Low |
@@ -114,7 +114,7 @@ Current progress estimates:
 
 ## Most Important Gaps
 
-1. More complete `MemoryRepository` parity for relation enhancement and subquery execution
+1. More complete `MemoryRepository` parity for multi-level relation preload paths (single-level relation aggregation, counts, and statistics are fully supported)
 2. Typed checker generation and richer Java-style validation semantics such as Java status mapping and nested typed object locations
 3. Richer language translation payloads such as domain-specific property labels instead of field-name title casing
 4. Richer event payloads for old/new values and typed entity snapshots, matching Java `BaseEntity` property-change details
@@ -127,7 +127,7 @@ Current progress estimates:
 
 ## Suggested Next Steps
 
-1. Expand `MemoryRepository` toward relation enhancement and richer query parity, especially subqueries
+1. Expand `MemoryRepository` toward recursive relation preload path enhancement
 2. Add derive/helper support for typed entity checkers so common validation can be registered without hand-written `Record` access
 3. Expand event payloads if consumers need old/new property values instead of changed-field names plus final values
 4. Extend value binding and decoding for `Uuid` and bytes
