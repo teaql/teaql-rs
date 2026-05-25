@@ -52,6 +52,30 @@ impl<T> SmartList<T> {
         self.facets.insert(key.into(), facet);
     }
 
+    pub fn facets(&self) -> &BTreeMap<String, SmartList<Record>> {
+        &self.facets
+    }
+
+    pub fn facets_mut(&mut self) -> &mut BTreeMap<String, SmartList<Record>> {
+        &mut self.facets
+    }
+
+    pub fn facet(&self, key: &str) -> Option<&SmartList<Record>> {
+        self.facets.get(key)
+    }
+
+    pub fn facet_mut(&mut self, key: &str) -> Option<&mut SmartList<Record>> {
+        self.facets.get_mut(key)
+    }
+
+    pub fn remove_facet(&mut self, key: &str) -> Option<SmartList<Record>> {
+        self.facets.remove(key)
+    }
+
+    pub fn take_facets(&mut self) -> BTreeMap<String, SmartList<Record>> {
+        std::mem::take(&mut self.facets)
+    }
+
     pub fn push(&mut self, value: T) {
         self.data.push(value);
     }

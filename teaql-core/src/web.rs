@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::{BaseEntity, BaseEntityData, Entity, Record, SmartList, Value, record_to_json_value};
 
@@ -298,6 +299,8 @@ pub struct WebResponse {
     pub message: Option<String>,
     pub record_count: u64,
     pub version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub facets: Option<BTreeMap<String, serde_json::Value>>,
 }
 
 impl WebResponse {
@@ -309,6 +312,7 @@ impl WebResponse {
             message: None,
             record_count: 0,
             version: WEB_RESPONSE_VERSION.to_owned(),
+            facets: None,
         }
     }
 
@@ -320,6 +324,7 @@ impl WebResponse {
             message: Some(message.into()),
             record_count: 0,
             version: WEB_RESPONSE_VERSION.to_owned(),
+            facets: None,
         }
     }
 
@@ -331,6 +336,7 @@ impl WebResponse {
             message: Some(message.into()),
             record_count: 0,
             version: WEB_RESPONSE_VERSION.to_owned(),
+            facets: None,
         }
     }
 
@@ -356,12 +362,28 @@ impl WebResponse {
         Self::from_records(entities.into_iter().map(Entity::into_record))
     }
 
-    pub fn from_smart_list<E>(smart_list: SmartList<E>) -> Self
+    pub fn from_smart_list<E>(mut smart_list: SmartList<E>) -> Self
     where
         E: Entity,
     {
         let total_count = smart_list.total_count_or_len();
-        Self::from_entities(smart_list).with_record_count(total_count)
+        let facets = if !smart_list.facets.is_empty() {
+            let mut mapped = BTreeMap::new();
+            for (key, facet_list) in smart_list.take_facets() {
+                let data: Vec<_> = facet_list
+                    .data
+                    .iter()
+                    .map(|record| record_to_json_value(record))
+                    .collect();
+                mapped.insert(key, serde_json::Value::Array(data));
+            }
+            Some(mapped)
+        } else {
+            None
+        };
+        Self::from_entities(smart_list)
+            .with_record_count(total_count)
+            .with_facets_option(facets)
     }
 
     pub fn with_data(mut self, data: Vec<serde_json::Value>) -> Self {
@@ -372,6 +394,16 @@ impl WebResponse {
 
     pub fn with_record_count(mut self, record_count: u64) -> Self {
         self.record_count = record_count;
+        self
+    }
+
+    pub fn with_facets(mut self, facets: BTreeMap<String, serde_json::Value>) -> Self {
+        self.facets = Some(facets);
+        self
+    }
+
+    pub fn with_facets_option(mut self, facets: Option<BTreeMap<String, serde_json::Value>>) -> Self {
+        self.facets = facets;
         self
     }
 

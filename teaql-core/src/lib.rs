@@ -715,6 +715,60 @@ mod tests {
     }
 
     #[test]
+    fn web_response_includes_facets() {
+        let entity = OrderRow {
+            id: 7,
+            version: 2,
+            name: "order".to_owned(),
+        };
+        let mut facet_record = Record::new();
+        facet_record.insert("status".to_owned(), Value::Text("PENDING".to_owned()));
+        facet_record.insert("count".to_owned(), Value::I64(5));
+
+        let facet_list = SmartList::from(vec![facet_record]);
+
+        let mut list = SmartList::from(vec![entity])
+            .with_total_count(99)
+            .with_facet("status", facet_list);
+
+        // Verify getter/mutator APIs on SmartList
+        assert!(list.facets().contains_key("status"));
+        assert_eq!(list.facet("status").unwrap().len(), 1);
+        assert!(list.facet_mut("status").is_some());
+        assert!(list.facets_mut().contains_key("status"));
+
+        let response = WebResponse::from_smart_list(list);
+        assert_eq!(response.record_count, 99);
+        assert_eq!(response.data.len(), 1);
+
+        let json = response.to_json_value();
+        assert!(json.get("facets").is_some());
+        let facets_map = json["facets"].as_object().unwrap();
+        assert!(facets_map.contains_key("status"));
+        let status_facet = facets_map["status"].as_array().unwrap();
+        assert_eq!(status_facet.len(), 1);
+        assert_eq!(status_facet[0]["status"], serde_json::json!("PENDING"));
+        assert_eq!(status_facet[0]["count"], serde_json::json!(5));
+
+        // Test removing and taking facets
+        let mut list2 = SmartList::new(vec![OrderRow {
+            id: 8,
+            version: 1,
+            name: "other".to_owned(),
+        }])
+        .with_facet("status", SmartList::empty());
+
+        let removed = list2.remove_facet("status");
+        assert!(removed.is_some());
+        assert!(list2.facet("status").is_none());
+
+        list2.add_facet("status", SmartList::empty());
+        let taken = list2.take_facets();
+        assert!(taken.contains_key("status"));
+        assert!(list2.facets().is_empty());
+    }
+
+    #[test]
     fn xls_block_context_matches_java_navigation_model() {
         let context = XlsBlockBuildContext::new("orders", 2, 3);
         let header = context
