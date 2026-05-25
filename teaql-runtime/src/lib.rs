@@ -2616,6 +2616,61 @@ mod tests {
         assert!(log_content.contains("test-comment"));
         assert!(log_content.contains("DEBUG - SqlLogEntry"));
         let _ = std::fs::remove_file("app.log"); // Cleanup
+
+        // Test nested comment stack propagation
+        let ctx6 = UserContext::new();
+        {
+            let _guard1 = crate::context::QueryCommentGuard::new(&ctx6, Some("outer-task".to_owned()));
+            ctx6.record_sql_log(
+                SqlLogOperation::Select,
+                &query,
+                DatabaseKind::Sqlite,
+                std::time::SystemTime::now(),
+                std::time::SystemTime::now(),
+                std::time::Duration::from_millis(10),
+                Some(1),
+                None,
+                None,
+                None,
+            );
+            assert_eq!(ctx6.sql_logs()[0].comment.as_deref(), Some("outer-task"));
+
+            {
+                let _guard2 = crate::context::QueryCommentGuard::new(&ctx6, Some("inner-task".to_owned()));
+                ctx6.record_sql_log(
+                    SqlLogOperation::Select,
+                    &query,
+                    DatabaseKind::Sqlite,
+                    std::time::SystemTime::now(),
+                    std::time::SystemTime::now(),
+                    std::time::Duration::from_millis(10),
+                    Some(1),
+                    None,
+                    None,
+                    None,
+                );
+                assert_eq!(ctx6.sql_logs()[1].comment.as_deref(), Some("outer-task->inner-task"));
+
+                {
+                    // Non-comment nested query does not alter stack
+                    let _guard3 = crate::context::QueryCommentGuard::new(&ctx6, None);
+                    ctx6.record_sql_log(
+                        SqlLogOperation::Select,
+                        &query,
+                        DatabaseKind::Sqlite,
+                        std::time::SystemTime::now(),
+                        std::time::SystemTime::now(),
+                        std::time::Duration::from_millis(10),
+                        Some(1),
+                        None,
+                        None,
+                        None,
+                    );
+                    assert_eq!(ctx6.sql_logs()[2].comment.as_deref(), Some("outer-task->inner-task"));
+                }
+            }
+        }
+        let _ = std::fs::remove_file("app.log"); // Cleanup
     }
 }
 

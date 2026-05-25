@@ -122,6 +122,7 @@ pub struct UserContext {
     sql_log_options: SqlLogOptions,
     sql_log_entries: Mutex<Vec<SqlLogEntry>>,
     user_identifier: Option<String>,
+    pub(crate) comment_stack: Mutex<Vec<String>>,
 }
 
 impl Default for UserContext {
@@ -151,6 +152,7 @@ impl Default for UserContext {
             sql_log_options: SqlLogOptions::all(),
             sql_log_entries: Mutex::new(Vec::new()),
             user_identifier: Some(user_id),
+            comment_stack: Mutex::new(Vec::new()),
         }
     }
 }
@@ -368,6 +370,16 @@ impl UserContext {
             affected_rows,
         );
 
+        // Resolve final comment from stack or parameter
+        let stack_comment = self.comment_stack.lock().ok().and_then(|stack| {
+            if stack.is_empty() {
+                None
+            } else {
+                Some(stack.join("->"))
+            }
+        });
+        let final_comment = stack_comment.or(comment);
+
         // Append log line to app.log file
         if let Ok(mut file) = std::fs::OpenOptions::new()
             .create(true)
@@ -378,7 +390,7 @@ impl UserContext {
             let local_time: chrono::DateTime<chrono::Local> = started_at.into();
             let timestamp_str = local_time.format("%Y-%m-%d %H:%M:%S%.3f").to_string();
             let user_id_str = self.user_identifier.as_deref().unwrap_or("");
-            let comment_part = if let Some(ref c) = comment {
+            let comment_part = if let Some(ref c) = final_comment {
                 format!("-[{c}]")
             } else {
                 "".to_owned()
@@ -406,7 +418,7 @@ impl UserContext {
                 result_type,
                 affected_rows,
                 user_identifier: self.user_identifier.clone(),
-                comment,
+                comment: final_comment,
             });
         }
     }
@@ -678,4 +690,36 @@ fn pretty_sql(sql: &str) -> String {
     pretty
         .replace(" AND ", "\n  AND ")
         .replace(" OR ", "\n  OR ")
+}
+
+pub struct QueryCommentGuard<'a> {
+    context: &'a UserContext,
+    has_pushed: bool,
+}
+
+impl<'a> QueryCommentGuard<'a> {
+    pub fn new(context: &'a UserContext, comment: Option<String>) -> Self {
+        let mut has_pushed = false;
+        if let Some(comment) = comment {
+            if !comment.is_empty() {
+                if let Ok(mut stack) = context.comment_stack.lock() {
+                    if stack.last() != Some(&comment) {
+                        stack.push(comment);
+                        has_pushed = true;
+                    }
+                }
+            }
+        }
+        Self { context, has_pushed }
+    }
+}
+
+impl<'a> Drop for QueryCommentGuard<'a> {
+    fn drop(&mut self) {
+        if self.has_pushed {
+            if let Ok(mut stack) = self.context.comment_stack.lock() {
+                stack.pop();
+            }
+        }
+    }
 }

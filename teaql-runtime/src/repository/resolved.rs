@@ -163,6 +163,7 @@ where
         let query = self
             .prepare_select_query(query)
             .map_err(RepositoryError::Runtime)?;
+        let _guard = crate::context::QueryCommentGuard::new(self.repository.metadata.context, query.comment.clone());
         let mut rows = self.fetch_prepared_query(&query)?;
         self.enhance_object_group_bys(&mut rows, &query.object_group_bys)?;
         self.enhance_child_queries(&mut rows, &query.child_enhancements)?;
@@ -173,6 +174,7 @@ where
         &self,
         query: &SelectQuery,
     ) -> Result<Vec<Record>, RepositoryError<E::Error>> {
+        let _guard = crate::context::QueryCommentGuard::new(self.repository.metadata.context, query.comment.clone());
         let compiled = self
             .repository
             .compile(query)
@@ -227,6 +229,7 @@ where
         options: AggregationCacheOptions,
         cache: &dyn AggregationCacheBackend,
     ) -> Result<Vec<Record>, RepositoryError<E::Error>> {
+        let _guard = crate::context::QueryCommentGuard::new(self.repository.metadata.context, query.comment.clone());
         let key = aggregation_cache_key(
             cache.namespace(),
             &aggregation_cache_namespace(&query.entity),
@@ -273,6 +276,7 @@ where
         let query = self
             .prepare_select_query(query)
             .map_err(RepositoryError::Runtime)?;
+        let _guard = crate::context::QueryCommentGuard::new(self.repository.metadata.context, query.comment.clone());
         self.repository.fetch_smart_list(&query)
     }
 
@@ -295,6 +299,7 @@ where
         let query = self
             .prepare_select_query(query)
             .map_err(RepositoryError::Runtime)?;
+        let _guard = crate::context::QueryCommentGuard::new(self.repository.metadata.context, query.comment.clone());
         self.repository.fetch_entities(&query)
     }
 
@@ -325,6 +330,7 @@ where
         let query = self
             .prepare_select_query(query)
             .map_err(RepositoryError::Runtime)?;
+        let _guard = crate::context::QueryCommentGuard::new(self.repository.metadata.context, query.comment.clone());
 
         let mut rows = self.repository.fetch_all(&query)?;
         self.enhance_relation_aggregates(&mut rows, relation_aggregates, query.aggregation_cache)?;
@@ -347,6 +353,7 @@ where
         let query = self
             .prepare_select_query(query)
             .map_err(RepositoryError::Runtime)?;
+        let _guard = crate::context::QueryCommentGuard::new(self.repository.metadata.context, query.comment.clone());
 
         let mut rows = self.repository.fetch_all(&query)?;
         self.enhance_query_relations(&mut rows, &query)?;
