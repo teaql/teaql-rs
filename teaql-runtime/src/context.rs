@@ -133,7 +133,10 @@ impl Default for UserContext {
             .strip_prefix("ThreadId(")
             .and_then(|s| s.strip_suffix(")"))
             .unwrap_or(&thread_id_str);
-        let user_id = format!("main@pid-{pid}.tid-{numeric_thread_id}");
+        let os_user = std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .unwrap_or_else(|_| "main".to_owned());
+        let user_id = format!("{os_user}@pid-{pid}.tid-{numeric_thread_id}");
         Self {
             metadata: None,
             repository_registry: None,
