@@ -2576,6 +2576,27 @@ mod tests {
 
         let ctx4 = UserContext::new().with_user_identifier_option(Some("user-abc".to_owned()));
         assert_eq!(ctx4.user_identifier(), Some("user-abc"));
+
+        // Verify user_identifier is captured in SQL logs
+        let ctx5 = UserContext::new().with_user_identifier("user-999");
+        let query = CompiledQuery {
+            sql: "SELECT 1".to_owned(),
+            params: vec![],
+        };
+        ctx5.record_sql_log(
+            SqlLogOperation::Select,
+            &query,
+            DatabaseKind::Sqlite,
+            std::time::SystemTime::now(),
+            std::time::SystemTime::now(),
+            std::time::Duration::from_millis(10),
+            Some(1),
+            None,
+            None,
+        );
+        let logs = ctx5.sql_logs();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].user_identifier.as_deref(), Some("user-999"));
     }
 }
 

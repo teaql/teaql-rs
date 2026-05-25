@@ -93,6 +93,7 @@ pub struct SqlLogEntry {
     pub result_type: Option<String>,
     pub affected_rows: Option<u64>,
     pub result_summary: String,
+    pub user_identifier: Option<String>,
 }
 
 pub trait SchemaProvider: Send + Sync {
@@ -370,6 +371,7 @@ impl UserContext {
                 result_count,
                 result_type,
                 affected_rows,
+                user_identifier: self.user_identifier.clone(),
             });
         }
     }
