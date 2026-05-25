@@ -215,6 +215,7 @@ where
             Some(rows.len()),
             Some(query.entity.clone()),
             None,
+            query.comment.clone(),
         );
         Ok(rows)
     }
@@ -249,6 +250,7 @@ where
             Some(rows.len()),
             Some(query.entity.clone()),
             None,
+            query.comment.clone(),
         );
         cache.put(key, rows.clone());
         Ok(rows)

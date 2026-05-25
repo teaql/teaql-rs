@@ -99,6 +99,7 @@ where
             Some(rows.len()),
             Some(query.entity.clone()),
             None,
+            query.comment.clone(),
         );
         Ok(rows)
     }
@@ -149,6 +150,7 @@ where
             None,
             None,
             Some(affected),
+            None,
         );
         self.invalidate_aggregation_cache_for(&command.entity);
         Ok(affected)
@@ -231,6 +233,7 @@ where
             None,
             None,
             Some(affected),
+            None,
         );
         self.invalidate_aggregation_cache_for(entity);
         Ok(affected)
@@ -245,6 +248,7 @@ where
         result_count: Option<usize>,
         result_type: Option<String>,
         affected_rows: Option<u64>,
+        comment: Option<String>,
     ) {
         self.metadata.context.record_sql_log(
             operation,
@@ -256,6 +260,7 @@ where
             result_count,
             result_type,
             affected_rows,
+            comment,
         );
     }
 

@@ -94,6 +94,7 @@ pub struct SqlLogEntry {
     pub affected_rows: Option<u64>,
     pub result_summary: String,
     pub user_identifier: Option<String>,
+    pub comment: Option<String>,
 }
 
 pub trait SchemaProvider: Send + Sync {
@@ -354,6 +355,7 @@ impl UserContext {
         result_count: Option<usize>,
         result_type: Option<String>,
         affected_rows: Option<u64>,
+        comment: Option<String>,
     ) {
         if !self.sql_log_options.enabled_for(operation) {
             return;
@@ -376,9 +378,14 @@ impl UserContext {
             let local_time: chrono::DateTime<chrono::Local> = started_at.into();
             let timestamp_str = local_time.format("%Y-%m-%d %H:%M:%S%.3f").to_string();
             let user_id_str = self.user_identifier.as_deref().unwrap_or("");
+            let comment_part = if let Some(ref c) = comment {
+                format!("-[{c}]")
+            } else {
+                "".to_owned()
+            };
             let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
             let log_line = format!(
-                "{timestamp_str}-[{user_id_str}]--DEBUG - SqlLogEntry - [{result_summary}] {} (took {:.3}ms)\n",
+                "{timestamp_str}-[{user_id_str}]{comment_part}--DEBUG - SqlLogEntry - [{result_summary}] {} (took {:.3}ms)\n",
                 debug_sql, elapsed_ms
             );
             let _ = file.write_all(log_line.as_bytes());
@@ -399,6 +406,7 @@ impl UserContext {
                 result_type,
                 affected_rows,
                 user_identifier: self.user_identifier.clone(),
+                comment,
             });
         }
     }

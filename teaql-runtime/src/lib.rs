@@ -2601,16 +2601,19 @@ mod tests {
             Some(1),
             None,
             None,
+            Some("test-comment".to_owned()),
         );
         let logs = ctx5.sql_logs();
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].user_identifier.as_deref(), Some("user-999"));
+        assert_eq!(logs[0].comment.as_deref(), Some("test-comment"));
 
         // Verify app.log content
         assert!(std::path::Path::new("app.log").exists());
         let log_content = std::fs::read_to_string("app.log").unwrap();
         assert!(log_content.contains("SELECT 1"));
         assert!(log_content.contains("user-999"));
+        assert!(log_content.contains("test-comment"));
         assert!(log_content.contains("DEBUG - SqlLogEntry"));
         let _ = std::fs::remove_file("app.log"); // Cleanup
     }
