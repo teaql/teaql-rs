@@ -2566,7 +2566,7 @@ mod tests {
             .strip_prefix("ThreadId(")
             .and_then(|s| s.strip_suffix(")"))
             .unwrap_or(&thread_id_str);
-        let expected_default = format!("main@{pid}.{numeric_thread_id}");
+        let expected_default = format!("main@pid-{pid}.tid-{numeric_thread_id}");
         assert_eq!(ctx.user_identifier(), Some(expected_default.as_str()));
 
         ctx.set_user_identifier("user-123");

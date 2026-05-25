@@ -133,7 +133,7 @@ impl Default for UserContext {
             .strip_prefix("ThreadId(")
             .and_then(|s| s.strip_suffix(")"))
             .unwrap_or(&thread_id_str);
-        let user_id = format!("main@{pid}.{numeric_thread_id}");
+        let user_id = format!("main@pid-{pid}.tid-{numeric_thread_id}");
         Self {
             metadata: None,
             repository_registry: None,
