@@ -2560,7 +2560,7 @@ mod tests {
     #[test]
     fn user_context_stores_and_exposes_user_identifier() {
         let mut ctx = UserContext::new();
-        assert_eq!(ctx.user_identifier(), None);
+        assert_eq!(ctx.user_identifier(), Some("main"));
 
         ctx.set_user_identifier("user-123");
         assert_eq!(ctx.user_identifier(), Some("user-123"));

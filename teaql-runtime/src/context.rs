@@ -142,7 +142,7 @@ impl Default for UserContext {
             entity_root: EntityRoot::default(),
             sql_log_options: SqlLogOptions::all(),
             sql_log_entries: Mutex::new(Vec::new()),
-            user_identifier: None,
+            user_identifier: Some("main".to_owned()),
         }
     }
 }
