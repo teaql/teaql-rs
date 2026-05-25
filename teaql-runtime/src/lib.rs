@@ -395,7 +395,7 @@ mod tests {
         assert_eq!(logs[0].operation, SqlLogOperation::Select);
         assert_eq!(logs[0].result_count, Some(0));
         assert_eq!(logs[0].result_type.as_deref(), Some("Order"));
-        assert_eq!(logs[0].result_summary, "0 x Order");
+        assert_eq!(logs[0].result_summary, "NO ROWS");
         assert!(logs[0].ended_at >= logs[0].started_at);
         assert!(logs[0].pretty_sql.contains("\nFROM \"orders\""));
         assert!(
@@ -425,7 +425,7 @@ mod tests {
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].operation, SqlLogOperation::Update);
         assert_eq!(logs[0].affected_rows, Some(1));
-        assert_eq!(logs[0].result_summary, "1 rows affected");
+        assert_eq!(logs[0].result_summary, "1 UPDATED");
         assert!(logs[0].debug_sql.contains("UPDATE \"orders\" SET"));
         assert!(logs[0].debug_sql.contains("'updated'"));
     }

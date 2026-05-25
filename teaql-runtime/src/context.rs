@@ -579,12 +579,24 @@ fn sql_result_summary(
     match operation {
         SqlLogOperation::Select => {
             let count = result_count.unwrap_or(0);
-            match result_type {
-                Some(result_type) => format!("{count} x {result_type}"),
-                None => format!("{count} rows"),
+            if count == 0 {
+                "NO ROWS".to_owned()
+            } else if count > 1 {
+                match result_type {
+                    Some(result_type) => format!("{count}*{result_type}"),
+                    None => format!("{count}*rows"),
+                }
+            } else {
+                match result_type {
+                    Some(result_type) => result_type.to_owned(),
+                    None => "row".to_owned(),
+                }
             }
         }
-        _ => format!("{} rows affected", affected_rows.unwrap_or(0)),
+        _ => {
+            let affected = affected_rows.unwrap_or(0);
+            format!("{affected} UPDATED")
+        }
     }
 }
 
