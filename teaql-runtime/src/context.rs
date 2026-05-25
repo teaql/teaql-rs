@@ -125,6 +125,13 @@ pub struct UserContext {
 
 impl Default for UserContext {
     fn default() -> Self {
+        let pid = std::process::id();
+        let thread_id_str = format!("{:?}", std::thread::current().id());
+        let numeric_thread_id = thread_id_str
+            .strip_prefix("ThreadId(")
+            .and_then(|s| s.strip_suffix(")"))
+            .unwrap_or(&thread_id_str);
+        let user_id = format!("main@{pid}.{numeric_thread_id}");
         Self {
             metadata: None,
             repository_registry: None,
@@ -142,7 +149,7 @@ impl Default for UserContext {
             entity_root: EntityRoot::default(),
             sql_log_options: SqlLogOptions::all(),
             sql_log_entries: Mutex::new(Vec::new()),
-            user_identifier: Some("main".to_owned()),
+            user_identifier: Some(user_id),
         }
     }
 }

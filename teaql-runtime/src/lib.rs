@@ -2560,7 +2560,14 @@ mod tests {
     #[test]
     fn user_context_stores_and_exposes_user_identifier() {
         let mut ctx = UserContext::new();
-        assert_eq!(ctx.user_identifier(), Some("main"));
+        let pid = std::process::id();
+        let thread_id_str = format!("{:?}", std::thread::current().id());
+        let numeric_thread_id = thread_id_str
+            .strip_prefix("ThreadId(")
+            .and_then(|s| s.strip_suffix(")"))
+            .unwrap_or(&thread_id_str);
+        let expected_default = format!("main@{pid}.{numeric_thread_id}");
+        assert_eq!(ctx.user_identifier(), Some(expected_default.as_str()));
 
         ctx.set_user_identifier("user-123");
         assert_eq!(ctx.user_identifier(), Some("user-123"));
