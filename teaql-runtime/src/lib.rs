@@ -2584,7 +2584,8 @@ mod tests {
         let ctx4 = UserContext::new().with_user_identifier_option(Some("user-abc".to_owned()));
         assert_eq!(ctx4.user_identifier(), Some("user-abc"));
 
-        // Verify user_identifier is captured in SQL logs
+        // Verify user_identifier is captured in SQL logs and written to app.log
+        let _ = std::fs::remove_file("app.log");
         let ctx5 = UserContext::new().with_user_identifier("user-999");
         let query = CompiledQuery {
             sql: "SELECT 1".to_owned(),
@@ -2604,6 +2605,14 @@ mod tests {
         let logs = ctx5.sql_logs();
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].user_identifier.as_deref(), Some("user-999"));
+
+        // Verify app.log content
+        assert!(std::path::Path::new("app.log").exists());
+        let log_content = std::fs::read_to_string("app.log").unwrap();
+        assert!(log_content.contains("SELECT 1"));
+        assert!(log_content.contains("user-999"));
+        assert!(log_content.contains("DEBUG - SqlLogEntry"));
+        let _ = std::fs::remove_file("app.log"); // Cleanup
     }
 }
 

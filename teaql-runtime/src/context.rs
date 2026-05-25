@@ -359,6 +359,31 @@ impl UserContext {
             return;
         }
         let debug_sql = query.debug_sql(database_kind);
+        let result_summary = sql_result_summary(
+            operation,
+            result_count,
+            result_type.as_deref(),
+            affected_rows,
+        );
+
+        // Append log line to app.log file
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("app.log")
+        {
+            use std::io::Write;
+            let local_time: chrono::DateTime<chrono::Local> = started_at.into();
+            let timestamp_str = local_time.format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+            let user_id_str = self.user_identifier.as_deref().unwrap_or("");
+            let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
+            let log_line = format!(
+                "{timestamp_str}-[{user_id_str}]--DEBUG - SqlLogEntry - [{result_summary}] {} (took {:.3}ms)\n",
+                debug_sql, elapsed_ms
+            );
+            let _ = file.write_all(log_line.as_bytes());
+        }
+
         if let Ok(mut entries) = self.sql_log_entries.lock() {
             entries.push(SqlLogEntry {
                 operation,
@@ -369,12 +394,7 @@ impl UserContext {
                 started_at,
                 ended_at,
                 elapsed,
-                result_summary: sql_result_summary(
-                    operation,
-                    result_count,
-                    result_type.as_deref(),
-                    affected_rows,
-                ),
+                result_summary,
                 result_count,
                 result_type,
                 affected_rows,
