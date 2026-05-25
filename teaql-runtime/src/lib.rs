@@ -57,9 +57,9 @@ mod tests {
         RecoverCommand, RelationAggregate, SelectQuery, TeaqlEntity, UpdateCommand, Value,
     };
     use teaql_macros::TeaqlEntity as DeriveTeaqlEntity;
-    use teaql_sql::{CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect};
+    use teaql_sql::{CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, quote_identifier_if_needed};
 
-    const ORDER_DEFAULT_PROJECTION: &str = "\"id\", \"version\", \"name\"";
+    const ORDER_DEFAULT_PROJECTION: &str = "id, version, name";
 
     #[derive(Debug, Default, Clone, Copy)]
     struct PostgresDialect;
@@ -70,7 +70,7 @@ mod tests {
         }
 
         fn quote_ident(&self, ident: &str) -> String {
-            format!("\"{}\"", ident.replace('"', "\"\""))
+            quote_identifier_if_needed(ident, '"')
         }
 
         fn placeholder(&self, index: usize) -> String {
@@ -397,16 +397,16 @@ mod tests {
         assert_eq!(logs[0].result_type.as_deref(), Some("Order"));
         assert_eq!(logs[0].result_summary, "NO ROWS");
         assert!(logs[0].ended_at >= logs[0].started_at);
-        assert!(logs[0].pretty_sql.contains("\nFROM \"orders\""));
+        assert!(logs[0].pretty_sql.contains("\nFROM orders"));
         assert!(
             logs[0]
                 .pretty_sql
-                .contains("\nWHERE (\"name\" = 'Bob''s Shop')")
+                .contains("\nWHERE (name = 'Bob''s Shop')")
         );
         assert_eq!(
             logs[0].debug_sql,
             format!(
-                "SELECT {ORDER_DEFAULT_PROJECTION} FROM \"orders\" WHERE (\"name\" = 'Bob''s Shop')"
+                "SELECT {ORDER_DEFAULT_PROJECTION} FROM orders WHERE (name = 'Bob''s Shop')"
             )
         );
 
@@ -426,7 +426,7 @@ mod tests {
         assert_eq!(logs[0].operation, SqlLogOperation::Update);
         assert_eq!(logs[0].affected_rows, Some(1));
         assert_eq!(logs[0].result_summary, "1 UPDATED");
-        assert!(logs[0].debug_sql.contains("UPDATE \"orders\" SET"));
+        assert!(logs[0].debug_sql.contains("UPDATE orders SET"));
         assert!(logs[0].debug_sql.contains("'updated'"));
     }
 
@@ -821,7 +821,7 @@ mod tests {
             .unwrap();
 
         let compiled = repo.compile(&repo.select()).unwrap();
-        assert!(compiled.sql.contains("WHERE (\"version\" = $1)"));
+        assert!(compiled.sql.contains("WHERE (version = $1)"));
 
         let insert = repo.insert_command().value("id", 1_u64).value("name", "n");
         let affected = repo.insert(&insert).unwrap();
@@ -855,8 +855,8 @@ mod tests {
             .unwrap();
 
         let compiled = repo.compile(&repo.select()).unwrap();
-        assert!(compiled.sql.contains("\"version\" = $1"));
-        assert!(compiled.sql.contains("\"id\" = $2"));
+        assert!(compiled.sql.contains("version = $1"));
+        assert!(compiled.sql.contains("id = $2"));
 
         let insert = repo.insert_command().value("id", 1_u64).value("name", "n");
         let command = repo.prepare_insert_command(&insert).unwrap();
@@ -1673,8 +1673,8 @@ mod tests {
 
         let query = repo.relation_query("lines", &parent_rows).unwrap();
         let compiled = repo.compile(&query).unwrap();
-        assert!(compiled.sql.contains("FROM \"orderline\""));
-        assert!(compiled.sql.contains("\"order_id\" IN ($1, $2)"));
+        assert!(compiled.sql.contains("FROM orderline"));
+        assert!(compiled.sql.contains("order_id IN ($1, $2)"));
         assert_eq!(compiled.params, vec![Value::U64(11), Value::U64(12)]);
     }
 
@@ -1901,7 +1901,7 @@ mod tests {
         assert_eq!(queries.len(), 2);
         assert_eq!(
             queries[1],
-            "SELECT \"order_id\", COUNT(*) AS \"lineCount\" FROM \"orderline\" WHERE (\"order_id\" IN ($1, $2)) GROUP BY \"order_id\""
+            "SELECT order_id, COUNT(*) AS lineCount FROM orderline WHERE (order_id IN ($1, $2)) GROUP BY order_id"
         );
     }
 
@@ -1961,7 +1961,7 @@ mod tests {
         let executor = ctx.get_resource::<QueueExecutor>().unwrap();
         assert_eq!(
             executor.queries.lock().unwrap()[1],
-            "SELECT \"order_ref\", COUNT(*) AS \"lineCount\" FROM \"orderline\" WHERE (\"order_ref\" IN ($1)) GROUP BY \"order_ref\""
+            "SELECT order_ref, COUNT(*) AS lineCount FROM orderline WHERE (order_ref IN ($1)) GROUP BY order_ref"
         );
     }
 
