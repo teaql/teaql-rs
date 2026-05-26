@@ -104,6 +104,7 @@ mod tests {
             CompiledQuery {
                 sql: "SELECT \"id\", \"name\" FROM \"orders\" WHERE (\"name\" = $1) ORDER BY \"id\" DESC LIMIT 10 OFFSET 5".to_owned(),
                 params: vec![Value::from("A")],
+                comment: None,
             }
         );
     }
@@ -177,6 +178,7 @@ mod tests {
                     "SELECT {ORDER_DEFAULT_PROJECTION} FROM \"orders\" WHERE (SOUNDEX(\"name\") = SOUNDEX($1))"
                 ),
                 params: vec![Value::from("Robert")],
+                comment: None,
             }
         );
     }
@@ -366,6 +368,11 @@ mod tests {
 
         assert_eq!(
             query.sql,
+            "SELECT \"id\", upper(name) AS \"name\", 42 AS \"score\" FROM \"orders\" WHERE name <> '' AND payload @> '{\"active\":true}'"
+        );
+        assert_eq!(query.comment.as_deref(), Some("audit"));
+        assert_eq!(
+            query.sql_with_comment(),
             "/* audit */ SELECT \"id\", upper(name) AS \"name\", 42 AS \"score\" FROM \"orders\" WHERE name <> '' AND payload @> '{\"active\":true}'"
         );
     }
@@ -381,7 +388,9 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(query.sql, "/* manual */ SELECT 1 AS id");
+        assert_eq!(query.sql, "SELECT 1 AS id");
+        assert_eq!(query.comment.as_deref(), Some("manual"));
+        assert_eq!(query.sql_with_comment(), "/* manual */ SELECT 1 AS id");
     }
 
     #[test]
@@ -455,6 +464,7 @@ mod tests {
                 Value::from("Bob's Shop"),
                 Value::List(vec![Value::from(1_u64), Value::from(2_u64)]),
             ],
+            comment: None,
         };
 
         assert_eq!(
@@ -469,6 +479,7 @@ mod tests {
             sql: "UPDATE \"orders\" SET \"name\" = ? WHERE ((\"id\" = ?) AND ('?' = '?'))"
                 .to_owned(),
             params: vec![Value::from("Alice's Shop"), Value::from(7_u64)],
+            comment: None,
         };
 
         assert_eq!(

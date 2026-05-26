@@ -398,16 +398,10 @@ impl UserContext {
             } else {
                 "".to_owned()
             };
-            let mut clean_debug_sql = debug_sql.clone();
-            if clean_debug_sql.starts_with("/*") {
-                if let Some(pos) = clean_debug_sql.find("*/") {
-                    clean_debug_sql = clean_debug_sql[pos + 2..].trim_start().to_owned();
-                }
-            }
             let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
             let log_line = format!(
                 "{timestamp_str}-[{user_id_str}]--DEBUG - SqlLogEntry{comment_part} - [{result_summary}] {} (took {:.3}ms)\n",
-                clean_debug_sql, elapsed_ms
+                debug_sql, elapsed_ms
             );
             let _ = file.write_all(log_line.as_bytes());
         }

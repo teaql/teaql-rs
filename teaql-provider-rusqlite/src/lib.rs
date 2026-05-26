@@ -178,14 +178,14 @@ impl RusqliteMutationExecutor {
         let params = bind_values(&query.params)?;
         let rows = self
             .lock()?
-            .execute(&query.sql, params_from_iter(params.iter()))?;
+            .execute(&query.sql_with_comment(), params_from_iter(params.iter()))?;
         Ok(rows as u64)
     }
 
     pub fn fetch_all(&self, query: &CompiledQuery) -> Result<Vec<Record>, MutationExecutorError> {
         let params = bind_values(&query.params)?;
         let connection = self.lock()?;
-        let mut statement = connection.prepare(&query.sql)?;
+        let mut statement = connection.prepare(&query.sql_with_comment())?;
         let columns = statement_columns(&statement);
         let mut rows = statement.query(params_from_iter(params.iter()))?;
         let mut records = Vec::new();
@@ -679,6 +679,7 @@ mod tests {
             .execute(&CompiledQuery {
                 sql: "CREATE TABLE payloads (text_payload TEXT, json_payload JSON)".to_owned(),
                 params: Vec::new(),
+                comment: None,
             })
             .unwrap();
         executor
@@ -688,6 +689,7 @@ mod tests {
                     Value::Text("{\"active\":true}".to_owned()),
                     Value::Json(serde_json::json!({"active": true})),
                 ],
+                comment: None,
             })
             .unwrap();
 
@@ -695,6 +697,7 @@ mod tests {
             .fetch_all(&CompiledQuery {
                 sql: "SELECT text_payload, json_payload FROM payloads".to_owned(),
                 params: Vec::new(),
+                comment: None,
             })
             .unwrap();
 

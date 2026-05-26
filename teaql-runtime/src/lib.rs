@@ -2593,6 +2593,7 @@ mod tests {
         let query = CompiledQuery {
             sql: "SELECT 1".to_owned(),
             params: vec![],
+            comment: None,
         };
         ctx5.record_sql_log(
             SqlLogOperation::Select,

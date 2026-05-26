@@ -197,11 +197,11 @@ impl SqliteMutationExecutor {
             bind_sqlite(&mut args, value)?;
         }
         let result = if let Some(connection) = self.transaction.lock().await.as_mut() {
-            query_with(&query.sql, args)
+            query_with(&query.sql_with_comment(), args)
                 .execute(&mut **connection)
                 .await?
         } else {
-            query_with(&query.sql, args).execute(&self.pool).await?
+            query_with(&query.sql_with_comment(), args).execute(&self.pool).await?
         };
         Ok(result.rows_affected())
     }
@@ -218,13 +218,13 @@ impl SqliteMutationExecutor {
         let (json_columns, rows) = if let Some(connection) = transaction.as_mut() {
             let json_columns =
                 json_columns_for_query_on_connection(&query.sql, &mut **connection).await?;
-            let rows = query_with(&query.sql, args)
+            let rows = query_with(&query.sql_with_comment(), args)
                 .fetch_all(&mut **connection)
                 .await?;
             (json_columns, rows)
         } else {
             let json_columns = self.json_columns_for_query(&query.sql).await?;
-            let rows = query_with(&query.sql, args).fetch_all(&self.pool).await?;
+            let rows = query_with(&query.sql_with_comment(), args).fetch_all(&self.pool).await?;
             (json_columns, rows)
         };
         rows.iter()
@@ -839,6 +839,7 @@ mod tests {
             .execute(&CompiledQuery {
                 sql: "CREATE TABLE payloads (text_payload TEXT, json_payload JSON)".to_owned(),
                 params: Vec::new(),
+                comment: None,
             })
             .await
             .unwrap();
@@ -849,6 +850,7 @@ mod tests {
                     Value::Text("{\"active\":true}".to_owned()),
                     Value::Json(serde_json::json!({"active": true})),
                 ],
+                comment: None,
             })
             .await
             .unwrap();
@@ -863,6 +865,7 @@ mod tests {
             .fetch_all(&CompiledQuery {
                 sql: "SELECT text_payload, json_payload FROM payloads".to_owned(),
                 params: Vec::new(),
+                comment: None,
             })
             .await
             .unwrap();
@@ -894,6 +897,7 @@ mod tests {
             .execute(&CompiledQuery {
                 sql: "CREATE TABLE payloads (id INTEGER PRIMARY KEY, json_payload JSON)".to_owned(),
                 params: Vec::new(),
+                comment: None,
             })
             .await
             .unwrap();
@@ -906,6 +910,7 @@ mod tests {
                     Value::I64(1),
                     Value::Json(serde_json::json!({"active": true})),
                 ],
+                comment: None,
             })
             .await
             .unwrap();
@@ -913,6 +918,7 @@ mod tests {
             .fetch_all(&CompiledQuery {
                 sql: "SELECT id, json_payload FROM payloads WHERE id = ?".to_owned(),
                 params: vec![Value::I64(1)],
+                comment: None,
             })
             .await
             .unwrap();
@@ -946,6 +952,7 @@ mod tests {
             .execute(&CompiledQuery {
                 sql: "CREATE TABLE payloads (id INTEGER PRIMARY KEY, name TEXT)".to_owned(),
                 params: Vec::new(),
+                comment: None,
             })
             .await
             .unwrap();
@@ -955,6 +962,7 @@ mod tests {
             .execute(&CompiledQuery {
                 sql: "INSERT INTO payloads (id, name) VALUES (?, ?)".to_owned(),
                 params: vec![Value::I64(1), Value::Text("inside-tx".to_owned())],
+                comment: None,
             })
             .await
             .unwrap();

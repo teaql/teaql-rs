@@ -47,15 +47,6 @@ fn needs_quoted_identifier(ident: &str) -> bool {
     chars.any(|ch| ch != '_' && !ch.is_ascii_alphanumeric())
 }
 
-fn with_comment(sql: String, comment: Option<&str>) -> String {
-    match comment {
-        Some(comment) if !comment.is_empty() => {
-            let escaped = comment.replace("*/", "* /");
-            format!("/* {escaped} */ {sql}")
-        }
-        _ => sql,
-    }
-}
 
 pub trait SqlDialect {
     fn kind(&self) -> DatabaseKind;
@@ -132,7 +123,11 @@ pub trait SqlDialect {
     ) -> Result<CompiledQuery, SqlCompileError> {
         let mut params = Vec::new();
         let sql = self.compile_select_sql(entity, query, &mut params)?;
-        Ok(CompiledQuery { sql, params })
+        Ok(CompiledQuery {
+            sql,
+            params,
+            comment: query.comment.clone(),
+        })
     }
 
     fn compile_select_sql(
@@ -142,7 +137,7 @@ pub trait SqlDialect {
         params: &mut Vec<Value>,
     ) -> Result<String, SqlCompileError> {
         if let Some(raw_sql) = &query.raw_sql {
-            return Ok(with_comment(raw_sql.clone(), query.comment.as_deref()));
+            return Ok(raw_sql.clone());
         }
 
         let projection = if query.aggregates.is_empty() {
@@ -203,7 +198,7 @@ pub trait SqlDialect {
             }
         }
 
-        Ok(with_comment(sql, query.comment.as_deref()))
+        Ok(sql)
     }
 
     fn compile_insert(
@@ -235,6 +230,7 @@ pub trait SqlDialect {
                 placeholders.join(", ")
             ),
             params,
+            comment: None,
         })
     }
 
@@ -306,6 +302,7 @@ pub trait SqlDialect {
                 predicates.join(" AND ")
             ),
             params,
+            comment: None,
         })
     }
 
@@ -353,6 +350,7 @@ pub trait SqlDialect {
                     predicates.join(" AND ")
                 ),
                 params,
+                comment: None,
             });
         }
 
@@ -382,6 +380,7 @@ pub trait SqlDialect {
                 predicates.join(" AND ")
             ),
             params,
+            comment: None,
         })
     }
 
@@ -420,6 +419,7 @@ pub trait SqlDialect {
                 self.placeholder(3),
             ),
             params,
+            comment: None,
         })
     }
 

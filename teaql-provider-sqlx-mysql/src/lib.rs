@@ -153,7 +153,7 @@ impl MysqlMutationExecutor {
         for value in &query.params {
             bind_mysql(&mut args, value)?;
         }
-        let result = query_with(&query.sql, args).execute(&self.pool).await?;
+        let result = query_with(&query.sql_with_comment(), args).execute(&self.pool).await?;
         Ok(result.rows_affected())
     }
 
@@ -165,7 +165,7 @@ impl MysqlMutationExecutor {
         for value in &query.params {
             bind_mysql(&mut args, value)?;
         }
-        let rows = query_with(&query.sql, args).fetch_all(&self.pool).await?;
+        let rows = query_with(&query.sql_with_comment(), args).fetch_all(&self.pool).await?;
         rows.iter().map(decode_mysql_row).collect()
     }
 
@@ -265,7 +265,7 @@ impl MysqlTransactionExecutor {
         for value in &query.params {
             bind_mysql(&mut args, value)?;
         }
-        let result = query_with(&query.sql, args)
+        let result = query_with(&query.sql_with_comment(), args)
             .execute(&mut **transaction)
             .await?;
         Ok(result.rows_affected())
@@ -283,7 +283,7 @@ impl MysqlTransactionExecutor {
         for value in &query.params {
             bind_mysql(&mut args, value)?;
         }
-        let rows = query_with(&query.sql, args)
+        let rows = query_with(&query.sql_with_comment(), args)
             .fetch_all(&mut **transaction)
             .await?;
         rows.iter().map(decode_mysql_row).collect()

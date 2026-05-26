@@ -11,9 +11,20 @@ pub enum DatabaseKind {
 pub struct CompiledQuery {
     pub sql: String,
     pub params: Vec<Value>,
+    pub comment: Option<String>,
 }
 
 impl CompiledQuery {
+    pub fn sql_with_comment(&self) -> String {
+        match &self.comment {
+            Some(comment) if !comment.is_empty() => {
+                let escaped = comment.replace("*/", "* /");
+                format!("/* {escaped} */ {}", self.sql)
+            }
+            _ => self.sql.clone(),
+        }
+    }
+
     pub fn debug_sql(&self, kind: DatabaseKind) -> String {
         match kind {
             DatabaseKind::PostgreSql => replace_postgres_placeholders(&self.sql, &self.params),
