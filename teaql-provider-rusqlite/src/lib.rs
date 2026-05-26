@@ -328,7 +328,7 @@ pub trait RusqliteSchemaExt {
     ) -> Pin<Box<dyn Future<Output = Result<(), MutationExecutorError>> + Send + '_>>;
 }
 
-fn ensure_rusqlite_schema_for(ctx: &UserContext) -> Result<(), MutationExecutorError> {
+pub fn ensure_rusqlite_schema_for(ctx: &UserContext) -> Result<(), MutationExecutorError> {
     let dialect = ctx.get_resource::<RusqliteDialect>().ok_or_else(|| {
         MutationExecutorError::Bind("missing typed resource: RusqliteDialect".to_owned())
     })?;

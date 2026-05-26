@@ -398,10 +398,22 @@ impl UserContext {
             } else {
                 "".to_owned()
             };
+            let mut clean_debug_sql = debug_sql.clone();
+            if let Some(ref c) = final_comment {
+                let prefix = format!("/* {c} */ ");
+                if clean_debug_sql.starts_with(&prefix) {
+                    clean_debug_sql = clean_debug_sql[prefix.len()..].to_owned();
+                } else {
+                    let prefix_no_space = format!("/* {c} */");
+                    if clean_debug_sql == prefix_no_space {
+                        clean_debug_sql = "".to_owned();
+                    }
+                }
+            }
             let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
             let log_line = format!(
                 "{timestamp_str}-[{user_id_str}]{comment_part}--DEBUG - SqlLogEntry - [{result_summary}] {} (took {:.3}ms)\n",
-                debug_sql, elapsed_ms
+                clean_debug_sql, elapsed_ms
             );
             let _ = file.write_all(log_line.as_bytes());
         }
