@@ -290,7 +290,7 @@ where
         }
     }
 
-    fn resolve_final_comment(&self, comment: Option<String>) -> Option<String> {
+    pub(crate) fn resolve_final_comment(&self, comment: Option<String>) -> Option<String> {
         let stack_comment = self.metadata.context.comment_stack.lock().ok().and_then(|stack| {
             if stack.is_empty() {
                 None

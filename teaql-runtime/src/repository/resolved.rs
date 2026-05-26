@@ -175,10 +175,11 @@ where
         query: &SelectQuery,
     ) -> Result<Vec<Record>, RepositoryError<E::Error>> {
         let _guard = crate::context::QueryCommentGuard::new(self.repository.metadata.context, query.comment.clone());
-        let compiled = self
+        let mut compiled = self
             .repository
             .compile(query)
             .map_err(RepositoryError::Runtime)?;
+        compiled.comment = self.repository.resolve_final_comment(query.comment.clone());
         if let Some(options) = query.aggregation_cache.filter(|options| options.enabled) {
             if let Some(cache) = self
                 .repository
@@ -331,6 +332,7 @@ where
         let query = self
             .prepare_select_query(query)
             .map_err(RepositoryError::Runtime)?;
+
         let _guard = crate::context::QueryCommentGuard::new(self.repository.metadata.context, query.comment.clone());
 
         let mut rows = self.repository.fetch_all(&query)?;

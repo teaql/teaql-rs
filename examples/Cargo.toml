@@ -7,11 +7,11 @@ authors.workspace = true
 publish = false
 
 [dependencies]
-teaql-core = { path = "../teaql-core", version = "0.9.3" }
-teaql-macros = { path = "../teaql-macros", version = "0.9.3" }
-teaql-provider-sqlx-postgres = { path = "../teaql-provider-sqlx-postgres", version = "0.9.3" }
-teaql-provider-sqlx-sqlite = { path = "../teaql-provider-sqlx-sqlite", version = "0.9.3" }
-teaql-runtime = { path = "../teaql-runtime", version = "0.9.3" }
-teaql-sql = { path = "../teaql-sql", version = "0.9.3" }
+teaql-core = { path = "../teaql-core", version = "0.9.4" }
+teaql-macros = { path = "../teaql-macros", version = "0.9.4" }
+teaql-provider-sqlx-postgres = { path = "../teaql-provider-sqlx-postgres", version = "0.9.4" }
+teaql-provider-sqlx-sqlite = { path = "../teaql-provider-sqlx-sqlite", version = "0.9.4" }
+teaql-runtime = { path = "../teaql-runtime", version = "0.9.4" }
+teaql-sql = { path = "../teaql-sql", version = "0.9.4" }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "sqlite", "json", "chrono", "rust_decimal"] }
 tokio = { workspace = true }

@@ -2676,6 +2676,41 @@ mod tests {
         }
         let _ = std::fs::remove_file("app.log"); // Cleanup
     }
+
+    #[test]
+    fn resolved_repository_propagates_comments_through_fetch_prepared_query() {
+        let mut ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(entity()),
+            )
+            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(StubExecutor {
+            affected: 1,
+            rows: Vec::new(),
+        });
+
+        let repo = ctx
+            .resolve_repository::<PostgresDialect, StubExecutor>("Order")
+            .unwrap();
+
+        // Simulate outer facet query comment propagation
+        {
+            let _guard1 = crate::context::QueryCommentGuard::new(&ctx, Some("outer-query-comment".to_owned()));
+            let _guard2 = crate::context::QueryCommentGuard::new(&ctx, Some("facet-name-comment".to_owned()));
+
+            let query = repo.select().comment("inner-query-comment");
+            let _ = repo.fetch_all(&query).unwrap();
+        }
+
+        let logs = ctx.sql_logs();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(
+            logs[0].comment.as_deref(),
+            Some("outer-query-comment->facet-name-comment->inner-query-comment")
+        );
+    }
 }
 
 pub use checker::{
