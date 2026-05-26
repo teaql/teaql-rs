@@ -84,7 +84,10 @@ where
     }
 
     pub fn fetch_all(&self, query: &SelectQuery) -> Result<Vec<Record>, RepositoryError<E::Error>> {
-        let compiled = self.compile(query).map_err(RepositoryError::Runtime)?;
+        let mut compiled = self.compile(query).map_err(RepositoryError::Runtime)?;
+        let final_comment = self.resolve_final_comment(query.comment.clone());
+        compiled.comment = final_comment;
+
         let started_at = SystemTime::now();
         let started = Instant::now();
         let rows = self
@@ -99,7 +102,7 @@ where
             Some(rows.len()),
             Some(query.entity.clone()),
             None,
-            query.comment.clone(),
+            compiled.comment.clone(),
         );
         Ok(rows)
     }
@@ -132,10 +135,13 @@ where
     }
 
     pub fn insert(&self, command: &InsertCommand) -> Result<u64, RepositoryError<E::Error>> {
-        let compiled = self
+        let mut compiled = self
             .repository()
             .compile_insert(command)
             .map_err(RepositoryError::Runtime)?;
+        let final_comment = self.resolve_final_comment(None);
+        compiled.comment = final_comment;
+
         let started_at = SystemTime::now();
         let started = Instant::now();
         let affected = self
@@ -150,7 +156,7 @@ where
             None,
             None,
             Some(affected),
-            None,
+            compiled.comment.clone(),
         );
         self.invalidate_aggregation_cache_for(&command.entity);
         Ok(affected)
@@ -217,8 +223,11 @@ where
         &self,
         operation: SqlLogOperation,
         entity: &str,
-        compiled: CompiledQuery,
+        mut compiled: CompiledQuery,
     ) -> Result<u64, RepositoryError<E::Error>> {
+        let final_comment = self.resolve_final_comment(None);
+        compiled.comment = final_comment;
+
         let started_at = SystemTime::now();
         let started = Instant::now();
         let affected = self
@@ -233,7 +242,7 @@ where
             None,
             None,
             Some(affected),
-            None,
+            compiled.comment.clone(),
         );
         self.invalidate_aggregation_cache_for(entity);
         Ok(affected)
@@ -278,6 +287,31 @@ where
             .get_resource::<InMemoryAggregationCache>()
         {
             invalidate_aggregation_cache_namespace(cache, entity);
+        }
+    }
+
+    fn resolve_final_comment(&self, comment: Option<String>) -> Option<String> {
+        let stack_comment = self.metadata.context.comment_stack.lock().ok().and_then(|stack| {
+            if stack.is_empty() {
+                None
+            } else {
+                Some(stack.join("->"))
+            }
+        });
+        let business_comment = stack_comment.or(comment);
+        let user_id = self.metadata.context.user_identifier().map(|s| s.to_owned());
+
+        match (user_id, business_comment) {
+            (Some(user), Some(bus)) if !user.is_empty() && !bus.is_empty() => {
+                Some(format!("[{user}] {bus}"))
+            }
+            (Some(user), _) if !user.is_empty() => {
+                Some(format!("[{user}]"))
+            }
+            (_, Some(bus)) if !bus.is_empty() => {
+                Some(bus)
+            }
+            _ => None,
         }
     }
 }
