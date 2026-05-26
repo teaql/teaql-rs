@@ -264,6 +264,7 @@ where
         query: &SelectQuery,
         relation_aggregates: &[RelationAggregate],
     ) -> Result<Vec<Record>, RepositoryError<E::Error>> {
+        let _guard = crate::context::QueryCommentGuard::new(self.repository.metadata.context, query.comment.clone());
         let mut rows = self.fetch_all(query)?;
         self.enhance_relation_aggregates(&mut rows, relation_aggregates, query.aggregation_cache)?;
         Ok(rows)

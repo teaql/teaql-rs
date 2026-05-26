@@ -10,7 +10,7 @@ mod memory;
 mod registry;
 mod repository;
 
-pub use context::{SchemaProvider, SqlLogEntry, SqlLogOperation, SqlLogOptions, UserContext};
+pub use context::{SchemaProvider, SqlLogEntry, SqlLogOperation, SqlLogOptions, UserContext, QueryCommentGuard};
 pub use entity_runtime::{ChangeSetStack, EntityChangeSet, EntityKey, EntityRoot, RootContext};
 pub use error::{ContextError, RepositoryError, RuntimeError};
 pub use event::{
