@@ -102,7 +102,7 @@ where
             Some(rows.len()),
             Some(query.entity.clone()),
             None,
-            compiled.comment.clone(),
+            query.comment.clone(),
         );
         Ok(rows)
     }
@@ -156,7 +156,7 @@ where
             None,
             None,
             Some(affected),
-            compiled.comment.clone(),
+            None,
         );
         self.invalidate_aggregation_cache_for(&command.entity);
         Ok(affected)
@@ -242,7 +242,7 @@ where
             None,
             None,
             Some(affected),
-            compiled.comment.clone(),
+            None,
         );
         self.invalidate_aggregation_cache_for(entity);
         Ok(affected)
