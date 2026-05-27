@@ -252,7 +252,8 @@ impl PgMutationExecutor {
 
             let existing_columns = self.table_columns(&entity.table_name).await?;
             for property in &entity.properties {
-                if existing_columns.contains(&property.column_name) {
+                let bare_column = strip_identifier_quotes(&property.column_name).to_lowercase();
+                if existing_columns.contains(&bare_column) {
                     continue;
                 }
                 let sql = dialect.compile_add_column(entity, property)?;
@@ -324,7 +325,7 @@ impl PgMutationExecutor {
         let mut columns = std::collections::BTreeSet::new();
         for row in rows {
             let name: String = row.try_get("column_name")?;
-            columns.insert(name);
+            columns.insert(name.to_lowercase());
         }
         Ok(columns)
     }
@@ -601,6 +602,23 @@ where
 
 fn quote_ident(ident: &str) -> String {
     quote_identifier_if_needed(ident, '"')
+}
+
+/// Strip wrapping identifier quotes from a SQL identifier so that bare column
+/// names returned by `information_schema.columns` can be compared with
+/// potentially-quoted `PropertyDescriptor::column_name` values.
+fn strip_identifier_quotes(ident: &str) -> &str {
+    let bytes = ident.as_bytes();
+    if bytes.len() >= 2 {
+        let (first, last) = (bytes[0], bytes[bytes.len() - 1]);
+        if (first == b'"' && last == b'"')
+            || (first == b'`' && last == b'`')
+            || (first == b'[' && last == b']')
+        {
+            return &ident[1..ident.len() - 1];
+        }
+    }
+    ident
 }
 
 fn bind_pg(args: &mut PgArguments, value: &Value) -> Result<(), MutationExecutorError> {

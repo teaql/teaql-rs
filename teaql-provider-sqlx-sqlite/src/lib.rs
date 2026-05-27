@@ -135,7 +135,8 @@ impl SqliteMutationExecutor {
 
             let existing_columns = self.table_columns(&entity.table_name).await?;
             for property in &entity.properties {
-                if existing_columns.contains(&property.column_name.to_lowercase()) {
+                let bare_column = strip_identifier_quotes(&property.column_name).to_lowercase();
+                if existing_columns.contains(&bare_column) {
                     continue;
                 }
                 let sql = dialect.compile_add_column(entity, property)?;
@@ -523,6 +524,27 @@ where
 
 fn quote_ident(ident: &str) -> String {
     quote_identifier_if_needed(ident, '"')
+}
+
+/// Strip wrapping identifier quotes from a SQL identifier.
+///
+/// SQLite `PRAGMA table_info` returns bare column names (e.g. `description`),
+/// but generated `PropertyDescriptor::column_name` may carry quotes
+/// (e.g. `"description"`) when the name is a reserved keyword.  This helper
+/// normalises the column name so the two can be compared correctly during
+/// schema migration.
+fn strip_identifier_quotes(ident: &str) -> &str {
+    let bytes = ident.as_bytes();
+    if bytes.len() >= 2 {
+        let (first, last) = (bytes[0], bytes[bytes.len() - 1]);
+        if (first == b'"' && last == b'"')
+            || (first == b'`' && last == b'`')
+            || (first == b'[' && last == b']')
+        {
+            return &ident[1..ident.len() - 1];
+        }
+    }
+    ident
 }
 
 fn bind_sqlite(args: &mut SqliteArguments<'_>, value: &Value) -> Result<(), MutationExecutorError> {
