@@ -135,7 +135,7 @@ impl SqliteMutationExecutor {
 
             let existing_columns = self.table_columns(&entity.table_name).await?;
             for property in &entity.properties {
-                if existing_columns.contains(&property.column_name) {
+                if existing_columns.contains(&property.column_name.to_lowercase()) {
                     continue;
                 }
                 let sql = dialect.compile_add_column(entity, property)?;
@@ -251,7 +251,7 @@ impl SqliteMutationExecutor {
         let mut columns = std::collections::BTreeSet::new();
         for row in rows {
             let name: String = row.try_get("name")?;
-            columns.insert(name);
+            columns.insert(name.to_lowercase());
         }
         Ok(columns)
     }

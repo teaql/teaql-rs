@@ -140,7 +140,7 @@ impl RusqliteMutationExecutor {
 
             let existing_columns = self.table_columns(&entity.table_name)?;
             for property in &entity.properties {
-                if existing_columns.contains(&property.column_name) {
+                if existing_columns.contains(&property.column_name.to_lowercase()) {
                     continue;
                 }
                 let sql = dialect.compile_add_column(entity, property)?;
@@ -211,7 +211,7 @@ impl RusqliteMutationExecutor {
         let rows = statement.query_map([], |row| row.get::<_, String>("name"))?;
         let mut columns = BTreeSet::new();
         for row in rows {
-            columns.insert(row?);
+            columns.insert(row?.to_lowercase());
         }
         Ok(columns)
     }
