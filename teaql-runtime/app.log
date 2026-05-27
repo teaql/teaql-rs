@@ -1,0 +1,5 @@
+2026-05-27 23:28:33.307-[philip@pid-3825486.tid-44]--DEBUG - SqlLogEntry - [OrderLine] SELECT id, version, order_id, name, product_id FROM orderline WHERE (id = 2059658020358455296) (took 0.002ms)
+2026-05-27 23:28:33.307-[philip@pid-3825486.tid-44]--DEBUG - SqlLogEntry - [OrderLine] SELECT id, version, order_id, name, product_id FROM orderline WHERE (id = 2059658020358455296) (took 0.001ms)
+2026-05-27 23:28:33.307-[philip@pid-3825486.tid-44]--DEBUG - SqlLogEntry - [1 UPDATED] UPDATE orderline SET order_id = 1, name = 'line', product_id = 3, version = 2 WHERE id = 2059658020358455296 AND version = 1 (took 0.000ms)
+2026-05-27 23:28:33.307-[philip@pid-3825486.tid-44]--DEBUG - SqlLogEntry - [OrderLine] SELECT id, version, order_id, name, product_id FROM orderline WHERE (id = 1) (took 0.001ms)
+2026-05-27 23:28:33.307-[philip@pid-3825486.tid-44]--DEBUG - SqlLogEntry - [1 UPDATED] UPDATE orderline SET version = -2 WHERE id = 1 AND version = 1 (took 0.000ms)

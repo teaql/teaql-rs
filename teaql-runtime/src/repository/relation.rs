@@ -410,7 +410,7 @@ where
                         && relation.foreign_key == plan.local_key
                 })
             })
-            .map(|relation| relation.name.clone());
+            .map(|relation| (relation.name.clone(), relation.many));
 
         let mut buckets: BTreeMap<String, Vec<Record>> = BTreeMap::new();
         for child in child_rows {
@@ -428,15 +428,22 @@ where
             };
             let bucket_key = graph_identity_key(local_value);
             let related = buckets.get(&bucket_key).cloned().unwrap_or_default();
-            let related = if let Some(inverse_relation) = &inverse_relation {
+            let related = if let Some((inverse_relation, inverse_many)) = &inverse_relation {
                 let mut parent_object = parent.clone();
                 parent_object.remove(&plan.relation_name);
                 related
                     .into_iter()
                     .map(|mut child| {
-                        child
-                            .entry(inverse_relation.clone())
-                            .or_insert_with(|| Value::object(parent_object.clone()));
+                        if *inverse_many {
+                            let entry = child
+                                .entry(inverse_relation.clone())
+                                .or_insert_with(|| Value::List(Vec::new()));
+                            if let Value::List(list) = entry {
+                                list.push(Value::object(parent_object.clone()));
+                            }
+                        } else {
+                            child.insert(inverse_relation.clone(), Value::object(parent_object.clone()));
+                        }
                         child
                     })
                     .collect::<Vec<_>>()
