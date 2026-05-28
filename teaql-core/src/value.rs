@@ -184,6 +184,12 @@ impl Value {
     pub fn try_date(&self) -> Option<NaiveDate> {
         match self {
             Self::Date(value) => Some(*value),
+            Self::Text(value) => {
+                if let Ok(nd) = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d") {
+                    return Some(nd);
+                }
+                None
+            }
             _ => None,
         }
     }
@@ -191,6 +197,19 @@ impl Value {
     pub fn try_timestamp(&self) -> Option<DateTime<Utc>> {
         match self {
             Self::Timestamp(value) => Some(*value),
+            Self::Text(value) => {
+                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(value) {
+                    return Some(dt.with_timezone(&chrono::Utc));
+                }
+                if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
+                    return Some(chrono::DateTime::from_naive_utc_and_offset(ndt, chrono::Utc));
+                }
+                if let Ok(nd) = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d") {
+                    let ndt = nd.and_hms_opt(0, 0, 0)?;
+                    return Some(chrono::DateTime::from_naive_utc_and_offset(ndt, chrono::Utc));
+                }
+                None
+            }
             _ => None,
         }
     }

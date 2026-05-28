@@ -249,6 +249,9 @@ pub trait SqlDialect {
             if property.is_id {
                 continue;
             }
+            if property.is_version && command.expected_version.is_some() {
+                continue;
+            }
             if let Some(value) = command.values.get(&property.name) {
                 params.push(value.clone());
                 assignments.push(format!(

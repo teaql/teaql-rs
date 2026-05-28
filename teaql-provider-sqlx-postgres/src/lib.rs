@@ -557,18 +557,38 @@ impl PgIdSpaceGenerator {
 
     pub async fn next_id(&self, entity: &str) -> Result<u64, MutationExecutorError> {
         self.ensure_table().await?;
-        let sql = format!(
-            "INSERT INTO {} (type_name, current_level) VALUES ($1, 1) \
-             ON CONFLICT (type_name) DO UPDATE \
-             SET current_level = {}.current_level + 1 \
-             RETURNING current_level",
-            quote_ident(&self.table_name),
+        let update_sql = format!(
+            "UPDATE {} SET current_level = current_level + 1 WHERE type_name = $1 RETURNING current_level",
             quote_ident(&self.table_name)
         );
-        let id: i64 = sqlx::query_scalar(&sql)
+        let row: Option<i64> = sqlx::query_scalar(&update_sql)
             .bind(entity)
-            .fetch_one(&self.pool)
+            .fetch_optional(&self.pool)
             .await?;
+        
+        let id = match row {
+            Some(level) => level,
+            None => {
+                let insert_sql = format!(
+                    "INSERT INTO {} (type_name, current_level) VALUES ($1, 1) RETURNING current_level",
+                    quote_ident(&self.table_name)
+                );
+                let insert_res: Result<i64, sqlx::Error> = sqlx::query_scalar(&insert_sql)
+                    .bind(entity)
+                    .fetch_one(&self.pool)
+                    .await;
+                match insert_res {
+                    Ok(level) => level,
+                    Err(_) => {
+                        sqlx::query_scalar(&update_sql)
+                            .bind(entity)
+                            .fetch_one(&self.pool)
+                            .await?
+                    }
+                }
+            }
+        };
+
         u64::try_from(id).map_err(|_| {
             MutationExecutorError::Bind(format!("generated id {id} cannot be represented as u64"))
         })
@@ -621,6 +641,20 @@ fn strip_identifier_quotes(ident: &str) -> &str {
     ident
 }
 
+fn try_parse_datetime_from_str(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Some(dt.with_timezone(&chrono::Utc));
+    }
+    if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        return Some(chrono::DateTime::from_naive_utc_and_offset(ndt, chrono::Utc));
+    }
+    if let Ok(nd) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        let ndt = nd.and_hms_opt(0, 0, 0)?;
+        return Some(chrono::DateTime::from_naive_utc_and_offset(ndt, chrono::Utc));
+    }
+    None
+}
+
 fn bind_pg(args: &mut PgArguments, value: &Value) -> Result<(), MutationExecutorError> {
     match value {
         Value::Null => {
@@ -647,9 +681,15 @@ fn bind_pg(args: &mut PgArguments, value: &Value) -> Result<(), MutationExecutor
         Value::Decimal(v) => args
             .add(*v)
             .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
-        Value::Text(v) => args
-            .add(v.clone())
-            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
+        Value::Text(v) => {
+            if let Some(dt) = try_parse_datetime_from_str(v) {
+                args.add(dt)
+                    .map_err(|err| MutationExecutorError::Bind(err.to_string()))?;
+            } else {
+                args.add(v.clone())
+                    .map_err(|err| MutationExecutorError::Bind(err.to_string()))?;
+            }
+        }
         Value::Json(v) => args
             .add(Json(v.clone()))
             .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
