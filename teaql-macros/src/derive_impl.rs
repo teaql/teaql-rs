@@ -191,6 +191,9 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 #(#into_record_fields)*
                 record
             }
+
+            fn on_loaded(&mut self, _context: &dyn std::any::Any) {
+            }
         }
 
         #identifiable_impl_tokens

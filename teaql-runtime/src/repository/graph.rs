@@ -7,9 +7,10 @@ use teaql_core::{
 use teaql_sql::SqlDialect;
 
 use crate::{
-    GraphMutationKind, GraphMutationPlan, GraphNode, GraphOperation, RepositoryError, RuntimeError,
-    sorted_update_fields,
+    CommentTrack, GraphMutationKind, GraphMutationPlan, GraphNode, GraphOperation, RepositoryError,
+    RuntimeError, ScopedCommentNode, sorted_update_fields,
 };
+use crate::entity_status::EntityStatus;
 
 use super::{GraphTransactionBoundary, QueryExecutor, ResolvedRepository, helpers::*};
 
@@ -35,9 +36,7 @@ where
                 "save_graph requires a transactional executor".to_owned(),
             )));
         }
-        let result = self
-            .plan_graph(node)
-            .and_then(|plan| self.execute_graph_plan(plan));
+        let result = self.upsert_graph_node_scoped(node, None);
         match result {
             Ok(saved) => {
                 if matches!(boundary, GraphTransactionBoundary::Started) {
@@ -60,6 +59,7 @@ where
         }
     }
 
+
     pub fn save_entity_graph<T>(&self, entity: T) -> Result<GraphNode, RepositoryError<E::Error>>
     where
         T: Entity,
@@ -67,6 +67,72 @@ where
         let node = self
             .graph_node_from_entity(entity)
             .map_err(RepositoryError::Runtime)?;
+        self.save_graph(node)
+    }
+
+    pub fn save_entity<T>(&self, entity: T, status: EntityStatus) -> Result<GraphNode, RepositoryError<E::Error>>
+    where
+        T: Entity,
+    {
+        if !status.need_persist() {
+            return Ok(GraphNode::new(&self.entity));
+        }
+        if status.is_deleted() {
+            let mut node = self.graph_node_from_entity(entity)
+                .map_err(RepositoryError::Runtime)?;
+            node.operation = GraphOperation::Remove;
+            node.relations.clear();
+            self.save_graph(node)
+        } else {
+            self.save_entity_graph(entity)
+        }
+    }
+    pub fn save_entity_with_comment<T>(&self, entity: T, status: EntityStatus, comment: impl Into<String>) -> Result<GraphNode, RepositoryError<E::Error>>
+    where
+        T: Entity,
+    {
+        if status.is_deleted() {
+            let mut node = self.graph_node_from_entity(entity)
+                .map_err(RepositoryError::Runtime)?;
+            node.operation = GraphOperation::Remove;
+            node.relations.clear();
+            node.set_comment(comment);
+            self.save_graph(node)
+        } else {
+            self.save_entity_graph_with_comment(entity, comment)
+        }
+    }
+    pub fn save_entity_graph_with_comment<T>(
+        &self,
+        entity: T,
+        comment: impl Into<String>,
+    ) -> Result<GraphNode, RepositoryError<E::Error>>
+    where
+        T: Entity,
+    {
+        let mut node = self
+            .graph_node_from_entity(entity)
+            .map_err(RepositoryError::Runtime)?;
+        node.set_comment(comment);
+        self.save_graph(node)
+    }
+
+    /// Create a new entity graph with an annotation comment on the root node.
+    /// This assumes all new nodes do not exist in the database, skipping existence checks
+    /// and throwing an exception on primary key conflict.
+    pub fn create_entity_graph_with_comment<T>(
+        &self,
+        entity: T,
+        comment: impl Into<String>,
+    ) -> Result<GraphNode, RepositoryError<E::Error>>
+    where
+        T: Entity,
+    {
+        let mut node = self
+            .graph_node_from_entity(entity)
+            .map_err(RepositoryError::Runtime)?;
+        node.operation = GraphOperation::Create;
+        node.set_comment(comment);
         self.save_graph(node)
     }
 
@@ -82,7 +148,7 @@ where
         }
         let mut node = node;
         let mut plan = GraphMutationPlan::default();
-        self.collect_graph_plan(&mut node, &mut plan)?;
+        self.collect_graph_plan(&mut node, &mut plan, None, false)?;
         plan.planned_root = Some(node);
         plan.rebuild_batches();
         Ok(plan)
@@ -97,7 +163,8 @@ where
                 "graph mutation plan has no planned root".to_owned(),
             )));
         };
-        self.upsert_graph_node(root)
+
+        self.upsert_graph_node_scoped(root, None)
     }
 
     pub fn graph_node_from_entity<T>(&self, entity: T) -> Result<GraphNode, RuntimeError>
@@ -114,10 +181,12 @@ where
         self.graph_node_from_record(&descriptor.name, entity.into_record())
     }
 
-    fn collect_graph_plan(
+    fn collect_graph_plan<'s>(
         &self,
         node: &mut GraphNode,
         plan: &mut GraphMutationPlan,
+        parent_scope: Option<&'s ScopedCommentNode<'s>>,
+        parent_is_create: bool,
     ) -> Result<(), RepositoryError<E::Error>> {
         match node.operation {
             GraphOperation::Reference => {
@@ -138,7 +207,7 @@ where
                 );
                 return Ok(());
             }
-            GraphOperation::Upsert => {}
+            GraphOperation::Upsert | GraphOperation::Create => {}
         }
 
         let descriptor = self
@@ -147,6 +216,26 @@ where
             .context
             .require_entity(&node.entity)
             .map_err(RepositoryError::Runtime)?;
+
+        // Create scope node on the current stack frame if this node has a comment
+        let current_scope = node.comment.as_ref().map(|c| ScopedCommentNode {
+            parent: parent_scope,
+            track: CommentTrack {
+                entity_type: node.entity.clone(),
+                entity_id: node
+                    .id()
+                    .map(|v| match v {
+                        Value::U64(n) => n.to_string(),
+                        Value::I64(n) => n.to_string(),
+                        Value::Text(s) => s.clone(),
+                        other => format!("{other:?}"),
+                    })
+                    .unwrap_or_else(|| "(pending)".into()),
+                comment: c.clone(),
+            },
+        });
+        let active_scope = current_scope.as_ref().or(parent_scope);
+
         let id_property = descriptor.id_property().cloned();
         let id = id_property.as_ref().and_then(|property| {
             node.values
@@ -154,11 +243,18 @@ where
                 .filter(|value| !is_unassigned_id_value(value))
                 .cloned()
         });
-        let is_update = match (id_property.as_ref(), id.as_ref()) {
-            (Some(id_property), Some(id)) => self
-                .fetch_graph_current_row(&node.entity, &id_property.name, id)?
-                .is_some(),
-            _ => false,
+
+        let is_create_op = node.operation == GraphOperation::Create || (parent_is_create && node.operation == GraphOperation::Upsert);
+
+        let is_update = if is_create_op {
+            false
+        } else {
+            match (id_property.as_ref(), id.as_ref()) {
+                (Some(id_property), Some(id)) => self
+                    .fetch_graph_current_row(&node.entity, &id_property.name, id, active_scope.map(|s| s.to_lineage_string()))?
+                    .is_some(),
+                _ => false,
+            }
         };
         if !is_update {
             if let Some(id_property) = id_property.as_ref() {
@@ -212,19 +308,20 @@ where
             let child_repo = self.scoped_repository(relation.target_entity.clone());
             for child in children {
                 ensure_relation_target(&node.entity, name, &relation.target_entity, child)?;
-                child_repo.collect_graph_plan(child, plan)?;
+                child_repo.collect_graph_plan(child, plan, active_scope, is_create_op)?;
             }
         }
         Ok(())
     }
 
-    fn insert_graph_node(
+    fn insert_graph_node_scoped<'s>(
         &self,
         mut node: GraphNode,
+        parent_scope: Option<&'s ScopedCommentNode<'s>>,
     ) -> Result<GraphNode, RepositoryError<E::Error>> {
         match node.operation {
-            GraphOperation::Upsert => {}
-            GraphOperation::Reference => return self.validate_reference_node(node),
+            GraphOperation::Upsert | GraphOperation::Create => {}
+            GraphOperation::Reference => return self.validate_reference_node(node, parent_scope.map(|s| s.to_lineage_string())),
             GraphOperation::Remove => {
                 return Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
                     "create graph cannot remove node {}",
@@ -232,6 +329,25 @@ where
                 ))));
             }
         }
+
+        // Create scope node on the current stack frame if this node has a comment
+        let current_scope = node.comment.as_ref().map(|c| ScopedCommentNode {
+            parent: parent_scope,
+            track: CommentTrack {
+                entity_type: node.entity.clone(),
+                entity_id: node
+                    .id()
+                    .map(|v| match v {
+                        Value::U64(n) => n.to_string(),
+                        Value::I64(n) => n.to_string(),
+                        Value::Text(s) => s.clone(),
+                        other => format!("{other:?}"),
+                    })
+                    .unwrap_or_else(|| "(pending)".into()),
+                comment: c.clone(),
+            },
+        });
+        let active_scope = current_scope.as_ref().or(parent_scope);
 
         let descriptor = self
             .repository
@@ -269,7 +385,7 @@ where
             for child in children {
                 ensure_relation_target(&node.entity, &name, &relation.target_entity, &child)?;
                 let child_repo = self.scoped_repository(child.entity.clone());
-                let saved_child = child_repo.insert_graph_node(child)?;
+                let saved_child = child_repo.insert_graph_node_scoped(child, active_scope)?;
                 if relation.attach {
                     let foreign_value = saved_child
                         .values
@@ -295,7 +411,8 @@ where
                 values: node.values.clone(),
             })
             .map_err(RepositoryError::Runtime)?;
-        self.execute_prepared_insert(command.clone())?;
+        let lineage = active_scope.map(|s| s.to_lineage_string());
+        self.execute_prepared_insert_with_comment(command.clone(), lineage)?;
         node.values = command.values;
 
         for (name, relation, children) in many_relations {
@@ -318,7 +435,7 @@ where
                         .insert(relation.foreign_key.clone(), local_value.clone());
                 }
                 let child_repo = self.scoped_repository(child.entity.clone());
-                saved_children.push(child_repo.insert_graph_node(child)?);
+                saved_children.push(child_repo.insert_graph_node_scoped(child, active_scope)?);
             }
             node.relations.insert(name, saved_children);
         }
@@ -326,16 +443,36 @@ where
         Ok(node)
     }
 
-    fn upsert_graph_node(
+    fn upsert_graph_node_scoped<'s>(
         &self,
         mut node: GraphNode,
+        parent_scope: Option<&'s ScopedCommentNode<'s>>,
     ) -> Result<GraphNode, RepositoryError<E::Error>> {
+        // Create scope node on the current stack frame if this node has a comment
+        let current_scope = node.comment.as_ref().map(|c| ScopedCommentNode {
+            parent: parent_scope,
+            track: CommentTrack {
+                entity_type: node.entity.clone(),
+                entity_id: node
+                    .id()
+                    .map(|v| match v {
+                        Value::U64(n) => n.to_string(),
+                        Value::I64(n) => n.to_string(),
+                        Value::Text(s) => s.clone(),
+                        other => format!("{other:?}"),
+                    })
+                    .unwrap_or_else(|| "(pending)".into()),
+                comment: c.clone(),
+            },
+        });
+        let active_scope = current_scope.as_ref().or(parent_scope);
+
         match node.operation {
-            GraphOperation::Upsert => {}
-            GraphOperation::Reference => return self.validate_reference_node(node),
+            GraphOperation::Upsert | GraphOperation::Create => {}
+            GraphOperation::Reference => return self.validate_reference_node(node, active_scope.map(|s| s.to_lineage_string())),
             GraphOperation::Remove => {
-                self.validate_remove_node(&node)?;
-                self.delete_graph_node(&node)?;
+                self.validate_remove_node(&node, active_scope.map(|s| s.to_lineage_string()))?;
+                self.delete_graph_node(&node, parent_scope)?;
                 return Ok(node);
             }
         }
@@ -358,14 +495,17 @@ where
             .filter(|value| !is_unassigned_id_value(value))
             .cloned()
         else {
-            return self.insert_graph_node(node);
+            // Strip comment to prevent duplicate scope — already captured in active_scope
+            node.comment = None;
+            return self.insert_graph_node_scoped(node, active_scope);
         };
 
-        if self
-            .fetch_graph_current_row(&node.entity, &id_property.name, &id)?
+        if node.operation == GraphOperation::Create || self
+            .fetch_graph_current_row(&node.entity, &id_property.name, &id, active_scope.map(|s| s.to_lineage_string()))?
             .is_none()
         {
-            return self.insert_graph_node(node);
+            node.comment = None;
+            return self.insert_graph_node_scoped(node, active_scope);
         }
 
         let mut one_relations = Vec::new();
@@ -397,7 +537,7 @@ where
             for child in children {
                 ensure_relation_target(&node.entity, &name, &relation.target_entity, &child)?;
                 let child_repo = self.scoped_repository(child.entity.clone());
-                let saved_child = child_repo.upsert_graph_node(child)?;
+                let saved_child = child_repo.upsert_graph_node_scoped(child, active_scope)?;
                 if relation.attach {
                     let foreign_value = saved_child
                         .values
@@ -422,7 +562,8 @@ where
             let prepared_update = self
                 .prepare_update_command(&update)
                 .map_err(RepositoryError::Runtime)?;
-            self.execute_prepared_update(prepared_update.clone())?;
+            let lineage = active_scope.map(|s| s.to_lineage_string());
+            self.execute_prepared_update_with_comment(prepared_update.clone(), lineage)?;
             for (field, value) in &prepared_update.values {
                 node.values.insert(field.clone(), value.clone());
             }
@@ -452,6 +593,7 @@ where
                 &relation.target_entity,
                 &relation.foreign_key,
                 &local_value,
+                active_scope.map(|s| s.to_lineage_string()),
             )?;
             let child_descriptor = self
                 .repository
@@ -494,7 +636,7 @@ where
                         ))));
                     }
                 }
-                saved_children.push(child_repo.upsert_graph_node(child)?);
+                saved_children.push(child_repo.upsert_graph_node_scoped(child, active_scope)?);
             }
 
             if relation.delete_missing {
@@ -510,7 +652,8 @@ where
                     if let Some(version) = graph_record_version(&existing, child_descriptor) {
                         delete = delete.expected_version(version);
                     }
-                    child_repo.delete(&delete)?;
+                    let lineage = active_scope.map(|s| s.to_lineage_string());
+                    child_repo.delete_scoped(&delete, lineage)?;
                 }
             }
 
@@ -523,6 +666,7 @@ where
     fn validate_reference_node(
         &self,
         node: GraphNode,
+        lineage: Option<String>,
     ) -> Result<GraphNode, RepositoryError<E::Error>> {
         if !node.relations.is_empty() {
             return Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
@@ -572,7 +716,7 @@ where
         }
 
         let current = self
-            .fetch_graph_current_row(&node.entity, &id_property.name, &id)?
+            .fetch_graph_current_row(&node.entity, &id_property.name, &id, lineage)?
             .ok_or_else(|| {
                 RepositoryError::Runtime(RuntimeError::Graph(format!(
                     "reference node {}({}) does not exist",
@@ -609,10 +753,11 @@ where
             values: current,
             relations: BTreeMap::new(),
             operation: GraphOperation::Reference,
+            comment: None,
         })
     }
 
-    fn validate_remove_node(&self, node: &GraphNode) -> Result<(), RepositoryError<E::Error>> {
+    fn validate_remove_node(&self, node: &GraphNode, lineage: Option<String>) -> Result<(), RepositoryError<E::Error>> {
         if !node.relations.is_empty() {
             return Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
                 "remove node {} cannot contain child relations",
@@ -643,7 +788,7 @@ where
                 )))
             })?;
         let current = self
-            .fetch_graph_current_row(&node.entity, &id_property.name, &id)?
+            .fetch_graph_current_row(&node.entity, &id_property.name, &id, lineage)?
             .ok_or_else(|| {
                 RepositoryError::Runtime(RuntimeError::Graph(format!(
                     "remove node {}({}) does not exist",
@@ -674,6 +819,12 @@ where
         let mut node = GraphNode::new(entity);
 
         for (field, value) in record {
+            if field == "_comment" {
+                if let Value::Text(comment) = value {
+                    node.set_comment(comment);
+                }
+                continue;
+            }
             let Some(relation) = descriptor.relation_by_name(&field) else {
                 node.values.insert(field, value);
                 continue;
@@ -738,7 +889,11 @@ where
         command
     }
 
-    fn delete_graph_node(&self, node: &GraphNode) -> Result<u64, RepositoryError<E::Error>> {
+    fn delete_graph_node<'s>(
+        &self,
+        node: &GraphNode,
+        parent_scope: Option<&'s ScopedCommentNode<'s>>,
+    ) -> Result<u64, RepositoryError<E::Error>> {
         let descriptor = self
             .repository
             .metadata
@@ -768,7 +923,28 @@ where
                 delete = delete.expected_version(*version);
             }
         }
-        self.delete(&delete)
+
+        // Create scope node for deletion if parent/node comment is present
+        let current_scope = node.comment.as_ref().map(|c| ScopedCommentNode {
+            parent: parent_scope,
+            track: CommentTrack {
+                entity_type: node.entity.clone(),
+                entity_id: node
+                    .id()
+                    .map(|v| match v {
+                        Value::U64(n) => n.to_string(),
+                        Value::I64(n) => n.to_string(),
+                        Value::Text(s) => s.clone(),
+                        other => format!("{other:?}"),
+                    })
+                    .unwrap_or_else(|| "(pending)".into()),
+                comment: c.clone(),
+            },
+        });
+        let active_scope = current_scope.as_ref().or(parent_scope);
+        let lineage = active_scope.map(|s| s.to_lineage_string());
+
+        self.delete_scoped(&delete, lineage)
     }
 
     fn fetch_graph_current_row(
@@ -776,10 +952,15 @@ where
         entity: &str,
         id_property: &str,
         id: &Value,
+        lineage: Option<String>,
     ) -> Result<Option<Record>, RepositoryError<E::Error>> {
+        let mut query = SelectQuery::new(entity).filter(Expr::eq(id_property, id.clone()));
+        if let Some(lineage) = lineage {
+            query = query.comment(lineage);
+        }
         let mut rows = self
             .scoped_repository(entity.to_owned())
-            .fetch_all(&SelectQuery::new(entity).filter(Expr::eq(id_property, id.clone())))?;
+            .fetch_all(&query)?;
         Ok(rows.pop())
     }
 
@@ -788,9 +969,12 @@ where
         entity: &str,
         foreign_key: &str,
         parent_value: &Value,
+        lineage: Option<String>,
     ) -> Result<Vec<Record>, RepositoryError<E::Error>> {
-        self.scoped_repository(entity.to_owned()).fetch_all(
-            &SelectQuery::new(entity).filter(Expr::eq(foreign_key, parent_value.clone())),
-        )
+        let mut query = SelectQuery::new(entity).filter(Expr::eq(foreign_key, parent_value.clone()));
+        if let Some(lineage) = lineage {
+            query = query.comment(lineage);
+        }
+        self.scoped_repository(entity.to_owned()).fetch_all(&query)
     }
 }

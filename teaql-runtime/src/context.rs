@@ -98,6 +98,17 @@ pub struct SqlLogEntry {
     pub comment: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct TuiLogEntry {
+    pub timestamp: SystemTime,
+    pub line: String,
+}
+
+#[derive(Clone, Default)]
+pub struct TuiLogBuffer {
+    pub entries: std::sync::Arc<Mutex<Vec<TuiLogEntry>>>,
+}
+
 pub trait SchemaProvider: Send + Sync {
     fn ensure_schema<'a>(
         &'a self,
@@ -372,6 +383,7 @@ impl UserContext {
             result_count,
             result_type.as_deref(),
             affected_rows,
+            &debug_sql,
         );
 
         // Resolve final comment from stack or parameter
@@ -413,17 +425,45 @@ impl UserContext {
                 sql: query.sql.clone(),
                 params: query.params.clone(),
                 pretty_sql: pretty_sql(&debug_sql),
-                debug_sql,
+                debug_sql: debug_sql.clone(),
                 started_at,
                 ended_at,
                 elapsed,
-                result_summary,
+                result_summary: result_summary.clone(),
                 result_count,
                 result_type,
                 affected_rows,
                 user_identifier: self.user_identifier.clone(),
-                comment: final_comment,
+                comment: final_comment.clone(),
             });
+        }
+
+        if let Some(buf) = self.get_resource::<TuiLogBuffer>() {
+            let local_time: chrono::DateTime<chrono::Local> = started_at.into();
+            let timestamp_str = local_time.format("%H:%M:%S%.3f").to_string();
+            let user_id_str = self.user_identifier.as_deref().unwrap_or("");
+            let comment_part = if let Some(ref c) = final_comment {
+                format!(" - [{c}]")
+            } else {
+                "".to_owned()
+            };
+            let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
+            let single_line_sql = debug_sql
+                .lines()
+                .map(|line| line.trim())
+                .filter(|line| !line.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let log_line = format!(
+                "[{}]-[{}]-[DEBUG]-SqlLogEntry{} - [{}] {} (took {:.3}ms)",
+                timestamp_str, user_id_str, comment_part, result_summary, single_line_sql, elapsed_ms
+            );
+            if let Ok(mut entries) = buf.entries.lock() {
+                entries.push(TuiLogEntry {
+                    timestamp: started_at,
+                    line: log_line,
+                });
+            }
         }
     }
 
@@ -647,17 +687,85 @@ impl UserContext {
     }
 }
 
+fn extract_id_from_sql(sql: &str) -> Option<String> {
+    let sql_lower = sql.to_lowercase();
+    let where_idx = sql_lower.find("where")?;
+    let where_clause = &sql_lower[where_idx + 5..];
+    
+    let bytes = where_clause.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + 1 < bytes.len() && &bytes[i..i+2] == b"id" {
+            // Check boundary before
+            let prev_ok = if i == 0 {
+                true
+            } else {
+                let prev_char = bytes[i - 1] as char;
+                !prev_char.is_ascii_alphanumeric() && prev_char != '_' && prev_char != '.'
+            };
+            // Check boundary after
+            let next_ok = if i + 2 == bytes.len() {
+                true
+            } else {
+                let next_char = bytes[i + 2] as char;
+                !next_char.is_ascii_alphanumeric() && next_char != '_'
+            };
+            
+            if prev_ok && next_ok {
+                // Found the standalone "id" word!
+                // Now look for "=" after it
+                let mut j = i + 2;
+                while j < bytes.len() && (bytes[j] as char).is_whitespace() {
+                    j += 1;
+                }
+                if j < bytes.len() && bytes[j] == b'=' {
+                    j += 1;
+                    while j < bytes.len() && (bytes[j] as char).is_whitespace() {
+                        j += 1;
+                      }
+                      // Now extract the value
+                      let mut val_str = String::new();
+                      if j < bytes.len() && bytes[j] == b'\'' {
+                          j += 1; // consume single quote
+                          while j < bytes.len() && bytes[j] != b'\'' {
+                              val_str.push(bytes[j] as char);
+                              j += 1;
+                          }
+                          return Some(val_str);
+                      } else {
+                          while j < bytes.len() {
+                              let c = bytes[j] as char;
+                              if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                                  val_str.push(c);
+                                  j += 1;
+                              } else {
+                                  break;
+                              }
+                          }
+                          if !val_str.is_empty() {
+                              return Some(val_str);
+                          }
+                      }
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
 fn sql_result_summary(
     operation: SqlLogOperation,
     result_count: Option<usize>,
     result_type: Option<&str>,
     affected_rows: Option<u64>,
+    debug_sql: &str,
 ) -> String {
     match operation {
         SqlLogOperation::Select => {
             let count = result_count.unwrap_or(0);
             if count == 0 {
-                "NO ROWS".to_owned()
+                "MISS".to_owned()
             } else if count > 1 {
                 match result_type {
                     Some(result_type) => format!("{count}*{result_type}"),
@@ -665,7 +773,13 @@ fn sql_result_summary(
                 }
             } else {
                 match result_type {
-                    Some(result_type) => result_type.to_owned(),
+                    Some(result_type) => {
+                        if let Some(id) = extract_id_from_sql(debug_sql) {
+                            format!("{result_type}({id})")
+                        } else {
+                            result_type.to_owned()
+                        }
+                    }
                     None => "row".to_owned(),
                 }
             }

@@ -37,6 +37,11 @@ pub trait Entity: TeaqlEntity + Sized {
     fn from_record(record: Record) -> Result<Self, EntityError>;
     fn into_record(self) -> Record;
 
+    /// Invoked immediately after the entity is loaded from the repository.
+    /// Used by implementations to attach runtime contexts or initialize internal states.
+    #[allow(unused_variables)]
+    fn on_loaded(&mut self, context: &dyn std::any::Any) {}
+
     fn into_json(self) -> serde_json::Value {
         record_to_json_value(&self.into_record())
     }

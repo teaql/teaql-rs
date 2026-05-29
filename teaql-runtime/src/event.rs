@@ -42,6 +42,8 @@ pub struct EntityEvent {
     pub old_values: Option<Record>,
     pub new_values: Option<Record>,
     pub changes: Vec<EntityPropertyChange>,
+    /// Annotation comment lineage from the graph save scope chain.
+    pub comment: Option<String>,
 }
 
 impl EntityEvent {
@@ -60,6 +62,7 @@ impl EntityEvent {
             old_values: None,
             new_values: Some(values),
             changes,
+            comment: None,
         }
     }
 
@@ -74,6 +77,7 @@ impl EntityEvent {
             old_values: None,
             new_values: Some(values),
             changes,
+            comment: None,
         }
     }
 
@@ -94,6 +98,7 @@ impl EntityEvent {
             old_values,
             new_values: Some(new_values),
             changes,
+            comment: None,
         }
     }
 
@@ -110,6 +115,7 @@ impl EntityEvent {
             old_values: None,
             new_values: None,
             changes: Vec::new(),
+            comment: None,
         }
     }
 
@@ -148,6 +154,7 @@ impl EntityEvent {
             old_values: None,
             new_values: None,
             changes: Vec::new(),
+            comment: None,
         }
     }
 

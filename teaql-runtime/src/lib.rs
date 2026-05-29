@@ -1,6 +1,7 @@
 mod checker;
 mod context;
 mod entity_runtime;
+mod entity_status;
 mod error;
 mod event;
 mod graph;
@@ -10,15 +11,16 @@ mod memory;
 mod registry;
 mod repository;
 
-pub use context::{SchemaProvider, SqlLogEntry, SqlLogOperation, SqlLogOptions, UserContext, QueryCommentGuard};
+pub use context::{SchemaProvider, SqlLogEntry, SqlLogOperation, SqlLogOptions, UserContext, QueryCommentGuard, TuiLogEntry, TuiLogBuffer};
+pub use entity_status::{EntityAction, EntityStatus};
 pub use entity_runtime::{ChangeSetStack, EntityChangeSet, EntityKey, EntityRoot, RootContext};
 pub use error::{ContextError, RepositoryError, RuntimeError};
 pub use event::{
     EntityEvent, EntityEventKind, EntityEventSink, EntityPropertyChange, InMemoryEntityEventSink,
 };
 pub use graph::{
-    GraphMutationBatch, GraphMutationKind, GraphMutationPlan, GraphMutationPlanItem, GraphNode,
-    GraphOperation, sorted_update_fields,
+    CommentTrack, GraphMutationBatch, GraphMutationKind, GraphMutationPlan, GraphMutationPlanItem,
+    GraphNode, GraphOperation, ScopedCommentNode, sorted_update_fields,
 };
 pub(crate) use id::local_id_generator;
 pub use id::{InternalIdGenerator, SnowflakeIdGenerator};
@@ -395,7 +397,7 @@ mod tests {
         assert_eq!(logs[0].operation, SqlLogOperation::Select);
         assert_eq!(logs[0].result_count, Some(0));
         assert_eq!(logs[0].result_type.as_deref(), Some("Order"));
-        assert_eq!(logs[0].result_summary, "NO ROWS");
+        assert_eq!(logs[0].result_summary, "MISS");
         assert!(logs[0].ended_at >= logs[0].started_at);
         assert!(logs[0].pretty_sql.contains("\nFROM orders"));
         assert!(
@@ -949,12 +951,12 @@ mod tests {
         assert_eq!(saved.values.get("version"), Some(&Value::I64(1)));
         let lines = saved.relations.get("lines").unwrap();
         assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0].values.get("id"), Some(&Value::U64(501)));
+        assert_eq!(lines[0].values.get("id"), Some(&Value::U64(502)));
         assert_eq!(lines[0].values.get("version"), Some(&Value::I64(1)));
         assert_eq!(lines[0].values.get("order_id"), Some(&Value::U64(500)));
-        assert_eq!(lines[0].values.get("product_id"), Some(&Value::U64(502)));
+        assert_eq!(lines[0].values.get("product_id"), Some(&Value::U64(501)));
         let product = lines[0].relations.get("product").unwrap();
-        assert_eq!(product[0].values.get("id"), Some(&Value::U64(502)));
+        assert_eq!(product[0].values.get("id"), Some(&Value::U64(501)));
     }
 
     #[test]
@@ -1014,13 +1016,13 @@ mod tests {
         assert_eq!(saved.values.get("id"), Some(&Value::U64(700)));
         assert_eq!(saved.values.get("version"), Some(&Value::I64(1)));
         let lines = saved.relations.get("lines").unwrap();
-        assert_eq!(lines[0].values.get("id"), Some(&Value::U64(701)));
+        assert_eq!(lines[0].values.get("id"), Some(&Value::U64(702)));
         assert_eq!(lines[0].values.get("version"), Some(&Value::I64(1)));
         assert_eq!(lines[0].values.get("order_id"), Some(&Value::U64(700)));
-        assert_eq!(lines[0].values.get("product_id"), Some(&Value::U64(702)));
+        assert_eq!(lines[0].values.get("product_id"), Some(&Value::U64(701)));
         assert_eq!(
             lines[0].relations["product"][0].values.get("id"),
-            Some(&Value::U64(702))
+            Some(&Value::U64(701))
         );
     }
 
@@ -1070,7 +1072,7 @@ mod tests {
         );
         assert_eq!(
             saved.relations["lines"][0].values.get("product_id"),
-            Some(&Value::U64(802))
+            Some(&Value::U64(801))
         );
     }
 
@@ -1494,7 +1496,7 @@ mod tests {
         assert_eq!(events.len(), 3);
         assert_eq!(events[0].kind, EntityEventKind::Updated);
         assert_eq!(events[0].entity, "Order");
-        assert_eq!(events[1].kind, EntityEventKind::Updated);
+        assert_eq!(events[1].kind, EntityEventKind::Created);
         assert_eq!(events[1].entity, "OrderLine");
         assert_eq!(events[1].values.get("order_id"), Some(&Value::U64(1)));
         assert_eq!(events[2].kind, EntityEventKind::Deleted);

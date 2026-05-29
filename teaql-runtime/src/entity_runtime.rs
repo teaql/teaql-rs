@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use teaql_core::{Record, Value};
@@ -84,6 +84,11 @@ impl EntityChangeSet {
     pub fn changes(&self) -> &BTreeMap<EntityKey, Record> {
         &self.changes
     }
+
+    /// Remove all pending changes for a specific entity key.
+    pub fn clear_entity(&mut self, key: &EntityKey) {
+        self.changes.remove(key);
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -127,11 +132,23 @@ impl ChangeSetStack {
             *current = EntityChangeSet::default();
         }
     }
+
+    /// Remove all pending changes for a specific entity key across all stack levels.
+    pub fn clear_entity(&mut self, key: &EntityKey) {
+        for change_set in &mut self.stack {
+            change_set.clear_entity(key);
+        }
+    }
 }
 
 #[derive(Debug, Default)]
 pub struct RootContext {
     change_sets: ChangeSetStack,
+    /// Annotation comment for observability during graph save.
+    comment: Option<String>,
+    /// Entity keys that have been marked for deletion.
+    /// When the entity is saved, the graph save pipeline will treat these as Remove operations.
+    deleted_keys: BTreeSet<EntityKey>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -194,5 +211,42 @@ impl EntityRoot {
             .current()
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// Set an annotation comment on this entity root.
+    /// The comment propagates through the graph save process for observability.
+    pub fn set_comment(&self, comment: impl Into<String>) {
+        self.inner
+            .lock()
+            .expect("entity root mutex")
+            .comment = Some(comment.into());
+    }
+
+    /// Get the annotation comment, if any.
+    pub fn get_comment(&self) -> Option<String> {
+        self.inner
+            .lock()
+            .expect("entity root mutex")
+            .comment
+            .clone()
+    }
+
+    /// Mark an entity as deleted. The next `save()` call will treat this entity
+    /// as a Remove operation in the graph save pipeline.
+    /// Any pending field changes for this entity are cleared — they are irrelevant
+    /// when the entity is being deleted.
+    pub fn mark_as_delete(&self, key: EntityKey) {
+        let mut ctx = self.inner.lock().expect("entity root mutex");
+        ctx.change_sets.clear_entity(&key);
+        ctx.deleted_keys.insert(key);
+    }
+
+    /// Check whether an entity has been marked for deletion.
+    pub fn is_marked_as_delete(&self, key: &EntityKey) -> bool {
+        self.inner
+            .lock()
+            .expect("entity root mutex")
+            .deleted_keys
+            .contains(key)
     }
 }

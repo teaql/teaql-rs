@@ -315,7 +315,12 @@ where
     {
         self.fetch_all_with_relation_aggregates(query, relation_aggregates)?
             .into_iter()
-            .map(T::from_record)
+            .map(|record| {
+                let mut entity = T::from_record(record)?;
+                let root = crate::EntityRoot::default();
+                entity.on_loaded(&root as &dyn std::any::Any);
+                Ok(entity)
+            })
             .collect::<Result<Vec<_>, _>>()
             .map(SmartList::from)
             .map_err(RepositoryError::Entity)
@@ -340,7 +345,12 @@ where
         self.enhance_query_relations(&mut rows, &query)?;
         self.enhance_relations(&mut rows)?;
         rows.into_iter()
-            .map(T::from_record)
+            .map(|record| {
+                let mut entity = T::from_record(record)?;
+                let root = crate::EntityRoot::default();
+                entity.on_loaded(&root as &dyn std::any::Any);
+                Ok(entity)
+            })
             .collect::<Result<Vec<_>, _>>()
             .map(SmartList::from)
             .map_err(RepositoryError::Entity)
@@ -361,8 +371,16 @@ where
         let mut rows = self.repository.fetch_all(&query)?;
         self.enhance_query_relations(&mut rows, &query)?;
         self.enhance_relations(&mut rows)?;
+        let root = self.repository.metadata.context.get_resource::<crate::EntityRoot>().cloned();
+
         rows.into_iter()
-            .map(T::from_record)
+            .map(|record| {
+                let mut entity = T::from_record(record)?;
+                if let Some(ref root) = root {
+                    entity.on_loaded(root as &dyn std::any::Any);
+                }
+                Ok(entity)
+            })
             .collect::<Result<Vec<_>, _>>()
             .map(SmartList::from)
             .map_err(RepositoryError::Entity)
@@ -383,6 +401,14 @@ where
     }
 
     pub fn delete(&self, command: &DeleteCommand) -> Result<u64, RepositoryError<E::Error>> {
+        self.delete_scoped(command, None)
+    }
+
+    pub fn delete_scoped(
+        &self,
+        command: &DeleteCommand,
+        comment_lineage: Option<String>,
+    ) -> Result<u64, RepositoryError<E::Error>> {
         let mut command = command.clone();
         if let Some(behavior) = self.behavior() {
             behavior
@@ -391,15 +417,24 @@ where
         }
         self.enforce_delete_policy(&mut command)
             .map_err(RepositoryError::Runtime)?;
+        let resolved_lineage = self.format_lineage_comment(&command.id, comment_lineage);
+        let _guard = resolved_lineage.as_ref().map(|lineage| {
+            crate::context::QueryCommentGuard::new(
+                self.repository.metadata.context,
+                Some(lineage.clone()),
+            )
+        });
         let old_values = self.fetch_current_event_row(&command.entity, &command.id)?;
         let affected = self.repository.delete(&command)?;
-        self.emit_event(EntityEvent::deleted_with_old_values(
+        let mut event = EntityEvent::deleted_with_old_values(
             command.entity,
             command.id,
             command.expected_version,
             old_values,
-        ))
-        .map_err(RepositoryError::Runtime)?;
+        );
+        event.comment = resolved_lineage;
+        self.emit_event(event)
+            .map_err(RepositoryError::Runtime)?;
         Ok(affected)
     }
 
@@ -414,13 +449,16 @@ where
             .map_err(RepositoryError::Runtime)?;
         let old_values = self.fetch_current_event_row(&command.entity, &command.id)?;
         let affected = self.repository.recover(&command)?;
-        self.emit_event(EntityEvent::recovered_with_old_values(
+        let resolved_lineage = self.format_lineage_comment(&command.id, None);
+        let mut event = EntityEvent::recovered_with_old_values(
             command.entity,
             command.id,
             command.expected_version,
             old_values,
-        ))
-        .map_err(RepositoryError::Runtime)?;
+        );
+        event.comment = resolved_lineage;
+        self.emit_event(event)
+            .map_err(RepositoryError::Runtime)?;
         Ok(affected)
     }
 
@@ -432,9 +470,26 @@ where
         &self,
         command: InsertCommand,
     ) -> Result<u64, RepositoryError<E::Error>> {
+        self.execute_prepared_insert_with_comment(command, None)
+    }
+
+    pub(super) fn execute_prepared_insert_with_comment(
+        &self,
+        command: InsertCommand,
+        comment_lineage: Option<String>,
+    ) -> Result<u64, RepositoryError<E::Error>> {
+        let id_val = command.values.get("id").cloned().unwrap_or(Value::Null);
+        let resolved_lineage = self.format_lineage_comment(&id_val, comment_lineage);
+        let _guard = resolved_lineage.as_ref().map(|lineage| {
+            crate::context::QueryCommentGuard::new(
+                self.repository.metadata.context,
+                Some(lineage.clone()),
+            )
+        });
         let affected = self.repository.insert(&command)?;
-        self.emit_event(EntityEvent::created(command.entity, command.values))
-            .map_err(RepositoryError::Runtime)?;
+        let mut event = EntityEvent::created(command.entity, command.values);
+        event.comment = resolved_lineage;
+        self.emit_event(event).map_err(RepositoryError::Runtime)?;
         Ok(affected)
     }
 
@@ -442,6 +497,21 @@ where
         &self,
         command: UpdateCommand,
     ) -> Result<u64, RepositoryError<E::Error>> {
+        self.execute_prepared_update_with_comment(command, None)
+    }
+
+    pub(super) fn execute_prepared_update_with_comment(
+        &self,
+        command: UpdateCommand,
+        comment_lineage: Option<String>,
+    ) -> Result<u64, RepositoryError<E::Error>> {
+        let resolved_lineage = self.format_lineage_comment(&command.id, comment_lineage);
+        let _guard = resolved_lineage.as_ref().map(|lineage| {
+            crate::context::QueryCommentGuard::new(
+                self.repository.metadata.context,
+                Some(lineage.clone()),
+            )
+        });
         let old_values = self.fetch_current_event_row(&command.entity, &command.id)?;
         let affected = self.repository.update(&command)?;
         let updated_fields = command.values.keys().cloned().collect();
@@ -454,14 +524,15 @@ where
         for (field, value) in &values {
             new_values.insert(field.clone(), value.clone());
         }
-        self.emit_event(EntityEvent::updated_with_old_values(
+        let mut event = EntityEvent::updated_with_old_values(
             command.entity,
             values,
             old_values,
             new_values,
             updated_fields,
-        ))
-        .map_err(RepositoryError::Runtime)?;
+        );
+        event.comment = resolved_lineage;
+        self.emit_event(event).map_err(RepositoryError::Runtime)?;
         Ok(affected)
     }
 
@@ -486,6 +557,39 @@ where
             &SelectQuery::new(entity).filter(Expr::eq(id_property.name.clone(), id.clone())),
         )?;
         Ok(rows.pop())
+    }
+
+    fn format_lineage_comment(
+        &self,
+        id: &Value,
+        comment_lineage: Option<String>,
+    ) -> Option<String> {
+        let raw_comment = comment_lineage.or_else(|| {
+            self.repository.metadata.context.comment_stack.lock().ok().and_then(|stack| {
+                if stack.is_empty() {
+                    None
+                } else {
+                    Some(stack.join(" -> "))
+                }
+            })
+        })?;
+
+        if raw_comment.is_empty() {
+            return None;
+        }
+
+        let id_str = match id {
+            Value::U64(n) => n.to_string(),
+            Value::I64(n) => n.to_string(),
+            Value::Text(s) => s.clone(),
+            other => format!("{other:?}"),
+        };
+        let prefix = format!("{}({}):", self.entity, id_str);
+        if raw_comment.starts_with(&prefix) || raw_comment.contains(&format!(" -> {}({}):", self.entity, id_str)) {
+            Some(raw_comment)
+        } else {
+            Some(format!("{}({}): {}", self.entity, id_str, raw_comment))
+        }
     }
 
     pub(super) fn scoped_repository(&self, entity: String) -> ResolvedRepository<'a, D, E> {

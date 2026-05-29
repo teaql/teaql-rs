@@ -5,6 +5,7 @@ use teaql_core::{Record, Value};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphOperation {
     Upsert,
+    Create,
     Reference,
     Remove,
 }
@@ -125,6 +126,9 @@ pub struct GraphNode {
     pub values: Record,
     pub relations: BTreeMap<String, Vec<GraphNode>>,
     pub operation: GraphOperation,
+    /// Annotation comment: carries business intent metadata through graph save.
+    /// Not persisted to the database — used for observability (SQL logs, audit trails).
+    pub comment: Option<String>,
 }
 
 impl GraphNode {
@@ -134,6 +138,7 @@ impl GraphNode {
             values: Record::new(),
             relations: BTreeMap::new(),
             operation: GraphOperation::Upsert,
+            comment: None,
         }
     }
 
@@ -173,5 +178,67 @@ impl GraphNode {
 
     pub fn id(&self) -> Option<&Value> {
         self.values.get("id")
+    }
+
+    /// Set an annotation comment on this graph node.
+    /// The comment propagates through the graph save process for observability.
+    pub fn comment(mut self, comment: impl Into<String>) -> Self {
+        self.comment = Some(comment.into());
+        self
+    }
+
+    /// Set an annotation comment by mutable reference.
+    pub fn set_comment(&mut self, comment: impl Into<String>) {
+        self.comment = Some(comment.into());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hierarchical Comment Propagation (Scoped Cons List)
+// ---------------------------------------------------------------------------
+
+/// Structured metadata attached to each scope node in the comment propagation chain.
+#[derive(Debug, Clone)]
+pub struct CommentTrack {
+    /// Entity type name (e.g. "Task")
+    pub entity_type: String,
+    /// Entity primary key (e.g. "23"), may be "(pending)" before INSERT
+    pub entity_id: String,
+    /// Business intent annotation (e.g. "Create lift #3")
+    pub comment: String,
+}
+
+/// A stack-allocated scope node forming a parent-pointer cons list.
+///
+/// Each node lives on the call stack of the recursive graph save function.
+/// Child nodes hold a `&'a` reference to their parent's stack frame,
+/// giving us thread-safe, lock-free, zero-overhead hierarchical comment tracking.
+#[derive(Debug)]
+pub struct ScopedCommentNode<'a> {
+    /// Reference to the parent scope (lives on the caller's stack frame)
+    pub parent: Option<&'a ScopedCommentNode<'a>>,
+    /// Structured metadata for this scope level
+    pub track: CommentTrack,
+}
+
+impl<'a> ScopedCommentNode<'a> {
+    /// Walk up the parent-pointer chain and format the full lineage string.
+    /// Output: `"Task(2): Create task '2' -> TaskExecutionLog(3): CREATED"`
+    pub fn to_lineage_string(&self) -> String {
+        let mut chain = Vec::new();
+        let mut current: Option<&ScopedCommentNode<'_>> = Some(self);
+
+        while let Some(node) = current {
+            if !node.track.comment.is_empty() {
+                chain.push(format!(
+                    "{}({}): {}",
+                    node.track.entity_type, node.track.entity_id, node.track.comment
+                ));
+            }
+            current = node.parent;
+        }
+
+        chain.reverse();
+        chain.join(" -> ")
     }
 }
