@@ -59,6 +59,25 @@ where
         }
     }
 
+    pub fn save_entity_graph_from(&self, graph: teaql_core::EntityGraph) -> Result<GraphNode, RepositoryError<E::Error>> {
+        fn convert(node: teaql_core::EntityGraphNode) -> GraphNode {
+            let mut relations = BTreeMap::new();
+            for (rel_name, child) in node.children {
+                relations.entry(rel_name).or_insert_with(Vec::new).push(convert(child));
+            }
+            GraphNode {
+                entity: node.entity_type,
+                values: node.record,
+                relations,
+                operation: match node.operation {
+                    teaql_core::EntityGraphOperation::Save => crate::GraphOperation::Upsert,
+                    teaql_core::EntityGraphOperation::Delete => crate::GraphOperation::Remove,
+                },
+                comment: node.comment,
+            }
+        }
+        self.save_graph(convert(graph.root))
+    }
 
     pub fn save_entity_graph<T>(&self, entity: T) -> Result<GraphNode, RepositoryError<E::Error>>
     where
