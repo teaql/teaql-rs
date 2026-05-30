@@ -42,8 +42,8 @@ pub struct EntityEvent {
     pub old_values: Option<Record>,
     pub new_values: Option<Record>,
     pub changes: Vec<EntityPropertyChange>,
-    /// Annotation comment lineage from the graph save scope chain.
-    pub comment: Option<String>,
+    /// Annotation trace chain from the graph save scope chain.
+    pub trace_chain: Vec<teaql_core::TraceNode>,
 }
 
 impl EntityEvent {
@@ -62,7 +62,7 @@ impl EntityEvent {
             old_values: None,
             new_values: Some(values),
             changes,
-            comment: None,
+            trace_chain: Vec::new(),
         }
     }
 
@@ -77,7 +77,7 @@ impl EntityEvent {
             old_values: None,
             new_values: Some(values),
             changes,
-            comment: None,
+            trace_chain: Vec::new(),
         }
     }
 
@@ -98,7 +98,7 @@ impl EntityEvent {
             old_values,
             new_values: Some(new_values),
             changes,
-            comment: None,
+            trace_chain: Vec::new(),
         }
     }
 
@@ -115,7 +115,7 @@ impl EntityEvent {
             old_values: None,
             new_values: None,
             changes: Vec::new(),
-            comment: None,
+            trace_chain: Vec::new(),
         }
     }
 
@@ -154,7 +154,7 @@ impl EntityEvent {
             old_values: None,
             new_values: None,
             changes: Vec::new(),
-            comment: None,
+            trace_chain: Vec::new(),
         }
     }
 

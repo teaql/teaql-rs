@@ -7,7 +7,7 @@ use teaql_core::{
 use teaql_sql::SqlDialect;
 
 use crate::{
-    CommentTrack, GraphMutationKind, GraphMutationPlan, GraphNode, GraphOperation, RepositoryError,
+    GraphMutationKind, GraphMutationPlan, GraphNode, GraphOperation, RepositoryError,
     RuntimeError, ScopedCommentNode, sorted_update_fields,
 };
 use crate::entity_status::EntityStatus;
@@ -220,17 +220,13 @@ where
         // Create scope node on the current stack frame if this node has a comment
         let current_scope = node.comment.as_ref().map(|c| ScopedCommentNode {
             parent: parent_scope,
-            track: CommentTrack {
+            track: teaql_core::TraceNode {
                 entity_type: node.entity.clone(),
-                entity_id: node
-                    .id()
-                    .map(|v| match v {
-                        Value::U64(n) => n.to_string(),
-                        Value::I64(n) => n.to_string(),
-                        Value::Text(s) => s.clone(),
-                        other => format!("{other:?}"),
-                    })
-                    .unwrap_or_else(|| "(pending)".into()),
+                entity_id: node.id().and_then(|v| match v {
+                    Value::U64(n) => Some(*n),
+                    Value::I64(n) => Some(*n as u64),
+                    _ => None,
+                }),
                 comment: c.clone(),
             },
         });
@@ -251,7 +247,7 @@ where
         } else {
             match (id_property.as_ref(), id.as_ref()) {
                 (Some(id_property), Some(id)) => self
-                    .fetch_graph_current_row(&node.entity, &id_property.name, id, active_scope.map(|s| s.to_lineage_string()))?
+                    .fetch_graph_current_row(&node.entity, &id_property.name, id, active_scope.map(|s| s.to_trace_chain()).unwrap_or_default())?
                     .is_some(),
                 _ => false,
             }
@@ -321,7 +317,7 @@ where
     ) -> Result<GraphNode, RepositoryError<E::Error>> {
         match node.operation {
             GraphOperation::Upsert | GraphOperation::Create => {}
-            GraphOperation::Reference => return self.validate_reference_node(node, parent_scope.map(|s| s.to_lineage_string())),
+            GraphOperation::Reference => return self.validate_reference_node(node, parent_scope.map(|s| s.to_trace_chain()).unwrap_or_default()),
             GraphOperation::Remove => {
                 return Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
                     "create graph cannot remove node {}",
@@ -333,17 +329,15 @@ where
         // Create scope node on the current stack frame if this node has a comment
         let current_scope = node.comment.as_ref().map(|c| ScopedCommentNode {
             parent: parent_scope,
-            track: CommentTrack {
+            track: teaql_core::TraceNode {
                 entity_type: node.entity.clone(),
                 entity_id: node
                     .id()
-                    .map(|v| match v {
-                        Value::U64(n) => n.to_string(),
-                        Value::I64(n) => n.to_string(),
-                        Value::Text(s) => s.clone(),
-                        other => format!("{other:?}"),
-                    })
-                    .unwrap_or_else(|| "(pending)".into()),
+                    .and_then(|v| match v {
+                        Value::U64(n) => Some(*n),
+                        Value::I64(n) => Some(*n as u64),
+                        _ => None,
+                    }),
                 comment: c.clone(),
             },
         });
@@ -409,9 +403,10 @@ where
             .prepare_insert_command(&InsertCommand {
                 entity: node.entity.clone(),
                 values: node.values.clone(),
+                trace_chain: Vec::new(),
             })
             .map_err(RepositoryError::Runtime)?;
-        let lineage = active_scope.map(|s| s.to_lineage_string());
+        let lineage = active_scope.map(|s| s.to_trace_chain()).unwrap_or_default();
         self.execute_prepared_insert_with_comment(command.clone(), lineage)?;
         node.values = command.values;
 
@@ -451,17 +446,15 @@ where
         // Create scope node on the current stack frame if this node has a comment
         let current_scope = node.comment.as_ref().map(|c| ScopedCommentNode {
             parent: parent_scope,
-            track: CommentTrack {
+            track: teaql_core::TraceNode {
                 entity_type: node.entity.clone(),
                 entity_id: node
                     .id()
-                    .map(|v| match v {
-                        Value::U64(n) => n.to_string(),
-                        Value::I64(n) => n.to_string(),
-                        Value::Text(s) => s.clone(),
-                        other => format!("{other:?}"),
-                    })
-                    .unwrap_or_else(|| "(pending)".into()),
+                    .and_then(|v| match v {
+                        Value::U64(n) => Some(*n),
+                        Value::I64(n) => Some(*n as u64),
+                        _ => None,
+                    }),
                 comment: c.clone(),
             },
         });
@@ -469,9 +462,9 @@ where
 
         match node.operation {
             GraphOperation::Upsert | GraphOperation::Create => {}
-            GraphOperation::Reference => return self.validate_reference_node(node, active_scope.map(|s| s.to_lineage_string())),
+            GraphOperation::Reference => return self.validate_reference_node(node, active_scope.map(|s| s.to_trace_chain()).unwrap_or_default()),
             GraphOperation::Remove => {
-                self.validate_remove_node(&node, active_scope.map(|s| s.to_lineage_string()))?;
+                self.validate_remove_node(&node, active_scope.map(|s| s.to_trace_chain()).unwrap_or_default())?;
                 self.delete_graph_node(&node, parent_scope)?;
                 return Ok(node);
             }
@@ -501,7 +494,7 @@ where
         };
 
         if node.operation == GraphOperation::Create || self
-            .fetch_graph_current_row(&node.entity, &id_property.name, &id, active_scope.map(|s| s.to_lineage_string()))?
+            .fetch_graph_current_row(&node.entity, &id_property.name, &id, active_scope.map(|s| s.to_trace_chain()).unwrap_or_default())?
             .is_none()
         {
             node.comment = None;
@@ -562,7 +555,7 @@ where
             let prepared_update = self
                 .prepare_update_command(&update)
                 .map_err(RepositoryError::Runtime)?;
-            let lineage = active_scope.map(|s| s.to_lineage_string());
+            let lineage = active_scope.map(|s| s.to_trace_chain()).unwrap_or_default();
             self.execute_prepared_update_with_comment(prepared_update.clone(), lineage)?;
             for (field, value) in &prepared_update.values {
                 node.values.insert(field.clone(), value.clone());
@@ -593,7 +586,7 @@ where
                 &relation.target_entity,
                 &relation.foreign_key,
                 &local_value,
-                active_scope.map(|s| s.to_lineage_string()),
+                active_scope.map(|s| s.to_trace_chain()).unwrap_or_default(),
             )?;
             let child_descriptor = self
                 .repository
@@ -652,7 +645,7 @@ where
                     if let Some(version) = graph_record_version(&existing, child_descriptor) {
                         delete = delete.expected_version(version);
                     }
-                    let lineage = active_scope.map(|s| s.to_lineage_string());
+                    let lineage = active_scope.map(|s| s.to_trace_chain()).unwrap_or_default();
                     child_repo.delete_scoped(&delete, lineage)?;
                 }
             }
@@ -666,7 +659,7 @@ where
     fn validate_reference_node(
         &self,
         node: GraphNode,
-        lineage: Option<String>,
+        trace_chain: Vec<teaql_core::TraceNode>,
     ) -> Result<GraphNode, RepositoryError<E::Error>> {
         if !node.relations.is_empty() {
             return Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
@@ -716,7 +709,7 @@ where
         }
 
         let current = self
-            .fetch_graph_current_row(&node.entity, &id_property.name, &id, lineage)?
+            .fetch_graph_current_row(&node.entity, &id_property.name, &id, trace_chain)?
             .ok_or_else(|| {
                 RepositoryError::Runtime(RuntimeError::Graph(format!(
                     "reference node {}({}) does not exist",
@@ -757,7 +750,7 @@ where
         })
     }
 
-    fn validate_remove_node(&self, node: &GraphNode, lineage: Option<String>) -> Result<(), RepositoryError<E::Error>> {
+    fn validate_remove_node(&self, node: &GraphNode, trace_chain: Vec<teaql_core::TraceNode>) -> Result<(), RepositoryError<E::Error>> {
         if !node.relations.is_empty() {
             return Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
                 "remove node {} cannot contain child relations",
@@ -788,7 +781,7 @@ where
                 )))
             })?;
         let current = self
-            .fetch_graph_current_row(&node.entity, &id_property.name, &id, lineage)?
+            .fetch_graph_current_row(&node.entity, &id_property.name, &id, trace_chain)?
             .ok_or_else(|| {
                 RepositoryError::Runtime(RuntimeError::Graph(format!(
                     "remove node {}({}) does not exist",
@@ -927,22 +920,20 @@ where
         // Create scope node for deletion if parent/node comment is present
         let current_scope = node.comment.as_ref().map(|c| ScopedCommentNode {
             parent: parent_scope,
-            track: CommentTrack {
+            track: teaql_core::TraceNode {
                 entity_type: node.entity.clone(),
                 entity_id: node
                     .id()
-                    .map(|v| match v {
-                        Value::U64(n) => n.to_string(),
-                        Value::I64(n) => n.to_string(),
-                        Value::Text(s) => s.clone(),
-                        other => format!("{other:?}"),
-                    })
-                    .unwrap_or_else(|| "(pending)".into()),
+                    .and_then(|v| match v {
+                        Value::U64(n) => Some(*n),
+                        Value::I64(n) => Some(*n as u64),
+                        _ => None,
+                    }),
                 comment: c.clone(),
             },
         });
         let active_scope = current_scope.as_ref().or(parent_scope);
-        let lineage = active_scope.map(|s| s.to_lineage_string());
+        let lineage = active_scope.map(|s| s.to_trace_chain()).unwrap_or_default();
 
         self.delete_scoped(&delete, lineage)
     }
@@ -952,12 +943,10 @@ where
         entity: &str,
         id_property: &str,
         id: &Value,
-        lineage: Option<String>,
+        trace_chain: Vec<teaql_core::TraceNode>,
     ) -> Result<Option<Record>, RepositoryError<E::Error>> {
         let mut query = SelectQuery::new(entity).filter(Expr::eq(id_property, id.clone()));
-        if let Some(lineage) = lineage {
-            query = query.comment(lineage);
-        }
+        query.trace_chain = trace_chain;
         let mut rows = self
             .scoped_repository(entity.to_owned())
             .fetch_all(&query)?;
@@ -969,12 +958,10 @@ where
         entity: &str,
         foreign_key: &str,
         parent_value: &Value,
-        lineage: Option<String>,
+        trace_chain: Vec<teaql_core::TraceNode>,
     ) -> Result<Vec<Record>, RepositoryError<E::Error>> {
         let mut query = SelectQuery::new(entity).filter(Expr::eq(foreign_key, parent_value.clone()));
-        if let Some(lineage) = lineage {
-            query = query.comment(lineage);
-        }
+        query.trace_chain = trace_chain;
         self.scoped_repository(entity.to_owned()).fetch_all(&query)
     }
 }

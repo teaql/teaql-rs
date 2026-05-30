@@ -197,17 +197,6 @@ impl GraphNode {
 // Hierarchical Comment Propagation (Scoped Cons List)
 // ---------------------------------------------------------------------------
 
-/// Structured metadata attached to each scope node in the comment propagation chain.
-#[derive(Debug, Clone)]
-pub struct CommentTrack {
-    /// Entity type name (e.g. "Task")
-    pub entity_type: String,
-    /// Entity primary key (e.g. "23"), may be "(pending)" before INSERT
-    pub entity_id: String,
-    /// Business intent annotation (e.g. "Create lift #3")
-    pub comment: String,
-}
-
 /// A stack-allocated scope node forming a parent-pointer cons list.
 ///
 /// Each node lives on the call stack of the recursive graph save function.
@@ -217,28 +206,22 @@ pub struct CommentTrack {
 pub struct ScopedCommentNode<'a> {
     /// Reference to the parent scope (lives on the caller's stack frame)
     pub parent: Option<&'a ScopedCommentNode<'a>>,
-    /// Structured metadata for this scope level
-    pub track: CommentTrack,
+    pub track: teaql_core::TraceNode,
 }
 
 impl<'a> ScopedCommentNode<'a> {
-    /// Walk up the parent-pointer chain and format the full lineage string.
-    /// Output: `"Task(2): Create task '2' -> TaskExecutionLog(3): CREATED"`
-    pub fn to_lineage_string(&self) -> String {
+    pub fn to_trace_chain(&self) -> Vec<teaql_core::TraceNode> {
         let mut chain = Vec::new();
         let mut current: Option<&ScopedCommentNode<'_>> = Some(self);
 
         while let Some(node) = current {
             if !node.track.comment.is_empty() {
-                chain.push(format!(
-                    "{}({}): {}",
-                    node.track.entity_type, node.track.entity_id, node.track.comment
-                ));
+                chain.push(node.track.clone());
             }
             current = node.parent;
         }
 
         chain.reverse();
-        chain.join(" -> ")
+        chain
     }
 }

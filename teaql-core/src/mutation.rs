@@ -12,6 +12,7 @@ pub enum MutationKind {
 pub struct InsertCommand {
     pub entity: String,
     pub values: Record,
+    pub trace_chain: Vec<crate::TraceNode>,
 }
 
 impl InsertCommand {
@@ -19,6 +20,7 @@ impl InsertCommand {
         Self {
             entity: entity.into(),
             values: Record::new(),
+            trace_chain: Vec::new(),
         }
     }
 
@@ -34,6 +36,7 @@ pub struct UpdateCommand {
     pub id: Value,
     pub expected_version: Option<i64>,
     pub values: Record,
+    pub trace_chain: Vec<crate::TraceNode>,
 }
 
 impl UpdateCommand {
@@ -43,6 +46,7 @@ impl UpdateCommand {
             id: id.into(),
             expected_version: None,
             values: Record::new(),
+            trace_chain: Vec::new(),
         }
     }
 
@@ -63,6 +67,7 @@ pub struct DeleteCommand {
     pub id: Value,
     pub expected_version: Option<i64>,
     pub soft_delete: bool,
+    pub trace_chain: Vec<crate::TraceNode>,
 }
 
 impl DeleteCommand {
@@ -72,6 +77,7 @@ impl DeleteCommand {
             id: id.into(),
             expected_version: None,
             soft_delete: true,
+            trace_chain: Vec::new(),
         }
     }
 
@@ -91,6 +97,7 @@ pub struct RecoverCommand {
     pub entity: String,
     pub id: Value,
     pub expected_version: i64,
+    pub trace_chain: Vec<crate::TraceNode>,
 }
 
 impl RecoverCommand {
@@ -99,6 +106,7 @@ impl RecoverCommand {
             entity: entity.into(),
             id: id.into(),
             expected_version,
+            trace_chain: Vec::new(),
         }
     }
 }

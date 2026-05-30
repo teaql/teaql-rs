@@ -1,6 +1,7 @@
 extern crate self as teaql_core;
 
 mod entity;
+mod entity_graph;
 mod expr;
 mod list;
 mod meta;
@@ -8,6 +9,7 @@ mod mutation;
 mod naming;
 mod query;
 mod safe_expression;
+mod trace;
 mod value;
 mod web;
 mod xls;
@@ -16,6 +18,7 @@ pub use entity::{
     BaseEntity, BaseEntityData, Entity, EntityDescriptorStore, EntityError, IdentifiableEntity,
     TeaqlEntity, VersionedEntity,
 };
+pub use entity_graph::{EntityGraph, EntityGraphBuilder, EntityGraphNode, EntityGraphOperation};
 pub use expr::{BinaryOp, Expr, ExprFunction};
 pub use list::SmartList;
 pub use meta::{EntityDescriptor, PropertyDescriptor, RelationDescriptor};
@@ -27,6 +30,7 @@ pub use query::{
     record_to_json_value,
 };
 pub use safe_expression::{SafeExpression, TeaqlEmpty};
+pub use trace::TraceNode;
 pub use value::{DataType, Decimal, Value};
 pub use web::{ACTION_LIST_KEY, STYLE_KEY, WEB_RESPONSE_VERSION, WebAction, WebResponse, WebStyle};
 pub use xls::{XlsBlock, XlsBlockBuildContext, XlsPage, XlsWorkbook};

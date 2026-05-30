@@ -163,7 +163,7 @@ where
         let query = self
             .prepare_select_query(query)
             .map_err(RepositoryError::Runtime)?;
-        let _guard = crate::context::QueryCommentGuard::new(self.repository.metadata.context, query.comment.clone());
+
         let mut rows = self.fetch_prepared_query(&query)?;
         self.enhance_object_group_bys(&mut rows, &query.object_group_bys)?;
         self.enhance_child_queries(&mut rows, &query.child_enhancements)?;
@@ -174,12 +174,13 @@ where
         &self,
         query: &SelectQuery,
     ) -> Result<Vec<Record>, RepositoryError<E::Error>> {
-        let _guard = crate::context::QueryCommentGuard::new(self.repository.metadata.context, query.comment.clone());
+
         let mut compiled = self
             .repository
             .compile(query)
             .map_err(RepositoryError::Runtime)?;
-        compiled.comment = self.repository.resolve_final_comment(query.comment.clone());
+        let final_comment = self.repository.resolve_final_comment(&query.trace_chain, query.comment.clone());
+        compiled.comment = final_comment;
         if let Some(options) = query.aggregation_cache.filter(|options| options.enabled) {
             if let Some(cache) = self
                 .repository
@@ -218,7 +219,7 @@ where
             Some(rows.len()),
             Some(query.entity.clone()),
             None,
-            query.comment.clone(),
+            query.trace_chain.clone(),
         );
         Ok(rows)
     }
@@ -230,7 +231,7 @@ where
         options: AggregationCacheOptions,
         cache: &dyn AggregationCacheBackend,
     ) -> Result<Vec<Record>, RepositoryError<E::Error>> {
-        let _guard = crate::context::QueryCommentGuard::new(self.repository.metadata.context, query.comment.clone());
+
         let key = aggregation_cache_key(
             cache.namespace(),
             &aggregation_cache_namespace(&query.entity),
@@ -254,7 +255,7 @@ where
             Some(rows.len()),
             Some(query.entity.clone()),
             None,
-            query.comment.clone(),
+            query.trace_chain.clone(),
         );
         cache.put(key, rows.clone());
         Ok(rows)
@@ -265,7 +266,7 @@ where
         query: &SelectQuery,
         relation_aggregates: &[RelationAggregate],
     ) -> Result<Vec<Record>, RepositoryError<E::Error>> {
-        let _guard = crate::context::QueryCommentGuard::new(self.repository.metadata.context, query.comment.clone());
+
         let mut rows = self.fetch_all(query)?;
         self.enhance_relation_aggregates(&mut rows, relation_aggregates, query.aggregation_cache)?;
         Ok(rows)
@@ -278,7 +279,7 @@ where
         let query = self
             .prepare_select_query(query)
             .map_err(RepositoryError::Runtime)?;
-        let _guard = crate::context::QueryCommentGuard::new(self.repository.metadata.context, query.comment.clone());
+
         self.repository.fetch_smart_list(&query)
     }
 
@@ -301,7 +302,7 @@ where
         let query = self
             .prepare_select_query(query)
             .map_err(RepositoryError::Runtime)?;
-        let _guard = crate::context::QueryCommentGuard::new(self.repository.metadata.context, query.comment.clone());
+
         self.repository.fetch_entities(&query)
     }
 
@@ -338,7 +339,7 @@ where
             .prepare_select_query(query)
             .map_err(RepositoryError::Runtime)?;
 
-        let _guard = crate::context::QueryCommentGuard::new(self.repository.metadata.context, query.comment.clone());
+
 
         let mut rows = self.repository.fetch_all(&query)?;
         self.enhance_relation_aggregates(&mut rows, relation_aggregates, query.aggregation_cache)?;
@@ -366,7 +367,7 @@ where
         let query = self
             .prepare_select_query(query)
             .map_err(RepositoryError::Runtime)?;
-        let _guard = crate::context::QueryCommentGuard::new(self.repository.metadata.context, query.comment.clone());
+
 
         let mut rows = self.repository.fetch_all(&query)?;
         self.enhance_query_relations(&mut rows, &query)?;
@@ -401,15 +402,16 @@ where
     }
 
     pub fn delete(&self, command: &DeleteCommand) -> Result<u64, RepositoryError<E::Error>> {
-        self.delete_scoped(command, None)
+        self.delete_scoped(command, Vec::new())
     }
 
     pub fn delete_scoped(
         &self,
         command: &DeleteCommand,
-        comment_lineage: Option<String>,
+        trace_chain: Vec<teaql_core::TraceNode>,
     ) -> Result<u64, RepositoryError<E::Error>> {
         let mut command = command.clone();
+        command.trace_chain = trace_chain.clone();
         if let Some(behavior) = self.behavior() {
             behavior
                 .before_delete(self.repository.metadata.context, &mut command)
@@ -417,22 +419,17 @@ where
         }
         self.enforce_delete_policy(&mut command)
             .map_err(RepositoryError::Runtime)?;
-        let resolved_lineage = self.format_lineage_comment(&command.id, comment_lineage);
-        let _guard = resolved_lineage.as_ref().map(|lineage| {
-            crate::context::QueryCommentGuard::new(
-                self.repository.metadata.context,
-                Some(lineage.clone()),
-            )
-        });
+
         let old_values = self.fetch_current_event_row(&command.entity, &command.id)?;
         let affected = self.repository.delete(&command)?;
+
         let mut event = EntityEvent::deleted_with_old_values(
             command.entity,
             command.id,
             command.expected_version,
             old_values,
         );
-        event.comment = resolved_lineage;
+        event.trace_chain = trace_chain;
         self.emit_event(event)
             .map_err(RepositoryError::Runtime)?;
         Ok(affected)
@@ -449,14 +446,12 @@ where
             .map_err(RepositoryError::Runtime)?;
         let old_values = self.fetch_current_event_row(&command.entity, &command.id)?;
         let affected = self.repository.recover(&command)?;
-        let resolved_lineage = self.format_lineage_comment(&command.id, None);
         let mut event = EntityEvent::recovered_with_old_values(
             command.entity,
             command.id,
             command.expected_version,
             old_values,
         );
-        event.comment = resolved_lineage;
         self.emit_event(event)
             .map_err(RepositoryError::Runtime)?;
         Ok(affected)
@@ -470,25 +465,18 @@ where
         &self,
         command: InsertCommand,
     ) -> Result<u64, RepositoryError<E::Error>> {
-        self.execute_prepared_insert_with_comment(command, None)
+        self.execute_prepared_insert_with_comment(command, Vec::new())
     }
 
     pub(super) fn execute_prepared_insert_with_comment(
         &self,
-        command: InsertCommand,
-        comment_lineage: Option<String>,
+        mut command: InsertCommand,
+        trace_chain: Vec<teaql_core::TraceNode>,
     ) -> Result<u64, RepositoryError<E::Error>> {
-        let id_val = command.values.get("id").cloned().unwrap_or(Value::Null);
-        let resolved_lineage = self.format_lineage_comment(&id_val, comment_lineage);
-        let _guard = resolved_lineage.as_ref().map(|lineage| {
-            crate::context::QueryCommentGuard::new(
-                self.repository.metadata.context,
-                Some(lineage.clone()),
-            )
-        });
+        command.trace_chain = trace_chain.clone();
         let affected = self.repository.insert(&command)?;
         let mut event = EntityEvent::created(command.entity, command.values);
-        event.comment = resolved_lineage;
+        event.trace_chain = trace_chain;
         self.emit_event(event).map_err(RepositoryError::Runtime)?;
         Ok(affected)
     }
@@ -497,21 +485,15 @@ where
         &self,
         command: UpdateCommand,
     ) -> Result<u64, RepositoryError<E::Error>> {
-        self.execute_prepared_update_with_comment(command, None)
+        self.execute_prepared_update_with_comment(command, Vec::new())
     }
 
     pub(super) fn execute_prepared_update_with_comment(
         &self,
-        command: UpdateCommand,
-        comment_lineage: Option<String>,
+        mut command: UpdateCommand,
+        trace_chain: Vec<teaql_core::TraceNode>,
     ) -> Result<u64, RepositoryError<E::Error>> {
-        let resolved_lineage = self.format_lineage_comment(&command.id, comment_lineage);
-        let _guard = resolved_lineage.as_ref().map(|lineage| {
-            crate::context::QueryCommentGuard::new(
-                self.repository.metadata.context,
-                Some(lineage.clone()),
-            )
-        });
+        command.trace_chain = trace_chain.clone();
         let old_values = self.fetch_current_event_row(&command.entity, &command.id)?;
         let affected = self.repository.update(&command)?;
         let updated_fields = command.values.keys().cloned().collect();
@@ -531,7 +513,7 @@ where
             new_values,
             updated_fields,
         );
-        event.comment = resolved_lineage;
+        event.trace_chain = trace_chain;
         self.emit_event(event).map_err(RepositoryError::Runtime)?;
         Ok(affected)
     }
@@ -559,38 +541,6 @@ where
         Ok(rows.pop())
     }
 
-    fn format_lineage_comment(
-        &self,
-        id: &Value,
-        comment_lineage: Option<String>,
-    ) -> Option<String> {
-        let raw_comment = comment_lineage.or_else(|| {
-            self.repository.metadata.context.comment_stack.lock().ok().and_then(|stack| {
-                if stack.is_empty() {
-                    None
-                } else {
-                    Some(stack.join(" -> "))
-                }
-            })
-        })?;
-
-        if raw_comment.is_empty() {
-            return None;
-        }
-
-        let id_str = match id {
-            Value::U64(n) => n.to_string(),
-            Value::I64(n) => n.to_string(),
-            Value::Text(s) => s.clone(),
-            other => format!("{other:?}"),
-        };
-        let prefix = format!("{}({}):", self.entity, id_str);
-        if raw_comment.starts_with(&prefix) || raw_comment.contains(&format!(" -> {}({}):", self.entity, id_str)) {
-            Some(raw_comment)
-        } else {
-            Some(format!("{}({}): {}", self.entity, id_str, raw_comment))
-        }
-    }
 
     pub(super) fn scoped_repository(&self, entity: String) -> ResolvedRepository<'a, D, E> {
         ResolvedRepository {

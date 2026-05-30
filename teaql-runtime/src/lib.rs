@@ -11,7 +11,10 @@ mod memory;
 mod registry;
 mod repository;
 
-pub use context::{SchemaProvider, SqlLogEntry, SqlLogOperation, SqlLogOptions, UserContext, QueryCommentGuard, TuiLogEntry, TuiLogBuffer};
+pub use context::{
+    InfoLogEntry, LogPayload, SchemaProvider, SqlLogEntry, SqlLogOperation,
+    SqlLogOptions, UnifiedLogBuffer, UnifiedLogEntry, UserContext,
+};
 pub use entity_status::{EntityAction, EntityStatus};
 pub use entity_runtime::{ChangeSetStack, EntityChangeSet, EntityKey, EntityRoot, RootContext};
 pub use error::{ContextError, RepositoryError, RuntimeError};
@@ -19,7 +22,7 @@ pub use event::{
     EntityEvent, EntityEventKind, EntityEventSink, EntityPropertyChange, InMemoryEntityEventSink,
 };
 pub use graph::{
-    CommentTrack, GraphMutationBatch, GraphMutationKind, GraphMutationPlan, GraphMutationPlanItem,
+    GraphMutationBatch, GraphMutationKind, GraphMutationPlan, GraphMutationPlanItem,
     GraphNode, GraphOperation, ScopedCommentNode, sorted_update_fields,
 };
 pub(crate) use id::local_id_generator;
@@ -2233,6 +2236,7 @@ mod tests {
             having: None,
             order_by: Vec::new(),
             slice: None,
+            trace_chain: Vec::new(),
             aggregates: vec![
                 Aggregate {
                     function: AggregateFunction::Count,
@@ -2589,129 +2593,6 @@ mod tests {
         let ctx4 = UserContext::new().with_user_identifier_option(Some("user-abc".to_owned()));
         assert_eq!(ctx4.user_identifier(), Some("user-abc"));
 
-        // Verify user_identifier is captured in SQL logs and written to app.log
-        let _ = std::fs::remove_file("app.log");
-        let ctx5 = UserContext::new().with_user_identifier("user-999");
-        let query = CompiledQuery {
-            sql: "SELECT 1".to_owned(),
-            params: vec![],
-            comment: None,
-        };
-        ctx5.record_sql_log(
-            SqlLogOperation::Select,
-            &query,
-            DatabaseKind::Sqlite,
-            std::time::SystemTime::now(),
-            std::time::SystemTime::now(),
-            std::time::Duration::from_millis(10),
-            Some(1),
-            None,
-            None,
-            Some("test-comment".to_owned()),
-        );
-        let logs = ctx5.sql_logs();
-        assert_eq!(logs.len(), 1);
-        assert_eq!(logs[0].user_identifier.as_deref(), Some("user-999"));
-        assert_eq!(logs[0].comment.as_deref(), Some("test-comment"));
-
-        // Verify app.log content
-        assert!(std::path::Path::new("app.log").exists());
-        let log_content = std::fs::read_to_string("app.log").unwrap();
-        assert!(log_content.contains("SELECT 1"));
-        assert!(log_content.contains("user-999"));
-        assert!(log_content.contains("test-comment"));
-        assert!(log_content.contains("DEBUG - SqlLogEntry"));
-        let _ = std::fs::remove_file("app.log"); // Cleanup
-
-        // Test nested comment stack propagation
-        let ctx6 = UserContext::new();
-        {
-            let _guard1 = crate::context::QueryCommentGuard::new(&ctx6, Some("outer-task".to_owned()));
-            ctx6.record_sql_log(
-                SqlLogOperation::Select,
-                &query,
-                DatabaseKind::Sqlite,
-                std::time::SystemTime::now(),
-                std::time::SystemTime::now(),
-                std::time::Duration::from_millis(10),
-                Some(1),
-                None,
-                None,
-                None,
-            );
-            assert_eq!(ctx6.sql_logs()[0].comment.as_deref(), Some("outer-task"));
-
-            {
-                let _guard2 = crate::context::QueryCommentGuard::new(&ctx6, Some("inner-task".to_owned()));
-                ctx6.record_sql_log(
-                    SqlLogOperation::Select,
-                    &query,
-                    DatabaseKind::Sqlite,
-                    std::time::SystemTime::now(),
-                    std::time::SystemTime::now(),
-                    std::time::Duration::from_millis(10),
-                    Some(1),
-                    None,
-                    None,
-                    None,
-                );
-                assert_eq!(ctx6.sql_logs()[1].comment.as_deref(), Some("outer-task->inner-task"));
-
-                {
-                    // Non-comment nested query does not alter stack
-                    let _guard3 = crate::context::QueryCommentGuard::new(&ctx6, None);
-                    ctx6.record_sql_log(
-                        SqlLogOperation::Select,
-                        &query,
-                        DatabaseKind::Sqlite,
-                        std::time::SystemTime::now(),
-                        std::time::SystemTime::now(),
-                        std::time::Duration::from_millis(10),
-                        Some(1),
-                        None,
-                        None,
-                        None,
-                    );
-                    assert_eq!(ctx6.sql_logs()[2].comment.as_deref(), Some("outer-task->inner-task"));
-                }
-            }
-        }
-        let _ = std::fs::remove_file("app.log"); // Cleanup
-    }
-
-    #[test]
-    fn resolved_repository_propagates_comments_through_fetch_prepared_query() {
-        let mut ctx = UserContext::new()
-            .with_metadata(
-                InMemoryMetadataStore::new()
-                    .with_entity(entity()),
-            )
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(StubExecutor {
-            affected: 1,
-            rows: Vec::new(),
-        });
-
-        let repo = ctx
-            .resolve_repository::<PostgresDialect, StubExecutor>("Order")
-            .unwrap();
-
-        // Simulate outer facet query comment propagation
-        {
-            let _guard1 = crate::context::QueryCommentGuard::new(&ctx, Some("outer-query-comment".to_owned()));
-            let _guard2 = crate::context::QueryCommentGuard::new(&ctx, Some("facet-name-comment".to_owned()));
-
-            let query = repo.select().comment("inner-query-comment");
-            let _ = repo.fetch_all(&query).unwrap();
-        }
-
-        let logs = ctx.sql_logs();
-        assert_eq!(logs.len(), 1);
-        assert_eq!(
-            logs[0].comment.as_deref(),
-            Some("outer-query-comment->facet-name-comment->inner-query-comment")
-        );
     }
 }
 

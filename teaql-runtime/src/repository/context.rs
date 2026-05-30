@@ -85,7 +85,7 @@ where
 
     pub fn fetch_all(&self, query: &SelectQuery) -> Result<Vec<Record>, RepositoryError<E::Error>> {
         let mut compiled = self.compile(query).map_err(RepositoryError::Runtime)?;
-        let final_comment = self.resolve_final_comment(query.comment.clone());
+        let final_comment = self.resolve_final_comment(&query.trace_chain, query.comment.clone());
         compiled.comment = final_comment;
 
         let started_at = SystemTime::now();
@@ -102,7 +102,7 @@ where
             Some(rows.len()),
             Some(query.entity.clone()),
             None,
-            query.comment.clone(),
+            query.trace_chain.clone(),
         );
         Ok(rows)
     }
@@ -139,7 +139,7 @@ where
             .repository()
             .compile_insert(command)
             .map_err(RepositoryError::Runtime)?;
-        let final_comment = self.resolve_final_comment(None);
+        let final_comment = self.resolve_final_comment(&command.trace_chain, None);
         compiled.comment = final_comment;
 
         let started_at = SystemTime::now();
@@ -156,7 +156,7 @@ where
             None,
             None,
             Some(affected),
-            None,
+            command.trace_chain.clone(),
         );
         self.invalidate_aggregation_cache_for(&command.entity);
         Ok(affected)
@@ -169,6 +169,7 @@ where
             self.repository()
                 .compile_update(command)
                 .map_err(RepositoryError::Runtime)?,
+            command.trace_chain.clone(),
         )?;
         if command.expected_version.is_some() && affected == 0 {
             return Err(RepositoryError::Runtime(
@@ -188,6 +189,7 @@ where
             self.repository()
                 .compile_delete(command)
                 .map_err(RepositoryError::Runtime)?,
+            command.trace_chain.clone(),
         )?;
         if command.expected_version.is_some() && affected == 0 {
             return Err(RepositoryError::Runtime(
@@ -207,6 +209,7 @@ where
             self.repository()
                 .compile_recover(command)
                 .map_err(RepositoryError::Runtime)?,
+            command.trace_chain.clone(),
         )?;
         if affected == 0 {
             return Err(RepositoryError::Runtime(
@@ -224,8 +227,9 @@ where
         operation: SqlLogOperation,
         entity: &str,
         mut compiled: CompiledQuery,
+        trace_chain: Vec<teaql_core::TraceNode>,
     ) -> Result<u64, RepositoryError<E::Error>> {
-        let final_comment = self.resolve_final_comment(None);
+        let final_comment = self.resolve_final_comment(&trace_chain, None);
         compiled.comment = final_comment;
 
         let started_at = SystemTime::now();
@@ -242,7 +246,7 @@ where
             None,
             None,
             Some(affected),
-            None,
+            trace_chain,
         );
         self.invalidate_aggregation_cache_for(entity);
         Ok(affected)
@@ -257,7 +261,7 @@ where
         result_count: Option<usize>,
         result_type: Option<String>,
         affected_rows: Option<u64>,
-        comment: Option<String>,
+        trace_chain: Vec<teaql_core::TraceNode>,
     ) {
         self.metadata.context.record_sql_log(
             operation,
@@ -269,7 +273,7 @@ where
             result_count,
             result_type,
             affected_rows,
-            comment,
+            trace_chain,
         );
     }
 
@@ -290,15 +294,17 @@ where
         }
     }
 
-    pub(crate) fn resolve_final_comment(&self, comment: Option<String>) -> Option<String> {
-        let stack_comment = self.metadata.context.comment_stack.lock().ok().and_then(|stack| {
-            if stack.is_empty() {
-                None
-            } else {
-                Some(stack.join("->"))
-            }
-        });
-        let business_comment = stack_comment.or(comment);
+    pub(crate) fn resolve_final_comment(&self, trace_chain: &[teaql_core::TraceNode], comment: Option<String>) -> Option<String> {
+        let chain_str = if trace_chain.is_empty() {
+            None
+        } else {
+            let formatted = trace_chain.iter().map(|n| {
+                format!("{}({}): {}", n.entity_type, n.entity_id.map(|id| id.to_string()).unwrap_or_else(|| "pending".to_owned()), n.comment)
+            }).collect::<Vec<_>>().join(" -> ");
+            Some(formatted)
+        };
+
+        let business_comment = chain_str.or(comment);
         let user_id = self.metadata.context.user_identifier().map(|s| s.to_owned());
 
         match (user_id, business_comment) {

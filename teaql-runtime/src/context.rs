@@ -94,19 +94,30 @@ pub struct SqlLogEntry {
     pub result_type: Option<String>,
     pub affected_rows: Option<u64>,
     pub result_summary: String,
-    pub user_identifier: Option<String>,
-    pub comment: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct TuiLogEntry {
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnifiedLogEntry {
     pub timestamp: SystemTime,
-    pub line: String,
+    pub user_identifier: Option<String>,
+    pub trace_chain: Vec<teaql_core::TraceNode>,
+    pub payload: LogPayload,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LogPayload {
+    Sql(SqlLogEntry),
+    Info(InfoLogEntry),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InfoLogEntry {
+    pub message: String,
 }
 
 #[derive(Clone, Default)]
-pub struct TuiLogBuffer {
-    pub entries: std::sync::Arc<Mutex<Vec<TuiLogEntry>>>,
+pub struct UnifiedLogBuffer {
+    pub entries: std::sync::Arc<Mutex<Vec<UnifiedLogEntry>>>,
 }
 
 pub trait SchemaProvider: Send + Sync {
@@ -134,7 +145,6 @@ pub struct UserContext {
     sql_log_options: SqlLogOptions,
     sql_log_entries: Mutex<Vec<SqlLogEntry>>,
     user_identifier: Option<String>,
-    pub(crate) comment_stack: Mutex<Vec<String>>,
 }
 
 impl Default for UserContext {
@@ -167,7 +177,6 @@ impl Default for UserContext {
             sql_log_options: SqlLogOptions::all(),
             sql_log_entries: Mutex::new(Vec::new()),
             user_identifier: Some(user_id),
-            comment_stack: Mutex::new(Vec::new()),
         }
     }
 }
@@ -372,7 +381,7 @@ impl UserContext {
         result_count: Option<usize>,
         result_type: Option<String>,
         affected_rows: Option<u64>,
-        comment: Option<String>,
+        trace_chain: Vec<teaql_core::TraceNode>,
     ) {
         if !self.sql_log_options.enabled_for(operation) {
             return;
@@ -386,82 +395,35 @@ impl UserContext {
             &debug_sql,
         );
 
-        // Resolve final comment from stack or parameter
-        let stack_comment = self.comment_stack.lock().ok().and_then(|stack| {
-            if stack.is_empty() {
-                None
-            } else {
-                Some(stack.join("->"))
-            }
-        });
-        let final_comment = stack_comment.or(comment);
-
-        // Append log line to app.log file
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("app.log")
-        {
-            use std::io::Write;
-            let local_time: chrono::DateTime<chrono::Local> = started_at.into();
-            let timestamp_str = local_time.format("%Y-%m-%d %H:%M:%S%.3f").to_string();
-            let user_id_str = self.user_identifier.as_deref().unwrap_or("");
-            let comment_part = if let Some(ref c) = final_comment {
-                format!(" - [{c}]")
-            } else {
-                "".to_owned()
-            };
-            let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
-            let log_line = format!(
-                "{timestamp_str}-[{user_id_str}]--DEBUG - SqlLogEntry{comment_part} - [{result_summary}] {} (took {:.3}ms)\n",
-                debug_sql, elapsed_ms
-            );
-            let _ = file.write_all(log_line.as_bytes());
-        }
+        let sql_log_entry = SqlLogEntry {
+            operation,
+            sql: query.sql.clone(),
+            params: query.params.clone(),
+            pretty_sql: pretty_sql(&debug_sql),
+            debug_sql: debug_sql.clone(),
+            started_at,
+            ended_at,
+            elapsed,
+            result_summary: result_summary.clone(),
+            result_count,
+            result_type,
+            affected_rows,
+        };
 
         if let Ok(mut entries) = self.sql_log_entries.lock() {
-            entries.push(SqlLogEntry {
-                operation,
-                sql: query.sql.clone(),
-                params: query.params.clone(),
-                pretty_sql: pretty_sql(&debug_sql),
-                debug_sql: debug_sql.clone(),
-                started_at,
-                ended_at,
-                elapsed,
-                result_summary: result_summary.clone(),
-                result_count,
-                result_type,
-                affected_rows,
-                user_identifier: self.user_identifier.clone(),
-                comment: final_comment.clone(),
-            });
+            // Keep sql_log_entries backwards-compatible for now if needed,
+            // wait, we modified SqlLogEntry. We can just push it directly since we removed comment.
+            // Wait, we need to push a cloned SqlLogEntry since it doesn't have comment.
+            entries.push(sql_log_entry.clone());
         }
 
-        if let Some(buf) = self.get_resource::<TuiLogBuffer>() {
-            let local_time: chrono::DateTime<chrono::Local> = started_at.into();
-            let timestamp_str = local_time.format("%H:%M:%S%.3f").to_string();
-            let user_id_str = self.user_identifier.as_deref().unwrap_or("");
-            let comment_part = if let Some(ref c) = final_comment {
-                format!(" - [{c}]")
-            } else {
-                "".to_owned()
-            };
-            let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
-            let single_line_sql = debug_sql
-                .lines()
-                .map(|line| line.trim())
-                .filter(|line| !line.is_empty())
-                .collect::<Vec<_>>()
-                .join(" ");
-            let log_line = format!(
-                "[{}]-[{}]-[DEBUG]-SqlLogEntry{} - [{}] {} (took {:.3}ms)",
-                timestamp_str, user_id_str, comment_part, result_summary, single_line_sql, elapsed_ms
-            );
+        if let Some(buf) = self.get_resource::<UnifiedLogBuffer>() {
             if let Ok(mut entries) = buf.entries.lock() {
-                entries.push(TuiLogEntry {
+                entries.push(UnifiedLogEntry {
                     timestamp: started_at,
-                    line: log_line,
+                    user_identifier: self.user_identifier.clone(),
+                    trace_chain,
+                    payload: LogPayload::Sql(sql_log_entry),
                 });
             }
         }
@@ -810,34 +772,4 @@ fn pretty_sql(sql: &str) -> String {
         .replace(" OR ", "\n  OR ")
 }
 
-pub struct QueryCommentGuard<'a> {
-    context: &'a UserContext,
-    has_pushed: bool,
-}
 
-impl<'a> QueryCommentGuard<'a> {
-    pub fn new(context: &'a UserContext, comment: Option<String>) -> Self {
-        let mut has_pushed = false;
-        if let Some(comment) = comment {
-            if !comment.is_empty() {
-                if let Ok(mut stack) = context.comment_stack.lock() {
-                    if stack.last() != Some(&comment) {
-                        stack.push(comment);
-                        has_pushed = true;
-                    }
-                }
-            }
-        }
-        Self { context, has_pushed }
-    }
-}
-
-impl<'a> Drop for QueryCommentGuard<'a> {
-    fn drop(&mut self) {
-        if self.has_pushed {
-            if let Ok(mut stack) = self.context.comment_stack.lock() {
-                stack.pop();
-            }
-        }
-    }
-}
