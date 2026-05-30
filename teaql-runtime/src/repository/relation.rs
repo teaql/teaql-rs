@@ -94,11 +94,11 @@ where
                 continue;
             }
             let mut query = group_by.query.clone();
-            query.trace_chain = parent_trace_chain.to_vec();
             ensure_projection(&mut query, "id");
             query = query.and_filter(Expr::in_list("id", ids));
             let object_rows = self
                 .scoped_repository(query.entity.clone())
+                .with_trace_context(parent_trace_chain.to_vec())
                 .fetch_all(&query)?
                 .into_iter()
                 .filter_map(|row| {
@@ -136,11 +136,11 @@ where
                 continue;
             }
             let mut query = child_query.clone();
-            query.trace_chain = parent_trace_chain.to_vec();
             ensure_projection(&mut query, "id");
             query = query.and_filter(Expr::in_list("id", ids));
             let child_rows = self
                 .scoped_repository(query.entity.clone())
+                .with_trace_context(parent_trace_chain.to_vec())
                 .fetch_all(&query)?
                 .into_iter()
                 .filter_map(|row| {
@@ -197,7 +197,6 @@ where
         let child_repo = self.scoped_repository(plan.target_entity.clone());
         let mut query = aggregate.query.clone();
         query.entity = plan.target_entity.clone();
-        query.trace_chain = parent_trace_chain.to_vec();
         if query.aggregation_cache.is_none() {
             if let Some(options) = parent_cache_options.filter(|options| options.propagate) {
                 query.aggregation_cache = Some(teaql_core::AggregationCacheOptions::enabled(
@@ -227,7 +226,14 @@ where
         }
         query = query.and_filter(Expr::in_list(plan.foreign_key.clone(), ids));
 
-        let mut aggregate_rows = child_repo.fetch_all(&query)?;
+        let mut chain = parent_trace_chain.to_vec();
+        chain.push(teaql_core::TraceNode {
+            entity_type: query.entity.clone(),
+            entity_id: None,
+            comment: aggregate.alias.clone(),
+        });
+
+        let mut aggregate_rows = child_repo.with_trace_context(chain).fetch_all(&query)?;
         let foreign_key_column = self
             .repository
             .metadata

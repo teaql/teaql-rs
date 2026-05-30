@@ -1,0 +1,6 @@
+2026-05-30 10:39:23.462-[philip@pid-2426033.tid-61]--DEBUG - SqlLogEntry - [1 UPDATED] UPDATE orders SET version = 4 WHERE id = 88 AND version = -3 (took 0.000ms)
+2026-05-30 10:39:23.462-[philip@pid-2426033.tid-60]--DEBUG - SqlLogEntry - [1 UPDATED] INSERT INTO orderline (id, version, order_id, name, product_id) VALUES (2060551617479966722, 1, 1, 'line', 3) (took 0.000ms)
+2026-05-30 10:39:23.462-[philip@pid-2426033.tid-53]--DEBUG - SqlLogEntry - [1 UPDATED] INSERT INTO orderline (id, version, order_id, name, product_id) VALUES (802, 1, 800, 'typed-line', 801) (took 0.000ms)
+2026-05-30 10:39:23.462-[philip@pid-2426033.tid-60]--DEBUG - SqlLogEntry - [OrderLine(1)] SELECT id, version, order_id, name, product_id FROM orderline WHERE (id = 1) (took 0.003ms)
+2026-05-30 10:39:23.462-[philip@pid-2426033.tid-60]--DEBUG - SqlLogEntry - [1 UPDATED] UPDATE orderline SET version = -2 WHERE id = 1 AND version = 1 (took 0.000ms)
+2026-05-30 10:39:23.462-[philip@pid-2426033.tid-67]--DEBUG - SqlLogEntry - [1 UPDATED] INSERT INTO orders (id, version, name) VALUES (1, 1, 'n') (took 0.000ms)

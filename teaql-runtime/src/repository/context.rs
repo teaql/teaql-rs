@@ -52,6 +52,7 @@ impl UserContext {
         Ok(ResolvedRepository {
             entity,
             repository: self.repository::<D, E>()?,
+            trace_context: Vec::new(),
         })
     }
 

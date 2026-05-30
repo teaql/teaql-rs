@@ -75,6 +75,11 @@ where
 
     fn prepare_select_query(&self, query: &SelectQuery) -> Result<SelectQuery, RuntimeError> {
         let mut query = query.clone();
+        
+        let mut full_trace = self.trace_context.clone();
+        full_trace.extend(query.trace_chain);
+        query.trace_chain = full_trace;
+
         if let Some(behavior) = self.query_behavior(&query.entity) {
             behavior.before_select(self.repository.metadata.context, &mut query)?;
         }
@@ -391,18 +396,18 @@ where
         let command = self
             .prepare_insert_command(command)
             .map_err(RepositoryError::Runtime)?;
-        self.execute_prepared_insert(command)
+        self.execute_prepared_insert_with_comment(command, self.trace_context.clone())
     }
 
     pub fn update(&self, command: &UpdateCommand) -> Result<u64, RepositoryError<E::Error>> {
         let command = self
             .prepare_update_command(command)
             .map_err(RepositoryError::Runtime)?;
-        self.execute_prepared_update(command)
+        self.execute_prepared_update_with_comment(command, self.trace_context.clone())
     }
 
     pub fn delete(&self, command: &DeleteCommand) -> Result<u64, RepositoryError<E::Error>> {
-        self.delete_scoped(command, Vec::new())
+        self.delete_scoped(command, self.trace_context.clone())
     }
 
     pub fn delete_scoped(
@@ -437,6 +442,7 @@ where
 
     pub fn recover(&self, command: &RecoverCommand) -> Result<u64, RepositoryError<E::Error>> {
         let mut command = command.clone();
+        command.trace_chain = self.trace_context.clone();
         if let Some(behavior) = self.behavior() {
             behavior
                 .before_recover(self.repository.metadata.context, &mut command)
@@ -542,7 +548,7 @@ where
     }
 
 
-    pub(super) fn scoped_repository(&self, entity: String) -> ResolvedRepository<'a, D, E> {
+    pub fn scoped_repository(&self, entity: String) -> ResolvedRepository<'a, D, E> {
         ResolvedRepository {
             entity,
             repository: ContextRepository {
@@ -552,6 +558,7 @@ where
                 dialect: self.repository.dialect,
                 executor: self.repository.executor,
             },
+            trace_context: Vec::new(),
         }
     }
 }

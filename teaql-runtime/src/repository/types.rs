@@ -17,6 +17,14 @@ pub struct ContextRepository<'a, D, E> {
 pub struct ResolvedRepository<'a, D, E> {
     pub(super) entity: String,
     pub(super) repository: ContextRepository<'a, D, E>,
+    pub(super) trace_context: Vec<teaql_core::TraceNode>,
+}
+
+impl<'a, D, E> ResolvedRepository<'a, D, E> {
+    pub fn with_trace_context(mut self, trace_context: Vec<teaql_core::TraceNode>) -> Self {
+        self.trace_context = trace_context;
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
