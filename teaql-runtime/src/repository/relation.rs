@@ -71,9 +71,10 @@ where
         parent_rows: &mut [Record],
         relation_aggregates: &[RelationAggregate],
         parent_cache_options: Option<teaql_core::AggregationCacheOptions>,
+        parent_trace_chain: &[teaql_core::TraceNode],
     ) -> Result<(), RepositoryError<E::Error>> {
         for aggregate in relation_aggregates {
-            self.enhance_relation_aggregate(parent_rows, aggregate, parent_cache_options)?;
+            self.enhance_relation_aggregate(parent_rows, aggregate, parent_cache_options, parent_trace_chain)?;
         }
         Ok(())
     }
@@ -82,6 +83,7 @@ where
         &self,
         rows: &mut [Record],
         object_group_bys: &[ObjectGroupBy],
+        parent_trace_chain: &[teaql_core::TraceNode],
     ) -> Result<(), RepositoryError<E::Error>> {
         for group_by in object_group_bys {
             let ids = rows
@@ -92,6 +94,7 @@ where
                 continue;
             }
             let mut query = group_by.query.clone();
+            query.trace_chain = parent_trace_chain.to_vec();
             ensure_projection(&mut query, "id");
             query = query.and_filter(Expr::in_list("id", ids));
             let object_rows = self
@@ -122,6 +125,7 @@ where
         &self,
         rows: &mut [Record],
         child_queries: &[SelectQuery],
+        parent_trace_chain: &[teaql_core::TraceNode],
     ) -> Result<(), RepositoryError<E::Error>> {
         for child_query in child_queries {
             let ids = rows
@@ -132,6 +136,7 @@ where
                 continue;
             }
             let mut query = child_query.clone();
+            query.trace_chain = parent_trace_chain.to_vec();
             ensure_projection(&mut query, "id");
             query = query.and_filter(Expr::in_list("id", ids));
             let child_rows = self
@@ -160,6 +165,7 @@ where
         parent_rows: &mut [Record],
         aggregate: &RelationAggregate,
         parent_cache_options: Option<teaql_core::AggregationCacheOptions>,
+        parent_trace_chain: &[teaql_core::TraceNode],
     ) -> Result<(), RepositoryError<E::Error>> {
         let plan = self
             .build_relation_plans_from_loads(
@@ -191,6 +197,7 @@ where
         let child_repo = self.scoped_repository(plan.target_entity.clone());
         let mut query = aggregate.query.clone();
         query.entity = plan.target_entity.clone();
+        query.trace_chain = parent_trace_chain.to_vec();
         if query.aggregation_cache.is_none() {
             if let Some(options) = parent_cache_options.filter(|options| options.propagate) {
                 query.aggregation_cache = Some(teaql_core::AggregationCacheOptions::enabled(
