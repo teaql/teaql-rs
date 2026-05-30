@@ -13,8 +13,8 @@ use teaql_core::{
     UpdateCommand, Value,
 };
 use teaql_runtime::{
-    GraphNode, GraphTransactionBoundary, InternalIdGenerator, QueryExecutor, RuntimeError,
-    SchemaProvider, UserContext,
+    EntityEvent, GraphNode, GraphTransactionBoundary, InternalIdGenerator, QueryExecutor,
+    RuntimeError, SchemaProvider, UserContext,
 };
 use teaql_sql::{
     CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, quote_identifier_if_needed,
@@ -343,8 +343,39 @@ pub fn ensure_rusqlite_schema_for(ctx: &UserContext) -> Result<(), MutationExecu
 
     let entities = ctx.all_entities();
 
-    executor.ensure_schema(dialect, &entities)?;
-    ensure_initial_graphs_rusqlite(executor, dialect, ctx)
+    // Create tables one by one, emitting SchemaCreated event for each
+    executor.ensure_id_space_table(DEFAULT_ID_SPACE_TABLE)?;
+    for entity in &entities {
+        executor.ensure_schema(dialect, &[entity])?;
+        let _ = ctx.send_event(EntityEvent::schema_created(
+            &entity.name,
+            &entity.table_name,
+        ));
+    }
+
+    // Seed initial data, emitting DataSeeded event per unique entity
+    let mut seeded_entities = BTreeSet::new();
+    for graph in ctx.initial_graphs() {
+        let entity = ctx.entity(&graph.entity).ok_or_else(|| {
+            MutationExecutorError::Bind(format!("missing entity: {}", graph.entity))
+        })?;
+        if initial_graph_exists_rusqlite(executor, dialect, entity, graph)? {
+            if let Some(query) = compile_initial_graph_update(dialect, entity, graph)? {
+                executor.execute(&query)?;
+            }
+        } else {
+            let query = compile_initial_graph_insert(dialect, entity, graph)?;
+            executor.execute(&query)?;
+        }
+        if seeded_entities.insert(graph.entity.clone()) {
+            let _ = ctx.send_event(EntityEvent::data_seeded(
+                &graph.entity,
+                &entity.table_name,
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 impl RusqliteSchemaExt for UserContext {

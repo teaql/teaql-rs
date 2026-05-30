@@ -10,6 +10,10 @@ pub enum EntityEventKind {
     Updated,
     Deleted,
     Recovered,
+    /// Emitted when a table is created or verified during schema bootstrap.
+    SchemaCreated,
+    /// Emitted when initial seed data is inserted or updated during bootstrap.
+    DataSeeded,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -177,6 +181,38 @@ impl EntityEvent {
             &["version".to_owned()],
         );
         event
+    }
+
+    /// Creates a SchemaCreated event for a table that was created or verified during bootstrap.
+    pub fn schema_created(entity: impl Into<String>, table_name: impl Into<String>) -> Self {
+        let entity = entity.into();
+        let values = Record::from([("table_name".to_owned(), Value::Text(table_name.into()))]);
+        Self {
+            kind: EntityEventKind::SchemaCreated,
+            entity,
+            values,
+            updated_fields: Vec::new(),
+            old_values: None,
+            new_values: None,
+            changes: Vec::new(),
+            trace_chain: Vec::new(),
+        }
+    }
+
+    /// Creates a DataSeeded event for initial data that was seeded during bootstrap.
+    pub fn data_seeded(entity: impl Into<String>, table_name: impl Into<String>) -> Self {
+        let entity = entity.into();
+        let values = Record::from([("table_name".to_owned(), Value::Text(table_name.into()))]);
+        Self {
+            kind: EntityEventKind::DataSeeded,
+            entity,
+            values,
+            updated_fields: Vec::new(),
+            old_values: None,
+            new_values: None,
+            changes: Vec::new(),
+            trace_chain: Vec::new(),
+        }
     }
 
     fn changes_for_fields(
