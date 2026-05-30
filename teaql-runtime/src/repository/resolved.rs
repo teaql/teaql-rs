@@ -458,7 +458,7 @@ where
             .map_err(RepositoryError::Runtime)?;
         let old_values = self.fetch_current_event_row(&command.entity, &command.id)?;
         let affected = self.repository.recover(&command)?;
-        let mut event = EntityEvent::recovered_with_old_values(
+        let event = EntityEvent::recovered_with_old_values(
             command.entity,
             command.id,
             command.expected_version,
@@ -473,6 +473,7 @@ where
         self.repository.metadata.context.send_event(event)
     }
 
+    #[allow(dead_code)]
     pub(super) fn execute_prepared_insert(
         &self,
         command: InsertCommand,
@@ -493,6 +494,7 @@ where
         Ok(affected)
     }
 
+    #[allow(dead_code)]
     pub(super) fn execute_prepared_update(
         &self,
         command: UpdateCommand,
