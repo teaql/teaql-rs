@@ -168,8 +168,11 @@ where
         let query = self
             .prepare_select_query(query)
             .map_err(RepositoryError::Runtime)?;
+        self.fetch_prepared_all(&query)
+    }
 
-        let mut rows = self.fetch_prepared_query(&query)?;
+    fn fetch_prepared_all(&self, query: &SelectQuery) -> Result<Vec<Record>, RepositoryError<E::Error>> {
+        let mut rows = self.fetch_prepared_query(query)?;
         self.enhance_object_group_bys(&mut rows, &query.object_group_bys, &query.trace_chain)?;
         self.enhance_child_queries(&mut rows, &query.child_enhancements, &query.trace_chain)?;
         Ok(rows)
@@ -271,8 +274,11 @@ where
         query: &SelectQuery,
         relation_aggregates: &[RelationAggregate],
     ) -> Result<Vec<Record>, RepositoryError<E::Error>> {
+        let query = self
+            .prepare_select_query(query)
+            .map_err(RepositoryError::Runtime)?;
 
-        let mut rows = self.fetch_all(query)?;
+        let mut rows = self.fetch_prepared_all(&query)?;
         self.enhance_relation_aggregates(&mut rows, relation_aggregates, query.aggregation_cache, &query.trace_chain)?;
         Ok(rows)
     }
@@ -346,7 +352,7 @@ where
 
 
 
-        let mut rows = self.repository.fetch_all(&query)?;
+        let mut rows = self.fetch_prepared_all(&query)?;
         self.enhance_relation_aggregates(&mut rows, relation_aggregates, query.aggregation_cache, &query.trace_chain)?;
         self.enhance_query_relations(&mut rows, &query)?;
         self.enhance_relations(&mut rows)?;
@@ -374,7 +380,7 @@ where
             .map_err(RepositoryError::Runtime)?;
 
 
-        let mut rows = self.repository.fetch_all(&query)?;
+        let mut rows = self.fetch_prepared_all(&query)?;
         self.enhance_query_relations(&mut rows, &query)?;
         self.enhance_relations(&mut rows)?;
         let root = self.repository.metadata.context.get_resource::<crate::EntityRoot>().cloned();
