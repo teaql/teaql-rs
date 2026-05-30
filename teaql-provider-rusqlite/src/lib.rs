@@ -196,7 +196,7 @@ impl RusqliteMutationExecutor {
         Ok(records)
     }
 
-    fn table_exists(&self, table_name: &str) -> Result<bool, MutationExecutorError> {
+    pub fn table_exists(&self, table_name: &str) -> Result<bool, MutationExecutorError> {
         let exists: i64 = self.lock()?.query_row(
             "SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = ?",
             [table_name],
@@ -205,7 +205,7 @@ impl RusqliteMutationExecutor {
         Ok(exists > 0)
     }
 
-    fn table_columns(&self, table_name: &str) -> Result<BTreeSet<String>, MutationExecutorError> {
+    pub fn table_columns(&self, table_name: &str) -> Result<BTreeSet<String>, MutationExecutorError> {
         let pragma_sql = format!("PRAGMA table_info({})", quote_ident(table_name));
         let connection = self.lock()?;
         let mut statement = connection.prepare(&pragma_sql)?;
@@ -343,36 +343,78 @@ pub fn ensure_rusqlite_schema_for(ctx: &UserContext) -> Result<(), MutationExecu
 
     let entities = ctx.all_entities();
 
-    // Create tables one by one, emitting SchemaCreated event for each
+    // Ensure id space table exists
     executor.ensure_id_space_table(DEFAULT_ID_SPACE_TABLE)?;
+
+    // Process each entity table individually with granular events
     for entity in &entities {
-        executor.ensure_schema(dialect, &[entity])?;
-        let _ = ctx.send_event(EntityEvent::schema_created(
-            &entity.name,
-            &entity.table_name,
-        ));
+        let field_count = entity.properties.len();
+        if !executor.table_exists(&entity.table_name)? {
+            // New table: create it
+            let sql = dialect.compile_create_table(entity)?;
+            executor.lock()?.execute(&sql, [])?;
+            let _ = ctx.send_event(EntityEvent::schema_created(
+                &entity.name,
+                &entity.table_name,
+                field_count,
+            ));
+        } else {
+            // Existing table: check for missing columns
+            let existing_columns = executor.table_columns(&entity.table_name)?;
+            let mut fields_added = 0;
+            for property in &entity.properties {
+                let bare_column = strip_identifier_quotes(&property.column_name).to_lowercase();
+                if existing_columns.contains(&bare_column) {
+                    continue;
+                }
+                let sql = dialect.compile_add_column(entity, property)?;
+                executor.lock()?.execute(&sql, [])?;
+                let _ = ctx.send_event(EntityEvent::field_added(
+                    &entity.name,
+                    &entity.table_name,
+                    &property.column_name,
+                ));
+                fields_added += 1;
+            }
+            let _ = ctx.send_event(EntityEvent::schema_verified(
+                &entity.name,
+                &entity.table_name,
+                field_count,
+            ));
+            let _ = fields_added; // used above for FieldAdded events
+        }
     }
 
-    // Seed initial data, emitting DataSeeded event per unique entity
-    let mut seeded_entities = BTreeSet::new();
+    // Seed initial data, tracking insert vs update counts per entity
+    let mut seed_counts: BTreeMap<String, (usize, usize)> = BTreeMap::new(); // (inserted, updated)
     for graph in ctx.initial_graphs() {
         let entity = ctx.entity(&graph.entity).ok_or_else(|| {
             MutationExecutorError::Bind(format!("missing entity: {}", graph.entity))
         })?;
+        let counts = seed_counts.entry(graph.entity.clone()).or_insert((0, 0));
         if initial_graph_exists_rusqlite(executor, dialect, entity, graph)? {
             if let Some(query) = compile_initial_graph_update(dialect, entity, graph)? {
                 executor.execute(&query)?;
             }
+            counts.1 += 1; // updated
         } else {
             let query = compile_initial_graph_insert(dialect, entity, graph)?;
             executor.execute(&query)?;
+            counts.0 += 1; // inserted
         }
-        if seeded_entities.insert(graph.entity.clone()) {
-            let _ = ctx.send_event(EntityEvent::data_seeded(
-                &graph.entity,
-                &entity.table_name,
-            ));
-        }
+    }
+
+    // Fire DataSeeded events per entity type
+    for (entity_name, (inserted, updated)) in &seed_counts {
+        let entity = ctx.entity(entity_name).ok_or_else(|| {
+            MutationExecutorError::Bind(format!("missing entity: {}", entity_name))
+        })?;
+        let _ = ctx.send_event(EntityEvent::data_seeded(
+            entity_name,
+            &entity.table_name,
+            *inserted,
+            *updated,
+        ));
     }
 
     Ok(())

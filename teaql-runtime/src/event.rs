@@ -10,8 +10,12 @@ pub enum EntityEventKind {
     Updated,
     Deleted,
     Recovered,
-    /// Emitted when a table is created or verified during schema bootstrap.
+    /// Emitted when a new table is created during schema bootstrap.
     SchemaCreated,
+    /// Emitted when an existing table is verified during schema bootstrap.
+    SchemaVerified,
+    /// Emitted when a new column is added to an existing table (schema migration).
+    FieldAdded,
     /// Emitted when initial seed data is inserted or updated during bootstrap.
     DataSeeded,
 }
@@ -183,10 +187,17 @@ impl EntityEvent {
         event
     }
 
-    /// Creates a SchemaCreated event for a table that was created or verified during bootstrap.
-    pub fn schema_created(entity: impl Into<String>, table_name: impl Into<String>) -> Self {
+    /// A new table was created during schema bootstrap.
+    pub fn schema_created(
+        entity: impl Into<String>,
+        table_name: impl Into<String>,
+        field_count: usize,
+    ) -> Self {
         let entity = entity.into();
-        let values = Record::from([("table_name".to_owned(), Value::Text(table_name.into()))]);
+        let values = Record::from([
+            ("table_name".to_owned(), Value::Text(table_name.into())),
+            ("field_count".to_owned(), Value::I64(field_count as i64)),
+        ]);
         Self {
             kind: EntityEventKind::SchemaCreated,
             entity,
@@ -199,10 +210,68 @@ impl EntityEvent {
         }
     }
 
-    /// Creates a DataSeeded event for initial data that was seeded during bootstrap.
-    pub fn data_seeded(entity: impl Into<String>, table_name: impl Into<String>) -> Self {
+    /// An existing table was verified during schema bootstrap.
+    pub fn schema_verified(
+        entity: impl Into<String>,
+        table_name: impl Into<String>,
+        field_count: usize,
+    ) -> Self {
         let entity = entity.into();
-        let values = Record::from([("table_name".to_owned(), Value::Text(table_name.into()))]);
+        let values = Record::from([
+            ("table_name".to_owned(), Value::Text(table_name.into())),
+            ("field_count".to_owned(), Value::I64(field_count as i64)),
+        ]);
+        Self {
+            kind: EntityEventKind::SchemaVerified,
+            entity,
+            values,
+            updated_fields: Vec::new(),
+            old_values: None,
+            new_values: None,
+            changes: Vec::new(),
+            trace_chain: Vec::new(),
+        }
+    }
+
+    /// A new column was added to an existing table (schema migration).
+    pub fn field_added(
+        entity: impl Into<String>,
+        table_name: impl Into<String>,
+        field_name: impl Into<String>,
+    ) -> Self {
+        let entity = entity.into();
+        let values = Record::from([
+            ("table_name".to_owned(), Value::Text(table_name.into())),
+            ("field_name".to_owned(), Value::Text(field_name.into())),
+        ]);
+        Self {
+            kind: EntityEventKind::FieldAdded,
+            entity,
+            values,
+            updated_fields: Vec::new(),
+            old_values: None,
+            new_values: None,
+            changes: Vec::new(),
+            trace_chain: Vec::new(),
+        }
+    }
+
+    /// Initial seed data was inserted or updated during bootstrap.
+    ///
+    /// - `inserted`: number of new records inserted
+    /// - `updated`: number of existing records updated
+    pub fn data_seeded(
+        entity: impl Into<String>,
+        table_name: impl Into<String>,
+        inserted: usize,
+        updated: usize,
+    ) -> Self {
+        let entity = entity.into();
+        let values = Record::from([
+            ("table_name".to_owned(), Value::Text(table_name.into())),
+            ("inserted".to_owned(), Value::I64(inserted as i64)),
+            ("updated".to_owned(), Value::I64(updated as i64)),
+        ]);
         Self {
             kind: EntityEventKind::DataSeeded,
             entity,
