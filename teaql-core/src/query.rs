@@ -509,7 +509,13 @@ impl SelectQuery {
     }
 
     pub fn comment(mut self, comment: impl Into<String>) -> Self {
-        self.comment = Some(comment.into());
+        let comment_str = comment.into();
+        self.comment = Some(comment_str.clone());
+        self.trace_chain.push(crate::TraceNode {
+            entity_type: self.entity.clone(),
+            entity_id: None,
+            comment: comment_str,
+        });
         self
     }
 
