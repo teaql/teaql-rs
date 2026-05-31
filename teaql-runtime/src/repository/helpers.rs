@@ -127,14 +127,7 @@ pub(super) fn single_relation_aggregate_value(row: &Record) -> Value {
     }
 }
 
-pub(super) fn graph_record_version(record: &Record, descriptor: &EntityDescriptor) -> Option<i64> {
-    descriptor
-        .version_property()
-        .and_then(|property| match record.get(&property.name) {
-            Some(Value::I64(version)) => Some(*version),
-            _ => None,
-        })
-}
+
 
 pub(super) fn ensure_initial_version(record: &mut Record, descriptor: &EntityDescriptor) {
     if let Some(version_property) = descriptor.version_property() {

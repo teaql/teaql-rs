@@ -167,6 +167,10 @@ pub struct RootContext {
     /// Entity keys that have been marked for deletion.
     /// When the entity is saved, the graph save pipeline will treat these as Remove operations.
     deleted_keys: BTreeSet<EntityKey>,
+    /// Indicates if this entity is newly created in memory.
+    is_new: bool,
+    /// The original loaded snapshot record, used to avoid redundant fetching during save.
+    original_record: Option<Record>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -246,6 +250,39 @@ impl EntityRoot {
             .lock()
             .expect("entity root mutex")
             .comment
+            .clone()
+    }
+
+    /// Mark this entity root as a newly created entity in memory.
+    pub fn mark_as_new(&self) {
+        self.inner
+            .lock()
+            .expect("entity root mutex")
+            .is_new = true;
+    }
+
+    /// Check if this entity root is marked as newly created.
+    pub fn is_new(&self) -> bool {
+        self.inner
+            .lock()
+            .expect("entity root mutex")
+            .is_new
+    }
+
+    /// Store the original record when loaded from DB.
+    pub fn set_original_record(&self, record: Record) {
+        self.inner
+            .lock()
+            .expect("entity root mutex")
+            .original_record = Some(record);
+    }
+
+    /// Retrieve the original record.
+    pub fn original_record(&self) -> Option<Record> {
+        self.inner
+            .lock()
+            .expect("entity root mutex")
+            .original_record
             .clone()
     }
 

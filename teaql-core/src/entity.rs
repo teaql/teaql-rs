@@ -44,6 +44,29 @@ pub trait Entity: TeaqlEntity + Sized {
         None
     }
 
+    /// Returns true if this entity has been marked for deletion.
+    fn is_marked_as_delete(&self) -> bool {
+        false
+    }
+
+    /// Returns true if this entity was explicitly constructed as a new entity.
+    fn is_new(&self) -> bool {
+        false
+    }
+
+    /// Mark this entity as a newly created entity, bypassing database existence checks.
+    fn mark_as_new(&mut self) {}
+
+    /// Get the annotation comment, if any.
+    fn comment(&self) -> Option<String> {
+        None
+    }
+
+    /// Get the original snapshot values when this entity was loaded from the repository, if available.
+    fn original_values(&self) -> Option<::std::collections::BTreeMap<String, Value>> {
+        None
+    }
+
     /// Invoked immediately after the entity is loaded from the repository.
     /// Used by implementations to attach runtime contexts or initialize internal states.
     #[allow(unused_variables)]

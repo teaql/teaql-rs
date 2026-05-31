@@ -424,7 +424,7 @@ where
         self.enforce_delete_policy(&mut command)
             .map_err(RepositoryError::Runtime)?;
 
-        let old_values = self.fetch_current_event_row(&command.entity, &command.id)?;
+        let old_values = self.fetch_current_event_row(&command.entity, &command.id, trace_chain.clone())?;
         let affected = self.repository.delete(&command)?;
 
         let mut event = EntityEvent::deleted_with_old_values(
@@ -449,7 +449,7 @@ where
         }
         self.enforce_recover_policy(&mut command)
             .map_err(RepositoryError::Runtime)?;
-        let old_values = self.fetch_current_event_row(&command.entity, &command.id)?;
+        let old_values = self.fetch_current_event_row(&command.entity, &command.id, command.trace_chain.clone())?;
         let affected = self.repository.recover(&command)?;
         let event = EntityEvent::recovered_with_old_values(
             command.entity,
@@ -501,7 +501,16 @@ where
         trace_chain: Vec<teaql_core::TraceNode>,
     ) -> Result<u64, RepositoryError<E::Error>> {
         command.trace_chain = trace_chain.clone();
-        let old_values = self.fetch_current_event_row(&command.entity, &command.id)?;
+        
+        let mut old_values = command.old_values.clone();
+        let needs_fetch = match &old_values {
+            Some(snapshot) => !command.values.keys().all(|k| snapshot.contains_key(k)),
+            None => true,
+        };
+        if needs_fetch {
+            old_values = self.fetch_current_event_row(&command.entity, &command.id, trace_chain.clone())?;
+        }
+
         let affected = self.repository.update(&command)?;
         let updated_fields = command.values.keys().cloned().collect();
         let mut values = command.values.clone();
@@ -527,25 +536,13 @@ where
 
     fn fetch_current_event_row(
         &self,
-        entity: &str,
-        id: &Value,
+        _entity: &str,
+        _id: &Value,
+        _trace_chain: Vec<teaql_core::TraceNode>,
     ) -> Result<Option<Record>, RepositoryError<E::Error>> {
-        if self.repository.metadata.context.event_sink.is_none() {
-            return Ok(None);
-        }
-        let descriptor = self
-            .repository
-            .metadata
-            .context
-            .require_entity(entity)
-            .map_err(RepositoryError::Runtime)?;
-        let Some(id_property) = descriptor.id_property() else {
-            return Ok(None);
-        };
-        let mut rows = self.fetch_all(
-            &SelectQuery::new(entity).filter(Expr::eq(id_property.name.clone(), id.clone())),
-        )?;
-        Ok(rows.pop())
+        // PER THE USER: "我们不需要在审计的时候去抓旧的值"
+        // Avoid DB queries during event emission. We rely on in-memory `original_values`.
+        Ok(None)
     }
 
 

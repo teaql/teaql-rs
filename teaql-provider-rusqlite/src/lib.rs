@@ -249,26 +249,6 @@ impl QueryExecutor for RusqliteMutationExecutor {
     }
 }
 
-fn ensure_initial_graphs_rusqlite(
-    executor: &RusqliteMutationExecutor,
-    dialect: &RusqliteDialect,
-    ctx: &UserContext,
-) -> Result<(), MutationExecutorError> {
-    for graph in ctx.initial_graphs() {
-        let entity = ctx.entity(&graph.entity).ok_or_else(|| {
-            MutationExecutorError::Bind(format!("missing entity: {}", graph.entity))
-        })?;
-        if initial_graph_exists_rusqlite(executor, dialect, entity, graph)? {
-            if let Some(query) = compile_initial_graph_update(dialect, entity, graph)? {
-                executor.execute(&query)?;
-            }
-        } else {
-            let query = compile_initial_graph_insert(dialect, entity, graph)?;
-            executor.execute(&query)?;
-        }
-    }
-    Ok(())
-}
 
 fn initial_graph_exists_rusqlite(
     executor: &RusqliteMutationExecutor,

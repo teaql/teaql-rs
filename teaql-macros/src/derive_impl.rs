@@ -178,20 +178,28 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
 
     // Generate dirty_fields() if entity has a 'root' field (EntityRoot) and an id field.
     // This is the Rust equivalent of Java's entity.getUpdatedProperties().
-    let dirty_fields_impl = if has_root_field {
+    let (dirty_fields_impl, is_marked_as_delete_impl) = if has_root_field {
         if let Some(id_ident) = &id_field_ident {
-            quote! {
-                fn dirty_fields(&self) -> Option<std::collections::BTreeSet<String>> {
-                    let key = teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
-                    let fields = self.root.changed_field_names(&key);
-                    if fields.is_empty() { None } else { Some(fields) }
+            (
+                quote! {
+                    fn dirty_fields(&self) -> Option<std::collections::BTreeSet<String>> {
+                        let key = teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
+                        let fields = self.root.changed_field_names(&key);
+                        if fields.is_empty() { None } else { Some(fields) }
+                    }
+                },
+                quote! {
+                    fn is_marked_as_delete(&self) -> bool {
+                        let key = teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
+                        self.root.is_marked_as_delete(&key)
+                    }
                 }
-            }
+            )
         } else {
-            quote! {}
+            (quote! {}, quote! {})
         }
     } else {
-        quote! {}
+        (quote! {}, quote! {})
     };
 
     quote! {
@@ -207,9 +215,11 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
 
         impl ::teaql_core::Entity for #struct_name {
             fn from_record(record: ::teaql_core::Record) -> Result<Self, ::teaql_core::EntityError> {
-                Ok(Self {
+                let mut entity = Self {
                     #(#from_record_fields),*
-                })
+                };
+                entity.root.set_original_record(record);
+                Ok(entity)
             }
 
             fn into_record(self) -> ::teaql_core::Record {
@@ -222,6 +232,23 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             }
 
             #dirty_fields_impl
+            #is_marked_as_delete_impl
+
+            fn is_new(&self) -> bool {
+                self.root.is_new()
+            }
+
+            fn mark_as_new(&mut self) {
+                self.root.mark_as_new()
+            }
+
+            fn comment(&self) -> Option<String> {
+                self.root.get_comment()
+            }
+
+            fn original_values(&self) -> Option<::teaql_core::Record> {
+                self.root.original_record()
+            }
         }
 
         #identifiable_impl_tokens

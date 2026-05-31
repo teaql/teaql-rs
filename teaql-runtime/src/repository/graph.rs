@@ -74,7 +74,7 @@ where
                     teaql_core::EntityGraphOperation::Delete => crate::GraphOperation::Remove,
                 },
                 comment: node.comment,
-                dirty_fields: None,
+                dirty_fields: None, original_values: None,
             }
         }
         self.save_graph(convert(graph.root))
@@ -201,8 +201,19 @@ where
         // Extract dirty field names BEFORE into_record() consumes the entity.
         // This is the Rust equivalent of Java's entity.getUpdatedProperties().
         let dirty_fields = entity.dirty_fields();
+        let original_values = entity.original_values();
+        let is_deleted = entity.is_marked_as_delete();
+        let comment = entity.comment();
         let mut node = self.graph_node_from_record(&descriptor.name, entity.into_record())?;
         node.dirty_fields = dirty_fields;
+        node.original_values = original_values;
+        if is_deleted {
+            node.operation = GraphOperation::Remove;
+            node.relations.clear();
+        }
+        if let Some(c) = comment {
+            node.set_comment(c);
+        }
         Ok(node)
     }
 
@@ -744,7 +755,7 @@ where
             relations: BTreeMap::new(),
             operation: GraphOperation::Reference,
             comment: None,
-            dirty_fields: None,
+            dirty_fields: None, original_values: None,
         })
     }
 
@@ -871,6 +882,7 @@ where
         check_result.map_err(RepositoryError::Runtime)?;
 
         let mut command = UpdateCommand::new(node.entity.clone(), id.clone());
+        command.old_values = node.original_values.clone();
         if let Some(version_property) = descriptor.version_property() {
             if let Some(Value::I64(version)) = node.values.get(&version_property.name) {
                 command = command.expected_version(*version);

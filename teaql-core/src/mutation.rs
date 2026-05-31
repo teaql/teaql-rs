@@ -37,6 +37,7 @@ pub struct UpdateCommand {
     pub expected_version: Option<i64>,
     pub values: Record,
     pub trace_chain: Vec<crate::TraceNode>,
+    pub old_values: Option<Record>,
 }
 
 impl UpdateCommand {
@@ -47,6 +48,7 @@ impl UpdateCommand {
             expected_version: None,
             values: Record::new(),
             trace_chain: Vec::new(),
+            old_values: None,
         }
     }
 

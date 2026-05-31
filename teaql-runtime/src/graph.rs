@@ -134,6 +134,9 @@ pub struct GraphNode {
     /// `Some(set)` = only these fields were modified — UPDATE should only include them.
     /// This is the Rust equivalent of Java's `entity.getUpdatedProperties()`.
     pub dirty_fields: Option<BTreeSet<String>>,
+    /// L1 Cache snapshot of the entity values exactly as they were loaded from the database.
+    /// Used by the Event Engine to eliminate redundant old_value queries during auditing.
+    pub original_values: Option<Record>,
 }
 
 impl GraphNode {
@@ -145,6 +148,7 @@ impl GraphNode {
             operation: GraphOperation::Upsert,
             comment: None,
             dirty_fields: None,
+            original_values: None,
         }
     }
 
