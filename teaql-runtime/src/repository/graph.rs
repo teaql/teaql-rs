@@ -74,6 +74,7 @@ where
                     teaql_core::EntityGraphOperation::Delete => crate::GraphOperation::Remove,
                 },
                 comment: node.comment,
+                dirty_fields: None,
             }
         }
         self.save_graph(convert(graph.root))
@@ -197,7 +198,12 @@ where
                 self.entity, descriptor.name
             )));
         }
-        self.graph_node_from_record(&descriptor.name, entity.into_record())
+        // Extract dirty field names BEFORE into_record() consumes the entity.
+        // This is the Rust equivalent of Java's entity.getUpdatedProperties().
+        let dirty_fields = entity.dirty_fields();
+        let mut node = self.graph_node_from_record(&descriptor.name, entity.into_record())?;
+        node.dirty_fields = dirty_fields;
+        Ok(node)
     }
 
     fn collect_graph_plan<'s>(
@@ -569,7 +575,7 @@ where
             node.relations.insert(name, saved_children);
         }
 
-        let update = self.graph_update_command(&node, descriptor, id_property, &id);
+        let update = self.graph_update_command(&mut node, descriptor, id_property, &id)?;
         if !update.values.is_empty() || update.expected_version.is_some() {
             let prepared_update = self
                 .prepare_update_command(&update)
@@ -601,12 +607,6 @@ where
                     )))
                 })?;
             let child_repo = self.scoped_repository(relation.target_entity.clone());
-            let existing_children = child_repo.fetch_graph_children(
-                &relation.target_entity,
-                &relation.foreign_key,
-                &local_value,
-                active_scope.map(|s| s.to_trace_chain()).unwrap_or_default(),
-            )?;
             let child_descriptor = self
                 .repository
                 .metadata
@@ -615,16 +615,10 @@ where
                 .map_err(RepositoryError::Runtime)?;
             let child_id_property = child_descriptor.id_property().ok_or_else(|| {
                 RepositoryError::Runtime(RuntimeError::Graph(format!(
-                    "entity {} has no id property for graph diff",
+                    "entity {} has no id property",
                     relation.target_entity
                 )))
             })?;
-            let mut existing_by_id = BTreeMap::new();
-            for child in existing_children {
-                if let Some(id) = child.get(&child_id_property.name) {
-                    existing_by_id.insert(graph_identity_key(id), child);
-                }
-            }
 
             let mut seen = std::collections::BTreeSet::new();
             let mut saved_children = Vec::new();
@@ -651,23 +645,7 @@ where
                 saved_children.push(child_repo.upsert_graph_node_scoped(child, active_scope)?);
             }
 
-            if relation.delete_missing {
-                for (id_key, existing) in existing_by_id {
-                    if seen.contains(&id_key) {
-                        continue;
-                    }
-                    let Some(existing_id) = existing.get(&child_id_property.name).cloned() else {
-                        continue;
-                    };
-                    let mut delete =
-                        DeleteCommand::new(relation.target_entity.clone(), existing_id);
-                    if let Some(version) = graph_record_version(&existing, child_descriptor) {
-                        delete = delete.expected_version(version);
-                    }
-                    let lineage = active_scope.map(|s| s.to_trace_chain()).unwrap_or_default();
-                    child_repo.delete_scoped(&delete, lineage)?;
-                }
-            }
+
 
             node.relations.insert(name, saved_children);
         }
@@ -766,6 +744,7 @@ where
             relations: BTreeMap::new(),
             operation: GraphOperation::Reference,
             comment: None,
+            dirty_fields: None,
         })
     }
 
@@ -877,28 +856,43 @@ where
 
     fn graph_update_command(
         &self,
-        node: &GraphNode,
+        node: &mut GraphNode,
         descriptor: &EntityDescriptor,
         id_property: &PropertyDescriptor,
         id: &Value,
-    ) -> UpdateCommand {
+    ) -> Result<UpdateCommand, RepositoryError<E::Error>> {
+        crate::mark_record_status(&mut node.values, crate::CheckObjectStatus::Update);
+        let check_result = self
+            .repository
+            .metadata
+            .context
+            .check_and_fix_record(&node.entity, &mut node.values);
+        crate::clear_record_status(&mut node.values);
+        check_result.map_err(RepositoryError::Runtime)?;
+
         let mut command = UpdateCommand::new(node.entity.clone(), id.clone());
         if let Some(version_property) = descriptor.version_property() {
             if let Some(Value::I64(version)) = node.values.get(&version_property.name) {
                 command = command.expected_version(*version);
             }
         }
+        // Filter properties by dirty_fields when available (Java-style minimal UPDATE).
+        // When dirty_fields is Some, only modified fields are included in the SET clause.
+        // When dirty_fields is None (no tracking), fall back to all fields in node.values.
         for property in descriptor.properties.iter().filter(|property| {
-            !property.is_id && !property.is_version && node.values.contains_key(&property.name)
+            !property.is_id
+                && !property.is_version
+                && property.name != id_property.name
+                && match &node.dirty_fields {
+                    Some(dirty) => dirty.contains(&property.name),
+                    None => node.values.contains_key(&property.name),
+                }
         }) {
-            if property.name == id_property.name {
-                continue;
-            }
             if let Some(value) = node.values.get(&property.name) {
                 command.values.insert(property.name.clone(), value.clone());
             }
         }
-        command
+        Ok(command)
     }
 
     fn delete_graph_node<'s>(

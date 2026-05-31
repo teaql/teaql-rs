@@ -28,6 +28,8 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     let mut into_record_fields = Vec::new();
     let mut id_impl = None;
     let mut version_impl = None;
+    let mut has_root_field = false;
+    let mut id_field_ident: Option<syn::Ident> = None;
     let explicit_field_names: Vec<String> = named_fields
         .iter()
         .filter_map(|field| {
@@ -47,6 +49,9 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         let parsed = parse_field_attrs(&field.attrs);
 
         if parsed.skip {
+            if field_name == "root" {
+                has_root_field = true;
+            }
             from_record_fields.push(quote! {
                 #field_ident: Default::default()
             });
@@ -96,7 +101,9 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 #field_ident: #from_relation
             });
             into_record_fields.push(quote! {
-                record.insert(#field_name.to_owned(), #into_relation);
+                if let Some(val) = #into_relation {
+                    record.insert(#field_name.to_owned(), val);
+                }
             });
             continue;
         }
@@ -113,6 +120,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             quote! { .not_null() }
         };
         let id_tokens = if id {
+            id_field_ident = Some(field_ident.clone());
             id_impl = Some(identifiable_value_tokens(
                 &field.ty,
                 quote! { &self.#field_ident },
@@ -168,6 +176,24 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         }
     });
 
+    // Generate dirty_fields() if entity has a 'root' field (EntityRoot) and an id field.
+    // This is the Rust equivalent of Java's entity.getUpdatedProperties().
+    let dirty_fields_impl = if has_root_field {
+        if let Some(id_ident) = &id_field_ident {
+            quote! {
+                fn dirty_fields(&self) -> Option<std::collections::BTreeSet<String>> {
+                    let key = teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
+                    let fields = self.root.changed_field_names(&key);
+                    if fields.is_empty() { None } else { Some(fields) }
+                }
+            }
+        } else {
+            quote! {}
+        }
+    } else {
+        quote! {}
+    };
+
     quote! {
         impl ::teaql_core::TeaqlEntity for #struct_name {
             fn entity_descriptor() -> ::teaql_core::EntityDescriptor {
@@ -194,6 +220,8 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
 
             fn on_loaded(&mut self, _context: &dyn std::any::Any) {
             }
+
+            #dirty_fields_impl
         }
 
         #identifiable_impl_tokens

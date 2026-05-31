@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{Decimal, EntityDescriptor, Record, Value, record_to_json_value};
 
@@ -36,6 +36,13 @@ impl std::error::Error for EntityError {}
 pub trait Entity: TeaqlEntity + Sized {
     fn from_record(record: Record) -> Result<Self, EntityError>;
     fn into_record(self) -> Record;
+
+    /// Returns the set of field names that have been modified since the entity was loaded.
+    /// Returns `None` if dirty tracking is not available (backwards compatible default).
+    /// This is the Rust equivalent of Java's `entity.getUpdatedProperties()`.
+    fn dirty_fields(&self) -> Option<BTreeSet<String>> {
+        None
+    }
 
     /// Invoked immediately after the entity is loaded from the repository.
     /// Used by implementations to attach runtime contexts or initialize internal states.

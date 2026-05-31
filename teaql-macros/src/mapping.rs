@@ -263,37 +263,41 @@ pub fn into_relation_value_tokens(
 ) -> proc_macro2::TokenStream {
     if option_inner_type(ty).is_some() {
         return quote! {
-            match #value_expr {
+            Some(match #value_expr {
                 Some(entity) => ::teaql_core::Value::object(entity.into_record()),
                 None => ::teaql_core::Value::Null,
-            }
+            })
         };
     }
 
     if vec_inner_type(ty).is_some() {
         return quote! {
-            ::teaql_core::Value::List(
+            Some(::teaql_core::Value::List(
                 (#value_expr)
                     .into_iter()
                     .map(|entity| ::teaql_core::Value::object(entity.into_record()))
                     .collect(),
-            )
+            ))
         };
     }
 
     if smart_list_inner_type(ty).is_some() {
         return quote! {
-            ::teaql_core::Value::List(
-                (#value_expr)
-                    .data
-                    .into_iter()
-                    .map(|entity| ::teaql_core::Value::object(entity.into_record()))
-                    .collect(),
-            )
+            if (#value_expr).is_loaded {
+                Some(::teaql_core::Value::List(
+                    (#value_expr)
+                        .data
+                        .into_iter()
+                        .map(|entity| ::teaql_core::Value::object(entity.into_record()))
+                        .collect(),
+                ))
+            } else {
+                None
+            }
         };
     }
 
-    quote! { ::teaql_core::Value::Null }
+    quote! { Some(::teaql_core::Value::Null) }
 }
 
 pub fn identifiable_value_tokens(

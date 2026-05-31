@@ -129,6 +129,11 @@ pub struct GraphNode {
     /// Annotation comment: carries business intent metadata through graph save.
     /// Not persisted to the database — used for observability (SQL logs, audit trails).
     pub comment: Option<String>,
+    /// Fields modified via `update_*()` methods (dirty tracking).
+    /// `None` = all fields (new entity or no tracking available).
+    /// `Some(set)` = only these fields were modified — UPDATE should only include them.
+    /// This is the Rust equivalent of Java's `entity.getUpdatedProperties()`.
+    pub dirty_fields: Option<BTreeSet<String>>,
 }
 
 impl GraphNode {
@@ -139,6 +144,7 @@ impl GraphNode {
             relations: BTreeMap::new(),
             operation: GraphOperation::Upsert,
             comment: None,
+            dirty_fields: None,
         }
     }
 

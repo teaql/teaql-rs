@@ -89,6 +89,14 @@ impl EntityChangeSet {
     pub fn clear_entity(&mut self, key: &EntityKey) {
         self.changes.remove(key);
     }
+
+    /// Get the set of field names that have been modified for a given entity key.
+    pub fn field_names(&self, key: &EntityKey) -> BTreeSet<String> {
+        self.changes
+            .get(key)
+            .map(|record| record.keys().cloned().collect())
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -138,6 +146,16 @@ impl ChangeSetStack {
         for change_set in &mut self.stack {
             change_set.clear_entity(key);
         }
+    }
+
+    /// Get the union of all changed field names for a given entity key across all stack levels.
+    /// This is the Rust equivalent of Java's `entity.getUpdatedProperties()`.
+    pub fn changed_field_names(&self, key: &EntityKey) -> BTreeSet<String> {
+        let mut fields = BTreeSet::new();
+        for change_set in &self.stack {
+            fields.extend(change_set.field_names(key));
+        }
+        fields
     }
 }
 
@@ -248,5 +266,15 @@ impl EntityRoot {
             .expect("entity root mutex")
             .deleted_keys
             .contains(key)
+    }
+
+    /// Get the set of field names that have been modified for the given entity key.
+    /// This is the Rust equivalent of Java's `entity.getUpdatedProperties()`.
+    pub fn changed_field_names(&self, key: &EntityKey) -> BTreeSet<String> {
+        self.inner
+            .lock()
+            .expect("entity root mutex")
+            .change_sets
+            .changed_field_names(key)
     }
 }

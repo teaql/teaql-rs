@@ -11,11 +11,14 @@ pub struct SmartList<T> {
     pub aggregations: Record,
     pub summary: Record,
     pub facets: BTreeMap<String, SmartList<Record>>,
+    pub is_loaded: bool,
 }
 
 impl<T> SmartList<T> {
     pub fn empty() -> Self {
-        Self::new(Vec::new())
+        let mut list = Self::new(Vec::new());
+        list.is_loaded = false;
+        list
     }
 
     pub fn new(data: Vec<T>) -> Self {
@@ -25,6 +28,7 @@ impl<T> SmartList<T> {
             aggregations: Record::new(),
             summary: Record::new(),
             facets: BTreeMap::new(),
+            is_loaded: true,
         }
     }
 
@@ -166,6 +170,7 @@ impl<T> SmartList<T> {
             aggregations: self.aggregations,
             summary: self.summary,
             facets: self.facets,
+            is_loaded: self.is_loaded,
         }
     }
 
@@ -240,6 +245,7 @@ impl<T> SmartList<T> {
             aggregations: self.aggregations,
             summary: self.summary,
             facets: self.facets,
+            is_loaded: self.is_loaded,
         }
     }
 }
@@ -280,7 +286,7 @@ impl<T> From<Vec<T>> for SmartList<T> {
 
 impl<T> Default for SmartList<T> {
     fn default() -> Self {
-        Self::new(Vec::new())
+        Self::empty()
     }
 }
 

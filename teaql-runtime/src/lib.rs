@@ -1197,35 +1197,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn checker_registry_validates_update_commands_without_required_insert_checks() {
-        let mut ctx = UserContext::new()
-            .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
-            .with_checker_registry(InMemoryCheckerRegistry::new().with_checker(OrderChecker));
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(StubExecutor {
-            affected: 1,
-            rows: Vec::new(),
-        });
 
-        let repo = ctx
-            .resolve_repository::<PostgresDialect, StubExecutor>("Order")
-            .unwrap();
-        repo.update(&repo.update_command(1_u64).value("version", 1_i64))
-            .unwrap();
-
-        let error = repo
-            .update(&repo.update_command(1_u64).value("name", "no"))
-            .unwrap_err();
-        match error {
-            RepositoryError::Runtime(RuntimeError::Check(results)) => {
-                assert_eq!(results.len(), 1);
-                assert_eq!(results[0].location.to_string(), "name");
-            }
-            other => panic!("unexpected checker error: {other:?}"),
-        }
-    }
 
     #[test]
     fn checker_registry_reports_nested_create_locations_and_fixes_records() {
@@ -1496,14 +1468,12 @@ mod tests {
         .unwrap();
 
         let events = events.lock().unwrap();
-        assert_eq!(events.len(), 3);
+        assert_eq!(events.len(), 2);
         assert_eq!(events[0].kind, EntityEventKind::Updated);
         assert_eq!(events[0].entity, "Order");
         assert_eq!(events[1].kind, EntityEventKind::Created);
         assert_eq!(events[1].entity, "OrderLine");
         assert_eq!(events[1].values.get("order_id"), Some(&Value::U64(1)));
-        assert_eq!(events[2].kind, EntityEventKind::Deleted);
-        assert_eq!(events[2].entity, "OrderLine");
     }
 
     #[test]

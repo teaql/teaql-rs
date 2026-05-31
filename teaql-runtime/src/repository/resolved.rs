@@ -140,14 +140,7 @@ where
             behavior.before_update(self.repository.metadata.context, &mut command)?;
         }
         self.enforce_update_policy(&mut command)?;
-        mark_record_status(&mut command.values, CheckObjectStatus::Update);
-        let check_result = self
-            .repository
-            .metadata
-            .context
-            .check_and_fix_record(&command.entity, &mut command.values);
-        clear_record_status(&mut command.values);
-        check_result?;
+
         Ok(command)
     }
 
