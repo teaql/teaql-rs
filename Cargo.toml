@@ -13,7 +13,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.0.2"
+version = "1.0.3"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["Philip"]
@@ -34,11 +34,11 @@ proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full", "extra-traits"] }
 
-teaql-core = { path = "teaql-core", version = "1.0.2" }
-teaql-macros = { path = "teaql-macros", version = "1.0.2" }
-teaql-runtime = { path = "teaql-runtime", version = "1.0.2" }
-teaql-sql = { path = "teaql-sql", version = "1.0.2" }
-teaql-provider-rusqlite = { path = "teaql-provider-rusqlite", version = "1.0.2" }
-teaql-provider-sqlx-postgres = { path = "teaql-provider-sqlx-postgres", version = "1.0.2" }
-teaql-provider-sqlx-sqlite = { path = "teaql-provider-sqlx-sqlite", version = "1.0.2" }
-teaql-provider-sqlx-mysql = { path = "teaql-provider-sqlx-mysql", version = "1.0.2" }
+teaql-core = { path = "teaql-core", version = "1.0.3" }
+teaql-macros = { path = "teaql-macros", version = "1.0.3" }
+teaql-runtime = { path = "teaql-runtime", version = "1.0.3" }
+teaql-sql = { path = "teaql-sql", version = "1.0.3" }
+teaql-provider-rusqlite = { path = "teaql-provider-rusqlite", version = "1.0.3" }
+teaql-provider-sqlx-postgres = { path = "teaql-provider-sqlx-postgres", version = "1.0.3" }
+teaql-provider-sqlx-sqlite = { path = "teaql-provider-sqlx-sqlite", version = "1.0.3" }
+teaql-provider-sqlx-mysql = { path = "teaql-provider-sqlx-mysql", version = "1.0.3" }

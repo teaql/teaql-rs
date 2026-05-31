@@ -37,6 +37,7 @@ impl UserContext {
         })
     }
 
+    #[doc(hidden)]
     pub fn resolve_repository<D, E>(
         &self,
         entity: impl Into<String>,
