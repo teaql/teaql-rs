@@ -62,6 +62,9 @@ pub trait Entity: TeaqlEntity + Sized {
         None
     }
 
+    /// Set an annotation comment for this entity instance.
+    fn set_comment(&mut self, _comment: String) {}
+
     /// Get the original snapshot values when this entity was loaded from the repository, if available.
     fn original_values(&self) -> Option<::std::collections::BTreeMap<String, Value>> {
         None

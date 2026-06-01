@@ -487,6 +487,26 @@ where
         Ok(affected)
     }
 
+    pub(super) fn execute_prepared_batch_insert(
+        &self,
+        command: teaql_core::BatchInsertCommand,
+    ) -> Result<u64, RepositoryError<E::Error>> {
+        if command.batch_values.is_empty() {
+            return Ok(0);
+        }
+        let affected = self.repository.batch_insert(&command)?;
+        
+        let entity = command.entity.clone();
+        for (i, values) in command.batch_values.into_iter().enumerate() {
+            let mut event = EntityEvent::created(entity.clone(), values);
+            if i < command.trace_chains.len() {
+                event.trace_chain = command.trace_chains[i].clone();
+            }
+            self.emit_event(event).map_err(RepositoryError::Runtime)?;
+        }
+        Ok(affected)
+    }
+
     #[allow(dead_code)]
     pub(super) fn execute_prepared_update(
         &self,
@@ -531,6 +551,44 @@ where
         );
         event.trace_chain = trace_chain;
         self.emit_event(event).map_err(RepositoryError::Runtime)?;
+        Ok(affected)
+    }
+
+    pub(super) fn execute_prepared_batch_update(
+        &self,
+        command: teaql_core::BatchUpdateCommand,
+    ) -> Result<u64, RepositoryError<E::Error>> {
+        if command.batch_values.is_empty() {
+            return Ok(0);
+        }
+        let affected = self.repository.batch_update(&command)?;
+        
+        let entity = command.entity.clone();
+        for (i, values) in command.batch_values.into_iter().enumerate() {
+            let mut full_values = values.clone();
+            full_values.insert("id".to_owned(), command.batch_ids[i].clone());
+            if let Some(Some(version)) = command.batch_expected_versions.get(i) {
+                full_values.insert("version".to_owned(), teaql_core::Value::I64(*version + 1));
+            }
+            
+            let old_values = command.batch_old_values.get(i).cloned().unwrap_or(None);
+            let mut new_values = old_values.clone().unwrap_or_default();
+            for (field, value) in &full_values {
+                new_values.insert(field.clone(), value.clone());
+            }
+            
+            let mut event = EntityEvent::updated_with_old_values(
+                entity.clone(),
+                full_values,
+                old_values,
+                new_values,
+                command.update_fields.clone(),
+            );
+            if i < command.trace_chains.len() {
+                event.trace_chain = command.trace_chains[i].clone();
+            }
+            self.emit_event(event).map_err(RepositoryError::Runtime)?;
+        }
         Ok(affected)
     }
 

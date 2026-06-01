@@ -184,6 +184,42 @@ where
         Ok(affected)
     }
 
+    pub fn batch_insert(&self, command: &teaql_core::BatchInsertCommand) -> Result<u64, RepositoryError<E::Error>> {
+        let trace_chain = command.trace_chains.first().cloned().unwrap_or_default();
+        let affected = self.execute_mutation(
+            SqlLogOperation::Insert,
+            &command.entity,
+            self.repository()
+                .compile_batch_insert(command)
+                .map_err(RepositoryError::Runtime)?,
+            trace_chain,
+        )?;
+        Ok(affected)
+    }
+
+    pub fn batch_update(&self, command: &teaql_core::BatchUpdateCommand) -> Result<u64, RepositoryError<E::Error>> {
+        let trace_chain = command.trace_chains.first().cloned().unwrap_or_default();
+        let affected = self.execute_mutation(
+            SqlLogOperation::Update,
+            &command.entity,
+            self.repository()
+                .compile_batch_update(command)
+                .map_err(RepositoryError::Runtime)?,
+            trace_chain,
+        )?;
+        if command.batch_expected_versions.iter().any(|v| v.is_some()) {
+            if affected != command.batch_ids.len() as u64 {
+                return Err(RepositoryError::Runtime(
+                    RuntimeError::OptimisticLockConflict {
+                        entity: command.entity.clone(),
+                        id: "BATCH".to_owned(),
+                    },
+                ));
+            }
+        }
+        Ok(affected)
+    }
+
     pub fn delete(&self, command: &DeleteCommand) -> Result<u64, RepositoryError<E::Error>> {
         let affected = self.execute_mutation(
             SqlLogOperation::Delete,

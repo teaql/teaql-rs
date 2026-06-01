@@ -202,6 +202,38 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         (quote! {}, quote! {})
     };
 
+    let set_original_record_impl = if has_root_field {
+        quote! { entity.root.set_original_record(record); }
+    } else {
+        quote! {}
+    };
+
+    let root_methods_impl = if has_root_field {
+        quote! {
+            fn is_new(&self) -> bool {
+                self.root.is_new()
+            }
+
+            fn mark_as_new(&mut self) {
+                self.root.mark_as_new()
+            }
+
+            fn comment(&self) -> Option<String> {
+                self.root.get_comment()
+            }
+
+            fn set_comment(&mut self, comment: String) {
+                self.root.set_comment(comment);
+            }
+
+            fn original_values(&self) -> Option<::teaql_core::Record> {
+                self.root.original_record()
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     quote! {
         impl ::teaql_core::TeaqlEntity for #struct_name {
             fn entity_descriptor() -> ::teaql_core::EntityDescriptor {
@@ -218,12 +250,16 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 let mut entity = Self {
                     #(#from_record_fields),*
                 };
-                entity.root.set_original_record(record);
+                #set_original_record_impl
                 Ok(entity)
             }
 
             fn into_record(self) -> ::teaql_core::Record {
+                use ::teaql_core::Entity;
                 let mut record = ::teaql_core::Record::new();
+                if let Some(comment) = self.comment() {
+                    record.insert("_comment".to_owned(), ::teaql_core::Value::Text(comment));
+                }
                 #(#into_record_fields)*
                 record
             }
@@ -233,22 +269,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
 
             #dirty_fields_impl
             #is_marked_as_delete_impl
-
-            fn is_new(&self) -> bool {
-                self.root.is_new()
-            }
-
-            fn mark_as_new(&mut self) {
-                self.root.mark_as_new()
-            }
-
-            fn comment(&self) -> Option<String> {
-                self.root.get_comment()
-            }
-
-            fn original_values(&self) -> Option<::teaql_core::Record> {
-                self.root.original_record()
-            }
+            #root_methods_impl
         }
 
         #identifiable_impl_tokens

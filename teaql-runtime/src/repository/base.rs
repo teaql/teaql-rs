@@ -1,6 +1,6 @@
 use teaql_core::{
-    DeleteCommand, Entity, InsertCommand, Record, RecoverCommand, SelectQuery, SmartList,
-    UpdateCommand,
+    BatchInsertCommand, BatchUpdateCommand, DeleteCommand, Entity, InsertCommand, Record,
+    RecoverCommand, SelectQuery, SmartList, UpdateCommand,
 };
 use teaql_sql::{CompiledQuery, SqlDialect};
 
@@ -44,6 +44,28 @@ where
             .entity(&command.entity)
             .ok_or_else(|| RuntimeError::MissingEntity(command.entity.clone()))?;
         Ok(self.dialect.compile_update(entity, command)?)
+    }
+
+    pub fn compile_batch_insert(
+        &self,
+        command: &BatchInsertCommand,
+    ) -> Result<CompiledQuery, RuntimeError> {
+        let entity = self
+            .metadata
+            .entity(&command.entity)
+            .ok_or_else(|| RuntimeError::MissingEntity(command.entity.clone()))?;
+        Ok(self.dialect.compile_batch_insert(entity, command)?)
+    }
+
+    pub fn compile_batch_update(
+        &self,
+        command: &BatchUpdateCommand,
+    ) -> Result<CompiledQuery, RuntimeError> {
+        let entity = self
+            .metadata
+            .entity(&command.entity)
+            .ok_or_else(|| RuntimeError::MissingEntity(command.entity.clone()))?;
+        Ok(self.dialect.compile_batch_update(entity, command)?)
     }
 
     pub fn compile_delete(&self, command: &DeleteCommand) -> Result<CompiledQuery, RuntimeError> {
@@ -147,6 +169,45 @@ where
                     id: format!("{:?}", command.id),
                 },
             ));
+        }
+
+        Ok(affected)
+    }
+
+    pub fn batch_insert(
+        &self,
+        command: &teaql_core::BatchInsertCommand,
+    ) -> Result<u64, RepositoryError<E::Error>> {
+        let compiled = self
+            .compile_batch_insert(command)
+            .map_err(RepositoryError::Runtime)?;
+        self.executor
+            .execute(&compiled)
+            .map_err(RepositoryError::Executor)
+    }
+
+    pub fn batch_update(
+        &self,
+        command: &teaql_core::BatchUpdateCommand,
+    ) -> Result<u64, RepositoryError<E::Error>> {
+        let compiled = self
+            .compile_batch_update(command)
+            .map_err(RepositoryError::Runtime)?;
+        let affected = self
+            .executor
+            .execute(&compiled)
+            .map_err(RepositoryError::Executor)?;
+
+        if command.batch_expected_versions.iter().any(|v| v.is_some()) {
+            if affected != command.batch_ids.len() as u64 {
+                // To be precise we should know WHICH id failed, but for now we just error
+                return Err(RepositoryError::Runtime(
+                    RuntimeError::OptimisticLockConflict {
+                        entity: command.entity.clone(),
+                        id: "BATCH".to_owned(),
+                    },
+                ));
+            }
         }
 
         Ok(affected)

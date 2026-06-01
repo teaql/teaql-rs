@@ -204,7 +204,7 @@ pub trait SqlDialect {
     fn compile_insert(
         &self,
         entity: &EntityDescriptor,
-        command: &InsertCommand,
+        command: &teaql_core::InsertCommand,
     ) -> Result<CompiledQuery, SqlCompileError> {
         let mut columns = Vec::new();
         let mut placeholders = Vec::new();
@@ -234,10 +234,58 @@ pub trait SqlDialect {
         })
     }
 
+    fn compile_batch_insert(
+        &self,
+        entity: &EntityDescriptor,
+        command: &teaql_core::BatchInsertCommand,
+    ) -> Result<CompiledQuery, SqlCompileError> {
+        if command.batch_values.is_empty() {
+            return Err(SqlCompileError::EmptyMutation("batch_insert".to_owned()));
+        }
+        
+        let mut columns = Vec::new();
+        let first_record = &command.batch_values[0];
+        
+        for property in &entity.properties {
+            if first_record.contains_key(&property.name) {
+                columns.push(property.clone());
+            }
+        }
+        
+        if columns.is_empty() {
+            return Err(SqlCompileError::EmptyMutation("batch_insert".to_owned()));
+        }
+        
+        let column_names: Vec<String> = columns.iter().map(|p| self.quote_ident(&p.column_name)).collect();
+        let mut params = Vec::new();
+        let mut values_clauses = Vec::new();
+        
+        for record in &command.batch_values {
+            let mut row_placeholders = Vec::new();
+            for property in &columns {
+                let value = record.get(&property.name).cloned().unwrap_or(teaql_core::Value::Null);
+                params.push(value);
+                row_placeholders.push(self.placeholder(params.len()));
+            }
+            values_clauses.push(format!("({})", row_placeholders.join(", ")));
+        }
+        
+        Ok(CompiledQuery {
+            sql: format!(
+                "INSERT INTO {} ({}) VALUES {}",
+                self.quote_ident(&entity.table_name),
+                column_names.join(", "),
+                values_clauses.join(", ")
+            ),
+            params,
+            comment: None,
+        })
+    }
+
     fn compile_update(
         &self,
         entity: &EntityDescriptor,
-        command: &UpdateCommand,
+        command: &teaql_core::UpdateCommand,
     ) -> Result<CompiledQuery, SqlCompileError> {
         let id_property = entity
             .id_property()
@@ -302,6 +350,127 @@ pub trait SqlDialect {
                 "UPDATE {} SET {} WHERE {}",
                 self.quote_ident(&entity.table_name),
                 assignments.join(", "),
+                predicates.join(" AND ")
+            ),
+            params,
+            comment: None,
+        })
+    }
+
+    fn compile_batch_update(
+        &self,
+        entity: &EntityDescriptor,
+        command: &teaql_core::BatchUpdateCommand,
+    ) -> Result<CompiledQuery, SqlCompileError> {
+        if command.batch_values.is_empty() {
+            return Err(SqlCompileError::EmptyMutation("batch_update".to_owned()));
+        }
+        
+        let id_property = entity
+            .id_property()
+            .ok_or_else(|| SqlCompileError::MissingIdProperty(entity.name.clone()))?;
+            
+        let mut params = Vec::new();
+        let mut set_clauses = Vec::new();
+        
+        // Build CASE statement for each updated field
+        for field_name in &command.update_fields {
+            let property = entity.property_by_name(field_name)
+                .ok_or_else(|| SqlCompileError::UnknownField(field_name.clone()))?;
+                
+            let mut case_parts = Vec::new();
+            case_parts.push(format!("CASE {}", self.quote_ident(&id_property.column_name)));
+            
+            for (i, record) in command.batch_values.iter().enumerate() {
+                let id = &command.batch_ids[i];
+                let val = record.get(field_name).cloned().unwrap_or(teaql_core::Value::Null);
+                
+                params.push(id.clone());
+                let id_ph = self.placeholder(params.len());
+                
+                params.push(val);
+                let val_ph = self.placeholder(params.len());
+                
+                case_parts.push(format!("WHEN {} THEN {}", id_ph, val_ph));
+            }
+            
+            case_parts.push(format!("ELSE {} END", self.quote_ident(&property.column_name)));
+            set_clauses.push(format!("{} = {}", self.quote_ident(&property.column_name), case_parts.join(" ")));
+        }
+        
+        let mut has_versions = false;
+        if let Some(version_property) = entity.version_property() {
+            let mut case_parts = Vec::new();
+            case_parts.push(format!("CASE {}", self.quote_ident(&id_property.column_name)));
+            
+            for (i, exp_ver_opt) in command.batch_expected_versions.iter().enumerate() {
+                if let Some(exp_ver) = exp_ver_opt {
+                    has_versions = true;
+                    let id = &command.batch_ids[i];
+                    
+                    params.push(id.clone());
+                    let id_ph = self.placeholder(params.len());
+                    
+                    params.push(teaql_core::Value::I64(*exp_ver + 1));
+                    let val_ph = self.placeholder(params.len());
+                    
+                    case_parts.push(format!("WHEN {} THEN {}", id_ph, val_ph));
+                }
+            }
+            
+            if has_versions {
+                case_parts.push(format!("ELSE {} END", self.quote_ident(&version_property.column_name)));
+                set_clauses.push(format!("{} = {}", self.quote_ident(&version_property.column_name), case_parts.join(" ")));
+            }
+        }
+        
+        if set_clauses.is_empty() {
+            return Err(SqlCompileError::EmptyMutation("batch_update".to_owned()));
+        }
+        
+        let mut in_placeholders = Vec::new();
+        for id in &command.batch_ids {
+            params.push(id.clone());
+            in_placeholders.push(self.placeholder(params.len()));
+        }
+        let mut predicates = vec![format!(
+            "{} IN ({})",
+            self.quote_ident(&id_property.column_name),
+            in_placeholders.join(", ")
+        )];
+        
+        if has_versions {
+            let version_property = entity.version_property().unwrap();
+            let mut case_parts = Vec::new();
+            case_parts.push(format!("CASE {}", self.quote_ident(&id_property.column_name)));
+            
+            for (i, exp_ver_opt) in command.batch_expected_versions.iter().enumerate() {
+                if let Some(exp_ver) = exp_ver_opt {
+                    let id = &command.batch_ids[i];
+                    
+                    params.push(id.clone());
+                    let id_ph = self.placeholder(params.len());
+                    
+                    params.push(teaql_core::Value::I64(*exp_ver));
+                    let val_ph = self.placeholder(params.len());
+                    
+                    case_parts.push(format!("WHEN {} THEN {}", id_ph, val_ph));
+                }
+            }
+            case_parts.push(format!("ELSE {} END", self.quote_ident(&version_property.column_name)));
+            
+            predicates.push(format!(
+                "{} = {}",
+                self.quote_ident(&version_property.column_name),
+                case_parts.join(" ")
+            ));
+        }
+
+        Ok(CompiledQuery {
+            sql: format!(
+                "UPDATE {} SET {} WHERE {}",
+                self.quote_ident(&entity.table_name),
+                set_clauses.join(", "),
                 predicates.join(" AND ")
             ),
             params,

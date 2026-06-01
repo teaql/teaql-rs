@@ -22,7 +22,10 @@ pub use entity_graph::{EntityGraph, EntityGraphBuilder, EntityGraphNode, EntityG
 pub use expr::{BinaryOp, Expr, ExprFunction};
 pub use list::SmartList;
 pub use meta::{EntityDescriptor, PropertyDescriptor, RelationDescriptor};
-pub use mutation::{DeleteCommand, InsertCommand, MutationKind, RecoverCommand, UpdateCommand};
+pub use mutation::{
+    BatchInsertCommand, BatchUpdateCommand, DeleteCommand, InsertCommand, MutationKind,
+    RecoverCommand, UpdateCommand,
+};
 pub use naming::default_table_name;
 pub use query::{
     Aggregate, AggregateFunction, AggregationCacheOptions, NamedExpr, ObjectGroupBy, OrderBy,

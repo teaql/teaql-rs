@@ -62,6 +62,7 @@ pub struct GraphMutationPlanItem {
     pub item_index: u64,
     /// Lazy trace context — only materialized into a Vec<TraceNode> on demand.
     pub scope_token: Option<Arc<TraceScopeToken>>,
+    pub old_values: Option<Record>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -89,6 +90,7 @@ impl GraphMutationPlan {
         values: Record,
         update_fields: Vec<String>,
         scope_token: Option<Arc<TraceScopeToken>>,
+        old_values: Option<Record>,
     ) {
         let index = self.next_item_index;
         self.next_item_index += 1;
@@ -99,6 +101,7 @@ impl GraphMutationPlan {
             update_fields,
             item_index: index,
             scope_token,
+            old_values,
         });
     }
 

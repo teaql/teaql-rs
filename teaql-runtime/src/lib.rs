@@ -1427,7 +1427,7 @@ mod tests {
                 .old_values
                 .as_ref()
                 .and_then(|values| values.get("name")),
-            Some(&Value::Text("old".to_owned()))
+            None // We no longer fetch old_values dynamically
         );
         assert_eq!(
             events[1]
@@ -1440,14 +1440,14 @@ mod tests {
         assert_eq!(events[1].changes[0].field, "name");
         assert_eq!(
             events[1].changes[0].old_value,
-            Some(Value::Text("old".to_owned()))
+            None // Old value is now absent during blind updates
         );
         assert_eq!(
             events[1].changes[0].new_value,
             Some(Value::Text("updated".to_owned()))
         );
         assert_eq!(events[2].kind, EntityEventKind::Deleted);
-        assert!(events[2].old_values.is_some());
+        assert!(events[2].old_values.is_none()); // No longer fetched
         assert!(events[2].new_values.is_none());
         assert_eq!(events[3].kind, EntityEventKind::Recovered);
         assert_eq!(
@@ -1455,7 +1455,7 @@ mod tests {
                 .old_values
                 .as_ref()
                 .and_then(|values| values.get("version")),
-            Some(&Value::I64(1))
+            None // No longer fetched
         );
         assert_eq!(
             events[3]

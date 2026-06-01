@@ -185,7 +185,69 @@ where
             )));
         };
 
-        self.upsert_graph_node_scoped(root, None)
+        for batch in plan.batches {
+            if batch.items.is_empty() {
+                continue;
+            }
+            match batch.kind {
+                GraphMutationKind::Create => {
+                    let mut cmd = teaql_core::BatchInsertCommand::new(&batch.entity);
+                    for item in batch.items {
+                        cmd.batch_values.push(item.values);
+                        if let Some(token) = item.scope_token {
+                            cmd.trace_chains.push(token.recover_trace_chain());
+                        } else {
+                            cmd.trace_chains.push(Vec::new());
+                        }
+                    }
+                    self.execute_prepared_batch_insert(cmd)?;
+                }
+                GraphMutationKind::Update => {
+                    let mut cmd = teaql_core::BatchUpdateCommand::new(&batch.entity, batch.update_fields);
+                    for item in batch.items {
+                        let id = item.values.get("id").cloned().ok_or_else(|| {
+                            RepositoryError::Runtime(RuntimeError::Graph(format!(
+                                "update item in batch missing id for {}", batch.entity
+                            )))
+                        })?;
+                        let version = item.values.get("version").and_then(|v| {
+                            if let teaql_core::Value::I64(n) = v { Some(*n) } else { None }
+                        });
+                        cmd.batch_values.push(item.values);
+                        cmd.batch_ids.push(id);
+                        cmd.batch_expected_versions.push(version);
+                        cmd.batch_old_values.push(item.old_values);
+                        if let Some(token) = item.scope_token {
+                            cmd.trace_chains.push(token.recover_trace_chain());
+                        } else {
+                            cmd.trace_chains.push(Vec::new());
+                        }
+                    }
+                    self.execute_prepared_batch_update(cmd)?;
+                }
+                GraphMutationKind::Delete => {
+                    // For now, loop individually since we lack BatchDeleteCommand
+                    for item in batch.items {
+                        let id = item.values.get("id").cloned().ok_or_else(|| {
+                            RepositoryError::Runtime(RuntimeError::Graph(format!(
+                                "delete item in batch missing id for {}", batch.entity
+                            )))
+                        })?;
+                        let mut cmd = teaql_core::DeleteCommand::new(&batch.entity, id);
+                        if let Some(teaql_core::Value::I64(version)) = item.values.get("version") {
+                            cmd = cmd.expected_version(*version);
+                        }
+                        let trace_chain = if let Some(token) = item.scope_token { token.recover_trace_chain() } else { Vec::new() };
+                        self.delete_scoped(&cmd, trace_chain)?;
+                    }
+                }
+                GraphMutationKind::Reference => {
+                    // References are skipped in execution, they only validate during traversal
+                }
+            }
+        }
+
+        Ok(root)
     }
 
     pub fn graph_node_from_entity<T>(&self, entity: T) -> Result<GraphNode, RuntimeError>
@@ -234,6 +296,7 @@ where
                     node.values.clone(),
                     Vec::new(),
                     parent_token,
+                    node.original_values.clone(),
                 );
                 return Ok(());
             }
@@ -244,6 +307,7 @@ where
                     node.values.clone(),
                     Vec::new(),
                     parent_token,
+                    node.original_values.clone(),
                 );
                 return Ok(());
             }
@@ -354,6 +418,7 @@ where
             node.values.clone(),
             update_fields,
             current_token.clone(),
+            node.original_values.clone(),
         );
 
         for (name, children) in &mut node.relations {
@@ -989,7 +1054,7 @@ where
         self.delete_scoped(&delete, lineage)
     }
 
-    fn fetch_graph_current_row(
+    pub fn fetch_graph_current_row(
         &self,
         entity: &str,
         id_property: &str,

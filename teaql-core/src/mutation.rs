@@ -64,6 +64,48 @@ impl UpdateCommand {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct BatchInsertCommand {
+    pub entity: String,
+    pub batch_values: Vec<Record>,
+    pub trace_chains: Vec<Vec<crate::TraceNode>>,
+}
+
+impl BatchInsertCommand {
+    pub fn new(entity: impl Into<String>) -> Self {
+        Self {
+            entity: entity.into(),
+            batch_values: Vec::new(),
+            trace_chains: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BatchUpdateCommand {
+    pub entity: String,
+    pub batch_ids: Vec<Value>,
+    pub batch_expected_versions: Vec<Option<i64>>,
+    pub batch_values: Vec<Record>,
+    pub update_fields: Vec<String>,
+    pub trace_chains: Vec<Vec<crate::TraceNode>>,
+    pub batch_old_values: Vec<Option<Record>>,
+}
+
+impl BatchUpdateCommand {
+    pub fn new(entity: impl Into<String>, update_fields: Vec<String>) -> Self {
+        Self {
+            entity: entity.into(),
+            batch_ids: Vec::new(),
+            batch_expected_versions: Vec::new(),
+            batch_values: Vec::new(),
+            update_fields,
+            trace_chains: Vec::new(),
+            batch_old_values: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct DeleteCommand {
     pub entity: String,
     pub id: Value,
