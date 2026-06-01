@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use teaql_core::{
     DeleteCommand, Entity, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, Record,
@@ -8,7 +9,7 @@ use teaql_sql::SqlDialect;
 
 use crate::{
     GraphMutationKind, GraphMutationPlan, GraphNode, GraphOperation, RepositoryError,
-    RuntimeError, ScopedCommentNode, sorted_update_fields,
+    RuntimeError, ScopedCommentNode, TraceScopeToken, sorted_update_fields,
 };
 use crate::entity_status::EntityStatus;
 
@@ -168,7 +169,7 @@ where
         }
         let mut node = node;
         let mut plan = GraphMutationPlan::default();
-        self.collect_graph_plan(&mut node, &mut plan, None, false)?;
+        self.collect_graph_plan(&mut node, &mut plan, None, None, false)?;
         plan.planned_root = Some(node);
         plan.rebuild_batches();
         Ok(plan)
@@ -222,6 +223,7 @@ where
         node: &mut GraphNode,
         plan: &mut GraphMutationPlan,
         parent_scope: Option<&'s ScopedCommentNode<'s>>,
+        parent_token: Option<Arc<TraceScopeToken>>,
         parent_is_create: bool,
     ) -> Result<(), RepositoryError<E::Error>> {
         match node.operation {
@@ -231,6 +233,7 @@ where
                     GraphMutationKind::Reference,
                     node.values.clone(),
                     Vec::new(),
+                    parent_token,
                 );
                 return Ok(());
             }
@@ -240,6 +243,7 @@ where
                     GraphMutationKind::Delete,
                     node.values.clone(),
                     Vec::new(),
+                    parent_token,
                 );
                 return Ok(());
             }
@@ -319,6 +323,27 @@ where
         } else {
             Vec::new()
         };
+
+        // Build the TraceScopeToken for this node (only if it has a comment).
+        // This is an Arc-linked persistent list: zero-copy, O(1) creation.
+        let current_token = if let Some(c) = &node.comment {
+            Some(Arc::new(TraceScopeToken {
+                parent: parent_token.clone(),
+                track: teaql_core::TraceNode {
+                    entity_type: node.entity.clone(),
+                    entity_id: node.id().and_then(|v| match v {
+                        Value::U64(n) => Some(*n),
+                        Value::I64(n) => Some(*n as u64),
+                        _ => None,
+                    }),
+                    comment: c.clone(),
+                },
+                node_index: plan.next_item_index,
+            }))
+        } else {
+            parent_token.clone()
+        };
+
         plan.push(
             node.entity.clone(),
             if is_update {
@@ -328,6 +353,7 @@ where
             },
             node.values.clone(),
             update_fields,
+            current_token.clone(),
         );
 
         for (name, children) in &mut node.relations {
@@ -340,7 +366,7 @@ where
             let child_repo = self.scoped_repository(relation.target_entity.clone());
             for child in children {
                 ensure_relation_target(&node.entity, name, &relation.target_entity, child)?;
-                child_repo.collect_graph_plan(child, plan, active_scope, is_create_op)?;
+                child_repo.collect_graph_plan(child, plan, active_scope, current_token.clone(), is_create_op)?;
             }
         }
         Ok(())

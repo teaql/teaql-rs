@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
-use teaql_core::{Record, Value};
+use teaql_core::{Record, TraceNode, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphOperation {
@@ -18,12 +19,49 @@ pub enum GraphMutationKind {
     Reference,
 }
 
+/// A persistent linked-list token for hierarchical trace context.
+///
+/// Each token holds the trace info for one graph node and an `Arc` pointer
+/// to its parent's token. The full trace chain is only materialized when
+/// explicitly requested via [`recover_trace_chain()`], giving us zero-cost
+/// propagation during the flatten phase.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraceScopeToken {
+    /// Shared pointer to the parent scope (zero-copy link).
+    pub parent: Option<Arc<TraceScopeToken>>,
+    /// The trace metadata for this scope level.
+    pub track: TraceNode,
+    /// The item_index of the PlanItem that created this scope (for debugging).
+    pub node_index: u64,
+}
+
+impl TraceScopeToken {
+    /// Lazily recover the full trace chain by walking the parent pointers.
+    /// Only called when an event consumer actually needs the chain.
+    pub fn recover_trace_chain(&self) -> Vec<TraceNode> {
+        let mut chain = Vec::new();
+        let mut current: Option<&TraceScopeToken> = Some(self);
+        while let Some(token) = current {
+            if !token.track.comment.is_empty() {
+                chain.push(token.track.clone());
+            }
+            current = token.parent.as_deref();
+        }
+        chain.reverse();
+        chain
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphMutationPlanItem {
     pub entity: String,
     pub kind: GraphMutationKind,
     pub values: Record,
     pub update_fields: Vec<String>,
+    /// Monotonically increasing index assigned at push time (for debugging).
+    pub item_index: u64,
+    /// Lazy trace context — only materialized into a Vec<TraceNode> on demand.
+    pub scope_token: Option<Arc<TraceScopeToken>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -39,6 +77,8 @@ pub struct GraphMutationPlan {
     pub planned_root: Option<GraphNode>,
     pub items: Vec<GraphMutationPlanItem>,
     pub batches: Vec<GraphMutationBatch>,
+    /// Auto-incrementing counter for item_index assignment.
+    pub next_item_index: u64,
 }
 
 impl GraphMutationPlan {
@@ -48,12 +88,17 @@ impl GraphMutationPlan {
         kind: GraphMutationKind,
         values: Record,
         update_fields: Vec<String>,
+        scope_token: Option<Arc<TraceScopeToken>>,
     ) {
+        let index = self.next_item_index;
+        self.next_item_index += 1;
         self.items.push(GraphMutationPlanItem {
             entity: entity.into(),
             kind,
             values,
             update_fields,
+            item_index: index,
+            scope_token,
         });
     }
 

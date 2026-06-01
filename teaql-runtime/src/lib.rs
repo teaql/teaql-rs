@@ -23,7 +23,7 @@ pub use event::{
 };
 pub use graph::{
     GraphMutationBatch, GraphMutationKind, GraphMutationPlan, GraphMutationPlanItem,
-    GraphNode, GraphOperation, ScopedCommentNode, sorted_update_fields,
+    GraphNode, GraphOperation, ScopedCommentNode, TraceScopeToken, sorted_update_fields,
 };
 pub(crate) use id::local_id_generator;
 pub use id::{InternalIdGenerator, SnowflakeIdGenerator};
