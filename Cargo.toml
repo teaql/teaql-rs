@@ -8,7 +8,7 @@ members = [
     "teaql-provider-sqlx-mysql",
     "teaql-provider-rusqlite",
     "teaql-macros",
-    "examples",
+    "examples", "teaql-data-service",
 ]
 resolver = "2"
 
@@ -42,3 +42,4 @@ teaql-provider-rusqlite = { path = "teaql-provider-rusqlite", version = "1.1.0" 
 teaql-provider-sqlx-postgres = { path = "teaql-provider-sqlx-postgres", version = "1.1.0" }
 teaql-provider-sqlx-sqlite = { path = "teaql-provider-sqlx-sqlite", version = "1.1.0" }
 teaql-provider-sqlx-mysql = { path = "teaql-provider-sqlx-mysql", version = "1.1.0" }
+teaql-data-service = { path = "teaql-data-service", version = "1.1.0" }

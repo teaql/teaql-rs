@@ -13,11 +13,12 @@ use teaql_core::{
     UpdateCommand, Value,
 };
 use teaql_runtime::{
-    EntityEvent, GraphNode, GraphTransactionBoundary, InternalIdGenerator, QueryExecutor,
+    EntityEvent, GraphNode, GraphTransactionBoundary, InternalIdGenerator,
     RuntimeError, SchemaProvider, UserContext,
 };
 use teaql_sql::{
-    CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, quote_identifier_if_needed,
+    CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, SqlExecutorError,
+    SqlTransport, quote_identifier_if_needed,
 };
 
 pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";
@@ -224,30 +225,19 @@ impl RusqliteMutationExecutor {
     }
 }
 
-impl QueryExecutor for RusqliteMutationExecutor {
+
+impl SqlTransport for RusqliteMutationExecutor {
     type Error = MutationExecutorError;
 
-    fn fetch_all(&self, query: &CompiledQuery) -> Result<Vec<Record>, Self::Error> {
+    fn fetch_all_sql(&self, query: &CompiledQuery) -> Result<Vec<Record>, Self::Error> {
         RusqliteMutationExecutor::fetch_all(self, query)
     }
 
-    fn execute(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
+    fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
         RusqliteMutationExecutor::execute(self, query)
     }
-
-    fn begin_transaction(&self) -> Result<GraphTransactionBoundary, Self::Error> {
-        RusqliteMutationExecutor::begin_transaction(self)?;
-        Ok(GraphTransactionBoundary::Started)
-    }
-
-    fn commit_transaction(&self) -> Result<(), Self::Error> {
-        RusqliteMutationExecutor::commit_transaction(self)
-    }
-
-    fn rollback_transaction(&self) -> Result<(), Self::Error> {
-        RusqliteMutationExecutor::rollback_transaction(self)
-    }
 }
+
 
 
 fn initial_graph_exists_rusqlite(

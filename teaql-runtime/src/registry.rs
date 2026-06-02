@@ -142,6 +142,12 @@ impl MetadataStore for InMemoryMetadataStore {
     }
 }
 
+impl teaql_data_service::SchemaProvider for InMemoryMetadataStore {
+    fn get_entity(&self, name: &str) -> Option<std::sync::Arc<teaql_core::EntityDescriptor>> {
+        self.entities.get(name).map(|e| std::sync::Arc::new(e.clone()))
+    }
+}
+
 impl EntityDescriptorStore for InMemoryMetadataStore {
     fn register_descriptor(&mut self, descriptor: EntityDescriptor) {
         self.register(descriptor);

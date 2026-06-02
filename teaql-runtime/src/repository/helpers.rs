@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 
 use teaql_core::{EntityDescriptor, Record, RelationAggregate, SelectQuery, Value};
-use teaql_sql::CompiledQuery;
 
 use crate::{GraphNode, RepositoryError, RuntimeError};
 
@@ -43,11 +42,11 @@ pub(super) fn invalidate_aggregation_cache_namespace(
 pub(super) fn aggregation_cache_key(
     cache_namespace: &str,
     query_namespace: &str,
-    query: &CompiledQuery,
+    query: &SelectQuery,
 ) -> String {
+    let query_str = format!("{:?}", query);
     format!(
-        "{cache_namespace}::{query_namespace}::{}::{:?}",
-        query.sql, query.params
+        "{cache_namespace}::{query_namespace}::{query_str}"
     )
 }
 

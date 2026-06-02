@@ -15,7 +15,7 @@ use crate::{
     RepositoryBehaviorRegistry, RepositoryRegistry, RequestPolicy, RuntimeError,
     local_id_generator, translate_check_result,
 };
-use crate::{EntityRoot, QueryExecutor, RepositoryError};
+use crate::{EntityRoot, RepositoryError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SqlLogOperation {
@@ -607,16 +607,10 @@ impl UserContext {
         sink.on_event(self, &event)
     }
 
-    pub fn commit_changes<D, E>(&self) -> Result<(), RepositoryError<E::Error>>
+    pub fn commit_changes<E>(&self) -> Result<(), RepositoryError<E::Error>>
     where
-        D: SqlDialect + Send + Sync + 'static,
-        E: QueryExecutor + Send + Sync + 'static,
+        E: teaql_data_service::MutationExecutor + Send + Sync + 'static,
     {
-        let dialect = self.require_resource::<D>().map_err(|err| {
-            RepositoryError::Runtime(RuntimeError::Graph(format!(
-                "cannot commit changes without dialect: {err}"
-            )))
-        })?;
         let executor = self.require_resource::<E>().map_err(|err| {
             RepositoryError::Runtime(RuntimeError::Graph(format!(
                 "cannot commit changes without executor: {err}"
@@ -628,19 +622,16 @@ impl UserContext {
             if changes.is_empty() {
                 continue;
             }
-            let entity = self
+            let _entity = self
                 .require_entity(&key.entity)
                 .map_err(RepositoryError::Runtime)?;
             let mut command = UpdateCommand::new(&key.entity, key.id.clone());
             for (field, value) in changes {
                 command = command.value(field.clone(), value.clone());
             }
-            let query = dialect
-                .compile_update(entity, &command)
-                .map_err(RuntimeError::from)
-                .map_err(RepositoryError::Runtime)?;
+            let request = teaql_data_service::MutationRequest::Update(command);
             executor
-                .execute(&query)
+                .mutate(request)
                 .map_err(RepositoryError::Executor)?;
         }
 

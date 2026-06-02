@@ -4,16 +4,14 @@ use std::slice;
 use teaql_core::{
     Aggregate, Expr, ObjectGroupBy, Record, RelationAggregate, RelationLoad, SelectQuery, Value,
 };
-use teaql_sql::SqlDialect;
 
 use crate::{RepositoryError, RuntimeError};
 
-use super::{QueryExecutor, RelationLoadPlan, ResolvedRepository, helpers::*};
+use super::{RelationLoadPlan, ResolvedRepository, helpers::*};
 
-impl<'a, D, E> ResolvedRepository<'a, D, E>
+impl<'a, E> ResolvedRepository<'a, E>
 where
-    D: SqlDialect,
-    E: QueryExecutor,
+    E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor,
 {
     pub fn relation_loads(&self) -> Vec<String> {
         self.behavior()

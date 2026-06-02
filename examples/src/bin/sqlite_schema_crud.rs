@@ -1,5 +1,5 @@
 use teaql_core::{DeleteCommand, Expr, RecoverCommand, UpdateCommand};
-use teaql_examples::{Order, SqliteSyncExecutor, reset_sqlite_schema, sqlite_context};
+use teaql_examples::{Order, reset_sqlite_schema, sqlite_context};
 use teaql_provider_sqlx_sqlite::{SqliteDialect, SqliteMutationExecutor};
 
 #[tokio::main(flavor = "multi_thread")]
@@ -12,7 +12,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     reset_sqlite_schema(&pool, &executor).await?;
 
     let ctx = sqlite_context(executor);
-    let repo = ctx.resolve_repository::<SqliteDialect, SqliteSyncExecutor>("Order")?;
+    let repo = ctx.resolve_repository::<teaql_sql::SqlDataServiceExecutor<SqliteDialect, SqliteMutationExecutor, teaql_runtime::InMemoryMetadataStore>>("Order")?;
 
     repo.insert(
         &repo

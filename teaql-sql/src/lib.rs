@@ -1,8 +1,13 @@
 mod dialect;
 mod types;
+mod executor;
 
 pub use dialect::{SqlDialect, quote_identifier_if_needed};
 pub use types::{CompiledQuery, DatabaseKind, SqlCompileError};
+pub use executor::{
+    SqlDataServiceExecutor, SqlTransport, SqlTransaction,
+    SqlTransactionTransport, SqlExecutorError,
+};
 
 #[cfg(test)]
 mod tests {

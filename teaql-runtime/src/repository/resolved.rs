@@ -5,22 +5,20 @@ use teaql_core::{
     AggregationCacheOptions, DeleteCommand, Entity, Expr, InsertCommand, Record, RecoverCommand,
     RelationAggregate, SelectQuery, SmartList, UpdateCommand, Value,
 };
-use teaql_sql::{CompiledQuery, SqlDialect};
 
 use crate::{
     CheckObjectStatus, EntityEvent, RepositoryBehavior, RepositoryError, RuntimeError,
-    SqlLogOperation, clear_record_status, mark_record_status,
+    clear_record_status, mark_record_status,
 };
 
 use super::{
-    AggregationCacheBackend, ContextRepository, InMemoryAggregationCache, QueryExecutor,
+    AggregationCacheBackend, ContextRepository, InMemoryAggregationCache,
     ResolvedRepository, UserContextMetadata, helpers::*,
 };
 
-impl<'a, D, E> ResolvedRepository<'a, D, E>
+impl<'a, E> ResolvedRepository<'a, E>
 where
-    D: SqlDialect,
-    E: QueryExecutor,
+    E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor,
 {
     pub(super) fn query_behavior(&self, entity: &str) -> Option<Arc<dyn RepositoryBehavior>> {
         self.repository.metadata.context.repository_behavior(entity)
@@ -152,11 +150,6 @@ where
         RecoverCommand::new(self.entity.clone(), id, expected_version)
     }
 
-    pub fn compile(&self, query: &SelectQuery) -> Result<CompiledQuery, RuntimeError> {
-        let query = self.prepare_select_query(query)?;
-        self.repository.compile(&query)
-    }
-
     pub fn fetch_all(&self, query: &SelectQuery) -> Result<Vec<Record>, RepositoryError<E::Error>> {
         let query = self
             .prepare_select_query(query)
@@ -176,12 +169,9 @@ where
         query: &SelectQuery,
     ) -> Result<Vec<Record>, RepositoryError<E::Error>> {
 
-        let mut compiled = self
-            .repository
-            .compile(query)
-            .map_err(RepositoryError::Runtime)?;
         let final_comment = self.repository.resolve_final_comment(&query.trace_chain, query.comment.clone());
-        compiled.comment = final_comment;
+        let mut query = query.clone();
+        query.comment = final_comment;
         if let Some(options) = query.aggregation_cache.filter(|options| options.enabled) {
             if let Some(cache) = self
                 .repository
@@ -190,8 +180,7 @@ where
                 .get_resource::<Arc<dyn AggregationCacheBackend>>()
             {
                 return self.fetch_prepared_query_with_cache(
-                    query,
-                    &compiled,
+                    &query,
                     options,
                     cache.as_ref(),
                 );
@@ -202,33 +191,26 @@ where
                 .context
                 .get_resource::<InMemoryAggregationCache>()
             {
-                return self.fetch_prepared_query_with_cache(query, &compiled, options, cache);
+                return self.fetch_prepared_query_with_cache(&query, options, cache);
             }
         }
-        let started_at = SystemTime::now();
-        let started = Instant::now();
+        let request = teaql_data_service::QueryRequest {
+            query: query.clone(),
+            trace_chain: query.trace_chain.clone(),
+            comment: query.comment.clone(),
+        };
         let rows = self
             .repository
             .executor
-            .fetch_all(&compiled)
-            .map_err(RepositoryError::Executor)?;
-        self.repository.log_sql_result(
-            SqlLogOperation::Select,
-            &compiled,
-            started_at,
-            started,
-            Some(rows.len()),
-            Some(query.entity.clone()),
-            None,
-            query.trace_chain.clone(),
-        );
+            .query(request)
+            .map_err(RepositoryError::Executor)?
+            .rows;
         Ok(rows)
     }
 
     fn fetch_prepared_query_with_cache(
         &self,
         query: &SelectQuery,
-        compiled: &CompiledQuery,
         options: AggregationCacheOptions,
         cache: &dyn AggregationCacheBackend,
     ) -> Result<Vec<Record>, RepositoryError<E::Error>> {
@@ -236,28 +218,22 @@ where
         let key = aggregation_cache_key(
             cache.namespace(),
             &aggregation_cache_namespace(&query.entity),
-            compiled,
+            query,
         );
         if let Some(rows) = cache.get(&key, options.cache_expired_millis) {
             return Ok(rows);
         }
-        let started_at = SystemTime::now();
-        let started = Instant::now();
+        let request = teaql_data_service::QueryRequest {
+            query: query.clone(),
+            trace_chain: query.trace_chain.clone(),
+            comment: query.comment.clone(),
+        };
         let rows = self
             .repository
             .executor
-            .fetch_all(compiled)
-            .map_err(RepositoryError::Executor)?;
-        self.repository.log_sql_result(
-            SqlLogOperation::Select,
-            compiled,
-            started_at,
-            started,
-            Some(rows.len()),
-            Some(query.entity.clone()),
-            None,
-            query.trace_chain.clone(),
-        );
+            .query(request)
+            .map_err(RepositoryError::Executor)?
+            .rows;
         cache.put(key, rows.clone());
         Ok(rows)
     }
@@ -604,14 +580,13 @@ where
     }
 
 
-    pub fn scoped_repository(&self, entity: String) -> ResolvedRepository<'a, D, E> {
+    pub fn scoped_repository(&self, entity: String) -> ResolvedRepository<'a, E> {
         ResolvedRepository {
             entity,
             repository: ContextRepository {
                 metadata: UserContextMetadata {
                     context: self.repository.metadata.context,
                 },
-                dialect: self.repository.dialect,
                 executor: self.repository.executor,
             },
             trace_context: Vec::new(),

@@ -10,10 +10,9 @@ use teaql_provider_sqlx_sqlite::{
 };
 use teaql_runtime::{
     GraphTransactionBoundary, InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry,
-    InMemoryRepositoryRegistry, QueryExecutor, RepositoryBehavior, RuntimeModule, UserContext,
+    InMemoryRepositoryRegistry, RepositoryBehavior, RuntimeModule, UserContext,
 };
-use tokio::runtime::Handle;
-use tokio::task::block_in_place;
+use teaql_sql::SqlDataServiceExecutor;
 
 #[derive(Clone, Debug, PartialEq, TeaqlEntity)]
 #[teaql(entity = "Product", table = "example_product")]
@@ -57,71 +56,7 @@ impl RepositoryBehavior for OrderRelations {
     }
 }
 
-#[derive(Clone)]
-pub struct SqliteSyncExecutor {
-    inner: SqliteMutationExecutor,
-}
 
-impl SqliteSyncExecutor {
-    pub fn new(inner: SqliteMutationExecutor) -> Self {
-        Self { inner }
-    }
-}
-
-impl QueryExecutor for SqliteSyncExecutor {
-    type Error = SqliteMutationExecutorError;
-
-    fn fetch_all(&self, query: &teaql_sql::CompiledQuery) -> Result<Vec<Record>, Self::Error> {
-        let handle = Handle::current();
-        block_in_place(|| handle.block_on(self.inner.fetch_all(query)))
-    }
-
-    fn execute(&self, query: &teaql_sql::CompiledQuery) -> Result<u64, Self::Error> {
-        let handle = Handle::current();
-        block_in_place(|| handle.block_on(self.inner.execute(query)))
-    }
-
-    fn begin_transaction(&self) -> Result<GraphTransactionBoundary, Self::Error> {
-        let handle = Handle::current();
-        block_in_place(|| handle.block_on(self.inner.begin_transaction()))?;
-        Ok(GraphTransactionBoundary::Started)
-    }
-
-    fn commit_transaction(&self) -> Result<(), Self::Error> {
-        let handle = Handle::current();
-        block_in_place(|| handle.block_on(self.inner.commit_transaction()))
-    }
-
-    fn rollback_transaction(&self) -> Result<(), Self::Error> {
-        let handle = Handle::current();
-        block_in_place(|| handle.block_on(self.inner.rollback_transaction()))
-    }
-}
-
-#[derive(Clone)]
-pub struct PgSyncExecutor {
-    inner: PgMutationExecutor,
-}
-
-impl PgSyncExecutor {
-    pub fn new(inner: PgMutationExecutor) -> Self {
-        Self { inner }
-    }
-}
-
-impl QueryExecutor for PgSyncExecutor {
-    type Error = PgMutationExecutorError;
-
-    fn fetch_all(&self, query: &teaql_sql::CompiledQuery) -> Result<Vec<Record>, Self::Error> {
-        let handle = Handle::current();
-        block_in_place(|| handle.block_on(self.inner.fetch_all(query)))
-    }
-
-    fn execute(&self, query: &teaql_sql::CompiledQuery) -> Result<u64, Self::Error> {
-        let handle = Handle::current();
-        block_in_place(|| handle.block_on(self.inner.execute(query)))
-    }
-}
 
 pub fn module() -> RuntimeModule {
     RuntimeModule::new()
@@ -151,7 +86,14 @@ pub fn sqlite_context(executor: SqliteMutationExecutor) -> UserContext {
         .with_repository_registry(repository_registry())
         .with_repository_behavior_registry(behavior_registry());
     ctx.use_sqlite_provider(executor.clone());
-    ctx.insert_resource(SqliteSyncExecutor::new(executor));
+    
+    // Build and inject SqlDataServiceExecutor instead of the old QueryExecutor
+    let data_service = SqlDataServiceExecutor::new(
+        SqliteDialect,
+        executor,
+        metadata()
+    );
+    ctx.insert_resource(data_service);
     ctx
 }
 
@@ -161,7 +103,14 @@ pub fn postgres_context(executor: PgMutationExecutor) -> UserContext {
         .with_repository_registry(repository_registry())
         .with_repository_behavior_registry(behavior_registry());
     ctx.use_postgres_provider(executor.clone());
-    ctx.insert_resource(PgSyncExecutor::new(executor));
+    
+    // Build and inject SqlDataServiceExecutor instead of the old QueryExecutor
+    let data_service = SqlDataServiceExecutor::new(
+        PostgresDialect,
+        executor,
+        metadata()
+    );
+    ctx.insert_resource(data_service);
     ctx
 }
 

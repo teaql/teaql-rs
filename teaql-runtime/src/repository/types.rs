@@ -2,25 +2,23 @@ use teaql_core::{EntityDescriptor, SelectQuery};
 
 use crate::{MetadataStore, UserContext};
 
-pub struct Repository<'a, D, M, E> {
-    pub(super) dialect: &'a D,
+pub struct Repository<'a, M, E> {
     pub(super) metadata: &'a M,
     pub(super) executor: &'a E,
 }
 
-pub struct ContextRepository<'a, D, E> {
+pub struct ContextRepository<'a, E> {
     pub(super) metadata: UserContextMetadata<'a>,
-    pub(crate) dialect: &'a D,
     pub(crate) executor: &'a E,
 }
 
-pub struct ResolvedRepository<'a, D, E> {
+pub struct ResolvedRepository<'a, E> {
     pub(super) entity: String,
-    pub(super) repository: ContextRepository<'a, D, E>,
+    pub(super) repository: ContextRepository<'a, E>,
     pub(super) trace_context: Vec<teaql_core::TraceNode>,
 }
 
-impl<'a, D, E> ResolvedRepository<'a, D, E> {
+impl<'a, E> ResolvedRepository<'a, E> {
     pub fn with_trace_context(mut self, trace_context: Vec<teaql_core::TraceNode>) -> Self {
         self.trace_context = trace_context;
         self

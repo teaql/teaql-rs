@@ -1,5 +1,5 @@
 use teaql_core::{BinaryOp, Expr, SelectQuery, TeaqlEntity, Value};
-use teaql_examples::{Order, PgSyncExecutor, postgres_context, reset_postgres_schema};
+use teaql_examples::{Order, postgres_context, reset_postgres_schema};
 use teaql_provider_sqlx_postgres::{PgMutationExecutor, PostgresDialect};
 use teaql_sql::SqlDialect;
 
@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
 
     let ctx = postgres_context(executor.clone());
-    let repo = ctx.resolve_repository::<PostgresDialect, PgSyncExecutor>("Order")?;
+    let repo = ctx.resolve_repository::<teaql_sql::SqlDataServiceExecutor<teaql_provider_sqlx_postgres::PostgresDialect, teaql_provider_sqlx_postgres::PgMutationExecutor, teaql_runtime::InMemoryMetadataStore>>("Order")?;
 
     let feature_query = repo
         .select()

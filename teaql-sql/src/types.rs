@@ -129,6 +129,7 @@ fn quoted_sql_string(value: &str) -> String {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SqlCompileError {
+    UnknownEntity(String),
     UnknownField(String),
     EmptyInList,
     MissingIdProperty(String),
@@ -143,6 +144,7 @@ pub enum SqlCompileError {
 impl std::fmt::Display for SqlCompileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::UnknownEntity(entity) => write!(f, "unknown entity: {entity}"),
             Self::UnknownField(field) => write!(f, "unknown field: {field}"),
             Self::EmptyInList => write!(f, "IN requires at least one value"),
             Self::MissingIdProperty(entity) => write!(f, "entity {entity} has no id property"),

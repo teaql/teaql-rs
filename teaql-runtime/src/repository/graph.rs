@@ -5,7 +5,6 @@ use teaql_core::{
     DeleteCommand, Entity, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, Record,
     SelectQuery, UpdateCommand, Value,
 };
-use teaql_sql::SqlDialect;
 
 use crate::{
     GraphMutationKind, GraphMutationPlan, GraphNode, GraphOperation, RepositoryError,
@@ -13,12 +12,11 @@ use crate::{
 };
 use crate::entity_status::EntityStatus;
 
-use super::{GraphTransactionBoundary, QueryExecutor, ResolvedRepository, helpers::*};
+use super::{ResolvedRepository, helpers::*};
 
-impl<'a, D, E> ResolvedRepository<'a, D, E>
+impl<'a, E> ResolvedRepository<'a, E>
 where
-    D: SqlDialect,
-    E: QueryExecutor,
+    E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor,
 {
     pub fn save_graph(&self, node: GraphNode) -> Result<GraphNode, RepositoryError<E::Error>> {
         if node.entity != self.entity {
@@ -27,37 +25,7 @@ where
                 self.entity, node.entity
             ))));
         }
-        let boundary = self
-            .repository
-            .executor
-            .begin_transaction()
-            .map_err(RepositoryError::Executor)?;
-        if matches!(boundary, GraphTransactionBoundary::Unsupported) {
-            return Err(RepositoryError::Runtime(RuntimeError::Graph(
-                "save_graph requires a transactional executor".to_owned(),
-            )));
-        }
-        let result = self.upsert_graph_node_scoped(node, None);
-        match result {
-            Ok(saved) => {
-                if matches!(boundary, GraphTransactionBoundary::Started) {
-                    self.repository
-                        .executor
-                        .commit_transaction()
-                        .map_err(RepositoryError::Executor)?;
-                }
-                Ok(saved)
-            }
-            Err(err) => {
-                if !matches!(boundary, GraphTransactionBoundary::Unsupported) {
-                    self.repository
-                        .executor
-                        .rollback_transaction()
-                        .map_err(RepositoryError::Executor)?;
-                }
-                Err(err)
-            }
-        }
+        self.upsert_graph_node_scoped(node, None)
     }
 
     pub fn save_entity_graph_from(&self, graph: teaql_core::EntityGraph) -> Result<GraphNode, RepositoryError<E::Error>> {

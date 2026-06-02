@@ -13,7 +13,7 @@ use teaql_core::{
 };
 use teaql_runtime::{GraphNode, InternalIdGenerator, RuntimeError, SchemaProvider, UserContext};
 use teaql_sql::{
-    CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, quote_identifier_if_needed,
+    CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, SqlTransport, quote_identifier_if_needed,
 };
 use tokio::sync::Mutex;
 
@@ -226,6 +226,20 @@ impl From<SqlCompileError> for MutationExecutorError {
 #[derive(Clone)]
 pub struct PgMutationExecutor {
     pool: PgPool,
+}
+
+impl SqlTransport for PgMutationExecutor {
+    type Error = MutationExecutorError;
+
+    fn fetch_all_sql(&self, query: &CompiledQuery) -> Result<Vec<Record>, Self::Error> {
+        let handle = tokio::runtime::Handle::current();
+        tokio::task::block_in_place(|| handle.block_on(self.fetch_all(query)))
+    }
+
+    fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
+        let handle = tokio::runtime::Handle::current();
+        tokio::task::block_in_place(|| handle.block_on(self.execute(query)))
+    }
 }
 
 impl PgMutationExecutor {
