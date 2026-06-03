@@ -175,7 +175,7 @@ impl Default for UserContext {
             locals: BTreeMap::new(),
             initial_graphs: Vec::new(),
             entity_root: EntityRoot::default(),
-            sql_log_options: SqlLogOptions::default(),
+            sql_log_options: SqlLogOptions::all(),
             sql_log_entries: Mutex::new(Vec::new()),
             user_identifier: Some(user_id),
             timezone: Some("UTC".to_owned()),
