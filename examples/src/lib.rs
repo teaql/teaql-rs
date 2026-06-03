@@ -1,4 +1,4 @@
-use teaql_core::{Record, SmartList, TeaqlEntity};
+use teaql_core::{SmartList, TeaqlEntity};
 use teaql_macros::TeaqlEntity;
 use teaql_provider_sqlx_postgres::{
     MutationExecutorError as PgMutationExecutorError, PgMutationExecutor, PostgresDialect,
@@ -9,7 +9,7 @@ use teaql_provider_sqlx_sqlite::{
     SqliteProviderExt,
 };
 use teaql_runtime::{
-    GraphTransactionBoundary, InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry,
+    InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry,
     InMemoryRepositoryRegistry, RepositoryBehavior, RuntimeModule, UserContext,
 };
 use teaql_sql::SqlDataServiceExecutor;

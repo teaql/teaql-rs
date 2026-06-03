@@ -1,3 +1,5 @@
+#![allow(async_fn_in_trait)]
+
 use std::time::SystemTime;
 use teaql_core::{
     DeleteCommand, InsertCommand, RecoverCommand, UpdateCommand, SelectQuery, TraceNode, Record,
@@ -36,6 +38,28 @@ pub enum MutationRequest {
     Batch(Vec<MutationRequest>),
 }
 
+impl MutationRequest {
+    pub fn trace_chain(&self) -> &[teaql_core::TraceNode] {
+        match self {
+            MutationRequest::Insert(cmd) => &cmd.trace_chain,
+            MutationRequest::Update(cmd) => &cmd.trace_chain,
+            MutationRequest::Delete(cmd) => &cmd.trace_chain,
+            MutationRequest::Recover(cmd) => &cmd.trace_chain,
+            MutationRequest::Batch(_) => &[], // Batch traces are per-item
+        }
+    }
+
+    pub fn comment(&self) -> Option<&str> {
+        match self {
+            MutationRequest::Insert(cmd) => cmd.trace_chain.last().map(|n| n.comment.as_str()),
+            MutationRequest::Update(cmd) => cmd.trace_chain.last().map(|n| n.comment.as_str()),
+            MutationRequest::Delete(cmd) => cmd.trace_chain.last().map(|n| n.comment.as_str()),
+            MutationRequest::Recover(cmd) => cmd.trace_chain.last().map(|n| n.comment.as_str()),
+            MutationRequest::Batch(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MutationResult {
     pub affected_rows: u64,
@@ -65,6 +89,7 @@ pub struct ExecutionMetadata {
     pub trace_chain: Vec<TraceNode>,
     pub comment: Option<String>,
     pub backend_request_id: Option<String>,
+    pub debug_query: Option<String>,
 }
 
 pub trait DataServiceExecutor {
@@ -74,11 +99,11 @@ pub trait DataServiceExecutor {
 }
 
 pub trait QueryExecutor: DataServiceExecutor {
-    fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error>;
+    fn query(&self, request: QueryRequest) -> impl std::future::Future<Output = Result<QueryResult, Self::Error>> + Send;
 }
 
 pub trait MutationExecutor: DataServiceExecutor {
-    fn mutate(&self, request: MutationRequest) -> Result<MutationResult, Self::Error>;
+    fn mutate(&self, request: MutationRequest) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send;
 }
 
 pub trait TransactionExecutor: DataServiceExecutor {
@@ -88,14 +113,14 @@ pub trait TransactionExecutor: DataServiceExecutor {
     where
         Self: 'a;
 
-    fn begin(&self) -> Result<Self::Tx<'_>, Self::Error>;
+    fn begin(&self) -> impl std::future::Future<Output = Result<Self::Tx<'_>, Self::Error>> + Send;
 }
 
 pub trait Transaction {
     type Error: std::error::Error + Send + Sync + 'static;
 
-    fn commit(self) -> Result<(), Self::Error>;
-    fn rollback(self) -> Result<(), Self::Error>;
+    fn commit(self) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
+    fn rollback(self) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
 }
 
 #[derive(Debug, Clone)]
@@ -109,15 +134,13 @@ pub struct SchemaResult {
 }
 
 pub trait SchemaExecutor: DataServiceExecutor {
-    fn ensure_schema(&self, request: SchemaRequest) -> Result<SchemaResult, Self::Error>;
+    fn ensure_schema(&self, request: SchemaRequest) -> impl std::future::Future<Output = Result<SchemaResult, Self::Error>> + Send;
 }
 
 pub trait IdGeneratorExecutor: DataServiceExecutor {
-    fn next_id(&self, entity: &str) -> Result<u64, Self::Error>;
+    fn next_id(&self, entity: &str) -> impl std::future::Future<Output = Result<u64, Self::Error>> + Send;
 }
 
 pub trait SchemaProvider: Send + Sync {
     fn get_entity(&self, name: &str) -> Option<std::sync::Arc<teaql_core::EntityDescriptor>>;
 }
-
-

@@ -1,0 +1,170 @@
+    Checking teaql-runtime v1.1.0 (/home/philip/githome/teaql-rs/teaql-runtime)
+warning: unused import: `SqlDialect`
+  --> teaql-runtime/src/context.rs:10:46
+   |
+10 | use teaql_sql::{CompiledQuery, DatabaseKind, SqlDialect};
+   |                                              ^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: unused imports: `BatchInsertCommand` and `BatchUpdateCommand`
+ --> teaql-runtime/src/repository/base.rs:2:5
+  |
+2 |     BatchInsertCommand, BatchUpdateCommand, DeleteCommand, Entity, InsertCommand, Record,
+  |     ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `Instant` and `SystemTime`
+ --> teaql-runtime/src/repository/context.rs:2:17
+  |
+2 | use std::time::{Instant, SystemTime};
+  |                 ^^^^^^^  ^^^^^^^^^^
+
+warning: unused imports: `MutationRequest` and `QueryRequest`
+ --> teaql-runtime/src/repository/context.rs:8:26
+  |
+8 | use teaql_data_service::{MutationRequest, QueryRequest};
+  |                          ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^
+
+warning: unused imports: `Instant` and `SystemTime`
+ --> teaql-runtime/src/repository/resolved.rs:2:17
+  |
+2 | use std::time::{Instant, SystemTime};
+  |                 ^^^^^^^  ^^^^^^^^^^
+
+warning: unused import: `Expr`
+ --> teaql-runtime/src/repository/resolved.rs:5:53
+  |
+5 |     AggregationCacheOptions, DeleteCommand, Entity, Expr, InsertCommand, Record, RecoverCommand,
+  |                                                     ^^^^
+
+error[E0599]: no method named `map_err` found for associated type `impl Future<Output = Result<MutationResult, <E as DataServiceExecutor>::Error>>` in the current scope
+   --> teaql-runtime/src/context.rs:635:18
+    |
+633 | /             executor
+634 | |                 .mutate(request)
+635 | |                 .map_err(RepositoryError::Executor)?;
+    | |                 -^^^^^^^ method not found in `impl Future<Output = Result<MutationResult, <E as DataServiceExecutor>::Error>>`
+    | |_________________|
+    |
+    |
+help: consider `await`ing on the `Future` and calling the method on its `Output`
+    |
+635 |                 .await.map_err(RepositoryError::Executor)?;
+    |                  ++++++
+
+error[E0599]: no method named `map_err` found for associated type `impl Future<Output = Result<QueryResult, <E as DataServiceExecutor>::Error>>` in the current scope
+  --> teaql-runtime/src/repository/base.rs:29:48
+   |
+29 |         let res = self.executor.query(request).map_err(RepositoryError::Executor)?;
+   |                                                ^^^^^^^ method not found in `impl Future<Output = Result<QueryResult, <E as DataServiceExecutor>::Error>>`
+   |
+help: consider `await`ing on the `Future` and calling the method on its `Output`
+   |
+29 |         let res = self.executor.query(request).await.map_err(RepositoryError::Executor)?;
+   |                                                ++++++
+
+error[E0599]: no method named `map_err` found for associated type `impl Future<Output = Result<MutationResult, <E as DataServiceExecutor>::Error>>` in the current scope
+  --> teaql-runtime/src/repository/base.rs:67:49
+   |
+67 |         let res = self.executor.mutate(request).map_err(RepositoryError::Executor)?;
+   |                                                 ^^^^^^^ method not found in `impl Future<Output = Result<MutationResult, <E as DataServiceExecutor>::Error>>`
+   |
+help: consider `await`ing on the `Future` and calling the method on its `Output`
+   |
+67 |         let res = self.executor.mutate(request).await.map_err(RepositoryError::Executor)?;
+   |                                                 ++++++
+
+error[E0599]: no method named `map_err` found for associated type `impl Future<Output = Result<MutationResult, <E as DataServiceExecutor>::Error>>` in the current scope
+  --> teaql-runtime/src/repository/base.rs:73:49
+   |
+73 |         let res = self.executor.mutate(request).map_err(RepositoryError::Executor)?;
+   |                                                 ^^^^^^^ method not found in `impl Future<Output = Result<MutationResult, <E as DataServiceExecutor>::Error>>`
+   |
+help: consider `await`ing on the `Future` and calling the method on its `Output`
+   |
+73 |         let res = self.executor.mutate(request).await.map_err(RepositoryError::Executor)?;
+   |                                                 ++++++
+
+error[E0599]: no method named `map_err` found for associated type `impl Future<Output = Result<MutationResult, <E as DataServiceExecutor>::Error>>` in the current scope
+  --> teaql-runtime/src/repository/base.rs:90:49
+   |
+90 |         let res = self.executor.mutate(request).map_err(RepositoryError::Executor)?;
+   |                                                 ^^^^^^^ method not found in `impl Future<Output = Result<MutationResult, <E as DataServiceExecutor>::Error>>`
+   |
+help: consider `await`ing on the `Future` and calling the method on its `Output`
+   |
+90 |         let res = self.executor.mutate(request).await.map_err(RepositoryError::Executor)?;
+   |                                                 ++++++
+
+error[E0599]: no method named `map_err` found for associated type `impl Future<Output = Result<MutationResult, <E as DataServiceExecutor>::Error>>` in the current scope
+   --> teaql-runtime/src/repository/base.rs:120:49
+    |
+120 |         let res = self.executor.mutate(request).map_err(RepositoryError::Executor)?;
+    |                                                 ^^^^^^^ method not found in `impl Future<Output = Result<MutationResult, <E as DataServiceExecutor>::Error>>`
+    |
+help: consider `await`ing on the `Future` and calling the method on its `Output`
+    |
+120 |         let res = self.executor.mutate(request).await.map_err(RepositoryError::Executor)?;
+    |                                                 ++++++
+
+error[E0599]: no method named `map_err` found for associated type `impl Future<Output = Result<MutationResult, <E as DataServiceExecutor>::Error>>` in the current scope
+   --> teaql-runtime/src/repository/base.rs:144:49
+    |
+144 |         let res = self.executor.mutate(request).map_err(RepositoryError::Executor)?;
+    |                                                 ^^^^^^^ method not found in `impl Future<Output = Result<MutationResult, <E as DataServiceExecutor>::Error>>`
+    |
+help: consider `await`ing on the `Future` and calling the method on its `Output`
+    |
+144 |         let res = self.executor.mutate(request).await.map_err(RepositoryError::Executor)?;
+    |                                                 ++++++
+
+error[E0599]: no method named `map_err` found for associated type `impl Future<Output = Result<MutationResult, <E as DataServiceExecutor>::Error>>` in the current scope
+   --> teaql-runtime/src/repository/base.rs:163:49
+    |
+163 |         let res = self.executor.mutate(request).map_err(RepositoryError::Executor)?;
+    |                                                 ^^^^^^^ method not found in `impl Future<Output = Result<MutationResult, <E as DataServiceExecutor>::Error>>`
+    |
+help: consider `await`ing on the `Future` and calling the method on its `Output`
+    |
+163 |         let res = self.executor.mutate(request).await.map_err(RepositoryError::Executor)?;
+    |                                                 ++++++
+
+error[E0599]: no method named `map_err` found for associated type `impl Future<Output = Result<QueryResult, <E as DataServiceExecutor>::Error>>` in the current scope
+   --> teaql-runtime/src/repository/resolved.rs:206:14
+    |
+202 |           let rows = self
+    |  ____________________-
+203 | |             .repository
+204 | |             .executor
+205 | |             .query(request)
+206 | |             .map_err(RepositoryError::Executor)?
+    | |             -^^^^^^^ method not found in `impl Future<Output = Result<QueryResult, <E as DataServiceExecutor>::Error>>`
+    | |_____________|
+    |
+    |
+help: consider `await`ing on the `Future` and calling the method on its `Output`
+    |
+206 |             .await.map_err(RepositoryError::Executor)?
+    |              ++++++
+
+error[E0599]: no method named `map_err` found for associated type `impl Future<Output = Result<QueryResult, <E as DataServiceExecutor>::Error>>` in the current scope
+   --> teaql-runtime/src/repository/resolved.rs:235:14
+    |
+231 |           let rows = self
+    |  ____________________-
+232 | |             .repository
+233 | |             .executor
+234 | |             .query(request)
+235 | |             .map_err(RepositoryError::Executor)?
+    | |             -^^^^^^^ method not found in `impl Future<Output = Result<QueryResult, <E as DataServiceExecutor>::Error>>`
+    | |_____________|
+    |
+    |
+help: consider `await`ing on the `Future` and calling the method on its `Output`
+    |
+235 |             .await.map_err(RepositoryError::Executor)?
+    |              ++++++
+
+For more information about this error, try `rustc --explain E0599`.
+warning: `teaql-runtime` (lib) generated 6 warnings
+error: could not compile `teaql-runtime` (lib) due to 10 previous errors; 6 warnings emitted

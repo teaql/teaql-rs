@@ -20,31 +20,38 @@ where
         }
     }
 
-    pub fn fetch_all(&self, query: &SelectQuery) -> Result<Vec<Record>, RepositoryError<E::Error>> {
+    pub async fn fetch_all(&self, query: &SelectQuery) -> Result<Vec<Record>, RepositoryError<E::Error>> {
         let request = QueryRequest {
             query: query.clone(),
             trace_chain: query.trace_chain.clone(),
             comment: query.comment.clone(),
         };
-        let res = self.executor.query(request).map_err(RepositoryError::Executor)?;
+        let res = self.executor.query(request).await.map_err(RepositoryError::Executor)?;
         Ok(res.rows)
     }
 
-    pub fn fetch_smart_list(
+    pub async fn fetch_smart_list(
         &self,
         query: &SelectQuery,
     ) -> Result<SmartList<Record>, RepositoryError<E::Error>> {
-        self.fetch_all(query).map(SmartList::from)
+        let request = QueryRequest {
+            query: query.clone(),
+            trace_chain: query.trace_chain.clone(),
+            comment: query.comment.clone(),
+        };
+        let res = self.executor.query(request).await.map_err(RepositoryError::Executor)?;
+        self.metadata.record_metadata_log(&res.metadata);
+        Ok(SmartList::from(res.rows))
     }
 
-    pub fn fetch_entities<T>(
+    pub async fn fetch_entities<T>(
         &self,
         query: &SelectQuery,
     ) -> Result<SmartList<T>, RepositoryError<E::Error>>
     where
         T: Entity,
     {
-        self.fetch_all(query)?
+        self.fetch_all(query).await?
             .into_iter()
             .map(T::from_record)
             .collect::<Result<Vec<_>, _>>()
@@ -52,25 +59,27 @@ where
             .map_err(RepositoryError::Entity)
     }
 
-    pub fn fetch_enhanced_entities<T>(
+    pub async fn fetch_enhanced_entities<T>(
         &self,
         query: &SelectQuery,
     ) -> Result<SmartList<T>, RepositoryError<E::Error>>
     where
         T: Entity,
     {
-        self.fetch_entities(query)
+        self.fetch_entities(query).await
     }
 
-    pub fn insert(&self, command: &InsertCommand) -> Result<u64, RepositoryError<E::Error>> {
+    pub async fn insert(&self, command: &InsertCommand) -> Result<u64, RepositoryError<E::Error>> {
         let request = MutationRequest::Insert(command.clone());
-        let res = self.executor.mutate(request).map_err(RepositoryError::Executor)?;
+        let res = self.executor.mutate(request).await.map_err(RepositoryError::Executor)?;
+        self.metadata.record_metadata_log(&res.metadata);
         Ok(res.affected_rows)
     }
 
-    pub fn update(&self, command: &UpdateCommand) -> Result<u64, RepositoryError<E::Error>> {
+    pub async fn update(&self, command: &UpdateCommand) -> Result<u64, RepositoryError<E::Error>> {
         let request = MutationRequest::Update(command.clone());
-        let res = self.executor.mutate(request).map_err(RepositoryError::Executor)?;
+        let res = self.executor.mutate(request).await.map_err(RepositoryError::Executor)?;
+        self.metadata.record_metadata_log(&res.metadata);
         let affected = res.affected_rows;
 
         if command.expected_version.is_some() && affected == 0 {
@@ -85,9 +94,10 @@ where
         Ok(affected)
     }
 
-    pub fn delete(&self, command: &DeleteCommand) -> Result<u64, RepositoryError<E::Error>> {
+    pub async fn delete(&self, command: &DeleteCommand) -> Result<u64, RepositoryError<E::Error>> {
         let request = MutationRequest::Delete(command.clone());
-        let res = self.executor.mutate(request).map_err(RepositoryError::Executor)?;
+        let res = self.executor.mutate(request).await.map_err(RepositoryError::Executor)?;
+        self.metadata.record_metadata_log(&res.metadata);
         let affected = res.affected_rows;
 
         if command.expected_version.is_some() && affected == 0 {
@@ -102,7 +112,7 @@ where
         Ok(affected)
     }
 
-    pub fn batch_insert(
+    pub async fn batch_insert(
         &self,
         command: &teaql_core::BatchInsertCommand,
     ) -> Result<u64, RepositoryError<E::Error>> {
@@ -117,11 +127,12 @@ where
             reqs.push(MutationRequest::Insert(insert_cmd));
         }
         let request = MutationRequest::Batch(reqs);
-        let res = self.executor.mutate(request).map_err(RepositoryError::Executor)?;
+        let res = self.executor.mutate(request).await.map_err(RepositoryError::Executor)?;
+        self.metadata.record_metadata_log(&res.metadata);
         Ok(res.affected_rows)
     }
 
-    pub fn batch_update(
+    pub async fn batch_update(
         &self,
         command: &teaql_core::BatchUpdateCommand,
     ) -> Result<u64, RepositoryError<E::Error>> {
@@ -141,7 +152,8 @@ where
             reqs.push(MutationRequest::Update(update_cmd));
         }
         let request = MutationRequest::Batch(reqs);
-        let res = self.executor.mutate(request).map_err(RepositoryError::Executor)?;
+        let res = self.executor.mutate(request).await.map_err(RepositoryError::Executor)?;
+        self.metadata.record_metadata_log(&res.metadata);
         let affected = res.affected_rows;
 
         if command.batch_expected_versions.iter().any(|v| v.is_some()) {
@@ -158,9 +170,10 @@ where
         Ok(affected)
     }
 
-    pub fn recover(&self, command: &RecoverCommand) -> Result<u64, RepositoryError<E::Error>> {
+    pub async fn recover(&self, command: &RecoverCommand) -> Result<u64, RepositoryError<E::Error>> {
         let request = MutationRequest::Recover(command.clone());
-        let res = self.executor.mutate(request).map_err(RepositoryError::Executor)?;
+        let res = self.executor.mutate(request).await.map_err(RepositoryError::Executor)?;
+        self.metadata.record_metadata_log(&res.metadata);
         let affected = res.affected_rows;
 
         if affected == 0 {
@@ -175,46 +188,46 @@ where
         Ok(affected)
     }
 
-    pub fn insert_many(
+    pub async fn insert_many(
         &self,
         commands: &[InsertCommand],
     ) -> Result<u64, RepositoryError<E::Error>> {
         let mut total = 0;
         for command in commands {
-            total += self.insert(command)?;
+            total += self.insert(command).await?;
         }
         Ok(total)
     }
 
-    pub fn update_many(
+    pub async fn update_many(
         &self,
         commands: &[UpdateCommand],
     ) -> Result<u64, RepositoryError<E::Error>> {
         let mut total = 0;
         for command in commands {
-            total += self.update(command)?;
+            total += self.update(command).await?;
         }
         Ok(total)
     }
 
-    pub fn delete_many(
+    pub async fn delete_many(
         &self,
         commands: &[DeleteCommand],
     ) -> Result<u64, RepositoryError<E::Error>> {
         let mut total = 0;
         for command in commands {
-            total += self.delete(command)?;
+            total += self.delete(command).await?;
         }
         Ok(total)
     }
 
-    pub fn recover_many(
+    pub async fn recover_many(
         &self,
         commands: &[RecoverCommand],
     ) -> Result<u64, RepositoryError<E::Error>> {
         let mut total = 0;
         for command in commands {
-            total += self.recover(command)?;
+            total += self.recover(command).await?;
         }
         Ok(total)
     }

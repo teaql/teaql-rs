@@ -11,7 +11,7 @@ use super::{RelationLoadPlan, ResolvedRepository, helpers::*};
 
 impl<'a, E> ResolvedRepository<'a, E>
 where
-    E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor,
+    E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync + 'static,
 {
     pub fn relation_loads(&self) -> Vec<String> {
         self.behavior()
@@ -39,18 +39,18 @@ where
         Ok(self.query_for_plan(&plan, parent_rows))
     }
 
-    pub fn enhance_relations(
+    pub async fn enhance_relations(
         &self,
         parent_rows: &mut [Record],
     ) -> Result<(), RepositoryError<E::Error>> {
         let plans = self.relation_plans().map_err(RepositoryError::Runtime)?;
         for plan in plans {
-            self.enhance_plan(parent_rows, &plan)?;
+            self.enhance_plan(parent_rows, &plan).await?;
         }
         Ok(())
     }
 
-    pub fn enhance_query_relations(
+    pub async fn enhance_query_relations(
         &self,
         parent_rows: &mut [Record],
         query: &SelectQuery,
@@ -59,30 +59,33 @@ where
             .build_relation_plans_from_loads(&query.entity, &query.relations)
             .map_err(RepositoryError::Runtime)?;
         for plan in plans {
-            self.enhance_plan(parent_rows, &plan)?;
+            self.enhance_plan(parent_rows, &plan).await?;
         }
         Ok(())
     }
 
-    pub fn enhance_relation_aggregates(
-        &self,
-        parent_rows: &mut [Record],
-        relation_aggregates: &[RelationAggregate],
+    pub fn enhance_relation_aggregates<'b>(
+        &'b self,
+        parent_rows: &'b mut [Record],
+        relation_aggregates: &'b [RelationAggregate],
         parent_cache_options: Option<teaql_core::AggregationCacheOptions>,
-        parent_trace_chain: &[teaql_core::TraceNode],
-    ) -> Result<(), RepositoryError<E::Error>> {
+        parent_trace_chain: &'b [teaql_core::TraceNode],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), RepositoryError<E::Error>>> + Send + 'b>> {
+        Box::pin(async move {
         for aggregate in relation_aggregates {
-            self.enhance_relation_aggregate(parent_rows, aggregate, parent_cache_options, parent_trace_chain)?;
+            self.enhance_relation_aggregate(parent_rows, aggregate, parent_cache_options, parent_trace_chain).await?;
         }
         Ok(())
+        })
     }
 
-    pub fn enhance_object_group_bys(
-        &self,
-        rows: &mut [Record],
-        object_group_bys: &[ObjectGroupBy],
-        parent_trace_chain: &[teaql_core::TraceNode],
-    ) -> Result<(), RepositoryError<E::Error>> {
+    pub fn enhance_object_group_bys<'b>(
+        &'b self,
+        rows: &'b mut [Record],
+        object_group_bys: &'b [ObjectGroupBy],
+        parent_trace_chain: &'b [teaql_core::TraceNode],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), RepositoryError<E::Error>>> + Send + 'b>> {
+        Box::pin(async move {
         for group_by in object_group_bys {
             let ids = rows
                 .iter()
@@ -97,7 +100,7 @@ where
             let object_rows = self
                 .scoped_repository(query.entity.clone())
                 .with_trace_context(parent_trace_chain.to_vec())
-                .fetch_all(&query)?
+                .fetch_all(&query).await?
                 .into_iter()
                 .filter_map(|row| {
                     row.get("id")
@@ -117,14 +120,16 @@ where
             }
         }
         Ok(())
+        })
     }
 
-    pub fn enhance_child_queries(
-        &self,
-        rows: &mut [Record],
-        child_queries: &[SelectQuery],
-        parent_trace_chain: &[teaql_core::TraceNode],
-    ) -> Result<(), RepositoryError<E::Error>> {
+    pub fn enhance_child_queries<'b>(
+        &'b self,
+        rows: &'b mut [Record],
+        child_queries: &'b [SelectQuery],
+        parent_trace_chain: &'b [teaql_core::TraceNode],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), RepositoryError<E::Error>>> + Send + 'b>> {
+        Box::pin(async move {
         for child_query in child_queries {
             let ids = rows
                 .iter()
@@ -139,7 +144,7 @@ where
             let child_rows = self
                 .scoped_repository(query.entity.clone())
                 .with_trace_context(parent_trace_chain.to_vec())
-                .fetch_all(&query)?
+                .fetch_all(&query).await?
                 .into_iter()
                 .filter_map(|row| {
                     row.get("id")
@@ -156,9 +161,10 @@ where
             }
         }
         Ok(())
+        })
     }
 
-    fn enhance_relation_aggregate(
+    async fn enhance_relation_aggregate(
         &self,
         parent_rows: &mut [Record],
         aggregate: &RelationAggregate,
@@ -231,7 +237,7 @@ where
             comment: aggregate.alias.clone(),
         });
 
-        let mut aggregate_rows = child_repo.with_trace_context(chain).fetch_all(&query)?;
+        let mut aggregate_rows = child_repo.with_trace_context(chain).fetch_all(&query).await?;
         let foreign_key_column = self
             .repository
             .metadata
@@ -341,45 +347,49 @@ where
             })
             .collect()
     }
-    fn enhance_plan(
-        &self,
-        parent_rows: &mut [Record],
-        plan: &RelationLoadPlan,
-    ) -> Result<(), RepositoryError<E::Error>> {
-        let child_repo = self.scoped_repository(plan.target_entity.clone());
-        let query = self.query_for_plan(plan, parent_rows);
-        let child_rows = child_repo.fetch_all(&query)?;
-        self.attach_relation_rows(parent_rows, plan, child_rows);
+    fn enhance_plan<'b>(
+        &'b self,
+        parent_rows: &'b mut [Record],
+        plan: &'b RelationLoadPlan,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), RepositoryError<E::Error>>> + Send + 'b>> {
+        Box::pin(async move {
+            let child_repo = self.scoped_repository(plan.target_entity.clone());
+            let query = self.query_for_plan(plan, parent_rows);
+            let child_rows = child_repo.fetch_all(&query).await?;
+            self.attach_relation_rows(parent_rows, plan, child_rows);
 
-        if !plan.children.is_empty() {
-            for parent in parent_rows.iter_mut() {
-                match parent.get_mut(&plan.relation_name) {
-                    Some(Value::Object(child)) => {
-                        child_repo.enhance_child_record(child, &plan.children)?;
-                    }
-                    Some(Value::List(values)) => {
-                        for value in values.iter_mut() {
-                            if let Value::Object(child) = value {
-                                child_repo.enhance_child_record(child, &plan.children)?;
+            if !plan.children.is_empty() {
+                for parent in parent_rows.iter_mut() {
+                    match parent.get_mut(&plan.relation_name) {
+                        Some(Value::Object(child)) => {
+                            child_repo.enhance_child_record(child, &plan.children).await?;
+                        }
+                        Some(Value::List(values)) => {
+                            for value in values.iter_mut() {
+                                if let Value::Object(child) = value {
+                                    child_repo.enhance_child_record(child, &plan.children).await?;
+                                }
                             }
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
-    fn enhance_child_record(
-        &self,
-        child: &mut Record,
-        plans: &[RelationLoadPlan],
-    ) -> Result<(), RepositoryError<E::Error>> {
-        for plan in plans {
-            self.enhance_plan(slice::from_mut(child), plan)?;
-        }
-        Ok(())
+    fn enhance_child_record<'b>(
+        &'b self,
+        child: &'b mut Record,
+        plans: &'b [RelationLoadPlan],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), RepositoryError<E::Error>>> + Send + 'b>> {
+        Box::pin(async move {
+            for plan in plans {
+                self.enhance_plan(slice::from_mut(child), plan).await?;
+            }
+            Ok(())
+        })
     }
 
     fn query_for_plan(&self, plan: &RelationLoadPlan, parent_rows: &[Record]) -> SelectQuery {

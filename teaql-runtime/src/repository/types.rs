@@ -54,4 +54,8 @@ impl MetadataStore for UserContextMetadata<'_> {
             .map(|metadata| metadata.all_entities())
             .unwrap_or_default()
     }
+
+    fn record_metadata_log(&self, metadata: &teaql_data_service::ExecutionMetadata) {
+        self.context.record_metadata_log(metadata);
+    }
 }

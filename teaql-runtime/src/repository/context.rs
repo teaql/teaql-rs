@@ -1,11 +1,9 @@
 use std::sync::Arc;
-use std::time::{Instant, SystemTime};
 
 use teaql_core::{
     DeleteCommand, Entity, InsertCommand, Record, RecoverCommand, SelectQuery, SmartList,
     UpdateCommand,
 };
-use teaql_data_service::{MutationRequest, QueryRequest};
 
 use crate::{
     ContextError, GraphMutationPlan, GraphNode, RepositoryError, RuntimeError,
@@ -53,7 +51,7 @@ impl UserContext {
         })
     }
 
-    pub fn plan_for_save_graph<E>(
+    pub async fn plan_for_save_graph<E>(
         &self,
         node: GraphNode,
     ) -> Result<GraphMutationPlan, RepositoryError<E::Error>>
@@ -63,83 +61,83 @@ impl UserContext {
         let repository = self
             .resolve_repository::<E>(node.entity.clone())
             .map_err(|err| RepositoryError::Runtime(RuntimeError::Graph(err.to_string())))?;
-        repository.plan_graph(node)
+        repository.plan_graph(node).await
     }
 }
 
 impl<'a, E> ContextRepository<'a, E>
 where
-    E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor,
+    E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync + 'static,
 {
     fn repository(&self) -> Repository<'_, UserContextMetadata<'_>, E> {
         Repository::new(&self.metadata, self.executor)
     }
 
-    pub fn fetch_all(&self, mut query: SelectQuery) -> Result<Vec<Record>, RepositoryError<E::Error>> {
+    pub async fn fetch_all(&self, mut query: SelectQuery) -> Result<Vec<Record>, RepositoryError<E::Error>> {
         let final_comment = self.resolve_final_comment(&query.trace_chain, query.comment.clone());
         query.comment = final_comment;
-        self.repository().fetch_all(&query)
+        self.repository().fetch_all(&query).await
     }
 
-    pub fn fetch_smart_list(
+    pub async fn fetch_smart_list(
         &self,
         query: &SelectQuery,
     ) -> Result<SmartList<Record>, RepositoryError<E::Error>> {
-        self.repository().fetch_smart_list(query)
+        self.repository().fetch_smart_list(query).await
     }
 
-    pub fn fetch_entities<T>(
+    pub async fn fetch_entities<T>(
         &self,
         query: &SelectQuery,
     ) -> Result<SmartList<T>, RepositoryError<E::Error>>
     where
         T: Entity,
     {
-        self.repository().fetch_entities(query)
+        self.repository().fetch_entities(query).await
     }
 
-    pub fn fetch_enhanced_entities<T>(
+    pub async fn fetch_enhanced_entities<T>(
         &self,
         query: &SelectQuery,
     ) -> Result<SmartList<T>, RepositoryError<E::Error>>
     where
         T: Entity,
     {
-        self.repository().fetch_enhanced_entities(query)
+        self.repository().fetch_enhanced_entities(query).await
     }
 
-    pub fn insert(&self, command: &InsertCommand) -> Result<u64, RepositoryError<E::Error>> {
-        let affected = self.repository().insert(command)?;
+    pub async fn insert(&self, command: &InsertCommand) -> Result<u64, RepositoryError<E::Error>> {
+        let affected = self.repository().insert(command).await?;
         self.invalidate_aggregation_cache_for(&command.entity);
         Ok(affected)
     }
 
-    pub fn update(&self, command: &UpdateCommand) -> Result<u64, RepositoryError<E::Error>> {
-        let affected = self.repository().update(command)?;
+    pub async fn update(&self, command: &UpdateCommand) -> Result<u64, RepositoryError<E::Error>> {
+        let affected = self.repository().update(command).await?;
         self.invalidate_aggregation_cache_for(&command.entity);
         Ok(affected)
     }
 
-    pub fn batch_insert(&self, command: &teaql_core::BatchInsertCommand) -> Result<u64, RepositoryError<E::Error>> {
-        let affected = self.repository().batch_insert(command)?;
+    pub async fn batch_insert(&self, command: &teaql_core::BatchInsertCommand) -> Result<u64, RepositoryError<E::Error>> {
+        let affected = self.repository().batch_insert(command).await?;
         self.invalidate_aggregation_cache_for(&command.entity);
         Ok(affected)
     }
 
-    pub fn batch_update(&self, command: &teaql_core::BatchUpdateCommand) -> Result<u64, RepositoryError<E::Error>> {
-        let affected = self.repository().batch_update(command)?;
+    pub async fn batch_update(&self, command: &teaql_core::BatchUpdateCommand) -> Result<u64, RepositoryError<E::Error>> {
+        let affected = self.repository().batch_update(command).await?;
         self.invalidate_aggregation_cache_for(&command.entity);
         Ok(affected)
     }
 
-    pub fn delete(&self, command: &DeleteCommand) -> Result<u64, RepositoryError<E::Error>> {
-        let affected = self.repository().delete(command)?;
+    pub async fn delete(&self, command: &DeleteCommand) -> Result<u64, RepositoryError<E::Error>> {
+        let affected = self.repository().delete(command).await?;
         self.invalidate_aggregation_cache_for(&command.entity);
         Ok(affected)
     }
 
-    pub fn recover(&self, command: &RecoverCommand) -> Result<u64, RepositoryError<E::Error>> {
-        let affected = self.repository().recover(command)?;
+    pub async fn recover(&self, command: &RecoverCommand) -> Result<u64, RepositoryError<E::Error>> {
+        let affected = self.repository().recover(command).await?;
         self.invalidate_aggregation_cache_for(&command.entity);
         Ok(affected)
     }

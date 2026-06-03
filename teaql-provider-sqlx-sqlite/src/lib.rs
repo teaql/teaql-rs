@@ -1,3 +1,4 @@
+#![allow(warnings)]
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
@@ -114,14 +115,33 @@ pub struct SqliteMutationExecutor {
 impl SqlTransport for SqliteMutationExecutor {
     type Error = MutationExecutorError;
 
-    fn fetch_all_sql(&self, query: &CompiledQuery) -> Result<Vec<Record>, Self::Error> {
-        let handle = tokio::runtime::Handle::current();
-        tokio::task::block_in_place(|| handle.block_on(self.fetch_all(query)))
+    async fn fetch_all_sql(&self, query: &CompiledQuery) -> Result<Vec<Record>, Self::Error> {
+        self.fetch_all(query).await
     }
 
-    fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
-        let handle = tokio::runtime::Handle::current();
-        tokio::task::block_in_place(|| handle.block_on(self.execute(query)))
+    async fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
+        self.execute(query).await
+    }
+}
+
+impl teaql_sql::SqlTransaction for SqliteMutationExecutor {
+    type Error = MutationExecutorError;
+
+    async fn commit_sql(self) -> Result<(), Self::Error> {
+        self.commit_transaction().await
+    }
+
+    async fn rollback_sql(self) -> Result<(), Self::Error> {
+        self.rollback_transaction().await
+    }
+}
+
+impl teaql_sql::SqlTransactionTransport for SqliteMutationExecutor {
+    type Tx<'a> = Self where Self: 'a;
+
+    async fn begin_sql(&self) -> Result<Self::Tx<'_>, Self::Error> {
+        self.begin_transaction().await?;
+        Ok(self.clone())
     }
 }
 

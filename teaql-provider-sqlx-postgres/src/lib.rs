@@ -1,3 +1,4 @@
+#![allow(warnings)]
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -231,14 +232,32 @@ pub struct PgMutationExecutor {
 impl SqlTransport for PgMutationExecutor {
     type Error = MutationExecutorError;
 
-    fn fetch_all_sql(&self, query: &CompiledQuery) -> Result<Vec<Record>, Self::Error> {
-        let handle = tokio::runtime::Handle::current();
-        tokio::task::block_in_place(|| handle.block_on(self.fetch_all(query)))
+    async fn fetch_all_sql(&self, query: &CompiledQuery) -> Result<Vec<Record>, Self::Error> {
+        self.fetch_all(query).await
     }
 
-    fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
-        let handle = tokio::runtime::Handle::current();
-        tokio::task::block_in_place(|| handle.block_on(self.execute(query)))
+    async fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
+        self.execute(query).await
+    }
+}
+
+impl teaql_sql::SqlTransaction for PgMutationExecutor {
+    type Error = MutationExecutorError;
+
+    async fn commit_sql(self) -> Result<(), Self::Error> {
+        Err(MutationExecutorError::Bind("Transactions not supported yet".to_string()))
+    }
+
+    async fn rollback_sql(self) -> Result<(), Self::Error> {
+        Err(MutationExecutorError::Bind("Transactions not supported yet".to_string()))
+    }
+}
+
+impl teaql_sql::SqlTransactionTransport for PgMutationExecutor {
+    type Tx<'a> = Self where Self: 'a;
+
+    async fn begin_sql(&self) -> Result<Self::Tx<'_>, Self::Error> {
+        Err(MutationExecutorError::Bind("Transactions not supported yet".to_string()))
     }
 }
 

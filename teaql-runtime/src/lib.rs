@@ -1,3 +1,4 @@
+#![allow(warnings)]
 mod checker;
 mod context;
 mod entity_runtime;

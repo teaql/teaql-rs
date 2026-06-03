@@ -1,3 +1,4 @@
+#![allow(warnings)]
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -202,6 +203,38 @@ impl MysqlMutationExecutor {
             columns.insert(name.to_lowercase());
         }
         Ok(columns)
+    }
+}
+
+impl teaql_sql::SqlTransport for MysqlMutationExecutor {
+    type Error = MutationExecutorError;
+
+    async fn fetch_all_sql(&self, query: &CompiledQuery) -> Result<Vec<Record>, Self::Error> {
+        self.fetch_all(query).await
+    }
+
+    async fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
+        self.execute(query).await
+    }
+}
+
+impl teaql_sql::SqlTransaction for MysqlMutationExecutor {
+    type Error = MutationExecutorError;
+
+    async fn commit_sql(self) -> Result<(), Self::Error> {
+        Err(MutationExecutorError::Bind("Transactions not supported yet".to_string()))
+    }
+
+    async fn rollback_sql(self) -> Result<(), Self::Error> {
+        Err(MutationExecutorError::Bind("Transactions not supported yet".to_string()))
+    }
+}
+
+impl teaql_sql::SqlTransactionTransport for MysqlMutationExecutor {
+    type Tx<'a> = Self where Self: 'a;
+
+    async fn begin_sql(&self) -> Result<Self::Tx<'_>, Self::Error> {
+        Err(MutationExecutorError::Bind("Transactions not supported yet".to_string()))
     }
 }
 

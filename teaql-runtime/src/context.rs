@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
 use teaql_core::{EntityDescriptor, Record, UpdateCommand, Value};
-use teaql_sql::{CompiledQuery, DatabaseKind, SqlDialect};
+use teaql_sql::{CompiledQuery, DatabaseKind};
 
 use crate::{
     CheckResults, CheckerRegistry, ContextError, EntityEvent, EntityEventSink, GraphNode,
@@ -429,6 +429,59 @@ impl UserContext {
         }
     }
 
+    pub(crate) fn record_metadata_log(&self, metadata: &teaql_data_service::ExecutionMetadata) {
+        if let Some(debug_sql) = &metadata.debug_query {
+            let sql_log_entry = SqlLogEntry {
+                operation: match metadata.operation {
+                    teaql_data_service::DataServiceOperation::Query => SqlLogOperation::Select,
+                    teaql_data_service::DataServiceOperation::Insert => SqlLogOperation::Insert,
+                    teaql_data_service::DataServiceOperation::Update => SqlLogOperation::Update,
+                    teaql_data_service::DataServiceOperation::Delete => SqlLogOperation::Delete,
+                    teaql_data_service::DataServiceOperation::Recover => SqlLogOperation::Update, // Approximate
+                    teaql_data_service::DataServiceOperation::Batch => SqlLogOperation::Update,
+                    teaql_data_service::DataServiceOperation::Schema => SqlLogOperation::Update,
+                },
+                sql: String::new(), // Not available in metadata
+                params: Vec::new(), // Not available in metadata
+                pretty_sql: pretty_sql(debug_sql),
+                debug_sql: debug_sql.clone(),
+                started_at: metadata.started_at,
+                ended_at: metadata.ended_at,
+                elapsed: metadata.ended_at.duration_since(metadata.started_at).unwrap_or_default(),
+                result_count: metadata.result_count,
+                result_type: None, // Not directly available
+                affected_rows: metadata.affected_rows,
+                result_summary: String::new(), // We can synthesize this if needed, or leave it empty/basic
+            };
+
+            // synthesize a summary for the log
+            let mut summary = String::new();
+            if let Some(c) = metadata.result_count {
+                summary = format!("{} rows returned", c);
+            } else if let Some(a) = metadata.affected_rows {
+                summary = format!("{} rows affected", a);
+            }
+
+            let mut final_entry = sql_log_entry;
+            final_entry.result_summary = summary;
+
+            if let Ok(mut entries) = self.sql_log_entries.lock() {
+                entries.push(final_entry.clone());
+            }
+
+            if let Some(buf) = self.get_resource::<UnifiedLogBuffer>() {
+                if let Ok(mut entries) = buf.entries.lock() {
+                    entries.push(UnifiedLogEntry {
+                        timestamp: metadata.started_at,
+                        user_identifier: self.user_identifier.clone(),
+                        trace_chain: metadata.trace_chain.clone(),
+                        payload: LogPayload::Sql(final_entry),
+                    });
+                }
+            }
+        }
+    }
+
     pub fn language(&self) -> Language {
         self.language
     }
@@ -607,7 +660,7 @@ impl UserContext {
         sink.on_event(self, &event)
     }
 
-    pub fn commit_changes<E>(&self) -> Result<(), RepositoryError<E::Error>>
+    pub async fn commit_changes<E>(&self) -> Result<(), RepositoryError<E::Error>>
     where
         E: teaql_data_service::MutationExecutor + Send + Sync + 'static,
     {
@@ -631,7 +684,7 @@ impl UserContext {
             }
             let request = teaql_data_service::MutationRequest::Update(command);
             executor
-                .mutate(request)
+                .mutate(request).await
                 .map_err(RepositoryError::Executor)?;
         }
 

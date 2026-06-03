@@ -1,3 +1,4 @@
+#![allow(warnings)]
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
@@ -13,11 +14,11 @@ use teaql_core::{
     UpdateCommand, Value,
 };
 use teaql_runtime::{
-    EntityEvent, GraphNode, GraphTransactionBoundary, InternalIdGenerator,
+    EntityEvent, GraphNode, InternalIdGenerator,
     RuntimeError, SchemaProvider, UserContext,
 };
 use teaql_sql::{
-    CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, SqlExecutorError,
+    CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect,
     SqlTransport, quote_identifier_if_needed,
 };
 
@@ -229,12 +230,33 @@ impl RusqliteMutationExecutor {
 impl SqlTransport for RusqliteMutationExecutor {
     type Error = MutationExecutorError;
 
-    fn fetch_all_sql(&self, query: &CompiledQuery) -> Result<Vec<Record>, Self::Error> {
+    async fn fetch_all_sql(&self, query: &CompiledQuery) -> Result<Vec<Record>, Self::Error> {
         RusqliteMutationExecutor::fetch_all(self, query)
     }
 
-    fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
+    async fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
         RusqliteMutationExecutor::execute(self, query)
+    }
+}
+
+impl teaql_sql::SqlTransaction for RusqliteMutationExecutor {
+    type Error = MutationExecutorError;
+
+    async fn commit_sql(self) -> Result<(), Self::Error> {
+        self.commit_transaction()
+    }
+
+    async fn rollback_sql(self) -> Result<(), Self::Error> {
+        self.rollback_transaction()
+    }
+}
+
+impl teaql_sql::SqlTransactionTransport for RusqliteMutationExecutor {
+    type Tx<'a> = Self where Self: 'a;
+
+    async fn begin_sql(&self) -> Result<Self::Tx<'_>, Self::Error> {
+        self.begin_transaction()?;
+        Ok(self.clone())
     }
 }
 

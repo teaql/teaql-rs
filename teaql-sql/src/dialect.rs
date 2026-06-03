@@ -1,7 +1,7 @@
 use teaql_core::{
     AggregateFunction, BinaryOp, DataType, DeleteCommand, EntityDescriptor, Expr, ExprFunction,
-    InsertCommand, OrderBy, PropertyDescriptor, RecoverCommand, SelectQuery, SortDirection,
-    UpdateCommand, Value,
+    OrderBy, PropertyDescriptor, RecoverCommand, SelectQuery, SortDirection,
+    Value,
 };
 
 use crate::{CompiledQuery, DatabaseKind, SqlCompileError};

@@ -14,6 +14,7 @@ use crate::{
 pub trait MetadataStore: Send + Sync {
     fn entity(&self, name: &str) -> Option<&EntityDescriptor>;
     fn all_entities(&self) -> Vec<&EntityDescriptor>;
+    fn record_metadata_log(&self, _metadata: &teaql_data_service::ExecutionMetadata) {}
 }
 
 pub trait RepositoryRegistry: Send + Sync {

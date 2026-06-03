@@ -1,8 +1,7 @@
 use std::sync::Arc;
-use std::time::{Instant, SystemTime};
 
 use teaql_core::{
-    AggregationCacheOptions, DeleteCommand, Entity, Expr, InsertCommand, Record, RecoverCommand,
+    AggregationCacheOptions, DeleteCommand, Entity, InsertCommand, Record, RecoverCommand,
     RelationAggregate, SelectQuery, SmartList, UpdateCommand, Value,
 };
 
@@ -18,7 +17,7 @@ use super::{
 
 impl<'a, E> ResolvedRepository<'a, E>
 where
-    E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor,
+    E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync + 'static,
 {
     pub(super) fn query_behavior(&self, entity: &str) -> Option<Arc<dyn RepositoryBehavior>> {
         self.repository.metadata.context.repository_behavior(entity)
@@ -150,21 +149,22 @@ where
         RecoverCommand::new(self.entity.clone(), id, expected_version)
     }
 
-    pub fn fetch_all(&self, query: &SelectQuery) -> Result<Vec<Record>, RepositoryError<E::Error>> {
+    pub async fn fetch_all(&self, query: &SelectQuery) -> Result<Vec<Record>, RepositoryError<E::Error>> {
         let query = self
             .prepare_select_query(query)
             .map_err(RepositoryError::Runtime)?;
-        self.fetch_prepared_all(&query)
+        self.fetch_prepared_all(&query).await
     }
 
-    fn fetch_prepared_all(&self, query: &SelectQuery) -> Result<Vec<Record>, RepositoryError<E::Error>> {
-        let mut rows = self.fetch_prepared_query(query)?;
-        self.enhance_object_group_bys(&mut rows, &query.object_group_bys, &query.trace_chain)?;
-        self.enhance_child_queries(&mut rows, &query.child_enhancements, &query.trace_chain)?;
+    async fn fetch_prepared_all(&self, query: &SelectQuery) -> Result<Vec<Record>, RepositoryError<E::Error>> {
+        let mut rows = self.fetch_prepared_query(query).await?;
+        self.enhance_object_group_bys(&mut rows, &query.object_group_bys, &query.trace_chain).await?;
+        self.enhance_child_queries(&mut rows, &query.child_enhancements, &query.trace_chain).await?;
+        self.enhance_query_relations(&mut rows, query).await?;
         Ok(rows)
     }
 
-    fn fetch_prepared_query(
+    async fn fetch_prepared_query(
         &self,
         query: &SelectQuery,
     ) -> Result<Vec<Record>, RepositoryError<E::Error>> {
@@ -183,7 +183,7 @@ where
                     &query,
                     options,
                     cache.as_ref(),
-                );
+                ).await;
             }
             if let Some(cache) = self
                 .repository
@@ -191,7 +191,7 @@ where
                 .context
                 .get_resource::<InMemoryAggregationCache>()
             {
-                return self.fetch_prepared_query_with_cache(&query, options, cache);
+                return self.fetch_prepared_query_with_cache(&query, options, cache).await;
             }
         }
         let request = teaql_data_service::QueryRequest {
@@ -199,16 +199,16 @@ where
             trace_chain: query.trace_chain.clone(),
             comment: query.comment.clone(),
         };
-        let rows = self
+        let res = self
             .repository
             .executor
             .query(request)
-            .map_err(RepositoryError::Executor)?
-            .rows;
-        Ok(rows)
+            .await.map_err(RepositoryError::Executor)?;
+        self.repository.metadata.context.record_metadata_log(&res.metadata);
+        Ok(res.rows)
     }
 
-    fn fetch_prepared_query_with_cache(
+    async fn fetch_prepared_query_with_cache(
         &self,
         query: &SelectQuery,
         options: AggregationCacheOptions,
@@ -228,17 +228,18 @@ where
             trace_chain: query.trace_chain.clone(),
             comment: query.comment.clone(),
         };
-        let rows = self
+        let res = self
             .repository
             .executor
             .query(request)
-            .map_err(RepositoryError::Executor)?
-            .rows;
+            .await.map_err(RepositoryError::Executor)?;
+        self.repository.metadata.context.record_metadata_log(&res.metadata);
+        let rows = res.rows;
         cache.put(key, rows.clone());
         Ok(rows)
     }
 
-    pub fn fetch_all_with_relation_aggregates(
+    pub async fn fetch_all_with_relation_aggregates(
         &self,
         query: &SelectQuery,
         relation_aggregates: &[RelationAggregate],
@@ -247,12 +248,12 @@ where
             .prepare_select_query(query)
             .map_err(RepositoryError::Runtime)?;
 
-        let mut rows = self.fetch_prepared_all(&query)?;
-        self.enhance_relation_aggregates(&mut rows, relation_aggregates, query.aggregation_cache, &query.trace_chain)?;
+        let mut rows = self.fetch_prepared_all(&query).await?;
+        self.enhance_relation_aggregates(&mut rows, relation_aggregates, query.aggregation_cache, &query.trace_chain).await?;
         Ok(rows)
     }
 
-    pub fn fetch_smart_list(
+    pub async fn fetch_smart_list(
         &self,
         query: &SelectQuery,
     ) -> Result<SmartList<Record>, RepositoryError<E::Error>> {
@@ -260,19 +261,19 @@ where
             .prepare_select_query(query)
             .map_err(RepositoryError::Runtime)?;
 
-        self.repository.fetch_smart_list(&query)
+        self.repository.fetch_smart_list(&query).await
     }
 
-    pub fn fetch_smart_list_with_relation_aggregates(
+    pub async fn fetch_smart_list_with_relation_aggregates(
         &self,
         query: &SelectQuery,
         relation_aggregates: &[RelationAggregate],
     ) -> Result<SmartList<Record>, RepositoryError<E::Error>> {
-        self.fetch_all_with_relation_aggregates(query, relation_aggregates)
+        self.fetch_all_with_relation_aggregates(query, relation_aggregates).await
             .map(SmartList::from)
     }
 
-    pub fn fetch_entities<T>(
+    pub async fn fetch_entities<T>(
         &self,
         query: &SelectQuery,
     ) -> Result<SmartList<T>, RepositoryError<E::Error>>
@@ -283,10 +284,10 @@ where
             .prepare_select_query(query)
             .map_err(RepositoryError::Runtime)?;
 
-        self.repository.fetch_entities(&query)
+        self.repository.fetch_entities(&query).await
     }
 
-    pub fn fetch_entities_with_relation_aggregates<T>(
+    pub async fn fetch_entities_with_relation_aggregates<T>(
         &self,
         query: &SelectQuery,
         relation_aggregates: &[RelationAggregate],
@@ -294,7 +295,7 @@ where
     where
         T: Entity,
     {
-        self.fetch_all_with_relation_aggregates(query, relation_aggregates)?
+        self.fetch_all_with_relation_aggregates(query, relation_aggregates).await?
             .into_iter()
             .map(|record| {
                 let mut entity = T::from_record(record)?;
@@ -307,7 +308,7 @@ where
             .map_err(RepositoryError::Entity)
     }
 
-    pub fn fetch_enhanced_entities_with_relation_aggregates<T>(
+    pub async fn fetch_enhanced_entities_with_relation_aggregates<T>(
         &self,
         query: &SelectQuery,
         relation_aggregates: &[RelationAggregate],
@@ -319,12 +320,10 @@ where
             .prepare_select_query(query)
             .map_err(RepositoryError::Runtime)?;
 
-
-
-        let mut rows = self.fetch_prepared_all(&query)?;
-        self.enhance_relation_aggregates(&mut rows, relation_aggregates, query.aggregation_cache, &query.trace_chain)?;
-        self.enhance_query_relations(&mut rows, &query)?;
-        self.enhance_relations(&mut rows)?;
+        let mut rows = self.fetch_prepared_all(&query).await?;
+        self.enhance_relation_aggregates(&mut rows, relation_aggregates, query.aggregation_cache, &query.trace_chain).await?;
+        self.enhance_query_relations(&mut rows, &query).await?;
+        self.enhance_relations(&mut rows).await?;
         rows.into_iter()
             .map(|record| {
                 let mut entity = T::from_record(record)?;
@@ -337,7 +336,7 @@ where
             .map_err(RepositoryError::Entity)
     }
 
-    pub fn fetch_enhanced_entities<T>(
+    pub async fn fetch_enhanced_entities<T>(
         &self,
         query: &SelectQuery,
     ) -> Result<SmartList<T>, RepositoryError<E::Error>>
@@ -348,10 +347,9 @@ where
             .prepare_select_query(query)
             .map_err(RepositoryError::Runtime)?;
 
-
-        let mut rows = self.fetch_prepared_all(&query)?;
-        self.enhance_query_relations(&mut rows, &query)?;
-        self.enhance_relations(&mut rows)?;
+        let mut rows = self.fetch_prepared_all(&query).await?;
+        self.enhance_query_relations(&mut rows, &query).await?;
+        self.enhance_relations(&mut rows).await?;
         let root = self.repository.metadata.context.get_resource::<crate::EntityRoot>().cloned();
 
         rows.into_iter()
@@ -367,25 +365,33 @@ where
             .map_err(RepositoryError::Entity)
     }
 
-    pub fn insert(&self, command: &InsertCommand) -> Result<u64, RepositoryError<E::Error>> {
-        let command = self
-            .prepare_insert_command(command)
-            .map_err(RepositoryError::Runtime)?;
-        self.execute_prepared_insert_with_comment(command, self.trace_context.clone())
+    pub async fn insert(&self, command: &InsertCommand) -> Result<u64, RepositoryError<E::Error>> {
+        let mut command = command.clone();
+        if let Some(behavior) = self.behavior() {
+            behavior
+                .before_insert(self.repository.metadata.context, &mut command)
+                .map_err(RepositoryError::Runtime)?;
+        }
+        self.enforce_insert_policy(&mut command).map_err(RepositoryError::Runtime)?;
+        self.execute_prepared_insert_with_comment(command, self.trace_context.clone()).await
     }
 
-    pub fn update(&self, command: &UpdateCommand) -> Result<u64, RepositoryError<E::Error>> {
-        let command = self
-            .prepare_update_command(command)
-            .map_err(RepositoryError::Runtime)?;
-        self.execute_prepared_update_with_comment(command, self.trace_context.clone())
+    pub async fn update(&self, command: &UpdateCommand) -> Result<u64, RepositoryError<E::Error>> {
+        let mut command = command.clone();
+        if let Some(behavior) = self.behavior() {
+            behavior
+                .before_update(self.repository.metadata.context, &mut command)
+                .map_err(RepositoryError::Runtime)?;
+        }
+        self.enforce_update_policy(&mut command).map_err(RepositoryError::Runtime)?;
+        self.execute_prepared_update_with_comment(command, self.trace_context.clone()).await
     }
 
-    pub fn delete(&self, command: &DeleteCommand) -> Result<u64, RepositoryError<E::Error>> {
-        self.delete_scoped(command, self.trace_context.clone())
+    pub async fn delete(&self, command: &DeleteCommand) -> Result<u64, RepositoryError<E::Error>> {
+        self.delete_scoped(command, self.trace_context.clone()).await
     }
 
-    pub fn delete_scoped(
+    pub async fn delete_scoped(
         &self,
         command: &DeleteCommand,
         trace_chain: Vec<teaql_core::TraceNode>,
@@ -401,7 +407,7 @@ where
             .map_err(RepositoryError::Runtime)?;
 
         let old_values = self.fetch_current_event_row(&command.entity, &command.id, trace_chain.clone())?;
-        let affected = self.repository.delete(&command)?;
+        let affected = self.repository.delete(&command).await?;
 
         let mut event = EntityEvent::deleted_with_old_values(
             command.entity,
@@ -415,7 +421,7 @@ where
         Ok(affected)
     }
 
-    pub fn recover(&self, command: &RecoverCommand) -> Result<u64, RepositoryError<E::Error>> {
+    pub async fn recover(&self, command: &RecoverCommand) -> Result<u64, RepositoryError<E::Error>> {
         let mut command = command.clone();
         command.trace_chain = self.trace_context.clone();
         if let Some(behavior) = self.behavior() {
@@ -426,7 +432,7 @@ where
         self.enforce_recover_policy(&mut command)
             .map_err(RepositoryError::Runtime)?;
         let old_values = self.fetch_current_event_row(&command.entity, &command.id, command.trace_chain.clone())?;
-        let affected = self.repository.recover(&command)?;
+        let affected = self.repository.recover(&command).await?;
         let event = EntityEvent::recovered_with_old_values(
             command.entity,
             command.id,
@@ -443,34 +449,34 @@ where
     }
 
     #[allow(dead_code)]
-    pub(super) fn execute_prepared_insert(
+    pub(super) async fn execute_prepared_insert(
         &self,
         command: InsertCommand,
     ) -> Result<u64, RepositoryError<E::Error>> {
-        self.execute_prepared_insert_with_comment(command, Vec::new())
+        self.execute_prepared_insert_with_comment(command, Vec::new()).await
     }
 
-    pub(super) fn execute_prepared_insert_with_comment(
+    pub(super) async fn execute_prepared_insert_with_comment(
         &self,
         mut command: InsertCommand,
         trace_chain: Vec<teaql_core::TraceNode>,
     ) -> Result<u64, RepositoryError<E::Error>> {
         command.trace_chain = trace_chain.clone();
-        let affected = self.repository.insert(&command)?;
+        let affected = self.repository.insert(&command).await?;
         let mut event = EntityEvent::created(command.entity, command.values);
         event.trace_chain = trace_chain;
         self.emit_event(event).map_err(RepositoryError::Runtime)?;
         Ok(affected)
     }
 
-    pub(super) fn execute_prepared_batch_insert(
+    pub(super) async fn execute_prepared_batch_insert(
         &self,
         command: teaql_core::BatchInsertCommand,
     ) -> Result<u64, RepositoryError<E::Error>> {
         if command.batch_values.is_empty() {
             return Ok(0);
         }
-        let affected = self.repository.batch_insert(&command)?;
+        let affected = self.repository.batch_insert(&command).await?;
         
         let entity = command.entity.clone();
         for (i, values) in command.batch_values.into_iter().enumerate() {
@@ -484,14 +490,14 @@ where
     }
 
     #[allow(dead_code)]
-    pub(super) fn execute_prepared_update(
+    pub(super) async fn execute_prepared_update(
         &self,
         command: UpdateCommand,
     ) -> Result<u64, RepositoryError<E::Error>> {
-        self.execute_prepared_update_with_comment(command, Vec::new())
+        self.execute_prepared_update_with_comment(command, Vec::new()).await
     }
 
-    pub(super) fn execute_prepared_update_with_comment(
+    pub(super) async fn execute_prepared_update_with_comment(
         &self,
         mut command: UpdateCommand,
         trace_chain: Vec<teaql_core::TraceNode>,
@@ -507,7 +513,7 @@ where
             old_values = self.fetch_current_event_row(&command.entity, &command.id, trace_chain.clone())?;
         }
 
-        let affected = self.repository.update(&command)?;
+        let affected = self.repository.update(&command).await?;
         let updated_fields = command.values.keys().cloned().collect();
         let mut values = command.values.clone();
         values.insert("id".to_owned(), command.id.clone());
@@ -530,14 +536,14 @@ where
         Ok(affected)
     }
 
-    pub(super) fn execute_prepared_batch_update(
+    pub(super) async fn execute_prepared_batch_update(
         &self,
         command: teaql_core::BatchUpdateCommand,
     ) -> Result<u64, RepositoryError<E::Error>> {
         if command.batch_values.is_empty() {
             return Ok(0);
         }
-        let affected = self.repository.batch_update(&command)?;
+        let affected = self.repository.batch_update(&command).await?;
         
         let entity = command.entity.clone();
         for (i, values) in command.batch_values.into_iter().enumerate() {
