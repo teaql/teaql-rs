@@ -145,6 +145,7 @@ pub struct UserContext {
     sql_log_options: SqlLogOptions,
     sql_log_entries: Mutex<Vec<SqlLogEntry>>,
     user_identifier: Option<String>,
+    timezone: Option<String>,
 }
 
 impl Default for UserContext {
@@ -174,9 +175,10 @@ impl Default for UserContext {
             locals: BTreeMap::new(),
             initial_graphs: Vec::new(),
             entity_root: EntityRoot::default(),
-            sql_log_options: SqlLogOptions::all(),
+            sql_log_options: SqlLogOptions::default(),
             sql_log_entries: Mutex::new(Vec::new()),
             user_identifier: Some(user_id),
+            timezone: Some("UTC".to_owned()),
         }
     }
 }
@@ -205,6 +207,19 @@ impl UserContext {
 
     pub fn with_user_identifier_option(mut self, user_identifier: Option<String>) -> Self {
         self.user_identifier = user_identifier;
+        self
+    }
+
+    pub fn timezone(&self) -> Option<&str> {
+        self.timezone.as_deref()
+    }
+
+    pub fn set_timezone(&mut self, timezone: impl Into<String>) {
+        self.timezone = Some(timezone.into());
+    }
+
+    pub fn with_timezone(mut self, timezone: impl Into<String>) -> Self {
+        self.timezone = Some(timezone.into());
         self
     }
 
