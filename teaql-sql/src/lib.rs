@@ -33,6 +33,21 @@ mod tests {
         fn placeholder(&self, index: usize) -> String {
             format!("${index}")
         }
+
+        fn compile_gbk_function(
+            &self,
+            entity: &teaql_core::EntityDescriptor,
+            args: &[teaql_core::Expr],
+            params: &mut Vec<teaql_core::Value>,
+        ) -> Result<String, crate::SqlCompileError> {
+            let [arg] = args else {
+                return Err(crate::SqlCompileError::InvalidFunctionArguments(
+                    "GBK expects exactly one argument".to_owned(),
+                ));
+            };
+            let arg = self.compile_expr(entity, arg, params)?;
+            Ok(format!("convert_to({arg}, 'GBK')"))
+        }
     }
 
     const ORDER_DEFAULT_PROJECTION: &str = "\"id\", \"version\", \"name\"";

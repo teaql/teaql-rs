@@ -188,7 +188,7 @@ impl EntityRoot {
     pub fn push_change_set(&self) {
         self.inner
             .lock()
-            .expect("entity root mutex")
+            .unwrap_or_else(|e| e.into_inner())
             .change_sets
             .push();
     }
@@ -196,7 +196,7 @@ impl EntityRoot {
     pub fn pop_change_set(&self) -> Option<EntityChangeSet> {
         self.inner
             .lock()
-            .expect("entity root mutex")
+            .unwrap_or_else(|e| e.into_inner())
             .change_sets
             .pop()
     }
@@ -204,7 +204,7 @@ impl EntityRoot {
     pub fn clear_current_change_set(&self) {
         self.inner
             .lock()
-            .expect("entity root mutex")
+            .unwrap_or_else(|e| e.into_inner())
             .change_sets
             .clear_current();
     }
@@ -212,7 +212,7 @@ impl EntityRoot {
     pub fn set(&self, key: EntityKey, field: impl Into<String>, value: impl Into<Value>) {
         self.inner
             .lock()
-            .expect("entity root mutex")
+            .unwrap_or_else(|e| e.into_inner())
             .change_sets
             .set(key, field, value.into());
     }
@@ -220,7 +220,7 @@ impl EntityRoot {
     pub fn get(&self, key: &EntityKey, field: &str) -> Option<Value> {
         self.inner
             .lock()
-            .expect("entity root mutex")
+            .unwrap_or_else(|e| e.into_inner())
             .change_sets
             .get(key, field)
     }
@@ -228,7 +228,7 @@ impl EntityRoot {
     pub fn current_change_set(&self) -> EntityChangeSet {
         self.inner
             .lock()
-            .expect("entity root mutex")
+            .unwrap_or_else(|e| e.into_inner())
             .change_sets
             .current()
             .cloned()
@@ -240,7 +240,7 @@ impl EntityRoot {
     pub fn set_comment(&self, comment: impl Into<String>) {
         self.inner
             .lock()
-            .expect("entity root mutex")
+            .unwrap_or_else(|e| e.into_inner())
             .comment = Some(comment.into());
     }
 
@@ -248,7 +248,7 @@ impl EntityRoot {
     pub fn get_comment(&self) -> Option<String> {
         self.inner
             .lock()
-            .expect("entity root mutex")
+            .unwrap_or_else(|e| e.into_inner())
             .comment
             .clone()
     }
@@ -257,7 +257,7 @@ impl EntityRoot {
     pub fn mark_as_new(&self) {
         self.inner
             .lock()
-            .expect("entity root mutex")
+            .unwrap_or_else(|e| e.into_inner())
             .is_new = true;
     }
 
@@ -265,7 +265,7 @@ impl EntityRoot {
     pub fn is_new(&self) -> bool {
         self.inner
             .lock()
-            .expect("entity root mutex")
+            .unwrap_or_else(|e| e.into_inner())
             .is_new
     }
 
@@ -273,7 +273,7 @@ impl EntityRoot {
     pub fn set_original_record(&self, record: Record) {
         self.inner
             .lock()
-            .expect("entity root mutex")
+            .unwrap_or_else(|e| e.into_inner())
             .original_record = Some(record);
     }
 
@@ -281,7 +281,7 @@ impl EntityRoot {
     pub fn original_record(&self) -> Option<Record> {
         self.inner
             .lock()
-            .expect("entity root mutex")
+            .unwrap_or_else(|e| e.into_inner())
             .original_record
             .clone()
     }
@@ -291,7 +291,7 @@ impl EntityRoot {
     /// Any pending field changes for this entity are cleared — they are irrelevant
     /// when the entity is being deleted.
     pub fn mark_as_delete(&self, key: EntityKey) {
-        let mut ctx = self.inner.lock().expect("entity root mutex");
+        let mut ctx = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         ctx.change_sets.clear_entity(&key);
         ctx.deleted_keys.insert(key);
     }
@@ -300,7 +300,7 @@ impl EntityRoot {
     pub fn is_marked_as_delete(&self, key: &EntityKey) -> bool {
         self.inner
             .lock()
-            .expect("entity root mutex")
+            .unwrap_or_else(|e| e.into_inner())
             .deleted_keys
             .contains(key)
     }
@@ -310,7 +310,7 @@ impl EntityRoot {
     pub fn changed_field_names(&self, key: &EntityKey) -> BTreeSet<String> {
         self.inner
             .lock()
-            .expect("entity root mutex")
+            .unwrap_or_else(|e| e.into_inner())
             .change_sets
             .changed_field_names(key)
     }

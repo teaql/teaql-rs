@@ -30,7 +30,7 @@ The Rust rewrite keeps the scope deliberately narrow:
 
 Progress tracking lives in [PROGRESS.md](./PROGRESS.md).
 
-Current published release: `0.7.4`.
+Current published release: `2.0.0`.
 
 ## Try It
 

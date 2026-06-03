@@ -250,7 +250,31 @@ impl<'a, D: SqlDialect + Send + Sync, Tx: SqlTransport + SqlTransaction<Error = 
             MutationRequest::Update(cmd) => &cmd.entity,
             MutationRequest::Delete(cmd) => &cmd.entity,
             MutationRequest::Recover(cmd) => &cmd.entity,
-            MutationRequest::Batch(_) => unreachable!(), // Similar to above, implement properly if needed
+            MutationRequest::Batch(mutations) => {
+                let mut total_affected = 0;
+                let start = SystemTime::now();
+                for req in mutations {
+                    let res = Box::pin(self.mutate(req.clone())).await?;
+                    total_affected += res.affected_rows;
+                }
+                let end = SystemTime::now();
+                return Ok(MutationResult {
+                    affected_rows: total_affected,
+                    generated_values: Record::default(),
+                    metadata: ExecutionMetadata {
+                        backend: "sql".to_string(),
+                        operation: DataServiceOperation::Batch,
+                        started_at: start,
+                        ended_at: end,
+                        affected_rows: Some(total_affected),
+                        result_count: None,
+                        trace_chain: Vec::new(),
+                        comment: None,
+                        backend_request_id: None,
+                        debug_query: None,
+                    },
+                });
+            }
         };
         
         let entity_desc = self.schema_provider.get_entity(entity_name)
@@ -261,7 +285,7 @@ impl<'a, D: SqlDialect + Send + Sync, Tx: SqlTransport + SqlTransaction<Error = 
             MutationRequest::Update(cmd) => self.dialect.compile_update(&entity_desc, cmd).map_err(SqlExecutorError::Compile)?,
             MutationRequest::Delete(cmd) => self.dialect.compile_delete(&entity_desc, cmd).map_err(SqlExecutorError::Compile)?,
             MutationRequest::Recover(cmd) => self.dialect.compile_recover(&entity_desc, cmd).map_err(SqlExecutorError::Compile)?,
-            MutationRequest::Batch(_) => unreachable!(),
+            MutationRequest::Batch(_) => unreachable!("batch handled above"),
         };
 
         let start = SystemTime::now();

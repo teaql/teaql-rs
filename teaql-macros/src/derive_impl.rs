@@ -9,17 +9,29 @@ use crate::mapping::{
 use crate::types::{is_option, rust_type_to_data_type};
 
 pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
-    let struct_name = input.ident;
+    let struct_name = input.ident.clone();
     let (entity_name, table_name) = parse_container_attrs(&input.attrs, &struct_name.to_string());
 
     let fields = match input.data {
         Data::Struct(data) => data.fields,
-        _ => panic!("TeaqlEntity only supports structs"),
+        _ => {
+            return syn::Error::new(
+                input.ident.span(),
+                "TeaqlEntity only supports structs",
+            )
+            .to_compile_error();
+        }
     };
 
     let named_fields: Vec<_> = match fields {
         Fields::Named(fields) => fields.named.into_iter().collect(),
-        _ => panic!("TeaqlEntity only supports structs with named fields"),
+        _ => {
+            return syn::Error::new(
+                struct_name.span(),
+                "TeaqlEntity only supports structs with named fields",
+            )
+            .to_compile_error();
+        }
     };
 
     let mut property_tokens = Vec::new();

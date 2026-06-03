@@ -28,8 +28,8 @@ impl CompiledQuery {
     pub fn debug_sql(&self, kind: DatabaseKind) -> String {
         match kind {
             DatabaseKind::PostgreSql => replace_postgres_placeholders(&self.sql, &self.params),
-            DatabaseKind::Sqlite => replace_sqlite_placeholders(&self.sql, &self.params),
-            DatabaseKind::MySql => replace_sqlite_placeholders(&self.sql, &self.params),
+            DatabaseKind::Sqlite => replace_positional_placeholders(&self.sql, &self.params, DatabaseKind::Sqlite),
+            DatabaseKind::MySql => replace_positional_placeholders(&self.sql, &self.params, DatabaseKind::MySql),
         }
     }
 }
@@ -56,7 +56,7 @@ fn replace_postgres_placeholders(sql: &str, params: &[Value]) -> String {
             }
             if let Ok(index) = index.parse::<usize>() {
                 if let Some(value) = index.checked_sub(1).and_then(|idx| params.get(idx)) {
-                    output.push_str(&sql_literal(value));
+                    output.push_str(&sql_literal(value, DatabaseKind::PostgreSql));
                     continue;
                 }
             }
@@ -69,7 +69,7 @@ fn replace_postgres_placeholders(sql: &str, params: &[Value]) -> String {
     output
 }
 
-fn replace_sqlite_placeholders(sql: &str, params: &[Value]) -> String {
+fn replace_positional_placeholders(sql: &str, params: &[Value], kind: DatabaseKind) -> String {
     let mut output = String::with_capacity(sql.len());
     let mut params = params.iter();
     let mut in_string = false;
@@ -86,7 +86,7 @@ fn replace_sqlite_placeholders(sql: &str, params: &[Value]) -> String {
         }
         if !in_string && ch == '?' {
             if let Some(value) = params.next() {
-                output.push_str(&sql_literal(value));
+                output.push_str(&sql_literal(value, kind));
             } else {
                 output.push(ch);
             }
@@ -97,7 +97,7 @@ fn replace_sqlite_placeholders(sql: &str, params: &[Value]) -> String {
     output
 }
 
-fn sql_literal(value: &Value) -> String {
+fn sql_literal(value: &Value, kind: DatabaseKind) -> String {
     match value {
         Value::Null => "NULL".to_owned(),
         Value::Bool(value) => if *value { "TRUE" } else { "FALSE" }.to_owned(),
@@ -115,10 +115,13 @@ fn sql_literal(value: &Value) -> String {
         Value::List(values) => {
             let values = values
                 .iter()
-                .map(sql_literal)
+                .map(|v| sql_literal(v, kind))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("ARRAY[{values}]")
+            match kind {
+                DatabaseKind::PostgreSql => format!("ARRAY[{values}]"),
+                _ => format!("({values})"),
+            }
         }
     }
 }

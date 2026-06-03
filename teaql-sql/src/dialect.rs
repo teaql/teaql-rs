@@ -840,15 +840,7 @@ pub trait SqlDialect {
                 let arg = self.compile_expr(entity, arg, params)?;
                 Ok(format!("SOUNDEX({arg})"))
             }
-            ExprFunction::Gbk => {
-                let [arg] = args else {
-                    return Err(SqlCompileError::InvalidFunctionArguments(
-                        "GBK expects exactly one argument".to_owned(),
-                    ));
-                };
-                let arg = self.compile_expr(entity, arg, params)?;
-                Ok(format!("convert_to({arg}, 'GBK')"))
-            }
+            ExprFunction::Gbk => self.compile_gbk_function(entity, args, params),
             ExprFunction::Count if args.is_empty() => Ok("COUNT(*)".to_owned()),
             ExprFunction::Count => self.compile_single_arg_function(entity, "COUNT", args, params),
             ExprFunction::Sum => self.compile_single_arg_function(entity, "SUM", args, params),
@@ -891,6 +883,26 @@ pub trait SqlDialect {
         };
         let arg = self.compile_expr(entity, arg, params)?;
         Ok(format!("{function}({arg})"))
+    }
+
+    /// Compile a GBK sort expression. The default implementation returns an error
+    /// because GBK encoding conversion is dialect-specific. PostgreSQL dialects
+    /// should override this to use `convert_to(arg, 'GBK')`.
+    fn compile_gbk_function(
+        &self,
+        entity: &EntityDescriptor,
+        args: &[Expr],
+        params: &mut Vec<Value>,
+    ) -> Result<String, SqlCompileError> {
+        let [arg] = args else {
+            return Err(SqlCompileError::InvalidFunctionArguments(
+                "GBK expects exactly one argument".to_owned(),
+            ));
+        };
+        // Default: pass through the column as-is (no GBK conversion).
+        // Dialects with GBK support (e.g. PostgreSQL) should override this method.
+        let arg = self.compile_expr(entity, arg, params)?;
+        Ok(arg)
     }
 
     fn compile_subquery(

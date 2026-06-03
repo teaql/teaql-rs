@@ -1,3 +1,7 @@
 /target
 *.db
 Cargo.lock
+scratch.rs
+diff.txt
+compile_errors.log
+app.log
