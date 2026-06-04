@@ -67,8 +67,8 @@ pub trait Entity: TeaqlEntity + Sized {
 
     /// Attach an audit comment and return a `Commented<Self>` wrapper.
     /// This is the only way to unlock the `.save()` method.
-    fn comment(self, comment: impl Into<String>) -> Commented<Self> {
-        Commented::new(self, comment)
+    fn audit_as(self, comment: impl Into<String>) -> Audited<Self> {
+        Audited::new(self, comment)
     }
 
     /// Get the original snapshot values when this entity was loaded from the repository, if available.
@@ -89,12 +89,12 @@ pub trait Entity: TeaqlEntity + Sized {
 /// A wrapper that carries a mandatory audit comment with an entity.
 /// Only `Commented<T>` has a `.save()` method — bare entities cannot be saved directly.
 /// This enforces the "must comment on save" policy at compile time.
-pub struct Commented<T: Entity> {
+pub struct Audited<T: Entity> {
     inner: T,
     comment: String,
 }
 
-impl<T: Entity> Commented<T> {
+impl<T: Entity> Audited<T> {
     /// Create a new Commented wrapper. Panics if comment is empty.
     pub fn new(entity: T, comment: impl Into<String>) -> Self {
         let comment = comment.into();
