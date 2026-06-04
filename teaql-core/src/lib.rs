@@ -15,7 +15,7 @@ mod web;
 mod xls;
 
 pub use entity::{
-    BaseEntity, BaseEntityData, Entity, EntityDescriptorStore, EntityError, IdentifiableEntity,
+    BaseEntity, BaseEntityData, Commented, Entity, EntityDescriptorStore, EntityError, IdentifiableEntity,
     TeaqlEntity, VersionedEntity,
 };
 pub use entity_graph::{EntityGraph, EntityGraphBuilder, EntityGraphNode, EntityGraphOperation};

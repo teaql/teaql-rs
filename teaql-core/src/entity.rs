@@ -58,12 +58,18 @@ pub trait Entity: TeaqlEntity + Sized {
     fn mark_as_new(&mut self) {}
 
     /// Get the annotation comment, if any.
-    fn comment(&self) -> Option<String> {
+    fn get_comment(&self) -> Option<String> {
         None
     }
 
     /// Set an annotation comment for this entity instance.
     fn set_comment(&mut self, _comment: String) {}
+
+    /// Attach an audit comment and return a `Commented<Self>` wrapper.
+    /// This is the only way to unlock the `.save()` method.
+    fn comment(self, comment: impl Into<String>) -> Commented<Self> {
+        Commented::new(self, comment)
+    }
 
     /// Get the original snapshot values when this entity was loaded from the repository, if available.
     fn original_values(&self) -> Option<::std::collections::BTreeMap<String, Value>> {
@@ -77,6 +83,45 @@ pub trait Entity: TeaqlEntity + Sized {
 
     fn into_json(self) -> serde_json::Value {
         record_to_json_value(&self.into_record())
+    }
+}
+
+/// A wrapper that carries a mandatory audit comment with an entity.
+/// Only `Commented<T>` has a `.save()` method — bare entities cannot be saved directly.
+/// This enforces the "must comment on save" policy at compile time.
+pub struct Commented<T: Entity> {
+    inner: T,
+    comment: String,
+}
+
+impl<T: Entity> Commented<T> {
+    /// Create a new Commented wrapper. Panics if comment is empty.
+    pub fn new(entity: T, comment: impl Into<String>) -> Self {
+        let comment = comment.into();
+        assert!(!comment.trim().is_empty(), "audit comment must not be empty");
+        Self { inner: entity, comment }
+    }
+
+    /// Access the inner entity by reference.
+    pub fn entity(&self) -> &T {
+        &self.inner
+    }
+
+    /// Access the inner entity by mutable reference.
+    pub fn entity_mut(&mut self) -> &mut T {
+        &mut self.inner
+    }
+
+    /// Consume and return the inner entity with comment applied.
+    pub fn into_entity(self) -> T {
+        let mut entity = self.inner;
+        entity.set_comment(self.comment);
+        entity
+    }
+
+    /// Get the comment.
+    pub fn get_comment(&self) -> &str {
+        &self.comment
     }
 }
 

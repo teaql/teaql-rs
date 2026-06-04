@@ -230,7 +230,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 self.root.mark_as_new()
             }
 
-            fn comment(&self) -> Option<String> {
+            fn get_comment(&self) -> Option<String> {
                 self.root.get_comment()
             }
 
@@ -269,7 +269,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             fn into_record(self) -> ::teaql_core::Record {
                 use ::teaql_core::Entity;
                 let mut record = ::teaql_core::Record::new();
-                if let Some(comment) = self.comment() {
+                if let Some(comment) = self.get_comment() {
                     record.insert("_comment".to_owned(), ::teaql_core::Value::Text(comment));
                 }
                 #(#into_record_fields)*

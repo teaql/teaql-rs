@@ -234,7 +234,7 @@ where
         let dirty_fields = entity.dirty_fields();
         let original_values = entity.original_values();
         let is_deleted = entity.is_marked_as_delete();
-        let comment = entity.comment();
+        let comment = entity.get_comment();
         let mut node = self.graph_node_from_record(&descriptor.name, entity.into_record())?;
         node.dirty_fields = dirty_fields;
         node.original_values = original_values;
