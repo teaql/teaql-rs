@@ -400,10 +400,11 @@ mod tests {
     }
 
     impl QueryExecutor for StubExecutor {
-        fn query(&self, _request: QueryRequest) -> Result<QueryResult, Self::Error> {
+        async fn query(&self, _request: QueryRequest) -> Result<QueryResult, Self::Error> {
             Ok(QueryResult {
                 rows: self.rows.clone(),
                 metadata: ExecutionMetadata {
+                    debug_query: None,
                     backend: "stub".to_owned(),
                     operation: DataServiceOperation::Query,
                     started_at: std::time::SystemTime::now(),
@@ -419,11 +420,12 @@ mod tests {
     }
 
     impl MutationExecutor for StubExecutor {
-        fn mutate(&self, _request: MutationRequest) -> Result<MutationResult, Self::Error> {
+        async fn mutate(&self, _request: MutationRequest) -> Result<MutationResult, Self::Error> {
             Ok(MutationResult {
                 affected_rows: self.affected,
                 generated_values: Record::new(),
                 metadata: ExecutionMetadata {
+                    debug_query: None,
                     backend: "stub".to_owned(),
                     operation: DataServiceOperation::Update,
                     started_at: std::time::SystemTime::now(),
@@ -447,12 +449,13 @@ mod tests {
     }
 
     impl QueryExecutor for QueueExecutor {
-        fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
+        async fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
             let sql_approx = format!("SELECT ... FROM {} ...", request.query.entity);
             self.queries.lock().unwrap().push(sql_approx);
             Ok(QueryResult {
                 rows: self.rows.lock().unwrap().pop_front().unwrap_or_default(),
                 metadata: ExecutionMetadata {
+                    debug_query: None,
                     backend: "queue".to_owned(),
                     operation: DataServiceOperation::Query,
                     started_at: std::time::SystemTime::now(),
@@ -468,11 +471,12 @@ mod tests {
     }
 
     impl MutationExecutor for QueueExecutor {
-        fn mutate(&self, _request: MutationRequest) -> Result<MutationResult, Self::Error> {
+        async fn mutate(&self, _request: MutationRequest) -> Result<MutationResult, Self::Error> {
             Ok(MutationResult {
                 affected_rows: self.affected,
                 generated_values: Record::new(),
                 metadata: ExecutionMetadata {
+                    debug_query: None,
                     backend: "queue".to_owned(),
                     operation: DataServiceOperation::Update,
                     started_at: std::time::SystemTime::now(),
@@ -693,21 +697,21 @@ mod tests {
         }
     }
 
-    #[test]
-    fn metadata_store_registers_entities() {
+    #[tokio::test]
+    async fn metadata_store_registers_entities() {
         let store = InMemoryMetadataStore::new().with_entity(entity());
         assert!(store.entity("Order").is_some());
     }
 
-    #[test]
-    fn runtime_module_registers_descriptor_into_context() {
+    #[tokio::test]
+    async fn runtime_module_registers_descriptor_into_context() {
         let ctx = UserContext::new().with_module(RuntimeModule::new().descriptor(entity()));
         assert!(ctx.entity("Order").is_some());
         assert!(ctx.has_repository("Order"));
     }
 
-    #[test]
-    fn runtime_module_registers_derived_entity_and_behavior() {
+    #[tokio::test]
+    async fn runtime_module_registers_derived_entity_and_behavior() {
         let ctx = UserContext::new().with_module(
             RuntimeModule::new().entity_with_behavior::<CatalogProductRow, _>(OrderBehavior),
         );
@@ -716,23 +720,23 @@ mod tests {
         assert!(ctx.repository_behavior("CatalogProduct").is_some());
     }
 
-    #[test]
-    fn module_macro_registers_multiple_entities() {
+    #[tokio::test]
+    async fn module_macro_registers_multiple_entities() {
         let ctx = UserContext::new().with_module(crate::module!(CatalogProductRow));
         assert!(ctx.entity("CatalogProduct").is_some());
         assert!(ctx.has_repository("CatalogProduct"));
     }
 
-    #[test]
-    fn module_macro_registers_entity_behavior_pairs() {
+    #[tokio::test]
+    async fn module_macro_registers_entity_behavior_pairs() {
         let ctx =
             UserContext::new().with_module(crate::module!(CatalogProductRow => OrderBehavior));
         assert!(ctx.entity("CatalogProduct").is_some());
         assert!(ctx.repository_behavior("CatalogProduct").is_some());
     }
 
-    #[test]
-    fn repository_returns_optimistic_lock_conflict() {
+    #[tokio::test]
+    async fn repository_returns_optimistic_lock_conflict() {
         let store = InMemoryMetadataStore::new().with_entity(entity());
         let executor = StubExecutor {
             affected: 0,
@@ -746,7 +750,7 @@ mod tests {
                     .expected_version(3)
                     .value("name", "next"),
             )
-            .unwrap_err();
+            .await.unwrap_err();
 
         match err {
             RepositoryError::Runtime(RuntimeError::OptimisticLockConflict { .. }) => {}
@@ -754,8 +758,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn user_context_indexes_resources_and_locals() {
+    #[tokio::test]
+    async fn user_context_indexes_resources_and_locals() {
         let mut ctx =
             UserContext::new().with_metadata(InMemoryMetadataStore::new().with_entity(entity()));
         ctx.insert_resource::<u64>(42);
@@ -774,8 +778,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn user_context_builds_context_repository() {
+    #[tokio::test]
+    async fn user_context_builds_context_repository() {
         let mut ctx =
             UserContext::new().with_metadata(InMemoryMetadataStore::new().with_entity(entity()));
         ctx.insert_resource(PostgresDialect);
@@ -791,13 +795,13 @@ mod tests {
                     .expected_version(3)
                     .value("name", "next"),
             )
-            .unwrap();
+            .await.unwrap();
 
         assert_eq!(affected, 1);
     }
 
-    #[test]
-    fn user_context_resolves_repository_by_entity_type() {
+    #[tokio::test]
+    async fn user_context_resolves_repository_by_entity_type() {
         let mut ctx = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
             .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
@@ -821,12 +825,12 @@ mod tests {
                     .value("version", 1_i64)
                     .value("name", "n"),
             )
-            .unwrap();
+            .await.unwrap();
         assert_eq!(affected, 1);
     }
 
-    #[test]
-    fn resolved_repository_applies_behavior_hooks() {
+    #[tokio::test]
+    async fn resolved_repository_applies_behavior_hooks() {
         let mut ctx = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
@@ -852,13 +856,13 @@ mod tests {
         // assert!(compiled.sql.contains("WHERE (version = $1)"));
 
         let insert = repo.insert_command().value("id", 1_u64).value("name", "n");
-        let affected = repo.insert(&insert).unwrap();
+        let affected = repo.insert(&insert).await.unwrap();
         assert_eq!(affected, 1);
         assert_eq!(repo.relation_loads(), vec!["lines".to_owned()]);
     }
 
-    #[test]
-    fn resolved_repository_applies_request_policy_after_behavior_hooks() {
+    #[tokio::test]
+    async fn resolved_repository_applies_request_policy_after_behavior_hooks() {
         let mut ctx = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
@@ -891,8 +895,8 @@ mod tests {
         assert_eq!(command.values.get("version"), Some(&Value::I64(9)));
     }
 
-    #[test]
-    fn resolved_repository_prepares_insert_command_with_generated_id() {
+    #[tokio::test]
+    async fn resolved_repository_prepares_insert_command_with_generated_id() {
         let mut ctx = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
@@ -941,8 +945,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolved_repository_saves_create_graph_and_maintains_relation_keys() {
+    #[tokio::test]
+    async fn resolved_repository_saves_create_graph_and_maintains_relation_keys() {
         let mut ctx = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
@@ -971,7 +975,7 @@ mod tests {
                 .relation("product", GraphNode::new("Product").value("name", "sku-1")),
         );
 
-        let saved = repo.save_graph(graph).unwrap();
+        let saved = repo.save_graph(graph).await.unwrap();
 
         assert_eq!(saved.values.get("id"), Some(&Value::U64(500)));
         assert_eq!(saved.values.get("version"), Some(&Value::I64(1)));
@@ -985,8 +989,8 @@ mod tests {
         assert_eq!(product[0].values.get("id"), Some(&Value::U64(501)));
     }
 
-    #[test]
-    fn resolved_repository_extracts_and_saves_typed_entity_graph() {
+    #[tokio::test]
+    async fn resolved_repository_extracts_and_saves_typed_entity_graph() {
         let mut ctx = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
@@ -1038,7 +1042,7 @@ mod tests {
             1
         );
 
-        let saved = repo.save_graph(extracted).unwrap();
+        let saved = repo.save_graph(extracted).await.unwrap();
         assert_eq!(saved.values.get("id"), Some(&Value::U64(700)));
         assert_eq!(saved.values.get("version"), Some(&Value::I64(1)));
         let lines = saved.relations.get("lines").unwrap();
@@ -1052,8 +1056,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolved_repository_saves_typed_entity_graph_directly() {
+    #[tokio::test]
+    async fn resolved_repository_saves_typed_entity_graph_directly() {
         let mut ctx = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
@@ -1088,7 +1092,7 @@ mod tests {
                     }),
                 }]),
             })
-            .unwrap();
+            .await.unwrap();
 
         assert_eq!(saved.values.get("id"), Some(&Value::U64(800)));
         assert_eq!(saved.values.get("version"), Some(&Value::I64(1)));
@@ -1102,8 +1106,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn custom_user_context_can_drive_insert_preparation() {
+    #[tokio::test]
+    async fn custom_user_context_can_drive_insert_preparation() {
         let mut ctx = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
             .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
@@ -1134,8 +1138,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn checker_registry_validates_and_fixes_insert_commands() {
+    #[tokio::test]
+    async fn checker_registry_validates_and_fixes_insert_commands() {
         let mut ctx = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
             .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
@@ -1170,8 +1174,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn typed_checker_validates_and_fixes_derived_entities_without_record_access() {
+    #[tokio::test]
+    async fn typed_checker_validates_and_fixes_derived_entities_without_record_access() {
         let mut ctx = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(Order::entity_descriptor()))
             .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
@@ -1222,8 +1226,8 @@ mod tests {
 
 
 
-    #[test]
-    fn checker_registry_reports_nested_create_locations_and_fixes_records() {
+    #[tokio::test]
+    async fn checker_registry_reports_nested_create_locations_and_fixes_records() {
         let ctx = UserContext::new()
             .with_checker_registry(InMemoryCheckerRegistry::new().with_checker(OrderChecker));
 
@@ -1261,8 +1265,8 @@ mod tests {
         .unwrap();
     }
 
-    #[test]
-    fn built_in_language_translators_cover_fifteen_languages() {
+    #[tokio::test]
+    async fn built_in_language_translators_cover_fifteen_languages() {
         assert_eq!(Language::ALL.len(), 15);
         let result = super::CheckResult::required(ObjectLocation::hash_root("name"));
         let messages = Language::ALL
@@ -1285,8 +1289,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn user_context_language_switch_translates_checker_errors() {
+    #[tokio::test]
+    async fn user_context_language_switch_translates_checker_errors() {
         let mut ctx = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
             .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
@@ -1323,8 +1327,8 @@ mod tests {
         assert_eq!(ctx.language(), Language::Spanish);
     }
 
-    #[test]
-    fn checker_registry_merges_graph_update_fixes_by_object_status() {
+    #[tokio::test]
+    async fn checker_registry_merges_graph_update_fixes_by_object_status() {
         let mut ctx = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
             .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
@@ -1349,7 +1353,7 @@ mod tests {
                     .value("version", 1_i64)
                     .value("name", "graph-update"),
             )
-            .unwrap();
+            .await.unwrap();
 
         assert_eq!(
             saved.values.get("name"),
@@ -1359,8 +1363,8 @@ mod tests {
         assert!(!saved.values.contains_key(CHECK_OBJECT_STATUS_FIELD));
     }
 
-    #[test]
-    fn user_context_event_sink_receives_repository_mutation_events() {
+    #[tokio::test]
+    async fn user_context_event_sink_receives_repository_mutation_events() {
         let events = Arc::new(Mutex::new(Vec::new()));
         let mut ctx = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
@@ -1383,17 +1387,17 @@ mod tests {
             .resolve_repository::< StubExecutor>("Order")
             .unwrap();
         repo.insert(&repo.insert_command().value("name", "created"))
-            .unwrap();
+            .await.unwrap();
         repo.update(
             &repo
                 .update_command(88_u64)
                 .expected_version(1)
                 .value("name", "updated"),
         )
-        .unwrap();
+        .await.unwrap();
         repo.delete(&repo.delete_command(88_u64).expected_version(2))
-            .unwrap();
-        repo.recover(&repo.recover_command(88_u64, -3)).unwrap();
+            .await.unwrap();
+        repo.recover(&repo.recover_command(88_u64, -3)).await.unwrap();
 
         let events = events.lock().unwrap();
         assert_eq!(events.len(), 4);
@@ -1449,8 +1453,8 @@ mod tests {
         assert_eq!(events[3].changes[0].field, "version");
     }
 
-    #[test]
-    fn user_context_event_sink_receives_mixed_graph_mutation_events() {
+    #[tokio::test]
+    async fn user_context_event_sink_receives_mixed_graph_mutation_events() {
         let events = Arc::new(Mutex::new(Vec::new()));
         let mut ctx = UserContext::new()
             .with_metadata(
@@ -1488,7 +1492,7 @@ mod tests {
                         .value("product_id", 3_u64),
                 ),
         )
-        .unwrap();
+        .await.unwrap();
 
         let events = events.lock().unwrap();
         assert_eq!(events.len(), 2);
@@ -1499,8 +1503,8 @@ mod tests {
         assert_eq!(events[1].values.get("order_id"), Some(&Value::U64(1)));
     }
 
-    #[test]
-    fn save_graph_builds_plan_grouped_by_entity_and_operation() {
+    #[tokio::test]
+    async fn save_graph_builds_plan_grouped_by_entity_and_operation() {
         let mut ctx = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
@@ -1561,7 +1565,7 @@ mod tests {
                         GraphNode::new("OrderLine").value("id", 4_u64).reference(),
                     ),
             )
-            .unwrap();
+            .await.unwrap();
         let counts = plan.grouped_counts();
 
         assert_eq!(
@@ -1610,8 +1614,8 @@ mod tests {
         assert_eq!(update_batch.items.len(), 2);
     }
 
-    #[test]
-    fn resolved_repository_builds_relation_plans() {
+    #[tokio::test]
+    async fn resolved_repository_builds_relation_plans() {
         let mut ctx = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
@@ -1642,8 +1646,8 @@ mod tests {
         assert!(plans[0].many);
     }
 
-    #[test]
-    fn resolved_repository_builds_relation_query_from_parent_rows() {
+    #[tokio::test]
+    async fn resolved_repository_builds_relation_query_from_parent_rows() {
         let mut ctx = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
@@ -1676,8 +1680,8 @@ mod tests {
         // assert_eq!(compiled.params, vec![Value::U64(11), Value::U64(12)]);
     }
 
-    #[test]
-    fn resolved_repository_enhances_parent_rows_with_relations() {
+    #[tokio::test]
+    async fn resolved_repository_enhances_parent_rows_with_relations() {
         let mut ctx = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
@@ -1719,7 +1723,7 @@ mod tests {
             Record::from([(String::from("id"), Value::U64(12))]),
         ];
 
-        repo.enhance_relations(&mut parents).unwrap();
+        repo.enhance_relations(&mut parents).await.unwrap();
 
         match parents[0].get("lines") {
             Some(Value::List(lines)) => assert_eq!(lines.len(), 2),
@@ -1731,8 +1735,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn relation_enhancement_wraps_inverse_many_relation_as_list() {
+    #[tokio::test]
+    async fn relation_enhancement_wraps_inverse_many_relation_as_list() {
         let mut ctx = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
@@ -1765,15 +1769,15 @@ mod tests {
             .fetch_enhanced_entities::<OrderLineWithProductEntityRow>(
                 &SelectQuery::new("OrderLine").relation("product"),
             )
-            .unwrap();
+            .await.unwrap();
 
         let product = rows.data[0].product.as_ref().unwrap();
         assert_eq!(product.lines.data.len(), 1);
         assert_eq!(product.lines.data[0].id, 11);
     }
 
-    #[test]
-    fn resolved_repository_fetches_smart_list_of_entities() {
+    #[tokio::test]
+    async fn resolved_repository_fetches_smart_list_of_entities() {
         let mut ctx = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
             .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
@@ -1790,7 +1794,7 @@ mod tests {
         let repo = ctx
             .resolve_repository::< StubExecutor>("Order")
             .unwrap();
-        let rows = repo.fetch_entities::<OrderEntity>(&repo.select()).unwrap();
+        let rows = repo.fetch_entities::<OrderEntity>(&repo.select()).await.unwrap();
 
         assert_eq!(rows.len(), 1);
         assert_eq!(
@@ -1803,8 +1807,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolved_repository_fetches_smart_list_of_derived_entities() {
+    #[tokio::test]
+    async fn resolved_repository_fetches_smart_list_of_derived_entities() {
         let mut ctx = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new().with_entity(CatalogProductRow::entity_descriptor()),
@@ -1826,7 +1830,7 @@ mod tests {
             .unwrap();
         let rows = repo
             .fetch_entities::<CatalogProductRow>(&repo.select())
-            .unwrap();
+            .await.unwrap();
 
         assert_eq!(rows.len(), 1);
         assert_eq!(
@@ -1838,8 +1842,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolved_repository_collects_dynamic_properties_for_aggregate_output() {
+    #[tokio::test]
+    async fn resolved_repository_collects_dynamic_properties_for_aggregate_output() {
         let mut ctx = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
@@ -1863,7 +1867,7 @@ mod tests {
             .unwrap();
         let rows = repo
             .fetch_entities::<OrderAggregateDynamic>(&repo.select())
-            .unwrap();
+            .await.unwrap();
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows.data[0].id, 1);
@@ -1879,8 +1883,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolved_repository_executes_relation_aggregates_into_dynamic_properties() {
+    #[tokio::test]
+    async fn resolved_repository_executes_relation_aggregates_into_dynamic_properties() {
         let executor = QueueExecutor {
             affected: 1,
             rows: Mutex::new(VecDeque::from([
@@ -1930,7 +1934,7 @@ mod tests {
                     true,
                 )],
             )
-            .unwrap();
+            .await.unwrap();
 
         assert_eq!(rows[0].get("lineCount"), Some(&Value::I64(3)));
         assert_eq!(rows[1].get("lineCount"), Some(&Value::U64(0)));
@@ -1944,8 +1948,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolved_repository_maps_relation_aggregate_storage_key_to_property_key() {
+    #[tokio::test]
+    async fn resolved_repository_maps_relation_aggregate_storage_key_to_property_key() {
         let mut line = line_entity();
         line.properties
             .iter_mut()
@@ -1994,7 +1998,7 @@ mod tests {
                     true,
                 )],
             )
-            .unwrap();
+            .await.unwrap();
 
         assert_eq!(rows[0].get("lineCount"), Some(&Value::I64(3)));
         let executor = ctx.get_resource::<QueueExecutor>().unwrap();
@@ -2004,8 +2008,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolved_repository_uses_aggregation_cache_when_resource_is_registered() {
+    #[tokio::test]
+    async fn resolved_repository_uses_aggregation_cache_when_resource_is_registered() {
         let executor = QueueExecutor {
             affected: 1,
             rows: Mutex::new(VecDeque::from([vec![Record::from([(
@@ -2029,16 +2033,16 @@ mod tests {
             .count("count")
             .enable_aggregation_cache_for(60_000);
 
-        let first = repo.fetch_all(&query).unwrap();
-        let second = repo.fetch_all(&query).unwrap();
+        let first = repo.fetch_all(&query).await.unwrap();
+        let second = repo.fetch_all(&query).await.unwrap();
 
         assert_eq!(first, second);
         let executor = ctx.get_resource::<QueueExecutor>().unwrap();
         assert_eq!(executor.queries.lock().unwrap().len(), 1);
     }
 
-    #[test]
-    fn aggregation_cache_is_namespaced_and_invalidated_after_write() {
+    #[tokio::test]
+    async fn aggregation_cache_is_namespaced_and_invalidated_after_write() {
         let executor = QueueExecutor {
             affected: 1,
             rows: Mutex::new(VecDeque::from([
@@ -2065,16 +2069,16 @@ mod tests {
             .count("count")
             .enable_aggregation_cache_for(60_000);
 
-        let first = repo.fetch_all(&query).unwrap();
-        let cached = repo.fetch_all(&query).unwrap();
+        let first = repo.fetch_all(&query).await.unwrap();
+        let cached = repo.fetch_all(&query).await.unwrap();
         repo.insert(
             &InsertCommand::new("Order")
                 .value("id", 9_u64)
                 .value("version", 1_i64)
                 .value("name", "new"),
         )
-        .unwrap();
-        let refreshed = repo.fetch_all(&query).unwrap();
+        .await.unwrap();
+        let refreshed = repo.fetch_all(&query).await.unwrap();
 
         assert_eq!(first, cached);
         assert_ne!(cached, refreshed);
@@ -2082,8 +2086,8 @@ mod tests {
         assert_eq!(executor.queries.lock().unwrap().len(), 2);
     }
 
-    #[test]
-    fn aggregation_cache_propagates_to_relation_aggregates() {
+    #[tokio::test]
+    async fn aggregation_cache_propagates_to_relation_aggregates() {
         let parent_rows = vec![
             Record::from([
                 (String::from("id"), Value::U64(1)),
@@ -2131,18 +2135,18 @@ mod tests {
 
         let first = repo
             .fetch_all_with_relation_aggregates(&query, &[aggregate.clone()])
-            .unwrap();
+            .await.unwrap();
         let second = repo
             .fetch_all_with_relation_aggregates(&query, &[aggregate])
-            .unwrap();
+            .await.unwrap();
 
         assert_eq!(first, second);
         let executor = ctx.get_resource::<QueueExecutor>().unwrap();
         assert_eq!(executor.queries.lock().unwrap().len(), 2);
     }
 
-    #[test]
-    fn memory_repository_fetches_smart_list_entities_with_query_features() {
+    #[tokio::test]
+    async fn memory_repository_fetches_smart_list_entities_with_query_features() {
         let metadata = InMemoryMetadataStore::new().with_entity(entity());
         let repository = MemoryRepository::new(metadata).with_rows(
             "Order",
@@ -2181,8 +2185,8 @@ mod tests {
         assert_eq!(orders.first().unwrap().name, "gamma");
     }
 
-    #[test]
-    fn memory_repository_runs_relation_aggregates() {
+    #[tokio::test]
+    async fn memory_repository_runs_relation_aggregates() {
         let metadata = InMemoryMetadataStore::new()
             .with_entity(entity())
             .with_entity(line_entity());
@@ -2243,8 +2247,8 @@ mod tests {
         assert_eq!(second_order.get("lineCount"), Some(&Value::U64(1)));
     }
 
-    #[test]
-    fn memory_repository_runs_aggregates() {
+    #[tokio::test]
+    async fn memory_repository_runs_aggregates() {
         let metadata = InMemoryMetadataStore::new().with_entity(entity());
         let repository = MemoryRepository::new(metadata).with_rows(
             "Order",
@@ -2302,8 +2306,8 @@ mod tests {
         assert_eq!(rows[0].get("versionSum"), Some(&Value::U64(3)));
     }
 
-    #[test]
-    fn memory_repository_runs_grouped_aggregates_and_extended_filters() {
+    #[tokio::test]
+    async fn memory_repository_runs_grouped_aggregates_and_extended_filters() {
         let metadata = InMemoryMetadataStore::new().with_entity(entity());
         let repository = MemoryRepository::new(metadata).with_rows(
             "Order",
@@ -2349,8 +2353,8 @@ mod tests {
         assert_eq!(rows[0].get("versionSum"), Some(&Value::U64(3)));
     }
 
-    #[test]
-    fn memory_repository_runs_extended_aggregates_and_having() {
+    #[tokio::test]
+    async fn memory_repository_runs_extended_aggregates_and_having() {
         let metadata = InMemoryMetadataStore::new().with_entity(entity());
         let repository = MemoryRepository::new(metadata).with_rows(
             "Order",
@@ -2404,8 +2408,8 @@ mod tests {
         assert_eq!(rows[0].get("bitOrVersion"), Some(&Value::I64(3)));
     }
 
-    #[test]
-    fn memory_repository_runs_sound_like_filter() {
+    #[tokio::test]
+    async fn memory_repository_runs_sound_like_filter() {
         let metadata = InMemoryMetadataStore::new().with_entity(entity());
         let repository = MemoryRepository::new(metadata).with_rows(
             "Order",
@@ -2441,8 +2445,8 @@ mod tests {
         assert_eq!(rows[1].get("name"), Some(&Value::Text("Rupert".to_owned())));
     }
 
-    #[test]
-    fn memory_repository_runs_java_style_string_match_filters() {
+    #[tokio::test]
+    async fn memory_repository_runs_java_style_string_match_filters() {
         let metadata = InMemoryMetadataStore::new().with_entity(entity());
         let repository = MemoryRepository::new(metadata).with_rows(
             "Order",
@@ -2493,8 +2497,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn memory_repository_runs_property_to_property_filters() {
+    #[tokio::test]
+    async fn memory_repository_runs_property_to_property_filters() {
         let metadata = InMemoryMetadataStore::new().with_entity(entity());
         let repository = MemoryRepository::new(metadata).with_rows(
             "Order",
@@ -2524,8 +2528,8 @@ mod tests {
         assert_eq!(rows[0].get("name"), Some(&Value::Text("keep".to_owned())));
     }
 
-    #[test]
-    fn memory_repository_supports_mutations_and_optimistic_locking() {
+    #[tokio::test]
+    async fn memory_repository_supports_mutations_and_optimistic_locking() {
         let metadata = InMemoryMetadataStore::new().with_entity(entity());
         let repository = MemoryRepository::new(metadata);
 
@@ -2597,8 +2601,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn user_context_stores_and_exposes_user_identifier() {
+    #[tokio::test]
+    async fn user_context_stores_and_exposes_user_identifier() {
         let mut ctx = UserContext::new();
         let pid = std::process::id();
         let thread_id_str = format!("{:?}", std::thread::current().id());

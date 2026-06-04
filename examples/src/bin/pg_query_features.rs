@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .and_expr(Expr::not_in_large("name", vec![Value::from("Alice")])),
         )
         .order_expr_asc(Expr::soundex(Expr::column("name")));
-    let rows = repo.fetch_all(&feature_query)?;
+    let rows = repo.fetch_all(&feature_query).await?;
 
     let aggregate_query = SelectQuery::new("Order")
         .count("total")
@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             BinaryOp::Gt,
             Expr::value(1_i64),
         ));
-    let aggregate_rows = repo.fetch_all(&aggregate_query)?;
+    let aggregate_rows = repo.fetch_all(&aggregate_query).await?;
 
     let compiled = PostgresDialect.compile_select(&Order::entity_descriptor(), &feature_query)?;
     println!("pg feature SQL: {}", compiled.sql);

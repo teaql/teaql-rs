@@ -20,14 +20,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .value("id", 1_u64)
             .value("version", 1_i64)
             .value("name", "draft"),
-    )?;
+    ).await?;
     repo.update(
         &UpdateCommand::new("Order", 1_u64)
             .expected_version(1)
             .value("name", "submitted"),
-    )?;
-    repo.delete(&DeleteCommand::new("Order", 1_u64).expected_version(2))?;
-    repo.recover(&RecoverCommand::new("Order", 1_u64, -3))?;
+    ).await?;
+    repo.delete(&DeleteCommand::new("Order", 1_u64).expected_version(2)).await?;
+    repo.recover(&RecoverCommand::new("Order", 1_u64, -3)).await?;
 
     let orders = repo.fetch_entities::<Order>(
         &repo
@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .project("version")
             .project("name")
             .filter(Expr::eq("id", 1_u64)),
-    )?;
+    ).await?;
 
     println!("schema+crud example rows: {orders:?}");
     Ok(())

@@ -42,10 +42,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }),
             },
         ]),
-    })?;
+    }).await?;
 
     let orders =
-        repo.fetch_enhanced_entities::<Order>(&SelectQuery::new("Order").order_asc("id"))?;
+        repo.fetch_enhanced_entities::<Order>(&SelectQuery::new("Order").order_asc("id")).await?;
 
     println!("relation+graph example rows: {orders:?}");
     Ok(())

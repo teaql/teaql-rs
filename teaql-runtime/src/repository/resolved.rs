@@ -322,7 +322,6 @@ where
 
         let mut rows = self.fetch_prepared_all(&query).await?;
         self.enhance_relation_aggregates(&mut rows, relation_aggregates, query.aggregation_cache, &query.trace_chain).await?;
-        self.enhance_query_relations(&mut rows, &query).await?;
         self.enhance_relations(&mut rows).await?;
         rows.into_iter()
             .map(|record| {
@@ -348,10 +347,8 @@ where
             .map_err(RepositoryError::Runtime)?;
 
         let mut rows = self.fetch_prepared_all(&query).await?;
-        self.enhance_query_relations(&mut rows, &query).await?;
         self.enhance_relations(&mut rows).await?;
         let root = self.repository.metadata.context.get_resource::<crate::EntityRoot>().cloned();
-
         rows.into_iter()
             .map(|record| {
                 let mut entity = T::from_record(record)?;
@@ -366,24 +363,16 @@ where
     }
 
     pub async fn insert(&self, command: &InsertCommand) -> Result<u64, RepositoryError<E::Error>> {
-        let mut command = command.clone();
-        if let Some(behavior) = self.behavior() {
-            behavior
-                .before_insert(self.repository.metadata.context, &mut command)
-                .map_err(RepositoryError::Runtime)?;
-        }
-        self.enforce_insert_policy(&mut command).map_err(RepositoryError::Runtime)?;
+        let command = self
+            .prepare_insert_command(command)
+            .map_err(RepositoryError::Runtime)?;
         self.execute_prepared_insert_with_comment(command, self.trace_context.clone()).await
     }
 
     pub async fn update(&self, command: &UpdateCommand) -> Result<u64, RepositoryError<E::Error>> {
-        let mut command = command.clone();
-        if let Some(behavior) = self.behavior() {
-            behavior
-                .before_update(self.repository.metadata.context, &mut command)
-                .map_err(RepositoryError::Runtime)?;
-        }
-        self.enforce_update_policy(&mut command).map_err(RepositoryError::Runtime)?;
+        let command = self
+            .prepare_update_command(command)
+            .map_err(RepositoryError::Runtime)?;
         self.execute_prepared_update_with_comment(command, self.trace_context.clone()).await
     }
 
