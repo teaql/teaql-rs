@@ -218,7 +218,7 @@ impl RepositoryBehaviorRegistry for InMemoryRepositoryBehaviorRegistry {
 
 #[derive(Default, Clone)]
 pub struct RuntimeModule {
-    metadata: InMemoryMetadataStore,
+    pub metadata: InMemoryMetadataStore,
     repositories: InMemoryRepositoryRegistry,
     behaviors: InMemoryRepositoryBehaviorRegistry,
     checkers: InMemoryCheckerRegistry,

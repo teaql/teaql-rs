@@ -58,6 +58,24 @@ impl SqlDialect for RusqliteDialect {
             DataType::Timestamp => Ok("TIMESTAMP"),
         }
     }
+
+    fn compile_add_column(
+        &self,
+        entity: &EntityDescriptor,
+        property: &PropertyDescriptor,
+    ) -> Result<String, SqlCompileError> {
+        // SQLite does not support adding NOT NULL columns without a DEFAULT.
+        // Since TeaQL enforces nullability at the application layer, we can safely
+        // strip the NOT NULL constraint when adding columns to existing tables.
+        let def = self.column_definition_sql(property)?;
+        let def_without_not_null = def.replace(" NOT NULL", "");
+        
+        Ok(format!(
+            "ALTER TABLE {} ADD COLUMN {}",
+            self.quote_ident(&entity.table_name),
+            def_without_not_null
+        ))
+    }
 }
 
 #[derive(Debug)]
