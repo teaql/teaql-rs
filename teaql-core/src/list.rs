@@ -343,6 +343,30 @@ impl<T> IndexMut<usize> for SmartList<T> {
     }
 }
 
+impl<T> std::ops::Deref for SmartList<T> {
+    type Target = [T];
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl<T> std::ops::DerefMut for SmartList<T> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.data
+    }
+}
+
+impl<T> From<SmartList<T>> for Vec<T> {
+    #[inline(always)]
+    fn from(list: SmartList<T>) -> Self {
+        list.data
+    }
+}
+
+
 fn id_key(value: &Value) -> String {
     match value {
         Value::Null => "null".to_owned(),
