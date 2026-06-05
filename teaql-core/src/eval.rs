@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The load state metadata hidden inside an entity.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LoadState {
     NotLoaded,
     Partial(std::collections::HashSet<String>),
@@ -146,10 +146,10 @@ mod tests {
             .and_then("platform", |p| p.eval_company().and_then("company", |c| c.eval_name()));
 
         // We expect it to fail exactly at "name" and bubble up the path!
-        match result {
+        match &result {
             EvalResult::NotLoaded { missing_path } => {
                 assert_eq!(missing_path, "platform.company.name");
-                println!("Success! Intercepted missing path: {}", missing_path);
+                println!("\n\n>>> 【系统捕获到未加载异常】 <<<\n{:#?}\n\n", result);
             }
             _ => panic!("Expected NotLoaded but got {:?}", result),
         }
