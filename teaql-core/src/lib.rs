@@ -890,3 +890,4 @@ mod tests {
         assert_eq!(restored.dynamic_f64("amount"), Some(18.5));
     }
 }
+pub mod eval;
