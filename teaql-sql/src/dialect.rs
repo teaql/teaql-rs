@@ -155,6 +155,21 @@ pub trait SqlDialect {
         if let Some(filter) = &query.filter {
             where_parts.push(self.compile_expr(entity, filter, params)?);
         }
+        
+        if let Some(search_text) = &query.search_for_text {
+            let mut or_parts = Vec::new();
+            let like_value = format!("%{}%", search_text);
+            for property in &entity.properties {
+                if property.data_type == teaql_core::DataType::Text {
+                    params.push(teaql_core::Value::from(like_value.clone()));
+                    or_parts.push(format!("{} LIKE {}", self.quote_ident(&property.column_name), self.placeholder(params.len())));
+                }
+            }
+            if !or_parts.is_empty() {
+                where_parts.push(format!("({})", or_parts.join(" OR ")));
+            }
+        }
+        
         where_parts.extend(query.raw_sql_search_criteria.iter().cloned());
         if !where_parts.is_empty() {
             sql.push_str(" WHERE ");

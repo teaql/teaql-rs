@@ -239,6 +239,22 @@ mod tests {
     }
 
     #[test]
+    fn compiles_search_for_text() {
+        let query = TestDialect
+            .compile_select(
+                &entity(),
+                &SelectQuery::new("Order").search_for_text("AI"),
+            )
+            .unwrap();
+
+        assert_eq!(
+            query.sql,
+            format!("SELECT {ORDER_DEFAULT_PROJECTION} FROM \"orders\" WHERE (\"name\" LIKE $1)")
+        );
+        assert_eq!(query.params, vec![Value::from("%AI%")]);
+    }
+
+    #[test]
     fn dialect_schema_setup_defaults_to_empty() {
         assert!(TestDialect.schema_setup_sqls().is_empty());
     }
