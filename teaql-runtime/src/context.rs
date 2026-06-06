@@ -146,6 +146,7 @@ pub struct UserContext {
     sql_log_entries: Mutex<Vec<SqlLogEntry>>,
     user_identifier: Option<String>,
     timezone: Option<String>,
+    trace_id: String,
 }
 
 impl Default for UserContext {
@@ -179,7 +180,47 @@ impl Default for UserContext {
             sql_log_entries: Mutex::new(Vec::new()),
             user_identifier: Some(user_id),
             timezone: Some("UTC".to_owned()),
+            trace_id: format!("req-{pid}-{numeric_thread_id}-{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_micros()),
         }
+    }
+}
+
+#[async_trait::async_trait]
+pub trait DataStore: Send + Sync + 'static {
+    async fn get(&self, key: &str) -> Option<Value>;
+    async fn put(&self, key: &str, value: Value, timeout_seconds: Option<u64>);
+    async fn remove(&self, key: &str);
+}
+
+#[derive(Default)]
+pub struct InMemoryDataStore {
+    cache: std::sync::RwLock<HashMap<String, (Value, Option<std::time::Instant>)>>,
+}
+
+#[async_trait::async_trait]
+impl DataStore for InMemoryDataStore {
+    async fn get(&self, key: &str) -> Option<Value> {
+        let lock = self.cache.read().unwrap();
+        if let Some((val, expires_at)) = lock.get(key) {
+            if let Some(exp) = expires_at {
+                if std::time::Instant::now() > *exp {
+                    return None;
+                }
+            }
+            return Some(val.clone());
+        }
+        None
+    }
+
+    async fn put(&self, key: &str, value: Value, timeout_seconds: Option<u64>) {
+        let mut lock = self.cache.write().unwrap();
+        let expires_at = timeout_seconds.map(|secs| std::time::Instant::now() + std::time::Duration::from_secs(secs));
+        lock.insert(key.to_string(), (value, expires_at));
+    }
+
+    async fn remove(&self, key: &str) {
+        let mut lock = self.cache.write().unwrap();
+        lock.remove(key);
     }
 }
 
@@ -220,6 +261,19 @@ impl UserContext {
 
     pub fn with_timezone(mut self, timezone: impl Into<String>) -> Self {
         self.timezone = Some(timezone.into());
+        self
+    }
+
+    pub fn trace_id(&self) -> &str {
+        &self.trace_id
+    }
+
+    pub fn set_trace_id(&mut self, trace_id: impl Into<String>) {
+        self.trace_id = trace_id.into();
+    }
+
+    pub fn with_trace_id(mut self, trace_id: impl Into<String>) -> Self {
+        self.trace_id = trace_id.into();
         self
     }
 
@@ -705,6 +759,26 @@ impl UserContext {
 
         self.entity_root.clear_current_change_set();
         Ok(())
+    }
+
+    pub async fn get_in_store(&self, key: &str) -> Option<Value> {
+        if let Some(store) = self.get_resource::<Box<dyn DataStore>>() {
+            store.get(key).await
+        } else {
+            None
+        }
+    }
+
+    pub async fn put_in_store(&self, key: &str, value: impl Into<Value>, timeout_seconds: Option<u64>) {
+        if let Some(store) = self.get_resource::<Box<dyn DataStore>>() {
+            store.put(key, value.into(), timeout_seconds).await;
+        }
+    }
+
+    pub async fn clear_in_store(&self, key: &str) {
+        if let Some(store) = self.get_resource::<Box<dyn DataStore>>() {
+            store.remove(key).await;
+        }
     }
 }
 

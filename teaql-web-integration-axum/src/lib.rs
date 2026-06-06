@@ -113,6 +113,41 @@ pub trait ContextProvider {
     fn build_context(&self) -> UserContext;
 }
 
+/// Web Request Information injected by Axum Extractor
+#[derive(Debug, Clone)]
+pub struct WebRequestInfo {
+    pub client_ip: Option<String>,
+    pub user_agent: Option<String>,
+    pub request_uri: String,
+    pub method: String,
+}
+
+/// Extension trait for UserContext to access HTTP/Web details
+pub trait WebContextExt {
+    fn web_info(&self) -> Option<&WebRequestInfo>;
+    fn client_ip(&self) -> Option<&str>;
+    fn request_uri(&self) -> Option<&str>;
+    fn method(&self) -> Option<&str>;
+}
+
+impl WebContextExt for UserContext {
+    fn web_info(&self) -> Option<&WebRequestInfo> {
+        self.get_resource::<WebRequestInfo>()
+    }
+
+    fn client_ip(&self) -> Option<&str> {
+        self.web_info().and_then(|info| info.client_ip.as_deref())
+    }
+
+    fn request_uri(&self) -> Option<&str> {
+        self.web_info().map(|info| info.request_uri.as_str())
+    }
+
+    fn method(&self) -> Option<&str> {
+        self.web_info().map(|info| info.method.as_str())
+    }
+}
+
 /// To bypass the Rust Orphan Rule, we wrap UserContext in our own TeaContext
 pub struct TeaContext(pub UserContext);
 
@@ -135,9 +170,31 @@ where
 
         if let Some(trace_id) = parts.headers.get("X-Trace-Id") {
             if let Ok(trace_str) = trace_id.to_str() {
-                ctx.put_local("trace_id", trace_str);
+                ctx.set_trace_id(trace_str);
             }
         }
+
+        // Build WebRequestInfo
+        let client_ip = parts
+            .headers
+            .get("X-Forwarded-For")
+            .and_then(|h| h.to_str().ok())
+            .map(|s| s.split(',').next().unwrap_or("").trim().to_string());
+        
+        let user_agent = parts
+            .headers
+            .get("User-Agent")
+            .and_then(|h| h.to_str().ok())
+            .map(|s| s.to_string());
+
+        let web_info = WebRequestInfo {
+            client_ip,
+            user_agent,
+            request_uri: parts.uri.to_string(),
+            method: parts.method.as_str().to_string(),
+        };
+
+        ctx.insert_resource(web_info);
 
         Ok(TeaContext(ctx))
     }
