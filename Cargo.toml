@@ -8,7 +8,7 @@ members = [
     "teaql-provider-sqlx-mysql",
     "teaql-provider-rusqlite",
     "teaql-macros",
-    "examples", "teaql-data-service",
+    "examples", "teaql-data-service", "teaql-web-integration-axum",
 ]
 resolver = "2"
 
