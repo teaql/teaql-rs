@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The load state metadata hidden inside an entity.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LoadState {
     NotLoaded,
     Partial(std::collections::HashSet<String>),
