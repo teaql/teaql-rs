@@ -2297,6 +2297,7 @@ mod tests {
             dynamic_properties: Vec::new(),
             raw_projections: Vec::new(),
             object_group_bys: Vec::new(),
+            search_with_text: None,
             child_enhancements: Vec::new(),
         };
 

@@ -64,6 +64,11 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         }
     };
 
+    let has_load_state_field = named_fields
+        .iter()
+        .any(|field| field.ident.as_ref().map(|ident| ident == "__load_state").unwrap_or(false));
+
+
     let mut property_tokens = Vec::new();
     let mut relation_tokens = Vec::new();
     let mut from_record_fields = Vec::new();
@@ -276,6 +281,14 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         quote! {}
     };
 
+    let set_load_state_impl = if has_load_state_field {
+        quote! {
+            entity.__load_state = ::teaql_core::eval::LoadState::Partial(record.keys().cloned().collect());
+        }
+    } else {
+        quote! {}
+    };
+
     quote! {
         impl ::teaql_core::TeaqlEntity for #struct_name {
             fn entity_descriptor() -> ::teaql_core::EntityDescriptor {
@@ -297,8 +310,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 let mut entity = Self {
                     #(#from_record_fields),*
                 };
-                println!("MACRO from_record called with keys: {:?}", record.keys());
-                entity.__load_state = ::teaql_core::eval::LoadState::Partial(record.keys().cloned().collect());
+                #set_load_state_impl
                 #set_original_record_impl
                 Ok(entity)
             }

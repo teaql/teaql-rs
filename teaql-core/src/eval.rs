@@ -59,15 +59,7 @@ impl<T> EvalResult<T> {
             },
             EvalResult::Null => EvalResult::Null,
             EvalResult::NotLoaded { failed_node, attempted_path } => {
-                let new_path = if attempted_path.is_empty() {
-                    field_name.to_string()
-                } else {
-                    format!("{}.{}", attempted_path, field_name)
-                };
-                EvalResult::NotLoaded { 
-                    failed_node, 
-                    attempted_path: new_path 
-                }
+                EvalResult::NotLoaded { failed_node, attempted_path }
             },
         }
     }
@@ -170,8 +162,8 @@ mod tests {
 
         // We expect it to fail exactly at "name" and bubble up the path!
         match &result {
-            EvalResult::NotLoaded { missing_path } => {
-                assert_eq!(missing_path, "platform.company.name");
+            EvalResult::NotLoaded { attempted_path, .. } => {
+                assert_eq!(attempted_path, "platform.company.name");
                 println!("\n\n>>> 【系统捕获到未加载异常】 <<<\n{:#?}\n\n", result);
             }
             _ => panic!("Expected NotLoaded but got {:?}", result),
@@ -195,9 +187,9 @@ mod tests {
             .and_then("platform", |p| p.eval_company().and_then("company", |c| c.eval_name()));
 
         match result {
-            EvalResult::NotLoaded { missing_path } => {
-                assert_eq!(missing_path, "platform.company");
-                println!("Success! Intercepted middle missing path: {}", missing_path);
+            EvalResult::NotLoaded { attempted_path, .. } => {
+                assert_eq!(attempted_path, "platform.company");
+                println!("Success! Intercepted middle missing path: {}", attempted_path);
             }
             _ => panic!("Expected NotLoaded"),
         }
