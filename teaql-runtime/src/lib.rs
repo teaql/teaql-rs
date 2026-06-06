@@ -13,7 +13,7 @@ mod registry;
 mod repository;
 
 pub use context::{
-    InfoLogEntry, LogPayload, SchemaProvider, SqlLogEntry, SqlLogOperation,
+    DataStore, InfoLogEntry, InMemoryDataStore, LogPayload, SchemaProvider, SqlLogEntry, SqlLogOperation,
     SqlLogOptions, UnifiedLogBuffer, UnifiedLogEntry, UserContext,
 };
 pub use entity_status::{EntityAction, EntityStatus};
