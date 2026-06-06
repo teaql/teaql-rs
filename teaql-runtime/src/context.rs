@@ -10,7 +10,7 @@ use teaql_core::{EntityDescriptor, Record, UpdateCommand, Value};
 use teaql_sql::{CompiledQuery, DatabaseKind};
 
 use crate::{
-    CheckResults, CheckerRegistry, ContextError, EntityEvent, EntityEventSink, GraphNode,
+    CheckResults, CheckerRegistry, ContextError, RawAuditEvent, RawAuditEventSink, GraphNode,
     InternalIdGenerator, Language, MetadataStore, ObjectLocation, RepositoryBehavior,
     RepositoryBehaviorRegistry, RepositoryRegistry, RequestPolicy, RuntimeError,
     local_id_generator, translate_check_result,
@@ -133,7 +133,8 @@ pub struct UserContext {
     pub(crate) repository_behavior_registry: Option<Box<dyn RepositoryBehaviorRegistry>>,
     pub(crate) request_policy: Option<Box<dyn RequestPolicy>>,
     pub(crate) checker_registry: Option<Box<dyn CheckerRegistry>>,
-    pub(crate) event_sink: Option<Box<dyn EntityEventSink>>,
+    pub(crate) event_sink: Option<Box<dyn RawAuditEventSink>>,
+    pub(crate) custom_event_sink: Option<Box<dyn crate::SafeAuditEventSink>>,
     pub(crate) internal_id_generator: Option<Box<dyn InternalIdGenerator>>,
     schema_provider: Option<Box<dyn SchemaProvider>>,
     language: Language,
@@ -168,6 +169,7 @@ impl Default for UserContext {
             request_policy: None,
             checker_registry: None,
             event_sink: None,
+            custom_event_sink: None,
             internal_id_generator: None,
             schema_provider: None,
             language: Language::default(),
@@ -349,13 +351,22 @@ impl UserContext {
         self.checker_registry = Some(Box::new(registry));
     }
 
-    pub fn with_event_sink(mut self, sink: impl EntityEventSink + 'static) -> Self {
+    pub(crate) fn with_event_sink(mut self, sink: impl RawAuditEventSink + 'static) -> Self {
         self.event_sink = Some(Box::new(sink));
         self
     }
 
-    pub fn set_event_sink(&mut self, sink: impl EntityEventSink + 'static) {
+    pub(crate) fn set_event_sink(&mut self, sink: impl RawAuditEventSink + 'static) {
         self.event_sink = Some(Box::new(sink));
+    }
+
+    pub fn with_custom_event_sink(mut self, sink: impl crate::SafeAuditEventSink + 'static) -> Self {
+        self.custom_event_sink = Some(Box::new(sink));
+        self
+    }
+
+    pub fn set_custom_event_sink(&mut self, sink: impl crate::SafeAuditEventSink + 'static) {
+        self.custom_event_sink = Some(Box::new(sink));
     }
 
     pub fn with_internal_id_generator(
@@ -722,11 +733,25 @@ impl UserContext {
         }
     }
 
-    pub fn send_event(&self, event: EntityEvent) -> Result<(), RuntimeError> {
-        let Some(sink) = self.event_sink.as_ref() else {
-            return Ok(());
-        };
-        sink.on_event(self, &event)
+    pub fn send_event(&self, event: RawAuditEvent) -> Result<(), RuntimeError> {
+        if let Some(sink) = self.event_sink.as_ref() {
+            sink.on_event(self, &event)?;
+        }
+        if let Some(sink) = self.custom_event_sink.as_ref() {
+            let (mask_fields, max_len) = if let Some(metadata) = &self.metadata {
+                if let Some(desc) = metadata.entity(&event.entity) {
+                    (desc.audit_mask_fields.clone(), desc.audit_value_max_len)
+                } else {
+                    (vec![], None)
+                }
+            } else {
+                (vec![], None)
+            };
+            
+            let safe_event = event.build_safe_event(&mask_fields, max_len);
+            sink.on_safe_event(self, &safe_event)?;
+        }
+        Ok(())
     }
 
     pub async fn commit_changes<E>(&self) -> Result<(), RepositoryError<E::Error>>

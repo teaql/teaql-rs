@@ -7,7 +7,7 @@ use teaql_core::{
 };
 
 use crate::{
-    Checker, EntityEventSink, GraphNode, InMemoryCheckerRegistry, InMemoryEntityEventSink,
+    Checker, RawAuditEventSink, GraphNode, InMemoryCheckerRegistry, InMemoryRawAuditEventSink,
     Language, RuntimeError, UserContext,
 };
 
@@ -222,7 +222,7 @@ pub struct RuntimeModule {
     repositories: InMemoryRepositoryRegistry,
     behaviors: InMemoryRepositoryBehaviorRegistry,
     checkers: InMemoryCheckerRegistry,
-    event_sinks: InMemoryEntityEventSink,
+    event_sinks: InMemoryRawAuditEventSink,
     language: Option<Language>,
     initial_graphs: Vec<GraphNode>,
 }
@@ -272,7 +272,7 @@ impl RuntimeModule {
         self
     }
 
-    pub fn event_sink(mut self, sink: impl EntityEventSink + 'static) -> Self {
+    pub fn event_sink(mut self, sink: impl RawAuditEventSink + 'static) -> Self {
         self.event_sinks.register(sink);
         self
     }

@@ -279,7 +279,7 @@ pub struct SelectQuery {
     pub entity: String,
     pub projection: Vec<String>,
     pub expr_projection: Vec<NamedExpr>,
-    pub search_for_text: Option<String>,
+    pub search_with_text: Option<String>,
     pub filter: Option<Expr>,
     pub having: Option<Expr>,
     pub order_by: Vec<OrderBy>,
@@ -304,7 +304,7 @@ impl SelectQuery {
             entity: entity.into(),
             projection: Vec::new(),
             expr_projection: Vec::new(),
-            search_for_text: None,
+            search_with_text: None,
             filter: None,
             having: None,
             order_by: Vec::new(),
@@ -359,8 +359,8 @@ impl SelectQuery {
         self
     }
 
-    pub fn search_for_text(mut self, text: impl Into<String>) -> Self {
-        self.search_for_text = Some(text.into());
+    pub fn search_with_text(mut self, text: impl Into<String>) -> Self {
+        self.search_with_text = Some(text.into());
         self
     }
 

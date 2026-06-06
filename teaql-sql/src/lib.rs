@@ -239,11 +239,11 @@ mod tests {
     }
 
     #[test]
-    fn compiles_search_for_text() {
+    fn compiles_search_with_text() {
         let query = TestDialect
             .compile_select(
                 &entity(),
-                &SelectQuery::new("Order").search_for_text("AI"),
+                &SelectQuery::new("Order").search_with_text("AI"),
             )
             .unwrap();
 

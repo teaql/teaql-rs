@@ -156,7 +156,7 @@ pub trait SqlDialect {
             where_parts.push(self.compile_expr(entity, filter, params)?);
         }
         
-        if let Some(search_text) = &query.search_for_text {
+        if let Some(search_text) = &query.search_with_text {
             let mut or_parts = Vec::new();
             let like_value = format!("%{}%", search_text);
             for property in &entity.properties {

@@ -1,9 +1,22 @@
 use quote::quote;
 use syn::{Expr, Lit};
 
-pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> (String, String) {
-    let mut entity_name = default_name.to_owned();
-    let mut table_name = default_table_name(default_name);
+pub struct ContainerAttrs {
+    pub entity_name: String,
+    pub table_name: String,
+    pub data_service: Option<String>,
+    pub audit_mask_fields: Vec<String>,
+    pub audit_value_max_len: Option<usize>,
+}
+
+pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> ContainerAttrs {
+    let mut attrs_out = ContainerAttrs {
+        entity_name: default_name.to_owned(),
+        table_name: default_table_name(default_name),
+        data_service: None,
+        audit_mask_fields: Vec::new(),
+        audit_value_max_len: None,
+    };
 
     for attr in attrs {
         if !attr.path().is_ident("teaql") {
@@ -12,16 +25,37 @@ pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> (S
         let _ = attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("entity") {
                 let value = meta.value()?;
-                entity_name = parse_string_expr(&value.parse::<Expr>()?);
+                attrs_out.entity_name = parse_string_expr(&value.parse::<Expr>()?);
             } else if meta.path.is_ident("table") {
                 let value = meta.value()?;
-                table_name = parse_string_expr(&value.parse::<Expr>()?);
+                attrs_out.table_name = parse_string_expr(&value.parse::<Expr>()?);
+            } else if meta.path.is_ident("data_service") {
+                let value = meta.value()?;
+                attrs_out.data_service = Some(parse_string_expr(&value.parse::<Expr>()?));
+            } else if meta.path.is_ident("audit_mask_fields") {
+                let value = meta.value()?;
+                let fields_str = parse_string_expr(&value.parse::<Expr>()?);
+                attrs_out.audit_mask_fields = fields_str.split(',').map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect();
+            } else if meta.path.is_ident("audit_value_max_len") {
+                let value = meta.value()?;
+                let expr = value.parse::<Expr>()?;
+                if let Expr::Lit(syn::ExprLit { lit: Lit::Int(lit_int), .. }) = &expr {
+                    attrs_out.audit_value_max_len = lit_int.base10_parse().ok();
+                } else if let Expr::Lit(syn::ExprLit { lit: Lit::Str(lit_str), .. }) = &expr {
+                    attrs_out.audit_value_max_len = lit_str.value().parse().ok();
+                }
+            } else if meta.path.is_ident("audit_value_max_len_int") {
+                // In case it's passed as an integer literal instead of string
+                let value = meta.value()?;
+                if let Expr::Lit(syn::ExprLit { lit: Lit::Int(lit_int), .. }) = value.parse::<Expr>()? {
+                    attrs_out.audit_value_max_len = lit_int.base10_parse().ok();
+                }
             }
             Ok(())
         });
     }
 
-    (entity_name, table_name)
+    attrs_out
 }
 
 fn default_table_name(entity_name: &str) -> String {

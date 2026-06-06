@@ -6,7 +6,7 @@ use teaql_core::{
 };
 
 use crate::{
-    CheckObjectStatus, EntityEvent, RepositoryBehavior, RepositoryError, RuntimeError,
+    CheckObjectStatus, RawAuditEvent, RepositoryBehavior, RepositoryError, RuntimeError,
     clear_record_status, mark_record_status,
 };
 
@@ -398,7 +398,7 @@ where
         let old_values = self.fetch_current_event_row(&command.entity, &command.id, trace_chain.clone())?;
         let affected = self.repository.delete(&command).await?;
 
-        let mut event = EntityEvent::deleted_with_old_values(
+        let mut event = RawAuditEvent::deleted_with_old_values(
             command.entity,
             command.id,
             command.expected_version,
@@ -422,7 +422,7 @@ where
             .map_err(RepositoryError::Runtime)?;
         let old_values = self.fetch_current_event_row(&command.entity, &command.id, command.trace_chain.clone())?;
         let affected = self.repository.recover(&command).await?;
-        let event = EntityEvent::recovered_with_old_values(
+        let event = RawAuditEvent::recovered_with_old_values(
             command.entity,
             command.id,
             command.expected_version,
@@ -433,7 +433,7 @@ where
         Ok(affected)
     }
 
-    fn emit_event(&self, event: EntityEvent) -> Result<(), RuntimeError> {
+    fn emit_event(&self, event: RawAuditEvent) -> Result<(), RuntimeError> {
         self.repository.metadata.context.send_event(event)
     }
 
@@ -452,7 +452,7 @@ where
     ) -> Result<u64, RepositoryError<E::Error>> {
         command.trace_chain = trace_chain.clone();
         let affected = self.repository.insert(&command).await?;
-        let mut event = EntityEvent::created(command.entity, command.values);
+        let mut event = RawAuditEvent::created(command.entity, command.values);
         event.trace_chain = trace_chain;
         self.emit_event(event).map_err(RepositoryError::Runtime)?;
         Ok(affected)
@@ -469,7 +469,7 @@ where
         
         let entity = command.entity.clone();
         for (i, values) in command.batch_values.into_iter().enumerate() {
-            let mut event = EntityEvent::created(entity.clone(), values);
+            let mut event = RawAuditEvent::created(entity.clone(), values);
             if i < command.trace_chains.len() {
                 event.trace_chain = command.trace_chains[i].clone();
             }
@@ -513,7 +513,7 @@ where
         for (field, value) in &values {
             new_values.insert(field.clone(), value.clone());
         }
-        let mut event = EntityEvent::updated_with_old_values(
+        let mut event = RawAuditEvent::updated_with_old_values(
             command.entity,
             values,
             old_values,
@@ -548,7 +548,7 @@ where
                 new_values.insert(field.clone(), value.clone());
             }
             
-            let mut event = EntityEvent::updated_with_old_values(
+            let mut event = RawAuditEvent::updated_with_old_values(
                 entity.clone(),
                 full_values,
                 old_values,
