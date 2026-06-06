@@ -297,6 +297,8 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 let mut entity = Self {
                     #(#from_record_fields),*
                 };
+                println!("MACRO from_record called with keys: {:?}", record.keys());
+                entity.__load_state = ::teaql_core::eval::LoadState::Partial(record.keys().cloned().collect());
                 #set_original_record_impl
                 Ok(entity)
             }
