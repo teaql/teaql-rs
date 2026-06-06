@@ -6,6 +6,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use teaql_core::SmartList;
 use teaql_runtime::UserContext;
 
 /// A unified WebResponse struct that perfectly aligns with the Java legacy API.
@@ -65,6 +66,16 @@ impl<T> WebResponse<T> {
         self
     }
 
+    pub fn with_facets(mut self, facets: HashMap<String, serde_json::Value>) -> Self {
+        self.facets = Some(facets);
+        self
+    }
+
+    pub fn with_record_count(mut self, count: usize) -> Self {
+        self.record_count = count;
+        self
+    }
+
     pub fn of_single(entity: T) -> Self {
         Self {
             data: vec![entity],
@@ -80,6 +91,25 @@ impl<T> WebResponse<T> {
             record_count: count,
             ..Self::success()
         }
+    }
+
+    pub fn from_smart_list(mut smart_list: SmartList<T>) -> Self {
+        let count = smart_list.total_count_or_len() as usize;
+        let mut facets = HashMap::new();
+        for (key, facet_list) in smart_list.take_facets() {
+            let data: Vec<_> = facet_list
+                .data
+                .iter()
+                .map(|record| teaql_core::record_to_json_value(record))
+                .collect();
+            facets.insert(key, serde_json::Value::Array(data));
+        }
+        
+        let mut response = Self::of_list(smart_list.data).with_record_count(count);
+        if !facets.is_empty() {
+            response = response.with_facets(facets);
+        }
+        response
     }
 }
 
