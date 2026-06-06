@@ -11,6 +11,9 @@ CRATES=(
   "teaql-provider-sqlx-postgres"
   "teaql-provider-sqlx-sqlite"
   "teaql-provider-sqlx-mysql"
+  "teaql-provider-meilisearch"
+  "teaql-cache-integration-redis"
+  "teaql-web-integration-axum"
 )
 
 for crate in "${CRATES[@]}"; do
