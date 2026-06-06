@@ -108,8 +108,11 @@ impl RelationDescriptor {
 pub struct EntityDescriptor {
     pub name: String,
     pub table_name: String,
+    pub data_service: Option<String>,
     pub properties: Vec<PropertyDescriptor>,
     pub relations: Vec<RelationDescriptor>,
+    pub audit_mask_fields: Vec<String>,
+    pub audit_value_max_len: Option<usize>,
 }
 
 impl EntityDescriptor {
@@ -118,13 +121,21 @@ impl EntityDescriptor {
         Self {
             table_name: default_table_name(&name),
             name,
+            data_service: None,
             properties: Vec::new(),
             relations: Vec::new(),
+            audit_mask_fields: Vec::new(),
+            audit_value_max_len: None,
         }
     }
 
     pub fn table_name(mut self, table_name: impl Into<String>) -> Self {
         self.table_name = table_name.into();
+        self
+    }
+
+    pub fn data_service(mut self, data_service: impl Into<String>) -> Self {
+        self.data_service = Some(data_service.into());
         self
     }
 
@@ -135,6 +146,16 @@ impl EntityDescriptor {
 
     pub fn relation(mut self, relation: RelationDescriptor) -> Self {
         self.relations.push(relation);
+        self
+    }
+
+    pub fn audit_mask_fields(mut self, fields: Vec<String>) -> Self {
+        self.audit_mask_fields = fields;
+        self
+    }
+
+    pub fn audit_value_max_len(mut self, max_len: Option<usize>) -> Self {
+        self.audit_value_max_len = max_len;
         self
     }
 

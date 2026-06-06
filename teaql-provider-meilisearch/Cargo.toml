@@ -1,22 +1,17 @@
 [package]
-name = "teaql-runtime"
+name = "teaql-provider-meilisearch"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 description.workspace = true
 repository.workspace = true
-readme = "README.md"
 
 [dependencies]
-chrono = { workspace = true }
-serde_json = { workspace = true }
-rust_decimal = { workspace = true }
 teaql-core = { workspace = true }
-teaql-sql = { workspace = true }
 teaql-data-service = { workspace = true }
 async-trait = { workspace = true }
-
-[dev-dependencies]
-teaql-macros = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 tokio = { workspace = true }
+reqwest = { version = "0.12", features = ["json"] }

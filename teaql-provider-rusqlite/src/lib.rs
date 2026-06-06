@@ -13,7 +13,7 @@ use teaql_core::{
     UpdateCommand, Value,
 };
 use teaql_runtime::{
-    EntityEvent, GraphNode, InternalIdGenerator,
+    RawAuditEvent, GraphNode, InternalIdGenerator,
     RuntimeError, SchemaProvider, UserContext,
 };
 use teaql_sql::{
@@ -362,7 +362,7 @@ pub fn ensure_rusqlite_schema_for(ctx: &UserContext) -> Result<(), MutationExecu
             // New table: create it
             let sql = dialect.compile_create_table(entity)?;
             executor.lock()?.execute(&sql, [])?;
-            let _ = ctx.send_event(EntityEvent::schema_created(
+            let _ = ctx.send_event(RawAuditEvent::schema_created(
                 &entity.name,
                 &entity.table_name,
                 field_count,
@@ -378,14 +378,14 @@ pub fn ensure_rusqlite_schema_for(ctx: &UserContext) -> Result<(), MutationExecu
                 }
                 let sql = dialect.compile_add_column(entity, property)?;
                 executor.lock()?.execute(&sql, [])?;
-                let _ = ctx.send_event(EntityEvent::field_added(
+                let _ = ctx.send_event(RawAuditEvent::field_added(
                     &entity.name,
                     &entity.table_name,
                     &property.column_name,
                 ));
                 fields_added += 1;
             }
-            let _ = ctx.send_event(EntityEvent::schema_verified(
+            let _ = ctx.send_event(RawAuditEvent::schema_verified(
                 &entity.name,
                 &entity.table_name,
                 field_count,
@@ -418,7 +418,7 @@ pub fn ensure_rusqlite_schema_for(ctx: &UserContext) -> Result<(), MutationExecu
         let entity = ctx.entity(entity_name).ok_or_else(|| {
             MutationExecutorError::Bind(format!("missing entity: {}", entity_name))
         })?;
-        let _ = ctx.send_event(EntityEvent::data_seeded(
+        let _ = ctx.send_event(RawAuditEvent::data_seeded(
             entity_name,
             &entity.table_name,
             *inserted,

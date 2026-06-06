@@ -10,7 +10,37 @@ use crate::types::{is_option, rust_type_to_data_type};
 
 pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     let struct_name = input.ident.clone();
-    let (entity_name, table_name) = parse_container_attrs(&input.attrs, &struct_name.to_string());
+    let attrs = parse_container_attrs(&input.attrs, &struct_name.to_string());
+    let entity_name = attrs.entity_name;
+    let table_name = attrs.table_name;
+    let data_service = attrs.data_service;
+    
+    let data_service_token = if let Some(ds) = data_service {
+        quote! {
+            descriptor = descriptor.data_service(#ds);
+        }
+    } else {
+        quote! {}
+    };
+
+    let audit_mask_fields = attrs.audit_mask_fields;
+    let audit_mask_fields_token = if !audit_mask_fields.is_empty() {
+        let fields = audit_mask_fields.iter().map(|f| quote! { #f.to_owned() });
+        quote! {
+            descriptor = descriptor.audit_mask_fields(vec![#(#fields),*]);
+        }
+    } else {
+        quote! {}
+    };
+
+    let audit_value_max_len = attrs.audit_value_max_len;
+    let audit_value_max_len_token = if let Some(len) = audit_value_max_len {
+        quote! {
+            descriptor = descriptor.audit_value_max_len(Some(#len));
+        }
+    } else {
+        quote! {}
+    };
 
     let fields = match input.data {
         Data::Struct(data) => data.fields,
@@ -251,6 +281,11 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             fn entity_descriptor() -> ::teaql_core::EntityDescriptor {
                 let mut descriptor = ::teaql_core::EntityDescriptor::new(#entity_name)
                     .table_name(#table_name);
+                
+                #data_service_token
+                #audit_mask_fields_token
+                #audit_value_max_len_token
+
                 #(#property_tokens)*
                 #(#relation_tokens)*
                 descriptor

@@ -1,20 +1,16 @@
 [package]
-name = "teaql-core"
+name = "teaql-web-integration-axum"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 description.workspace = true
 repository.workspace = true
-readme = "README.md"
 
 [dependencies]
-chrono = { workspace = true }
+teaql-runtime = { workspace = true }
+teaql-core = { workspace = true }
+axum = { version = "0.7", features = ["macros"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-rust_decimal = { workspace = true }
-
-[dev-dependencies]
-# teaql-macros = { workspace = true }
-
-
+tokio = { workspace = true }

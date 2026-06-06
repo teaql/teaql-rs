@@ -13,14 +13,15 @@ mod registry;
 mod repository;
 
 pub use context::{
-    InfoLogEntry, LogPayload, SchemaProvider, SqlLogEntry, SqlLogOperation,
+    DataStore, InfoLogEntry, InMemoryDataStore, LogPayload, SchemaProvider, SqlLogEntry, SqlLogOperation,
     SqlLogOptions, UnifiedLogBuffer, UnifiedLogEntry, UserContext,
 };
 pub use entity_status::{EntityAction, EntityStatus};
 pub use entity_runtime::{ChangeSetStack, EntityChangeSet, EntityKey, EntityRoot, RootContext};
 pub use error::{ContextError, RepositoryError, RuntimeError};
 pub use event::{
-    EntityEvent, EntityEventKind, EntityEventSink, EntityPropertyChange, InMemoryEntityEventSink,
+    RawAuditEvent, RawAuditEventKind, RawAuditEventSink, EntityPropertyChange, InMemoryRawAuditEventSink,
+    SafeAuditEvent, SafeAuditField, SafeAuditEventSink,
 };
 pub use graph::{
     GraphMutationBatch, GraphMutationKind, GraphMutationPlan, GraphMutationPlanItem,
@@ -49,7 +50,7 @@ mod tests {
 
     use super::{
         AggregationCacheBackend, CHECK_OBJECT_STATUS_FIELD, CheckObjectStatus, CheckResult,
-        CheckResults, CheckRule, Checker, EntityEvent, EntityEventKind, EntityEventSink,
+        CheckResults, CheckRule, Checker, RawAuditEvent, RawAuditEventKind, RawAuditEventSink,
         GraphMutationKind, GraphNode, InMemoryAggregationCache,
         InMemoryCheckerRegistry, InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry,
         InMemoryRepositoryRegistry, InternalIdGenerator, Language, MemoryRepository, MetadataStore,
@@ -526,7 +527,7 @@ mod tests {
     struct TypedOrderChecker;
     #[derive(Clone)]
     struct RecordingEventSink {
-        events: Arc<Mutex<Vec<EntityEvent>>>,
+        events: Arc<Mutex<Vec<RawAuditEvent>>>,
     }
 
     impl RepositoryBehavior for ContextAwareOrderBehavior {
@@ -658,8 +659,8 @@ mod tests {
         }
     }
 
-    impl EntityEventSink for RecordingEventSink {
-        fn on_event(&self, _ctx: &UserContext, event: &EntityEvent) -> Result<(), RuntimeError> {
+    impl RawAuditEventSink for RecordingEventSink {
+        fn on_event(&self, _ctx: &UserContext, event: &RawAuditEvent) -> Result<(), RuntimeError> {
             self.events.lock().unwrap().push(event.clone());
             Ok(())
         }
@@ -1401,10 +1402,10 @@ mod tests {
 
         let events = events.lock().unwrap();
         assert_eq!(events.len(), 4);
-        assert_eq!(events[0].kind, EntityEventKind::Created);
+        assert_eq!(events[0].kind, RawAuditEventKind::Created);
         assert_eq!(events[0].entity, "Order");
         assert_eq!(events[0].values.get("id"), Some(&Value::U64(88)));
-        assert_eq!(events[1].kind, EntityEventKind::Updated);
+        assert_eq!(events[1].kind, RawAuditEventKind::Updated);
         assert_eq!(events[1].values.get("id"), Some(&Value::U64(88)));
         assert_eq!(events[1].values.get("version"), Some(&Value::I64(2)));
         assert_eq!(events[1].updated_fields, vec!["name".to_owned()]);
@@ -1432,10 +1433,10 @@ mod tests {
             events[1].changes[0].new_value,
             Some(Value::Text("updated".to_owned()))
         );
-        assert_eq!(events[2].kind, EntityEventKind::Deleted);
+        assert_eq!(events[2].kind, RawAuditEventKind::Deleted);
         assert!(events[2].old_values.is_none()); // No longer fetched
         assert!(events[2].new_values.is_none());
-        assert_eq!(events[3].kind, EntityEventKind::Recovered);
+        assert_eq!(events[3].kind, RawAuditEventKind::Recovered);
         assert_eq!(
             events[3]
                 .old_values
@@ -1496,9 +1497,9 @@ mod tests {
 
         let events = events.lock().unwrap();
         assert_eq!(events.len(), 2);
-        assert_eq!(events[0].kind, EntityEventKind::Updated);
+        assert_eq!(events[0].kind, RawAuditEventKind::Updated);
         assert_eq!(events[0].entity, "Order");
-        assert_eq!(events[1].kind, EntityEventKind::Created);
+        assert_eq!(events[1].kind, RawAuditEventKind::Created);
         assert_eq!(events[1].entity, "OrderLine");
         assert_eq!(events[1].values.get("order_id"), Some(&Value::U64(1)));
     }
