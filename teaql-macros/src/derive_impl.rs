@@ -183,6 +183,20 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             quote! {}
         };
 
+        if parsed.boxed_relations {
+            let boxed_type = &field.ty;
+            relation_tokens.push(quote! {
+                <#boxed_type as ::teaql_core::TeaqlBoxedRelations>::extend_descriptor(&mut descriptor);
+            });
+            from_record_fields.push(quote! {
+                #field_ident: <#boxed_type as ::teaql_core::TeaqlBoxedRelations>::extract_from_record(&record)?
+            });
+            into_record_fields.push(quote! {
+                ::teaql_core::TeaqlBoxedRelations::inject_into_record(self.#field_ident, &mut record);
+            });
+            continue;
+        }
+
         property_tokens.push(quote! {
             descriptor = descriptor.property(
                 ::teaql_core::PropertyDescriptor::new(#field_name, #data_type)
@@ -335,5 +349,82 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
 
         #identifiable_impl_tokens
         #versioned_impl_tokens
+    }
+}
+
+pub fn expand_teaql_reverse_relations(input: DeriveInput) -> proc_macro2::TokenStream {
+    let struct_name = input.ident;
+    let fields = match input.data {
+        Data::Struct(data) => data.fields,
+        _ => {
+            return syn::Error::new(struct_name.span(), "TeaqlReverseRelations only supports structs").to_compile_error();
+        }
+    };
+    
+    let named_fields: Vec<_> = match fields {
+        Fields::Named(fields) => fields.named.into_iter().collect(),
+        _ => {
+            return syn::Error::new(struct_name.span(), "TeaqlReverseRelations only supports structs with named fields").to_compile_error();
+        }
+    };
+    
+    let mut from_record_fields = Vec::new();
+    let mut into_record_fields = Vec::new();
+    let mut relation_tokens = Vec::new();
+    let entity_name = struct_name.to_string();
+    
+    for field in named_fields {
+        let field_ident = field.ident.expect("named field");
+        let field_name = field_ident.to_string();
+        
+        let parsed = crate::attr::parse_field_attrs(&field.attrs);
+        if let Some(relation) = parsed.relation {
+            let local_key = relation.local_key.unwrap_or_else(|| "id".to_owned());
+            let foreign_key = relation.foreign_key.unwrap_or_else(|| "id".to_owned());
+            let target = relation.target;
+            let many = relation.many;
+            let attach = relation.attach;
+            let delete_missing = relation.delete_missing;
+            relation_tokens.push(quote! {
+                *descriptor = descriptor.clone().relation(
+                    ::teaql_core::RelationDescriptor::new(#field_name, #target)
+                        .local_key(#local_key)
+                        .foreign_key(#foreign_key)
+                        #many
+                        #attach
+                        #delete_missing
+                );
+            });
+        }
+        
+        let from_value = crate::mapping::from_relation_value_tokens(&field.ty, &field_name, &entity_name);
+        let into_value = crate::mapping::into_relation_value_tokens(&field.ty, quote! { self.#field_ident });
+        
+        from_record_fields.push(quote! {
+            #field_ident: #from_value
+        });
+        into_record_fields.push(quote! {
+            if let Some(val) = #into_value {
+                record.insert(#field_name.to_owned(), val);
+            }
+        });
+    }
+    
+    quote! {
+        impl ::teaql_core::TeaqlBoxedRelations for #struct_name {
+            fn extend_descriptor(descriptor: &mut ::teaql_core::EntityDescriptor) {
+                #(#relation_tokens)*
+            }
+            
+            fn extract_from_record(record: &::teaql_core::Record) -> Result<Self, ::teaql_core::EntityError> {
+                Ok(Self {
+                    #(#from_record_fields,)*
+                })
+            }
+            
+            fn inject_into_record(self, record: &mut ::teaql_core::Record) {
+                #(#into_record_fields)*
+            }
+        }
     }
 }

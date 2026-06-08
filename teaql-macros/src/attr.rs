@@ -74,14 +74,28 @@ fn default_table_name(entity_name: &str) -> String {
     out
 }
 
-#[derive(Default)]
 pub struct ParsedFieldAttrs {
-    pub column: Option<String>,
     pub id: bool,
     pub version: bool,
     pub dynamic: bool,
     pub skip: bool,
+    pub boxed_relations: bool,
+    pub column: Option<String>,
     pub relation: Option<ParsedRelation>,
+}
+
+impl Default for ParsedFieldAttrs {
+    fn default() -> Self {
+        Self {
+            id: false,
+            version: false,
+            dynamic: false,
+            skip: false,
+            boxed_relations: false,
+            column: None,
+            relation: None,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -111,6 +125,8 @@ pub fn parse_field_attrs(attrs: &[syn::Attribute]) -> ParsedFieldAttrs {
                 parsed.dynamic = true;
             } else if meta.path.is_ident("skip") {
                 parsed.skip = true;
+            } else if meta.path.is_ident("boxed_relations") {
+                parsed.boxed_relations = true;
             } else if meta.path.is_ident("column") {
                 let value = meta.value()?;
                 parsed.column = Some(parse_string_expr(&value.parse::<Expr>()?));
