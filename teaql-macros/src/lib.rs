@@ -11,3 +11,9 @@ pub fn derive_teaql_entity(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     derive_impl::expand_teaql_entity(input).into()
 }
+
+#[proc_macro_derive(TeaqlReverseRelations, attributes(teaql))]
+pub fn derive_teaql_reverse_relations(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    derive_impl::expand_teaql_reverse_relations(input).into()
+}

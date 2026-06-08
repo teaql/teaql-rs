@@ -301,6 +301,24 @@ pub trait VersionedEntity: Entity {
     fn version(&self) -> i64;
 }
 
+pub trait TeaqlBoxedRelations: Sized {
+    fn extend_descriptor(descriptor: &mut EntityDescriptor);
+    fn extract_from_record(record: &Record) -> Result<Self, EntityError>;
+    fn inject_into_record(self, record: &mut Record);
+}
+
+impl<T: TeaqlBoxedRelations> TeaqlBoxedRelations for Box<T> {
+    fn extend_descriptor(descriptor: &mut EntityDescriptor) {
+        T::extend_descriptor(descriptor);
+    }
+    fn extract_from_record(record: &Record) -> Result<Self, EntityError> {
+        Ok(Box::new(T::extract_from_record(record)?))
+    }
+    fn inject_into_record(self, record: &mut Record) {
+        (*self).inject_into_record(record);
+    }
+}
+
 pub trait EntityDescriptorStore {
     fn register_descriptor(&mut self, descriptor: EntityDescriptor);
 }

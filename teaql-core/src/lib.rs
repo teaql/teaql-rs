@@ -16,7 +16,7 @@ mod xls;
 
 pub use entity::{
     Audited, BaseEntity, BaseEntityData, Entity, EntityDescriptorStore, EntityError, IdentifiableEntity,
-    TeaqlEntity, VersionedEntity,
+    TeaqlBoxedRelations, TeaqlEntity, VersionedEntity,
 };
 pub use entity_graph::{EntityGraph, EntityGraphBuilder, EntityGraphNode, EntityGraphOperation};
 pub use expr::{BinaryOp, Expr, ExprFunction};
@@ -44,7 +44,7 @@ mod tests {
 
     use super::*;
     use chrono::{NaiveDate, TimeZone, Utc};
-    use teaql_macros::TeaqlEntity;
+    use teaql_macros::{TeaqlEntity, TeaqlReverseRelations};
 
     #[derive(Default)]
     struct TestStore {
