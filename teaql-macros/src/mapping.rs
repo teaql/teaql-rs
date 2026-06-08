@@ -283,25 +283,7 @@ pub fn into_relation_value_tokens(
 
     if smart_list_inner_type(ty).is_some() {
         return quote! {
-            {
-                let mut has_changes = false;
-                let mut items = ::std::vec::Vec::new();
-                for entity in (#value_expr).data.into_iter() {
-                    if ::teaql_core::Entity::is_new(&entity) 
-                        || ::teaql_core::Entity::dirty_fields(&entity).is_some() 
-                        || ::teaql_core::Entity::is_marked_as_delete(&entity) 
-                    {
-                        has_changes = true;
-                    }
-                    items.push(::teaql_core::Value::object(::teaql_core::Entity::into_record(entity)));
-                }
-                
-                if (#value_expr).is_loaded || has_changes {
-                    Some(::teaql_core::Value::List(items))
-                } else {
-                    None
-                }
-            }
+            (#value_expr).into_value()
         };
     }
 
