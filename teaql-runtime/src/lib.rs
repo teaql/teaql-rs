@@ -8,6 +8,7 @@ mod event;
 mod graph;
 mod id;
 mod language;
+pub mod log_formatter;
 mod memory;
 mod registry;
 mod repository;

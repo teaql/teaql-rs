@@ -502,11 +502,13 @@ impl UserContext {
                 entries.push(UnifiedLogEntry {
                     timestamp: started_at,
                     user_identifier: self.user_identifier.clone(),
-                    trace_chain,
-                    payload: LogPayload::Sql(sql_log_entry),
+                    trace_chain: trace_chain.clone(),
+                    payload: LogPayload::Sql(sql_log_entry.clone()),
                 });
             }
         }
+        
+        crate::log_formatter::LogManager::write_sql_log(&trace_chain, &sql_log_entry);
     }
 
     pub(crate) fn record_metadata_log(&self, metadata: &teaql_data_service::ExecutionMetadata) {
@@ -555,10 +557,12 @@ impl UserContext {
                         timestamp: metadata.started_at,
                         user_identifier: self.user_identifier.clone(),
                         trace_chain: metadata.trace_chain.clone(),
-                        payload: LogPayload::Sql(final_entry),
+                        payload: LogPayload::Sql(final_entry.clone()),
                     });
                 }
             }
+            
+            crate::log_formatter::LogManager::write_sql_log(&metadata.trace_chain, &final_entry);
         }
     }
 
@@ -751,6 +755,9 @@ impl UserContext {
             let safe_event = event.build_safe_event(&mask_fields, max_len);
             sink.on_safe_event(self, &safe_event)?;
         }
+        
+        crate::log_formatter::LogManager::write_audit_log(&event);
+        
         Ok(())
     }
 
@@ -927,7 +934,4 @@ fn pretty_sql(sql: &str) -> String {
     }
     pretty
         .replace(" AND ", "\n  AND ")
-        .replace(" OR ", "\n  OR ")
 }
-
-

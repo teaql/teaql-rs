@@ -9,6 +9,7 @@ mod mutation;
 mod naming;
 mod query;
 mod safe_expression;
+pub mod serde_utils;
 mod trace;
 mod value;
 mod web;

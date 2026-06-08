@@ -319,11 +319,23 @@ impl Expr {
     }
 
     pub fn and(parts: impl IntoIterator<Item = Expr>) -> Self {
-        Self::And(parts.into_iter().collect())
+        let mut unique = Vec::new();
+        for part in parts {
+            if !unique.contains(&part) {
+                unique.push(part);
+            }
+        }
+        Self::And(unique)
     }
 
     pub fn or(parts: impl IntoIterator<Item = Expr>) -> Self {
-        Self::Or(parts.into_iter().collect())
+        let mut unique = Vec::new();
+        for part in parts {
+            if !unique.contains(&part) {
+                unique.push(part);
+            }
+        }
+        Self::Or(unique)
     }
 
     pub fn negate(expr: Expr) -> Self {
@@ -331,9 +343,14 @@ impl Expr {
     }
 
     pub fn and_expr(self, other: Expr) -> Self {
+        if self == other {
+            return self;
+        }
         match self {
             Self::And(mut parts) => {
-                parts.push(other);
+                if !parts.contains(&other) {
+                    parts.push(other);
+                }
                 Self::And(parts)
             }
             expr => Self::And(vec![expr, other]),
@@ -341,9 +358,14 @@ impl Expr {
     }
 
     pub fn or_expr(self, other: Expr) -> Self {
+        if self == other {
+            return self;
+        }
         match self {
             Self::Or(mut parts) => {
-                parts.push(other);
+                if !parts.contains(&other) {
+                    parts.push(other);
+                }
                 Self::Or(parts)
             }
             expr => Self::Or(vec![expr, other]),
