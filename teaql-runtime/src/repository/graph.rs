@@ -352,7 +352,11 @@ where
             if let Some(version_property) = descriptor.version_property() {
                 excluded.push(version_property.name.clone());
             }
-            sorted_update_fields(&node.values, excluded)
+            let mut fields = sorted_update_fields(&node.values, excluded);
+            if let Some(dirty) = &node.dirty_fields {
+                fields.retain(|f| dirty.contains(f));
+            }
+            fields
         } else {
             Vec::new()
         };
@@ -651,7 +655,7 @@ where
         }
 
         let update = self.graph_update_command(&mut node, descriptor, id_property, &id)?;
-        if !update.values.is_empty() || update.expected_version.is_some() {
+        if !update.values.is_empty() {
             let prepared_update = self
                 .prepare_update_command(&update)
                 .map_err(RepositoryError::Runtime)?;
