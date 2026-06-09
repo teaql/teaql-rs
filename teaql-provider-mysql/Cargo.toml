@@ -1,18 +1,20 @@
 [package]
-name = "teaql-provider-rusqlite"
+name = "teaql-provider-mysql"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "rusqlite provider adapter for TeaQL runtime"
+description = "MySQL provider adapter for TeaQL runtime"
 repository.workspace = true
 readme = "README.md"
 
 [dependencies]
 chrono = { workspace = true }
-rusqlite = { workspace = true }
 rust_decimal = { workspace = true }
 serde_json = { workspace = true }
+mysql_async = { version = "0.34", default-features = false, features = ["default-rustls", "chrono"] }
+mysql_common = { version = "0.32" }
 teaql-core = { workspace = true }
 teaql-runtime = { workspace = true }
 teaql-sql = { workspace = true }
+tokio = { workspace = true }

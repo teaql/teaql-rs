@@ -51,18 +51,7 @@ impl UserContext {
         })
     }
 
-    pub async fn plan_for_save_graph<E>(
-        &self,
-        node: GraphNode,
-    ) -> Result<GraphMutationPlan, RepositoryError<E::Error>>
-    where
-        E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync + 'static,
-    {
-        let repository = self
-            .resolve_repository::<E>(node.entity.clone())
-            .map_err(|err| RepositoryError::Runtime(RuntimeError::Graph(err.to_string())))?;
-        repository.plan_graph(node).await
-    }
+
 }
 
 impl<'a, E> ContextRepository<'a, E>

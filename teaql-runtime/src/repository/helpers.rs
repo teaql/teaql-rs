@@ -173,3 +173,16 @@ pub(super) fn ensure_relation_target<ExecError>(
         child.entity
     ))))
 }
+
+pub(crate) fn increment_version(
+    record: &mut Record,
+    descriptor: &EntityDescriptor,
+    original_version: Option<i64>,
+) {
+    if let Some(prop) = descriptor.version_property() {
+        if !record.contains_key(&prop.name) {
+            let next_version = original_version.map(|v| v + 1).unwrap_or(2);
+            record.insert(prop.name.clone(), teaql_core::Value::I64(next_version));
+        }
+    }
+}

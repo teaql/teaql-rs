@@ -263,10 +263,10 @@ pub fn into_relation_value_tokens(
 ) -> proc_macro2::TokenStream {
     if option_inner_type(ty).is_some() {
         return quote! {
-            Some(match #value_expr {
-                Some(entity) => ::teaql_core::Value::object(entity.into_record()),
-                None => ::teaql_core::Value::Null,
-            })
+            match #value_expr {
+                Some(entity) => Some(::teaql_core::Value::object(entity.into_record())),
+                None => None,
+            }
         };
     }
 

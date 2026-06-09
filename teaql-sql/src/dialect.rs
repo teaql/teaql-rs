@@ -104,15 +104,31 @@ pub trait SqlDialect {
         ))
     }
 
+    fn fallback_default_value_sql(&self, data_type: DataType) -> &'static str {
+        match data_type {
+            DataType::Bool => "FALSE",
+            DataType::I64 | DataType::U64 | DataType::F64 | DataType::Decimal => "0",
+            DataType::Text => "''",
+            DataType::Json => "'{}'",
+            DataType::Date => "'1970-01-01'",
+            DataType::Timestamp => "'1970-01-01 00:00:00Z'",
+        }
+    }
+
     fn compile_add_column(
         &self,
         entity: &EntityDescriptor,
         property: &PropertyDescriptor,
     ) -> Result<String, SqlCompileError> {
+        let mut def = self.column_definition_sql(property)?;
+        if !property.nullable && !property.is_id {
+            def.push_str(" DEFAULT ");
+            def.push_str(self.fallback_default_value_sql(property.data_type));
+        }
         Ok(format!(
             "ALTER TABLE {} ADD COLUMN {}",
             self.quote_ident(&entity.table_name),
-            self.column_definition_sql(property)?
+            def
         ))
     }
 

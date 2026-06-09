@@ -9,9 +9,9 @@ publish = false
 [dependencies]
 teaql-core = { workspace = true }
 teaql-macros = { workspace = true }
-teaql-provider-sqlx-postgres = { workspace = true }
-teaql-provider-sqlx-sqlite = { workspace = true }
+# teaql-provider-postgres = { workspace = true }
+teaql-provider-sqlite = { workspace = true }
 teaql-runtime = { workspace = true }
 teaql-sql = { workspace = true }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "sqlite", "json", "chrono", "rust_decimal"] }
+rusqlite = { workspace = true }
 tokio = { workspace = true }

@@ -166,11 +166,17 @@ pub struct RootContext {
     comment: Option<String>,
     /// Entity keys that have been marked for deletion.
     /// When the entity is saved, the graph save pipeline will treat these as Remove operations.
-    deleted_keys: BTreeSet<EntityKey>,
-    /// Indicates if this entity is newly created in memory.
-    is_new: bool,
+    deleted_keys: std::collections::BTreeSet<EntityKey>,
+    /// Entity keys that have been marked as newly inserted.
+    new_keys: std::collections::BTreeSet<EntityKey>,
     /// The original loaded snapshot record, used to avoid redundant fetching during save.
     original_record: Option<Record>,
+    /// Trace chains associated with each entity key.
+    trace_chains: std::collections::BTreeMap<EntityKey, Vec<teaql_core::TraceNode>>,
+    /// Original versions of entities to perform optimistic concurrency control.
+    original_versions: std::collections::BTreeMap<EntityKey, i64>,
+    /// Indicates if this entity root is entirely new.
+    is_new: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -254,19 +260,21 @@ impl EntityRoot {
     }
 
     /// Mark this entity root as a newly created entity in memory.
-    pub fn mark_as_new(&self) {
+    pub fn mark_as_new(&self, key: EntityKey) {
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .is_new = true;
+            .new_keys
+            .insert(key);
     }
 
     /// Check if this entity root is marked as newly created.
-    pub fn is_new(&self) -> bool {
+    pub fn is_new(&self, key: &EntityKey) -> bool {
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .is_new
+            .new_keys
+            .contains(key)
     }
 
     /// Store the original record when loaded from DB.
@@ -314,4 +322,29 @@ impl EntityRoot {
             .change_sets
             .changed_field_names(key)
     }
+    pub fn deleted_keys(&self) -> std::collections::BTreeSet<EntityKey> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).deleted_keys.clone()
+    }
+
+    pub fn new_keys(&self) -> std::collections::BTreeSet<EntityKey> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).new_keys.clone()
+    }
+
+    pub fn get_original_version(&self, key: &EntityKey) -> Option<i64> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).original_versions.get(key).cloned()
+    }
+
+    pub fn get_trace_chain(&self, key: &EntityKey) -> Vec<teaql_core::TraceNode> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).trace_chains.get(key).cloned().unwrap_or_default()
+    }
+    
+
+    
+    pub fn set_original_version(&self, key: EntityKey, version: i64) {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).original_versions.insert(key, version);
+    }
+}
+
+pub trait LedgerEntity: teaql_core::Entity {
+    fn entity_root(&self) -> Option<EntityRoot>;
 }

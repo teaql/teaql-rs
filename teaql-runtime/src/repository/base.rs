@@ -83,6 +83,8 @@ where
         let affected = res.affected_rows;
 
         if command.expected_version.is_some() && affected == 0 {
+            println!("OptimisticLockConflict in base.rs update! entity={}, id={:?}", command.entity, command.id);
+            println!("Backtrace: {:#?}", std::backtrace::Backtrace::force_capture());
             return Err(RepositoryError::Runtime(
                 RuntimeError::OptimisticLockConflict {
                     entity: command.entity.clone(),
@@ -117,29 +119,35 @@ where
         command: &teaql_core::BatchInsertCommand,
     ) -> Result<u64, RepositoryError<E::Error>> {
         // Build individual InsertCommands for now, or use BatchMutation if appropriate
-        let mut reqs = Vec::new();
+        let mut affected = 0;
         for (i, val) in command.batch_values.iter().enumerate() {
             let mut insert_cmd = InsertCommand::new(command.entity.clone());
             insert_cmd.values = val.clone();
             if i < command.trace_chains.len() {
                 insert_cmd.trace_chain = command.trace_chains[i].clone();
             }
-            reqs.push(MutationRequest::Insert(insert_cmd));
+            let res = self.executor.mutate(MutationRequest::Insert(insert_cmd)).await.map_err(RepositoryError::Executor)?;
+            self.metadata.record_metadata_log(&res.metadata);
+            affected += res.affected_rows;
         }
-        let request = MutationRequest::Batch(reqs);
-        let res = self.executor.mutate(request).await.map_err(RepositoryError::Executor)?;
-        self.metadata.record_metadata_log(&res.metadata);
-        Ok(res.affected_rows)
+        Ok(affected)
     }
 
     pub async fn batch_update(
         &self,
         command: &teaql_core::BatchUpdateCommand,
     ) -> Result<u64, RepositoryError<E::Error>> {
-        let mut reqs = Vec::new();
+        let mut affected = 0;
         for (i, val) in command.batch_values.iter().enumerate() {
             let mut update_cmd = UpdateCommand::new(command.entity.clone(), command.batch_ids[i].clone());
-            update_cmd.values = val.clone();
+            
+            let mut filtered_values = Record::new();
+            for field in &command.update_fields {
+                if let Some(v) = val.get(field) {
+                    filtered_values.insert(field.clone(), v.clone());
+                }
+            }
+            update_cmd.values = filtered_values;
             if let Some(Some(v)) = command.batch_expected_versions.get(i) {
                 update_cmd.expected_version = Some(*v);
             }
@@ -149,15 +157,14 @@ where
             if i < command.trace_chains.len() {
                 update_cmd.trace_chain = command.trace_chains[i].clone();
             }
-            reqs.push(MutationRequest::Update(update_cmd));
+            let res = self.executor.mutate(MutationRequest::Update(update_cmd)).await.map_err(RepositoryError::Executor)?;
+            self.metadata.record_metadata_log(&res.metadata);
+            affected += res.affected_rows;
         }
-        let request = MutationRequest::Batch(reqs);
-        let res = self.executor.mutate(request).await.map_err(RepositoryError::Executor)?;
-        self.metadata.record_metadata_log(&res.metadata);
-        let affected = res.affected_rows;
 
         if command.batch_expected_versions.iter().any(|v| v.is_some()) {
             if affected != command.batch_ids.len() as u64 {
+                println!("OptimisticLockConflict in batch_update! entity={}, affected={}, expected={}", command.entity, affected, command.batch_ids.len());
                 return Err(RepositoryError::Runtime(
                     RuntimeError::OptimisticLockConflict {
                         entity: command.entity.clone(),

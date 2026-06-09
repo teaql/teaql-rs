@@ -309,6 +309,9 @@ impl RawAuditEvent {
     ) -> SafeAuditEvent {
         let mut safe_fields = Vec::new();
         for change in &self.changes {
+            if change.field.starts_with('_') {
+                continue;
+            }
             // For audit, if it's masked or we just want the new/old values, we should represent it stringified.
             // Usually we care about the new value in SafeAuditEvent. Or maybe we want to represent the change.
             // Based on design doc, we stringify the value and apply masks.

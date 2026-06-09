@@ -80,6 +80,8 @@ pub struct GraphMutationPlan {
     pub batches: Vec<GraphMutationBatch>,
     /// Auto-incrementing counter for item_index assignment.
     pub next_item_index: u64,
+    /// Keep track of visited nodes to avoid infinite loops and redundant updates
+    pub visited_nodes: std::collections::HashSet<(String, String)>,
 }
 
 impl GraphMutationPlan {
