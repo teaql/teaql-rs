@@ -15,8 +15,4 @@ serde_json = { workspace = true }
 rust_decimal = { workspace = true }
 
 [dev-dependencies]
-
-
-
-[dev-dependencies]
 teaql-macros = { workspace = true }
