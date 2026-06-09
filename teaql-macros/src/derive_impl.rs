@@ -237,6 +237,18 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         }
     });
 
+    let ledger_entity_impl_tokens = if has_root_field {
+        quote! {
+            impl ::teaql_runtime::LedgerEntity for #struct_name {
+                fn entity_root(&self) -> Option<::teaql_runtime::EntityRoot> {
+                    Some(self.root.clone())
+                }
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     // Generate dirty_fields() if entity has a 'root' field (EntityRoot) and an id field.
     // This is the Rust equivalent of Java's entity.getUpdatedProperties().
     let (dirty_fields_impl, is_marked_as_delete_impl) = if has_root_field {
@@ -253,6 +265,16 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                     fn is_marked_as_delete(&self) -> bool {
                         let key = teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
                         self.root.is_marked_as_delete(&key)
+                    }
+
+                    fn is_new(&self) -> bool {
+                        let key = teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
+                        self.root.is_new(&key)
+                    }
+
+                    fn mark_as_new(&mut self) {
+                        let key = teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
+                        self.root.mark_as_new(key)
                     }
                 }
             )
@@ -271,14 +293,6 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
 
     let root_methods_impl = if has_root_field {
         quote! {
-            fn is_new(&self) -> bool {
-                self.root.is_new()
-            }
-
-            fn mark_as_new(&mut self) {
-                self.root.mark_as_new()
-            }
-
             fn get_comment(&self) -> Option<String> {
                 self.root.get_comment()
             }
@@ -356,6 +370,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
 
         #identifiable_impl_tokens
         #versioned_impl_tokens
+        #ledger_entity_impl_tokens
     }
 }
 

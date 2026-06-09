@@ -5,8 +5,6 @@ use std::pin::Pin;
 
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
-use sqlx::types::Json;
-use sqlx::{Arguments, Column, Error as SqlxError, Row, TypeInfo, ValueRef, query_with};
 use std::sync::Arc;
 use teaql_core::{
     BinaryOp, DataType, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, Record,
@@ -17,10 +15,9 @@ use teaql_sql::{
     CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, SqlTransport, quote_identifier_if_needed,
 };
 use tokio::sync::Mutex;
+use deadpool_postgres::Pool;
 
 pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";
-use sqlx::postgres::{PgArguments, PgPool, PgRow};
-use sqlx::{Postgres, Transaction};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct PostgresDialect;
@@ -181,7 +178,8 @@ $$
 
 #[derive(Debug)]
 pub enum MutationExecutorError {
-    Sqlx(SqlxError),
+    Sqlx(tokio_postgres::Error),
+    Pool(String),
     SqlCompile(SqlCompileError),
     UnsupportedValue(&'static str),
     UnsupportedColumnType(String),
@@ -192,28 +190,29 @@ impl std::fmt::Display for MutationExecutorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Sqlx(err) => err.fmt(f),
+            Self::Pool(err) => write!(f, "postgres pool error: {err}"),
             Self::SqlCompile(err) => err.fmt(f),
             Self::UnsupportedValue(kind) => {
                 write!(
                     f,
-                    "unsupported sqlx bind value for mutation executor: {kind}"
+                    "unsupported bind value for mutation executor: {kind}"
                 )
             }
             Self::UnsupportedColumnType(kind) => {
                 write!(
                     f,
-                    "unsupported sqlx column type for record decoding: {kind}"
+                    "unsupported column type for record decoding: {kind}"
                 )
             }
-            Self::Bind(message) => write!(f, "sqlx bind error: {message}"),
+            Self::Bind(message) => write!(f, "bind error: {message}"),
         }
     }
 }
 
 impl std::error::Error for MutationExecutorError {}
 
-impl From<SqlxError> for MutationExecutorError {
-    fn from(value: SqlxError) -> Self {
+impl From<tokio_postgres::Error> for MutationExecutorError {
+    fn from(value: tokio_postgres::Error) -> Self {
         Self::Sqlx(value)
     }
 }
@@ -226,7 +225,7 @@ impl From<SqlCompileError> for MutationExecutorError {
 
 #[derive(Clone)]
 pub struct PgMutationExecutor {
-    pool: PgPool,
+    pool: Pool,
 }
 
 impl SqlTransport for PgMutationExecutor {
@@ -262,8 +261,12 @@ impl teaql_sql::SqlTransactionTransport for PgMutationExecutor {
 }
 
 impl PgMutationExecutor {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: Pool) -> Self {
         Self { pool }
+    }
+
+    pub fn pool(&self) -> Pool {
+        self.pool.clone()
     }
 
     pub async fn ensure_schema(
@@ -271,15 +274,16 @@ impl PgMutationExecutor {
         dialect: &PostgresDialect,
         entities: &[&EntityDescriptor],
     ) -> Result<(), MutationExecutorError> {
+        let client = self.pool.get().await.map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
         for sql in dialect.schema_setup_sqls() {
-            sqlx::query(sql).execute(&self.pool).await?;
+            client.execute(*sql, &[]).await?;
         }
         self.ensure_id_space_table(DEFAULT_ID_SPACE_TABLE).await?;
 
         for entity in entities {
             if !self.table_exists(&entity.table_name).await? {
                 let sql = dialect.compile_create_table(entity)?;
-                sqlx::query(&sql).execute(&self.pool).await?;
+                client.execute(&sql, &[]).await?;
                 continue;
             }
 
@@ -290,7 +294,7 @@ impl PgMutationExecutor {
                     continue;
                 }
                 let sql = dialect.compile_add_column(entity, property)?;
-                sqlx::query(&sql).execute(&self.pool).await?;
+                client.execute(&sql, &[]).await?;
             }
         }
         Ok(())
@@ -304,41 +308,44 @@ impl PgMutationExecutor {
             "CREATE TABLE IF NOT EXISTS {} (type_name VARCHAR(100) PRIMARY KEY, current_level BIGINT NOT NULL)",
             quote_ident(table_name)
         );
-        sqlx::query(&sql).execute(&self.pool).await?;
+        let client = self.pool.get().await.map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
+        client.execute(&sql, &[]).await?;
         Ok(())
     }
 
     pub async fn execute(&self, query: &CompiledQuery) -> Result<u64, MutationExecutorError> {
-        let mut args = PgArguments::default();
+        let mut args = PgArgs { values: Vec::new() };
         for value in &query.params {
             bind_pg(&mut args, value)?;
         }
-        let result = query_with(&query.sql_with_comment(), args).execute(&self.pool).await?;
-        Ok(result.rows_affected())
+        let client = self.pool.get().await.map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
+        let result = client.execute(&query.sql, &args.as_refs()).await?;
+        Ok(result)
     }
 
     pub async fn fetch_all(
         &self,
         query: &CompiledQuery,
     ) -> Result<Vec<Record>, MutationExecutorError> {
-        let mut args = PgArguments::default();
+        let mut args = PgArgs { values: Vec::new() };
         for value in &query.params {
             bind_pg(&mut args, value)?;
         }
-        let rows = query_with(&query.sql_with_comment(), args).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await.map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
+        let rows = client.query(&query.sql, &args.as_refs()).await?;
         rows.iter().map(decode_pg_row).collect()
     }
 
     async fn table_exists(&self, table_name: &str) -> Result<bool, MutationExecutorError> {
-        let exists = sqlx::query_scalar::<_, i64>(
+        let client = self.pool.get().await.map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
+        let row = client.query_one(
             "SELECT COUNT(1)
              FROM information_schema.tables
              WHERE table_schema = current_schema()
                AND table_name = $1",
-        )
-        .bind(table_name)
-        .fetch_one(&self.pool)
-        .await?;
+            &[&table_name],
+        ).await?;
+        let exists: i64 = row.try_get(0)?;
         Ok(exists > 0)
     }
 
@@ -346,15 +353,14 @@ impl PgMutationExecutor {
         &self,
         table_name: &str,
     ) -> Result<std::collections::BTreeSet<String>, MutationExecutorError> {
-        let rows = sqlx::query(
+        let client = self.pool.get().await.map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
+        let rows = client.query(
             "SELECT column_name
              FROM information_schema.columns
              WHERE table_schema = current_schema()
                AND table_name = $1",
-        )
-        .bind(table_name)
-        .fetch_all(&self.pool)
-        .await?;
+            &[&table_name],
+        ).await?;
         let mut columns = std::collections::BTreeSet::new();
         for row in rows {
             let name: String = row.try_get("column_name")?;
@@ -404,74 +410,6 @@ async fn initial_graph_exists_postgres(
     Ok(!executor.fetch_all(&query).await?.is_empty())
 }
 
-#[derive(Clone)]
-pub struct PgTransactionExecutor {
-    transaction: Arc<Mutex<Option<Transaction<'static, Postgres>>>>,
-}
-
-impl PgTransactionExecutor {
-    pub async fn begin(pool: &PgPool) -> Result<Self, MutationExecutorError> {
-        Ok(Self {
-            transaction: Arc::new(Mutex::new(Some(pool.begin().await?))),
-        })
-    }
-
-    pub async fn execute(&self, query: &CompiledQuery) -> Result<u64, MutationExecutorError> {
-        let mut transaction = self.transaction.lock().await;
-        let transaction = transaction.as_mut().ok_or_else(|| {
-            MutationExecutorError::Bind("postgres transaction is closed".to_owned())
-        })?;
-        let mut args = PgArguments::default();
-        for value in &query.params {
-            bind_pg(&mut args, value)?;
-        }
-        let result = query_with(&query.sql_with_comment(), args)
-            .execute(&mut **transaction)
-            .await?;
-        Ok(result.rows_affected())
-    }
-
-    pub async fn fetch_all(
-        &self,
-        query: &CompiledQuery,
-    ) -> Result<Vec<Record>, MutationExecutorError> {
-        let mut transaction = self.transaction.lock().await;
-        let transaction = transaction.as_mut().ok_or_else(|| {
-            MutationExecutorError::Bind("postgres transaction is closed".to_owned())
-        })?;
-        let mut args = PgArguments::default();
-        for value in &query.params {
-            bind_pg(&mut args, value)?;
-        }
-        let rows = query_with(&query.sql_with_comment(), args)
-            .fetch_all(&mut **transaction)
-            .await?;
-        rows.iter().map(decode_pg_row).collect()
-    }
-
-    pub async fn commit(&self) -> Result<(), MutationExecutorError> {
-        let transaction = self.transaction.lock().await.take();
-        let Some(transaction) = transaction else {
-            return Err(MutationExecutorError::Bind(
-                "postgres transaction is closed".to_owned(),
-            ));
-        };
-        transaction.commit().await?;
-        Ok(())
-    }
-
-    pub async fn rollback(&self) -> Result<(), MutationExecutorError> {
-        let transaction = self.transaction.lock().await.take();
-        let Some(transaction) = transaction else {
-            return Err(MutationExecutorError::Bind(
-                "postgres transaction is closed".to_owned(),
-            ));
-        };
-        transaction.rollback().await?;
-        Ok(())
-    }
-}
-
 fn compile_initial_graph_insert(
     dialect: &impl SqlDialect,
     entity: &EntityDescriptor,
@@ -512,7 +450,7 @@ pub trait PostgresSchemaExt {
     ) -> Pin<Box<dyn Future<Output = Result<(), MutationExecutorError>> + '_>>;
 }
 
-async fn ensure_postgres_schema_for(ctx: &UserContext) -> Result<(), MutationExecutorError> {
+pub async fn ensure_postgres_schema_for(ctx: &UserContext) -> Result<(), MutationExecutorError> {
     let dialect = ctx.get_resource::<PostgresDialect>().ok_or_else(|| {
         MutationExecutorError::Bind("missing typed resource: PostgresDialect".to_owned())
     })?;
@@ -565,16 +503,20 @@ impl PostgresProviderExt for UserContext {
 
 #[derive(Clone)]
 pub struct PgIdSpaceGenerator {
-    pool: PgPool,
+    pool: Pool,
     table_name: String,
 }
 
 impl PgIdSpaceGenerator {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: Pool) -> Self {
         Self {
             pool,
             table_name: DEFAULT_ID_SPACE_TABLE.to_owned(),
         }
+    }
+
+    pub fn from_executor(executor: PgMutationExecutor) -> Self {
+        Self::new(executor.pool())
     }
 
     pub fn with_table_name(mut self, table_name: impl Into<String>) -> Self {
@@ -594,29 +536,29 @@ impl PgIdSpaceGenerator {
             "UPDATE {} SET current_level = current_level + 1 WHERE type_name = $1 RETURNING current_level",
             quote_ident(&self.table_name)
         );
-        let row: Option<i64> = sqlx::query_scalar(&update_sql)
-            .bind(entity)
-            .fetch_optional(&self.pool)
-            .await?;
+        let client = self.pool.get().await.map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
+        let row = client.query_opt(&update_sql, &[&entity]).await?;
         
         let id = match row {
-            Some(level) => level,
+            Some(r) => {
+                let level: i64 = r.try_get(0)?;
+                level
+            },
             None => {
                 let insert_sql = format!(
                     "INSERT INTO {} (type_name, current_level) VALUES ($1, 1) RETURNING current_level",
                     quote_ident(&self.table_name)
                 );
-                let insert_res: Result<i64, sqlx::Error> = sqlx::query_scalar(&insert_sql)
-                    .bind(entity)
-                    .fetch_one(&self.pool)
-                    .await;
+                let insert_res = client.query_one(&insert_sql, &[&entity]).await;
                 match insert_res {
-                    Ok(level) => level,
+                    Ok(r) => {
+                        let level: i64 = r.try_get(0)?;
+                        level
+                    },
                     Err(_) => {
-                        sqlx::query_scalar(&update_sql)
-                            .bind(entity)
-                            .fetch_one(&self.pool)
-                            .await?
+                        let row = client.query_one(&update_sql, &[&entity]).await?;
+                        let level: i64 = row.try_get(0)?;
+                        level
                     }
                 }
             }
@@ -688,57 +630,53 @@ fn try_parse_datetime_from_str(s: &str) -> Option<chrono::DateTime<chrono::Utc>>
     None
 }
 
-fn bind_pg(args: &mut PgArguments, value: &Value) -> Result<(), MutationExecutorError> {
+struct PgArgs {
+    values: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>>,
+}
+impl PgArgs {
+    fn add<T: tokio_postgres::types::ToSql + Sync + Send + 'static>(&mut self, v: T) {
+        self.values.push(Box::new(v));
+    }
+    fn as_refs(&self) -> Vec<&(dyn tokio_postgres::types::ToSql + Sync)> {
+        self.values.iter().map(|b| b.as_ref() as _).collect()
+    }
+}
+
+fn bind_pg(args: &mut PgArgs, value: &Value) -> Result<(), MutationExecutorError> {
     match value {
         Value::Null => {
-            let v: Option<String> = None;
-            args.add(v)
-                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?;
+            args.add(Option::<i32>::None);
         }
-        Value::Bool(v) => args
-            .add(*v)
-            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
-        Value::I64(v) => args
-            .add(*v)
-            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
+        Value::Bool(v) => args.add(*v),
+        Value::I64(v) => args.add(*v),
         Value::U64(v) => {
             let v = i64::try_from(*v).map_err(|_| {
                 MutationExecutorError::Bind(format!("u64 value {v} exceeds i64 range"))
             })?;
-            args.add(v)
-                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?
+            args.add(v);
         }
-        Value::F64(v) => args
-            .add(*v)
-            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
-        Value::Decimal(v) => args
-            .add(*v)
-            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
+        Value::F64(v) => args.add(*v),
+        Value::Decimal(v) => args.add(*v),
         Value::Text(v) => {
             if let Some(dt) = try_parse_datetime_from_str(v) {
-                args.add(dt)
-                    .map_err(|err| MutationExecutorError::Bind(err.to_string()))?;
+                args.add(dt);
             } else {
-                args.add(v.clone())
-                    .map_err(|err| MutationExecutorError::Bind(err.to_string()))?;
+                args.add(v.clone());
             }
         }
-        Value::Json(v) => args
-            .add(Json(v.clone()))
-            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
-        Value::Date(v) => args
-            .add(*v)
-            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
-        Value::Timestamp(v) => args
-            .add(*v)
-            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
+        Value::Json(v) => {
+            let j_val: serde_json::Value = serde_json::to_value(v).map_err(|e| MutationExecutorError::Bind(e.to_string()))?;
+            args.add(j_val);
+        }
+        Value::Date(v) => args.add(*v),
+        Value::Timestamp(v) => args.add(*v),
         Value::Object(_) => return Err(MutationExecutorError::UnsupportedValue("object")),
         Value::List(values) => bind_pg_list(args, values)?,
     }
     Ok(())
 }
 
-fn bind_pg_list(args: &mut PgArguments, values: &[Value]) -> Result<(), MutationExecutorError> {
+fn bind_pg_list(args: &mut PgArgs, values: &[Value]) -> Result<(), MutationExecutorError> {
     let Some(first) = values.first() else {
         return Err(MutationExecutorError::UnsupportedValue("empty list"));
     };
@@ -751,8 +689,7 @@ fn bind_pg_list(args: &mut PgArguments, values: &[Value]) -> Result<(), Mutation
                     _ => Err(MutationExecutorError::UnsupportedValue("mixed bool list")),
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            args.add(values)
-                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?;
+            args.add(values);
         }
         Value::I64(_) => {
             let values = values
@@ -762,8 +699,7 @@ fn bind_pg_list(args: &mut PgArguments, values: &[Value]) -> Result<(), Mutation
                     _ => Err(MutationExecutorError::UnsupportedValue("mixed i64 list")),
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            args.add(values)
-                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?;
+            args.add(values);
         }
         Value::U64(_) => {
             let values = values
@@ -775,8 +711,7 @@ fn bind_pg_list(args: &mut PgArguments, values: &[Value]) -> Result<(), Mutation
                     _ => Err(MutationExecutorError::UnsupportedValue("mixed u64 list")),
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            args.add(values)
-                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?;
+            args.add(values);
         }
         Value::F64(_) => {
             let values = values
@@ -786,8 +721,7 @@ fn bind_pg_list(args: &mut PgArguments, values: &[Value]) -> Result<(), Mutation
                     _ => Err(MutationExecutorError::UnsupportedValue("mixed f64 list")),
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            args.add(values)
-                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?;
+            args.add(values);
         }
         Value::Decimal(_) => {
             let values = values
@@ -799,8 +733,7 @@ fn bind_pg_list(args: &mut PgArguments, values: &[Value]) -> Result<(), Mutation
                     )),
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            args.add(values)
-                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?;
+            args.add(values);
         }
         Value::Text(_) => {
             let values = values
@@ -810,8 +743,7 @@ fn bind_pg_list(args: &mut PgArguments, values: &[Value]) -> Result<(), Mutation
                     _ => Err(MutationExecutorError::UnsupportedValue("mixed text list")),
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            args.add(values)
-                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?;
+            args.add(values);
         }
         Value::Date(_) => {
             let values = values
@@ -821,8 +753,7 @@ fn bind_pg_list(args: &mut PgArguments, values: &[Value]) -> Result<(), Mutation
                     _ => Err(MutationExecutorError::UnsupportedValue("mixed date list")),
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            args.add(values)
-                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?;
+            args.add(values);
         }
         Value::Timestamp(_) => {
             let values = values
@@ -834,8 +765,7 @@ fn bind_pg_list(args: &mut PgArguments, values: &[Value]) -> Result<(), Mutation
                     )),
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            args.add(values)
-                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?;
+            args.add(values);
         }
         Value::Null => return Err(MutationExecutorError::UnsupportedValue("null list")),
         Value::Json(_) => return Err(MutationExecutorError::UnsupportedValue("json list")),
@@ -845,54 +775,89 @@ fn bind_pg_list(args: &mut PgArguments, values: &[Value]) -> Result<(), Mutation
     Ok(())
 }
 
-fn decode_pg_row(row: &PgRow) -> Result<Record, MutationExecutorError> {
+fn decode_pg_row(row: &tokio_postgres::Row) -> Result<Record, MutationExecutorError> {
     let mut record = BTreeMap::new();
     for (index, column) in row.columns().iter().enumerate() {
         let name = column.name().to_owned();
-        let raw = row
-            .try_get_raw(index)
-            .map_err(MutationExecutorError::Sqlx)?;
-        if raw.is_null() {
-            record.insert(name, Value::Null);
-            continue;
-        }
-        let type_name = column.type_info().name().to_ascii_uppercase();
+        let type_name = column.type_().name().to_ascii_uppercase();
+        
         let value = match type_name.as_str() {
             "BOOL" | "BOOLEAN" => {
-                Value::Bool(row.try_get(index).map_err(MutationExecutorError::Sqlx)?)
+                let v: Option<bool> = row.try_get(index)?;
+                match v {
+                    Some(v) => Value::Bool(v),
+                    None => Value::Null,
+                }
             }
-            "INT2" => Value::I64(
-                row.try_get::<i16, _>(index)
-                    .map_err(MutationExecutorError::Sqlx)? as i64,
-            ),
-            "INT4" => Value::I64(
-                row.try_get::<i32, _>(index)
-                    .map_err(MutationExecutorError::Sqlx)? as i64,
-            ),
-            "INT8" => Value::I64(row.try_get(index).map_err(MutationExecutorError::Sqlx)?),
-            "FLOAT4" => Value::F64(
-                row.try_get::<f32, _>(index)
-                    .map_err(MutationExecutorError::Sqlx)? as f64,
-            ),
-            "FLOAT8" => Value::F64(row.try_get(index).map_err(MutationExecutorError::Sqlx)?),
-            "NUMERIC" => Value::Decimal(
-                row.try_get::<Decimal, _>(index)
-                    .map_err(MutationExecutorError::Sqlx)?,
-            ),
+            "INT2" => {
+                let v: Option<i16> = row.try_get(index)?;
+                match v {
+                    Some(v) => Value::I64(v as i64),
+                    None => Value::Null,
+                }
+            }
+            "INT4" => {
+                let v: Option<i32> = row.try_get(index)?;
+                match v {
+                    Some(v) => Value::I64(v as i64),
+                    None => Value::Null,
+                }
+            }
+            "INT8" => {
+                let v: Option<i64> = row.try_get(index)?;
+                match v {
+                    Some(v) => Value::I64(v),
+                    None => Value::Null,
+                }
+            }
+            "FLOAT4" => {
+                let v: Option<f32> = row.try_get(index)?;
+                match v {
+                    Some(v) => Value::F64(v as f64),
+                    None => Value::Null,
+                }
+            }
+            "FLOAT8" => {
+                let v: Option<f64> = row.try_get(index)?;
+                match v {
+                    Some(v) => Value::F64(v),
+                    None => Value::Null,
+                }
+            }
+            "NUMERIC" => {
+                let v: Option<Decimal> = row.try_get(index)?;
+                match v {
+                    Some(v) => Value::Decimal(v),
+                    None => Value::Null,
+                }
+            }
             "JSON" | "JSONB" => {
-                let Json(value) = row.try_get(index).map_err(MutationExecutorError::Sqlx)?;
-                Value::Json(value)
+                let v: Option<serde_json::Value> = row.try_get(index)?;
+                match v {
+                    Some(j) => Value::Json(j.into()),
+                    None => Value::Null,
+                }
             }
-            "DATE" => Value::Date(
-                row.try_get::<NaiveDate, _>(index)
-                    .map_err(MutationExecutorError::Sqlx)?,
-            ),
-            "TIMESTAMP" | "TIMESTAMPTZ" => Value::Timestamp(
-                row.try_get::<DateTime<Utc>, _>(index)
-                    .map_err(MutationExecutorError::Sqlx)?,
-            ),
+            "DATE" => {
+                let v: Option<NaiveDate> = row.try_get(index)?;
+                match v {
+                    Some(v) => Value::Date(v),
+                    None => Value::Null,
+                }
+            }
+            "TIMESTAMP" | "TIMESTAMPTZ" => {
+                let v: Option<DateTime<Utc>> = row.try_get(index)?;
+                match v {
+                    Some(v) => Value::Timestamp(v),
+                    None => Value::Null,
+                }
+            }
             "TEXT" | "VARCHAR" | "BPCHAR" | "NAME" | "UUID" => {
-                Value::Text(row.try_get(index).map_err(MutationExecutorError::Sqlx)?)
+                let v: Option<String> = row.try_get(index)?;
+                match v {
+                    Some(v) => Value::Text(v),
+                    None => Value::Null,
+                }
             }
             other => {
                 return Err(MutationExecutorError::UnsupportedColumnType(

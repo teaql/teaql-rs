@@ -26,9 +26,9 @@ pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";
 const SQLITE_DECIMAL_PREFIX: &str = "__teaql_decimal__:";
 
 #[derive(Debug, Default, Clone, Copy)]
-pub struct RusqliteDialect;
+pub struct SqliteDialect;
 
-impl SqlDialect for RusqliteDialect {
+impl SqlDialect for SqliteDialect {
     fn kind(&self) -> DatabaseKind {
         DatabaseKind::Sqlite
     }
@@ -80,7 +80,7 @@ impl SqlDialect for RusqliteDialect {
 
 #[derive(Debug)]
 pub enum MutationExecutorError {
-    Rusqlite(rusqlite::Error),
+    Sqlite(rusqlite::Error),
     SqlCompile(SqlCompileError),
     UnsupportedValue(&'static str),
     UnsupportedColumnType(String),
@@ -91,7 +91,7 @@ pub enum MutationExecutorError {
 impl std::fmt::Display for MutationExecutorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Rusqlite(err) => err.fmt(f),
+            Self::Sqlite(err) => err.fmt(f),
             Self::SqlCompile(err) => err.fmt(f),
             Self::UnsupportedValue(kind) => {
                 write!(
@@ -115,7 +115,7 @@ impl std::error::Error for MutationExecutorError {}
 
 impl From<rusqlite::Error> for MutationExecutorError {
     fn from(value: rusqlite::Error) -> Self {
-        Self::Rusqlite(value)
+        Self::Sqlite(value)
     }
 }
 
@@ -126,11 +126,11 @@ impl From<SqlCompileError> for MutationExecutorError {
 }
 
 #[derive(Clone)]
-pub struct RusqliteMutationExecutor {
+pub struct SqliteMutationExecutor {
     connection: Arc<Mutex<Connection>>,
 }
 
-impl RusqliteMutationExecutor {
+impl SqliteMutationExecutor {
     pub fn new(connection: Connection) -> Self {
         Self::from_shared_connection(Arc::new(Mutex::new(connection)))
     }
@@ -145,7 +145,7 @@ impl RusqliteMutationExecutor {
 
     pub fn ensure_schema(
         &self,
-        dialect: &RusqliteDialect,
+        dialect: &SqliteDialect,
         entities: &[&EntityDescriptor],
     ) -> Result<(), MutationExecutorError> {
         self.ensure_id_space_table(DEFAULT_ID_SPACE_TABLE)?;
@@ -244,19 +244,19 @@ impl RusqliteMutationExecutor {
 }
 
 
-impl SqlTransport for RusqliteMutationExecutor {
+impl SqlTransport for SqliteMutationExecutor {
     type Error = MutationExecutorError;
 
     async fn fetch_all_sql(&self, query: &CompiledQuery) -> Result<Vec<Record>, Self::Error> {
-        RusqliteMutationExecutor::fetch_all(self, query)
+        SqliteMutationExecutor::fetch_all(self, query)
     }
 
     async fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
-        RusqliteMutationExecutor::execute(self, query)
+        SqliteMutationExecutor::execute(self, query)
     }
 }
 
-impl teaql_sql::SqlTransaction for RusqliteMutationExecutor {
+impl teaql_sql::SqlTransaction for SqliteMutationExecutor {
     type Error = MutationExecutorError;
 
     async fn commit_sql(self) -> Result<(), Self::Error> {
@@ -268,7 +268,7 @@ impl teaql_sql::SqlTransaction for RusqliteMutationExecutor {
     }
 }
 
-impl teaql_sql::SqlTransactionTransport for RusqliteMutationExecutor {
+impl teaql_sql::SqlTransactionTransport for SqliteMutationExecutor {
     type Tx<'a> = Self where Self: 'a;
 
     async fn begin_sql(&self) -> Result<Self::Tx<'_>, Self::Error> {
@@ -279,9 +279,9 @@ impl teaql_sql::SqlTransactionTransport for RusqliteMutationExecutor {
 
 
 
-fn initial_graph_exists_rusqlite(
-    executor: &RusqliteMutationExecutor,
-    dialect: &RusqliteDialect,
+fn initial_graph_exists_sqlite(
+    executor: &SqliteMutationExecutor,
+    dialect: &SqliteDialect,
     entity: &EntityDescriptor,
     graph: &GraphNode,
 ) -> Result<bool, MutationExecutorError> {
@@ -332,21 +332,21 @@ fn compile_initial_graph_update(
     }
 }
 
-pub trait RusqliteSchemaExt {
-    fn ensure_rusqlite_schema(
+pub trait SqliteSchemaExt {
+    fn ensure_sqlite_schema(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<(), MutationExecutorError>> + Send + '_>>;
 }
 
-pub fn ensure_rusqlite_schema_for(ctx: &UserContext) -> Result<(), MutationExecutorError> {
-    let dialect = ctx.get_resource::<RusqliteDialect>().ok_or_else(|| {
-        MutationExecutorError::Bind("missing typed resource: RusqliteDialect".to_owned())
+pub fn ensure_sqlite_schema_for(ctx: &UserContext) -> Result<(), MutationExecutorError> {
+    let dialect = ctx.get_resource::<SqliteDialect>().ok_or_else(|| {
+        MutationExecutorError::Bind("missing typed resource: SqliteDialect".to_owned())
     })?;
     let executor = ctx
-        .get_resource::<RusqliteMutationExecutor>()
+        .get_resource::<SqliteMutationExecutor>()
         .ok_or_else(|| {
             MutationExecutorError::Bind(
-                "missing typed resource: RusqliteMutationExecutor".to_owned(),
+                "missing typed resource: SqliteMutationExecutor".to_owned(),
             )
         })?;
 
@@ -401,7 +401,7 @@ pub fn ensure_rusqlite_schema_for(ctx: &UserContext) -> Result<(), MutationExecu
             MutationExecutorError::Bind(format!("missing entity: {}", graph.entity))
         })?;
         let counts = seed_counts.entry(graph.entity.clone()).or_insert((0, 0));
-        if initial_graph_exists_rusqlite(executor, dialect, entity, graph)? {
+        if initial_graph_exists_sqlite(executor, dialect, entity, graph)? {
             if let Some(query) = compile_initial_graph_update(dialect, entity, graph)? {
                 executor.execute(&query)?;
             }
@@ -429,53 +429,53 @@ pub fn ensure_rusqlite_schema_for(ctx: &UserContext) -> Result<(), MutationExecu
     Ok(())
 }
 
-impl RusqliteSchemaExt for UserContext {
-    fn ensure_rusqlite_schema(
+impl SqliteSchemaExt for UserContext {
+    fn ensure_sqlite_schema(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<(), MutationExecutorError>> + Send + '_>> {
-        Box::pin(async move { ensure_rusqlite_schema_for(self) })
+        Box::pin(async move { ensure_sqlite_schema_for(self) })
     }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
-pub struct RusqliteSchemaProvider;
+pub struct SqliteSchemaProvider;
 
-impl SchemaProvider for RusqliteSchemaProvider {
+impl SchemaProvider for SqliteSchemaProvider {
     fn ensure_schema<'a>(
         &'a self,
         ctx: &'a UserContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
-            ensure_rusqlite_schema_for(ctx).map_err(|err| RuntimeError::Schema(err.to_string()))
+            ensure_sqlite_schema_for(ctx).map_err(|err| RuntimeError::Schema(err.to_string()))
         })
     }
 }
 
-pub trait RusqliteProviderExt {
-    fn use_rusqlite_provider(&mut self, executor: RusqliteMutationExecutor) -> &mut Self;
+pub trait SqliteProviderExt {
+    fn use_sqlite_provider(&mut self, executor: SqliteMutationExecutor) -> &mut Self;
 }
 
-impl RusqliteProviderExt for UserContext {
-    fn use_rusqlite_provider(&mut self, executor: RusqliteMutationExecutor) -> &mut Self {
-        self.insert_resource(RusqliteDialect);
+impl SqliteProviderExt for UserContext {
+    fn use_sqlite_provider(&mut self, executor: SqliteMutationExecutor) -> &mut Self {
+        self.insert_resource(SqliteDialect);
         self.insert_resource(executor);
-        self.set_schema_provider(RusqliteSchemaProvider);
+        self.set_schema_provider(SqliteSchemaProvider);
         self
     }
 }
 
 #[derive(Clone)]
-pub struct RusqliteIdSpaceGenerator {
-    executor: RusqliteMutationExecutor,
+pub struct SqliteIdSpaceGenerator {
+    executor: SqliteMutationExecutor,
     table_name: String,
 }
 
-impl RusqliteIdSpaceGenerator {
+impl SqliteIdSpaceGenerator {
     pub fn new(connection: Connection) -> Self {
-        Self::from_executor(RusqliteMutationExecutor::new(connection))
+        Self::from_executor(SqliteMutationExecutor::new(connection))
     }
 
-    pub fn from_executor(executor: RusqliteMutationExecutor) -> Self {
+    pub fn from_executor(executor: SqliteMutationExecutor) -> Self {
         Self {
             executor,
             table_name: DEFAULT_ID_SPACE_TABLE.to_owned(),
@@ -510,7 +510,7 @@ impl RusqliteIdSpaceGenerator {
     }
 }
 
-impl InternalIdGenerator for RusqliteIdSpaceGenerator {
+impl InternalIdGenerator for SqliteIdSpaceGenerator {
     fn generate_id(&self, entity: &str) -> Result<u64, RuntimeError> {
         self.next_id(entity)
             .map_err(|err| RuntimeError::IdGeneration(err.to_string()))
@@ -690,8 +690,8 @@ mod tests {
     }
 
     #[test]
-    fn rusqlite_dialect_compiles_mutations_and_schema() {
-        let insert = RusqliteDialect
+    fn sqlite_dialect_compiles_mutations_and_schema() {
+        let insert = SqliteDialect
             .compile_insert(
                 &entity(),
                 &InsertCommand::new("Order")
@@ -701,7 +701,7 @@ mod tests {
             .unwrap();
         assert_eq!(insert.sql, "INSERT INTO orders (id, name) VALUES (?, ?)");
 
-        let update = RusqliteDialect
+        let update = SqliteDialect
             .compile_update(
                 &entity(),
                 &UpdateCommand::new("Order", 1_u64)
@@ -714,13 +714,13 @@ mod tests {
             "UPDATE orders SET name = ?, version = ? WHERE id = ? AND version = ?"
         );
 
-        let delete = RusqliteDialect
+        let delete = SqliteDialect
             .compile_delete(
                 &entity(),
                 &DeleteCommand::new("Order", 1_u64).expected_version(3),
             )
             .unwrap();
-        let recover = RusqliteDialect
+        let recover = SqliteDialect
             .compile_recover(&entity(), &RecoverCommand::new("Order", 1_u64, -4))
             .unwrap();
         assert_eq!(
@@ -732,7 +732,7 @@ mod tests {
             "UPDATE orders SET version = ? WHERE id = ? AND version = ?"
         );
 
-        let create = RusqliteDialect.compile_create_table(&entity()).unwrap();
+        let create = SqliteDialect.compile_create_table(&entity()).unwrap();
         assert_eq!(
             create,
             "CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY NOT NULL, version INTEGER NOT NULL, name TEXT)"
@@ -740,16 +740,16 @@ mod tests {
     }
 
     #[test]
-    fn rusqlite_executor_ensures_schema_and_roundtrips_rows() {
-        let executor = RusqliteMutationExecutor::new(Connection::open_in_memory().unwrap());
+    fn sqlite_executor_ensures_schema_and_roundtrips_rows() {
+        let executor = SqliteMutationExecutor::new(Connection::open_in_memory().unwrap());
         let entity = entity();
         let mut ctx = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity.clone()));
 
-        ctx.use_rusqlite_provider(executor.clone());
-        ensure_rusqlite_schema_for(&ctx).unwrap();
+        ctx.use_sqlite_provider(executor.clone());
+        ensure_sqlite_schema_for(&ctx).unwrap();
 
-        let insert = RusqliteDialect
+        let insert = SqliteDialect
             .compile_insert(
                 &entity,
                 &InsertCommand::new("Order")
@@ -760,7 +760,7 @@ mod tests {
             .unwrap();
         assert_eq!(executor.execute(&insert).unwrap(), 1);
 
-        let select = RusqliteDialect
+        let select = SqliteDialect
             .compile_select(
                 &entity,
                 &SelectQuery::new("Order")
@@ -776,8 +776,8 @@ mod tests {
     }
 
     #[test]
-    fn rusqlite_executor_parses_json_only_for_json_columns() {
-        let executor = RusqliteMutationExecutor::new(Connection::open_in_memory().unwrap());
+    fn sqlite_executor_parses_json_only_for_json_columns() {
+        let executor = SqliteMutationExecutor::new(Connection::open_in_memory().unwrap());
 
         executor
             .execute(&CompiledQuery {
@@ -816,9 +816,9 @@ mod tests {
     }
 
     #[test]
-    fn rusqlite_id_space_generator_increments_ids() {
-        let executor = RusqliteMutationExecutor::new(Connection::open_in_memory().unwrap());
-        let generator = RusqliteIdSpaceGenerator::from_executor(executor);
+    fn sqlite_id_space_generator_increments_ids() {
+        let executor = SqliteMutationExecutor::new(Connection::open_in_memory().unwrap());
+        let generator = SqliteIdSpaceGenerator::from_executor(executor);
         assert_eq!(generator.next_id("Order").unwrap(), 1);
         assert_eq!(generator.next_id("Order").unwrap(), 2);
     }

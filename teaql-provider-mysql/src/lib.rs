@@ -4,8 +4,6 @@ use std::pin::Pin;
 
 use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
 use rust_decimal::Decimal;
-use sqlx::types::Json;
-use sqlx::{Arguments, Column, Error as SqlxError, Row, TypeInfo, ValueRef, query_with};
 use std::sync::Arc;
 use teaql_core::{
     DataType, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, Record, SelectQuery,
@@ -16,10 +14,12 @@ use teaql_sql::{
     CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, quote_identifier_if_needed,
 };
 use tokio::sync::Mutex;
+use std::str::FromStr;
 
 pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";
-use sqlx::mysql::{MySqlArguments, MySqlPool, MySqlRow};
-use sqlx::{MySql, Transaction};
+
+use mysql_async::prelude::Queryable;
+use mysql_common::constants::ColumnType;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MysqlDialect;
@@ -57,7 +57,8 @@ impl SqlDialect for MysqlDialect {
 
 #[derive(Debug)]
 pub enum MutationExecutorError {
-    Sqlx(SqlxError),
+    MysqlAsync(mysql_async::Error),
+    Pool(String),
     SqlCompile(SqlCompileError),
     UnsupportedValue(&'static str),
     UnsupportedColumnType(String),
@@ -67,30 +68,31 @@ pub enum MutationExecutorError {
 impl std::fmt::Display for MutationExecutorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Sqlx(err) => err.fmt(f),
+            Self::MysqlAsync(err) => err.fmt(f),
+            Self::Pool(msg) => write!(f, "mysql pool error: {msg}"),
             Self::SqlCompile(err) => err.fmt(f),
             Self::UnsupportedValue(kind) => {
                 write!(
                     f,
-                    "unsupported sqlx bind value for mutation executor: {kind}"
+                    "unsupported mysql bind value for mutation executor: {kind}"
                 )
             }
             Self::UnsupportedColumnType(kind) => {
                 write!(
                     f,
-                    "unsupported sqlx column type for record decoding: {kind}"
+                    "unsupported mysql column type for record decoding: {kind}"
                 )
             }
-            Self::Bind(message) => write!(f, "sqlx bind error: {message}"),
+            Self::Bind(message) => write!(f, "mysql bind error: {message}"),
         }
     }
 }
 
 impl std::error::Error for MutationExecutorError {}
 
-impl From<SqlxError> for MutationExecutorError {
-    fn from(value: SqlxError) -> Self {
-        Self::Sqlx(value)
+impl From<mysql_async::Error> for MutationExecutorError {
+    fn from(value: mysql_async::Error) -> Self {
+        Self::MysqlAsync(value)
     }
 }
 
@@ -102,11 +104,11 @@ impl From<SqlCompileError> for MutationExecutorError {
 
 #[derive(Clone)]
 pub struct MysqlMutationExecutor {
-    pool: MySqlPool,
+    pool: mysql_async::Pool,
 }
 
 impl MysqlMutationExecutor {
-    pub fn new(pool: MySqlPool) -> Self {
+    pub fn new(pool: mysql_async::Pool) -> Self {
         Self { pool }
     }
 
@@ -120,7 +122,8 @@ impl MysqlMutationExecutor {
         for entity in entities {
             if !self.table_exists(&entity.table_name).await? {
                 let sql = dialect.compile_create_table(entity)?;
-                sqlx::query(&sql).execute(&self.pool).await?;
+                let mut conn = self.pool.get_conn().await?;
+                conn.exec_drop(&sql, ()).await?;
                 continue;
             }
 
@@ -131,7 +134,8 @@ impl MysqlMutationExecutor {
                     continue;
                 }
                 let sql = dialect.compile_add_column(entity, property)?;
-                sqlx::query(&sql).execute(&self.pool).await?;
+                let mut conn = self.pool.get_conn().await?;
+                conn.exec_drop(&sql, ()).await?;
             }
         }
         Ok(())
@@ -145,60 +149,64 @@ impl MysqlMutationExecutor {
             "CREATE TABLE IF NOT EXISTS {} (type_name VARCHAR(100) PRIMARY KEY, current_level BIGINT NOT NULL)",
             mysql_quote_ident(table_name)
         );
-        sqlx::query(&sql).execute(&self.pool).await?;
+        let mut conn = self.pool.get_conn().await?;
+        conn.exec_drop(&sql, ()).await?;
         Ok(())
     }
 
     pub async fn execute(&self, query: &CompiledQuery) -> Result<u64, MutationExecutorError> {
-        let mut args = MySqlArguments::default();
+        let mut params = Vec::new();
         for value in &query.params {
-            bind_mysql(&mut args, value)?;
+            params.push(bind_mysql(value)?);
         }
-        let result = query_with(&query.sql_with_comment(), args).execute(&self.pool).await?;
-        Ok(result.rows_affected())
+        let mut conn = self.pool.get_conn().await?;
+        conn.exec_drop(&query.sql_with_comment(), mysql_async::Params::Positional(params)).await?;
+        Ok(conn.affected_rows())
     }
 
     pub async fn fetch_all(
         &self,
         query: &CompiledQuery,
     ) -> Result<Vec<Record>, MutationExecutorError> {
-        let mut args = MySqlArguments::default();
+        let mut params = Vec::new();
         for value in &query.params {
-            bind_mysql(&mut args, value)?;
+            params.push(bind_mysql(value)?);
         }
-        let rows = query_with(&query.sql_with_comment(), args).fetch_all(&self.pool).await?;
-        rows.iter().map(decode_mysql_row).collect()
+        let mut conn = self.pool.get_conn().await?;
+        let rows: Vec<mysql_async::Row> = conn.exec(&query.sql_with_comment(), mysql_async::Params::Positional(params)).await?;
+        let mut records = Vec::new();
+        for row in rows {
+            records.push(decode_mysql_row(row)?);
+        }
+        Ok(records)
     }
 
     async fn table_exists(&self, table_name: &str) -> Result<bool, MutationExecutorError> {
-        let exists = sqlx::query_scalar::<_, i64>(
+        let mut conn = self.pool.get_conn().await?;
+        let exists: Option<i64> = conn.exec_first(
             "SELECT COUNT(1)
              FROM information_schema.tables
              WHERE table_schema = DATABASE()
                AND table_name = ?",
-        )
-        .bind(table_name)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(exists > 0)
+            (table_name,)
+        ).await?;
+        Ok(exists.unwrap_or(0) > 0)
     }
 
     async fn table_columns(
         &self,
         table_name: &str,
     ) -> Result<std::collections::BTreeSet<String>, MutationExecutorError> {
-        let rows = sqlx::query(
-            "SELECT CAST(column_name AS CHAR) AS column_name
+        let mut conn = self.pool.get_conn().await?;
+        let rows: Vec<String> = conn.exec(
+            "SELECT CAST(column_name AS CHAR)
              FROM information_schema.columns
              WHERE table_schema = DATABASE()
                AND table_name = ?",
-        )
-        .bind(table_name)
-        .fetch_all(&self.pool)
-        .await?;
+            (table_name,)
+        ).await?;
         let mut columns = std::collections::BTreeSet::new();
-        for row in rows {
-            let name: String = row.try_get("column_name")?;
+        for name in rows {
             columns.insert(name.to_lowercase());
         }
         Ok(columns)
@@ -291,68 +299,66 @@ async fn initial_graph_exists_mysql(
 
 #[derive(Clone)]
 pub struct MysqlTransactionExecutor {
-    transaction: Arc<Mutex<Option<Transaction<'static, MySql>>>>,
+    conn: Arc<Mutex<Option<mysql_async::Conn>>>,
 }
 
 impl MysqlTransactionExecutor {
-    pub async fn begin(pool: &MySqlPool) -> Result<Self, MutationExecutorError> {
+    pub async fn begin(pool: &mysql_async::Pool) -> Result<Self, MutationExecutorError> {
+        let mut conn = pool.get_conn().await?;
+        conn.query_drop("START TRANSACTION").await?;
         Ok(Self {
-            transaction: Arc::new(Mutex::new(Some(pool.begin().await?))),
+            conn: Arc::new(Mutex::new(Some(conn))),
         })
     }
 
     pub async fn execute(&self, query: &CompiledQuery) -> Result<u64, MutationExecutorError> {
-        let mut transaction = self.transaction.lock().await;
-        let transaction = transaction
-            .as_mut()
-            .ok_or_else(|| MutationExecutorError::Bind("mysql transaction is closed".to_owned()))?;
-        let mut args = MySqlArguments::default();
+        let mut params = Vec::new();
         for value in &query.params {
-            bind_mysql(&mut args, value)?;
+            params.push(bind_mysql(value)?);
         }
-        let result = query_with(&query.sql_with_comment(), args)
-            .execute(&mut **transaction)
-            .await?;
-        Ok(result.rows_affected())
+        let mut lock = self.conn.lock().await;
+        let conn = lock.as_mut().ok_or_else(|| MutationExecutorError::Bind("mysql transaction is closed".to_owned()))?;
+        conn.exec_drop(&query.sql_with_comment(), mysql_async::Params::Positional(params)).await?;
+        Ok(conn.affected_rows())
     }
 
     pub async fn fetch_all(
         &self,
         query: &CompiledQuery,
     ) -> Result<Vec<Record>, MutationExecutorError> {
-        let mut transaction = self.transaction.lock().await;
-        let transaction = transaction
-            .as_mut()
-            .ok_or_else(|| MutationExecutorError::Bind("mysql transaction is closed".to_owned()))?;
-        let mut args = MySqlArguments::default();
+        let mut params = Vec::new();
         for value in &query.params {
-            bind_mysql(&mut args, value)?;
+            params.push(bind_mysql(value)?);
         }
-        let rows = query_with(&query.sql_with_comment(), args)
-            .fetch_all(&mut **transaction)
-            .await?;
-        rows.iter().map(decode_mysql_row).collect()
+        let mut lock = self.conn.lock().await;
+        let conn = lock.as_mut().ok_or_else(|| MutationExecutorError::Bind("mysql transaction is closed".to_owned()))?;
+        let rows: Vec<mysql_async::Row> = conn.exec(&query.sql_with_comment(), mysql_async::Params::Positional(params)).await?;
+        let mut records = Vec::new();
+        for row in rows {
+            records.push(decode_mysql_row(row)?);
+        }
+        Ok(records)
     }
 
     pub async fn commit(&self) -> Result<(), MutationExecutorError> {
-        let transaction = self.transaction.lock().await.take();
-        let Some(transaction) = transaction else {
+        let conn_opt = self.conn.lock().await.take();
+        let Some(mut conn) = conn_opt else {
             return Err(MutationExecutorError::Bind(
                 "mysql transaction is closed".to_owned(),
             ));
         };
-        transaction.commit().await?;
+        conn.query_drop("COMMIT").await?;
         Ok(())
     }
 
     pub async fn rollback(&self) -> Result<(), MutationExecutorError> {
-        let transaction = self.transaction.lock().await.take();
-        let Some(transaction) = transaction else {
+        let conn_opt = self.conn.lock().await.take();
+        let Some(mut conn) = conn_opt else {
             return Err(MutationExecutorError::Bind(
                 "mysql transaction is closed".to_owned(),
             ));
         };
-        transaction.rollback().await?;
+        conn.query_drop("ROLLBACK").await?;
         Ok(())
     }
 }
@@ -397,7 +403,7 @@ pub trait MysqlSchemaExt {
     ) -> Pin<Box<dyn Future<Output = Result<(), MutationExecutorError>> + '_>>;
 }
 
-async fn ensure_mysql_schema_for(ctx: &UserContext) -> Result<(), MutationExecutorError> {
+pub async fn ensure_mysql_schema_for(ctx: &UserContext) -> Result<(), MutationExecutorError> {
     let dialect = ctx.get_resource::<MysqlDialect>().ok_or_else(|| {
         MutationExecutorError::Bind("missing typed resource: MysqlDialect".to_owned())
     })?;
@@ -450,12 +456,12 @@ impl MysqlProviderExt for UserContext {
 
 #[derive(Clone)]
 pub struct MysqlIdSpaceGenerator {
-    pool: MySqlPool,
+    pool: mysql_async::Pool,
     table_name: String,
 }
 
 impl MysqlIdSpaceGenerator {
-    pub fn new(pool: MySqlPool) -> Self {
+    pub fn new(pool: mysql_async::Pool) -> Self {
         Self {
             pool,
             table_name: DEFAULT_ID_SPACE_TABLE.to_owned(),
@@ -480,12 +486,10 @@ impl MysqlIdSpaceGenerator {
              ON DUPLICATE KEY UPDATE current_level = LAST_INSERT_ID(current_level + 1)",
             mysql_quote_ident(&self.table_name)
         );
-        let mut conn = self.pool.acquire().await?;
-        sqlx::query(&sql).bind(entity).execute(&mut *conn).await?;
-        let id: u64 = sqlx::query_scalar("SELECT LAST_INSERT_ID()")
-            .fetch_one(&mut *conn)
-            .await?;
-        Ok(id)
+        let mut conn = self.pool.get_conn().await?;
+        conn.exec_drop(&sql, (entity,)).await?;
+        let id: Option<u64> = conn.query_first("SELECT LAST_INSERT_ID()").await?;
+        Ok(id.unwrap_or(0))
     }
 }
 
@@ -518,9 +522,6 @@ fn mysql_quote_ident(ident: &str) -> String {
     quote_identifier_if_needed(ident, '`')
 }
 
-/// Strip wrapping identifier quotes from a SQL identifier so that bare column
-/// names returned by `information_schema.columns` can be compared with
-/// potentially-quoted `PropertyDescriptor::column_name` values.
 fn strip_identifier_quotes(ident: &str) -> &str {
     let bytes = ident.as_bytes();
     if bytes.len() >= 2 {
@@ -535,127 +536,118 @@ fn strip_identifier_quotes(ident: &str) -> &str {
     ident
 }
 
-fn bind_mysql(args: &mut MySqlArguments, value: &Value) -> Result<(), MutationExecutorError> {
+fn bind_mysql(value: &Value) -> Result<mysql_async::Value, MutationExecutorError> {
     match value {
-        Value::Null => {
-            let v: Option<String> = None;
-            args.add(v)
-                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?;
-        }
-        Value::Bool(v) => args
-            .add(*v)
-            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
-        Value::I64(v) => args
-            .add(*v)
-            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
+        Value::Null => Ok(mysql_async::Value::NULL),
+        Value::Bool(v) => Ok(mysql_async::Value::Int(if *v { 1 } else { 0 })),
+        Value::I64(v) => Ok(mysql_async::Value::Int(*v)),
         Value::U64(v) => {
             let v = i64::try_from(*v).map_err(|_| {
                 MutationExecutorError::Bind(format!("u64 value {v} exceeds i64 range"))
             })?;
-            args.add(v)
-                .map_err(|err| MutationExecutorError::Bind(err.to_string()))?
+            Ok(mysql_async::Value::Int(v))
         }
-        Value::F64(v) => args
-            .add(*v)
-            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
-        Value::Decimal(v) => args
-            .add(*v)
-            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
-        Value::Text(v) => args
-            .add(v.clone())
-            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
-        Value::Json(v) => args
-            .add(Json(v.clone()))
-            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
-        Value::Date(v) => args
-            .add(*v)
-            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
-        Value::Timestamp(v) => args
-            .add(v.naive_utc())
-            .map_err(|err| MutationExecutorError::Bind(err.to_string()))?,
-        Value::Object(_) => return Err(MutationExecutorError::UnsupportedValue("object")),
-        Value::List(_) => return Err(MutationExecutorError::UnsupportedValue("list")),
+        Value::F64(v) => Ok(mysql_async::Value::Double(*v)),
+        Value::Decimal(v) => Ok(mysql_async::Value::Bytes(v.to_string().into_bytes())),
+        Value::Text(v) => Ok(mysql_async::Value::Bytes(v.clone().into_bytes())),
+        Value::Json(v) => Ok(mysql_async::Value::Bytes(serde_json::to_string(v).unwrap_or_default().into_bytes())),
+        Value::Date(v) => Ok(mysql_async::Value::Bytes(v.to_string().into_bytes())),
+        Value::Timestamp(v) => Ok(mysql_async::Value::Bytes(v.naive_utc().to_string().into_bytes())),
+        Value::Object(_) => Err(MutationExecutorError::UnsupportedValue("object")),
+        Value::List(_) => Err(MutationExecutorError::UnsupportedValue("list")),
     }
-    Ok(())
 }
 
-fn decode_mysql_row(row: &MySqlRow) -> Result<Record, MutationExecutorError> {
+fn decode_mysql_row(row: mysql_async::Row) -> Result<Record, MutationExecutorError> {
     let mut record = BTreeMap::new();
-    for (index, column) in row.columns().iter().enumerate() {
-        let name = column.name().to_owned();
-        let raw = row
-            .try_get_raw(index)
-            .map_err(MutationExecutorError::Sqlx)?;
-        if raw.is_null() {
+    for index in 0..row.len() {
+        let column = row.columns_ref()[index].clone();
+        let name = column.name_str().into_owned();
+        let val_opt = row
+            .get_opt::<mysql_async::Value, _>(index)
+            .ok_or_else(|| MutationExecutorError::Bind(format!("missing col {index}")))?
+            .map_err(|e| MutationExecutorError::Bind(e.to_string()))?;
+
+        if val_opt == mysql_async::Value::NULL {
             record.insert(name, Value::Null);
             continue;
         }
-        let type_name = column.type_info().name().to_ascii_uppercase();
-        let value = match type_name.as_str() {
-            "BOOL" | "BOOLEAN" => {
-                Value::Bool(row.try_get(index).map_err(MutationExecutorError::Sqlx)?)
-            }
-            "TINYINT" => {
-                let value: i8 = row.try_get(index).map_err(MutationExecutorError::Sqlx)?;
-                match value {
+
+        let value = match column.column_type() {
+            ColumnType::MYSQL_TYPE_TINY => {
+                let v: i8 = row.get_opt(index).unwrap().map_err(|e| MutationExecutorError::Bind(e.to_string()))?;
+                match v {
                     0 => Value::Bool(false),
                     1 => Value::Bool(true),
-                    _ => Value::I64(value as i64),
+                    _ => Value::I64(v as i64),
                 }
             }
-            "SMALLINT" | "SHORT" => Value::I64(
-                row.try_get::<i16, _>(index)
-                    .map_err(MutationExecutorError::Sqlx)? as i64,
-            ),
-            "INT" | "INTEGER" | "MEDIUMINT" | "LONG" => Value::I64(
-                row.try_get::<i32, _>(index)
-                    .map_err(MutationExecutorError::Sqlx)? as i64,
-            ),
-            "BIGINT" | "LONGLONG" | "BIGINT UNSIGNED" | "UNSIGNED BIGINT" => {
-                decode_mysql_bigint(row, index)?
+            ColumnType::MYSQL_TYPE_SHORT => {
+                let v: i16 = row.get_opt(index).unwrap().map_err(|e| MutationExecutorError::Bind(e.to_string()))?;
+                Value::I64(v as i64)
             }
-            "FLOAT" => Value::F64(
-                row.try_get::<f32, _>(index)
-                    .map_err(MutationExecutorError::Sqlx)? as f64,
-            ),
-            "DOUBLE" => Value::F64(row.try_get(index).map_err(MutationExecutorError::Sqlx)?),
-            "DECIMAL" | "NEWDECIMAL" => Value::Decimal(
-                row.try_get::<Decimal, _>(index)
-                    .map_err(MutationExecutorError::Sqlx)?,
-            ),
-            "JSON" => {
-                let Json(value) = row.try_get(index).map_err(MutationExecutorError::Sqlx)?;
-                Value::Json(value)
+            ColumnType::MYSQL_TYPE_INT24 | ColumnType::MYSQL_TYPE_LONG => {
+                let v: i32 = row.get_opt(index).unwrap().map_err(|e| MutationExecutorError::Bind(e.to_string()))?;
+                Value::I64(v as i64)
             }
-            "DATE" => Value::Date(
-                row.try_get::<NaiveDate, _>(index)
-                    .map_err(MutationExecutorError::Sqlx)?,
-            ),
-            "DATETIME" | "TIMESTAMP" => {
-                let value: NaiveDateTime =
-                    row.try_get(index).map_err(MutationExecutorError::Sqlx)?;
-                Value::Timestamp(Utc.from_utc_datetime(&value))
+            ColumnType::MYSQL_TYPE_LONGLONG => {
+                match val_opt {
+                    mysql_async::Value::Int(v) => Value::I64(v),
+                    mysql_async::Value::UInt(v) => Value::U64(v),
+                    mysql_async::Value::Bytes(b) => {
+                        let s = String::from_utf8(b).unwrap_or_default();
+                        if let Ok(v) = s.parse::<i64>() {
+                            Value::I64(v)
+                        } else if let Ok(v) = s.parse::<u64>() {
+                            Value::U64(v)
+                        } else {
+                            Value::I64(0)
+                        }
+                    }
+                    _ => return Err(MutationExecutorError::UnsupportedColumnType(format!("{:?}", column.column_type()))),
+                }
             }
-            "TEXT" | "VARCHAR" | "CHAR" | "VAR_STRING" | "STRING" => {
-                Value::Text(row.try_get(index).map_err(MutationExecutorError::Sqlx)?)
+            ColumnType::MYSQL_TYPE_FLOAT => {
+                let v: f32 = row.get_opt(index).unwrap().map_err(|e| MutationExecutorError::Bind(e.to_string()))?;
+                Value::F64(v as f64)
+            }
+            ColumnType::MYSQL_TYPE_DOUBLE => {
+                let v: f64 = row.get_opt(index).unwrap().map_err(|e| MutationExecutorError::Bind(e.to_string()))?;
+                Value::F64(v)
+            }
+            ColumnType::MYSQL_TYPE_DECIMAL | ColumnType::MYSQL_TYPE_NEWDECIMAL => {
+                let s: String = row.get_opt(index).unwrap().map_err(|e| MutationExecutorError::Bind(e.to_string()))?;
+                Value::Decimal(Decimal::from_str(&s).unwrap_or_default())
+            }
+            ColumnType::MYSQL_TYPE_JSON => {
+                let s: String = row.get_opt(index).unwrap().map_err(|e| MutationExecutorError::Bind(e.to_string()))?;
+                Value::Json(serde_json::from_str(&s).unwrap_or(serde_json::Value::Null))
+            }
+            ColumnType::MYSQL_TYPE_DATE => {
+                let d: NaiveDate = row.get_opt(index).unwrap().map_err(|e| MutationExecutorError::Bind(e.to_string()))?;
+                Value::Date(d)
+            }
+            ColumnType::MYSQL_TYPE_DATETIME | ColumnType::MYSQL_TYPE_TIMESTAMP => {
+                let dt: NaiveDateTime = row.get_opt(index).unwrap().map_err(|e| MutationExecutorError::Bind(e.to_string()))?;
+                Value::Timestamp(Utc.from_utc_datetime(&dt))
+            }
+            ColumnType::MYSQL_TYPE_STRING
+            | ColumnType::MYSQL_TYPE_VAR_STRING
+            | ColumnType::MYSQL_TYPE_VARCHAR
+            | ColumnType::MYSQL_TYPE_BLOB
+            | ColumnType::MYSQL_TYPE_TINY_BLOB
+            | ColumnType::MYSQL_TYPE_MEDIUM_BLOB
+            | ColumnType::MYSQL_TYPE_LONG_BLOB => {
+                let s: String = row.get_opt(index).unwrap().map_err(|e| MutationExecutorError::Bind(e.to_string()))?;
+                Value::Text(s)
             }
             other => {
-                return Err(MutationExecutorError::UnsupportedColumnType(
-                    other.to_owned(),
-                ));
+                return Err(MutationExecutorError::UnsupportedColumnType(format!("{:?}", other)));
             }
         };
         record.insert(name, value);
     }
     Ok(record)
-}
-
-fn decode_mysql_bigint(row: &MySqlRow, index: usize) -> Result<Value, MutationExecutorError> {
-    if let Ok(value) = row.try_get::<i64, _>(index) {
-        return Ok(Value::I64(value));
-    }
-    let value: u64 = row.try_get(index).map_err(MutationExecutorError::Sqlx)?;
-    Ok(Value::U64(value))
 }
 
 #[cfg(test)]

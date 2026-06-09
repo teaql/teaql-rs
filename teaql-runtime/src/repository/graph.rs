@@ -1063,20 +1063,6 @@ where
         })
     }
 
-    pub async fn fetch_graph_current_row(
-        &self,
-        entity: &str,
-        id_property: &str,
-        id: &Value,
-        trace_chain: Vec<teaql_core::TraceNode>,
-    ) -> Result<Option<Record>, RepositoryError<E::Error>> {
-        let mut query = SelectQuery::new(entity).filter(Expr::eq(id_property, id.clone()));
-        query.trace_chain = trace_chain;
-        let mut rows = self
-            .scoped_repository(entity.to_owned())
-            .fetch_all(&query).await?;
-        Ok(rows.pop())
-    }
 
     async fn fetch_graph_children(
         &self,
@@ -1088,5 +1074,132 @@ where
         let mut query = SelectQuery::new(entity).filter(Expr::eq(foreign_key, parent_value.clone()));
         query.trace_chain = trace_chain;
         self.scoped_repository(entity.to_owned()).fetch_all(&query).await
+    }
+    pub async fn fetch_graph_current_row(
+        &self,
+        entity: &str,
+        id_property: &str,
+        id: &teaql_core::Value,
+        trace_chain: Vec<teaql_core::TraceNode>,
+    ) -> Result<Option<Record>, RepositoryError<E::Error>> {
+        let mut query = teaql_core::SelectQuery::new(entity).filter(teaql_core::Expr::eq(id_property, id.clone()));
+        query.trace_chain = trace_chain;
+        let mut rows = self
+            .scoped_repository(entity.to_owned())
+            .fetch_all(&query).await?;
+        Ok(rows.pop())
+    }
+
+    pub async fn execute_ledger_plan(&self, root: crate::EntityRoot) -> Result<(), RepositoryError<E::Error>> {
+        let comment = root.get_comment();
+        let trace_chain = comment.map(|c| vec![teaql_core::TraceNode {
+            entity_type: self.entity.clone(),
+            entity_id: None,
+            comment: c,
+        }]).unwrap_or_default();
+
+        let deleted_keys = root.deleted_keys();
+        let new_keys = root.new_keys();
+        let change_set = root.current_change_set();
+        
+        // 1. Execute Deletes
+        for key in deleted_keys.iter() {
+            let id = key.id.clone();
+            let mut cmd = teaql_core::DeleteCommand::new(&key.entity, id);
+            if let Some(version) = root.get_original_version(key) {
+                cmd = cmd.expected_version(version);
+            }
+            let t = root.get_trace_chain(key);
+            cmd.trace_chain = if t.is_empty() { trace_chain.clone() } else { t };
+            self.delete(&cmd).await?;
+        }
+
+        // 2. Execute Updates and Inserts
+        let mut update_batches: std::collections::BTreeMap<(String, String), Vec<crate::EntityKey>> = std::collections::BTreeMap::new();
+        let mut insert_batches: std::collections::BTreeMap<String, Vec<crate::EntityKey>> = std::collections::BTreeMap::new();
+
+        for (key, record) in change_set.changes() {
+            if deleted_keys.contains(key) {
+                continue;
+            }
+            let mut is_new = new_keys.contains(key);
+            
+            if !is_new {
+                let descriptor = self.repository.metadata.context.require_entity(&key.entity).map_err(RepositoryError::Runtime)?;
+                let id_property = descriptor.id_property().ok_or_else(|| {
+                    RepositoryError::Runtime(RuntimeError::Graph(format!("entity {} has no id property", key.entity)))
+                })?;
+                let t = root.get_trace_chain(key);
+                let my_trace = if t.is_empty() { trace_chain.clone() } else { t };
+                let current_row = self.fetch_graph_current_row(&key.entity, &id_property.name, &key.id, my_trace).await?;
+                if current_row.is_none() {
+                    is_new = true;
+                }
+            }
+            
+            if is_new {
+                insert_batches.entry(key.entity.clone()).or_default().push(key.clone());
+            } else {
+                let mut fields: Vec<String> = record.keys().cloned().collect();
+                fields.sort();
+                let signature = fields.join(",");
+                update_batches.entry((key.entity.clone(), signature)).or_default().push(key.clone());
+            }
+        }
+
+        let mut insert_order: Vec<String> = insert_batches.keys().cloned().collect();
+        insert_order.sort();
+        println!("execute_ledger_plan: insert_batches={:?}", insert_order);
+        
+        for entity in insert_order {
+            let keys = insert_batches.get(&entity).unwrap();
+            let descriptor = self.repository.metadata.context.require_entity(&entity).map_err(RepositoryError::Runtime)?;
+            let mut cmd = teaql_core::BatchInsertCommand::new(&descriptor.table_name);
+            let mut traces = Vec::new();
+            for key in keys {
+                let record = change_set.changes().get(key).unwrap();
+                let mut db_record = Record::new();
+                db_record.insert("id".to_owned(), key.id.clone());
+                for (field, value) in record {
+                    db_record.insert(field.clone(), value.clone());
+                }
+                crate::repository::helpers::ensure_initial_version(&mut db_record, descriptor);
+                cmd.batch_values.push(db_record);
+                let t = root.get_trace_chain(key);
+                let my_trace = if t.is_empty() { trace_chain.clone() } else { t };
+                traces.push(my_trace);
+            }
+            cmd.trace_chains = traces;
+            self.execute_prepared_batch_insert(cmd).await?;
+        }
+
+        let mut update_order: Vec<(String, String)> = update_batches.keys().cloned().collect();
+        update_order.sort();
+        println!("execute_ledger_plan: update_batches={:?}", update_order);
+
+        for signature in update_order {
+            let keys = update_batches.get(&signature).unwrap();
+            let descriptor = self.repository.metadata.context.require_entity(&signature.0).map_err(RepositoryError::Runtime)?;
+            let mut update_fields: Vec<String> = signature.0.split(',').map(|s| s.to_string()).collect();
+            let mut cmd = teaql_core::BatchUpdateCommand::new(&descriptor.table_name, update_fields);
+            let mut traces = Vec::new();
+            for key in keys {
+                let record = change_set.changes().get(key).unwrap();
+                let mut db_record = Record::new();
+                db_record.insert("id".to_owned(), key.id.clone());
+                for (field, value) in record {
+                    db_record.insert(field.clone(), value.clone());
+                }
+                crate::repository::helpers::increment_version(&mut db_record, descriptor, root.get_original_version(key));
+                cmd.batch_values.push(db_record);
+                let t = root.get_trace_chain(key);
+                let my_trace = if t.is_empty() { trace_chain.clone() } else { t };
+                traces.push(my_trace);
+            }
+            cmd.trace_chains = traces;
+            self.execute_prepared_batch_update(cmd).await?;
+        }
+
+        Ok(())
     }
 }
