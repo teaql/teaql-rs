@@ -7,7 +7,7 @@ use teaql_provider_sqlite::{SqliteDialect, SqliteMutationExecutor};
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let connection = rusqlite::Connection::open_in_memory()?;
-    let executor = SqliteMutationExecutor::new(connection);
+    let executor = SqliteMutationExecutor::from_connection(connection);
     reset_sqlite_schema(&executor).await?;
 
     let ctx = sqlite_context(executor);

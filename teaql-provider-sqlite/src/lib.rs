@@ -131,12 +131,12 @@ pub struct SqliteMutationExecutor {
 }
 
 impl SqliteMutationExecutor {
-    pub fn new(connection: Connection) -> Self {
-        Self::from_shared_connection(Arc::new(Mutex::new(connection)))
+    pub fn new(connection: Arc<Mutex<Connection>>) -> Self {
+        Self { connection }
     }
 
-    pub fn from_shared_connection(connection: Arc<Mutex<Connection>>) -> Self {
-        Self { connection }
+    pub fn from_connection(connection: Connection) -> Self {
+        Self::new(Arc::new(Mutex::new(connection)))
     }
 
     pub fn connection(&self) -> Arc<Mutex<Connection>> {
@@ -472,7 +472,7 @@ pub struct SqliteIdSpaceGenerator {
 
 impl SqliteIdSpaceGenerator {
     pub fn new(connection: Connection) -> Self {
-        Self::from_executor(SqliteMutationExecutor::new(connection))
+        Self::from_executor(SqliteMutationExecutor::from_connection(connection))
     }
 
     pub fn from_executor(executor: SqliteMutationExecutor) -> Self {
@@ -741,7 +741,7 @@ mod tests {
 
     #[test]
     fn sqlite_executor_ensures_schema_and_roundtrips_rows() {
-        let executor = SqliteMutationExecutor::new(Connection::open_in_memory().unwrap());
+        let executor = SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
         let entity = entity();
         let mut ctx = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity.clone()));
@@ -777,7 +777,7 @@ mod tests {
 
     #[test]
     fn sqlite_executor_parses_json_only_for_json_columns() {
-        let executor = SqliteMutationExecutor::new(Connection::open_in_memory().unwrap());
+        let executor = SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
 
         executor
             .execute(&CompiledQuery {
@@ -817,7 +817,7 @@ mod tests {
 
     #[test]
     fn sqlite_id_space_generator_increments_ids() {
-        let executor = SqliteMutationExecutor::new(Connection::open_in_memory().unwrap());
+        let executor = SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
         let generator = SqliteIdSpaceGenerator::from_executor(executor);
         assert_eq!(generator.next_id("Order").unwrap(), 1);
         assert_eq!(generator.next_id("Order").unwrap(), 2);
