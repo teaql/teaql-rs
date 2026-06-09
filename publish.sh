@@ -2,10 +2,11 @@
 set -e
 
 CRATES=(
-  "teaql-data-service"
+  "teaql-core"
   "teaql-sql"
   "teaql-macros"
   "teaql-runtime"
+  "teaql-data-service"
   "teaql-provider-sqlite"
   "teaql-provider-postgres"
   "teaql-provider-mysql"
