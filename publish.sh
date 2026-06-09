@@ -2,15 +2,13 @@
 set -e
 
 CRATES=(
-  "teaql-core"
   "teaql-data-service"
   "teaql-sql"
   "teaql-macros"
   "teaql-runtime"
-  "teaql-provider-rusqlite"
-  "teaql-provider-sqlx-postgres"
-  "teaql-provider-sqlx-sqlite"
-  "teaql-provider-sqlx-mysql"
+  "teaql-provider-sqlite"
+  "teaql-provider-postgres"
+  "teaql-provider-mysql"
   "teaql-provider-meilisearch"
   "teaql-cache-integration-redis"
   "teaql-web-integration-axum"
