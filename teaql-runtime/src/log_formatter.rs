@@ -53,6 +53,9 @@ impl LogFormatter for HumanReaderFormatter {
         
         let mut field_changes = Vec::new();
         for change in &event.changes {
+            if change.field.starts_with('_') {
+                continue;
+            }
             let val = change.new_value.as_ref().map(|v| format!("{:?}", v)).unwrap_or_else(|| "null".to_string());
             field_changes.push(format!("{}: {}", change.field, val));
         }

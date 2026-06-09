@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use teaql_core::{EntityDescriptor, Record, Value};
 use teaql_data_service::{
     DataServiceCapabilities, DataServiceExecutor, DataServiceOperation, ExecutionMetadata,

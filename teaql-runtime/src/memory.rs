@@ -316,8 +316,9 @@ where
             );
         };
 
-        if let Some(expected_version) = command.expected_version {
-            if row.get(version_property) != Some(&Value::I64(expected_version)) {
+        if let Some(expected) = command.expected_version {
+            if row.get(version_property) != Some(&Value::I64(expected)) {
+                println!("OptimisticLockConflict in memory.rs update! entity={}, id={:?}, expected={}, existing={:?}", command.entity, command.id, expected, row.get(version_property));
                 return Err(RepositoryError::Runtime(
                     RuntimeError::OptimisticLockConflict {
                         entity: command.entity.clone(),
@@ -327,7 +328,7 @@ where
             }
             row.insert(
                 version_property.to_owned(),
-                Value::I64(expected_version + 1),
+                Value::I64(expected + 1),
             );
         }
 

@@ -25,7 +25,8 @@ where
                 self.entity, node.entity
             ))));
         }
-        self.upsert_graph_node_scoped(node, None).await
+        let plan = self.plan_graph(node).await?;
+        self.execute_graph_plan(plan).await
     }
 
     pub async fn save_entity_graph_from(&self, graph: teaql_core::EntityGraph) -> Result<GraphNode, RepositoryError<E::Error>> {
@@ -154,7 +155,7 @@ where
         };
 
         for batch in plan.batches {
-            if batch.items.is_empty() {
+            if batch.items.is_empty() || (matches!(batch.kind, GraphMutationKind::Update) && batch.update_fields.is_empty()) {
                 continue;
             }
             match batch.kind {
@@ -171,6 +172,9 @@ where
                     self.execute_prepared_batch_insert(cmd).await?;
                 }
                 GraphMutationKind::Update => {
+                    if batch.update_fields.is_empty() {
+                        continue;
+                    }
                     let mut cmd = teaql_core::BatchUpdateCommand::new(&batch.entity, batch.update_fields);
                     for item in batch.items {
                         let id = item.values.get("id").cloned().ok_or_else(|| {
@@ -312,6 +316,12 @@ where
                 .filter(|value| !is_unassigned_id_value(value))
                 .cloned()
         });
+
+        if let Some(id_val) = &id {
+            if !plan.visited_nodes.insert((node.entity.clone(), graph_identity_key(id_val))) {
+                return Ok(());
+            }
+        }
 
         let is_create_op = node.operation == GraphOperation::Create || (parent_is_create && node.operation == GraphOperation::Upsert);
 
@@ -807,6 +817,7 @@ where
                 if let Some(Value::I64(expected_version)) = node.values.get(&version_property.name)
                 {
                     if expected_version != existing_version {
+                        println!("OptimisticLockConflict in validate_reference_node! entity={}, expected={}, existing={}", node.entity, expected_version, existing_version);
                         return Err(RepositoryError::Runtime(
                             RuntimeError::OptimisticLockConflict {
                                 entity: node.entity,
@@ -893,6 +904,24 @@ where
             if field == "_comment" {
                 if let Value::Text(comment) = value {
                     node.set_comment(comment);
+                }
+                continue;
+            }
+            if field == "_dirty_fields" {
+                if let Value::List(fields) = value {
+                    let mut dirty = std::collections::BTreeSet::new();
+                    for f in fields {
+                        if let Value::Text(t) = f {
+                            dirty.insert(t);
+                        }
+                    }
+                    node.dirty_fields = Some(dirty);
+                }
+                continue;
+            }
+            if field == "_original_values" {
+                if let Value::Object(orig) = value {
+                    node.original_values = Some(orig);
                 }
                 continue;
             }

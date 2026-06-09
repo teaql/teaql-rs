@@ -335,6 +335,13 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 if let Some(comment) = self.get_comment() {
                     record.insert("_comment".to_owned(), ::teaql_core::Value::Text(comment));
                 }
+                if let Some(dirty_fields) = self.dirty_fields() {
+                    let fields: Vec<::teaql_core::Value> = dirty_fields.into_iter().map(::teaql_core::Value::Text).collect();
+                    record.insert("_dirty_fields".to_owned(), ::teaql_core::Value::List(fields));
+                }
+                if let Some(original_values) = self.original_values() {
+                    record.insert("_original_values".to_owned(), ::teaql_core::Value::Object(original_values));
+                }
                 #(#into_record_fields)*
                 record
             }

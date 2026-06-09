@@ -354,6 +354,14 @@ Current examples cover:
 - PostgreSQL `soundlike`/`SOUNDEX`, array-bound large IN, expression projection/sort, extended aggregates, and `HAVING`
 - Generated-service validation with high-level `Q` APIs covers complex object commit, subtrait-style DDD methods, JSON serialization, JSON-expression search, and simple-to-relation statistics against SQLite
 
+## Environment Variables
+
+TeaQL supports the following environment variables for configuration and debugging:
+
+- `TEAQL_LOG_ENDPOINT`: If set, specifies an absolute file path where TeaQL will append all internal execution logs (e.g., SQL queries, audit events). This allows external AI agents or log-collectors to analyze the runtime execution of the framework directly.
+- `TEAQL_LOG_FORMAT`: Controls the format of the output log specified by `TEAQL_LOG_ENDPOINT`. Can be set to `json` (or `debug`) for structured JSON logging, or `human` (default) for human-readable output.
+- `TEAQL_TEST_PG_URL`: The PostgreSQL connection URL used during tests and examples.
+
 ## Next steps
 
 1. Expand `MemoryRepository` toward relation enhancement and richer parity with the SQL-backed path.
