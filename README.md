@@ -30,7 +30,7 @@ The Rust rewrite keeps the scope deliberately narrow:
 
 Progress tracking lives in [PROGRESS.md](./PROGRESS.md).
 
-Current published release: `2.0.0`.
+Current published release: `4.0.0`.
 
 ## Try It
 
@@ -71,9 +71,9 @@ let platforms = Q::platforms()
 - `teaql-core`: metadata, entity traits, base entity data, values, filters, ordering, aggregates, query model, and `SmartList<T>`
 - `teaql-sql`: SQL dialect trait, compiled query types, DDL helpers, and AST-to-SQL compiler
 - `teaql-runtime`: minimal runtime mechanism, `UserContext`, metadata lookup, repository boundary, repository registry, behavior registry, checker registry, entity event sink, id generation, `RuntimeModule`, and in-memory execution
-- `teaql-provider-sqlx-postgres`: PostgreSQL SQLx adapter, schema bootstrap, transaction wrapper, row decoding, and ID-space generator
-- `teaql-provider-sqlx-sqlite`: SQLite SQLx adapter, schema bootstrap, transaction wrapper, row decoding, and ID-space generator
-- `teaql-provider-sqlx-mysql`: MySQL SQLx adapter, schema bootstrap, transaction wrapper, row decoding, and ID-space generator
+- `teaql-provider-postgres`: PostgreSQL native adapter (deadpool-postgres), schema bootstrap, transaction wrapper, row decoding, and ID-space generator
+- `teaql-provider-sqlite`: SQLite native adapter (rusqlite), schema bootstrap, transaction wrapper, row decoding, and ID-space generator
+- `teaql-provider-mysql`: MySQL native adapter (mysql_async), schema bootstrap, transaction wrapper, row decoding, and ID-space generator
 - `teaql-provider-rusqlite`: synchronous SQLite adapter for embedded and multi-architecture deployments such as routers, robots, and appliance controllers
 - `teaql-macros`: `TeaqlEntity` derive macro plus attribute parsing and record/entity mapping generation
 
@@ -83,9 +83,9 @@ The large crates are now split by function instead of keeping all implementation
 - `teaql-core/src`: `entity.rs`, `expr.rs`, `list.rs`, `meta.rs`, `mutation.rs`, `naming.rs`, `query.rs`, `value.rs`
 - `teaql-sql/src`: `dialect.rs`, `types.rs`
 - `teaql-runtime/src`: `checker.rs`, `context.rs`, `error.rs`, `event.rs`, `graph.rs`, `id.rs`, `memory.rs`, `registry.rs`, `repository/`
-- `teaql-provider-sqlx-postgres/src`: PostgreSQL SQLx provider adapter
-- `teaql-provider-sqlx-sqlite/src`: SQLite SQLx provider adapter
-- `teaql-provider-sqlx-mysql/src`: MySQL SQLx provider adapter
+- `teaql-provider-postgres/src`: PostgreSQL provider adapter
+- `teaql-provider-sqlite/src`: SQLite provider adapter
+- `teaql-provider-mysql/src`: MySQL provider adapter
 - `teaql-provider-rusqlite/src`: synchronous rusqlite provider adapter
 - `teaql-runtime/src/repository`: `base.rs`, `cache.rs`, `context.rs`, `executor.rs`, `graph.rs`, `helpers.rs`, `relation.rs`, `resolved.rs`, `types.rs`
 - `teaql-macros/src`: `attr.rs`, `derive_impl.rs`, `mapping.rs`, `types.rs`
@@ -104,7 +104,7 @@ The current implementation focuses on the Rust-native core runtime:
 - extended predicates including `between`, `is null`, `is not null`, Java-style `contain`/`begin_with`/`end_with`, `not like`, `not in`, and `soundlike` through `SOUNDEX`
 - grouped aggregate SQL and memory execution, including `COUNT(*)`
 - aggregate decimal results use `Value::Decimal`/PostgreSQL `NUMERIC` instead of lossy `f64`
-- `u64`, signed integers, and Decimal now have explicit checked conversion behavior in entity mapping and SQLx bind/decode paths
+- `u64`, signed integers, and Decimal now have explicit checked conversion behavior in entity mapping and database bind/decode paths
 - PostgreSQL `IN_LARGE`/`NOT_IN_LARGE` compile to array binds with `ANY`/`ALL`
 - subquery filters can compile `field IN (SELECT ...)` / `field NOT IN (SELECT ...)`
 - expression projections, expression/function ordering, extended aggregates, and `HAVING`
@@ -139,24 +139,24 @@ The current implementation focuses on the Rust-native core runtime:
 - graph write state hints: `Upsert`, `Reference`, and `Remove`
 - stricter graph state semantics: reference nodes validate existence/version/deleted state, remove nodes validate existence, and many-relation merge rejects duplicate child ids
 - relation metadata for graph writes: `attach/detached` and `delete_missing/keep_missing`
-- SQLx transaction boundary helpers for graph-write wrapping and rollback testing live in the per-database provider crates
+- native transaction boundary helpers for graph-write wrapping and rollback testing live in the per-database provider crates
 - declarative runtime assembly through `RuntimeModule` and `module!`
-- built-in `SnowflakeIdGenerator` and `UserContext`-driven id generation; SQLx `teaql_id_space` generators live in the per-database provider crates
+- built-in `SnowflakeIdGenerator` and `UserContext`-driven id generation; native `teaql_id_space` generators live in the per-database provider crates
 - `BaseEntityData` / `BaseEntity` for shared `id + version + dynamic` entity state
 - dynamic-property capture through `#[teaql(dynamic)]`, with JSON flattening for aggregate-style outputs
 - `MemoryRepository` for no-database tests and lightweight in-memory execution
-- SQLx PostgreSQL, SQLite, and MySQL execution moved to per-database provider crates
-- SQLite `ensure_schema` support for create-table and add-missing-column flows in `teaql-provider-sqlx-sqlite`
-- PostgreSQL `ensure_schema` support with real multi-table integration validation, including `soundex(text)` and `teaql_id_space` bootstrap, in `teaql-provider-sqlx-postgres`
+- PostgreSQL, SQLite, and MySQL execution moved to per-database provider crates using native drivers
+- SQLite `ensure_schema` support for create-table and add-missing-column flows in `teaql-provider-sqlite`
+- PostgreSQL `ensure_schema` support with real multi-table integration validation, including `soundex(text)` and `teaql_id_space` bootstrap, in `teaql-provider-postgres`
 - `UserContext::ensure_schema()` as the database-neutral schema entry point after a provider is registered
-- JSON, Decimal, date, and timestamp bind/decode support in the per-database SQLx providers
-- SQLite in-memory integration tests for CRUD and relation enhancement in the SQLx provider
+- JSON, Decimal, date, and timestamp bind/decode support in the per-database providers
+- SQLite in-memory integration tests for CRUD and relation enhancement in the provider
 - SQLite integration coverage for nested create-graph writes
 - SQLite integration coverage for nested graph update diff
 - SQLite integration coverage for reference-only nodes, explicit remove, keep-missing relation metadata, and transaction rollback
 - SQLite relation aggregate coverage through generated high-level `Q` APIs in an external generated service crate
 - PostgreSQL integration coverage for graph-write transaction rollback when `TEAQL_TEST_PG_URL` is provided
-- PostgreSQL integration tests in the SQLx provider when `TEAQL_TEST_PG_URL` is provided
+- PostgreSQL integration tests in the provider when `TEAQL_TEST_PG_URL` is provided
 
 ## Typed entities and `SmartList<T>`
 
@@ -269,9 +269,9 @@ For nested enhancement, register relation paths from repository behavior, for ex
 - `lines`
 - `lines.product`
 
-## SQLx provider schema bootstrap
+## Database provider schema bootstrap
 
-Schema setup is implemented by the selected SQLx provider, but exposed through
+Schema setup is implemented by the selected database provider, but exposed through
 the database-neutral runtime entry point:
 
 ```rust
@@ -284,7 +284,7 @@ executor, and schema provider into `UserContext`.
 PostgreSQL:
 
 ```rust
-use teaql_provider_sqlx_postgres::{
+use teaql_provider_postgres::{
     PgMutationExecutor, PostgresProviderExt,
 };
 
@@ -295,7 +295,7 @@ ctx.ensure_schema().await?;
 SQLite:
 
 ```rust
-use teaql_provider_sqlx_sqlite::{SqliteMutationExecutor, SqliteProviderExt};
+use teaql_provider_sqlite::{SqliteMutationExecutor, SqliteProviderExt};
 
 ctx.use_sqlite_provider(SqliteMutationExecutor::new(sqlite_pool));
 ctx.ensure_schema().await?;
@@ -304,7 +304,7 @@ ctx.ensure_schema().await?;
 MySQL:
 
 ```rust
-use teaql_provider_sqlx_mysql::{
+use teaql_provider_mysql::{
     MysqlMutationExecutor, MysqlProviderExt,
 };
 
