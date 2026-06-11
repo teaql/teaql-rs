@@ -349,3 +349,39 @@ impl<D: SqlDialect + Send + Sync, T: SqlTransactionTransport + Send + Sync, S: t
         })
     } }
 }
+
+impl<D: SqlDialect + Send + Sync, T: SqlTransport + Send + Sync, S: teaql_data_service::SchemaProvider + Send + Sync> teaql_data_service::StreamQueryExecutor
+    for SqlDataServiceExecutor<D, T, S>
+{
+    async fn query_stream(
+        &self,
+        request: teaql_data_service::QueryRequest,
+        chunk_size: usize,
+    ) -> Result<Vec<teaql_data_service::StreamChunk>, Self::Error> {
+        use teaql_data_service::QueryExecutor;
+        let query_result = self.query(request).await?;
+        let mut chunks = Vec::new();
+        let mut current_chunk = Vec::new();
+        let mut chunk_index = 0;
+        
+        for row in query_result.rows {
+            current_chunk.push(row);
+            if current_chunk.len() >= chunk_size {
+                chunks.push(teaql_data_service::StreamChunk {
+                    rows: std::mem::take(&mut current_chunk),
+                    chunk_index,
+                    is_last: false,
+                });
+                chunk_index += 1;
+            }
+        }
+        
+        chunks.push(teaql_data_service::StreamChunk {
+            rows: current_chunk,
+            chunk_index,
+            is_last: true,
+        });
+        
+        Ok(chunks)
+    }
+}
