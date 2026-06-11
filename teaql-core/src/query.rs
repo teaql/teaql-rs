@@ -275,6 +275,17 @@ impl AggregationCacheOptions {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct StreamConfig {
+    pub chunk_size: usize,
+}
+
+impl Default for StreamConfig {
+    fn default() -> Self {
+        Self { chunk_size: 1000 }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct SelectQuery {
     pub entity: String,
     pub projection: Vec<String>,
@@ -296,6 +307,7 @@ pub struct SelectQuery {
     pub raw_projections: Vec<RawSqlProjection>,
     pub object_group_bys: Vec<ObjectGroupBy>,
     pub child_enhancements: Vec<SelectQuery>,
+    pub stream_config: Option<StreamConfig>,
 }
 
 impl SelectQuery {
@@ -321,6 +333,7 @@ impl SelectQuery {
             raw_projections: Vec::new(),
             object_group_bys: Vec::new(),
             child_enhancements: Vec::new(),
+            stream_config: None,
         }
     }
 
@@ -582,6 +595,19 @@ impl SelectQuery {
 
     pub fn page(self, offset: u64, limit: u64) -> Self {
         self.offset(offset).limit(limit)
+    }
+
+    /// Enable streaming mode with the given chunk size.
+    /// When streaming, rows are fetched and enhanced in batches rather than all at once.
+    pub fn stream(mut self, chunk_size: usize) -> Self {
+        self.stream_config = Some(StreamConfig { chunk_size });
+        self
+    }
+
+    /// Enable streaming mode with default chunk size (1000).
+    pub fn stream_default(mut self) -> Self {
+        self.stream_config = Some(StreamConfig::default());
+        self
     }
 }
 

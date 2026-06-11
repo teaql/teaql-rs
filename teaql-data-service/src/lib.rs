@@ -102,6 +102,23 @@ pub trait QueryExecutor: DataServiceExecutor {
     fn query(&self, request: QueryRequest) -> impl std::future::Future<Output = Result<QueryResult, Self::Error>> + Send;
 }
 
+/// Result of a single streaming chunk.
+#[derive(Debug, Clone)]
+pub struct StreamChunk {
+    pub rows: Vec<Record>,
+    pub chunk_index: usize,
+    pub is_last: bool,
+}
+
+/// Streaming query executor. Returns rows in chunks rather than all at once.
+pub trait StreamQueryExecutor: DataServiceExecutor {
+    fn query_stream(
+        &self,
+        request: QueryRequest,
+        chunk_size: usize,
+    ) -> impl std::future::Future<Output = Result<Vec<StreamChunk>, Self::Error>> + Send;
+}
+
 pub trait MutationExecutor: DataServiceExecutor {
     fn mutate(&self, request: MutationRequest) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send;
 }

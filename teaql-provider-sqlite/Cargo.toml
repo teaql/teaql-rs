@@ -14,5 +14,6 @@ rusqlite = { workspace = true }
 rust_decimal = { workspace = true }
 serde_json = { workspace = true }
 teaql-core = { workspace = true }
+teaql-data-service = { workspace = true }
 teaql-runtime = { workspace = true }
 teaql-sql = { workspace = true }
