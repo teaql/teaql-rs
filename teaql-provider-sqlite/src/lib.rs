@@ -215,6 +215,46 @@ impl SqliteMutationExecutor {
         Ok(records)
     }
 
+    /// Fetch rows in streaming mode (chunked).
+    /// Returns a Vec of StreamChunk, each containing up to `chunk_size` rows.
+    pub fn fetch_stream(
+        &self,
+        query: &CompiledQuery,
+        chunk_size: usize,
+    ) -> Result<Vec<teaql_data_service::StreamChunk>, MutationExecutorError> {
+        let params = bind_values(&query.params)?;
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(&query.sql_with_comment())?;
+        let columns = statement_columns(&statement);
+        let mut rows = statement.query(params_from_iter(params.iter()))?;
+
+        let mut chunks = Vec::new();
+        let mut current_chunk = Vec::new();
+        let mut chunk_index = 0;
+
+        while let Some(row) = rows.next()? {
+            current_chunk.push(decode_sqlite_row(row, &columns)?);
+            if current_chunk.len() >= chunk_size {
+                chunks.push(teaql_data_service::StreamChunk {
+                    rows: current_chunk,
+                    chunk_index,
+                    is_last: false,
+                });
+                current_chunk = Vec::new();
+                chunk_index += 1;
+            }
+        }
+
+        // Push the final chunk (may be empty if exactly aligned)
+        chunks.push(teaql_data_service::StreamChunk {
+            rows: current_chunk,
+            chunk_index,
+            is_last: true,
+        });
+
+        Ok(chunks)
+    }
+
     pub fn table_exists(&self, table_name: &str) -> Result<bool, MutationExecutorError> {
         let exists: i64 = self.lock()?.query_row(
             "SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -244,6 +284,21 @@ impl SqliteMutationExecutor {
 }
 
 
+impl teaql_data_service::DataServiceExecutor for SqliteMutationExecutor {
+    type Error = MutationExecutorError;
+
+    fn capabilities(&self) -> teaql_data_service::DataServiceCapabilities {
+        teaql_data_service::DataServiceCapabilities {
+            query: true,
+            mutation: true,
+            transaction: true,
+            schema: true,
+            id_generation: true,
+            ..Default::default()
+        }
+    }
+}
+
 impl SqlTransport for SqliteMutationExecutor {
     type Error = MutationExecutorError;
 
@@ -253,6 +308,21 @@ impl SqlTransport for SqliteMutationExecutor {
 
     async fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
         SqliteMutationExecutor::execute(self, query)
+    }
+}
+
+impl teaql_data_service::StreamQueryExecutor for SqliteMutationExecutor {
+    async fn query_stream(
+        &self,
+        request: teaql_data_service::QueryRequest,
+        chunk_size: usize,
+    ) -> Result<Vec<teaql_data_service::StreamChunk>, Self::Error> {
+        let dialect = SqliteDialect;
+        // Use a dummy entity descriptor for compilation
+        let entity_desc = teaql_core::EntityDescriptor::new(&request.query.entity);
+        let compiled = dialect.compile_select(&entity_desc, &request.query)
+            .map_err(MutationExecutorError::SqlCompile)?;
+        SqliteMutationExecutor::fetch_stream(self, &compiled, chunk_size)
     }
 }
 

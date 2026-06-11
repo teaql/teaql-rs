@@ -156,6 +156,55 @@ where
         self.fetch_prepared_all(&query).await
     }
 
+    /// Fetch records in streaming mode (chunked).
+    /// Returns a Vec of chunks, each chunk containing up to `chunk_size` rows.
+    /// Each chunk is enhanced (relations, children) before returning.
+    /// Requires E to implement StreamQueryExecutor.
+    pub async fn fetch_stream(
+        &self,
+        query: &SelectQuery,
+    ) -> Result<Vec<teaql_data_service::StreamChunk>, RepositoryError<E::Error>>
+    where
+        E: teaql_data_service::StreamQueryExecutor,
+    {
+        let query = self
+            .prepare_select_query(query)
+            .map_err(RepositoryError::Runtime)?;
+
+        let chunk_size = query.stream_config
+            .as_ref()
+            .map(|c| c.chunk_size)
+            .unwrap_or(1000);
+
+        let final_comment = self.repository.resolve_final_comment(&query.trace_chain, query.comment.clone());
+        let mut query = query.clone();
+        query.comment = final_comment;
+
+        let request = teaql_data_service::QueryRequest {
+            query: query.clone(),
+            trace_chain: query.trace_chain.clone(),
+            comment: query.comment.clone(),
+        };
+
+        let chunks = self
+            .repository
+            .executor
+            .query_stream(request, chunk_size)
+            .await
+            .map_err(RepositoryError::Executor)?;
+
+        // Enhance each chunk
+        let mut enhanced_chunks = Vec::with_capacity(chunks.len());
+        for mut chunk in chunks {
+            self.enhance_object_group_bys(&mut chunk.rows, &query.object_group_bys, &query.trace_chain).await?;
+            self.enhance_child_queries(&mut chunk.rows, &query.child_enhancements, &query.trace_chain).await?;
+            self.enhance_query_relations(&mut chunk.rows, &query).await?;
+            enhanced_chunks.push(chunk);
+        }
+
+        Ok(enhanced_chunks)
+    }
+
     async fn fetch_prepared_all(&self, query: &SelectQuery) -> Result<Vec<Record>, RepositoryError<E::Error>> {
         let mut rows = self.fetch_prepared_query(query).await?;
         self.enhance_object_group_bys(&mut rows, &query.object_group_bys, &query.trace_chain).await?;

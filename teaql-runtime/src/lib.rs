@@ -1947,6 +1947,7 @@ mod tests {
             object_group_bys: Vec::new(),
             search_with_text: None,
             child_enhancements: Vec::new(),
+            stream_config: None,
         };
 
         let rows = repository.fetch_all(&query).unwrap();
