@@ -892,4 +892,133 @@ mod tests {
         assert_eq!(generator.next_id("Order").unwrap(), 1);
         assert_eq!(generator.next_id("Order").unwrap(), 2);
     }
+
+    #[test]
+    fn sqlite_fetch_stream_returns_chunked_rows() {
+        let executor = SqliteMutationExecutor::new(Connection::open_in_memory().unwrap());
+        let entity = entity();
+
+        // Create table and insert 25 rows
+        executor.execute(&CompiledQuery {
+            sql: "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER, name TEXT)".to_owned(),
+            params: Vec::new(),
+            comment: None,
+        }).unwrap();
+
+        for i in 1..=25 {
+            let insert = SqliteDialect
+                .compile_insert(
+                    &entity,
+                    &InsertCommand::new("Order")
+                        .value("id", i as u64)
+                        .value("version", 1_i64)
+                        .value("name", format!("order-{i}")),
+                )
+                .unwrap();
+            executor.execute(&insert).unwrap();
+        }
+
+        // Stream with chunk_size = 10
+        let query = SelectQuery::new("Order")
+            .filter(Expr::gt("version", 0_i64))
+            .order_asc("id")
+            .stream(10);
+
+        let compiled = SqliteDialect
+            .compile_select(&entity, &query)
+            .unwrap();
+
+        let chunks = executor.fetch_stream(&compiled, 10).unwrap();
+
+        // 25 rows / 10 per chunk = 3 chunks
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].rows.len(), 10);
+        assert_eq!(chunks[0].chunk_index, 0);
+        assert!(!chunks[0].is_last);
+
+        assert_eq!(chunks[1].rows.len(), 10);
+        assert_eq!(chunks[1].chunk_index, 1);
+        assert!(!chunks[1].is_last);
+
+        assert_eq!(chunks[2].rows.len(), 5);
+        assert_eq!(chunks[2].chunk_index, 2);
+        assert!(chunks[2].is_last);
+
+        // Verify first and last row
+        assert_eq!(chunks[0].rows[0].get("name"), Some(&Value::Text("order-1".to_owned())));
+        assert_eq!(chunks[2].rows[4].get("name"), Some(&Value::Text("order-25".to_owned())));
+    }
+
+    #[test]
+    fn sqlite_fetch_stream_handles_empty_result() {
+        let executor = SqliteMutationExecutor::new(Connection::open_in_memory().unwrap());
+
+        executor.execute(&CompiledQuery {
+            sql: "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER, name TEXT)".to_owned(),
+            params: Vec::new(),
+            comment: None,
+        }).unwrap();
+
+        let entity = entity();
+        let query = SelectQuery::new("Order")
+            .filter(Expr::gt("version", 0_i64))
+            .stream(10);
+
+        let compiled = SqliteDialect
+            .compile_select(&entity, &query)
+            .unwrap();
+
+        let chunks = executor.fetch_stream(&compiled, 10).unwrap();
+
+        // Empty result = 1 chunk with 0 rows, marked as last
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].rows.len(), 0);
+        assert!(chunks[0].is_last);
+    }
+
+    #[test]
+    fn sqlite_fetch_stream_exact_chunk_boundary() {
+        let executor = SqliteMutationExecutor::new(Connection::open_in_memory().unwrap());
+        let entity = entity();
+
+        executor.execute(&CompiledQuery {
+            sql: "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER, name TEXT)".to_owned(),
+            params: Vec::new(),
+            comment: None,
+        }).unwrap();
+
+        // Insert exactly 20 rows
+        for i in 1..=20 {
+            let insert = SqliteDialect
+                .compile_insert(
+                    &entity,
+                    &InsertCommand::new("Order")
+                        .value("id", i as u64)
+                        .value("version", 1_i64)
+                        .value("name", format!("order-{i}")),
+                )
+                .unwrap();
+            executor.execute(&insert).unwrap();
+        }
+
+        let query = SelectQuery::new("Order")
+            .filter(Expr::gt("version", 0_i64))
+            .order_asc("id")
+            .stream(10);
+
+        let compiled = SqliteDialect
+            .compile_select(&entity, &query)
+            .unwrap();
+
+        let chunks = executor.fetch_stream(&compiled, 10).unwrap();
+
+        // 20 rows / 10 per chunk = 2 full chunks + 1 empty final chunk
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].rows.len(), 10);
+        assert!(!chunks[0].is_last);
+        assert_eq!(chunks[1].rows.len(), 10);
+        assert!(!chunks[1].is_last);
+        assert_eq!(chunks[2].rows.len(), 0);
+        assert!(chunks[2].is_last);
+    }
 }
