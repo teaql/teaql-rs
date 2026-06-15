@@ -178,7 +178,7 @@ $$
 
 #[derive(Debug)]
 pub enum MutationExecutorError {
-    Sqlx(tokio_postgres::Error),
+    Driver(tokio_postgres::Error),
     Pool(String),
     SqlCompile(SqlCompileError),
     UnsupportedValue(&'static str),
@@ -189,7 +189,7 @@ pub enum MutationExecutorError {
 impl std::fmt::Display for MutationExecutorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Sqlx(err) => err.fmt(f),
+            Self::Driver(err) => err.fmt(f),
             Self::Pool(err) => write!(f, "postgres pool error: {err}"),
             Self::SqlCompile(err) => err.fmt(f),
             Self::UnsupportedValue(kind) => {
@@ -213,7 +213,7 @@ impl std::error::Error for MutationExecutorError {}
 
 impl From<tokio_postgres::Error> for MutationExecutorError {
     fn from(value: tokio_postgres::Error) -> Self {
-        Self::Sqlx(value)
+        Self::Driver(value)
     }
 }
 
