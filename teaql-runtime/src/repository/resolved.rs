@@ -83,6 +83,19 @@ where
         if let Some(policy) = self.repository.metadata.context.request_policy.as_ref() {
             policy.enforce_select(self.repository.metadata.context, &mut query)?;
         }
+        // Ensure local_key fields for relation loads are projected so that
+        // enhance_query_relations can match parent rows to child records.
+        if !query.relations.is_empty() {
+            if let Some(descriptor) = self.repository.metadata.context.entity(&query.entity) {
+                for load in &query.relations {
+                    if let Some(relation) = descriptor.relation_by_name(&load.name) {
+                        if !query.projection.contains(&relation.local_key) {
+                            query.projection.push(relation.local_key.clone());
+                        }
+                    }
+                }
+            }
+        }
         Ok(query)
     }
 
@@ -372,6 +385,7 @@ where
         let mut rows = self.fetch_prepared_all(&query).await?;
         self.enhance_relation_aggregates(&mut rows, relation_aggregates, query.aggregation_cache, &query.trace_chain).await?;
         self.enhance_relations(&mut rows).await?;
+        self.enhance_query_relations(&mut rows, &query).await?;
         rows.into_iter()
             .map(|record| {
                 let mut entity = T::from_record(record)?;
@@ -397,6 +411,7 @@ where
 
         let mut rows = self.fetch_prepared_all(&query).await?;
         self.enhance_relations(&mut rows).await?;
+        self.enhance_query_relations(&mut rows, &query).await?;
         let root = self.repository.metadata.context.get_resource::<crate::EntityRoot>().cloned();
         rows.into_iter()
             .map(|record| {
