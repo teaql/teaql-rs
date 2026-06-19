@@ -14,6 +14,7 @@ mod trace;
 mod value;
 mod web;
 mod xls;
+pub mod request;
 
 pub use entity::{
     Audited, BaseEntity, BaseEntityData, Entity, EntityDescriptorStore, EntityError, IdentifiableEntity,
