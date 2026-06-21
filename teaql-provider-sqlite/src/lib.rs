@@ -13,12 +13,11 @@ use teaql_core::{
     UpdateCommand, Value,
 };
 use teaql_runtime::{
-    RawAuditEvent, GraphNode, InternalIdGenerator,
-    RuntimeError, SchemaProvider, UserContext,
+    GraphNode, InternalIdGenerator, RawAuditEvent, RuntimeError, SchemaProvider, UserContext,
 };
 use teaql_sql::{
-    CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect,
-    SqlTransport, quote_identifier_if_needed,
+    CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, SqlTransport,
+    quote_identifier_if_needed,
 };
 
 pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";
@@ -69,7 +68,7 @@ impl SqlDialect for SqliteDialect {
         // strip the NOT NULL constraint when adding columns to existing tables.
         let def = self.column_definition_sql(property)?;
         let def_without_not_null = def.replace(" NOT NULL", "");
-        
+
         Ok(format!(
             "ALTER TABLE {} ADD COLUMN {}",
             self.quote_ident(&entity.table_name),
@@ -164,6 +163,10 @@ impl SqliteMutationExecutor {
                     continue;
                 }
                 let sql = dialect.compile_add_column(entity, property)?;
+                self.lock()?.execute(&sql, [])?;
+            }
+
+            for sql in dialect.schema_indexes_sqls(entity)? {
                 self.lock()?.execute(&sql, [])?;
             }
         }
@@ -264,7 +267,10 @@ impl SqliteMutationExecutor {
         Ok(exists > 0)
     }
 
-    pub fn table_columns(&self, table_name: &str) -> Result<BTreeSet<String>, MutationExecutorError> {
+    pub fn table_columns(
+        &self,
+        table_name: &str,
+    ) -> Result<BTreeSet<String>, MutationExecutorError> {
         let pragma_sql = format!("PRAGMA table_info({})", quote_ident(table_name));
         let connection = self.lock()?;
         let mut statement = connection.prepare(&pragma_sql)?;
@@ -282,7 +288,6 @@ impl SqliteMutationExecutor {
             .map_err(|err| MutationExecutorError::Lock(err.to_string()))
     }
 }
-
 
 impl teaql_data_service::DataServiceExecutor for SqliteMutationExecutor {
     type Error = MutationExecutorError;
@@ -320,7 +325,8 @@ impl teaql_data_service::StreamQueryExecutor for SqliteMutationExecutor {
         let dialect = SqliteDialect;
         // Use a dummy entity descriptor for compilation
         let entity_desc = teaql_core::EntityDescriptor::new(&request.query.entity);
-        let compiled = dialect.compile_select(&entity_desc, &request.query)
+        let compiled = dialect
+            .compile_select(&entity_desc, &request.query)
             .map_err(MutationExecutorError::SqlCompile)?;
         SqliteMutationExecutor::fetch_stream(self, &compiled, chunk_size)
     }
@@ -339,15 +345,16 @@ impl teaql_sql::SqlTransaction for SqliteMutationExecutor {
 }
 
 impl teaql_sql::SqlTransactionTransport for SqliteMutationExecutor {
-    type Tx<'a> = Self where Self: 'a;
+    type Tx<'a>
+        = Self
+    where
+        Self: 'a;
 
     async fn begin_sql(&self) -> Result<Self::Tx<'_>, Self::Error> {
         self.begin_transaction()?;
         Ok(self.clone())
     }
 }
-
-
 
 fn initial_graph_exists_sqlite(
     executor: &SqliteMutationExecutor,
@@ -415,9 +422,7 @@ pub fn ensure_sqlite_schema_for(ctx: &UserContext) -> Result<(), MutationExecuto
     let executor = ctx
         .get_resource::<SqliteMutationExecutor>()
         .ok_or_else(|| {
-            MutationExecutorError::Bind(
-                "missing typed resource: SqliteMutationExecutor".to_owned(),
-            )
+            MutationExecutorError::Bind("missing typed resource: SqliteMutationExecutor".to_owned())
         })?;
 
     let entities = ctx.all_entities();
@@ -811,7 +816,8 @@ mod tests {
 
     #[test]
     fn sqlite_executor_ensures_schema_and_roundtrips_rows() {
-        let executor = SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
         let entity = entity();
         let mut ctx = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity.clone()));
@@ -847,7 +853,8 @@ mod tests {
 
     #[test]
     fn sqlite_executor_parses_json_only_for_json_columns() {
-        let executor = SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
 
         executor
             .execute(&CompiledQuery {
@@ -887,7 +894,8 @@ mod tests {
 
     #[test]
     fn sqlite_id_space_generator_increments_ids() {
-        let executor = SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
         let generator = SqliteIdSpaceGenerator::from_executor(executor);
         assert_eq!(generator.next_id("Order").unwrap(), 1);
         assert_eq!(generator.next_id("Order").unwrap(), 2);
@@ -899,11 +907,14 @@ mod tests {
         let entity = entity();
 
         // Create table and insert 25 rows
-        executor.execute(&CompiledQuery {
-            sql: "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER, name TEXT)".to_owned(),
-            params: Vec::new(),
-            comment: None,
-        }).unwrap();
+        executor
+            .execute(&CompiledQuery {
+                sql: "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER, name TEXT)"
+                    .to_owned(),
+                params: Vec::new(),
+                comment: None,
+            })
+            .unwrap();
 
         for i in 1..=25 {
             let insert = SqliteDialect
@@ -924,9 +935,7 @@ mod tests {
             .order_asc("id")
             .stream(10);
 
-        let compiled = SqliteDialect
-            .compile_select(&entity, &query)
-            .unwrap();
+        let compiled = SqliteDialect.compile_select(&entity, &query).unwrap();
 
         let chunks = executor.fetch_stream(&compiled, 10).unwrap();
 
@@ -945,28 +954,35 @@ mod tests {
         assert!(chunks[2].is_last);
 
         // Verify first and last row
-        assert_eq!(chunks[0].rows[0].get("name"), Some(&Value::Text("order-1".to_owned())));
-        assert_eq!(chunks[2].rows[4].get("name"), Some(&Value::Text("order-25".to_owned())));
+        assert_eq!(
+            chunks[0].rows[0].get("name"),
+            Some(&Value::Text("order-1".to_owned()))
+        );
+        assert_eq!(
+            chunks[2].rows[4].get("name"),
+            Some(&Value::Text("order-25".to_owned()))
+        );
     }
 
     #[test]
     fn sqlite_fetch_stream_handles_empty_result() {
         let executor = SqliteMutationExecutor::new(Connection::open_in_memory().unwrap());
 
-        executor.execute(&CompiledQuery {
-            sql: "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER, name TEXT)".to_owned(),
-            params: Vec::new(),
-            comment: None,
-        }).unwrap();
+        executor
+            .execute(&CompiledQuery {
+                sql: "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER, name TEXT)"
+                    .to_owned(),
+                params: Vec::new(),
+                comment: None,
+            })
+            .unwrap();
 
         let entity = entity();
         let query = SelectQuery::new("Order")
             .filter(Expr::gt("version", 0_i64))
             .stream(10);
 
-        let compiled = SqliteDialect
-            .compile_select(&entity, &query)
-            .unwrap();
+        let compiled = SqliteDialect.compile_select(&entity, &query).unwrap();
 
         let chunks = executor.fetch_stream(&compiled, 10).unwrap();
 
@@ -981,11 +997,14 @@ mod tests {
         let executor = SqliteMutationExecutor::new(Connection::open_in_memory().unwrap());
         let entity = entity();
 
-        executor.execute(&CompiledQuery {
-            sql: "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER, name TEXT)".to_owned(),
-            params: Vec::new(),
-            comment: None,
-        }).unwrap();
+        executor
+            .execute(&CompiledQuery {
+                sql: "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER, name TEXT)"
+                    .to_owned(),
+                params: Vec::new(),
+                comment: None,
+            })
+            .unwrap();
 
         // Insert exactly 20 rows
         for i in 1..=20 {
@@ -1006,9 +1025,7 @@ mod tests {
             .order_asc("id")
             .stream(10);
 
-        let compiled = SqliteDialect
-            .compile_select(&entity, &query)
-            .unwrap();
+        let compiled = SqliteDialect.compile_select(&entity, &query).unwrap();
 
         let chunks = executor.fetch_stream(&compiled, 10).unwrap();
 
