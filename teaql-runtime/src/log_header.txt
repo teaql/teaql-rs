@@ -8,9 +8,9 @@ This log is enabled by default to fully record SQL execution traces and Audit da
 [Prevent Token Exhaustion: Zero-Code Focused Debugging]
 When debugging with AI, massive amounts of irrelevant logs can consume expensive tokens and cause context truncation.
 Please use the following zero-code environment variables to filter the noise and feed your AI only the core traces:
-👉 Focus on specific tables:  Set TEAQL_SQL_TABLES=orders,users (Only emits related SQL)
-👉 Focus on specific modules: Set TEAQL_TOOL_FOCUS=http,file (Only emits specific tool traces)
-👉 Adjust output levels:      Set TEAQL_AUDIT=_summary or TEAQL_SQL=_silent to reduce noise
+👉 Focus on specific tables:  Set TEAQL_SQL_LOG_TABLES=orders,users (Only emits related SQL)
+👉 Focus on specific modules: Set TEAQL_TOOL_LOG_FOCUS=http,file (Only emits specific tool traces)
+👉 Adjust output levels:      Set TEAQL_AUDIT_LOG=_summary or TEAQL_SQL_LOG=_silent to reduce noise
 
 [Production Best Practices (Observability)]
 When deploying to production, do NOT turn off tracing. Instead, "route" your logs to a professional collector:

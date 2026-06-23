@@ -120,6 +120,93 @@ impl LogFormatterFactory {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogLevel {
+    Silent,
+    Summary,
+    Full,
+    FullWithPayload,
+}
+
+impl LogLevel {
+    pub fn parse(s: &str, default: LogLevel) -> Self {
+        match s {
+            "_silent" => LogLevel::Silent,
+            "_summary" => LogLevel::Summary,
+            "_full" => LogLevel::Full,
+            "_full_with_payload" => LogLevel::FullWithPayload,
+            _ => default,
+        }
+    }
+}
+
+pub struct LogConfig {
+    pub audit_level: LogLevel,
+    pub sql_level: LogLevel,
+    pub tool_level: LogLevel,
+    pub audit_entities: Option<Vec<String>>,
+    pub sql_tables: Option<Vec<String>>,
+    pub tool_focus: Option<Vec<String>>,
+}
+
+impl LogConfig {
+    pub fn load() -> Self {
+        let audit_level = LogLevel::parse(&std::env::var("TEAQL_AUDIT_LOG").unwrap_or_default(), LogLevel::Full);
+        let sql_level = LogLevel::parse(&std::env::var("TEAQL_SQL_LOG").unwrap_or_default(), LogLevel::Summary);
+        let tool_level = LogLevel::parse(&std::env::var("TEAQL_TOOL_LOG").unwrap_or_default(), LogLevel::Full);
+
+        let audit_entities = std::env::var("TEAQL_AUDIT_LOG_ENTITIES").ok().map(|s| s.split(',').map(|s| s.trim().to_string()).collect());
+        let sql_tables = std::env::var("TEAQL_SQL_LOG_TABLES").ok().map(|s| s.split(',').map(|s| s.trim().to_string()).collect());
+        let tool_focus = std::env::var("TEAQL_TOOL_LOG_FOCUS").ok().map(|s| s.split(',').map(|s| s.trim().to_string()).collect());
+
+        Self {
+            audit_level,
+            sql_level,
+            tool_level,
+            audit_entities,
+            sql_tables,
+            tool_focus,
+        }
+    }
+
+    pub fn should_log_audit(&self, entity: &str) -> bool {
+        if self.audit_level == LogLevel::Silent {
+            return false;
+        }
+        if let Some(entities) = &self.audit_entities {
+            if !entities.iter().any(|e| e.eq_ignore_ascii_case(entity)) {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn should_log_sql(&self, sql: &str) -> bool {
+        if self.sql_level == LogLevel::Silent {
+            return false;
+        }
+        if let Some(tables) = &self.sql_tables {
+            let sql_lower = sql.to_ascii_lowercase();
+            if !tables.iter().any(|t| sql_lower.contains(&t.to_ascii_lowercase())) {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn should_log_tool(&self, module: &str) -> bool {
+        if self.tool_level == LogLevel::Silent {
+            return false;
+        }
+        if let Some(focus) = &self.tool_focus {
+            if !focus.iter().any(|f| f.eq_ignore_ascii_case(module)) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 /// Manager that handles reading the endpoint environment variable and dispatching to the factory
 pub struct LogManager;
 
@@ -129,6 +216,11 @@ static HEADER_WRITTEN: std::sync::Once = std::sync::Once::new();
 const EXTREME_TEST_FLAG: &str = "__i_agree_to_disable_runtime_trace_only_for_extreme_performance_testing";
 
 impl LogManager {
+    pub fn config() -> &'static LogConfig {
+        static CONFIG: std::sync::OnceLock<LogConfig> = std::sync::OnceLock::new();
+        CONFIG.get_or_init(LogConfig::load)
+    }
+
     fn get_log_endpoint() -> Option<&'static str> {
         LOG_ENDPOINT.get_or_init(|| {
             let mode = std::env::var("TEAQL_TRACE_MODE").unwrap_or_default();
@@ -201,6 +293,9 @@ impl LogManager {
     }
 
     pub fn write_sql_log(trace_chain: &[TraceNode], entry: &SqlLogEntry) {
+        if !Self::config().should_log_sql(&entry.sql) {
+            return;
+        }
         if let Some(endpoint) = Self::get_log_endpoint() {
             if endpoint == "off" {
                 return;
@@ -211,6 +306,9 @@ impl LogManager {
     }
 
     pub fn write_audit_log(event: &RawAuditEvent) {
+        if !Self::config().should_log_audit(&event.entity) {
+            return;
+        }
         if let Some(endpoint) = Self::get_log_endpoint() {
             if endpoint == "off" {
                 return;
