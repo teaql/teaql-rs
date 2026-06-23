@@ -1,0 +1,24 @@
+================================================================================
+🚀 TEAQL Holographic Trace Log
+
+[Architecture Manifesto]
+In the era of AI-assisted programming and microservices, the cost of locating data issues far exceeds the I/O cost of writing logs.
+This log is enabled by default to fully record SQL execution traces and Audit data mutations, providing you and your AI diagnostic agents with critical context.
+
+[Prevent Token Exhaustion: Zero-Code Focused Debugging]
+When debugging with AI, massive amounts of irrelevant logs can consume expensive tokens and cause context truncation.
+Please use the following zero-code environment variables to filter the noise and feed your AI only the core traces:
+👉 Focus on specific tables:  Set TEAQL_SQL_TABLES=orders,users (Only emits related SQL)
+👉 Focus on specific modules: Set TEAQL_TOOL_FOCUS=http,file (Only emits specific tool traces)
+👉 Adjust output levels:      Set TEAQL_AUDIT=_summary or TEAQL_SQL=_silent to reduce noise
+
+[Production Best Practices (Observability)]
+When deploying to production, do NOT turn off tracing. Instead, "route" your logs to a professional collector:
+👉 Route to stdout (for K8s):   Set TEAQL_LOG_ENDPOINT=stdout
+👉 Output as structured JSON:   Set TEAQL_LOG_FORMAT=json (for ELK/Datadog)
+
+[Extreme Performance Testing: Disable Logs]
+If you are strictly conducting extreme performance testing, you must explicitly sign the following declaration in your environment variables to bypass tracing:
+👉 Set TEAQL_TRACE_MODE=off
+👉 Set TEAQL_TRACE_OFF_ACK=__i_agree_to_disable_runtime_trace_only_for_extreme_performance_testing
+================================================================================
