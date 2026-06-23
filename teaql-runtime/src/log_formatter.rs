@@ -150,6 +150,11 @@ impl LogManager {
                 None
             }
             .or_else(|| {
+                if let Ok(val) = std::env::var("TEAQL_DOMAIN") {
+                    if !val.is_empty() {
+                        return Some(format!("{}.log", val));
+                    }
+                }
                 let exe_name = std::env::current_exe()
                     .ok()
                     .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))

@@ -7,3 +7,4 @@ compile_errors.log
 app.log
 
 *.py
+*.log
