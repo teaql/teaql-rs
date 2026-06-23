@@ -1,5 +1,5 @@
-use std::collections::{BTreeSet, HashMap};
-use teaql_core::{Value, Record};
+use std::collections::HashMap;
+use teaql_core::Value;
 use teaql_runtime::{EntityRoot, EntityKey};
 use teaql_runtime::InternalIdGenerator;
 
@@ -76,11 +76,11 @@ fn test_incremental_ledger_observability() {
     root.set(existing_task_key2.clone(), "version", Value::U64(999));
     
     // Setup original versions registry
-    root.record_version(existing_task_key.clone(), 3);
-    root.record_version(existing_task_key2.clone(), 5);
-    root.record_version(existing_task_key3.clone(), 2);
-    root.record_version(delete_task_key.clone(), 1);
-    root.record_version(delete_task_key2.clone(), 1);
+    root.set_original_version(existing_task_key.clone(), 3);
+    root.set_original_version(existing_task_key2.clone(), 5);
+    root.set_original_version(existing_task_key3.clone(), 2);
+    root.set_original_version(delete_task_key.clone(), 1);
+    root.set_original_version(delete_task_key2.clone(), 1);
 
     // --- OBSERVABILITY OUTPUT ---
     let change_set = root.current_change_set();

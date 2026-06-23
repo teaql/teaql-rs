@@ -1,5 +1,21 @@
 # teaql-rs
 
+**TeaQL is an AI-native runtime designed for Coding Agents and modern application development.** 
+
+While traditional frameworks assume a human is writing every line of code, TeaQL provides a strict, typed, and auditable Capability Sandbox tailored specifically for autonomous AI Agents (and humans) to execute code securely.
+
+### The Five Safeguards of AI Coding
+
+To ensure absolute safety and governance when AI Agents interact with production systems, the TeaQL runtime enforces the following five safeguards:
+
+1. **Mandatory Identity (UserContext):** Every operation must pass through a runtime `UserContext`. The system explicitly records whether the action was performed by a human or an AI Agent.
+2. **Intent Auditing (Typestate/Builder):** Agents cannot simply call `.execute()`. They are forced by the compiler to declare their intent using `.purpose()` (for reads) or `.audit_as()` (for writes) before the execution terminal is unlocked.
+3. **Capability Sandbox (SPI/Features):** Dangerous operations (HTTP, File IO, Message Queues) are physically isolated. Unless explicitly granted in the project dependencies (via Cargo features), the Agent is structurally blocked from accessing them.
+4. **Graph Mutability Control:** Agents do not manually assemble SQL `UPDATE`s or relationship loops. They operate on typed Entity Graphs (`save_graph`), reducing hallucination-induced data corruption.
+5. **Universal Error Translation:** The runtime intercepts infrastructure errors and translates them into semantic business codes, preventing the Agent from getting stuck in stack trace loops.
+
+---
+
 TeaQL is a DDD-oriented data runtime for applications that want generated,
 typed domain APIs instead of hand-written repository boilerplate.
 

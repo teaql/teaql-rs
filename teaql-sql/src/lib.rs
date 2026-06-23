@@ -1,13 +1,13 @@
 mod dialect;
-mod types;
 mod executor;
+mod types;
 
 pub use dialect::{SqlDialect, quote_identifier_if_needed};
-pub use types::{CompiledQuery, DatabaseKind, SqlCompileError};
 pub use executor::{
-    SqlDataServiceExecutor, SqlTransport, SqlTransaction,
-    SqlTransactionTransport, SqlExecutorError, SqlDataServiceTransaction,
+    SqlDataServiceExecutor, SqlDataServiceTransaction, SqlExecutorError, SqlTransaction,
+    SqlTransactionTransport, SqlTransport,
 };
+pub use types::{CompiledQuery, DatabaseKind, SqlCompileError};
 
 #[cfg(test)]
 mod tests {
@@ -241,10 +241,7 @@ mod tests {
     #[test]
     fn compiles_search_with_text() {
         let query = TestDialect
-            .compile_select(
-                &entity(),
-                &SelectQuery::new("Order").search_with_text("AI"),
-            )
+            .compile_select(&entity(), &SelectQuery::new("Order").search_with_text("AI"))
             .unwrap();
 
         assert_eq!(

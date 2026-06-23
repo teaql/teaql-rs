@@ -5,3 +5,6 @@ scratch.rs
 diff.txt
 compile_errors.log
 app.log
+
+*.py
+*.log

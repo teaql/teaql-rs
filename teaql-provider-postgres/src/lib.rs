@@ -4,6 +4,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use chrono::{DateTime, NaiveDate, Utc};
+use deadpool_postgres::Pool;
 use rust_decimal::Decimal;
 use std::sync::Arc;
 use teaql_core::{
@@ -12,10 +13,10 @@ use teaql_core::{
 };
 use teaql_runtime::{GraphNode, InternalIdGenerator, RuntimeError, SchemaProvider, UserContext};
 use teaql_sql::{
-    CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, SqlTransport, quote_identifier_if_needed,
+    CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, SqlTransport,
+    quote_identifier_if_needed,
 };
 use tokio::sync::Mutex;
-use deadpool_postgres::Pool;
 
 pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";
 
@@ -178,7 +179,7 @@ $$
 
 #[derive(Debug)]
 pub enum MutationExecutorError {
-    Sqlx(tokio_postgres::Error),
+    Driver(tokio_postgres::Error),
     Pool(String),
     SqlCompile(SqlCompileError),
     UnsupportedValue(&'static str),
@@ -189,20 +190,14 @@ pub enum MutationExecutorError {
 impl std::fmt::Display for MutationExecutorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Sqlx(err) => err.fmt(f),
+            Self::Driver(err) => err.fmt(f),
             Self::Pool(err) => write!(f, "postgres pool error: {err}"),
             Self::SqlCompile(err) => err.fmt(f),
             Self::UnsupportedValue(kind) => {
-                write!(
-                    f,
-                    "unsupported bind value for mutation executor: {kind}"
-                )
+                write!(f, "unsupported bind value for mutation executor: {kind}")
             }
             Self::UnsupportedColumnType(kind) => {
-                write!(
-                    f,
-                    "unsupported column type for record decoding: {kind}"
-                )
+                write!(f, "unsupported column type for record decoding: {kind}")
             }
             Self::Bind(message) => write!(f, "bind error: {message}"),
         }
@@ -213,7 +208,7 @@ impl std::error::Error for MutationExecutorError {}
 
 impl From<tokio_postgres::Error> for MutationExecutorError {
     fn from(value: tokio_postgres::Error) -> Self {
-        Self::Sqlx(value)
+        Self::Driver(value)
     }
 }
 
@@ -244,19 +239,28 @@ impl teaql_sql::SqlTransaction for PgMutationExecutor {
     type Error = MutationExecutorError;
 
     async fn commit_sql(self) -> Result<(), Self::Error> {
-        Err(MutationExecutorError::Bind("Transactions not supported yet".to_string()))
+        Err(MutationExecutorError::Bind(
+            "Transactions not supported yet".to_string(),
+        ))
     }
 
     async fn rollback_sql(self) -> Result<(), Self::Error> {
-        Err(MutationExecutorError::Bind("Transactions not supported yet".to_string()))
+        Err(MutationExecutorError::Bind(
+            "Transactions not supported yet".to_string(),
+        ))
     }
 }
 
 impl teaql_sql::SqlTransactionTransport for PgMutationExecutor {
-    type Tx<'a> = Self where Self: 'a;
+    type Tx<'a>
+        = Self
+    where
+        Self: 'a;
 
     async fn begin_sql(&self) -> Result<Self::Tx<'_>, Self::Error> {
-        Err(MutationExecutorError::Bind("Transactions not supported yet".to_string()))
+        Err(MutationExecutorError::Bind(
+            "Transactions not supported yet".to_string(),
+        ))
     }
 }
 
@@ -274,7 +278,11 @@ impl PgMutationExecutor {
         dialect: &PostgresDialect,
         entities: &[&EntityDescriptor],
     ) -> Result<(), MutationExecutorError> {
-        let client = self.pool.get().await.map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
+        let client = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
         for sql in dialect.schema_setup_sqls() {
             client.execute(*sql, &[]).await?;
         }
@@ -296,6 +304,10 @@ impl PgMutationExecutor {
                 let sql = dialect.compile_add_column(entity, property)?;
                 client.execute(&sql, &[]).await?;
             }
+
+            for sql in dialect.schema_indexes_sqls(entity)? {
+                client.execute(&sql, &[]).await?;
+            }
         }
         Ok(())
     }
@@ -308,7 +320,11 @@ impl PgMutationExecutor {
             "CREATE TABLE IF NOT EXISTS {} (type_name VARCHAR(100) PRIMARY KEY, current_level BIGINT NOT NULL)",
             quote_ident(table_name)
         );
-        let client = self.pool.get().await.map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
+        let client = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
         client.execute(&sql, &[]).await?;
         Ok(())
     }
@@ -318,7 +334,11 @@ impl PgMutationExecutor {
         for value in &query.params {
             bind_pg(&mut args, value)?;
         }
-        let client = self.pool.get().await.map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
+        let client = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
         let result = client.execute(&query.sql, &args.as_refs()).await?;
         Ok(result)
     }
@@ -331,20 +351,30 @@ impl PgMutationExecutor {
         for value in &query.params {
             bind_pg(&mut args, value)?;
         }
-        let client = self.pool.get().await.map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
+        let client = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
         let rows = client.query(&query.sql, &args.as_refs()).await?;
         rows.iter().map(decode_pg_row).collect()
     }
 
     async fn table_exists(&self, table_name: &str) -> Result<bool, MutationExecutorError> {
-        let client = self.pool.get().await.map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
-        let row = client.query_one(
-            "SELECT COUNT(1)
+        let client = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
+        let row = client
+            .query_one(
+                "SELECT COUNT(1)
              FROM information_schema.tables
              WHERE table_schema = current_schema()
                AND table_name = $1",
-            &[&table_name],
-        ).await?;
+                &[&table_name],
+            )
+            .await?;
         let exists: i64 = row.try_get(0)?;
         Ok(exists > 0)
     }
@@ -353,14 +383,20 @@ impl PgMutationExecutor {
         &self,
         table_name: &str,
     ) -> Result<std::collections::BTreeSet<String>, MutationExecutorError> {
-        let client = self.pool.get().await.map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
-        let rows = client.query(
-            "SELECT column_name
+        let client = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
+        let rows = client
+            .query(
+                "SELECT column_name
              FROM information_schema.columns
              WHERE table_schema = current_schema()
                AND table_name = $1",
-            &[&table_name],
-        ).await?;
+                &[&table_name],
+            )
+            .await?;
         let mut columns = std::collections::BTreeSet::new();
         for row in rows {
             let name: String = row.try_get("column_name")?;
@@ -536,14 +572,18 @@ impl PgIdSpaceGenerator {
             "UPDATE {} SET current_level = current_level + 1 WHERE type_name = $1 RETURNING current_level",
             quote_ident(&self.table_name)
         );
-        let client = self.pool.get().await.map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
+        let client = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
         let row = client.query_opt(&update_sql, &[&entity]).await?;
-        
+
         let id = match row {
             Some(r) => {
                 let level: i64 = r.try_get(0)?;
                 level
-            },
+            }
             None => {
                 let insert_sql = format!(
                     "INSERT INTO {} (type_name, current_level) VALUES ($1, 1) RETURNING current_level",
@@ -554,7 +594,7 @@ impl PgIdSpaceGenerator {
                     Ok(r) => {
                         let level: i64 = r.try_get(0)?;
                         level
-                    },
+                    }
                     Err(_) => {
                         let row = client.query_one(&update_sql, &[&entity]).await?;
                         let level: i64 = row.try_get(0)?;
@@ -621,11 +661,17 @@ fn try_parse_datetime_from_str(s: &str) -> Option<chrono::DateTime<chrono::Utc>>
         return Some(dt.with_timezone(&chrono::Utc));
     }
     if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
-        return Some(chrono::DateTime::from_naive_utc_and_offset(ndt, chrono::Utc));
+        return Some(chrono::DateTime::from_naive_utc_and_offset(
+            ndt,
+            chrono::Utc,
+        ));
     }
     if let Ok(nd) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
         let ndt = nd.and_hms_opt(0, 0, 0)?;
-        return Some(chrono::DateTime::from_naive_utc_and_offset(ndt, chrono::Utc));
+        return Some(chrono::DateTime::from_naive_utc_and_offset(
+            ndt,
+            chrono::Utc,
+        ));
     }
     None
 }
@@ -665,7 +711,8 @@ fn bind_pg(args: &mut PgArgs, value: &Value) -> Result<(), MutationExecutorError
             }
         }
         Value::Json(v) => {
-            let j_val: serde_json::Value = serde_json::to_value(v).map_err(|e| MutationExecutorError::Bind(e.to_string()))?;
+            let j_val: serde_json::Value =
+                serde_json::to_value(v).map_err(|e| MutationExecutorError::Bind(e.to_string()))?;
             args.add(j_val);
         }
         Value::Date(v) => args.add(*v),
@@ -780,7 +827,7 @@ fn decode_pg_row(row: &tokio_postgres::Row) -> Result<Record, MutationExecutorEr
     for (index, column) in row.columns().iter().enumerate() {
         let name = column.name().to_owned();
         let type_name = column.type_().name().to_ascii_uppercase();
-        
+
         let value = match type_name.as_str() {
             "BOOL" | "BOOLEAN" => {
                 let v: Option<bool> = row.try_get(index)?;
@@ -903,10 +950,7 @@ mod tests {
                     .value("name", "A"),
             )
             .unwrap();
-        assert_eq!(
-            insert.sql,
-            "INSERT INTO orders (id, name) VALUES ($1, $2)"
-        );
+        assert_eq!(insert.sql, "INSERT INTO orders (id, name) VALUES ($1, $2)");
 
         let update = PostgresDialect
             .compile_update(

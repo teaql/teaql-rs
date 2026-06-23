@@ -28,8 +28,12 @@ impl CompiledQuery {
     pub fn debug_sql(&self, kind: DatabaseKind) -> String {
         match kind {
             DatabaseKind::PostgreSql => replace_postgres_placeholders(&self.sql, &self.params),
-            DatabaseKind::Sqlite => replace_positional_placeholders(&self.sql, &self.params, DatabaseKind::Sqlite),
-            DatabaseKind::MySql => replace_positional_placeholders(&self.sql, &self.params, DatabaseKind::MySql),
+            DatabaseKind::Sqlite => {
+                replace_positional_placeholders(&self.sql, &self.params, DatabaseKind::Sqlite)
+            }
+            DatabaseKind::MySql => {
+                replace_positional_placeholders(&self.sql, &self.params, DatabaseKind::MySql)
+            }
         }
     }
 }

@@ -2,7 +2,7 @@ use crate::event::RawAuditEvent;
 use teaql_core::TraceNode;
 
 /// Represents a log entry for SQL execution
-pub use crate::context::SqlLogEntry;
+pub use crate::context::{SqlLogEntry, SqlLogOperation};
 
 /// A trait for defining how logs should be formatted before being output
 pub trait LogFormatter: Send + Sync {
@@ -124,36 +124,99 @@ impl LogFormatterFactory {
 pub struct LogManager;
 
 static LOG_ENDPOINT: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+static HEADER_WRITTEN: std::sync::Once = std::sync::Once::new();
+
+const EXTREME_TEST_FLAG: &str = "__i_agree_to_disable_runtime_trace_only_for_extreme_performance_testing";
 
 impl LogManager {
     fn get_log_endpoint() -> Option<&'static str> {
         LOG_ENDPOINT.get_or_init(|| {
-            std::env::var("TEAQL_LOG_ENDPOINT").ok().filter(|s| !s.is_empty())
+            let mode = std::env::var("TEAQL_TRACE_MODE").unwrap_or_default();
+            if mode == "off" {
+                let ack = std::env::var("TEAQL_TRACE_OFF_ACK").unwrap_or_default();
+                if ack == EXTREME_TEST_FLAG {
+                    return Some("off".to_string());
+                }
+                // If they didn't sign the waiver, ignore the off request and fallthrough
+            }
+
+            if let Ok(val) = std::env::var("TEAQL_LOG_ENDPOINT") {
+                if val.is_empty() {
+                    None // Fallthrough to default
+                } else {
+                    Some(val)
+                }
+            } else {
+                None
+            }
+            .or_else(|| {
+                if let Ok(val) = std::env::var("TEAQL_DOMAIN") {
+                    if !val.is_empty() {
+                        return Some(format!("{}.log", val));
+                    }
+                }
+                let exe_name = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
+                    .unwrap_or_else(|| "teaql".to_string());
+                Some(format!("{}.log", exe_name))
+            })
         }).as_deref()
+    }
+
+    fn write_header_if_needed(endpoint: &str) {
+        if endpoint == "off" {
+            return;
+        }
+        HEADER_WRITTEN.call_once(|| {
+            let header = include_str!("log_header.txt");
+            if endpoint == "stdout" {
+                println!("{}", header);
+            } else {
+                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(endpoint) {
+                    use std::io::Write;
+                    let _ = writeln!(file, "{}", header);
+                }
+            }
+        });
     }
 
     fn write_to_file(content: &str) {
         if let Some(endpoint) = Self::get_log_endpoint() {
-            if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(endpoint) {
-                use std::io::Write;
-                let _ = writeln!(file, "{}", content);
+            if endpoint == "off" {
+                return;
+            }
+            
+            Self::write_header_if_needed(endpoint);
+
+            if endpoint == "stdout" {
+                println!("{}", content);
+            } else {
+                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(endpoint) {
+                    use std::io::Write;
+                    let _ = writeln!(file, "{}", content);
+                }
             }
         }
     }
 
     pub fn write_sql_log(trace_chain: &[TraceNode], entry: &SqlLogEntry) {
-        if Self::get_log_endpoint().is_none() {
-            return;
+        if let Some(endpoint) = Self::get_log_endpoint() {
+            if endpoint == "off" {
+                return;
+            }
+            let content = LogFormatterFactory::get_formatter().format_sql_log(trace_chain, entry);
+            Self::write_to_file(&content);
         }
-        let content = LogFormatterFactory::get_formatter().format_sql_log(trace_chain, entry);
-        Self::write_to_file(&content);
     }
 
     pub fn write_audit_log(event: &RawAuditEvent) {
-        if Self::get_log_endpoint().is_none() {
-            return;
+        if let Some(endpoint) = Self::get_log_endpoint() {
+            if endpoint == "off" {
+                return;
+            }
+            let content = LogFormatterFactory::get_formatter().format_audit_log(event);
+            Self::write_to_file(&content);
         }
-        let content = LogFormatterFactory::get_formatter().format_audit_log(event);
-        Self::write_to_file(&content);
     }
 }

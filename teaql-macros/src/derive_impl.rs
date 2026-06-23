@@ -142,7 +142,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                         #delete_missing
                 );
             });
-            let from_relation = from_relation_value_tokens(&field.ty, &field_name, &entity_name);
+            let from_relation = from_relation_value_tokens(&field.ty, &field_name, &entity_name, &local_key, &foreign_key);
             let into_relation = into_relation_value_tokens(&field.ty, quote! { self.#field_ident });
             from_record_fields.push(quote! {
                 #field_ident: #from_relation
@@ -400,9 +400,13 @@ pub fn expand_teaql_reverse_relations(input: DeriveInput) -> proc_macro2::TokenS
         let field_name = field_ident.to_string();
         
         let parsed = crate::attr::parse_field_attrs(&field.attrs);
+        let mut rel_local_key = "id".to_owned();
+        let mut rel_foreign_key = "id".to_owned();
         if let Some(relation) = parsed.relation {
             let local_key = relation.local_key.unwrap_or_else(|| "id".to_owned());
             let foreign_key = relation.foreign_key.unwrap_or_else(|| "id".to_owned());
+            rel_local_key = local_key.clone();
+            rel_foreign_key = foreign_key.clone();
             let target = relation.target;
             let many = relation.many;
             let attach = relation.attach;
@@ -419,7 +423,7 @@ pub fn expand_teaql_reverse_relations(input: DeriveInput) -> proc_macro2::TokenS
             });
         }
         
-        let from_value = crate::mapping::from_relation_value_tokens(&field.ty, &field_name, &entity_name);
+        let from_value = crate::mapping::from_relation_value_tokens(&field.ty, &field_name, &entity_name, &rel_local_key, &rel_foreign_key);
         let into_value = crate::mapping::into_relation_value_tokens(&field.ty, quote! { self.#field_ident });
         
         from_record_fields.push(quote! {

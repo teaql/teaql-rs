@@ -12,6 +12,7 @@ pub mod log_formatter;
 mod memory;
 mod registry;
 mod repository;
+pub mod generated_support;
 
 pub use context::{
     DataStore, InfoLogEntry, InMemoryDataStore, LogPayload, SchemaProvider, SqlLogEntry, SqlLogOperation,
@@ -43,6 +44,7 @@ pub use repository::{
     AggregationCacheBackend, ContextRepository, GraphTransactionBoundary, InMemoryAggregationCache,
     RelationLoadPlan, Repository, ResolvedRepository,
 };
+pub use generated_support::*;
 
 #[cfg(test)]
 mod tests {

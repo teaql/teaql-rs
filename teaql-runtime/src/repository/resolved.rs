@@ -83,6 +83,19 @@ where
         if let Some(policy) = self.repository.metadata.context.request_policy.as_ref() {
             policy.enforce_select(self.repository.metadata.context, &mut query)?;
         }
+        // Ensure local_key fields for relation loads are projected so that
+        // enhance_query_relations can match parent rows to child records.
+        if !query.relations.is_empty() {
+            if let Some(descriptor) = self.repository.metadata.context.entity(&query.entity) {
+                for load in &query.relations {
+                    if let Some(relation) = descriptor.relation_by_name(&load.name) {
+                        if !query.projection.contains(&relation.local_key) {
+                            query.projection.push(relation.local_key.clone());
+                        }
+                    }
+                }
+            }
+        }
         Ok(query)
     }
 
