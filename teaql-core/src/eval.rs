@@ -76,7 +76,7 @@ impl<T> EvalResult<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
+
 
     struct Company {
         pub name: Option<String>,

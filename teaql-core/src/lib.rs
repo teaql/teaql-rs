@@ -46,7 +46,7 @@ mod tests {
 
     use super::*;
     use chrono::{NaiveDate, TimeZone, Utc};
-    use teaql_macros::{TeaqlEntity, TeaqlReverseRelations};
+    use teaql_macros::TeaqlEntity;
 
     #[derive(Default)]
     struct TestStore {

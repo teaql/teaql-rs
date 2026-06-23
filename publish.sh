@@ -2,10 +2,10 @@
 set -e
 
 CRATES=(
+  "teaql-macros"
   "teaql-core"
   "teaql-data-service"
   "teaql-sql"
-  "teaql-macros"
   "teaql-runtime"
   "teaql-provider-meilisearch"
   "teaql-provider-mysql"
@@ -17,7 +17,8 @@ CRATES=(
 
 for crate in "${CRATES[@]}"; do
   echo "Publishing $crate..."
-  until cargo publish -p "$crate" --allow-dirty --no-verify; do
+  until OUT=$(cargo publish -p "$crate" --allow-dirty --no-verify 2>&1) || echo "$OUT" | grep -q "already exists"; do
+    echo "$OUT"
     echo "Publishing $crate failed, likely due to crates.io index sync. Retrying in 5 seconds..."
     sleep 5
   done

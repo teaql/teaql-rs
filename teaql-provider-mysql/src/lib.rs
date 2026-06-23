@@ -859,7 +859,7 @@ mod tests {
                     .not_null(),
             )
             .unwrap();
-        assert_eq!(json, "ALTER TABLE orders ADD COLUMN payload JSON NOT NULL");
+        assert_eq!(json, "ALTER TABLE orders ADD COLUMN payload JSON NOT NULL DEFAULT '{}'");
 
         let decimal = MysqlDialect
             .compile_add_column(

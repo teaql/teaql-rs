@@ -434,7 +434,7 @@ where
             .map(|relation| (relation.name.clone(), relation.many));
 
         let mut buckets: BTreeMap<String, Vec<Record>> = BTreeMap::new();
-        for child in child_rows {
+        for child in child_rows.clone() {
             if let Some(key) = child.get(&plan.foreign_key) {
                 buckets
                     .entry(graph_identity_key(key))
@@ -442,6 +442,7 @@ where
                     .push(child);
             }
         }
+
 
         for parent in parent_rows.iter_mut() {
             let Some(local_value) = parent.get(&plan.local_key) else {

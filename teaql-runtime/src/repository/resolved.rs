@@ -385,7 +385,6 @@ where
         let mut rows = self.fetch_prepared_all(&query).await?;
         self.enhance_relation_aggregates(&mut rows, relation_aggregates, query.aggregation_cache, &query.trace_chain).await?;
         self.enhance_relations(&mut rows).await?;
-        self.enhance_query_relations(&mut rows, &query).await?;
         rows.into_iter()
             .map(|record| {
                 let mut entity = T::from_record(record)?;
@@ -411,7 +410,6 @@ where
 
         let mut rows = self.fetch_prepared_all(&query).await?;
         self.enhance_relations(&mut rows).await?;
-        self.enhance_query_relations(&mut rows, &query).await?;
         let root = self.repository.metadata.context.get_resource::<crate::EntityRoot>().cloned();
         rows.into_iter()
             .map(|record| {
