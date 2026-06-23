@@ -2,8 +2,8 @@
 set -e
 
 CRATES=(
-  "teaql-core"
   "teaql-macros"
+  "teaql-core"
   "teaql-data-service"
   "teaql-sql"
   "teaql-runtime"
