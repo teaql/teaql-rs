@@ -24,7 +24,7 @@ impl std::fmt::Display for RuntimeError {
         match self {
             Self::MissingEntity(entity) => write!(f, "missing entity descriptor: {entity}"),
             Self::SqlCompile(err) => err.fmt(f),
-            Self::Behavior(message) => write!(f, "repository behavior error: {message}"),
+            Self::Behavior(message) => write!(f, "entity data service behavior error: {message}"),
             Self::Event(message) => write!(f, "entity event error: {message}"),
             Self::Policy(message) => write!(f, "request policy error: {message}"),
             Self::Check(results) => {
@@ -61,7 +61,7 @@ impl From<SqlCompileError> for RuntimeError {
 pub enum ContextError {
     MissingResource(String),
     MissingTypedResource(&'static str),
-    MissingRepository(String),
+    MissingEntityDataService(String),
 }
 
 impl std::fmt::Display for ContextError {
@@ -69,7 +69,9 @@ impl std::fmt::Display for ContextError {
         match self {
             Self::MissingResource(name) => write!(f, "missing named resource: {name}"),
             Self::MissingTypedResource(name) => write!(f, "missing typed resource: {name}"),
-            Self::MissingRepository(name) => write!(f, "missing repository for entity: {name}"),
+            Self::MissingEntityDataService(name) => {
+                write!(f, "missing entity data service for entity: {name}")
+            }
         }
     }
 }
@@ -77,13 +79,13 @@ impl std::fmt::Display for ContextError {
 impl std::error::Error for ContextError {}
 
 #[derive(Debug)]
-pub enum RepositoryError<ExecError> {
+pub enum DataServiceError<ExecError> {
     Runtime(RuntimeError),
     Entity(EntityError),
     Executor(ExecError),
 }
 
-impl<ExecError> std::fmt::Display for RepositoryError<ExecError>
+impl<ExecError> std::fmt::Display for DataServiceError<ExecError>
 where
     ExecError: std::fmt::Display,
 {
@@ -96,7 +98,7 @@ where
     }
 }
 
-impl<ExecError> std::error::Error for RepositoryError<ExecError> where
+impl<ExecError> std::error::Error for DataServiceError<ExecError> where
     ExecError: std::error::Error + 'static
 {
 }

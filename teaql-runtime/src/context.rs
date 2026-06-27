@@ -10,12 +10,12 @@ use teaql_core::{EntityDescriptor, Record, UpdateCommand, Value};
 use teaql_sql::{CompiledQuery, DatabaseKind};
 
 use crate::{
-    CheckResults, CheckerRegistry, ContextError, RawAuditEvent, RawAuditEventSink, GraphNode,
-    InternalIdGenerator, Language, MetadataStore, ObjectLocation, RepositoryBehavior,
-    RepositoryBehaviorRegistry, RepositoryRegistry, RequestPolicy, RuntimeError,
+    CheckResults, CheckerRegistry, ContextError, EntityDataServiceBehavior,
+    EntityDataServiceBehaviorRegistry, EntityRegistry, GraphNode, InternalIdGenerator, Language,
+    MetadataStore, ObjectLocation, RawAuditEvent, RawAuditEventSink, RequestPolicy, RuntimeError,
     local_id_generator, translate_check_result,
 };
-use crate::{EntityRoot, RepositoryError};
+use crate::{DataServiceError, EntityRoot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SqlLogOperation {
@@ -129,8 +129,9 @@ pub trait SchemaProvider: Send + Sync {
 
 pub struct UserContext {
     pub(crate) metadata: Option<Box<dyn MetadataStore>>,
-    pub(crate) repository_registry: Option<Box<dyn RepositoryRegistry>>,
-    pub(crate) repository_behavior_registry: Option<Box<dyn RepositoryBehaviorRegistry>>,
+    pub(crate) entity_registry: Option<Box<dyn EntityRegistry>>,
+    pub(crate) entity_data_service_behavior_registry:
+        Option<Box<dyn EntityDataServiceBehaviorRegistry>>,
     pub(crate) request_policy: Option<Box<dyn RequestPolicy>>,
     pub(crate) checker_registry: Option<Box<dyn CheckerRegistry>>,
     pub(crate) event_sink: Option<Box<dyn RawAuditEventSink>>,
@@ -164,8 +165,8 @@ impl Default for UserContext {
         let user_id = format!("{os_user}@pid-{pid}.tid-{numeric_thread_id}");
         Self {
             metadata: None,
-            repository_registry: None,
-            repository_behavior_registry: None,
+            entity_registry: None,
+            entity_data_service_behavior_registry: None,
             request_policy: None,
             checker_registry: None,
             event_sink: None,
@@ -182,7 +183,13 @@ impl Default for UserContext {
             sql_log_entries: Mutex::new(Vec::new()),
             user_identifier: Some(user_id),
             timezone: Some("UTC".to_owned()),
-            trace_id: format!("req-{pid}-{numeric_thread_id}-{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_micros()),
+            trace_id: format!(
+                "req-{pid}-{numeric_thread_id}-{:x}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_micros()
+            ),
         }
     }
 }
@@ -216,7 +223,8 @@ impl DataStore for InMemoryDataStore {
 
     async fn put(&self, key: &str, value: Value, timeout_seconds: Option<u64>) {
         let mut lock = self.cache.write().unwrap();
-        let expires_at = timeout_seconds.map(|secs| std::time::Instant::now() + std::time::Duration::from_secs(secs));
+        let expires_at = timeout_seconds
+            .map(|secs| std::time::Instant::now() + std::time::Duration::from_secs(secs));
         lock.insert(key.to_string(), (value, expires_at));
     }
 
@@ -305,28 +313,28 @@ impl UserContext {
         self.metadata = Some(Box::new(metadata));
     }
 
-    pub fn with_repository_registry(mut self, registry: impl RepositoryRegistry + 'static) -> Self {
-        self.repository_registry = Some(Box::new(registry));
+    pub fn with_entity_registry(mut self, registry: impl EntityRegistry + 'static) -> Self {
+        self.entity_registry = Some(Box::new(registry));
         self
     }
 
-    pub fn set_repository_registry(&mut self, registry: impl RepositoryRegistry + 'static) {
-        self.repository_registry = Some(Box::new(registry));
+    pub fn set_entity_registry(&mut self, registry: impl EntityRegistry + 'static) {
+        self.entity_registry = Some(Box::new(registry));
     }
 
-    pub fn with_repository_behavior_registry(
+    pub fn with_entity_data_service_behavior_registry(
         mut self,
-        registry: impl RepositoryBehaviorRegistry + 'static,
+        registry: impl EntityDataServiceBehaviorRegistry + 'static,
     ) -> Self {
-        self.repository_behavior_registry = Some(Box::new(registry));
+        self.entity_data_service_behavior_registry = Some(Box::new(registry));
         self
     }
 
-    pub fn set_repository_behavior_registry(
+    pub fn set_entity_data_service_behavior_registry(
         &mut self,
-        registry: impl RepositoryBehaviorRegistry + 'static,
+        registry: impl EntityDataServiceBehaviorRegistry + 'static,
     ) {
-        self.repository_behavior_registry = Some(Box::new(registry));
+        self.entity_data_service_behavior_registry = Some(Box::new(registry));
     }
 
     pub fn with_request_policy(mut self, policy: impl RequestPolicy + 'static) -> Self {
@@ -360,7 +368,10 @@ impl UserContext {
         self.event_sink = Some(Box::new(sink));
     }
 
-    pub fn with_custom_event_sink(mut self, sink: impl crate::SafeAuditEventSink + 'static) -> Self {
+    pub fn with_custom_event_sink(
+        mut self,
+        sink: impl crate::SafeAuditEventSink + 'static,
+    ) -> Self {
         self.custom_event_sink = Some(Box::new(sink));
         self
     }
@@ -507,7 +518,7 @@ impl UserContext {
                 });
             }
         }
-        
+
         crate::log_formatter::LogManager::write_sql_log(&trace_chain, &sql_log_entry);
     }
 
@@ -529,7 +540,10 @@ impl UserContext {
                 debug_sql: debug_sql.clone(),
                 started_at: metadata.started_at,
                 ended_at: metadata.ended_at,
-                elapsed: metadata.ended_at.duration_since(metadata.started_at).unwrap_or_default(),
+                elapsed: metadata
+                    .ended_at
+                    .duration_since(metadata.started_at)
+                    .unwrap_or_default(),
                 result_count: metadata.result_count,
                 result_type: None, // Not directly available
                 affected_rows: metadata.affected_rows,
@@ -561,7 +575,7 @@ impl UserContext {
                     });
                 }
             }
-            
+
             crate::log_formatter::LogManager::write_sql_log(&metadata.trace_chain, &final_entry);
         }
     }
@@ -675,20 +689,20 @@ impl UserContext {
         self.locals.remove(key)
     }
 
-    pub fn has_repository(&self, entity: &str) -> bool {
+    pub fn has_entity_data_service(&self, entity: &str) -> bool {
         let in_registry = self
-            .repository_registry
+            .entity_registry
             .as_ref()
             .map(|registry| registry.contains(entity))
             .unwrap_or(false);
         in_registry || self.entity(entity).is_some()
     }
 
-    pub fn repository_behavior(
+    pub fn entity_data_service_behavior(
         &self,
         entity: &str,
-    ) -> Option<std::sync::Arc<dyn RepositoryBehavior>> {
-        self.repository_behavior_registry
+    ) -> Option<std::sync::Arc<dyn EntityDataServiceBehavior>> {
+        self.entity_data_service_behavior_registry
             .as_ref()
             .and_then(|registry| registry.behavior(entity))
     }
@@ -751,22 +765,22 @@ impl UserContext {
             } else {
                 (vec![], None)
             };
-            
+
             let safe_event = event.build_safe_event(&mask_fields, max_len);
             sink.on_safe_event(self, &safe_event)?;
         }
-        
+
         crate::log_formatter::LogManager::write_audit_log(&event);
-        
+
         Ok(())
     }
 
-    pub async fn commit_changes<E>(&self) -> Result<(), RepositoryError<E::Error>>
+    pub async fn commit_changes<E>(&self) -> Result<(), DataServiceError<E::Error>>
     where
         E: teaql_data_service::MutationExecutor + Send + Sync + 'static,
     {
         let executor = self.require_resource::<E>().map_err(|err| {
-            RepositoryError::Runtime(RuntimeError::Graph(format!(
+            DataServiceError::Runtime(RuntimeError::Graph(format!(
                 "cannot commit changes without executor: {err}"
             )))
         })?;
@@ -778,15 +792,16 @@ impl UserContext {
             }
             let _entity = self
                 .require_entity(&key.entity)
-                .map_err(RepositoryError::Runtime)?;
+                .map_err(DataServiceError::Runtime)?;
             let mut command = UpdateCommand::new(&key.entity, key.id.clone());
             for (field, value) in changes {
                 command = command.value(field.clone(), value.clone());
             }
             let request = teaql_data_service::MutationRequest::Update(command);
             executor
-                .mutate(request).await
-                .map_err(RepositoryError::Executor)?;
+                .mutate(request)
+                .await
+                .map_err(DataServiceError::Executor)?;
         }
 
         self.entity_root.clear_current_change_set();
@@ -801,7 +816,12 @@ impl UserContext {
         }
     }
 
-    pub async fn put_in_store(&self, key: &str, value: impl Into<Value>, timeout_seconds: Option<u64>) {
+    pub async fn put_in_store(
+        &self,
+        key: &str,
+        value: impl Into<Value>,
+        timeout_seconds: Option<u64>,
+    ) {
         if let Some(store) = self.get_resource::<Box<dyn DataStore>>() {
             store.put(key, value.into(), timeout_seconds).await;
         }
@@ -818,11 +838,11 @@ fn extract_id_from_sql(sql: &str) -> Option<String> {
     let sql_lower = sql.to_lowercase();
     let where_idx = sql_lower.find("where")?;
     let where_clause = &sql_lower[where_idx + 5..];
-    
+
     let bytes = where_clause.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if i + 1 < bytes.len() && &bytes[i..i+2] == b"id" {
+        if i + 1 < bytes.len() && &bytes[i..i + 2] == b"id" {
             // Check boundary before
             let prev_ok = if i == 0 {
                 true
@@ -837,7 +857,7 @@ fn extract_id_from_sql(sql: &str) -> Option<String> {
                 let next_char = bytes[i + 2] as char;
                 !next_char.is_ascii_alphanumeric() && next_char != '_'
             };
-            
+
             if prev_ok && next_ok {
                 // Found the standalone "id" word!
                 // Now look for "=" after it
@@ -849,30 +869,30 @@ fn extract_id_from_sql(sql: &str) -> Option<String> {
                     j += 1;
                     while j < bytes.len() && (bytes[j] as char).is_whitespace() {
                         j += 1;
-                      }
-                      // Now extract the value
-                      let mut val_str = String::new();
-                      if j < bytes.len() && bytes[j] == b'\'' {
-                          j += 1; // consume single quote
-                          while j < bytes.len() && bytes[j] != b'\'' {
-                              val_str.push(bytes[j] as char);
-                              j += 1;
-                          }
-                          return Some(val_str);
-                      } else {
-                          while j < bytes.len() {
-                              let c = bytes[j] as char;
-                              if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                                  val_str.push(c);
-                                  j += 1;
-                              } else {
-                                  break;
-                              }
-                          }
-                          if !val_str.is_empty() {
-                              return Some(val_str);
-                          }
-                      }
+                    }
+                    // Now extract the value
+                    let mut val_str = String::new();
+                    if j < bytes.len() && bytes[j] == b'\'' {
+                        j += 1; // consume single quote
+                        while j < bytes.len() && bytes[j] != b'\'' {
+                            val_str.push(bytes[j] as char);
+                            j += 1;
+                        }
+                        return Some(val_str);
+                    } else {
+                        while j < bytes.len() {
+                            let c = bytes[j] as char;
+                            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                                val_str.push(c);
+                                j += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        if !val_str.is_empty() {
+                            return Some(val_str);
+                        }
+                    }
                 }
             }
         }
@@ -932,6 +952,5 @@ fn pretty_sql(sql: &str) -> String {
     ] {
         pretty = pretty.replace(keyword, &format!("\n{}", keyword.trim_start()));
     }
-    pretty
-        .replace(" AND ", "\n  AND ")
+    pretty.replace(" AND ", "\n  AND ")
 }

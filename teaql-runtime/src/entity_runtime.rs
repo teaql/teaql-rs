@@ -244,10 +244,7 @@ impl EntityRoot {
     /// Set an annotation comment on this entity root.
     /// The comment propagates through the graph save process for observability.
     pub fn set_comment(&self, comment: impl Into<String>) {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .comment = Some(comment.into());
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).comment = Some(comment.into());
     }
 
     /// Get the annotation comment, if any.
@@ -323,25 +320,46 @@ impl EntityRoot {
             .changed_field_names(key)
     }
     pub fn deleted_keys(&self) -> std::collections::BTreeSet<EntityKey> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).deleted_keys.clone()
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .deleted_keys
+            .clone()
     }
 
     pub fn new_keys(&self) -> std::collections::BTreeSet<EntityKey> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).new_keys.clone()
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .new_keys
+            .clone()
     }
 
     pub fn get_original_version(&self, key: &EntityKey) -> Option<i64> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).original_versions.get(key).cloned()
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .original_versions
+            .get(key)
+            .cloned()
     }
 
     pub fn get_trace_chain(&self, key: &EntityKey) -> Vec<teaql_core::TraceNode> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).trace_chains.get(key).cloned().unwrap_or_default()
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .trace_chains
+            .get(key)
+            .cloned()
+            .unwrap_or_default()
     }
-    
 
-    
     pub fn set_original_version(&self, key: EntityKey, version: i64) {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).original_versions.insert(key, version);
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .original_versions
+            .insert(key, version);
     }
 }
 

@@ -1,50 +1,52 @@
 #![allow(warnings)]
 mod checker;
 mod context;
+mod data_service;
 mod entity_runtime;
 mod entity_status;
 mod error;
 mod event;
+pub mod generated_support;
 mod graph;
 mod id;
 mod language;
 pub mod log_formatter;
 mod memory;
 mod registry;
-mod repository;
-pub mod generated_support;
 
 pub use context::{
-    DataStore, InfoLogEntry, InMemoryDataStore, LogPayload, SchemaProvider, SqlLogEntry, SqlLogOperation,
-    SqlLogOptions, UnifiedLogBuffer, UnifiedLogEntry, UserContext,
+    DataStore, InMemoryDataStore, InfoLogEntry, LogPayload, SchemaProvider, SqlLogEntry,
+    SqlLogOperation, SqlLogOptions, UnifiedLogBuffer, UnifiedLogEntry, UserContext,
+};
+pub use data_service::{
+    AggregationCacheBackend, ContextDataService, EntityDataService, GraphTransactionBoundary,
+    InMemoryAggregationCache, RelationLoadPlan, RuntimeDataService,
+};
+pub use entity_runtime::{
+    ChangeSetStack, EntityChangeSet, EntityKey, EntityRoot, LedgerEntity, RootContext,
 };
 pub use entity_status::{EntityAction, EntityStatus};
-pub use entity_runtime::{ChangeSetStack, EntityChangeSet, EntityKey, EntityRoot, RootContext, LedgerEntity};
-pub use error::{ContextError, RepositoryError, RuntimeError};
+pub use error::{ContextError, DataServiceError, RuntimeError};
 pub use event::{
-    RawAuditEvent, RawAuditEventKind, RawAuditEventSink, EntityPropertyChange, InMemoryRawAuditEventSink,
-    SafeAuditEvent, SafeAuditField, SafeAuditEventSink,
+    EntityPropertyChange, InMemoryRawAuditEventSink, RawAuditEvent, RawAuditEventKind,
+    RawAuditEventSink, SafeAuditEvent, SafeAuditEventSink, SafeAuditField,
 };
+pub use generated_support::*;
 pub use graph::{
-    GraphMutationBatch, GraphMutationKind, GraphMutationPlan, GraphMutationPlanItem,
-    GraphNode, GraphOperation, ScopedCommentNode, TraceScopeToken, sorted_update_fields,
+    GraphMutationBatch, GraphMutationKind, GraphMutationPlan, GraphMutationPlanItem, GraphNode,
+    GraphOperation, ScopedCommentNode, TraceScopeToken, sorted_update_fields,
 };
 pub(crate) use id::local_id_generator;
 pub use id::{InternalIdGenerator, SnowflakeIdGenerator};
 pub use language::{
     BuiltinTranslator, Language, MessageTranslator, translate_check_result, translate_location,
 };
-pub use memory::{MemoryRepository, MemoryRepositoryError};
+pub use memory::{MemoryDataService, MemoryDataServiceError};
 pub use registry::{
-    InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry, InMemoryRepositoryRegistry,
-    MetadataStore, RepositoryBehavior, RepositoryBehaviorRegistry, RepositoryRegistry,
-    RequestPolicy, RuntimeModule,
+    EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry, EntityRegistry,
+    InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityRegistry, InMemoryMetadataStore,
+    MetadataStore, RequestPolicy, RuntimeModule,
 };
-pub use repository::{
-    AggregationCacheBackend, ContextRepository, GraphTransactionBoundary, InMemoryAggregationCache,
-    RelationLoadPlan, Repository, ResolvedRepository,
-};
-pub use generated_support::*;
 
 #[cfg(test)]
 mod tests {
@@ -53,25 +55,28 @@ mod tests {
 
     use super::{
         AggregationCacheBackend, CHECK_OBJECT_STATUS_FIELD, CheckObjectStatus, CheckResult,
-        CheckResults, CheckRule, Checker, RawAuditEvent, RawAuditEventKind, RawAuditEventSink,
-        GraphMutationKind, GraphNode, InMemoryAggregationCache,
-        InMemoryCheckerRegistry, InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry,
-        InMemoryRepositoryRegistry, InternalIdGenerator, Language, MemoryRepository, MetadataStore,
-        ObjectLocation, Repository, RepositoryBehavior, RepositoryError,
-        RequestPolicy, RuntimeError, RuntimeModule, SqlLogOperation, SqlLogOptions, TypedChecker,
+        CheckResults, CheckRule, Checker, DataServiceError, EntityDataServiceBehavior,
+        GraphMutationKind, GraphNode, InMemoryAggregationCache, InMemoryCheckerRegistry,
+        InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityRegistry, InMemoryMetadataStore,
+        InternalIdGenerator, Language, MemoryDataService, MetadataStore, ObjectLocation,
+        RawAuditEvent, RawAuditEventKind, RawAuditEventSink, RequestPolicy, RuntimeDataService,
+        RuntimeError, RuntimeModule, SqlLogOperation, SqlLogOptions, TypedChecker,
         TypedEntityChecker, UserContext, translate_check_result,
-    };
-    use teaql_data_service::{
-        DataServiceCapabilities, DataServiceExecutor, ExecutionMetadata, MutationExecutor,
-        MutationRequest, MutationResult, QueryExecutor, QueryRequest, QueryResult, DataServiceOperation,
     };
     use teaql_core::{
         Aggregate, AggregateFunction, BinaryOp, DataType, Decimal, DeleteCommand, Entity,
         EntityDescriptor, EntityError, Expr, InsertCommand, OrderBy, PropertyDescriptor, Record,
         RecoverCommand, RelationAggregate, SelectQuery, TeaqlEntity, UpdateCommand, Value,
     };
+    use teaql_data_service::{
+        DataServiceCapabilities, DataServiceExecutor, DataServiceOperation, ExecutionMetadata,
+        MutationExecutor, MutationRequest, MutationResult, QueryExecutor, QueryRequest,
+        QueryResult,
+    };
     use teaql_macros::TeaqlEntity as DeriveTeaqlEntity;
-    use teaql_sql::{CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, quote_identifier_if_needed};
+    use teaql_sql::{
+        CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, quote_identifier_if_needed,
+    };
 
     const ORDER_DEFAULT_PROJECTION: &str = "id, version, name";
 
@@ -495,9 +500,7 @@ mod tests {
         }
     }
 
-
-
-    impl RepositoryBehavior for OrderBehavior {
+    impl EntityDataServiceBehavior for OrderBehavior {
         fn before_select(
             &self,
             _ctx: &UserContext,
@@ -533,7 +536,7 @@ mod tests {
         events: Arc<Mutex<Vec<RawAuditEvent>>>,
     }
 
-    impl RepositoryBehavior for ContextAwareOrderBehavior {
+    impl EntityDataServiceBehavior for ContextAwareOrderBehavior {
         fn before_insert(
             &self,
             ctx: &UserContext,
@@ -711,7 +714,7 @@ mod tests {
     async fn runtime_module_registers_descriptor_into_context() {
         let ctx = UserContext::new().with_module(RuntimeModule::new().descriptor(entity()));
         assert!(ctx.entity("Order").is_some());
-        assert!(ctx.has_repository("Order"));
+        assert!(ctx.has_entity_data_service("Order"));
     }
 
     #[tokio::test]
@@ -720,15 +723,15 @@ mod tests {
             RuntimeModule::new().entity_with_behavior::<CatalogProductRow, _>(OrderBehavior),
         );
         assert!(ctx.entity("CatalogProduct").is_some());
-        assert!(ctx.has_repository("CatalogProduct"));
-        assert!(ctx.repository_behavior("CatalogProduct").is_some());
+        assert!(ctx.has_entity_data_service("CatalogProduct"));
+        assert!(ctx.entity_data_service_behavior("CatalogProduct").is_some());
     }
 
     #[tokio::test]
     async fn module_macro_registers_multiple_entities() {
         let ctx = UserContext::new().with_module(crate::module!(CatalogProductRow));
         assert!(ctx.entity("CatalogProduct").is_some());
-        assert!(ctx.has_repository("CatalogProduct"));
+        assert!(ctx.has_entity_data_service("CatalogProduct"));
     }
 
     #[tokio::test]
@@ -736,17 +739,17 @@ mod tests {
         let ctx =
             UserContext::new().with_module(crate::module!(CatalogProductRow => OrderBehavior));
         assert!(ctx.entity("CatalogProduct").is_some());
-        assert!(ctx.repository_behavior("CatalogProduct").is_some());
+        assert!(ctx.entity_data_service_behavior("CatalogProduct").is_some());
     }
 
     #[tokio::test]
-    async fn repository_returns_optimistic_lock_conflict() {
+    async fn data_service_returns_optimistic_lock_conflict() {
         let store = InMemoryMetadataStore::new().with_entity(entity());
         let executor = StubExecutor {
             affected: 0,
             rows: Vec::new(),
         };
-        let repo = Repository::new(&store, &executor);
+        let repo = RuntimeDataService::new(&store, &executor);
 
         let err = repo
             .update(
@@ -754,10 +757,11 @@ mod tests {
                     .expected_version(3)
                     .value("name", "next"),
             )
-            .await.unwrap_err();
+            .await
+            .unwrap_err();
 
         match err {
-            RepositoryError::Runtime(RuntimeError::OptimisticLockConflict { .. }) => {}
+            DataServiceError::Runtime(RuntimeError::OptimisticLockConflict { .. }) => {}
             other => panic!("unexpected error: {other}"),
         }
     }
@@ -783,7 +787,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn user_context_builds_context_repository() {
+    async fn user_context_builds_context_data_service() {
         let mut ctx =
             UserContext::new().with_metadata(InMemoryMetadataStore::new().with_entity(entity()));
         ctx.insert_resource(PostgresDialect);
@@ -792,32 +796,31 @@ mod tests {
             rows: Vec::new(),
         });
 
-        let repo = ctx.repository::< StubExecutor>().unwrap();
+        let repo = ctx.data_service::<StubExecutor>().unwrap();
         let affected = repo
             .update(
                 &UpdateCommand::new("Order", 1_u64)
                     .expected_version(3)
                     .value("name", "next"),
             )
-            .await.unwrap();
+            .await
+            .unwrap();
 
         assert_eq!(affected, 1);
     }
 
     #[tokio::test]
-    async fn user_context_resolves_repository_by_entity_type() {
+    async fn user_context_resolves_entity_data_service_by_entity_type() {
         let mut ctx = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
         ctx.insert_resource(PostgresDialect);
         ctx.insert_resource(StubExecutor {
             affected: 1,
             rows: Vec::new(),
         });
 
-        let repo = ctx
-            .resolve_repository::< StubExecutor>("Order")
-            .unwrap();
+        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
         assert_eq!(repo.entity(), "Order");
         assert_eq!(repo.select().entity, "Order");
 
@@ -829,12 +832,13 @@ mod tests {
                     .value("version", 1_i64)
                     .value("name", "n"),
             )
-            .await.unwrap();
+            .await
+            .unwrap();
         assert_eq!(affected, 1);
     }
 
     #[tokio::test]
-    async fn resolved_repository_applies_behavior_hooks() {
+    async fn entity_data_service_applies_behavior_hooks() {
         let mut ctx = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
@@ -842,9 +846,10 @@ mod tests {
                     .with_entity(line_entity())
                     .with_entity(product_entity()),
             )
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
-            .with_repository_behavior_registry(
-                InMemoryRepositoryBehaviorRegistry::new().with_behavior("Order", OrderBehavior),
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"))
+            .with_entity_data_service_behavior_registry(
+                InMemoryEntityDataServiceBehaviorRegistry::new()
+                    .with_behavior("Order", OrderBehavior),
             );
         ctx.insert_resource(PostgresDialect);
         ctx.insert_resource(StubExecutor {
@@ -852,9 +857,7 @@ mod tests {
             rows: Vec::new(),
         });
 
-        let repo = ctx
-            .resolve_repository::< StubExecutor>("Order")
-            .unwrap();
+        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
 
         // let compiled = repo.compile(&repo.select()).unwrap();
         // assert!(compiled.sql.contains("WHERE (version = $1)"));
@@ -866,7 +869,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolved_repository_applies_request_policy_after_behavior_hooks() {
+    async fn entity_data_service_applies_request_policy_after_behavior_hooks() {
         let mut ctx = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
@@ -874,9 +877,10 @@ mod tests {
                     .with_entity(line_entity())
                     .with_entity(product_entity()),
             )
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
-            .with_repository_behavior_registry(
-                InMemoryRepositoryBehaviorRegistry::new().with_behavior("Order", OrderBehavior),
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"))
+            .with_entity_data_service_behavior_registry(
+                InMemoryEntityDataServiceBehaviorRegistry::new()
+                    .with_behavior("Order", OrderBehavior),
             )
             .with_request_policy(TenantRequestPolicy);
         ctx.insert_named_resource("tenant_id", 9_u64);
@@ -886,9 +890,7 @@ mod tests {
             rows: Vec::new(),
         });
 
-        let repo = ctx
-            .resolve_repository::< StubExecutor>("Order")
-            .unwrap();
+        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
 
         // let compiled = repo.compile(&repo.select()).unwrap();
         // assert!(compiled.sql.contains("version = $1"));
@@ -900,7 +902,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolved_repository_prepares_insert_command_with_generated_id() {
+    async fn entity_data_service_prepares_insert_command_with_generated_id() {
         let mut ctx = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
@@ -908,9 +910,10 @@ mod tests {
                     .with_entity(line_entity())
                     .with_entity(product_entity()),
             )
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
-            .with_repository_behavior_registry(
-                InMemoryRepositoryBehaviorRegistry::new().with_behavior("Order", OrderBehavior),
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"))
+            .with_entity_data_service_behavior_registry(
+                InMemoryEntityDataServiceBehaviorRegistry::new()
+                    .with_behavior("Order", OrderBehavior),
             )
             .with_internal_id_generator(FixedIdGenerator(42));
         ctx.insert_resource(PostgresDialect);
@@ -919,9 +922,7 @@ mod tests {
             rows: Vec::new(),
         });
 
-        let repo = ctx
-            .resolve_repository::< StubExecutor>("Order")
-            .unwrap();
+        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
 
         let prepared = repo
             .prepare_insert_command(&repo.insert_command().value("id", 0_u64).value("name", "n"))
@@ -949,15 +950,13 @@ mod tests {
         );
     }
 
-
-
     #[tokio::test]
     async fn custom_user_context_can_drive_insert_preparation() {
         let mut ctx = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
-            .with_repository_behavior_registry(
-                InMemoryRepositoryBehaviorRegistry::new()
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"))
+            .with_entity_data_service_behavior_registry(
+                InMemoryEntityDataServiceBehaviorRegistry::new()
                     .with_behavior("Order", ContextAwareOrderBehavior),
             )
             .with_internal_id_generator(FixedIdGenerator(99));
@@ -970,9 +969,7 @@ mod tests {
             rows: Vec::new(),
         });
 
-        let repo = ctx
-            .resolve_repository::< StubExecutor>("Order")
-            .unwrap();
+        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
         let prepared = repo.prepare_insert_command(&repo.insert_command()).unwrap();
 
         assert_eq!(prepared.values.get("id"), Some(&Value::U64(99)));
@@ -987,7 +984,7 @@ mod tests {
     async fn checker_registry_validates_and_fixes_insert_commands() {
         let mut ctx = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"))
             .with_checker_registry(InMemoryCheckerRegistry::new().with_checker(OrderChecker))
             .with_internal_id_generator(FixedIdGenerator(77));
         ctx.insert_resource(PostgresDialect);
@@ -996,9 +993,7 @@ mod tests {
             rows: Vec::new(),
         });
 
-        let repo = ctx
-            .resolve_repository::< StubExecutor>("Order")
-            .unwrap();
+        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
         let prepared = repo
             .prepare_insert_command(&repo.insert_command().value("name", "valid"))
             .unwrap();
@@ -1023,7 +1018,7 @@ mod tests {
     async fn typed_checker_validates_and_fixes_derived_entities_without_record_access() {
         let mut ctx = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(Order::entity_descriptor()))
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"))
             .with_checker_registry(
                 InMemoryCheckerRegistry::new()
                     .with_checker(TypedEntityChecker::<Order, _>::new(TypedOrderChecker)),
@@ -1035,9 +1030,7 @@ mod tests {
             rows: Vec::new(),
         });
 
-        let repo = ctx
-            .resolve_repository::< StubExecutor>("Order")
-            .unwrap();
+        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
         let prepared = repo
             .prepare_insert_command(
                 &repo
@@ -1068,8 +1061,6 @@ mod tests {
             other => panic!("unexpected typed checker error: {other:?}"),
         }
     }
-
-
 
     #[tokio::test]
     async fn checker_registry_reports_nested_create_locations_and_fixes_records() {
@@ -1138,7 +1129,7 @@ mod tests {
     async fn user_context_language_switch_translates_checker_errors() {
         let mut ctx = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"))
             .with_checker_registry(InMemoryCheckerRegistry::new().with_checker(OrderChecker))
             .with_internal_id_generator(FixedIdGenerator(77))
             .with_language(Language::Chinese);
@@ -1148,9 +1139,7 @@ mod tests {
             rows: Vec::new(),
         });
 
-        let repo = ctx
-            .resolve_repository::< StubExecutor>("Order")
-            .unwrap();
+        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
         let error = repo
             .prepare_insert_command(&repo.insert_command())
             .unwrap_err();
@@ -1172,14 +1161,12 @@ mod tests {
         assert_eq!(ctx.language(), Language::Spanish);
     }
 
-
-
     #[tokio::test]
-    async fn user_context_event_sink_receives_repository_mutation_events() {
+    async fn user_context_event_sink_receives_data_service_mutation_events() {
         let events = Arc::new(Mutex::new(Vec::new()));
         let mut ctx = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"))
             .with_internal_id_generator(FixedIdGenerator(88))
             .with_event_sink(RecordingEventSink {
                 events: events.clone(),
@@ -1194,21 +1181,24 @@ mod tests {
             ])],
         });
 
-        let repo = ctx
-            .resolve_repository::< StubExecutor>("Order")
-            .unwrap();
+        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
         repo.insert(&repo.insert_command().value("name", "created"))
-            .await.unwrap();
+            .await
+            .unwrap();
         repo.update(
             &repo
                 .update_command(88_u64)
                 .expected_version(1)
                 .value("name", "updated"),
         )
-        .await.unwrap();
+        .await
+        .unwrap();
         repo.delete(&repo.delete_command(88_u64).expected_version(2))
-            .await.unwrap();
-        repo.recover(&repo.recover_command(88_u64, -3)).await.unwrap();
+            .await
+            .unwrap();
+        repo.recover(&repo.recover_command(88_u64, -3))
+            .await
+            .unwrap();
 
         let events = events.lock().unwrap();
         assert_eq!(events.len(), 4);
@@ -1264,9 +1254,8 @@ mod tests {
         assert_eq!(events[3].changes[0].field, "version");
     }
 
-
     #[tokio::test]
-    async fn resolved_repository_builds_relation_plans() {
+    async fn entity_data_service_builds_relation_plans() {
         let mut ctx = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
@@ -1274,9 +1263,10 @@ mod tests {
                     .with_entity(line_entity())
                     .with_entity(product_entity()),
             )
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
-            .with_repository_behavior_registry(
-                InMemoryRepositoryBehaviorRegistry::new().with_behavior("Order", OrderBehavior),
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"))
+            .with_entity_data_service_behavior_registry(
+                InMemoryEntityDataServiceBehaviorRegistry::new()
+                    .with_behavior("Order", OrderBehavior),
             );
         ctx.insert_resource(PostgresDialect);
         ctx.insert_resource(StubExecutor {
@@ -1284,9 +1274,7 @@ mod tests {
             rows: Vec::new(),
         });
 
-        let repo = ctx
-            .resolve_repository::< StubExecutor>("Order")
-            .unwrap();
+        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
         let plans = repo.relation_plans().unwrap();
 
         assert_eq!(plans.len(), 1);
@@ -1298,7 +1286,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolved_repository_builds_relation_query_from_parent_rows() {
+    async fn entity_data_service_builds_relation_query_from_parent_rows() {
         let mut ctx = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
@@ -1306,9 +1294,10 @@ mod tests {
                     .with_entity(line_entity())
                     .with_entity(product_entity()),
             )
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
-            .with_repository_behavior_registry(
-                InMemoryRepositoryBehaviorRegistry::new().with_behavior("Order", OrderBehavior),
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"))
+            .with_entity_data_service_behavior_registry(
+                InMemoryEntityDataServiceBehaviorRegistry::new()
+                    .with_behavior("Order", OrderBehavior),
             );
         ctx.insert_resource(PostgresDialect);
         ctx.insert_resource(StubExecutor {
@@ -1316,9 +1305,7 @@ mod tests {
             rows: Vec::new(),
         });
 
-        let repo = ctx
-            .resolve_repository::< StubExecutor>("Order")
-            .unwrap();
+        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
         let parent_rows = vec![
             Record::from([(String::from("id"), Value::U64(11))]),
             Record::from([(String::from("id"), Value::U64(12))]),
@@ -1332,7 +1319,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolved_repository_enhances_parent_rows_with_relations() {
+    async fn entity_data_service_enhances_parent_rows_with_relations() {
         let mut ctx = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
@@ -1340,9 +1327,10 @@ mod tests {
                     .with_entity(line_entity())
                     .with_entity(product_entity()),
             )
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"))
-            .with_repository_behavior_registry(
-                InMemoryRepositoryBehaviorRegistry::new().with_behavior("Order", OrderBehavior),
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"))
+            .with_entity_data_service_behavior_registry(
+                InMemoryEntityDataServiceBehaviorRegistry::new()
+                    .with_behavior("Order", OrderBehavior),
             );
         ctx.insert_resource(PostgresDialect);
         ctx.insert_resource(StubExecutor {
@@ -1366,9 +1354,7 @@ mod tests {
             ],
         });
 
-        let repo = ctx
-            .resolve_repository::< StubExecutor>("Order")
-            .unwrap();
+        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
         let mut parents = vec![
             Record::from([(String::from("id"), Value::U64(11))]),
             Record::from([(String::from("id"), Value::U64(12))]),
@@ -1394,7 +1380,7 @@ mod tests {
                     .with_entity(OrderLineWithProductEntityRow::entity_descriptor())
                     .with_entity(ProductWithLinesEntityRow::entity_descriptor()),
             )
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("OrderLine"));
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("OrderLine"));
         ctx.insert_resource(PostgresDialect);
         ctx.insert_resource(QueueExecutor {
             affected: 1,
@@ -1414,13 +1400,14 @@ mod tests {
         });
 
         let repo = ctx
-            .resolve_repository::< QueueExecutor>("OrderLine")
+            .entity_data_service::<QueueExecutor>("OrderLine")
             .unwrap();
         let rows = repo
             .fetch_enhanced_entities::<OrderLineWithProductEntityRow>(
                 &SelectQuery::new("OrderLine").relation("product"),
             )
-            .await.unwrap();
+            .await
+            .unwrap();
 
         let product = rows.data[0].product.as_ref().unwrap();
         assert_eq!(product.lines.data.len(), 1);
@@ -1428,10 +1415,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolved_repository_fetches_smart_list_of_entities() {
+    async fn entity_data_service_fetches_smart_list_of_entities() {
         let mut ctx = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
         ctx.insert_resource(PostgresDialect);
         ctx.insert_resource(StubExecutor {
             affected: 1,
@@ -1442,10 +1429,11 @@ mod tests {
             ])],
         });
 
-        let repo = ctx
-            .resolve_repository::< StubExecutor>("Order")
+        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
+        let rows = repo
+            .fetch_entities::<OrderEntity>(&repo.select())
+            .await
             .unwrap();
-        let rows = repo.fetch_entities::<OrderEntity>(&repo.select()).await.unwrap();
 
         assert_eq!(rows.len(), 1);
         assert_eq!(
@@ -1459,14 +1447,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolved_repository_fetches_smart_list_of_derived_entities() {
+    async fn entity_data_service_fetches_smart_list_of_derived_entities() {
         let mut ctx = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new().with_entity(CatalogProductRow::entity_descriptor()),
             )
-            .with_repository_registry(
-                InMemoryRepositoryRegistry::new().with_entity("CatalogProduct"),
-            );
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("CatalogProduct"));
         ctx.insert_resource(PostgresDialect);
         ctx.insert_resource(StubExecutor {
             affected: 1,
@@ -1477,11 +1463,12 @@ mod tests {
         });
 
         let repo = ctx
-            .resolve_repository::< StubExecutor>("CatalogProduct")
+            .entity_data_service::<StubExecutor>("CatalogProduct")
             .unwrap();
         let rows = repo
             .fetch_entities::<CatalogProductRow>(&repo.select())
-            .await.unwrap();
+            .await
+            .unwrap();
 
         assert_eq!(rows.len(), 1);
         assert_eq!(
@@ -1494,15 +1481,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolved_repository_collects_dynamic_properties_for_aggregate_output() {
+    async fn entity_data_service_collects_dynamic_properties_for_aggregate_output() {
         let mut ctx = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
                     .with_entity(OrderAggregateDynamic::entity_descriptor()),
             )
-            .with_repository_registry(
-                InMemoryRepositoryRegistry::new().with_entity("OrderAggregate"),
-            );
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("OrderAggregate"));
         ctx.insert_resource(PostgresDialect);
         ctx.insert_resource(StubExecutor {
             affected: 1,
@@ -1514,11 +1499,12 @@ mod tests {
         });
 
         let repo = ctx
-            .resolve_repository::< StubExecutor>("OrderAggregate")
+            .entity_data_service::<StubExecutor>("OrderAggregate")
             .unwrap();
         let rows = repo
             .fetch_entities::<OrderAggregateDynamic>(&repo.select())
-            .await.unwrap();
+            .await
+            .unwrap();
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows.data[0].id, 1);
@@ -1535,7 +1521,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolved_repository_executes_relation_aggregates_into_dynamic_properties() {
+    async fn entity_data_service_executes_relation_aggregates_into_dynamic_properties() {
         let executor = QueueExecutor {
             affected: 1,
             rows: Mutex::new(VecDeque::from([
@@ -1564,13 +1550,11 @@ mod tests {
                     .with_entity(entity())
                     .with_entity(line_entity()),
             )
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
         ctx.insert_resource(PostgresDialect);
         ctx.insert_resource(executor);
 
-        let repo = ctx
-            .resolve_repository::< QueueExecutor>("Order")
-            .unwrap();
+        let repo = ctx.entity_data_service::<QueueExecutor>("Order").unwrap();
         let rows = repo
             .fetch_all_with_relation_aggregates(
                 &repo
@@ -1585,7 +1569,8 @@ mod tests {
                     true,
                 )],
             )
-            .await.unwrap();
+            .await
+            .unwrap();
 
         assert_eq!(rows[0].get("lineCount"), Some(&Value::I64(3)));
         assert_eq!(rows[1].get("lineCount"), Some(&Value::U64(0)));
@@ -1593,14 +1578,11 @@ mod tests {
         let executor = ctx.get_resource::<QueueExecutor>().unwrap();
         let queries = executor.queries.lock().unwrap();
         assert_eq!(queries.len(), 2);
-        assert_eq!(
-            queries[1],
-            "SELECT ... FROM OrderLine ..."
-        );
+        assert_eq!(queries[1], "SELECT ... FROM OrderLine ...");
     }
 
     #[tokio::test]
-    async fn resolved_repository_maps_relation_aggregate_storage_key_to_property_key() {
+    async fn entity_data_service_maps_relation_aggregate_storage_key_to_property_key() {
         let mut line = line_entity();
         line.properties
             .iter_mut()
@@ -1628,13 +1610,11 @@ mod tests {
                     .with_entity(entity())
                     .with_entity(line),
             )
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
         ctx.insert_resource(PostgresDialect);
         ctx.insert_resource(executor);
 
-        let repo = ctx
-            .resolve_repository::< QueueExecutor>("Order")
-            .unwrap();
+        let repo = ctx.entity_data_service::<QueueExecutor>("Order").unwrap();
         let rows = repo
             .fetch_all_with_relation_aggregates(
                 &repo
@@ -1649,7 +1629,8 @@ mod tests {
                     true,
                 )],
             )
-            .await.unwrap();
+            .await
+            .unwrap();
 
         assert_eq!(rows[0].get("lineCount"), Some(&Value::I64(3)));
         let executor = ctx.get_resource::<QueueExecutor>().unwrap();
@@ -1660,7 +1641,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolved_repository_uses_aggregation_cache_when_resource_is_registered() {
+    async fn entity_data_service_uses_aggregation_cache_when_resource_is_registered() {
         let executor = QueueExecutor {
             affected: 1,
             rows: Mutex::new(VecDeque::from([vec![Record::from([(
@@ -1671,14 +1652,12 @@ mod tests {
         };
         let mut ctx = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
         ctx.insert_resource(PostgresDialect);
         ctx.insert_resource(executor);
         ctx.insert_resource(InMemoryAggregationCache::default());
 
-        let repo = ctx
-            .resolve_repository::< QueueExecutor>("Order")
-            .unwrap();
+        let repo = ctx.entity_data_service::<QueueExecutor>("Order").unwrap();
         let query = repo
             .select()
             .count("count")
@@ -1704,7 +1683,7 @@ mod tests {
         };
         let mut ctx = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
         ctx.insert_resource(PostgresDialect);
         ctx.insert_resource(executor);
         ctx.insert_resource(
@@ -1712,9 +1691,7 @@ mod tests {
                 as Arc<dyn AggregationCacheBackend>,
         );
 
-        let repo = ctx
-            .resolve_repository::< QueueExecutor>("Order")
-            .unwrap();
+        let repo = ctx.entity_data_service::<QueueExecutor>("Order").unwrap();
         let query = repo
             .select()
             .count("count")
@@ -1728,7 +1705,8 @@ mod tests {
                 .value("version", 1_i64)
                 .value("name", "new"),
         )
-        .await.unwrap();
+        .await
+        .unwrap();
         let refreshed = repo.fetch_all(&query).await.unwrap();
 
         assert_eq!(first, cached);
@@ -1766,14 +1744,12 @@ mod tests {
                     .with_entity(entity())
                     .with_entity(line_entity()),
             )
-            .with_repository_registry(InMemoryRepositoryRegistry::new().with_entity("Order"));
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
         ctx.insert_resource(PostgresDialect);
         ctx.insert_resource(executor);
         ctx.insert_resource(InMemoryAggregationCache::default());
 
-        let repo = ctx
-            .resolve_repository::< QueueExecutor>("Order")
-            .unwrap();
+        let repo = ctx.entity_data_service::<QueueExecutor>("Order").unwrap();
         let query = repo
             .select()
             .project("id")
@@ -1786,10 +1762,12 @@ mod tests {
 
         let first = repo
             .fetch_all_with_relation_aggregates(&query, &[aggregate.clone()])
-            .await.unwrap();
+            .await
+            .unwrap();
         let second = repo
             .fetch_all_with_relation_aggregates(&query, &[aggregate])
-            .await.unwrap();
+            .await
+            .unwrap();
 
         assert_eq!(first, second);
         let executor = ctx.get_resource::<QueueExecutor>().unwrap();
@@ -1797,9 +1775,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn memory_repository_fetches_smart_list_entities_with_query_features() {
+    async fn memory_data_service_fetches_smart_list_entities_with_query_features() {
         let metadata = InMemoryMetadataStore::new().with_entity(entity());
-        let repository = MemoryRepository::new(metadata).with_rows(
+        let data_service = MemoryDataService::new(metadata).with_rows(
             "Order",
             vec![
                 Record::from([
@@ -1829,7 +1807,7 @@ mod tests {
             .order_by(OrderBy::desc("id"))
             .limit(1);
 
-        let orders = repository.fetch_entities::<Order>(&query).unwrap();
+        let orders = data_service.fetch_entities::<Order>(&query).unwrap();
 
         assert_eq!(orders.ids(), vec![Value::U64(3)]);
         assert_eq!(orders.versions(), vec![1]);
@@ -1837,12 +1815,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn memory_repository_runs_relation_aggregates() {
+    async fn memory_data_service_runs_relation_aggregates() {
         let metadata = InMemoryMetadataStore::new()
             .with_entity(entity())
             .with_entity(line_entity());
 
-        let repository = MemoryRepository::new(metadata)
+        let data_service = MemoryDataService::new(metadata)
             .with_rows(
                 "Order",
                 vec![
@@ -1883,25 +1861,32 @@ mod tests {
             );
 
         let query = SelectQuery::new("Order").project("id").project("name");
-        let aggregate = RelationAggregate::new("lines", "lineCount", SelectQuery::new("OrderLine"), true);
+        let aggregate =
+            RelationAggregate::new("lines", "lineCount", SelectQuery::new("OrderLine"), true);
 
-        let rows = repository
+        let rows = data_service
             .fetch_all_with_relation_aggregates(&query, &[aggregate])
             .unwrap();
 
         assert_eq!(rows.len(), 2);
 
-        let first_order = rows.iter().find(|r| r.get("id") == Some(&Value::U64(1))).unwrap();
+        let first_order = rows
+            .iter()
+            .find(|r| r.get("id") == Some(&Value::U64(1)))
+            .unwrap();
         assert_eq!(first_order.get("lineCount"), Some(&Value::U64(2)));
 
-        let second_order = rows.iter().find(|r| r.get("id") == Some(&Value::U64(2))).unwrap();
+        let second_order = rows
+            .iter()
+            .find(|r| r.get("id") == Some(&Value::U64(2)))
+            .unwrap();
         assert_eq!(second_order.get("lineCount"), Some(&Value::U64(1)));
     }
 
     #[tokio::test]
-    async fn memory_repository_runs_aggregates() {
+    async fn memory_data_service_runs_aggregates() {
         let metadata = InMemoryMetadataStore::new().with_entity(entity());
-        let repository = MemoryRepository::new(metadata).with_rows(
+        let data_service = MemoryDataService::new(metadata).with_rows(
             "Order",
             vec![
                 Record::from([
@@ -1952,7 +1937,7 @@ mod tests {
             stream_config: None,
         };
 
-        let rows = repository.fetch_all(&query).unwrap();
+        let rows = data_service.fetch_all(&query).unwrap();
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].get("count"), Some(&Value::U64(2)));
@@ -1960,9 +1945,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn memory_repository_runs_grouped_aggregates_and_extended_filters() {
+    async fn memory_data_service_runs_grouped_aggregates_and_extended_filters() {
         let metadata = InMemoryMetadataStore::new().with_entity(entity());
-        let repository = MemoryRepository::new(metadata).with_rows(
+        let data_service = MemoryDataService::new(metadata).with_rows(
             "Order",
             vec![
                 Record::from([
@@ -1983,7 +1968,7 @@ mod tests {
             ],
         );
 
-        let rows = repository
+        let rows = data_service
             .fetch_all(
                 &teaql_core::SelectQuery::new("Order")
                     .filter(
@@ -2007,9 +1992,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn memory_repository_runs_extended_aggregates_and_having() {
+    async fn memory_data_service_runs_extended_aggregates_and_having() {
         let metadata = InMemoryMetadataStore::new().with_entity(entity());
-        let repository = MemoryRepository::new(metadata).with_rows(
+        let data_service = MemoryDataService::new(metadata).with_rows(
             "Order",
             vec![
                 Record::from([
@@ -2030,7 +2015,7 @@ mod tests {
             ],
         );
 
-        let rows = repository
+        let rows = data_service
             .fetch_all(
                 &teaql_core::SelectQuery::new("Order")
                     .group_by("name")
@@ -2062,9 +2047,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn memory_repository_runs_sound_like_filter() {
+    async fn memory_data_service_runs_sound_like_filter() {
         let metadata = InMemoryMetadataStore::new().with_entity(entity());
-        let repository = MemoryRepository::new(metadata).with_rows(
+        let data_service = MemoryDataService::new(metadata).with_rows(
             "Order",
             vec![
                 Record::from([
@@ -2085,7 +2070,7 @@ mod tests {
             ],
         );
 
-        let rows = repository
+        let rows = data_service
             .fetch_all(
                 &teaql_core::SelectQuery::new("Order")
                     .filter(Expr::sound_like("name", "Robert"))
@@ -2099,9 +2084,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn memory_repository_runs_java_style_string_match_filters() {
+    async fn memory_data_service_runs_java_style_string_match_filters() {
         let metadata = InMemoryMetadataStore::new().with_entity(entity());
-        let repository = MemoryRepository::new(metadata).with_rows(
+        let data_service = MemoryDataService::new(metadata).with_rows(
             "Order",
             vec![
                 Record::from([
@@ -2128,7 +2113,7 @@ mod tests {
             ],
         );
 
-        let rows = repository
+        let rows = data_service
             .fetch_all(
                 &teaql_core::SelectQuery::new("Order")
                     .filter(
@@ -2151,9 +2136,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn memory_repository_runs_property_to_property_filters() {
+    async fn memory_data_service_runs_property_to_property_filters() {
         let metadata = InMemoryMetadataStore::new().with_entity(entity());
-        let repository = MemoryRepository::new(metadata).with_rows(
+        let data_service = MemoryDataService::new(metadata).with_rows(
             "Order",
             vec![
                 Record::from([
@@ -2169,7 +2154,7 @@ mod tests {
             ],
         );
 
-        let rows = repository
+        let rows = data_service
             .fetch_all(
                 &teaql_core::SelectQuery::new("Order")
                     .filter(Expr::compare_columns("version", BinaryOp::Gte, "id"))
@@ -2182,11 +2167,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn memory_repository_supports_mutations_and_optimistic_locking() {
+    async fn memory_data_service_supports_mutations_and_optimistic_locking() {
         let metadata = InMemoryMetadataStore::new().with_entity(entity());
-        let repository = MemoryRepository::new(metadata);
+        let data_service = MemoryDataService::new(metadata);
 
-        repository
+        data_service
             .insert(
                 &InsertCommand::new("Order")
                     .value("id", 10_u64)
@@ -2194,7 +2179,7 @@ mod tests {
                     .value("name", "draft"),
             )
             .unwrap();
-        repository
+        data_service
             .update(
                 &UpdateCommand::new("Order", 10_u64)
                     .expected_version(1)
@@ -2202,7 +2187,7 @@ mod tests {
             )
             .unwrap();
 
-        let row = repository
+        let row = data_service
             .fetch_all(&teaql_core::SelectQuery::new("Order").filter(Expr::eq("id", 10_u64)))
             .unwrap()
             .pop()
@@ -2213,7 +2198,7 @@ mod tests {
         );
         assert_eq!(row.get("version"), Some(&Value::I64(2)));
 
-        let conflict = repository
+        let conflict = data_service
             .update(
                 &UpdateCommand::new("Order", 10_u64)
                     .expected_version(1)
@@ -2222,23 +2207,23 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             conflict,
-            RepositoryError::Runtime(RuntimeError::OptimisticLockConflict { .. })
+            DataServiceError::Runtime(RuntimeError::OptimisticLockConflict { .. })
         ));
 
-        repository
+        data_service
             .delete(&DeleteCommand::new("Order", 10_u64).expected_version(2))
             .unwrap();
-        let row = repository
+        let row = data_service
             .fetch_all(&teaql_core::SelectQuery::new("Order").filter(Expr::eq("id", 10_u64)))
             .unwrap()
             .pop()
             .unwrap();
         assert_eq!(row.get("version"), Some(&Value::I64(-3)));
 
-        repository
+        data_service
             .recover(&RecoverCommand::new("Order", 10_u64, -3))
             .unwrap();
-        let row = repository
+        let row = data_service
             .fetch_all(&teaql_core::SelectQuery::new("Order").filter(Expr::eq("id", 10_u64)))
             .unwrap()
             .pop()
@@ -2283,7 +2268,6 @@ mod tests {
 
         let ctx4 = UserContext::new().with_user_identifier_option(Some("user-abc".to_owned()));
         assert_eq!(ctx4.user_identifier(), Some("user-abc"));
-
     }
 }
 

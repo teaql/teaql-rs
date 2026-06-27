@@ -8,7 +8,7 @@ pub use crate::context::{SqlLogEntry, SqlLogOperation};
 pub trait LogFormatter: Send + Sync {
     /// Format an SQL log entry along with its trace chain
     fn format_sql_log(&self, trace_chain: &[TraceNode], entry: &SqlLogEntry) -> String;
-    
+
     /// Format an audit or mutation event log
     fn format_audit_log(&self, event: &RawAuditEvent) -> String;
 }
@@ -22,7 +22,11 @@ impl HumanReaderFormatter {
         if trace_chain.is_empty() {
             "".to_string()
         } else {
-            trace_chain.iter().map(|n| n.comment.clone()).collect::<Vec<_>>().join(" -> ")
+            trace_chain
+                .iter()
+                .map(|n| n.comment.clone())
+                .collect::<Vec<_>>()
+                .join(" -> ")
         }
     }
 }
@@ -36,12 +40,18 @@ impl LogFormatter for HumanReaderFormatter {
         } else {
             format!(" - [{}]", trace_str)
         };
-        
+
         let elapsed_us = (entry.elapsed.as_secs_f64() * 1_000_000.0).round() as u64;
-        format!("[{}]-[{:>5}µs]-[DEBUG]-SqlLogEntry{} - [{}]\n          {}", 
-            ts, elapsed_us, trace_display, entry.result_summary, entry.pretty_sql.replace('\n', " "))
+        format!(
+            "[{}]-[{:>5}µs]-[DEBUG]-SqlLogEntry{} - [{}]\n          {}",
+            ts,
+            elapsed_us,
+            trace_display,
+            entry.result_summary,
+            entry.pretty_sql.replace('\n', " ")
+        )
     }
-    
+
     fn format_audit_log(&self, event: &RawAuditEvent) -> String {
         let ts = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f");
         let trace_str = self.format_trace_chain(&event.trace_chain);
@@ -50,13 +60,17 @@ impl LogFormatter for HumanReaderFormatter {
         } else {
             format!(" (Trace: {})", trace_str)
         };
-        
+
         let mut field_changes = Vec::new();
         for change in &event.changes {
             if change.field.starts_with('_') {
                 continue;
             }
-            let val = change.new_value.as_ref().map(|v| format!("{:?}", v)).unwrap_or_else(|| "null".to_string());
+            let val = change
+                .new_value
+                .as_ref()
+                .map(|v| format!("{:?}", v))
+                .unwrap_or_else(|| "null".to_string());
             field_changes.push(format!("{}: {}", change.field, val));
         }
         let fields_part = if field_changes.is_empty() {
@@ -64,15 +78,18 @@ impl LogFormatter for HumanReaderFormatter {
         } else {
             format!(" {{{}}}", field_changes.join(", "))
         };
-        
+
         let mut entity_id = "Unknown".to_string();
         if let Some(vals) = &event.new_values {
             if let Some(id_val) = vals.get("id") {
                 entity_id = format!("{:?}", id_val);
             }
         }
-        
-        format!("[{}]-[AUDIT]-Entity [{}:{}] {:?}{}{}", ts, event.entity, entity_id, event.kind, trace_display, fields_part)
+
+        format!(
+            "[{}]-[AUDIT]-Entity [{}:{}] {:?}{}{}",
+            ts, event.entity, entity_id, event.kind, trace_display, fields_part
+        )
     }
 }
 
@@ -84,7 +101,14 @@ impl DebugReaderFormatter {
         if trace_chain.is_empty() {
             "(Trace: None)".to_string()
         } else {
-            format!("(Trace: {})", trace_chain.iter().map(|n| n.comment.clone()).collect::<Vec<_>>().join(" -> "))
+            format!(
+                "(Trace: {})",
+                trace_chain
+                    .iter()
+                    .map(|n| n.comment.clone())
+                    .collect::<Vec<_>>()
+                    .join(" -> ")
+            )
         }
     }
 }
@@ -94,7 +118,7 @@ impl LogFormatter for DebugReaderFormatter {
         let trace_str = self.format_trace_chain(trace_chain);
         format!("[SQL_LOG] {} - Event: {:?}", trace_str, entry)
     }
-    
+
     fn format_audit_log(&self, event: &RawAuditEvent) -> String {
         let trace_str = self.format_trace_chain(&event.trace_chain);
         format!("[AUDIT_LOG] {} - Event: {:?}", trace_str, event)
@@ -108,15 +132,19 @@ impl LogFormatterFactory {
     /// Returns a singleton reference to the configured LogFormatter.
     /// It dynamically switches based on the TEAQL_LOG_FORMAT environment variable.
     pub fn get_formatter() -> &'static (dyn LogFormatter + Send + Sync) {
-        static FORMATTER: std::sync::OnceLock<Box<dyn LogFormatter + Send + Sync>> = std::sync::OnceLock::new();
-        FORMATTER.get_or_init(|| {
-            let format = std::env::var("TEAQL_LOG_FORMAT").unwrap_or_else(|_| "human".to_string());
-            if format == "json" || format == "debug" {
-                Box::new(DebugReaderFormatter)
-            } else {
-                Box::new(HumanReaderFormatter)
-            }
-        }).as_ref()
+        static FORMATTER: std::sync::OnceLock<Box<dyn LogFormatter + Send + Sync>> =
+            std::sync::OnceLock::new();
+        FORMATTER
+            .get_or_init(|| {
+                let format =
+                    std::env::var("TEAQL_LOG_FORMAT").unwrap_or_else(|_| "human".to_string());
+                if format == "json" || format == "debug" {
+                    Box::new(DebugReaderFormatter)
+                } else {
+                    Box::new(HumanReaderFormatter)
+                }
+            })
+            .as_ref()
     }
 }
 
@@ -151,13 +179,28 @@ pub struct LogConfig {
 
 impl LogConfig {
     pub fn load() -> Self {
-        let audit_level = LogLevel::parse(&std::env::var("TEAQL_AUDIT_LOG").unwrap_or_default(), LogLevel::Full);
-        let sql_level = LogLevel::parse(&std::env::var("TEAQL_SQL_LOG").unwrap_or_default(), LogLevel::Summary);
-        let tool_level = LogLevel::parse(&std::env::var("TEAQL_TOOL_LOG").unwrap_or_default(), LogLevel::Full);
+        let audit_level = LogLevel::parse(
+            &std::env::var("TEAQL_AUDIT_LOG").unwrap_or_default(),
+            LogLevel::Full,
+        );
+        let sql_level = LogLevel::parse(
+            &std::env::var("TEAQL_SQL_LOG").unwrap_or_default(),
+            LogLevel::Summary,
+        );
+        let tool_level = LogLevel::parse(
+            &std::env::var("TEAQL_TOOL_LOG").unwrap_or_default(),
+            LogLevel::Full,
+        );
 
-        let audit_entities = std::env::var("TEAQL_AUDIT_LOG_ENTITIES").ok().map(|s| s.split(',').map(|s| s.trim().to_string()).collect());
-        let sql_tables = std::env::var("TEAQL_SQL_LOG_TABLES").ok().map(|s| s.split(',').map(|s| s.trim().to_string()).collect());
-        let tool_focus = std::env::var("TEAQL_TOOL_LOG_FOCUS").ok().map(|s| s.split(',').map(|s| s.trim().to_string()).collect());
+        let audit_entities = std::env::var("TEAQL_AUDIT_LOG_ENTITIES")
+            .ok()
+            .map(|s| s.split(',').map(|s| s.trim().to_string()).collect());
+        let sql_tables = std::env::var("TEAQL_SQL_LOG_TABLES")
+            .ok()
+            .map(|s| s.split(',').map(|s| s.trim().to_string()).collect());
+        let tool_focus = std::env::var("TEAQL_TOOL_LOG_FOCUS")
+            .ok()
+            .map(|s| s.split(',').map(|s| s.trim().to_string()).collect());
 
         Self {
             audit_level,
@@ -187,7 +230,10 @@ impl LogConfig {
         }
         if let Some(tables) = &self.sql_tables {
             let sql_lower = sql.to_ascii_lowercase();
-            if !tables.iter().any(|t| sql_lower.contains(&t.to_ascii_lowercase())) {
+            if !tables
+                .iter()
+                .any(|t| sql_lower.contains(&t.to_ascii_lowercase()))
+            {
                 return false;
             }
         }
@@ -213,7 +259,8 @@ pub struct LogManager;
 static LOG_ENDPOINT: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
 static HEADER_WRITTEN: std::sync::Once = std::sync::Once::new();
 
-const EXTREME_TEST_FLAG: &str = "__i_agree_to_disable_runtime_trace_only_for_extreme_performance_testing";
+const EXTREME_TEST_FLAG: &str =
+    "__i_agree_to_disable_runtime_trace_only_for_extreme_performance_testing";
 
 impl LogManager {
     pub fn config() -> &'static LogConfig {
@@ -222,38 +269,40 @@ impl LogManager {
     }
 
     fn get_log_endpoint() -> Option<&'static str> {
-        LOG_ENDPOINT.get_or_init(|| {
-            let mode = std::env::var("TEAQL_TRACE_MODE").unwrap_or_default();
-            if mode == "off" {
-                let ack = std::env::var("TEAQL_TRACE_OFF_ACK").unwrap_or_default();
-                if ack == EXTREME_TEST_FLAG {
-                    return Some("off".to_string());
-                }
-                // If they didn't sign the waiver, ignore the off request and fallthrough
-            }
-
-            if let Ok(val) = std::env::var("TEAQL_LOG_ENDPOINT") {
-                if val.is_empty() {
-                    None // Fallthrough to default
-                } else {
-                    Some(val)
-                }
-            } else {
-                None
-            }
-            .or_else(|| {
-                if let Ok(val) = std::env::var("TEAQL_DOMAIN") {
-                    if !val.is_empty() {
-                        return Some(format!("{}.log", val));
+        LOG_ENDPOINT
+            .get_or_init(|| {
+                let mode = std::env::var("TEAQL_TRACE_MODE").unwrap_or_default();
+                if mode == "off" {
+                    let ack = std::env::var("TEAQL_TRACE_OFF_ACK").unwrap_or_default();
+                    if ack == EXTREME_TEST_FLAG {
+                        return Some("off".to_string());
                     }
+                    // If they didn't sign the waiver, ignore the off request and fallthrough
                 }
-                let exe_name = std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
-                    .unwrap_or_else(|| "teaql".to_string());
-                Some(format!("{}.log", exe_name))
+
+                if let Ok(val) = std::env::var("TEAQL_LOG_ENDPOINT") {
+                    if val.is_empty() {
+                        None // Fallthrough to default
+                    } else {
+                        Some(val)
+                    }
+                } else {
+                    None
+                }
+                .or_else(|| {
+                    if let Ok(val) = std::env::var("TEAQL_DOMAIN") {
+                        if !val.is_empty() {
+                            return Some(format!("{}.log", val));
+                        }
+                    }
+                    let exe_name = std::env::current_exe()
+                        .ok()
+                        .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
+                        .unwrap_or_else(|| "teaql".to_string());
+                    Some(format!("{}.log", exe_name))
+                })
             })
-        }).as_deref()
+            .as_deref()
     }
 
     fn write_header_if_needed(endpoint: &str) {
@@ -265,7 +314,11 @@ impl LogManager {
             if endpoint == "stdout" {
                 println!("{}", header);
             } else {
-                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(endpoint) {
+                if let Ok(mut file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(endpoint)
+                {
                     use std::io::Write;
                     let _ = writeln!(file, "{}", header);
                 }
@@ -278,13 +331,17 @@ impl LogManager {
             if endpoint == "off" {
                 return;
             }
-            
+
             Self::write_header_if_needed(endpoint);
 
             if endpoint == "stdout" {
                 println!("{}", content);
             } else {
-                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(endpoint) {
+                if let Ok(mut file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(endpoint)
+                {
                     use std::io::Write;
                     let _ = writeln!(file, "{}", content);
                 }

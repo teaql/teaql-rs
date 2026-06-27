@@ -6,23 +6,23 @@ use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 use teaql_core::{
     Aggregate, AggregateFunction, BinaryOp, DeleteCommand, Entity, Expr, ExprFunction,
-    InsertCommand, Record, RecoverCommand, RelationAggregate, SelectQuery, SmartList, SortDirection,
-    UpdateCommand, Value,
+    InsertCommand, Record, RecoverCommand, RelationAggregate, SelectQuery, SmartList,
+    SortDirection, UpdateCommand, Value,
 };
 
-use crate::{InMemoryMetadataStore, MetadataStore, RepositoryError, RuntimeError};
+use crate::{DataServiceError, InMemoryMetadataStore, MetadataStore, RuntimeError};
 
 #[derive(Debug)]
-pub enum MemoryRepositoryError {
+pub enum MemoryDataServiceError {
     Poisoned,
     UnsupportedExpression(String),
     UnsupportedAggregate(String),
 }
 
-impl std::fmt::Display for MemoryRepositoryError {
+impl std::fmt::Display for MemoryDataServiceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Poisoned => write!(f, "memory repository lock poisoned"),
+            Self::Poisoned => write!(f, "memory data service lock poisoned"),
             Self::UnsupportedExpression(message) => {
                 write!(f, "unsupported memory expression: {message}")
             }
@@ -33,15 +33,15 @@ impl std::fmt::Display for MemoryRepositoryError {
     }
 }
 
-impl std::error::Error for MemoryRepositoryError {}
+impl std::error::Error for MemoryDataServiceError {}
 
 #[derive(Debug, Clone)]
-pub struct MemoryRepository<M = InMemoryMetadataStore> {
+pub struct MemoryDataService<M = InMemoryMetadataStore> {
     metadata: M,
     data: Arc<Mutex<BTreeMap<String, Vec<Record>>>>,
 }
 
-impl<M> MemoryRepository<M>
+impl<M> MemoryDataService<M>
 where
     M: MetadataStore,
 {
@@ -66,12 +66,12 @@ where
     pub fn fetch_all(
         &self,
         query: &SelectQuery,
-    ) -> Result<Vec<Record>, RepositoryError<MemoryRepositoryError>> {
+    ) -> Result<Vec<Record>, DataServiceError<MemoryDataServiceError>> {
         self.require_entity(&query.entity)?;
         let data = self
             .data
             .lock()
-            .map_err(|_| RepositoryError::Executor(MemoryRepositoryError::Poisoned))?;
+            .map_err(|_| DataServiceError::Executor(MemoryDataServiceError::Poisoned))?;
         let mut rows = data.get(&query.entity).cloned().unwrap_or_default();
         drop(data);
 
@@ -84,11 +84,11 @@ where
                     Err(err) => Some(Err(err)),
                 })
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(RepositoryError::Executor)?;
+                .map_err(DataServiceError::Executor)?;
         }
 
         if !query.aggregates.is_empty() {
-            return aggregate_rows(query, &rows).map_err(RepositoryError::Executor);
+            return aggregate_rows(query, &rows).map_err(DataServiceError::Executor);
         }
 
         apply_ordering(&mut rows, query);
@@ -98,7 +98,7 @@ where
                 .into_iter()
                 .map(|row| project_row(row, query))
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(RepositoryError::Executor)?;
+                .map_err(DataServiceError::Executor)?;
         }
         Ok(rows)
     }
@@ -106,14 +106,14 @@ where
     pub fn fetch_smart_list(
         &self,
         query: &SelectQuery,
-    ) -> Result<SmartList<Record>, RepositoryError<MemoryRepositoryError>> {
+    ) -> Result<SmartList<Record>, DataServiceError<MemoryDataServiceError>> {
         self.fetch_all(query).map(SmartList::from)
     }
 
     pub fn fetch_entities<T>(
         &self,
         query: &SelectQuery,
-    ) -> Result<SmartList<T>, RepositoryError<MemoryRepositoryError>>
+    ) -> Result<SmartList<T>, DataServiceError<MemoryDataServiceError>>
     where
         T: Entity,
     {
@@ -122,14 +122,14 @@ where
             .map(T::from_record)
             .collect::<Result<Vec<_>, _>>()
             .map(SmartList::from)
-            .map_err(RepositoryError::Entity)
+            .map_err(DataServiceError::Entity)
     }
 
     pub fn fetch_all_with_relation_aggregates(
         &self,
         query: &SelectQuery,
         relation_aggregates: &[RelationAggregate],
-    ) -> Result<Vec<Record>, RepositoryError<MemoryRepositoryError>> {
+    ) -> Result<Vec<Record>, DataServiceError<MemoryDataServiceError>> {
         let mut rows = self.fetch_all(query)?;
         self.enhance_relation_aggregates(&query.entity, &mut rows, relation_aggregates)?;
         Ok(rows)
@@ -139,7 +139,7 @@ where
         &self,
         query: &SelectQuery,
         relation_aggregates: &[RelationAggregate],
-    ) -> Result<SmartList<Record>, RepositoryError<MemoryRepositoryError>> {
+    ) -> Result<SmartList<Record>, DataServiceError<MemoryDataServiceError>> {
         self.fetch_all_with_relation_aggregates(query, relation_aggregates)
             .map(SmartList::from)
     }
@@ -148,7 +148,7 @@ where
         &self,
         query: &SelectQuery,
         relation_aggregates: &[RelationAggregate],
-    ) -> Result<SmartList<T>, RepositoryError<MemoryRepositoryError>>
+    ) -> Result<SmartList<T>, DataServiceError<MemoryDataServiceError>>
     where
         T: Entity,
     {
@@ -157,7 +157,7 @@ where
             .map(T::from_record)
             .collect::<Result<Vec<_>, _>>()
             .map(SmartList::from)
-            .map_err(RepositoryError::Entity)
+            .map_err(DataServiceError::Entity)
     }
 
     pub fn enhance_relation_aggregates(
@@ -165,7 +165,7 @@ where
         parent_entity: &str,
         parent_rows: &mut [Record],
         relation_aggregates: &[RelationAggregate],
-    ) -> Result<(), RepositoryError<MemoryRepositoryError>> {
+    ) -> Result<(), DataServiceError<MemoryDataServiceError>> {
         for aggregate in relation_aggregates {
             self.enhance_relation_aggregate(parent_entity, parent_rows, aggregate)?;
         }
@@ -177,18 +177,15 @@ where
         parent_entity: &str,
         parent_rows: &mut [Record],
         aggregate: &RelationAggregate,
-    ) -> Result<(), RepositoryError<MemoryRepositoryError>> {
-        let descriptor = self
-            .metadata
-            .entity(parent_entity)
-            .ok_or_else(|| {
-                RepositoryError::Runtime(RuntimeError::MissingEntity(parent_entity.to_owned()))
-            })?;
+    ) -> Result<(), DataServiceError<MemoryDataServiceError>> {
+        let descriptor = self.metadata.entity(parent_entity).ok_or_else(|| {
+            DataServiceError::Runtime(RuntimeError::MissingEntity(parent_entity.to_owned()))
+        })?;
 
         let relation = descriptor
             .relation_by_name(&aggregate.relation_name)
             .ok_or_else(|| {
-                RepositoryError::Runtime(RuntimeError::MissingRelation {
+                DataServiceError::Runtime(RuntimeError::MissingRelation {
                     entity: parent_entity.to_owned(),
                     relation: aggregate.relation_name.clone(),
                 })
@@ -241,10 +238,7 @@ where
         for mut row in aggregate_rows {
             if let Some(key) = row.remove(&relation.foreign_key) {
                 let bucket_key = local_graph_identity_key(&key);
-                buckets
-                    .entry(bucket_key)
-                    .or_default()
-                    .push(row);
+                buckets.entry(bucket_key).or_default().push(row);
             }
         }
 
@@ -283,12 +277,12 @@ where
     pub fn insert(
         &self,
         command: &InsertCommand,
-    ) -> Result<u64, RepositoryError<MemoryRepositoryError>> {
+    ) -> Result<u64, DataServiceError<MemoryDataServiceError>> {
         self.require_entity(&command.entity)?;
         let mut data = self
             .data
             .lock()
-            .map_err(|_| RepositoryError::Executor(MemoryRepositoryError::Poisoned))?;
+            .map_err(|_| DataServiceError::Executor(MemoryDataServiceError::Poisoned))?;
         data.entry(command.entity.clone())
             .or_default()
             .push(command.values.clone());
@@ -298,12 +292,12 @@ where
     pub fn update(
         &self,
         command: &UpdateCommand,
-    ) -> Result<u64, RepositoryError<MemoryRepositoryError>> {
+    ) -> Result<u64, DataServiceError<MemoryDataServiceError>> {
         let (id_property, version_property) = self.id_and_version_properties(&command.entity)?;
         let mut data = self
             .data
             .lock()
-            .map_err(|_| RepositoryError::Executor(MemoryRepositoryError::Poisoned))?;
+            .map_err(|_| DataServiceError::Executor(MemoryDataServiceError::Poisoned))?;
         let rows = data.entry(command.entity.clone()).or_default();
         let Some(row) = rows
             .iter_mut()
@@ -318,18 +312,21 @@ where
 
         if let Some(expected) = command.expected_version {
             if row.get(version_property) != Some(&Value::I64(expected)) {
-                println!("OptimisticLockConflict in memory.rs update! entity={}, id={:?}, expected={}, existing={:?}", command.entity, command.id, expected, row.get(version_property));
-                return Err(RepositoryError::Runtime(
+                println!(
+                    "OptimisticLockConflict in memory.rs update! entity={}, id={:?}, expected={}, existing={:?}",
+                    command.entity,
+                    command.id,
+                    expected,
+                    row.get(version_property)
+                );
+                return Err(DataServiceError::Runtime(
                     RuntimeError::OptimisticLockConflict {
                         entity: command.entity.clone(),
                         id: format!("{:?}", command.id),
                     },
                 ));
             }
-            row.insert(
-                version_property.to_owned(),
-                Value::I64(expected + 1),
-            );
+            row.insert(version_property.to_owned(), Value::I64(expected + 1));
         }
 
         for (key, value) in &command.values {
@@ -341,12 +338,12 @@ where
     pub fn delete(
         &self,
         command: &DeleteCommand,
-    ) -> Result<u64, RepositoryError<MemoryRepositoryError>> {
+    ) -> Result<u64, DataServiceError<MemoryDataServiceError>> {
         let (id_property, version_property) = self.id_and_version_properties(&command.entity)?;
         let mut data = self
             .data
             .lock()
-            .map_err(|_| RepositoryError::Executor(MemoryRepositoryError::Poisoned))?;
+            .map_err(|_| DataServiceError::Executor(MemoryDataServiceError::Poisoned))?;
         let rows = data.entry(command.entity.clone()).or_default();
         let Some(index) = rows
             .iter()
@@ -361,7 +358,7 @@ where
 
         if let Some(expected_version) = command.expected_version {
             if rows[index].get(version_property) != Some(&Value::I64(expected_version)) {
-                return Err(RepositoryError::Runtime(
+                return Err(DataServiceError::Runtime(
                     RuntimeError::OptimisticLockConflict {
                         entity: command.entity.clone(),
                         id: format!("{:?}", command.id),
@@ -386,18 +383,18 @@ where
     pub fn recover(
         &self,
         command: &RecoverCommand,
-    ) -> Result<u64, RepositoryError<MemoryRepositoryError>> {
+    ) -> Result<u64, DataServiceError<MemoryDataServiceError>> {
         let (id_property, version_property) = self.id_and_version_properties(&command.entity)?;
         let mut data = self
             .data
             .lock()
-            .map_err(|_| RepositoryError::Executor(MemoryRepositoryError::Poisoned))?;
+            .map_err(|_| DataServiceError::Executor(MemoryDataServiceError::Poisoned))?;
         let rows = data.entry(command.entity.clone()).or_default();
         let Some(row) = rows
             .iter_mut()
             .find(|row| row.get(id_property) == Some(&command.id))
         else {
-            return Err(RepositoryError::Runtime(
+            return Err(DataServiceError::Runtime(
                 RuntimeError::OptimisticLockConflict {
                     entity: command.entity.clone(),
                     id: format!("{:?}", command.id),
@@ -406,7 +403,7 @@ where
         };
 
         if row.get(version_property) != Some(&Value::I64(command.expected_version)) {
-            return Err(RepositoryError::Runtime(
+            return Err(DataServiceError::Runtime(
                 RuntimeError::OptimisticLockConflict {
                     entity: command.entity.clone(),
                     id: format!("{:?}", command.id),
@@ -421,19 +418,18 @@ where
         Ok(1)
     }
 
-    fn require_entity(&self, entity: &str) -> Result<(), RepositoryError<MemoryRepositoryError>> {
-        self.metadata
-            .entity(entity)
-            .map(|_| ())
-            .ok_or_else(|| RepositoryError::Runtime(RuntimeError::MissingEntity(entity.to_owned())))
+    fn require_entity(&self, entity: &str) -> Result<(), DataServiceError<MemoryDataServiceError>> {
+        self.metadata.entity(entity).map(|_| ()).ok_or_else(|| {
+            DataServiceError::Runtime(RuntimeError::MissingEntity(entity.to_owned()))
+        })
     }
 
     fn id_and_version_properties(
         &self,
         entity: &str,
-    ) -> Result<(&str, &str), RepositoryError<MemoryRepositoryError>> {
+    ) -> Result<(&str, &str), DataServiceError<MemoryDataServiceError>> {
         let descriptor = self.metadata.entity(entity).ok_or_else(|| {
-            RepositoryError::Runtime(RuntimeError::MissingEntity(entity.to_owned()))
+            DataServiceError::Runtime(RuntimeError::MissingEntity(entity.to_owned()))
         })?;
         let id = descriptor
             .id_property()
@@ -451,9 +447,9 @@ where
         expected_version: Option<i64>,
         entity: &str,
         id: &Value,
-    ) -> Result<u64, RepositoryError<MemoryRepositoryError>> {
+    ) -> Result<u64, DataServiceError<MemoryDataServiceError>> {
         if expected_version.is_some() {
-            Err(RepositoryError::Runtime(
+            Err(DataServiceError::Runtime(
                 RuntimeError::OptimisticLockConflict {
                     entity: entity.to_owned(),
                     id: format!("{id:?}"),
@@ -465,7 +461,7 @@ where
     }
 }
 
-fn eval_filter(expr: &Expr, row: &Record) -> Result<bool, MemoryRepositoryError> {
+fn eval_filter(expr: &Expr, row: &Record) -> Result<bool, MemoryDataServiceError> {
     match expr {
         Expr::Column(_) | Expr::Value(_) | Expr::Function { .. } => {
             value_truthy(&eval_value(expr, row)?)
@@ -475,7 +471,7 @@ fn eval_filter(expr: &Expr, row: &Record) -> Result<bool, MemoryRepositoryError>
             let right = eval_value(right, row)?;
             eval_binary(&left, *op, &right)
         }
-        Expr::SubQuery { .. } => Err(MemoryRepositoryError::UnsupportedExpression(
+        Expr::SubQuery { .. } => Err(MemoryDataServiceError::UnsupportedExpression(
             "subquery filters require a SQL executor".to_owned(),
         )),
         Expr::Between { expr, lower, upper } => {
@@ -507,12 +503,12 @@ fn eval_filter(expr: &Expr, row: &Record) -> Result<bool, MemoryRepositoryError>
     }
 }
 
-fn eval_value(expr: &Expr, row: &Record) -> Result<Value, MemoryRepositoryError> {
+fn eval_value(expr: &Expr, row: &Record) -> Result<Value, MemoryDataServiceError> {
     match expr {
         Expr::Column(column) => Ok(row.get(column).cloned().unwrap_or(Value::Null)),
         Expr::Value(value) => Ok(value.clone()),
         Expr::Function { function, args } => eval_function(*function, args, row),
-        other => Err(MemoryRepositoryError::UnsupportedExpression(format!(
+        other => Err(MemoryDataServiceError::UnsupportedExpression(format!(
             "cannot evaluate {other:?} as a scalar value"
         ))),
     }
@@ -522,37 +518,37 @@ fn eval_function(
     function: ExprFunction,
     args: &[Expr],
     row: &Record,
-) -> Result<Value, MemoryRepositoryError> {
+) -> Result<Value, MemoryDataServiceError> {
     match function {
         ExprFunction::Soundex => {
             let [arg] = args else {
-                return Err(MemoryRepositoryError::UnsupportedExpression(
+                return Err(MemoryDataServiceError::UnsupportedExpression(
                     "SOUNDEX expects exactly one argument".to_owned(),
                 ));
             };
             match eval_value(arg, row)? {
                 Value::Text(value) => Ok(Value::Text(soundex(&value))),
                 Value::Null => Ok(Value::Null),
-                other => Err(MemoryRepositoryError::UnsupportedExpression(format!(
+                other => Err(MemoryDataServiceError::UnsupportedExpression(format!(
                     "SOUNDEX expects text, got {other:?}"
                 ))),
             }
         }
         ExprFunction::Gbk => {
             let [arg] = args else {
-                return Err(MemoryRepositoryError::UnsupportedExpression(
+                return Err(MemoryDataServiceError::UnsupportedExpression(
                     "GBK expects exactly one argument".to_owned(),
                 ));
             };
             eval_value(arg, row)
         }
-        other => Err(MemoryRepositoryError::UnsupportedExpression(format!(
+        other => Err(MemoryDataServiceError::UnsupportedExpression(format!(
             "function {other:?} is only supported by SQL execution"
         ))),
     }
 }
 
-fn eval_binary(left: &Value, op: BinaryOp, right: &Value) -> Result<bool, MemoryRepositoryError> {
+fn eval_binary(left: &Value, op: BinaryOp, right: &Value) -> Result<bool, MemoryDataServiceError> {
     match op {
         BinaryOp::Eq => Ok(values_equal(left, right)),
         BinaryOp::Ne => Ok(!values_equal(left, right)),
@@ -576,24 +572,24 @@ fn eval_binary(left: &Value, op: BinaryOp, right: &Value) -> Result<bool, Memory
         },
         BinaryOp::In | BinaryOp::InLarge => match right {
             Value::List(values) => Ok(values.iter().any(|value| values_equal(left, value))),
-            _ => Err(MemoryRepositoryError::UnsupportedExpression(
+            _ => Err(MemoryDataServiceError::UnsupportedExpression(
                 "IN expects a list value".to_owned(),
             )),
         },
         BinaryOp::NotIn | BinaryOp::NotInLarge => match right {
             Value::List(values) => Ok(!values.iter().any(|value| values_equal(left, value))),
-            _ => Err(MemoryRepositoryError::UnsupportedExpression(
+            _ => Err(MemoryDataServiceError::UnsupportedExpression(
                 "NOT IN expects a list value".to_owned(),
             )),
         },
     }
 }
 
-fn value_truthy(value: &Value) -> Result<bool, MemoryRepositoryError> {
+fn value_truthy(value: &Value) -> Result<bool, MemoryDataServiceError> {
     match value {
         Value::Bool(value) => Ok(*value),
         Value::Null => Ok(false),
-        other => Err(MemoryRepositoryError::UnsupportedExpression(format!(
+        other => Err(MemoryDataServiceError::UnsupportedExpression(format!(
             "non-boolean expression result: {other:?}"
         ))),
     }
@@ -715,7 +711,7 @@ fn apply_slice(rows: Vec<Record>, query: &SelectQuery) -> Vec<Record> {
     rows.into_iter().skip(offset).take(limit).collect()
 }
 
-fn project_row(row: Record, query: &SelectQuery) -> Result<Record, MemoryRepositoryError> {
+fn project_row(row: Record, query: &SelectQuery) -> Result<Record, MemoryDataServiceError> {
     let mut output: Record = query
         .projection
         .iter()
@@ -733,7 +729,7 @@ fn project_row(row: Record, query: &SelectQuery) -> Result<Record, MemoryReposit
 fn aggregate_rows(
     query: &SelectQuery,
     rows: &[Record],
-) -> Result<Vec<Record>, MemoryRepositoryError> {
+) -> Result<Vec<Record>, MemoryDataServiceError> {
     let mut groups: BTreeMap<Vec<String>, Vec<&Record>> = BTreeMap::new();
     if query.group_by.is_empty() {
         groups.insert(Vec::new(), rows.iter().collect());
@@ -817,7 +813,7 @@ fn aggregate_rows(
     }
 }
 
-fn numeric_sum(rows: &[&Record], field: &str) -> Result<Value, MemoryRepositoryError> {
+fn numeric_sum(rows: &[&Record], field: &str) -> Result<Value, MemoryDataServiceError> {
     let mut decimal_sum = Decimal::ZERO;
     let mut integer_sum: i128 = 0;
     let mut saw_decimal = false;
@@ -841,7 +837,7 @@ fn numeric_sum(rows: &[&Record], field: &str) -> Result<Value, MemoryRepositoryE
             }
             Value::Null => {}
             other => {
-                return Err(MemoryRepositoryError::UnsupportedAggregate(format!(
+                return Err(MemoryDataServiceError::UnsupportedAggregate(format!(
                     "SUM does not support {other:?}"
                 )));
             }
@@ -856,7 +852,7 @@ fn numeric_sum(rows: &[&Record], field: &str) -> Result<Value, MemoryRepositoryE
     }
 }
 
-fn numeric_avg(rows: &[&Record], field: &str) -> Result<Value, MemoryRepositoryError> {
+fn numeric_avg(rows: &[&Record], field: &str) -> Result<Value, MemoryDataServiceError> {
     let mut sum = Decimal::ZERO;
     let mut count: u64 = 0;
     for value in rows.iter().filter_map(|row| row.get(field)) {
@@ -879,7 +875,7 @@ fn numeric_avg(rows: &[&Record], field: &str) -> Result<Value, MemoryRepositoryE
             }
             Value::Null => {}
             other => {
-                return Err(MemoryRepositoryError::UnsupportedAggregate(format!(
+                return Err(MemoryDataServiceError::UnsupportedAggregate(format!(
                     "AVG does not support {other:?}"
                 )));
             }
@@ -896,7 +892,7 @@ fn decimal_from_f64(value: f64) -> Decimal {
     Decimal::from_f64_retain(value).unwrap_or(Decimal::ZERO)
 }
 
-fn numeric_values(rows: &[&Record], field: &str) -> Result<Vec<f64>, MemoryRepositoryError> {
+fn numeric_values(rows: &[&Record], field: &str) -> Result<Vec<f64>, MemoryDataServiceError> {
     rows.iter()
         .filter_map(|row| row.get(field))
         .filter(|value| !matches!(value, Value::Null))
@@ -905,11 +901,11 @@ fn numeric_values(rows: &[&Record], field: &str) -> Result<Vec<f64>, MemoryRepos
             Value::U64(value) => Ok(*value as f64),
             Value::F64(value) => Ok(*value),
             Value::Decimal(value) => value.to_f64().ok_or_else(|| {
-                MemoryRepositoryError::UnsupportedAggregate(format!(
+                MemoryDataServiceError::UnsupportedAggregate(format!(
                     "cannot convert decimal {value} to f64 for statistical aggregate"
                 ))
             }),
-            other => Err(MemoryRepositoryError::UnsupportedAggregate(format!(
+            other => Err(MemoryDataServiceError::UnsupportedAggregate(format!(
                 "numeric aggregate does not support {other:?}"
             ))),
         })
@@ -920,7 +916,7 @@ fn numeric_variance(
     rows: &[&Record],
     field: &str,
     sample: bool,
-) -> Result<Value, MemoryRepositoryError> {
+) -> Result<Value, MemoryDataServiceError> {
     let values = numeric_values(rows, field)?;
     let count = values.len();
     if count == 0 || (sample && count < 2) {
@@ -942,7 +938,7 @@ fn numeric_stddev(
     rows: &[&Record],
     field: &str,
     sample: bool,
-) -> Result<Value, MemoryRepositoryError> {
+) -> Result<Value, MemoryDataServiceError> {
     Ok(match numeric_variance(rows, field, sample)? {
         Value::Decimal(value) => {
             Value::Decimal(decimal_from_f64(value.to_f64().unwrap_or(0.0).sqrt()))
@@ -959,19 +955,23 @@ enum BitOp {
     Xor,
 }
 
-fn bit_aggregate(rows: &[&Record], field: &str, op: BitOp) -> Result<Value, MemoryRepositoryError> {
+fn bit_aggregate(
+    rows: &[&Record],
+    field: &str,
+    op: BitOp,
+) -> Result<Value, MemoryDataServiceError> {
     let mut selected: Option<i64> = None;
     for value in rows.iter().filter_map(|row| row.get(field)) {
         let value = match value {
             Value::I64(value) => *value,
             Value::U64(value) => i64::try_from(*value).map_err(|_| {
-                MemoryRepositoryError::UnsupportedAggregate(format!(
+                MemoryDataServiceError::UnsupportedAggregate(format!(
                     "BIT aggregate u64 {value} exceeds i64 range"
                 ))
             })?,
             Value::Null => continue,
             other => {
-                return Err(MemoryRepositoryError::UnsupportedAggregate(format!(
+                return Err(MemoryDataServiceError::UnsupportedAggregate(format!(
                     "BIT aggregate does not support {other:?}"
                 )));
             }
@@ -986,7 +986,7 @@ fn bit_aggregate(rows: &[&Record], field: &str, op: BitOp) -> Result<Value, Memo
     Ok(selected.map(Value::I64).unwrap_or(Value::Null))
 }
 
-fn min_max(rows: &[&Record], field: &str, max: bool) -> Result<Value, MemoryRepositoryError> {
+fn min_max(rows: &[&Record], field: &str, max: bool) -> Result<Value, MemoryDataServiceError> {
     let mut selected: Option<Value> = None;
     for value in rows.iter().filter_map(|row| row.get(field)) {
         if matches!(value, Value::Null) {
@@ -996,7 +996,7 @@ fn min_max(rows: &[&Record], field: &str, max: bool) -> Result<Value, MemoryRepo
             None => selected = Some(value.clone()),
             Some(current) => {
                 let Some(ordering) = compare_values(value, current) else {
-                    return Err(MemoryRepositoryError::UnsupportedAggregate(format!(
+                    return Err(MemoryDataServiceError::UnsupportedAggregate(format!(
                         "MIN/MAX does not support {value:?}"
                     )));
                 };
@@ -1050,4 +1050,3 @@ fn local_graph_identity_key(value: &Value) -> String {
         Value::List(_) => "l".to_owned(),
     }
 }
-
