@@ -55,6 +55,24 @@ impl UserContext {
             trace_context: Vec::new(),
         })
     }
+
+    /// Register a data-service executor and automatically set up the
+    /// type-erased [`DynGraphSaver`](crate::DynGraphSaver) so that
+    /// [`Audited::save`](crate::AuditedSaveExt::save) works.
+    pub fn register_executor<E>(&mut self, executor: E)
+    where
+        E: teaql_data_service::QueryExecutor
+            + teaql_data_service::MutationExecutor
+            + Send
+            + Sync
+            + 'static,
+    {
+        use std::sync::Arc;
+        self.insert_resource::<Arc<dyn crate::DynGraphSaver>>(Arc::new(
+            crate::entity_save::GraphSaverFor::<E>::new(),
+        ));
+        self.insert_resource(executor);
+    }
 }
 
 impl<'a, E> ContextDataService<'a, E>

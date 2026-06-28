@@ -3,6 +3,7 @@ mod checker;
 mod context;
 mod data_service;
 mod entity_runtime;
+pub mod entity_save;
 mod entity_status;
 mod error;
 mod event;
@@ -24,6 +25,10 @@ pub use data_service::{
 };
 pub use entity_runtime::{
     ChangeSetStack, EntityChangeSet, EntityKey, EntityRoot, LedgerEntity, RootContext,
+};
+pub use entity_save::{
+    AuditedSaveExt, DynGraphSaver, GraphSaverFor,
+    graph_node_from_entity,
 };
 pub use entity_status::{EntityAction, EntityStatus};
 pub use error::{ContextError, DataServiceError, RuntimeError};

@@ -52,6 +52,7 @@ pub trait TeaqlEntityDataService: TeaqlRecordDataService {
     where
         T: teaql_core::Entity;
 
+    #[doc(hidden)]
     async fn save_entity_graph<T>(
         &self,
         entity: T,
@@ -141,6 +142,7 @@ where
         .await
     }
 
+    #[doc(hidden)]
     async fn save_entity_graph<T>(
         &self,
         entity: T,
