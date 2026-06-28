@@ -198,7 +198,10 @@ impl RawAuditEvent {
             ("table_name".to_owned(), Value::Text(table_name.into())),
             ("field_count".to_owned(), Value::I64(field_count as i64)),
         ]);
-        let changes = values.iter().map(|(k, v)| EntityPropertyChange::new(k.clone(), None, Some(v.clone()))).collect();
+        let changes = values
+            .iter()
+            .map(|(k, v)| EntityPropertyChange::new(k.clone(), None, Some(v.clone())))
+            .collect();
         Self {
             kind: RawAuditEventKind::SchemaCreated,
             entity,
@@ -222,7 +225,10 @@ impl RawAuditEvent {
             ("table_name".to_owned(), Value::Text(table_name.into())),
             ("field_count".to_owned(), Value::I64(field_count as i64)),
         ]);
-        let changes = values.iter().map(|(k, v)| EntityPropertyChange::new(k.clone(), None, Some(v.clone()))).collect();
+        let changes = values
+            .iter()
+            .map(|(k, v)| EntityPropertyChange::new(k.clone(), None, Some(v.clone())))
+            .collect();
         Self {
             kind: RawAuditEventKind::SchemaVerified,
             entity,
@@ -246,7 +252,10 @@ impl RawAuditEvent {
             ("table_name".to_owned(), Value::Text(table_name.into())),
             ("field_name".to_owned(), Value::Text(field_name.into())),
         ]);
-        let changes = values.iter().map(|(k, v)| EntityPropertyChange::new(k.clone(), None, Some(v.clone()))).collect();
+        let changes = values
+            .iter()
+            .map(|(k, v)| EntityPropertyChange::new(k.clone(), None, Some(v.clone())))
+            .collect();
         Self {
             kind: RawAuditEventKind::FieldAdded,
             entity,
@@ -272,7 +281,10 @@ impl RawAuditEvent {
             ("inserted".to_owned(), Value::I64(inserted as i64)),
             ("updated".to_owned(), Value::I64(updated as i64)),
         ]);
-        let changes = values.iter().map(|(k, v)| EntityPropertyChange::new(k.clone(), None, Some(v.clone()))).collect();
+        let changes = values
+            .iter()
+            .map(|(k, v)| EntityPropertyChange::new(k.clone(), None, Some(v.clone())))
+            .collect();
         Self {
             kind: RawAuditEventKind::DataSeeded,
             entity,
@@ -492,5 +504,9 @@ pub struct SafeAuditEvent {
 }
 
 pub trait SafeAuditEventSink: Send + Sync {
-    fn on_safe_event(&self, ctx: &crate::UserContext, event: &SafeAuditEvent) -> Result<(), crate::RuntimeError>;
+    fn on_safe_event(
+        &self,
+        ctx: &crate::UserContext,
+        event: &SafeAuditEvent,
+    ) -> Result<(), crate::RuntimeError>;
 }

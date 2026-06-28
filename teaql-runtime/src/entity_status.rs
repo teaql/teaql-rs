@@ -269,29 +269,43 @@ mod tests {
         assert!(EntityStatus::New.next(EntityAction::Recover).is_err());
         assert!(EntityStatus::Persisted.next(EntityAction::Persist).is_err());
         assert!(EntityStatus::Persisted.next(EntityAction::Recover).is_err());
-        assert!(EntityStatus::PersistedDeleted
-            .next(EntityAction::Update)
-            .is_err());
-        assert!(EntityStatus::PersistedDeleted
-            .next(EntityAction::Delete)
-            .is_err());
-        assert!(EntityStatus::PersistedDeleted
-            .next(EntityAction::Persist)
-            .is_err());
+        assert!(
+            EntityStatus::PersistedDeleted
+                .next(EntityAction::Update)
+                .is_err()
+        );
+        assert!(
+            EntityStatus::PersistedDeleted
+                .next(EntityAction::Delete)
+                .is_err()
+        );
+        assert!(
+            EntityStatus::PersistedDeleted
+                .next(EntityAction::Persist)
+                .is_err()
+        );
         assert!(EntityStatus::Updated.next(EntityAction::Delete).is_err());
         assert!(EntityStatus::Updated.next(EntityAction::Recover).is_err());
-        assert!(EntityStatus::UpdatedDeleted
-            .next(EntityAction::Update)
-            .is_err());
-        assert!(EntityStatus::UpdatedDeleted
-            .next(EntityAction::Recover)
-            .is_err());
-        assert!(EntityStatus::UpdatedRecover
-            .next(EntityAction::Update)
-            .is_err());
-        assert!(EntityStatus::UpdatedRecover
-            .next(EntityAction::Delete)
-            .is_err());
+        assert!(
+            EntityStatus::UpdatedDeleted
+                .next(EntityAction::Update)
+                .is_err()
+        );
+        assert!(
+            EntityStatus::UpdatedDeleted
+                .next(EntityAction::Recover)
+                .is_err()
+        );
+        assert!(
+            EntityStatus::UpdatedRecover
+                .next(EntityAction::Update)
+                .is_err()
+        );
+        assert!(
+            EntityStatus::UpdatedRecover
+                .next(EntityAction::Delete)
+                .is_err()
+        );
         assert!(EntityStatus::Refer.next(EntityAction::Update).is_err());
         assert!(EntityStatus::Refer.next(EntityAction::Delete).is_err());
         assert!(EntityStatus::Refer.next(EntityAction::Persist).is_err());

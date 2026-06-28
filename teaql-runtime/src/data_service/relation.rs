@@ -5,17 +5,21 @@ use teaql_core::{
     Aggregate, Expr, ObjectGroupBy, Record, RelationAggregate, RelationLoad, SelectQuery, Value,
 };
 
-use crate::{RepositoryError, RuntimeError};
+use crate::{DataServiceError, RuntimeError};
 
-use super::{RelationLoadPlan, ResolvedRepository, helpers::*};
+use super::{EntityDataService, RelationLoadPlan, helpers::*};
 
-impl<'a, E> ResolvedRepository<'a, E>
+impl<'a, E> EntityDataService<'a, E>
 where
-    E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync + 'static,
+    E: teaql_data_service::QueryExecutor
+        + teaql_data_service::MutationExecutor
+        + Send
+        + Sync
+        + 'static,
 {
     pub fn relation_loads(&self) -> Vec<String> {
         self.behavior()
-            .map(|behavior| behavior.relation_loads(self.repository.metadata.context))
+            .map(|behavior| behavior.relation_loads(self.data_service.metadata.context))
             .unwrap_or_default()
     }
 
@@ -42,8 +46,8 @@ where
     pub async fn enhance_relations(
         &self,
         parent_rows: &mut [Record],
-    ) -> Result<(), RepositoryError<E::Error>> {
-        let plans = self.relation_plans().map_err(RepositoryError::Runtime)?;
+    ) -> Result<(), DataServiceError<E::Error>> {
+        let plans = self.relation_plans().map_err(DataServiceError::Runtime)?;
         for plan in plans {
             self.enhance_plan(parent_rows, &plan).await?;
         }
@@ -54,10 +58,10 @@ where
         &self,
         parent_rows: &mut [Record],
         query: &SelectQuery,
-    ) -> Result<(), RepositoryError<E::Error>> {
+    ) -> Result<(), DataServiceError<E::Error>> {
         let plans = self
             .build_relation_plans_from_loads(&query.entity, &query.relations)
-            .map_err(RepositoryError::Runtime)?;
+            .map_err(DataServiceError::Runtime)?;
         for plan in plans {
             self.enhance_plan(parent_rows, &plan).await?;
         }
@@ -70,12 +74,20 @@ where
         relation_aggregates: &'b [RelationAggregate],
         parent_cache_options: Option<teaql_core::AggregationCacheOptions>,
         parent_trace_chain: &'b [teaql_core::TraceNode],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), RepositoryError<E::Error>>> + Send + 'b>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
+    > {
         Box::pin(async move {
-        for aggregate in relation_aggregates {
-            self.enhance_relation_aggregate(parent_rows, aggregate, parent_cache_options, parent_trace_chain).await?;
-        }
-        Ok(())
+            for aggregate in relation_aggregates {
+                self.enhance_relation_aggregate(
+                    parent_rows,
+                    aggregate,
+                    parent_cache_options,
+                    parent_trace_chain,
+                )
+                .await?;
+            }
+            Ok(())
         })
     }
 
@@ -84,42 +96,45 @@ where
         rows: &'b mut [Record],
         object_group_bys: &'b [ObjectGroupBy],
         parent_trace_chain: &'b [teaql_core::TraceNode],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), RepositoryError<E::Error>>> + Send + 'b>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
+    > {
         Box::pin(async move {
-        for group_by in object_group_bys {
-            let ids = rows
-                .iter()
-                .filter_map(|row| row.get(&group_by.storage_field).cloned())
-                .collect::<Vec<_>>();
-            if ids.is_empty() {
-                continue;
-            }
-            let mut query = group_by.query.clone();
-            ensure_projection(&mut query, "id");
-            query = query.and_filter(Expr::in_list("id", ids));
-            let object_rows = self
-                .scoped_repository(query.entity.clone())
-                .with_trace_context(parent_trace_chain.to_vec())
-                .fetch_all(&query).await?
-                .into_iter()
-                .filter_map(|row| {
-                    row.get("id")
-                        .cloned()
-                        .map(|id| (graph_identity_key(&id), row))
-                })
-                .collect::<BTreeMap<_, _>>();
-            for row in rows.iter_mut() {
-                if let Some(key) = row.get(&group_by.storage_field).map(graph_identity_key) {
-                    let value = object_rows
-                        .get(&key)
-                        .cloned()
-                        .map(Value::object)
-                        .unwrap_or(Value::Null);
-                    row.insert(group_by.property_name.clone(), value);
+            for group_by in object_group_bys {
+                let ids = rows
+                    .iter()
+                    .filter_map(|row| row.get(&group_by.storage_field).cloned())
+                    .collect::<Vec<_>>();
+                if ids.is_empty() {
+                    continue;
+                }
+                let mut query = group_by.query.clone();
+                ensure_projection(&mut query, "id");
+                query = query.and_filter(Expr::in_list("id", ids));
+                let object_rows = self
+                    .scoped_data_service(query.entity.clone())
+                    .with_trace_context(parent_trace_chain.to_vec())
+                    .fetch_all(&query)
+                    .await?
+                    .into_iter()
+                    .filter_map(|row| {
+                        row.get("id")
+                            .cloned()
+                            .map(|id| (graph_identity_key(&id), row))
+                    })
+                    .collect::<BTreeMap<_, _>>();
+                for row in rows.iter_mut() {
+                    if let Some(key) = row.get(&group_by.storage_field).map(graph_identity_key) {
+                        let value = object_rows
+                            .get(&key)
+                            .cloned()
+                            .map(Value::object)
+                            .unwrap_or(Value::Null);
+                        row.insert(group_by.property_name.clone(), value);
+                    }
                 }
             }
-        }
-        Ok(())
+            Ok(())
         })
     }
 
@@ -128,39 +143,42 @@ where
         rows: &'b mut [Record],
         child_queries: &'b [SelectQuery],
         parent_trace_chain: &'b [teaql_core::TraceNode],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), RepositoryError<E::Error>>> + Send + 'b>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
+    > {
         Box::pin(async move {
-        for child_query in child_queries {
-            let ids = rows
-                .iter()
-                .filter_map(|row| row.get("id").cloned())
-                .collect::<Vec<_>>();
-            if ids.is_empty() {
-                continue;
-            }
-            let mut query = child_query.clone();
-            ensure_projection(&mut query, "id");
-            query = query.and_filter(Expr::in_list("id", ids));
-            let child_rows = self
-                .scoped_repository(query.entity.clone())
-                .with_trace_context(parent_trace_chain.to_vec())
-                .fetch_all(&query).await?
-                .into_iter()
-                .filter_map(|row| {
-                    row.get("id")
-                        .cloned()
-                        .map(|id| (graph_identity_key(&id), row))
-                })
-                .collect::<BTreeMap<_, _>>();
-            for row in rows.iter_mut() {
-                if let Some(key) = row.get("id").map(graph_identity_key) {
-                    if let Some(child) = child_rows.get(&key) {
-                        row.extend(child.clone());
+            for child_query in child_queries {
+                let ids = rows
+                    .iter()
+                    .filter_map(|row| row.get("id").cloned())
+                    .collect::<Vec<_>>();
+                if ids.is_empty() {
+                    continue;
+                }
+                let mut query = child_query.clone();
+                ensure_projection(&mut query, "id");
+                query = query.and_filter(Expr::in_list("id", ids));
+                let child_rows = self
+                    .scoped_data_service(query.entity.clone())
+                    .with_trace_context(parent_trace_chain.to_vec())
+                    .fetch_all(&query)
+                    .await?
+                    .into_iter()
+                    .filter_map(|row| {
+                        row.get("id")
+                            .cloned()
+                            .map(|id| (graph_identity_key(&id), row))
+                    })
+                    .collect::<BTreeMap<_, _>>();
+                for row in rows.iter_mut() {
+                    if let Some(key) = row.get("id").map(graph_identity_key) {
+                        if let Some(child) = child_rows.get(&key) {
+                            row.extend(child.clone());
+                        }
                     }
                 }
             }
-        }
-        Ok(())
+            Ok(())
         })
     }
 
@@ -170,7 +188,7 @@ where
         aggregate: &RelationAggregate,
         parent_cache_options: Option<teaql_core::AggregationCacheOptions>,
         parent_trace_chain: &[teaql_core::TraceNode],
-    ) -> Result<(), RepositoryError<E::Error>> {
+    ) -> Result<(), DataServiceError<E::Error>> {
         let plan = self
             .build_relation_plans_from_loads(
                 &self.entity,
@@ -179,11 +197,11 @@ where
                     aggregate.query.clone(),
                 )],
             )
-            .map_err(RepositoryError::Runtime)?
+            .map_err(DataServiceError::Runtime)?
             .into_iter()
             .next()
             .ok_or_else(|| {
-                RepositoryError::Runtime(RuntimeError::MissingRelation {
+                DataServiceError::Runtime(RuntimeError::MissingRelation {
                     entity: self.entity.clone(),
                     relation: aggregate.relation_name.clone(),
                 })
@@ -198,7 +216,7 @@ where
             return Ok(());
         }
 
-        let child_repo = self.scoped_repository(plan.target_entity.clone());
+        let child_repo = self.scoped_data_service(plan.target_entity.clone());
         let mut query = aggregate.query.clone();
         query.entity = plan.target_entity.clone();
         if query.aggregation_cache.is_none() {
@@ -237,9 +255,12 @@ where
             comment: aggregate.alias.clone(),
         });
 
-        let mut aggregate_rows = child_repo.with_trace_context(chain).fetch_all(&query).await?;
+        let mut aggregate_rows = child_repo
+            .with_trace_context(chain)
+            .fetch_all(&query)
+            .await?;
         let foreign_key_column = self
-            .repository
+            .data_service
             .metadata
             .context
             .entity(&plan.target_entity)
@@ -270,7 +291,7 @@ where
         entity: &str,
         loads: &[String],
     ) -> Result<Vec<RelationLoadPlan>, RuntimeError> {
-        let descriptor = self.repository.metadata.context.require_entity(entity)?;
+        let descriptor = self.data_service.metadata.context.require_entity(entity)?;
         let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for load in loads {
             if let Some((head, tail)) = load.split_once('.') {
@@ -292,7 +313,7 @@ where
                         relation: name.clone(),
                     }
                 })?;
-                let child_repo = self.scoped_repository(relation.target_entity.clone());
+                let child_repo = self.scoped_data_service(relation.target_entity.clone());
                 let children =
                     child_repo.build_relation_plans(&relation.target_entity, &child_loads)?;
                 Ok(RelationLoadPlan {
@@ -315,7 +336,7 @@ where
         entity: &str,
         loads: &[RelationLoad],
     ) -> Result<Vec<RelationLoadPlan>, RuntimeError> {
-        let descriptor = self.repository.metadata.context.require_entity(entity)?;
+        let descriptor = self.data_service.metadata.context.require_entity(entity)?;
         loads
             .iter()
             .map(|load| {
@@ -330,7 +351,7 @@ where
                     .as_ref()
                     .map(|query| query.relations.as_slice())
                     .unwrap_or_default();
-                let child_repo = self.scoped_repository(relation.target_entity.clone());
+                let child_repo = self.scoped_data_service(relation.target_entity.clone());
                 let children = child_repo
                     .build_relation_plans_from_loads(&relation.target_entity, child_loads)?;
                 Ok(RelationLoadPlan {
@@ -351,9 +372,11 @@ where
         &'b self,
         parent_rows: &'b mut [Record],
         plan: &'b RelationLoadPlan,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), RepositoryError<E::Error>>> + Send + 'b>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
+    > {
         Box::pin(async move {
-            let child_repo = self.scoped_repository(plan.target_entity.clone());
+            let child_repo = self.scoped_data_service(plan.target_entity.clone());
             let query = self.query_for_plan(plan, parent_rows);
             let child_rows = child_repo.fetch_all(&query).await?;
             self.attach_relation_rows(parent_rows, plan, child_rows);
@@ -362,12 +385,16 @@ where
                 for parent in parent_rows.iter_mut() {
                     match parent.get_mut(&plan.relation_name) {
                         Some(Value::Object(child)) => {
-                            child_repo.enhance_child_record(child, &plan.children).await?;
+                            child_repo
+                                .enhance_child_record(child, &plan.children)
+                                .await?;
                         }
                         Some(Value::List(values)) => {
                             for value in values.iter_mut() {
                                 if let Value::Object(child) = value {
-                                    child_repo.enhance_child_record(child, &plan.children).await?;
+                                    child_repo
+                                        .enhance_child_record(child, &plan.children)
+                                        .await?;
                                 }
                             }
                         }
@@ -383,7 +410,9 @@ where
         &'b self,
         child: &'b mut Record,
         plans: &'b [RelationLoadPlan],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), RepositoryError<E::Error>>> + Send + 'b>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
+    > {
         Box::pin(async move {
             for plan in plans {
                 self.enhance_plan(slice::from_mut(child), plan).await?;
@@ -420,7 +449,7 @@ where
         child_rows: Vec<Record>,
     ) {
         let inverse_relation = self
-            .repository
+            .data_service
             .metadata
             .context
             .entity(&plan.target_entity)
@@ -442,7 +471,6 @@ where
                     .push(child);
             }
         }
-
 
         for parent in parent_rows.iter_mut() {
             let Some(local_value) = parent.get(&plan.local_key) else {

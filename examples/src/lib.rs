@@ -9,8 +9,8 @@ use teaql_provider_sqlite::{
     SqliteProviderExt,
 };
 use teaql_runtime::{
-    InMemoryMetadataStore, InMemoryRepositoryBehaviorRegistry,
-    InMemoryRepositoryRegistry, RepositoryBehavior, RuntimeModule, UserContext,
+    EntityDataServiceBehavior, InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityRegistry,
+    InMemoryMetadataStore, RuntimeModule, UserContext,
 };
 use teaql_sql::SqlDataServiceExecutor;
 
@@ -56,13 +56,11 @@ pub struct Order {
 
 pub struct OrderRelations;
 
-impl RepositoryBehavior for OrderRelations {
+impl EntityDataServiceBehavior for OrderRelations {
     fn relation_loads(&self, _ctx: &UserContext) -> Vec<String> {
         vec!["lines.product".to_owned()]
     }
 }
-
-
 
 pub fn module() -> RuntimeModule {
     RuntimeModule::new()
@@ -78,27 +76,23 @@ pub fn metadata() -> InMemoryMetadataStore {
         .with_entity(Product::entity_descriptor())
 }
 
-pub fn repository_registry() -> InMemoryRepositoryRegistry {
-    InMemoryRepositoryRegistry::new().with_entity("Order")
+pub fn entity_registry() -> InMemoryEntityRegistry {
+    InMemoryEntityRegistry::new().with_entity("Order")
 }
 
-pub fn behavior_registry() -> InMemoryRepositoryBehaviorRegistry {
-    InMemoryRepositoryBehaviorRegistry::new().with_behavior("Order", OrderRelations)
+pub fn behavior_registry() -> InMemoryEntityDataServiceBehaviorRegistry {
+    InMemoryEntityDataServiceBehaviorRegistry::new().with_behavior("Order", OrderRelations)
 }
 
 pub fn sqlite_context(executor: SqliteMutationExecutor) -> UserContext {
     let mut ctx = UserContext::new()
         .with_metadata(metadata())
-        .with_repository_registry(repository_registry())
-        .with_repository_behavior_registry(behavior_registry());
+        .with_entity_registry(entity_registry())
+        .with_entity_data_service_behavior_registry(behavior_registry());
     ctx.use_sqlite_provider(executor.clone());
-    
-    // Build and inject SqlDataServiceExecutor instead of the old QueryExecutor
-    let data_service = SqlDataServiceExecutor::new(
-        SqliteDialect,
-        executor,
-        metadata()
-    );
+
+    // Build and inject SqlDataServiceExecutor instead of the data service executor
+    let data_service = SqlDataServiceExecutor::new(SqliteDialect, executor, metadata());
     ctx.insert_resource(data_service);
     ctx
 }
@@ -106,11 +100,11 @@ pub fn sqlite_context(executor: SqliteMutationExecutor) -> UserContext {
 // pub fn postgres_context(executor: PgMutationExecutor) -> UserContext {
 //     let mut ctx = UserContext::new()
 //         .with_metadata(metadata())
-//         .with_repository_registry(repository_registry())
-//         .with_repository_behavior_registry(behavior_registry());
+//         .with_entity_registry(entity_registry())
+//         .with_entity_data_service_behavior_registry(behavior_registry());
 //     ctx.use_postgres_provider(executor.clone());
-//     
-//     // Build and inject SqlDataServiceExecutor instead of the old QueryExecutor
+//
+//     // Build and inject SqlDataServiceExecutor instead of the data service executor
 //     let data_service = SqlDataServiceExecutor::new(
 //         PostgresDialect,
 //         executor,
@@ -119,7 +113,7 @@ pub fn sqlite_context(executor: SqliteMutationExecutor) -> UserContext {
 //     ctx.insert_resource(data_service);
 //     ctx
 // }
-// 
+//
 // pub async fn reset_postgres_schema(
 //     pool: &sqlx::PgPool,
 //     executor: &PgMutationExecutor,
@@ -151,18 +145,19 @@ pub async fn reset_sqlite_schema(
     {
         let conn = executor.connection();
         let conn = conn.lock().unwrap();
-        conn.execute("DROP TABLE IF EXISTS example_orderline", []).unwrap();
-        conn.execute("DROP TABLE IF EXISTS example_product", []).unwrap();
-        conn.execute("DROP TABLE IF EXISTS example_orders", []).unwrap();
+        conn.execute("DROP TABLE IF EXISTS example_orderline", [])
+            .unwrap();
+        conn.execute("DROP TABLE IF EXISTS example_product", [])
+            .unwrap();
+        conn.execute("DROP TABLE IF EXISTS example_orders", [])
+            .unwrap();
     }
-    executor
-        .ensure_schema(
-            &SqliteDialect,
-            &[
-                &Order::entity_descriptor(),
-                &OrderLine::entity_descriptor(),
-                &Product::entity_descriptor(),
-            ],
-        )
-
+    executor.ensure_schema(
+        &SqliteDialect,
+        &[
+            &Order::entity_descriptor(),
+            &OrderLine::entity_descriptor(),
+            &Product::entity_descriptor(),
+        ],
+    )
 }

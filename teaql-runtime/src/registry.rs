@@ -7,8 +7,8 @@ use teaql_core::{
 };
 
 use crate::{
-    Checker, RawAuditEventSink, GraphNode, InMemoryCheckerRegistry, InMemoryRawAuditEventSink,
-    Language, RuntimeError, UserContext,
+    Checker, GraphNode, InMemoryCheckerRegistry, InMemoryRawAuditEventSink, Language,
+    RawAuditEventSink, RuntimeError, UserContext,
 };
 
 pub trait MetadataStore: Send + Sync {
@@ -17,7 +17,7 @@ pub trait MetadataStore: Send + Sync {
     fn record_metadata_log(&self, _metadata: &teaql_data_service::ExecutionMetadata) {}
 }
 
-pub trait RepositoryRegistry: Send + Sync {
+pub trait EntityRegistry: Send + Sync {
     fn contains(&self, entity: &str) -> bool;
 }
 
@@ -63,7 +63,7 @@ pub trait RequestPolicy: Send + Sync {
     }
 }
 
-pub trait RepositoryBehavior: Send + Sync {
+pub trait EntityDataServiceBehavior: Send + Sync {
     fn before_select(
         &self,
         _ctx: &UserContext,
@@ -109,8 +109,8 @@ pub trait RepositoryBehavior: Send + Sync {
     }
 }
 
-pub trait RepositoryBehaviorRegistry: Send + Sync {
-    fn behavior(&self, entity: &str) -> Option<Arc<dyn RepositoryBehavior>>;
+pub trait EntityDataServiceBehaviorRegistry: Send + Sync {
+    fn behavior(&self, entity: &str) -> Option<Arc<dyn EntityDataServiceBehavior>>;
 }
 
 #[derive(Debug, Default, Clone)]
@@ -145,7 +145,9 @@ impl MetadataStore for InMemoryMetadataStore {
 
 impl teaql_data_service::SchemaProvider for InMemoryMetadataStore {
     fn get_entity(&self, name: &str) -> Option<std::sync::Arc<teaql_core::EntityDescriptor>> {
-        self.entities.get(name).map(|e| std::sync::Arc::new(e.clone()))
+        self.entities
+            .get(name)
+            .map(|e| std::sync::Arc::new(e.clone()))
     }
 }
 
@@ -156,11 +158,11 @@ impl EntityDescriptorStore for InMemoryMetadataStore {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct InMemoryRepositoryRegistry {
+pub struct InMemoryEntityRegistry {
     entities: BTreeMap<String, String>,
 }
 
-impl InMemoryRepositoryRegistry {
+impl InMemoryEntityRegistry {
     pub fn new() -> Self {
         Self::default()
     }
@@ -176,18 +178,18 @@ impl InMemoryRepositoryRegistry {
     }
 }
 
-impl RepositoryRegistry for InMemoryRepositoryRegistry {
+impl EntityRegistry for InMemoryEntityRegistry {
     fn contains(&self, entity: &str) -> bool {
         self.entities.contains_key(entity)
     }
 }
 
 #[derive(Default, Clone)]
-pub struct InMemoryRepositoryBehaviorRegistry {
-    behaviors: BTreeMap<String, Arc<dyn RepositoryBehavior>>,
+pub struct InMemoryEntityDataServiceBehaviorRegistry {
+    behaviors: BTreeMap<String, Arc<dyn EntityDataServiceBehavior>>,
 }
 
-impl InMemoryRepositoryBehaviorRegistry {
+impl InMemoryEntityDataServiceBehaviorRegistry {
     pub fn new() -> Self {
         Self::default()
     }
@@ -195,7 +197,7 @@ impl InMemoryRepositoryBehaviorRegistry {
     pub fn register(
         &mut self,
         entity: impl Into<String>,
-        behavior: impl RepositoryBehavior + 'static,
+        behavior: impl EntityDataServiceBehavior + 'static,
     ) {
         self.behaviors.insert(entity.into(), Arc::new(behavior));
     }
@@ -203,15 +205,15 @@ impl InMemoryRepositoryBehaviorRegistry {
     pub fn with_behavior(
         mut self,
         entity: impl Into<String>,
-        behavior: impl RepositoryBehavior + 'static,
+        behavior: impl EntityDataServiceBehavior + 'static,
     ) -> Self {
         self.register(entity, behavior);
         self
     }
 }
 
-impl RepositoryBehaviorRegistry for InMemoryRepositoryBehaviorRegistry {
-    fn behavior(&self, entity: &str) -> Option<Arc<dyn RepositoryBehavior>> {
+impl EntityDataServiceBehaviorRegistry for InMemoryEntityDataServiceBehaviorRegistry {
+    fn behavior(&self, entity: &str) -> Option<Arc<dyn EntityDataServiceBehavior>> {
         self.behaviors.get(entity).cloned()
     }
 }
@@ -219,8 +221,8 @@ impl RepositoryBehaviorRegistry for InMemoryRepositoryBehaviorRegistry {
 #[derive(Default, Clone)]
 pub struct RuntimeModule {
     pub metadata: InMemoryMetadataStore,
-    repositories: InMemoryRepositoryRegistry,
-    behaviors: InMemoryRepositoryBehaviorRegistry,
+    entity_registry: InMemoryEntityRegistry,
+    behaviors: InMemoryEntityDataServiceBehaviorRegistry,
     checkers: InMemoryCheckerRegistry,
     event_sinks: InMemoryRawAuditEventSink,
     language: Option<Language>,
@@ -234,7 +236,7 @@ impl RuntimeModule {
 
     pub fn entity<T: TeaqlEntity>(mut self) -> Self {
         let descriptor = T::entity_descriptor();
-        self.repositories.register(descriptor.name.clone());
+        self.entity_registry.register(descriptor.name.clone());
         self.metadata.register(descriptor);
         self
     }
@@ -242,18 +244,18 @@ impl RuntimeModule {
     pub fn entity_with_behavior<T, B>(mut self, behavior: B) -> Self
     where
         T: TeaqlEntity,
-        B: RepositoryBehavior + 'static,
+        B: EntityDataServiceBehavior + 'static,
     {
         let descriptor = T::entity_descriptor();
         let entity_name = descriptor.name.clone();
-        self.repositories.register(entity_name.clone());
+        self.entity_registry.register(entity_name.clone());
         self.metadata.register(descriptor);
         self.behaviors.register(entity_name, behavior);
         self
     }
 
     pub fn descriptor(mut self, descriptor: EntityDescriptor) -> Self {
-        self.repositories.register(descriptor.name.clone());
+        self.entity_registry.register(descriptor.name.clone());
         self.metadata.register(descriptor);
         self
     }
@@ -261,7 +263,7 @@ impl RuntimeModule {
     pub fn behavior(
         mut self,
         entity: impl Into<String>,
-        behavior: impl RepositoryBehavior + 'static,
+        behavior: impl EntityDataServiceBehavior + 'static,
     ) -> Self {
         self.behaviors.register(entity, behavior);
         self
@@ -294,8 +296,8 @@ impl RuntimeModule {
 
     pub fn apply_to(self, ctx: &mut UserContext) {
         ctx.set_metadata(self.metadata);
-        ctx.set_repository_registry(self.repositories);
-        ctx.set_repository_behavior_registry(self.behaviors);
+        ctx.set_entity_registry(self.entity_registry);
+        ctx.set_entity_data_service_behavior_registry(self.behaviors);
         ctx.set_checker_registry(self.checkers);
         ctx.set_event_sink(self.event_sinks);
         ctx.set_initial_graphs(self.initial_graphs);

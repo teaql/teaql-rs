@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use teaql_core::{EntityDescriptor, Record, RelationAggregate, SelectQuery, Value};
 
-use crate::{GraphNode, RepositoryError, RuntimeError};
+use crate::{DataServiceError, GraphNode, RuntimeError};
 
 use super::{AggregationCacheBackend, RelationLoadPlan};
 
@@ -45,9 +45,7 @@ pub(super) fn aggregation_cache_key(
     query: &SelectQuery,
 ) -> String {
     let query_str = format!("{:?}", query);
-    format!(
-        "{cache_namespace}::{query_namespace}::{query_str}"
-    )
+    format!("{cache_namespace}::{query_namespace}::{query_str}")
 }
 
 pub(super) fn ensure_projection(query: &mut SelectQuery, field: &str) {
@@ -126,8 +124,6 @@ pub(super) fn single_relation_aggregate_value(row: &Record) -> Value {
     }
 }
 
-
-
 pub(super) fn ensure_initial_version(record: &mut Record, descriptor: &EntityDescriptor) {
     if let Some(version_property) = descriptor.version_property() {
         let needs_version = match record.get(&version_property.name) {
@@ -164,11 +160,11 @@ pub(super) fn ensure_relation_target<ExecError>(
     relation_name: &str,
     expected_entity: &str,
     child: &GraphNode,
-) -> Result<(), RepositoryError<ExecError>> {
+) -> Result<(), DataServiceError<ExecError>> {
     if child.entity == expected_entity {
         return Ok(());
     }
-    Err(RepositoryError::Runtime(RuntimeError::Graph(format!(
+    Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
         "relation {parent_entity}.{relation_name} expects {expected_entity}, got {}",
         child.entity
     ))))

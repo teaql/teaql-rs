@@ -10,6 +10,6 @@ mod types;
 
 pub use cache::{AggregationCacheBackend, InMemoryAggregationCache};
 pub use executor::GraphTransactionBoundary;
-pub use types::{ContextRepository, RelationLoadPlan, Repository, ResolvedRepository};
+pub use types::{ContextDataService, EntityDataService, RelationLoadPlan, RuntimeDataService};
 
 pub(crate) use types::UserContextMetadata;
