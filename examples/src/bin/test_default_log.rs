@@ -1,5 +1,5 @@
+use std::time::{Duration, SystemTime};
 use teaql_runtime::log_formatter::{LogManager, SqlLogEntry, SqlLogOperation};
-use std::time::{SystemTime, Duration};
 
 #[tokio::main]
 async fn main() {
@@ -25,6 +25,6 @@ async fn main() {
     };
 
     LogManager::write_sql_log(&[], &entry);
-    
+
     println!("Done! A .log file should have been generated.");
 }
