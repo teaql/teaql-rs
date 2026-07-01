@@ -13,21 +13,48 @@ This provider uses `procfs` to extract real-time system metrics and exposes them
 
 ## Usage
 
-Add `teaql-provider-linux` to your `Cargo.toml`:
+The recommended way to use this provider is alongside the **TeaQL Code Generator**. While you can manually define models and use the provider, using the generator makes querying the Linux system fully type-safe and incredibly ergonomic.
 
-```toml
-[dependencies]
-teaql-provider-linux = "4.1.0"
-```
+1. **Generate the Domain Library**
+   Use `teaql-code-gen` to generate a native Rust library from your domain model that contains `SystemInfo`, `Process`, and `Thread` entities.
 
-To use it, construct a `LinuxDataServiceExecutor` and pass it to your runtime or context:
+2. **Add Dependencies**
+   In your application, depend on the generated library and this provider:
+   ```toml
+   [dependencies]
+   your-generated-lib = { path = "../your-generated-lib" }
+   teaql-provider-linux = "4.1.0"
+   teaql-runtime = "4.1.0"
+   ```
 
-```rust
-use teaql_provider_linux::LinuxDataServiceExecutor;
+3. **Initialize the Context**
+   Construct the `LinuxDataServiceExecutor` and provide it to the generated user context to execute queries against the system:
 
-let executor = LinuxDataServiceExecutor::new();
-// Provide `executor` to your TeaQL user context to execute queries against the system
-```
+   ```rust
+   use teaql_provider_linux::LinuxDataServiceExecutor;
+   use your_generated_lib::runtime::UserContext;
+   use your_generated_lib::process::Process;
+
+   #[tokio::main]
+   async fn main() -> Result<(), Box<dyn std::error::Error>> {
+       // 1. Initialize the Linux provider
+       let executor = LinuxDataServiceExecutor::new();
+       
+       // 2. Initialize the generated user context
+       let ctx = UserContext::new(executor).await?;
+       
+       // 3. Query the system with full type safety!
+       let processes = ctx.process().query().find_many().await?;
+       for process in processes {
+           println!("PID: {}, Name: {}", process.id(), process.name());
+       }
+       
+       Ok(())
+   }
+   ```
+
+### Full Example
+For a complete, runnable example of using `teaql-provider-linux` with generated code, see the **[Linux System Info Application Example](https://github.com/teaql/teaql-rust-app-examples/tree/main/003-linux-sysinfo-using-teaql)** in the `teaql-rust-app-examples` repository.
 
 ## Entities Mapping
 
