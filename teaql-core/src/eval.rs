@@ -43,12 +43,10 @@ impl<T> EvalResult<T> {
         match self {
             EvalResult::Value(val) => match f(val) {
                 EvalResult::NotLoaded { failed_node, attempted_path } => {
-                    let new_path = if attempted_path == field_name {
-                        attempted_path
-                    } else if attempted_path.is_empty() {
-                        field_name.to_string()
-                    } else {
-                        format!("{}.{}", field_name, attempted_path)
+                    let new_path = match (attempted_path == field_name, attempted_path.is_empty()) {
+                        (true, _) => attempted_path,
+                        (_, true) => field_name.to_string(),
+                        _ => format!("{}.{}", field_name, attempted_path),
                     };
                     EvalResult::NotLoaded { 
                         failed_node, 
@@ -86,12 +84,11 @@ mod tests {
     impl Company {
         fn eval_name(&self) -> EvalResult<&str> {
             if !self.__load_state.is_loaded("name") {
-                EvalResult::NotLoaded { failed_node: "name".to_string(), attempted_path: "name".to_string() }
-            } else {
-                match &self.name {
-                    Some(n) => EvalResult::Value(n.as_str()),
-                    None => EvalResult::Null,
-                }
+                return EvalResult::NotLoaded { failed_node: "name".to_string(), attempted_path: "name".to_string() };
+            }
+            match &self.name {
+                Some(n) => EvalResult::Value(n.as_str()),
+                None => EvalResult::Null,
             }
         }
     }
@@ -104,12 +101,11 @@ mod tests {
     impl Platform {
         fn eval_company(&self) -> EvalResult<&Company> {
             if !self.__load_state.is_loaded("company") {
-                EvalResult::NotLoaded { failed_node: "company".to_string(), attempted_path: "company".to_string() }
-            } else {
-                match &self.company {
-                    Some(c) => EvalResult::Value(c.as_ref()),
-                    None => EvalResult::Null,
-                }
+                return EvalResult::NotLoaded { failed_node: "company".to_string(), attempted_path: "company".to_string() };
+            }
+            match &self.company {
+                Some(c) => EvalResult::Value(c.as_ref()),
+                None => EvalResult::Null,
             }
         }
     }
@@ -122,12 +118,11 @@ mod tests {
     impl User {
         fn eval_platform(&self) -> EvalResult<&Platform> {
             if !self.__load_state.is_loaded("platform") {
-                EvalResult::NotLoaded { failed_node: "platform".to_string(), attempted_path: "platform".to_string() }
-            } else {
-                match &self.platform {
-                    Some(p) => EvalResult::Value(p.as_ref()),
-                    None => EvalResult::Null,
-                }
+                return EvalResult::NotLoaded { failed_node: "platform".to_string(), attempted_path: "platform".to_string() };
+            }
+            match &self.platform {
+                Some(p) => EvalResult::Value(p.as_ref()),
+                None => EvalResult::Null,
             }
         }
     }

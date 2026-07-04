@@ -413,10 +413,9 @@ pub fn build_safe_audit_field(
             let raw_length = raw.chars().count();
             let should_mask = audit_mask_fields.iter().any(|f| f == field_name);
 
-            let mut value = if should_mask {
-                mask_audit_value(raw)
-            } else {
-                raw.to_string()
+            let mut value = match should_mask {
+                true => mask_audit_value(raw),
+                false => raw.to_string(),
             };
 
             let mut truncated = false;
@@ -435,16 +434,8 @@ pub fn build_safe_audit_field(
                 truncated,
                 raw_length: Some(raw_length),
                 output_length: Some(output_length),
-                mask_reason: if should_mask {
-                    Some("_audit_mask_fields".to_string())
-                } else {
-                    None
-                },
-                truncate_reason: if truncated {
-                    Some("_audit_value_max_len".to_string())
-                } else {
-                    None
-                },
+                mask_reason: should_mask.then(|| "_audit_mask_fields".to_string()),
+                truncate_reason: truncated.then(|| "_audit_value_max_len".to_string()),
             }
         }
     }

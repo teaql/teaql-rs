@@ -38,18 +38,29 @@ impl CompiledQuery {
     }
 }
 
+fn handle_sql_quote(
+    chars: &mut std::iter::Peekable<std::str::Chars>,
+    output: &mut String,
+    in_string: &mut bool,
+) {
+    output.push('\'');
+    match *in_string && matches!(chars.peek(), Some('\'')) {
+        true => {
+            output.push(chars.next().expect("peeked quote must exist"));
+        }
+        false => {
+            *in_string = !*in_string;
+        }
+    }
+}
+
 fn replace_postgres_placeholders(sql: &str, params: &[Value]) -> String {
     let mut output = String::with_capacity(sql.len());
     let mut chars = sql.chars().peekable();
     let mut in_string = false;
     while let Some(ch) = chars.next() {
         if ch == '\'' {
-            output.push(ch);
-            if in_string && matches!(chars.peek(), Some('\'')) {
-                output.push(chars.next().expect("peeked quote must exist"));
-            } else {
-                in_string = !in_string;
-            }
+            handle_sql_quote(&mut chars, &mut output, &mut in_string);
             continue;
         }
         if !in_string && ch == '$' && chars.peek().is_some_and(|next| next.is_ascii_digit()) {
@@ -80,19 +91,13 @@ fn replace_positional_placeholders(sql: &str, params: &[Value], kind: DatabaseKi
     let mut chars = sql.chars().peekable();
     while let Some(ch) = chars.next() {
         if ch == '\'' {
-            output.push(ch);
-            if in_string && matches!(chars.peek(), Some('\'')) {
-                output.push(chars.next().expect("peeked quote must exist"));
-            } else {
-                in_string = !in_string;
-            }
+            handle_sql_quote(&mut chars, &mut output, &mut in_string);
             continue;
         }
         if !in_string && ch == '?' {
-            if let Some(value) = params.next() {
-                output.push_str(&sql_literal(value, kind));
-            } else {
-                output.push(ch);
+            match params.next() {
+                Some(value) => output.push_str(&sql_literal(value, kind)),
+                None => output.push(ch),
             }
             continue;
         }
@@ -101,10 +106,17 @@ fn replace_positional_placeholders(sql: &str, params: &[Value], kind: DatabaseKi
     output
 }
 
+fn sql_bool_literal(value: bool) -> &'static str {
+    match value {
+        true => "TRUE",
+        false => "FALSE",
+    }
+}
+
 fn sql_literal(value: &Value, kind: DatabaseKind) -> String {
     match value {
         Value::Null => "NULL".to_owned(),
-        Value::Bool(value) => if *value { "TRUE" } else { "FALSE" }.to_owned(),
+        Value::Bool(value) => sql_bool_literal(*value).to_owned(),
         Value::I64(value) => value.to_string(),
         Value::U64(value) => value.to_string(),
         Value::F64(value) => value.to_string(),

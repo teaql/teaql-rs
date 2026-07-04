@@ -419,10 +419,10 @@ async fn ensure_initial_graphs_postgres(
             if let Some(query) = compile_initial_graph_update(dialect, entity, graph)? {
                 executor.execute(&query).await?;
             }
-        } else {
-            let query = compile_initial_graph_insert(dialect, entity, graph)?;
-            executor.execute(&query).await?;
+            continue;
         }
+        let query = compile_initial_graph_insert(dialect, entity, graph)?;
+        executor.execute(&query).await?;
     }
     Ok(())
 }
@@ -622,15 +622,13 @@ fn block_on_id_generation<F>(future: F) -> Result<u64, RuntimeError>
 where
     F: Future<Output = Result<u64, MutationExecutorError>> + Send + 'static,
 {
-    let result = if tokio::runtime::Handle::try_current().is_ok() {
-        let handle = tokio::runtime::Handle::current();
-        tokio::task::block_in_place(|| handle.block_on(future))
-    } else {
-        tokio::runtime::Builder::new_current_thread()
+    let result = match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(future)),
+        Err(_) => tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|err| RuntimeError::IdGeneration(err.to_string()))?
-            .block_on(future)
+            .block_on(future),
     };
     result.map_err(|err| RuntimeError::IdGeneration(err.to_string()))
 }
@@ -703,13 +701,10 @@ fn bind_pg(args: &mut PgArgs, value: &Value) -> Result<(), MutationExecutorError
         }
         Value::F64(v) => args.add(*v),
         Value::Decimal(v) => args.add(*v),
-        Value::Text(v) => {
-            if let Some(dt) = try_parse_datetime_from_str(v) {
-                args.add(dt);
-            } else {
-                args.add(v.clone());
-            }
-        }
+        Value::Text(v) => match try_parse_datetime_from_str(v) {
+            Some(dt) => args.add(dt),
+            None => args.add(v.clone()),
+        },
         Value::Json(v) => {
             let j_val: serde_json::Value =
                 serde_json::to_value(v).map_err(|e| MutationExecutorError::Bind(e.to_string()))?;

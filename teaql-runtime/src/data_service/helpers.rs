@@ -6,6 +6,20 @@ use crate::{DataServiceError, GraphNode, RuntimeError};
 
 use super::{AggregationCacheBackend, RelationLoadPlan};
 
+pub(super) fn default_aggregate_value(single_result: bool) -> Value {
+    match single_result {
+        true => Value::U64(0),
+        false => Value::List(Vec::new()),
+    }
+}
+
+pub(super) fn aggregate_alias(single_result: bool, alias: &str) -> String {
+    match single_result {
+        true => alias.to_owned(),
+        false => "count".to_owned(),
+    }
+}
+
 pub(super) fn relation_bucket_key(value: &Value) -> String {
     match value {
         Value::Null => "null".to_owned(),
@@ -64,11 +78,7 @@ pub(super) fn attach_empty_relation_aggregate(
     alias: &str,
     single_result: bool,
 ) {
-    let value = if single_result {
-        Value::U64(0)
-    } else {
-        Value::List(Vec::new())
-    };
+    let value = default_aggregate_value(single_result);
     for parent in parent_rows {
         parent.insert(alias.to_owned(), value.clone());
     }
@@ -95,32 +105,25 @@ pub(super) fn attach_relation_aggregate_rows(
             .get(&plan.local_key)
             .and_then(|local_value| buckets.get(&graph_identity_key(local_value)))
             .map(|rows| relation_aggregate_value(rows, aggregate.single_result))
-            .unwrap_or_else(|| {
-                if aggregate.single_result {
-                    Value::U64(0)
-                } else {
-                    Value::List(Vec::new())
-                }
-            });
+            .unwrap_or_else(|| default_aggregate_value(aggregate.single_result));
         parent.insert(aggregate.alias.clone(), value);
     }
 }
 
 pub(super) fn relation_aggregate_value(rows: &[Record], single_result: bool) -> Value {
-    if single_result {
-        rows.first()
+    match single_result {
+        true => rows
+            .first()
             .map(single_relation_aggregate_value)
-            .unwrap_or(Value::U64(0))
-    } else {
-        Value::List(rows.iter().cloned().map(Value::object).collect())
+            .unwrap_or(Value::U64(0)),
+        false => Value::List(rows.iter().cloned().map(Value::object).collect()),
     }
 }
 
 pub(super) fn single_relation_aggregate_value(row: &Record) -> Value {
-    if row.len() == 1 {
-        row.values().next().cloned().unwrap_or(Value::Null)
-    } else {
-        Value::object(row.clone())
+    match row.len() {
+        1 => row.values().next().cloned().unwrap_or(Value::Null),
+        _ => Value::object(row.clone()),
     }
 }
 

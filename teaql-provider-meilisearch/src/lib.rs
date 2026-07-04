@@ -57,9 +57,9 @@ fn json_to_value(json: serde_json::Value) -> Value {
         serde_json::Value::Null => Value::Null,
         serde_json::Value::Bool(b) => Value::Bool(b),
         serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() { Value::I64(i) }
-            else if let Some(f) = n.as_f64() { Value::F64(f) }
-            else { Value::Null }
+            n.as_i64().map(Value::I64)
+                .or_else(|| n.as_f64().map(Value::F64))
+                .unwrap_or(Value::Null)
         }
         serde_json::Value::String(s) => Value::Text(s),
         serde_json::Value::Array(arr) => Value::List(arr.into_iter().map(json_to_value).collect()),

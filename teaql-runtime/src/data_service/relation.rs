@@ -232,11 +232,7 @@ where
         query.slice = None;
         query.relations.clear();
         if query.aggregates.is_empty() {
-            let alias = if aggregate.single_result {
-                aggregate.alias.clone()
-            } else {
-                "count".to_owned()
-            };
+            let alias = aggregate_alias(aggregate.single_result, &aggregate.alias);
             query = query.aggregate(Aggregate::count(alias));
         }
         if !query
@@ -294,13 +290,16 @@ where
         let descriptor = self.data_service.metadata.context.require_entity(entity)?;
         let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for load in loads {
-            if let Some((head, tail)) = load.split_once('.') {
-                grouped
-                    .entry(head.to_owned())
-                    .or_default()
-                    .push(tail.to_owned());
-            } else {
-                grouped.entry(load.clone()).or_default();
+            match load.split_once('.') {
+                Some((head, tail)) => {
+                    grouped
+                        .entry(head.to_owned())
+                        .or_default()
+                        .push(tail.to_owned());
+                }
+                None => {
+                    grouped.entry(load.clone()).or_default();
+                }
             }
         }
 
@@ -478,43 +477,50 @@ where
             };
             let bucket_key = graph_identity_key(local_value);
             let related = buckets.get(&bucket_key).cloned().unwrap_or_default();
-            let related = if let Some((inverse_relation, inverse_many)) = &inverse_relation {
-                let mut parent_object = parent.clone();
-                parent_object.remove(&plan.relation_name);
-                related
-                    .into_iter()
-                    .map(|mut child| {
-                        if *inverse_many {
-                            let entry = child
-                                .entry(inverse_relation.clone())
-                                .or_insert_with(|| Value::List(Vec::new()));
-                            if let Value::List(list) = entry {
-                                list.push(Value::object(parent_object.clone()));
+            let related = match &inverse_relation {
+                Some((inverse_relation, inverse_many)) => {
+                    let mut parent_object = parent.clone();
+                    parent_object.remove(&plan.relation_name);
+                    related
+                        .into_iter()
+                        .map(|mut child| {
+                            match *inverse_many {
+                                true => {
+                                    let entry = child
+                                        .entry(inverse_relation.clone())
+                                        .or_insert_with(|| Value::List(Vec::new()));
+                                    if let Value::List(list) = entry {
+                                        list.push(Value::object(parent_object.clone()));
+                                    }
+                                }
+                                false => {
+                                    child.insert(
+                                        inverse_relation.clone(),
+                                        Value::object(parent_object.clone()),
+                                    );
+                                }
                             }
-                        } else {
-                            child.insert(
-                                inverse_relation.clone(),
-                                Value::object(parent_object.clone()),
-                            );
-                        }
-                        child
-                    })
-                    .collect::<Vec<_>>()
-            } else {
-                related
+                            child
+                        })
+                        .collect::<Vec<_>>()
+                }
+                None => related,
             };
-            if plan.many {
-                parent.insert(
-                    plan.relation_name.clone(),
-                    Value::List(related.into_iter().map(Value::object).collect()),
-                );
-            } else {
-                let value = related
-                    .into_iter()
-                    .next()
-                    .map(Value::object)
-                    .unwrap_or(Value::Null);
-                parent.insert(plan.relation_name.clone(), value);
+            match plan.many {
+                true => {
+                    parent.insert(
+                        plan.relation_name.clone(),
+                        Value::List(related.into_iter().map(Value::object).collect()),
+                    );
+                }
+                false => {
+                    let value = related
+                        .into_iter()
+                        .next()
+                        .map(Value::object)
+                        .unwrap_or(Value::Null);
+                    parent.insert(plan.relation_name.clone(), value);
+                }
             }
         }
     }

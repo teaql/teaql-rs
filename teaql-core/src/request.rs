@@ -562,15 +562,10 @@ pub fn dynamic_json_value_to_teaql_value(value: &JsonValue) -> Value {
         JsonValue::Null => Value::Null,
         JsonValue::Bool(value) => Value::Bool(*value),
         JsonValue::Number(value) => {
-            if let Some(value) = value.as_i64() {
-                Value::I64(value)
-            } else if let Some(value) = value.as_u64() {
-                Value::U64(value)
-            } else if let Some(value) = value.as_f64() {
-                Value::F64(value)
-            } else {
-                Value::Null
-            }
+            value.as_i64().map(Value::I64)
+                .or_else(|| value.as_u64().map(Value::U64))
+                .or_else(|| value.as_f64().map(Value::F64))
+                .unwrap_or(Value::Null)
         }
         JsonValue::String(value) => Value::Text(value.trim().to_owned()),
         JsonValue::Array(values) => Value::List(

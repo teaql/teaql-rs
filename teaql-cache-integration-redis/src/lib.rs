@@ -46,10 +46,9 @@ impl DataStore for RedisDataStore {
             Err(_) => return,
         };
 
-        if let Some(secs) = timeout_seconds {
-            let _: redis::RedisResult<()> = conn.set_ex(key, json_str, secs).await;
-        } else {
-            let _: redis::RedisResult<()> = conn.set(key, json_str).await;
+        match timeout_seconds {
+            Some(secs) => { let _: redis::RedisResult<()> = conn.set_ex(key, json_str, secs).await; }
+            None => { let _: redis::RedisResult<()> = conn.set(key, json_str).await; }
         }
     }
 

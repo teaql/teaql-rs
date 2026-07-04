@@ -34,11 +34,7 @@ impl<T> SmartList<T> {
             items.push(Value::object(Entity::into_record(entity)));
         }
         
-        if self.is_loaded || has_changes {
-            Some(Value::List(items))
-        } else {
-            None
-        }
+        (self.is_loaded || has_changes).then(|| Value::List(items))
     }
 
     pub fn new(data: Vec<T>) -> Self {
@@ -246,11 +242,12 @@ impl<T> SmartList<T> {
             .collect::<std::collections::HashMap<_, _>>();
         for item in incoming {
             let item_key = key(&item);
-            if let Some(index) = positions.get(&item_key).copied() {
-                self.data[index] = item;
-            } else {
-                positions.insert(item_key, self.data.len());
-                self.data.push(item);
+            match positions.get(&item_key).copied() {
+                Some(index) => self.data[index] = item,
+                None => {
+                    positions.insert(item_key, self.data.len());
+                    self.data.push(item);
+                }
             }
         }
     }

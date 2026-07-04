@@ -19,15 +19,15 @@ pub struct HumanReaderFormatter;
 
 impl HumanReaderFormatter {
     fn format_trace_chain(&self, trace_chain: &[TraceNode]) -> String {
-        if trace_chain.is_empty() {
-            "".to_string()
-        } else {
-            trace_chain
-                .iter()
-                .map(|n| n.comment.clone())
-                .collect::<Vec<_>>()
-                .join(" -> ")
-        }
+        (!trace_chain.is_empty())
+            .then(|| {
+                trace_chain
+                    .iter()
+                    .map(|n| n.comment.clone())
+                    .collect::<Vec<_>>()
+                    .join(" -> ")
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -35,11 +35,8 @@ impl LogFormatter for HumanReaderFormatter {
     fn format_sql_log(&self, trace_chain: &[TraceNode], entry: &SqlLogEntry) -> String {
         let ts = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f");
         let trace_str = self.format_trace_chain(trace_chain);
-        let trace_display = if trace_str.is_empty() {
-            "".to_string()
-        } else {
-            format!(" - [{}]", trace_str)
-        };
+        let trace_display =
+            (!trace_str.is_empty()).then(|| format!(" - [{}]", trace_str)).unwrap_or_default();
 
         let elapsed_us = (entry.elapsed.as_secs_f64() * 1_000_000.0).round() as u64;
         format!(
@@ -55,11 +52,8 @@ impl LogFormatter for HumanReaderFormatter {
     fn format_audit_log(&self, event: &RawAuditEvent) -> String {
         let ts = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f");
         let trace_str = self.format_trace_chain(&event.trace_chain);
-        let trace_display = if trace_str.is_empty() {
-            String::new()
-        } else {
-            format!(" (Trace: {})", trace_str)
-        };
+        let trace_display =
+            (!trace_str.is_empty()).then(|| format!(" (Trace: {})", trace_str)).unwrap_or_default();
 
         let mut field_changes = Vec::new();
         for change in &event.changes {
@@ -73,11 +67,9 @@ impl LogFormatter for HumanReaderFormatter {
                 .unwrap_or_else(|| "null".to_string());
             field_changes.push(format!("{}: {}", change.field, val));
         }
-        let fields_part = if field_changes.is_empty() {
-            String::new()
-        } else {
-            format!(" {{{}}}", field_changes.join(", "))
-        };
+        let fields_part = (!field_changes.is_empty())
+            .then(|| format!(" {{{}}}", field_changes.join(", ")))
+            .unwrap_or_default();
 
         let mut entity_id = "Unknown".to_string();
         if let Some(vals) = &event.new_values {
@@ -98,17 +90,16 @@ pub struct DebugReaderFormatter;
 
 impl DebugReaderFormatter {
     fn format_trace_chain(&self, trace_chain: &[TraceNode]) -> String {
-        if trace_chain.is_empty() {
-            "(Trace: None)".to_string()
-        } else {
-            format!(
+        match trace_chain.is_empty() {
+            true => "(Trace: None)".to_string(),
+            false => format!(
                 "(Trace: {})",
                 trace_chain
                     .iter()
                     .map(|n| n.comment.clone())
                     .collect::<Vec<_>>()
                     .join(" -> ")
-            )
+            ),
         }
     }
 }
@@ -138,10 +129,9 @@ impl LogFormatterFactory {
             .get_or_init(|| {
                 let format =
                     std::env::var("TEAQL_LOG_FORMAT").unwrap_or_else(|_| "human".to_string());
-                if format == "json" || format == "debug" {
-                    Box::new(DebugReaderFormatter)
-                } else {
-                    Box::new(HumanReaderFormatter)
+                match format.as_str() {
+                    "json" | "debug" => Box::new(DebugReaderFormatter),
+                    _ => Box::new(HumanReaderFormatter),
                 }
             })
             .as_ref()
@@ -280,15 +270,9 @@ impl LogManager {
                     // If they didn't sign the waiver, ignore the off request and fallthrough
                 }
 
-                if let Ok(val) = std::env::var("TEAQL_LOG_ENDPOINT") {
-                    if val.is_empty() {
-                        None // Fallthrough to default
-                    } else {
-                        Some(val)
-                    }
-                } else {
-                    None
-                }
+                std::env::var("TEAQL_LOG_ENDPOINT")
+                    .ok()
+                    .filter(|v| !v.is_empty())
                 .or_else(|| {
                     if let Ok(val) = std::env::var("TEAQL_DOMAIN") {
                         if !val.is_empty() {
@@ -311,16 +295,17 @@ impl LogManager {
         }
         HEADER_WRITTEN.call_once(|| {
             let header = include_str!("log_header.txt");
-            if endpoint == "stdout" {
-                println!("{}", header);
-            } else {
-                if let Ok(mut file) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(endpoint)
-                {
-                    use std::io::Write;
-                    let _ = writeln!(file, "{}", header);
+            match endpoint {
+                "stdout" => println!("{}", header),
+                path => {
+                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(path)
+                    {
+                        use std::io::Write;
+                        let _ = writeln!(file, "{}", header);
+                    }
                 }
             }
         });
@@ -334,16 +319,17 @@ impl LogManager {
 
             Self::write_header_if_needed(endpoint);
 
-            if endpoint == "stdout" {
-                println!("{}", content);
-            } else {
-                if let Ok(mut file) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(endpoint)
-                {
-                    use std::io::Write;
-                    let _ = writeln!(file, "{}", content);
+            match endpoint {
+                "stdout" => println!("{}", content),
+                path => {
+                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(path)
+                    {
+                        use std::io::Write;
+                        let _ = writeln!(file, "{}", content);
+                    }
                 }
             }
         }

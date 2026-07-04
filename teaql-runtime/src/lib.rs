@@ -14,6 +14,7 @@ mod language;
 pub mod log_formatter;
 mod memory;
 mod registry;
+pub mod inmemory_engine;
 
 pub use context::{
     DataStore, InMemoryDataStore, InfoLogEntry, LogPayload, SchemaProvider, SqlLogEntry,
@@ -52,6 +53,7 @@ pub use registry::{
     InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityRegistry, InMemoryMetadataStore,
     MetadataStore, RequestPolicy, RuntimeModule,
 };
+pub use inmemory_engine::{InMemoryQueryEngine, ExprEvaluator};
 
 #[cfg(test)]
 mod tests {
