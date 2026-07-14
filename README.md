@@ -1,5 +1,6 @@
 # teaql-rs
 
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13608/badge)](https://www.bestpractices.dev/projects/13608)
 **TeaQL is an AI-native runtime designed for Coding Agents and modern application development.** 
 
 While traditional frameworks assume a human is writing every line of code, TeaQL provides a strict, typed, and auditable Capability Sandbox tailored specifically for autonomous AI Agents (and humans) to execute code securely.
