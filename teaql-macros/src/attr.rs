@@ -102,7 +102,6 @@ pub struct ParsedFieldAttrs {
     pub relation: Option<ParsedRelation>,
 }
 
-
 #[derive(Default)]
 pub struct ParsedRelation {
     pub target: String,

@@ -32,9 +32,10 @@ impl DataStore for RedisDataStore {
         let result: redis::RedisResult<Option<String>> = conn.get(key).await;
 
         if let Ok(Some(json_str)) = result
-            && let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                return Some(Value::from(json_value));
-            }
+            && let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&json_str)
+        {
+            return Some(Value::from(json_value));
+        }
         None
     }
 

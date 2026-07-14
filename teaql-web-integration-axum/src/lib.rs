@@ -193,14 +193,16 @@ where
         let mut ctx = state.build_context();
 
         if let Some(user_id) = parts.headers.get("X-User-Id")
-            && let Ok(id_str) = user_id.to_str() {
-                ctx.set_user_identifier(id_str);
-            }
+            && let Ok(id_str) = user_id.to_str()
+        {
+            ctx.set_user_identifier(id_str);
+        }
 
         if let Some(trace_id) = parts.headers.get("X-Trace-Id")
-            && let Ok(trace_str) = trace_id.to_str() {
-                ctx.set_trace_id(trace_str);
-            }
+            && let Ok(trace_str) = trace_id.to_str()
+        {
+            ctx.set_trace_id(trace_str);
+        }
 
         // Build WebRequestInfo
         let client_ip = parts

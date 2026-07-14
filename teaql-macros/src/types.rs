@@ -36,9 +36,10 @@ pub fn base_type_name(ty: &Type) -> Option<String> {
                 return Some(last.ident.to_string());
             }
             if let syn::PathArguments::AngleBracketed(args) = &last.arguments
-                && let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
-                    return base_type_name(inner);
-                }
+                && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+            {
+                return base_type_name(inner);
+            }
             None
         }
         Type::Reference(reference) => base_type_name(&reference.elem),
@@ -54,9 +55,10 @@ pub fn option_inner_type(ty: &Type) -> Option<&Type> {
                 return None;
             }
             if let syn::PathArguments::AngleBracketed(args) = &last.arguments
-                && let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
-                    return Some(inner);
-                }
+                && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+            {
+                return Some(inner);
+            }
             None
         }
         _ => None,
@@ -79,9 +81,10 @@ fn generic_inner_type<'a>(ty: &'a Type, name: &str) -> Option<&'a Type> {
                 return None;
             }
             if let syn::PathArguments::AngleBracketed(args) = &last.arguments
-                && let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
-                    return Some(inner);
-                }
+                && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+            {
+                return Some(inner);
+            }
             None
         }
         _ => None,

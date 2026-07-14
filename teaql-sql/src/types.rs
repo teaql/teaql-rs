@@ -70,10 +70,11 @@ fn replace_postgres_placeholders(sql: &str, params: &[Value]) -> String {
                 chars.next();
             }
             if let Ok(index) = index.parse::<usize>()
-                && let Some(value) = index.checked_sub(1).and_then(|idx| params.get(idx)) {
-                    output.push_str(&sql_literal(value, DatabaseKind::PostgreSql));
-                    continue;
-                }
+                && let Some(value) = index.checked_sub(1).and_then(|idx| params.get(idx))
+            {
+                output.push_str(&sql_literal(value, DatabaseKind::PostgreSql));
+                continue;
+            }
             output.push('$');
             output.push_str(&index);
             continue;

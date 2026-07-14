@@ -80,11 +80,7 @@ impl QueryExecutor for MeilisearchProvider {
     async fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
         let started_at = std::time::SystemTime::now();
         let entity = request.query.entity.clone();
-        let search = request
-            .query
-            .search_with_text
-            .clone()
-            .unwrap_or_default();
+        let search = request.query.search_with_text.clone().unwrap_or_default();
 
         let url = format!("{}/indexes/{}/search", self.host, entity);
         let payload = serde_json::json!({
