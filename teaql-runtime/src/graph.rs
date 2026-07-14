@@ -19,6 +19,15 @@ pub enum GraphMutationKind {
     Reference,
 }
 
+impl GraphMutationKind {
+    pub fn for_update(is_update: bool) -> Self {
+        match is_update {
+            true => Self::Update,
+            false => Self::Create,
+        }
+    }
+}
+
 /// A persistent linked-list token for hierarchical trace context.
 ///
 /// Each token holds the trace info for one graph node and an `Arc` pointer

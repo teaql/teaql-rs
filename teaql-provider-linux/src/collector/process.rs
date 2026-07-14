@@ -31,10 +31,7 @@ impl Collector for ProcessCollector {
                 Err(_) => continue,
             };
 
-            let cmdline = process
-                .cmdline()
-                .unwrap_or_default()
-                .join(" ");
+            let cmdline = process.cmdline().unwrap_or_default().join(" ");
 
             let pid = stat.pid;
             let mut record = BTreeMap::new();
@@ -45,10 +42,7 @@ impl Collector for ProcessCollector {
             record.insert("state".to_owned(), Value::Text(stat.state.to_string()));
             record.insert("ppid".to_owned(), Value::I64(stat.ppid as i64));
             record.insert("cmdline".to_owned(), Value::Text(cmdline));
-            record.insert(
-                "thread_count".to_owned(),
-                Value::I64(stat.num_threads),
-            );
+            record.insert("thread_count".to_owned(), Value::I64(stat.num_threads));
             record.insert(
                 "memory_rss_kb".to_owned(),
                 Value::I64(((stat.rss * page_size / 1024).min(i32::MAX as u64)) as i64),
@@ -67,7 +61,8 @@ impl Collector for ProcessCollector {
             );
 
             let create_time_secs = boot_time_secs + (stat.starttime / ticks_per_second);
-            if let Some(create_time) = chrono::DateTime::from_timestamp(create_time_secs as i64, 0) {
+            if let Some(create_time) = chrono::DateTime::from_timestamp(create_time_secs as i64, 0)
+            {
                 record.insert("create_time".to_owned(), Value::Timestamp(create_time));
                 record.insert("update_time".to_owned(), Value::Timestamp(create_time));
             }

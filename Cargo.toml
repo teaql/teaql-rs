@@ -13,12 +13,16 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "4.1.0"
+version = "4.1.1"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["Philip"]
 description = "TeaQL core, SQL, runtime, dialect, and macro crates for model-driven data access"
 repository = "https://github.com/teaql/teaql-rs"
+homepage = "https://github.com/teaql/teaql-rs"
+documentation = "https://docs.rs/teaql-core"
+keywords = ["orm", "database", "sql"]
+categories = ["database"]
 
 [workspace.dependencies]
 chrono = { version = "0.4", features = ["serde"] }
@@ -33,12 +37,12 @@ proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full", "extra-traits"] }
 
-teaql-core = { path = "teaql-core", version = "4.1.0" }
-teaql-macros = { path = "teaql-macros", version = "4.1.0" }
-teaql-runtime = { path = "teaql-runtime", version = "4.1.0" }
-teaql-sql = { path = "teaql-sql", version = "4.1.0" }
-teaql-provider-sqlite = { path = "teaql-provider-sqlite", version = "4.1.0" }
-teaql-provider-postgres = { path = "teaql-provider-postgres", version = "4.1.0" }
-teaql-provider-mysql = { path = "teaql-provider-mysql", version = "4.1.0" }
-teaql-data-service = { path = "teaql-data-service", version = "4.1.0" }
-teaql-provider-linux = { path = "teaql-provider-linux", version = "4.1.0" }
+teaql-core = { path = "teaql-core", version = "4.1.1" }
+teaql-macros = { path = "teaql-macros", version = "4.1.1" }
+teaql-runtime = { path = "teaql-runtime", version = "4.1.1" }
+teaql-sql = { path = "teaql-sql", version = "4.1.1" }
+teaql-provider-sqlite = { path = "teaql-provider-sqlite", version = "4.1.1" }
+teaql-provider-postgres = { path = "teaql-provider-postgres", version = "4.1.1" }
+teaql-provider-mysql = { path = "teaql-provider-mysql", version = "4.1.1" }
+teaql-data-service = { path = "teaql-data-service", version = "4.1.1" }
+teaql-provider-linux = { path = "teaql-provider-linux", version = "4.1.1" }

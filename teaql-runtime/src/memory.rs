@@ -197,11 +197,7 @@ where
             .collect::<Vec<_>>();
 
         if ids.is_empty() {
-            let value = if aggregate.single_result {
-                Value::U64(0)
-            } else {
-                Value::List(Vec::new())
-            };
+            let value = default_aggregate_value(aggregate.single_result);
             for parent in parent_rows.iter_mut() {
                 parent.insert(aggregate.alias.clone(), value.clone());
             }
@@ -216,11 +212,7 @@ where
         query.slice = None;
         query.relations.clear();
         if query.aggregates.is_empty() {
-            let alias = if aggregate.single_result {
-                aggregate.alias.clone()
-            } else {
-                "count".to_owned()
-            };
+            let alias = aggregate_alias(aggregate.single_result, &aggregate.alias);
             query = query.aggregate(Aggregate::count(alias));
         }
         if !query
@@ -246,28 +238,8 @@ where
             let value = parent
                 .get(&relation.local_key)
                 .and_then(|local_value| buckets.get(&local_graph_identity_key(local_value)))
-                .map(|rows| {
-                    if aggregate.single_result {
-                        rows.first()
-                            .map(|row| {
-                                if row.len() == 1 {
-                                    row.values().next().cloned().unwrap_or(Value::Null)
-                                } else {
-                                    Value::object(row.clone())
-                                }
-                            })
-                            .unwrap_or(Value::U64(0))
-                    } else {
-                        Value::List(rows.iter().cloned().map(Value::object).collect())
-                    }
-                })
-                .unwrap_or_else(|| {
-                    if aggregate.single_result {
-                        Value::U64(0)
-                    } else {
-                        Value::List(Vec::new())
-                    }
-                });
+                .map(|rows| local_relation_aggregate_value(rows, aggregate.single_result))
+                .unwrap_or_else(|| default_aggregate_value(aggregate.single_result));
             parent.insert(aggregate.alias.clone(), value);
         }
 
@@ -367,15 +339,18 @@ where
             }
         }
 
-        if command.soft_delete {
-            let next_version = command
-                .expected_version
-                .or_else(|| read_i64(rows[index].get(version_property)))
-                .map(|version| -(version.abs() + 1))
-                .unwrap_or(-1);
-            rows[index].insert(version_property.to_owned(), Value::I64(next_version));
-        } else {
-            rows.remove(index);
+        match command.soft_delete {
+            true => {
+                let next_version = command
+                    .expected_version
+                    .or_else(|| read_i64(rows[index].get(version_property)))
+                    .map(|version| -(version.abs() + 1))
+                    .unwrap_or(-1);
+                rows[index].insert(version_property.to_owned(), Value::I64(next_version));
+            }
+            false => {
+                rows.remove(index);
+            }
         }
         Ok(1)
     }
@@ -448,16 +423,46 @@ where
         entity: &str,
         id: &Value,
     ) -> Result<u64, DataServiceError<MemoryDataServiceError>> {
-        if expected_version.is_some() {
-            Err(DataServiceError::Runtime(
-                RuntimeError::OptimisticLockConflict {
-                    entity: entity.to_owned(),
-                    id: format!("{id:?}"),
-                },
-            ))
-        } else {
-            Ok(0)
-        }
+        let Some(_) = expected_version else {
+            return Ok(0);
+        };
+        Err(DataServiceError::Runtime(
+            RuntimeError::OptimisticLockConflict {
+                entity: entity.to_owned(),
+                id: format!("{id:?}"),
+            },
+        ))
+    }
+}
+
+fn default_aggregate_value(single_result: bool) -> Value {
+    match single_result {
+        true => Value::U64(0),
+        false => Value::List(Vec::new()),
+    }
+}
+
+fn aggregate_alias(single_result: bool, alias: &str) -> String {
+    match single_result {
+        true => alias.to_owned(),
+        false => "count".to_owned(),
+    }
+}
+
+fn local_relation_aggregate_value(rows: &[Record], single_result: bool) -> Value {
+    match single_result {
+        true => rows
+            .first()
+            .map(local_single_relation_aggregate_value)
+            .unwrap_or(Value::U64(0)),
+        false => Value::List(rows.iter().cloned().map(Value::object).collect()),
+    }
+}
+
+fn local_single_relation_aggregate_value(row: &Record) -> Value {
+    match row.len() {
+        1 => row.values().next().cloned().unwrap_or(Value::Null),
+        _ => Value::object(row.clone()),
     }
 }
 
@@ -675,16 +680,14 @@ fn soundex_code(ch: char) -> char {
 fn apply_ordering(rows: &mut [Record], query: &SelectQuery) {
     for order in query.order_by.iter().rev() {
         rows.sort_by(|left, right| {
-            let left_value = if let Some(expr) = &order.expr {
-                eval_value(expr, left).ok()
-            } else {
-                left.get(&order.field).cloned()
+            let resolve = |row: &Record| -> Option<Value> {
+                match &order.expr {
+                    Some(expr) => eval_value(expr, row).ok(),
+                    None => row.get(&order.field).cloned(),
+                }
             };
-            let right_value = if let Some(expr) = &order.expr {
-                eval_value(expr, right).ok()
-            } else {
-                right.get(&order.field).cloned()
-            };
+            let left_value = resolve(left);
+            let right_value = resolve(right);
             let ordering = match (left_value.as_ref(), right_value.as_ref()) {
                 (Some(left), Some(right)) => compare_values(left, right).unwrap_or(Ordering::Equal),
                 (None, Some(_)) => Ordering::Less,
@@ -731,16 +734,19 @@ fn aggregate_rows(
     rows: &[Record],
 ) -> Result<Vec<Record>, MemoryDataServiceError> {
     let mut groups: BTreeMap<Vec<String>, Vec<&Record>> = BTreeMap::new();
-    if query.group_by.is_empty() {
-        groups.insert(Vec::new(), rows.iter().collect());
-    } else {
-        for row in rows {
-            let key = query
-                .group_by
-                .iter()
-                .map(|field| row.get(field).map(value_key).unwrap_or_default())
-                .collect::<Vec<_>>();
-            groups.entry(key).or_default().push(row);
+    match query.group_by.is_empty() {
+        true => {
+            groups.insert(Vec::new(), rows.iter().collect());
+        }
+        false => {
+            for row in rows {
+                let key = query
+                    .group_by
+                    .iter()
+                    .map(|field| row.get(field).map(value_key).unwrap_or_default())
+                    .collect::<Vec<_>>();
+                groups.entry(key).or_default().push(row);
+            }
         }
     }
 
@@ -757,22 +763,7 @@ fn aggregate_rows(
             }
             for aggregate in &query.aggregates {
                 let value = match aggregate.function {
-                    AggregateFunction::Count => {
-                        if aggregate.field == "*" {
-                            Value::U64(rows.len() as u64)
-                        } else {
-                            Value::U64(
-                                rows.iter()
-                                    .filter(|row| {
-                                        !matches!(
-                                            row.get(&aggregate.field),
-                                            None | Some(Value::Null)
-                                        )
-                                    })
-                                    .count() as u64,
-                            )
-                        }
-                    }
+                    AggregateFunction::Count => count_rows(&rows, &aggregate.field),
                     AggregateFunction::Sum => numeric_sum(&rows, &aggregate.field)?,
                     AggregateFunction::Avg => numeric_avg(&rows, &aggregate.field)?,
                     AggregateFunction::Min => min_max(&rows, &aggregate.field, false)?,
@@ -800,17 +791,28 @@ fn aggregate_rows(
             Ok(output)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    if let Some(having) = &query.having {
-        rows.into_iter()
-            .filter_map(|row| match eval_filter(having, &row) {
-                Ok(true) => Some(Ok(row)),
-                Ok(false) => None,
-                Err(err) => Some(Err(err)),
-            })
-            .collect()
-    } else {
-        Ok(rows)
-    }
+    let Some(having) = &query.having else {
+        return Ok(rows);
+    };
+    rows.into_iter()
+        .filter_map(|row| match eval_filter(having, &row) {
+            Ok(true) => Some(Ok(row)),
+            Ok(false) => None,
+            Err(err) => Some(Err(err)),
+        })
+        .collect()
+}
+
+/// Count rows, treating `"*"` as counting all rows and other fields as counting non-null values.
+fn count_rows(rows: &[&Record], field: &str) -> Value {
+    let count = match field {
+        "*" => rows.len(),
+        _ => rows
+            .iter()
+            .filter(|row| !matches!(row.get(field), None | Some(Value::Null)))
+            .count(),
+    };
+    Value::U64(count as u64)
 }
 
 fn numeric_sum(rows: &[&Record], field: &str) -> Result<Value, MemoryDataServiceError> {
@@ -843,12 +845,10 @@ fn numeric_sum(rows: &[&Record], field: &str) -> Result<Value, MemoryDataService
             }
         }
     }
-    if saw_decimal {
-        Ok(Value::Decimal(decimal_sum))
-    } else if integer_sum >= 0 {
-        Ok(Value::U64(integer_sum as u64))
-    } else {
-        Ok(Value::I64(integer_sum as i64))
+    match (saw_decimal, integer_sum >= 0) {
+        (true, _) => Ok(Value::Decimal(decimal_sum)),
+        (_, true) => Ok(Value::U64(integer_sum as u64)),
+        _ => Ok(Value::I64(integer_sum as i64)),
     }
 }
 
@@ -881,11 +881,9 @@ fn numeric_avg(rows: &[&Record], field: &str) -> Result<Value, MemoryDataService
             }
         }
     }
-    Ok(if count == 0 {
-        Value::Null
-    } else {
-        Value::Decimal(sum / Decimal::from(count))
-    })
+    Ok((count > 0)
+        .then(|| Value::Decimal(sum / Decimal::from(count)))
+        .unwrap_or(Value::Null))
 }
 
 fn decimal_from_f64(value: f64) -> Decimal {
@@ -930,7 +928,10 @@ fn numeric_variance(
             diff * diff
         })
         .sum::<f64>();
-    let denominator = if sample { count - 1 } else { count } as f64;
+    let denominator = match sample {
+        true => count - 1,
+        false => count,
+    } as f64;
     Ok(Value::Decimal(decimal_from_f64(sum / denominator)))
 }
 

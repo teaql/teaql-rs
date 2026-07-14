@@ -411,11 +411,9 @@ pub fn translate_location(_language: Language, location: &ObjectLocation) -> Str
 fn title_case_path(path: &str) -> String {
     path.split('.')
         .map(|part| {
-            if let Some((name, index)) = part.split_once('[') {
-                format!("{}[{}", title_case_identifier(name), index)
-            } else {
-                title_case_identifier(part)
-            }
+            part.split_once('[')
+                .map(|(name, index)| format!("{}[{}", title_case_identifier(name), index))
+                .unwrap_or_else(|| title_case_identifier(part))
         })
         .collect::<Vec<_>>()
         .join(".")
@@ -427,10 +425,9 @@ fn title_case_identifier(value: &str) -> String {
         if index > 0 && ch.is_uppercase() {
             output.push(' ');
         }
-        if index == 0 {
-            output.extend(ch.to_uppercase());
-        } else {
-            output.extend(ch.to_lowercase());
+        match index {
+            0 => output.extend(ch.to_uppercase()),
+            _ => output.extend(ch.to_lowercase()),
         }
     }
     output

@@ -442,31 +442,31 @@ pub fn ensure_sqlite_schema_for(ctx: &UserContext) -> Result<(), MutationExecuto
                 &entity.table_name,
                 field_count,
             ));
-        } else {
-            // Existing table: check for missing columns
-            let existing_columns = executor.table_columns(&entity.table_name)?;
-            let mut fields_added = 0;
-            for property in &entity.properties {
-                let bare_column = strip_identifier_quotes(&property.column_name).to_lowercase();
-                if existing_columns.contains(&bare_column) {
-                    continue;
-                }
-                let sql = dialect.compile_add_column(entity, property)?;
-                executor.lock()?.execute(&sql, [])?;
-                let _ = ctx.send_event(RawAuditEvent::field_added(
-                    &entity.name,
-                    &entity.table_name,
-                    &property.column_name,
-                ));
-                fields_added += 1;
+            continue;
+        }
+        // Existing table: check for missing columns
+        let existing_columns = executor.table_columns(&entity.table_name)?;
+        let mut fields_added = 0;
+        for property in &entity.properties {
+            let bare_column = strip_identifier_quotes(&property.column_name).to_lowercase();
+            if existing_columns.contains(&bare_column) {
+                continue;
             }
-            let _ = ctx.send_event(RawAuditEvent::schema_verified(
+            let sql = dialect.compile_add_column(entity, property)?;
+            executor.lock()?.execute(&sql, [])?;
+            let _ = ctx.send_event(RawAuditEvent::field_added(
                 &entity.name,
                 &entity.table_name,
-                field_count,
+                &property.column_name,
             ));
-            let _ = fields_added; // used above for FieldAdded events
+            fields_added += 1;
         }
+        let _ = ctx.send_event(RawAuditEvent::schema_verified(
+            &entity.name,
+            &entity.table_name,
+            field_count,
+        ));
+        let _ = fields_added; // used above for FieldAdded events
     }
 
     // Seed initial data, tracking insert vs update counts per entity
@@ -481,11 +481,11 @@ pub fn ensure_sqlite_schema_for(ctx: &UserContext) -> Result<(), MutationExecuto
                 executor.execute(&query)?;
             }
             counts.1 += 1; // updated
-        } else {
-            let query = compile_initial_graph_insert(dialect, entity, graph)?;
-            executor.execute(&query)?;
-            counts.0 += 1; // inserted
+            continue;
         }
+        let query = compile_initial_graph_insert(dialect, entity, graph)?;
+        executor.execute(&query)?;
+        counts.0 += 1; // inserted
     }
 
     // Fire DataSeeded events per entity type
@@ -903,7 +903,9 @@ mod tests {
 
     #[test]
     fn sqlite_fetch_stream_returns_chunked_rows() {
-        let executor = SqliteMutationExecutor::new(Arc::new(Mutex::new(Connection::open_in_memory().unwrap())));
+        let executor = SqliteMutationExecutor::new(Arc::new(Mutex::new(
+            Connection::open_in_memory().unwrap(),
+        )));
         let entity = entity();
 
         // Create table and insert 25 rows
@@ -966,7 +968,9 @@ mod tests {
 
     #[test]
     fn sqlite_fetch_stream_handles_empty_result() {
-        let executor = SqliteMutationExecutor::new(Arc::new(Mutex::new(Connection::open_in_memory().unwrap())));
+        let executor = SqliteMutationExecutor::new(Arc::new(Mutex::new(
+            Connection::open_in_memory().unwrap(),
+        )));
 
         executor
             .execute(&CompiledQuery {
@@ -994,7 +998,9 @@ mod tests {
 
     #[test]
     fn sqlite_fetch_stream_exact_chunk_boundary() {
-        let executor = SqliteMutationExecutor::new(Arc::new(Mutex::new(Connection::open_in_memory().unwrap())));
+        let executor = SqliteMutationExecutor::new(Arc::new(Mutex::new(
+            Connection::open_in_memory().unwrap(),
+        )));
         let entity = entity();
 
         executor

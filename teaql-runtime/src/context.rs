@@ -72,10 +72,9 @@ impl SqlLogOptions {
     }
 
     pub fn enabled_for(self, operation: SqlLogOperation) -> bool {
-        if operation.is_select() {
-            self.select
-        } else {
-            self.mutation
+        match operation.is_select() {
+            true => self.select,
+            false => self.mutation,
         }
     }
 }
@@ -738,11 +737,10 @@ impl UserContext {
         let mut results = CheckResults::new();
         checker.check_and_fix(self, record, location, &mut results);
         if results.is_empty() {
-            Ok(())
-        } else {
-            self.translate_check_results(&mut results);
-            Err(RuntimeError::Check(results))
+            return Ok(());
         }
+        self.translate_check_results(&mut results);
+        Err(RuntimeError::Check(results))
     }
 
     pub fn translate_check_results(&self, results: &mut CheckResults) {
@@ -756,15 +754,12 @@ impl UserContext {
             sink.on_event(self, &event)?;
         }
         if let Some(sink) = self.custom_event_sink.as_ref() {
-            let (mask_fields, max_len) = if let Some(metadata) = &self.metadata {
-                if let Some(desc) = metadata.entity(&event.entity) {
-                    (desc.audit_mask_fields.clone(), desc.audit_value_max_len)
-                } else {
-                    (vec![], None)
-                }
-            } else {
-                (vec![], None)
-            };
+            let (mask_fields, max_len) = self
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.entity(&event.entity))
+                .map(|desc| (desc.audit_mask_fields.clone(), desc.audit_value_max_len))
+                .unwrap_or_else(|| (vec![], None));
 
             let safe_event = event.build_safe_event(&mask_fields, max_len);
             sink.on_safe_event(self, &safe_event)?;
@@ -809,11 +804,8 @@ impl UserContext {
     }
 
     pub async fn get_in_store(&self, key: &str) -> Option<Value> {
-        if let Some(store) = self.get_resource::<Box<dyn DataStore>>() {
-            store.get(key).await
-        } else {
-            None
-        }
+        let store = self.get_resource::<Box<dyn DataStore>>()?;
+        store.get(key).await
     }
 
     pub async fn put_in_store(
@@ -844,16 +836,12 @@ fn extract_id_from_sql(sql: &str) -> Option<String> {
     while i < bytes.len() {
         if i + 1 < bytes.len() && &bytes[i..i + 2] == b"id" {
             // Check boundary before
-            let prev_ok = if i == 0 {
-                true
-            } else {
+            let prev_ok = i == 0 || {
                 let prev_char = bytes[i - 1] as char;
                 !prev_char.is_ascii_alphanumeric() && prev_char != '_' && prev_char != '.'
             };
             // Check boundary after
-            let next_ok = if i + 2 == bytes.len() {
-                true
-            } else {
+            let next_ok = i + 2 == bytes.len() || {
                 let next_char = bytes[i + 2] as char;
                 !next_char.is_ascii_alphanumeric() && next_char != '_'
             };
@@ -879,19 +867,18 @@ fn extract_id_from_sql(sql: &str) -> Option<String> {
                             j += 1;
                         }
                         return Some(val_str);
-                    } else {
-                        while j < bytes.len() {
-                            let c = bytes[j] as char;
-                            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                                val_str.push(c);
-                                j += 1;
-                            } else {
-                                break;
-                            }
+                    }
+                    // No else needed — falls through to unquoted parsing
+                    while j < bytes.len() {
+                        let c = bytes[j] as char;
+                        if !c.is_ascii_alphanumeric() && c != '_' && c != '-' {
+                            break;
                         }
-                        if !val_str.is_empty() {
-                            return Some(val_str);
-                        }
+                        val_str.push(c);
+                        j += 1;
+                    }
+                    if !val_str.is_empty() {
+                        return Some(val_str);
                     }
                 }
             }
@@ -911,24 +898,18 @@ fn sql_result_summary(
     match operation {
         SqlLogOperation::Select => {
             let count = result_count.unwrap_or(0);
-            if count == 0 {
-                "MISS".to_owned()
-            } else if count > 1 {
-                match result_type {
+            match count {
+                0 => "MISS".to_owned(),
+                1 => match result_type {
+                    Some(result_type) => extract_id_from_sql(debug_sql)
+                        .map(|id| format!("{result_type}({id})"))
+                        .unwrap_or_else(|| result_type.to_owned()),
+                    None => "row".to_owned(),
+                },
+                _ => match result_type {
                     Some(result_type) => format!("{count}*{result_type}"),
                     None => format!("{count}*rows"),
-                }
-            } else {
-                match result_type {
-                    Some(result_type) => {
-                        if let Some(id) = extract_id_from_sql(debug_sql) {
-                            format!("{result_type}({id})")
-                        } else {
-                            result_type.to_owned()
-                        }
-                    }
-                    None => "row".to_owned(),
-                }
+                },
             }
         }
         _ => {

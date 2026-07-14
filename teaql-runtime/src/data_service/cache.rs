@@ -44,12 +44,8 @@ impl AggregationCacheBackend for InMemoryAggregationCache {
     fn get(&self, key: &str, max_age_millis: u64) -> Option<Vec<Record>> {
         let entries = self.entries.lock().ok()?;
         let entry = entries.get(key)?;
-        if max_age_millis == 0 || entry.stored_at.elapsed() <= Duration::from_millis(max_age_millis)
-        {
-            Some(entry.rows.clone())
-        } else {
-            None
-        }
+        (max_age_millis == 0 || entry.stored_at.elapsed() <= Duration::from_millis(max_age_millis))
+            .then(|| entry.rows.clone())
     }
 
     fn put(&self, key: String, rows: Vec<Record>) {

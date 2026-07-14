@@ -190,10 +190,8 @@ where
         trace_chain: &[teaql_core::TraceNode],
         comment: Option<String>,
     ) -> Option<String> {
-        let chain_str = if trace_chain.is_empty() {
-            None
-        } else {
-            let formatted = trace_chain
+        let chain_str = (!trace_chain.is_empty()).then(|| {
+            trace_chain
                 .iter()
                 .map(|n| {
                     format!(
@@ -206,9 +204,8 @@ where
                     )
                 })
                 .collect::<Vec<_>>()
-                .join(" -> ");
-            Some(formatted)
-        };
+                .join(" -> ")
+        });
 
         let business_comment = chain_str.or(comment);
         let user_id = self

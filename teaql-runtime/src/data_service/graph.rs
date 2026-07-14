@@ -14,6 +14,23 @@ use crate::{
 
 use super::{EntityDataService, helpers::*};
 
+fn recover_trace_or_default(token: &Option<Arc<TraceScopeToken>>) -> Vec<teaql_core::TraceNode> {
+    token
+        .as_ref()
+        .map(|t| t.recover_trace_chain())
+        .unwrap_or_default()
+}
+
+fn resolve_trace_chain(
+    specific: Vec<teaql_core::TraceNode>,
+    fallback: &[teaql_core::TraceNode],
+) -> Vec<teaql_core::TraceNode> {
+    match specific.is_empty() {
+        true => fallback.to_vec(),
+        false => specific,
+    }
+}
+
 impl<'a, E> EntityDataService<'a, E>
 where
     E: teaql_data_service::QueryExecutor
@@ -94,10 +111,9 @@ where
                 .map_err(DataServiceError::Runtime)?;
             node.operation = GraphOperation::Remove;
             node.relations.clear();
-            self.save_graph(node).await
-        } else {
-            self.save_entity_graph(entity).await
+            return self.save_graph(node).await;
         }
+        self.save_entity_graph(entity).await
     }
     pub async fn save_entity_with_comment<T>(
         &self,
@@ -115,10 +131,9 @@ where
             node.operation = GraphOperation::Remove;
             node.relations.clear();
             node.set_comment(comment);
-            self.save_graph(node).await
-        } else {
-            self.save_entity_graph_with_comment(entity, comment).await
+            return self.save_graph(node).await;
         }
+        self.save_entity_graph_with_comment(entity, comment).await
     }
     pub async fn save_entity_graph_with_comment<T>(
         &self,
@@ -195,11 +210,8 @@ where
                     let mut cmd = teaql_core::BatchInsertCommand::new(&batch.entity);
                     for item in batch.items {
                         cmd.batch_values.push(item.values);
-                        if let Some(token) = item.scope_token {
-                            cmd.trace_chains.push(token.recover_trace_chain());
-                        } else {
-                            cmd.trace_chains.push(Vec::new());
-                        }
+                        cmd.trace_chains
+                            .push(recover_trace_or_default(&item.scope_token));
                     }
                     self.execute_prepared_batch_insert(cmd).await?;
                 }
@@ -216,22 +228,16 @@ where
                                 batch.entity
                             )))
                         })?;
-                        let version = item.values.get("version").and_then(|v| {
-                            if let teaql_core::Value::I64(n) = v {
-                                Some(*n)
-                            } else {
-                                None
-                            }
+                        let version = item.values.get("version").and_then(|v| match v {
+                            teaql_core::Value::I64(n) => Some(*n),
+                            _ => None,
                         });
                         cmd.batch_values.push(item.values);
                         cmd.batch_ids.push(id);
                         cmd.batch_expected_versions.push(version);
                         cmd.batch_old_values.push(item.old_values);
-                        if let Some(token) = item.scope_token {
-                            cmd.trace_chains.push(token.recover_trace_chain());
-                        } else {
-                            cmd.trace_chains.push(Vec::new());
-                        }
+                        cmd.trace_chains
+                            .push(recover_trace_or_default(&item.scope_token));
                     }
                     self.execute_prepared_batch_update(cmd).await?;
                 }
@@ -248,11 +254,7 @@ where
                         if let Some(teaql_core::Value::I64(version)) = item.values.get("version") {
                             cmd = cmd.expected_version(*version);
                         }
-                        let trace_chain = if let Some(token) = item.scope_token {
-                            token.recover_trace_chain()
-                        } else {
-                            Vec::new()
-                        };
+                        let trace_chain = recover_trace_or_default(&item.scope_token);
                         self.delete_scoped(&cmd, trace_chain).await?;
                     }
                 }
@@ -374,10 +376,9 @@ where
             let is_create_op = node.operation == GraphOperation::Create
                 || (parent_is_create && node.operation == GraphOperation::Upsert);
 
-            let is_update = if is_create_op {
-                false
-            } else {
-                match (id_property.as_ref(), id.as_ref()) {
+            let is_update = match is_create_op {
+                true => false,
+                false => match (id_property.as_ref(), id.as_ref()) {
                     (Some(id_property), Some(id)) => self
                         .fetch_graph_current_row(
                             &node.entity,
@@ -388,7 +389,7 @@ where
                         .await?
                         .is_some(),
                     _ => false,
-                }
+                },
             };
             if !is_update {
                 if let Some(id_property) = id_property.as_ref() {
@@ -409,50 +410,48 @@ where
                 }
                 ensure_initial_version(&mut node.values, descriptor);
             }
-            let update_fields = if is_update {
-                let mut excluded = Vec::new();
-                if let Some(id_property) = id_property.as_ref() {
-                    excluded.push(id_property.name.clone());
-                }
-                if let Some(version_property) = descriptor.version_property() {
-                    excluded.push(version_property.name.clone());
-                }
-                let mut fields = sorted_update_fields(&node.values, excluded);
-                if let Some(dirty) = &node.dirty_fields {
-                    fields.retain(|f| dirty.contains(f));
-                }
-                fields
-            } else {
-                Vec::new()
-            };
+            let update_fields = is_update
+                .then(|| {
+                    let mut excluded = Vec::new();
+                    if let Some(id_property) = id_property.as_ref() {
+                        excluded.push(id_property.name.clone());
+                    }
+                    if let Some(version_property) = descriptor.version_property() {
+                        excluded.push(version_property.name.clone());
+                    }
+                    let mut fields = sorted_update_fields(&node.values, excluded);
+                    if let Some(dirty) = &node.dirty_fields {
+                        fields.retain(|f| dirty.contains(f));
+                    }
+                    fields
+                })
+                .unwrap_or_default();
 
             // Build the TraceScopeToken for this node (only if it has a comment).
             // This is an Arc-linked persistent list: zero-copy, O(1) creation.
-            let current_token = if let Some(c) = &node.comment {
-                Some(Arc::new(TraceScopeToken {
-                    parent: parent_token.clone(),
-                    track: teaql_core::TraceNode {
-                        entity_type: node.entity.clone(),
-                        entity_id: node.id().and_then(|v| match v {
-                            Value::U64(n) => Some(*n),
-                            Value::I64(n) => Some(*n as u64),
-                            _ => None,
-                        }),
-                        comment: c.clone(),
-                    },
-                    node_index: plan.next_item_index,
-                }))
-            } else {
-                parent_token.clone()
-            };
+            let current_token = node
+                .comment
+                .as_ref()
+                .map(|c| {
+                    Arc::new(TraceScopeToken {
+                        parent: parent_token.clone(),
+                        track: teaql_core::TraceNode {
+                            entity_type: node.entity.clone(),
+                            entity_id: node.id().and_then(|v| match v {
+                                Value::U64(n) => Some(*n),
+                                Value::I64(n) => Some(*n as u64),
+                                _ => None,
+                            }),
+                            comment: c.clone(),
+                        },
+                        node_index: plan.next_item_index,
+                    })
+                })
+                .or_else(|| parent_token.clone());
 
             plan.push(
                 node.entity.clone(),
-                if is_update {
-                    GraphMutationKind::Update
-                } else {
-                    GraphMutationKind::Create
-                },
+                GraphMutationKind::for_update(is_update),
                 node.values.clone(),
                 update_fields,
                 current_token.clone(),
@@ -545,10 +544,9 @@ where
                         relation: name.clone(),
                     })
                 })?;
-                if relation.many {
-                    many_relations.push((name, relation.clone(), children));
-                } else {
-                    one_relations.push((name, relation.clone(), children));
+                match relation.many {
+                    true => many_relations.push((name, relation.clone(), children)),
+                    false => one_relations.push((name, relation.clone(), children)),
                 }
             }
 
@@ -727,10 +725,9 @@ where
                         relation: name.clone(),
                     })
                 })?;
-                if relation.many {
-                    many_relations.push((name, relation.clone(), children));
-                } else {
-                    one_relations.push((name, relation.clone(), children));
+                match relation.many {
+                    true => many_relations.push((name, relation.clone(), children)),
+                    false => one_relations.push((name, relation.clone(), children)),
                 }
             }
 
@@ -1238,8 +1235,7 @@ where
             if let Some(version) = root.get_original_version(key) {
                 cmd = cmd.expected_version(version);
             }
-            let t = root.get_trace_chain(key);
-            cmd.trace_chain = if t.is_empty() { trace_chain.clone() } else { t };
+            cmd.trace_chain = resolve_trace_chain(root.get_trace_chain(key), &trace_chain);
             self.delete(&cmd).await?;
         }
 
@@ -1270,8 +1266,7 @@ where
                         key.entity
                     )))
                 })?;
-                let t = root.get_trace_chain(key);
-                let my_trace = if t.is_empty() { trace_chain.clone() } else { t };
+                let my_trace = resolve_trace_chain(root.get_trace_chain(key), &trace_chain);
                 let current_row = self
                     .fetch_graph_current_row(&key.entity, &id_property.name, &key.id, my_trace)
                     .await?;
@@ -1280,19 +1275,22 @@ where
                 }
             }
 
-            if is_new {
-                insert_batches
-                    .entry(key.entity.clone())
-                    .or_default()
-                    .push(key.clone());
-            } else {
-                let mut fields: Vec<String> = record.keys().cloned().collect();
-                fields.sort();
-                let signature = fields.join(",");
-                update_batches
-                    .entry((key.entity.clone(), signature))
-                    .or_default()
-                    .push(key.clone());
+            match is_new {
+                true => {
+                    insert_batches
+                        .entry(key.entity.clone())
+                        .or_default()
+                        .push(key.clone());
+                }
+                false => {
+                    let mut fields: Vec<String> = record.keys().cloned().collect();
+                    fields.sort();
+                    let signature = fields.join(",");
+                    update_batches
+                        .entry((key.entity.clone(), signature))
+                        .or_default()
+                        .push(key.clone());
+                }
             }
         }
 
@@ -1319,8 +1317,7 @@ where
                 }
                 crate::data_service::helpers::ensure_initial_version(&mut db_record, descriptor);
                 cmd.batch_values.push(db_record);
-                let t = root.get_trace_chain(key);
-                let my_trace = if t.is_empty() { trace_chain.clone() } else { t };
+                let my_trace = resolve_trace_chain(root.get_trace_chain(key), &trace_chain);
                 traces.push(my_trace);
             }
             cmd.trace_chains = traces;
@@ -1357,8 +1354,7 @@ where
                     root.get_original_version(key),
                 );
                 cmd.batch_values.push(db_record);
-                let t = root.get_trace_chain(key);
-                let my_trace = if t.is_empty() { trace_chain.clone() } else { t };
+                let my_trace = resolve_trace_chain(root.get_trace_chain(key), &trace_chain);
                 traces.push(my_trace);
             }
             cmd.trace_chains = traces;

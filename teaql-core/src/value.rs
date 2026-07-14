@@ -202,11 +202,17 @@ impl Value {
                     return Some(dt.with_timezone(&chrono::Utc));
                 }
                 if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
-                    return Some(chrono::DateTime::from_naive_utc_and_offset(ndt, chrono::Utc));
+                    return Some(chrono::DateTime::from_naive_utc_and_offset(
+                        ndt,
+                        chrono::Utc,
+                    ));
                 }
                 if let Ok(nd) = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d") {
                     let ndt = nd.and_hms_opt(0, 0, 0)?;
-                    return Some(chrono::DateTime::from_naive_utc_and_offset(ndt, chrono::Utc));
+                    return Some(chrono::DateTime::from_naive_utc_and_offset(
+                        ndt,
+                        chrono::Utc,
+                    ));
                 }
                 None
             }

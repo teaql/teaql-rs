@@ -85,13 +85,14 @@ impl InternalIdGenerator for SnowflakeIdGenerator {
             timestamp = Self::wait_until_next_millis(state.last_timestamp)?;
         }
 
-        if timestamp == state.last_timestamp {
-            state.sequence = (state.sequence + 1) & Self::SEQUENCE_MASK;
-            if state.sequence == 0 {
-                timestamp = Self::wait_until_next_millis(state.last_timestamp)?;
+        match timestamp == state.last_timestamp {
+            true => {
+                state.sequence = (state.sequence + 1) & Self::SEQUENCE_MASK;
+                if state.sequence == 0 {
+                    timestamp = Self::wait_until_next_millis(state.last_timestamp)?;
+                }
             }
-        } else {
-            state.sequence = 0;
+            false => state.sequence = 0,
         }
 
         state.last_timestamp = timestamp;

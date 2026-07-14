@@ -98,8 +98,14 @@ impl<T: Entity> Audited<T> {
     /// Create a new Commented wrapper. Panics if comment is empty.
     pub fn new(entity: T, comment: impl Into<String>) -> Self {
         let comment = comment.into();
-        assert!(!comment.trim().is_empty(), "audit comment must not be empty");
-        Self { inner: entity, comment }
+        assert!(
+            !comment.trim().is_empty(),
+            "audit comment must not be empty"
+        );
+        Self {
+            inner: entity,
+            comment,
+        }
     }
 
     /// Access the inner entity by reference.

@@ -368,11 +368,7 @@ impl WebResponse {
         let total_count = smart_list.total_count_or_len();
         let mut facets = BTreeMap::new();
         for (key, facet_list) in smart_list.take_facets() {
-            let data: Vec<_> = facet_list
-                .data
-                .iter()
-                .map(|record| record_to_json_value(record))
-                .collect();
+            let data: Vec<_> = facet_list.data.iter().map(record_to_json_value).collect();
             facets.insert(key, serde_json::Value::Array(data));
         }
         Self::from_entities(smart_list)
@@ -396,7 +392,10 @@ impl WebResponse {
         self
     }
 
-    pub fn with_facets_option(mut self, facets: Option<BTreeMap<String, serde_json::Value>>) -> Self {
+    pub fn with_facets_option(
+        mut self,
+        facets: Option<BTreeMap<String, serde_json::Value>>,
+    ) -> Self {
         self.facets = facets.unwrap_or_default();
         self
     }

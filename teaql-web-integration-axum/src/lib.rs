@@ -1,8 +1,8 @@
 use axum::{
-    extract::FromRequestParts,
-    http::{request::Parts, StatusCode},
-    response::{IntoResponse, Response},
     Json,
+    extract::FromRequestParts,
+    http::{StatusCode, request::Parts},
+    response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -27,7 +27,7 @@ pub struct WebResponse<T> {
     pub facets: Option<HashMap<String, serde_json::Value>>,
 
     pub version: String,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
 }
@@ -100,11 +100,11 @@ impl<T> WebResponse<T> {
             let data: Vec<_> = facet_list
                 .data
                 .iter()
-                .map(|record| teaql_core::record_to_json_value(record))
+                .map(teaql_core::record_to_json_value)
                 .collect();
             facets.insert(key, serde_json::Value::Array(data));
         }
-        
+
         let mut response = Self::of_list(smart_list.data).with_record_count(count);
         if !facets.is_empty() {
             response = response.with_facets(facets);
@@ -132,7 +132,7 @@ impl IntoResponse for AxumTeaError {
     fn into_response(self) -> Response {
         // Wrap the error inside the standard WebResponse structure
         let web_response: WebResponse<()> = WebResponse::fail(self.0);
-        
+
         // Return as JSON with the mapped status code
         (StatusCode::INTERNAL_SERVER_ERROR, Json(web_response)).into_response()
     }
@@ -192,16 +192,16 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let mut ctx = state.build_context();
 
-        if let Some(user_id) = parts.headers.get("X-User-Id") {
-            if let Ok(id_str) = user_id.to_str() {
-                ctx.set_user_identifier(id_str);
-            }
+        if let Some(user_id) = parts.headers.get("X-User-Id")
+            && let Ok(id_str) = user_id.to_str()
+        {
+            ctx.set_user_identifier(id_str);
         }
 
-        if let Some(trace_id) = parts.headers.get("X-Trace-Id") {
-            if let Ok(trace_str) = trace_id.to_str() {
-                ctx.set_trace_id(trace_str);
-            }
+        if let Some(trace_id) = parts.headers.get("X-Trace-Id")
+            && let Ok(trace_str) = trace_id.to_str()
+        {
+            ctx.set_trace_id(trace_str);
         }
 
         // Build WebRequestInfo
@@ -210,7 +210,7 @@ where
             .get("X-Forwarded-For")
             .and_then(|h| h.to_str().ok())
             .map(|s| s.split(',').next().unwrap_or("").trim().to_string());
-        
+
         let user_agent = parts
             .headers
             .get("User-Agent")

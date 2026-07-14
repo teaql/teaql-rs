@@ -218,7 +218,7 @@ impl MysqlMutationExecutor {
         }
         let mut conn = self.pool.get_conn().await?;
         conn.exec_drop(
-            &query.sql_with_comment(),
+            query.sql_with_comment(),
             mysql_async::Params::Positional(params),
         )
         .await?;
@@ -236,7 +236,7 @@ impl MysqlMutationExecutor {
         let mut conn = self.pool.get_conn().await?;
         let rows: Vec<mysql_async::Row> = conn
             .exec(
-                &query.sql_with_comment(),
+                query.sql_with_comment(),
                 mysql_async::Params::Positional(params),
             )
             .await?;
@@ -343,10 +343,10 @@ async fn ensure_initial_graphs_mysql(
             if let Some(query) = compile_initial_graph_update(dialect, entity, graph)? {
                 executor.execute(&query).await?;
             }
-        } else {
-            let query = compile_initial_graph_insert(dialect, entity, graph)?;
-            executor.execute(&query).await?;
+            continue;
         }
+        let query = compile_initial_graph_insert(dialect, entity, graph)?;
+        executor.execute(&query).await?;
     }
     Ok(())
 }
@@ -394,7 +394,7 @@ impl MysqlTransactionExecutor {
             .as_mut()
             .ok_or_else(|| MutationExecutorError::Bind("mysql transaction is closed".to_owned()))?;
         conn.exec_drop(
-            &query.sql_with_comment(),
+            query.sql_with_comment(),
             mysql_async::Params::Positional(params),
         )
         .await?;
@@ -415,7 +415,7 @@ impl MysqlTransactionExecutor {
             .ok_or_else(|| MutationExecutorError::Bind("mysql transaction is closed".to_owned()))?;
         let rows: Vec<mysql_async::Row> = conn
             .exec(
-                &query.sql_with_comment(),
+                query.sql_with_comment(),
                 mysql_async::Params::Positional(params),
             )
             .await?;
@@ -591,15 +591,13 @@ fn block_on_id_generation<F>(future: F) -> Result<u64, RuntimeError>
 where
     F: Future<Output = Result<u64, MutationExecutorError>> + Send + 'static,
 {
-    let result = if tokio::runtime::Handle::try_current().is_ok() {
-        let handle = tokio::runtime::Handle::current();
-        tokio::task::block_in_place(|| handle.block_on(future))
-    } else {
-        tokio::runtime::Builder::new_current_thread()
+    let result = match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(future)),
+        Err(_) => tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|err| RuntimeError::IdGeneration(err.to_string()))?
-            .block_on(future)
+            .block_on(future),
     };
     result.map_err(|err| RuntimeError::IdGeneration(err.to_string()))
 }
@@ -625,7 +623,7 @@ fn strip_identifier_quotes(ident: &str) -> &str {
 fn bind_mysql(value: &Value) -> Result<mysql_async::Value, MutationExecutorError> {
     match value {
         Value::Null => Ok(mysql_async::Value::NULL),
-        Value::Bool(v) => Ok(mysql_async::Value::Int(if *v { 1 } else { 0 })),
+        Value::Bool(v) => Ok(mysql_async::Value::Int(i64::from(*v))),
         Value::I64(v) => Ok(mysql_async::Value::Int(*v)),
         Value::U64(v) => {
             let v = i64::try_from(*v).map_err(|_| {
@@ -694,13 +692,10 @@ fn decode_mysql_row(row: mysql_async::Row) -> Result<Record, MutationExecutorErr
                 mysql_async::Value::UInt(v) => Value::U64(v),
                 mysql_async::Value::Bytes(b) => {
                     let s = String::from_utf8(b).unwrap_or_default();
-                    if let Ok(v) = s.parse::<i64>() {
-                        Value::I64(v)
-                    } else if let Ok(v) = s.parse::<u64>() {
-                        Value::U64(v)
-                    } else {
-                        Value::I64(0)
-                    }
+                    s.parse::<i64>()
+                        .map(Value::I64)
+                        .or_else(|_| s.parse::<u64>().map(Value::U64))
+                        .unwrap_or(Value::I64(0))
                 }
                 _ => {
                     return Err(MutationExecutorError::UnsupportedColumnType(format!(
@@ -859,7 +854,10 @@ mod tests {
                     .not_null(),
             )
             .unwrap();
-        assert_eq!(json, "ALTER TABLE orders ADD COLUMN payload JSON NOT NULL DEFAULT '{}'");
+        assert_eq!(
+            json,
+            "ALTER TABLE orders ADD COLUMN payload JSON NOT NULL DEFAULT '{}'"
+        );
 
         let decimal = MysqlDialect
             .compile_add_column(

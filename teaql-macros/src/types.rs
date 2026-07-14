@@ -32,16 +32,15 @@ pub fn base_type_name(ty: &Type) -> Option<String> {
     match ty {
         Type::Path(path) => {
             let last = path.path.segments.last()?;
-            if last.ident == "Option" {
-                if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
-                    if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
-                        return base_type_name(inner);
-                    }
-                }
-                None
-            } else {
-                Some(last.ident.to_string())
+            if last.ident != "Option" {
+                return Some(last.ident.to_string());
             }
+            if let syn::PathArguments::AngleBracketed(args) = &last.arguments
+                && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+            {
+                return base_type_name(inner);
+            }
+            None
         }
         Type::Reference(reference) => base_type_name(&reference.elem),
         _ => None,
@@ -55,10 +54,10 @@ pub fn option_inner_type(ty: &Type) -> Option<&Type> {
             if last.ident != "Option" {
                 return None;
             }
-            if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
-                if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
-                    return Some(inner);
-                }
+            if let syn::PathArguments::AngleBracketed(args) = &last.arguments
+                && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+            {
+                return Some(inner);
             }
             None
         }
@@ -81,10 +80,10 @@ fn generic_inner_type<'a>(ty: &'a Type, name: &str) -> Option<&'a Type> {
             if last.ident != name {
                 return None;
             }
-            if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
-                if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
-                    return Some(inner);
-                }
+            if let syn::PathArguments::AngleBracketed(args) = &last.arguments
+                && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+            {
+                return Some(inner);
             }
             None
         }

@@ -85,10 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     executor
         .ensure_schema(
             &SqliteDialect,
-            &[
-                &School::entity_descriptor(),
-                &Student::entity_descriptor(),
-            ],
+            &[&School::entity_descriptor(), &Student::entity_descriptor()],
         )
         .unwrap();
 

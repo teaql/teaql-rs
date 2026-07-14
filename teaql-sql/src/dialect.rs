@@ -1,6 +1,6 @@
 use teaql_core::{
-    AggregateFunction, BinaryOp, DataType, DeleteCommand, EntityDescriptor, Expr, ExprFunction,
-    OrderBy, PropertyDescriptor, RecoverCommand, SelectQuery, SortDirection, Value,
+    Aggregate, AggregateFunction, BinaryOp, DataType, DeleteCommand, EntityDescriptor, Expr,
+    ExprFunction, OrderBy, PropertyDescriptor, RecoverCommand, SelectQuery, SortDirection, Value,
 };
 
 use crate::{CompiledQuery, DatabaseKind, SqlCompileError};
@@ -200,11 +200,7 @@ pub trait SqlDialect {
             return Ok(raw_sql.clone());
         }
 
-        let projection = if query.aggregates.is_empty() {
-            self.select_projection(entity, query, params)?
-        } else {
-            self.aggregate_projection(entity, query, params)?
-        };
+        let projection = self.compile_projection(entity, query, params)?;
 
         let mut sql = format!(
             "SELECT {projection} FROM {}",
@@ -727,11 +723,7 @@ pub trait SqlDialect {
         order_by: &OrderBy,
         params: &mut Vec<Value>,
     ) -> Result<String, SqlCompileError> {
-        let field = if let Some(expr) = &order_by.expr {
-            self.compile_expr(entity, expr, params)?
-        } else {
-            self.column_sql(entity, &order_by.field)?
-        };
+        let field = self.resolve_order_field(entity, order_by, params)?;
         let direction = match order_by.direction {
             SortDirection::Asc => "ASC",
             SortDirection::Desc => "DESC",
@@ -745,14 +737,7 @@ pub trait SqlDialect {
         query: &SelectQuery,
         params: &mut Vec<Value>,
     ) -> Result<String, SqlCompileError> {
-        let property_projection = |property: &PropertyDescriptor| {
-            let column = self.quote_ident(&property.column_name);
-            if property.column_name == property.name {
-                column
-            } else {
-                format!("{column} AS {}", self.quote_ident(&property.name))
-            }
-        };
+        let property_projection = |property: &PropertyDescriptor| self.column_with_alias(property);
 
         if query.projection.is_empty()
             && query.expr_projection.is_empty()
@@ -833,13 +818,7 @@ pub trait SqlDialect {
                 .aggregates
                 .iter()
                 .map(|aggregate| {
-                    let field = if aggregate.function == AggregateFunction::Count
-                        && aggregate.field == "*"
-                    {
-                        "*".to_owned()
-                    } else {
-                        self.column_sql(entity, &aggregate.field)?
-                    };
+                    let field = self.resolve_aggregate_field(entity, aggregate)?;
                     let call = self.aggregate_call_sql(aggregate.function, &field);
                     Ok(format!("{call} AS {}", self.quote_ident(&aggregate.alias)))
                 })
@@ -1083,6 +1062,49 @@ pub trait SqlDialect {
                 let rhs = self.compile_expr(entity, right, params)?;
                 Ok(format!("({lhs} {operator} ({rhs}))"))
             }
+        }
+    }
+
+    fn compile_projection(
+        &self,
+        entity: &EntityDescriptor,
+        query: &SelectQuery,
+        params: &mut Vec<Value>,
+    ) -> Result<String, SqlCompileError> {
+        match query.aggregates.is_empty() {
+            true => self.select_projection(entity, query, params),
+            false => self.aggregate_projection(entity, query, params),
+        }
+    }
+
+    fn resolve_order_field(
+        &self,
+        entity: &EntityDescriptor,
+        order_by: &OrderBy,
+        params: &mut Vec<Value>,
+    ) -> Result<String, SqlCompileError> {
+        match &order_by.expr {
+            Some(expr) => self.compile_expr(entity, expr, params),
+            None => self.column_sql(entity, &order_by.field),
+        }
+    }
+
+    fn column_with_alias(&self, property: &PropertyDescriptor) -> String {
+        let column = self.quote_ident(&property.column_name);
+        match property.column_name == property.name {
+            true => column,
+            false => format!("{column} AS {}", self.quote_ident(&property.name)),
+        }
+    }
+
+    fn resolve_aggregate_field(
+        &self,
+        entity: &EntityDescriptor,
+        aggregate: &Aggregate,
+    ) -> Result<String, SqlCompileError> {
+        match aggregate.function == AggregateFunction::Count && aggregate.field == "*" {
+            true => Ok("*".to_owned()),
+            false => self.column_sql(entity, &aggregate.field),
         }
     }
 }

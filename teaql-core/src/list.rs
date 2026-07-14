@@ -21,24 +21,23 @@ impl<T> SmartList<T> {
         list
     }
 
-    pub fn into_value(self) -> Option<Value> where T: Entity {
+    pub fn into_value(self) -> Option<Value>
+    where
+        T: Entity,
+    {
         let mut has_changes = false;
         let mut items = Vec::new();
         for entity in self.data.into_iter() {
-            if Entity::is_new(&entity) 
-                || Entity::dirty_fields(&entity).is_some() 
-                || Entity::is_marked_as_delete(&entity) 
+            if Entity::is_new(&entity)
+                || Entity::dirty_fields(&entity).is_some()
+                || Entity::is_marked_as_delete(&entity)
             {
                 has_changes = true;
             }
             items.push(Value::object(Entity::into_record(entity)));
         }
-        
-        if self.is_loaded || has_changes {
-            Some(Value::List(items))
-        } else {
-            None
-        }
+
+        (self.is_loaded || has_changes).then_some(Value::List(items))
     }
 
     pub fn new(data: Vec<T>) -> Self {
@@ -246,11 +245,12 @@ impl<T> SmartList<T> {
             .collect::<std::collections::HashMap<_, _>>();
         for item in incoming {
             let item_key = key(&item);
-            if let Some(index) = positions.get(&item_key).copied() {
-                self.data[index] = item;
-            } else {
-                positions.insert(item_key, self.data.len());
-                self.data.push(item);
+            match positions.get(&item_key).copied() {
+                Some(index) => self.data[index] = item,
+                None => {
+                    positions.insert(item_key, self.data.len());
+                    self.data.push(item);
+                }
             }
         }
     }
@@ -385,7 +385,6 @@ impl<T> From<SmartList<T>> for Vec<T> {
         list.data
     }
 }
-
 
 fn id_key(value: &Value) -> String {
     match value {
