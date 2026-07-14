@@ -19,6 +19,10 @@ license = "Apache-2.0"
 authors = ["Philip"]
 description = "TeaQL core, SQL, runtime, dialect, and macro crates for model-driven data access"
 repository = "https://github.com/teaql/teaql-rs"
+homepage = "https://github.com/teaql/teaql-rs"
+documentation = "https://docs.rs/teaql-core"
+keywords = ["orm", "database", "sql"]
+categories = ["database"]
 
 [workspace.dependencies]
 chrono = { version = "0.4", features = ["serde"] }

@@ -48,6 +48,24 @@ Progress tracking lives in [PROGRESS.md](./PROGRESS.md).
 
 Current published release: `4.0.0`.
 
+## Build & Install
+
+To build TeaQL from source:
+
+```bash
+git clone https://github.com/teaql/teaql-rs.git
+cd teaql-rs
+cargo build --all-targets
+```
+
+To use TeaQL in your project, add the relevant crates to your `Cargo.toml`:
+
+```toml
+[dependencies]
+teaql-core = "4.1.1"
+# Add other providers as needed
+```
+
 ## Try It
 
 The quickest demo uses SQLite in memory and needs no database server:
@@ -377,6 +395,12 @@ TeaQL supports the following environment variables for configuration and debuggi
 - `TEAQL_LOG_ENDPOINT`: If set, specifies an absolute file path where TeaQL will append all internal execution logs (e.g., SQL queries, audit events). This allows external AI agents or log-collectors to analyze the runtime execution of the framework directly.
 - `TEAQL_LOG_FORMAT`: Controls the format of the output log specified by `TEAQL_LOG_ENDPOINT`. Can be set to `json` (or `debug`) for structured JSON logging, or `human` (default) for human-readable output.
 - `TEAQL_TEST_PG_URL`: The PostgreSQL connection URL used during tests and examples.
+
+## Reporting Bugs
+
+If you find a bug, please create an issue on [GitHub Issues](https://github.com/teaql/teaql-rs/issues).
+Please include as much detail as possible, such as TeaQL version, Rust version, database type, and steps to reproduce.
+For security vulnerabilities, please see our [Security Policy](SECURITY.md).
 
 ## Next steps
 

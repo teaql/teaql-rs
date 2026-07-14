@@ -8,3 +8,17 @@ app.log
 
 *.py
 *.log
+
+# Sensitive
+.env
+*.pem
+*.key
+*.p12
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+
+# Binaries / Temp
+test_str_cmp
