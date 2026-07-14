@@ -371,7 +371,7 @@ impl WebResponse {
             let data: Vec<_> = facet_list
                 .data
                 .iter()
-                .map(|record| record_to_json_value(record))
+                .map(record_to_json_value)
                 .collect();
             facets.insert(key, serde_json::Value::Array(data));
         }

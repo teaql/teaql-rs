@@ -24,14 +24,12 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         .unwrap_or_default();
 
     let audit_mask_fields = attrs.audit_mask_fields;
-    let audit_mask_fields_token = (!audit_mask_fields.is_empty())
-        .then(|| {
+    let audit_mask_fields_token = if !audit_mask_fields.is_empty() { {
             let fields = audit_mask_fields.iter().map(|f| quote! { #f.to_owned() });
             quote! {
                 descriptor = descriptor.audit_mask_fields(vec![#(#fields),*]);
             }
-        })
-        .unwrap_or_default();
+        } } else { Default::default() };
 
     let audit_value_max_len = attrs.audit_value_max_len;
     let audit_value_max_len_token = audit_value_max_len
@@ -163,25 +161,19 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         let id = parsed.id;
         let version = parsed.version;
 
-        let nullable_tokens = (!nullable)
-            .then(|| quote! { .not_null() })
-            .unwrap_or_default();
-        let id_tokens = id
-            .then(|| {
+        let nullable_tokens = if !nullable { quote! { .not_null() } } else { Default::default() };
+        let id_tokens = if id { {
                 id_field_ident = Some(field_ident.clone());
                 id_impl = Some(identifiable_value_tokens(
                     &field.ty,
                     quote! { &self.#field_ident },
                 ));
                 quote! { .id() }
-            })
-            .unwrap_or_default();
-        let version_tokens = version
-            .then(|| {
+            } } else { Default::default() };
+        let version_tokens = if version { {
                 version_impl = Some(quote! { self.#field_ident });
                 quote! { .version() }
-            })
-            .unwrap_or_default();
+            } } else { Default::default() };
 
         if parsed.boxed_relations {
             let boxed_type = &field.ty;
@@ -237,8 +229,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         }
     });
 
-    let ledger_entity_impl_tokens = has_root_field
-        .then(|| {
+    let ledger_entity_impl_tokens = if has_root_field { {
             quote! {
                 impl ::teaql_runtime::LedgerEntity for #struct_name {
                     fn entity_root(&self) -> Option<::teaql_runtime::EntityRoot> {
@@ -246,8 +237,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                     }
                 }
             }
-        })
-        .unwrap_or_default();
+        } } else { Default::default() };
 
     // Generate dirty_fields() if entity has a 'root' field (EntityRoot) and an id field.
     // This is the Rust equivalent of Java's entity.getUpdatedProperties().
@@ -280,12 +270,9 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         _ => (quote! {}, quote! {}),
     };
 
-    let set_original_record_impl = has_root_field
-        .then(|| quote! { entity.root.set_original_record(record); })
-        .unwrap_or_default();
+    let set_original_record_impl = if has_root_field { quote! { entity.root.set_original_record(record); } } else { Default::default() };
 
-    let root_methods_impl = has_root_field
-        .then(|| {
+    let root_methods_impl = if has_root_field { {
             quote! {
                 fn get_comment(&self) -> Option<String> {
                     self.root.get_comment()
@@ -299,12 +286,11 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                     self.root.original_record()
                 }
             }
-        })
-        .unwrap_or_default();
+        } } else { Default::default() };
 
-    let set_load_state_impl = has_load_state_field.then(|| quote! {
+    let set_load_state_impl = if has_load_state_field { quote! {
         entity.__load_state = ::teaql_core::eval::LoadState::Partial(record.keys().cloned().collect());
-    }).unwrap_or_default();
+    } } else { Default::default() };
 
     quote! {
         impl ::teaql_core::TeaqlEntity for #struct_name {

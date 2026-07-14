@@ -84,7 +84,7 @@ impl QueryExecutor for MeilisearchProvider {
             .query
             .search_with_text
             .clone()
-            .unwrap_or_else(String::new);
+            .unwrap_or_default();
 
         let url = format!("{}/indexes/{}/search", self.host, entity);
         let payload = serde_json::json!({

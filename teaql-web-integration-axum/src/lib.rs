@@ -100,7 +100,7 @@ impl<T> WebResponse<T> {
             let data: Vec<_> = facet_list
                 .data
                 .iter()
-                .map(|record| teaql_core::record_to_json_value(record))
+                .map(teaql_core::record_to_json_value)
                 .collect();
             facets.insert(key, serde_json::Value::Array(data));
         }
@@ -192,17 +192,15 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let mut ctx = state.build_context();
 
-        if let Some(user_id) = parts.headers.get("X-User-Id") {
-            if let Ok(id_str) = user_id.to_str() {
+        if let Some(user_id) = parts.headers.get("X-User-Id")
+            && let Ok(id_str) = user_id.to_str() {
                 ctx.set_user_identifier(id_str);
             }
-        }
 
-        if let Some(trace_id) = parts.headers.get("X-Trace-Id") {
-            if let Ok(trace_str) = trace_id.to_str() {
+        if let Some(trace_id) = parts.headers.get("X-Trace-Id")
+            && let Ok(trace_str) = trace_id.to_str() {
                 ctx.set_trace_id(trace_str);
             }
-        }
 
         // Build WebRequestInfo
         let client_ip = parts

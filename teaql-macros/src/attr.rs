@@ -91,6 +91,7 @@ fn default_table_name(entity_name: &str) -> String {
     out
 }
 
+#[derive(Default)]
 pub struct ParsedFieldAttrs {
     pub id: bool,
     pub version: bool,
@@ -101,19 +102,6 @@ pub struct ParsedFieldAttrs {
     pub relation: Option<ParsedRelation>,
 }
 
-impl Default for ParsedFieldAttrs {
-    fn default() -> Self {
-        Self {
-            id: false,
-            version: false,
-            dynamic: false,
-            skip: false,
-            boxed_relations: false,
-            column: None,
-            relation: None,
-        }
-    }
-}
 
 #[derive(Default)]
 pub struct ParsedRelation {

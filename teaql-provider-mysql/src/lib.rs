@@ -218,7 +218,7 @@ impl MysqlMutationExecutor {
         }
         let mut conn = self.pool.get_conn().await?;
         conn.exec_drop(
-            &query.sql_with_comment(),
+            query.sql_with_comment(),
             mysql_async::Params::Positional(params),
         )
         .await?;
@@ -236,7 +236,7 @@ impl MysqlMutationExecutor {
         let mut conn = self.pool.get_conn().await?;
         let rows: Vec<mysql_async::Row> = conn
             .exec(
-                &query.sql_with_comment(),
+                query.sql_with_comment(),
                 mysql_async::Params::Positional(params),
             )
             .await?;
@@ -394,7 +394,7 @@ impl MysqlTransactionExecutor {
             .as_mut()
             .ok_or_else(|| MutationExecutorError::Bind("mysql transaction is closed".to_owned()))?;
         conn.exec_drop(
-            &query.sql_with_comment(),
+            query.sql_with_comment(),
             mysql_async::Params::Positional(params),
         )
         .await?;
@@ -415,7 +415,7 @@ impl MysqlTransactionExecutor {
             .ok_or_else(|| MutationExecutorError::Bind("mysql transaction is closed".to_owned()))?;
         let rows: Vec<mysql_async::Row> = conn
             .exec(
-                &query.sql_with_comment(),
+                query.sql_with_comment(),
                 mysql_async::Params::Positional(params),
             )
             .await?;

@@ -37,7 +37,7 @@ impl<T> SmartList<T> {
             items.push(Value::object(Entity::into_record(entity)));
         }
 
-        (self.is_loaded || has_changes).then(|| Value::List(items))
+        (self.is_loaded || has_changes).then_some(Value::List(items))
     }
 
     pub fn new(data: Vec<T>) -> Self {
