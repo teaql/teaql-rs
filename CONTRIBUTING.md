@@ -30,6 +30,16 @@ Enhancement suggestions are tracked as GitHub issues. When creating an enhanceme
 4. Make sure your code conforms to our coding standards.
 5. Issue that pull request!
 
+## Coding Standards & Requirements for Acceptable Contributions
+
+To ensure consistency and quality, all contributions must adhere to the following requirements:
+
+1. **Rust Formatting**: All code must be formatted using `cargo fmt`. Our CI pipeline enforces this.
+2. **Clippy Lints**: Code must pass `cargo clippy` without any warnings.
+3. **Tests**: Any new functionality MUST include corresponding tests. Existing tests must not break.
+4. **Safety**: Avoid `unsafe` Rust code unless absolutely necessary and thoroughly documented.
+5. **Commit Messages**: Use clear and descriptive commit messages. We recommend [Conventional Commits](https://www.conventionalcommits.org/).
+
 ## Development Setup
 
 Please refer to the `README.md` for instructions on how to build and run the project locally.
