@@ -15,11 +15,8 @@ use std::collections::BTreeMap;
 use serde_json::Value as JsonValue;
 
 use crate::{
-    BinaryOp, Expr, Record,
-    RelationAggregate as RuntimeRelationAggregate,
-    RawSqlProjection as CoreRawSqlProjection,
-    ObjectGroupBy as CoreObjectGroupBy,
-    SelectQuery, SmartList, Value,
+    BinaryOp, Expr, ObjectGroupBy as CoreObjectGroupBy, RawSqlProjection as CoreRawSqlProjection,
+    Record, RelationAggregate as RuntimeRelationAggregate, SelectQuery, SmartList, Value,
 };
 
 // ---------------------------------------------------------------------------
@@ -453,11 +450,7 @@ pub fn attach_facets<T>(rows: &mut SmartList<T>, facets: BTreeMap<String, SmartL
 // field_operator_expr / field_operator_column_expr
 // ---------------------------------------------------------------------------
 
-pub fn field_operator_expr(
-    field: &str,
-    operator: FieldOperator,
-    values: Vec<Value>,
-) -> Expr {
+pub fn field_operator_expr(field: &str, operator: FieldOperator, values: Vec<Value>) -> Expr {
     match operator {
         FieldOperator::Equal => Expr::eq(field, required_value(operator, &values, 0)),
         FieldOperator::NotEqual => Expr::ne(field, required_value(operator, &values, 0)),
@@ -475,7 +468,9 @@ pub fn field_operator_expr(
         FieldOperator::Contain => Expr::contain(field, required_text(operator, &values, 0)),
         FieldOperator::NotContain => Expr::not_contain(field, required_text(operator, &values, 0)),
         FieldOperator::BeginWith => Expr::begin_with(field, required_text(operator, &values, 0)),
-        FieldOperator::NotBeginWith => Expr::not_begin_with(field, required_text(operator, &values, 0)),
+        FieldOperator::NotBeginWith => {
+            Expr::not_begin_with(field, required_text(operator, &values, 0))
+        }
         FieldOperator::EndWith => Expr::end_with(field, required_text(operator, &values, 0)),
         FieldOperator::NotEndWith => Expr::not_end_with(field, required_text(operator, &values, 0)),
         FieldOperator::SoundsLike => Expr::sound_like(field, required_value(operator, &values, 0)),
@@ -507,14 +502,11 @@ pub fn field_operator_column_expr(field: &str, operator: FieldOperator, other_fi
 // required_value / required_text
 // ---------------------------------------------------------------------------
 
-pub fn required_value(
-    operator: FieldOperator,
-    values: &[Value],
-    index: usize,
-) -> Value {
-    values.get(index).cloned().unwrap_or_else(|| {
-        panic!("{operator:?} requires value at index {index}")
-    })
+pub fn required_value(operator: FieldOperator, values: &[Value], index: usize) -> Value {
+    values
+        .get(index)
+        .cloned()
+        .unwrap_or_else(|| panic!("{operator:?} requires value at index {index}"))
 }
 
 pub fn required_text(operator: FieldOperator, values: &[Value], index: usize) -> String {
@@ -561,12 +553,12 @@ pub fn dynamic_json_value_to_teaql_value(value: &JsonValue) -> Value {
     match value {
         JsonValue::Null => Value::Null,
         JsonValue::Bool(value) => Value::Bool(*value),
-        JsonValue::Number(value) => {
-            value.as_i64().map(Value::I64)
-                .or_else(|| value.as_u64().map(Value::U64))
-                .or_else(|| value.as_f64().map(Value::F64))
-                .unwrap_or(Value::Null)
-        }
+        JsonValue::Number(value) => value
+            .as_i64()
+            .map(Value::I64)
+            .or_else(|| value.as_u64().map(Value::U64))
+            .or_else(|| value.as_f64().map(Value::F64))
+            .unwrap_or(Value::Null),
         JsonValue::String(value) => Value::Text(value.trim().to_owned()),
         JsonValue::Array(values) => Value::List(
             values
@@ -593,26 +585,18 @@ pub fn dynamic_json_values(value: &JsonValue) -> Vec<Value> {
 
 pub fn dynamic_json_operator(value: &JsonValue) -> FieldOperator {
     match value {
-        JsonValue::String(value) if value.eq_ignore_ascii_case("__is_null__") => FieldOperator::IsNull,
+        JsonValue::String(value) if value.eq_ignore_ascii_case("__is_null__") => {
+            FieldOperator::IsNull
+        }
         JsonValue::String(value) if value.eq_ignore_ascii_case("__is_not_null__") => {
             FieldOperator::IsNotNull
         }
         JsonValue::String(_) => FieldOperator::Contain,
         JsonValue::Number(_) | JsonValue::Bool(_) => FieldOperator::Equal,
-        JsonValue::Array(values)
-            if values
-                .first()
-                .map(JsonValue::is_string)
-                .unwrap_or(false) =>
-        {
+        JsonValue::Array(values) if values.first().map(JsonValue::is_string).unwrap_or(false) => {
             FieldOperator::In
         }
-        JsonValue::Array(values)
-            if values
-                .first()
-                .map(JsonValue::is_object)
-                .unwrap_or(false) =>
-        {
+        JsonValue::Array(values) if values.first().map(JsonValue::is_object).unwrap_or(false) => {
             FieldOperator::In
         }
         JsonValue::Array(values) if values.len() == 2 => FieldOperator::Between,
@@ -625,7 +609,10 @@ pub fn dynamic_json_filter_expr(field: &str, value: &JsonValue) -> Expr {
     field_operator_expr(field, operator, dynamic_json_values(value))
 }
 
-pub fn dynamic_json_u64_field(object: &serde_json::Map<String, JsonValue>, field: &str) -> Option<u64> {
+pub fn dynamic_json_u64_field(
+    object: &serde_json::Map<String, JsonValue>,
+    field: &str,
+) -> Option<u64> {
     object.get(field).and_then(|value| {
         value
             .as_u64()

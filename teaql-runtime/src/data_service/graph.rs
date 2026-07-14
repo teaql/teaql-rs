@@ -15,7 +15,10 @@ use crate::{
 use super::{EntityDataService, helpers::*};
 
 fn recover_trace_or_default(token: &Option<Arc<TraceScopeToken>>) -> Vec<teaql_core::TraceNode> {
-    token.as_ref().map(|t| t.recover_trace_chain()).unwrap_or_default()
+    token
+        .as_ref()
+        .map(|t| t.recover_trace_chain())
+        .unwrap_or_default()
 }
 
 fn resolve_trace_chain(
@@ -207,7 +210,8 @@ where
                     let mut cmd = teaql_core::BatchInsertCommand::new(&batch.entity);
                     for item in batch.items {
                         cmd.batch_values.push(item.values);
-                        cmd.trace_chains.push(recover_trace_or_default(&item.scope_token));
+                        cmd.trace_chains
+                            .push(recover_trace_or_default(&item.scope_token));
                     }
                     self.execute_prepared_batch_insert(cmd).await?;
                 }
@@ -224,17 +228,16 @@ where
                                 batch.entity
                             )))
                         })?;
-                        let version = item.values.get("version").and_then(|v| {
-                            match v {
-                                teaql_core::Value::I64(n) => Some(*n),
-                                _ => None,
-                            }
+                        let version = item.values.get("version").and_then(|v| match v {
+                            teaql_core::Value::I64(n) => Some(*n),
+                            _ => None,
                         });
                         cmd.batch_values.push(item.values);
                         cmd.batch_ids.push(id);
                         cmd.batch_expected_versions.push(version);
                         cmd.batch_old_values.push(item.old_values);
-                        cmd.trace_chains.push(recover_trace_or_default(&item.scope_token));
+                        cmd.trace_chains
+                            .push(recover_trace_or_default(&item.scope_token));
                     }
                     self.execute_prepared_batch_update(cmd).await?;
                 }
@@ -407,38 +410,44 @@ where
                 }
                 ensure_initial_version(&mut node.values, descriptor);
             }
-            let update_fields = is_update.then(|| {
-                let mut excluded = Vec::new();
-                if let Some(id_property) = id_property.as_ref() {
-                    excluded.push(id_property.name.clone());
-                }
-                if let Some(version_property) = descriptor.version_property() {
-                    excluded.push(version_property.name.clone());
-                }
-                let mut fields = sorted_update_fields(&node.values, excluded);
-                if let Some(dirty) = &node.dirty_fields {
-                    fields.retain(|f| dirty.contains(f));
-                }
-                fields
-            }).unwrap_or_default();
+            let update_fields = is_update
+                .then(|| {
+                    let mut excluded = Vec::new();
+                    if let Some(id_property) = id_property.as_ref() {
+                        excluded.push(id_property.name.clone());
+                    }
+                    if let Some(version_property) = descriptor.version_property() {
+                        excluded.push(version_property.name.clone());
+                    }
+                    let mut fields = sorted_update_fields(&node.values, excluded);
+                    if let Some(dirty) = &node.dirty_fields {
+                        fields.retain(|f| dirty.contains(f));
+                    }
+                    fields
+                })
+                .unwrap_or_default();
 
             // Build the TraceScopeToken for this node (only if it has a comment).
             // This is an Arc-linked persistent list: zero-copy, O(1) creation.
-            let current_token = node.comment.as_ref().map(|c| {
-                Arc::new(TraceScopeToken {
-                    parent: parent_token.clone(),
-                    track: teaql_core::TraceNode {
-                        entity_type: node.entity.clone(),
-                        entity_id: node.id().and_then(|v| match v {
-                            Value::U64(n) => Some(*n),
-                            Value::I64(n) => Some(*n as u64),
-                            _ => None,
-                        }),
-                        comment: c.clone(),
-                    },
-                    node_index: plan.next_item_index,
+            let current_token = node
+                .comment
+                .as_ref()
+                .map(|c| {
+                    Arc::new(TraceScopeToken {
+                        parent: parent_token.clone(),
+                        track: teaql_core::TraceNode {
+                            entity_type: node.entity.clone(),
+                            entity_id: node.id().and_then(|v| match v {
+                                Value::U64(n) => Some(*n),
+                                Value::I64(n) => Some(*n as u64),
+                                _ => None,
+                            }),
+                            comment: c.clone(),
+                        },
+                        node_index: plan.next_item_index,
+                    })
                 })
-            }).or_else(|| parent_token.clone());
+                .or_else(|| parent_token.clone());
 
             plan.push(
                 node.entity.clone(),

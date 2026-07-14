@@ -396,7 +396,10 @@ impl WebResponse {
         self
     }
 
-    pub fn with_facets_option(mut self, facets: Option<BTreeMap<String, serde_json::Value>>) -> Self {
+    pub fn with_facets_option(
+        mut self,
+        facets: Option<BTreeMap<String, serde_json::Value>>,
+    ) -> Self {
         self.facets = facets.unwrap_or_default();
         self
     }

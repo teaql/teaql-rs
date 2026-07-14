@@ -411,11 +411,7 @@ fn count_rows(rows: &[Record], field: &str) -> Value {
         "*" => rows.len(),
         _ => rows
             .iter()
-            .filter(|r| {
-                r.get(field)
-                    .map(|v| v != &Value::Null)
-                    .unwrap_or(false)
-            })
+            .filter(|r| r.get(field).map(|v| v != &Value::Null).unwrap_or(false))
             .count(),
     };
     Value::I64(count as i64)
@@ -502,10 +498,7 @@ mod tests {
     use teaql_core::{Aggregate, AggregateFunction, Record, SelectQuery, Value};
 
     fn make_row(pairs: Vec<(&str, Value)>) -> Record {
-        pairs
-            .into_iter()
-            .map(|(k, v)| (k.to_owned(), v))
-            .collect()
+        pairs.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()
     }
 
     fn sample_rows() -> Vec<Record> {
@@ -610,32 +603,28 @@ mod tests {
 
     #[test]
     fn test_sum_aggregate() {
-        let query =
-            SelectQuery::new("User").aggregate(Aggregate::sum("age", "age_sum"));
+        let query = SelectQuery::new("User").aggregate(Aggregate::sum("age", "age_sum"));
         let result = InMemoryQueryEngine::execute(&query, sample_rows());
         assert_eq!(result.rows[0].get("age_sum"), Some(&Value::F64(90.0)));
     }
 
     #[test]
     fn test_avg_aggregate() {
-        let query =
-            SelectQuery::new("User").aggregate(Aggregate::avg("age", "age_avg"));
+        let query = SelectQuery::new("User").aggregate(Aggregate::avg("age", "age_avg"));
         let result = InMemoryQueryEngine::execute(&query, sample_rows());
         assert_eq!(result.rows[0].get("age_avg"), Some(&Value::F64(30.0)));
     }
 
     #[test]
     fn test_max_aggregate() {
-        let query =
-            SelectQuery::new("User").aggregate(Aggregate::max("age", "age_max"));
+        let query = SelectQuery::new("User").aggregate(Aggregate::max("age", "age_max"));
         let result = InMemoryQueryEngine::execute(&query, sample_rows());
         assert_eq!(result.rows[0].get("age_max"), Some(&Value::I64(35)));
     }
 
     #[test]
     fn test_min_aggregate() {
-        let query =
-            SelectQuery::new("User").aggregate(Aggregate::min("age", "age_min"));
+        let query = SelectQuery::new("User").aggregate(Aggregate::min("age", "age_min"));
         let result = InMemoryQueryEngine::execute(&query, sample_rows());
         assert_eq!(result.rows[0].get("age_min"), Some(&Value::I64(25)));
     }
@@ -666,10 +655,7 @@ mod tests {
 
     #[test]
     fn test_and_or_not() {
-        let row = make_row(vec![
-            ("a", Value::I64(10)),
-            ("b", Value::I64(20)),
-        ]);
+        let row = make_row(vec![("a", Value::I64(10)), ("b", Value::I64(20))]);
         let expr_and = Expr::and([Expr::eq("a", 10_i64), Expr::eq("b", 20_i64)]);
         assert!(ExprEvaluator::eval(&expr_and, &row));
 
@@ -713,10 +699,7 @@ mod tests {
         );
         assert!(ExprEvaluator::eval(&expr, &row));
 
-        let expr_miss = Expr::in_list(
-            "status",
-            vec![Value::Text("closed".to_owned())],
-        );
+        let expr_miss = Expr::in_list("status", vec![Value::Text("closed".to_owned())]);
         assert!(!ExprEvaluator::eval(&expr_miss, &row));
     }
 }

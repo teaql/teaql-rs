@@ -48,10 +48,7 @@ impl Collector for ThreadCollector {
                 record.insert("tid".to_owned(), Value::I64(tid as i64));
                 record.insert("name".to_owned(), Value::Text(stat.comm.clone()));
                 record.insert("state".to_owned(), Value::Text(stat.state.to_string()));
-                record.insert(
-                    "process_pid".to_owned(),
-                    Value::I64(process_pid as i64),
-                );
+                record.insert("process_pid".to_owned(), Value::I64(process_pid as i64));
                 record.insert(
                     "cpu_user_ticks".to_owned(),
                     Value::I64(stat.utime.min(i32::MAX as u64) as i64),

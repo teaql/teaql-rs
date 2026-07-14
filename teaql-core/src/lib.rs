@@ -8,17 +8,17 @@ mod meta;
 mod mutation;
 mod naming;
 mod query;
+pub mod request;
 mod safe_expression;
 pub mod serde_utils;
 mod trace;
 mod value;
 mod web;
 mod xls;
-pub mod request;
 
 pub use entity::{
-    Audited, BaseEntity, BaseEntityData, Entity, EntityDescriptorStore, EntityError, IdentifiableEntity,
-    TeaqlBoxedRelations, TeaqlEntity, VersionedEntity,
+    Audited, BaseEntity, BaseEntityData, Entity, EntityDescriptorStore, EntityError,
+    IdentifiableEntity, TeaqlBoxedRelations, TeaqlEntity, VersionedEntity,
 };
 pub use entity_graph::{EntityGraph, EntityGraphBuilder, EntityGraphNode, EntityGraphOperation};
 pub use expr::{BinaryOp, Expr, ExprFunction};

@@ -348,7 +348,9 @@ where
                     .unwrap_or(-1);
                 rows[index].insert(version_property.to_owned(), Value::I64(next_version));
             }
-            false => { rows.remove(index); }
+            false => {
+                rows.remove(index);
+            }
         }
         Ok(1)
     }
@@ -733,7 +735,9 @@ fn aggregate_rows(
 ) -> Result<Vec<Record>, MemoryDataServiceError> {
     let mut groups: BTreeMap<Vec<String>, Vec<&Record>> = BTreeMap::new();
     match query.group_by.is_empty() {
-        true => { groups.insert(Vec::new(), rows.iter().collect()); }
+        true => {
+            groups.insert(Vec::new(), rows.iter().collect());
+        }
         false => {
             for row in rows {
                 let key = query
@@ -924,7 +928,10 @@ fn numeric_variance(
             diff * diff
         })
         .sum::<f64>();
-    let denominator = match sample { true => count - 1, false => count } as f64;
+    let denominator = match sample {
+        true => count - 1,
+        false => count,
+    } as f64;
     Ok(Value::Decimal(decimal_from_f64(sum / denominator)))
 }
 

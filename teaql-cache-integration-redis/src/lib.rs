@@ -30,7 +30,7 @@ impl DataStore for RedisDataStore {
     async fn get(&self, key: &str) -> Option<Value> {
         let mut conn = self.conn.clone();
         let result: redis::RedisResult<Option<String>> = conn.get(key).await;
-        
+
         if let Ok(Some(json_str)) = result {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&json_str) {
                 return Some(Value::from(json_value));
@@ -47,8 +47,12 @@ impl DataStore for RedisDataStore {
         };
 
         match timeout_seconds {
-            Some(secs) => { let _: redis::RedisResult<()> = conn.set_ex(key, json_str, secs).await; }
-            None => { let _: redis::RedisResult<()> = conn.set(key, json_str).await; }
+            Some(secs) => {
+                let _: redis::RedisResult<()> = conn.set_ex(key, json_str, secs).await;
+            }
+            None => {
+                let _: redis::RedisResult<()> = conn.set(key, json_str).await;
+            }
         }
     }
 

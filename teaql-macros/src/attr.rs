@@ -35,19 +35,35 @@ pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> Co
             } else if meta.path.is_ident("audit_mask_fields") {
                 let value = meta.value()?;
                 let fields_str = parse_string_expr(&value.parse::<Expr>()?);
-                attrs_out.audit_mask_fields = fields_str.split(',').map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect();
+                attrs_out.audit_mask_fields = fields_str
+                    .split(',')
+                    .map(|s| s.trim().to_owned())
+                    .filter(|s| !s.is_empty())
+                    .collect();
             } else if meta.path.is_ident("audit_value_max_len") {
                 let value = meta.value()?;
                 let expr = value.parse::<Expr>()?;
-                if let Expr::Lit(syn::ExprLit { lit: Lit::Int(lit_int), .. }) = &expr {
+                if let Expr::Lit(syn::ExprLit {
+                    lit: Lit::Int(lit_int),
+                    ..
+                }) = &expr
+                {
                     attrs_out.audit_value_max_len = lit_int.base10_parse().ok();
-                } else if let Expr::Lit(syn::ExprLit { lit: Lit::Str(lit_str), .. }) = &expr {
+                } else if let Expr::Lit(syn::ExprLit {
+                    lit: Lit::Str(lit_str),
+                    ..
+                }) = &expr
+                {
                     attrs_out.audit_value_max_len = lit_str.value().parse().ok();
                 }
             } else if meta.path.is_ident("audit_value_max_len_int") {
                 // In case it's passed as an integer literal instead of string
                 let value = meta.value()?;
-                if let Expr::Lit(syn::ExprLit { lit: Lit::Int(lit_int), .. }) = value.parse::<Expr>()? {
+                if let Expr::Lit(syn::ExprLit {
+                    lit: Lit::Int(lit_int),
+                    ..
+                }) = value.parse::<Expr>()?
+                {
                     attrs_out.audit_value_max_len = lit_int.base10_parse().ok();
                 }
             }

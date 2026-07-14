@@ -6,9 +6,7 @@ use std::sync::Arc;
 
 use teaql_core::{Entity, Record, Value};
 
-use crate::{
-    DataServiceError, GraphNode, GraphOperation, RuntimeError, UserContext,
-};
+use crate::{DataServiceError, GraphNode, GraphOperation, RuntimeError, UserContext};
 
 // ---------------------------------------------------------------------------
 // DynGraphSaver — type-erased graph save capability
@@ -212,10 +210,12 @@ where
             let node = graph_node_from_entity(ctx, entity)?;
             let saver = ctx
                 .require_resource::<Arc<dyn DynGraphSaver>>()
-                .map_err(|e| RuntimeError::Graph(format!(
-                    "no DynGraphSaver registered — did you call register_executor()? ({})",
-                    e
-                )))?;
+                .map_err(|e| {
+                    RuntimeError::Graph(format!(
+                        "no DynGraphSaver registered — did you call register_executor()? ({})",
+                        e
+                    ))
+                })?;
             saver.save_graph_dyn(ctx, &entity_name, node).await
         })
     }

@@ -29,16 +29,21 @@ impl Collector for SystemInfoCollector {
             .map(|m| (m.mem_total as i64, m.mem_available.unwrap_or(0) as i64))
             .unwrap_or((0, 0));
         record.insert("memory_total_bytes".to_owned(), Value::I64(mem_total));
-        record.insert("memory_available_bytes".to_owned(), Value::I64(mem_available));
+        record.insert(
+            "memory_available_bytes".to_owned(),
+            Value::I64(mem_available),
+        );
 
         {
             use std::str::FromStr;
             let (avg1, avg5, avg15) = procfs::LoadAverage::current()
-                .map(|la| (
-                    teaql_core::Decimal::from_str(&la.one.to_string()).unwrap_or_default(),
-                    teaql_core::Decimal::from_str(&la.five.to_string()).unwrap_or_default(),
-                    teaql_core::Decimal::from_str(&la.fifteen.to_string()).unwrap_or_default(),
-                ))
+                .map(|la| {
+                    (
+                        teaql_core::Decimal::from_str(&la.one.to_string()).unwrap_or_default(),
+                        teaql_core::Decimal::from_str(&la.five.to_string()).unwrap_or_default(),
+                        teaql_core::Decimal::from_str(&la.fifteen.to_string()).unwrap_or_default(),
+                    )
+                })
                 .unwrap_or_default();
             record.insert("load_avg_1".to_owned(), Value::Decimal(avg1));
             record.insert("load_avg_5".to_owned(), Value::Decimal(avg5));

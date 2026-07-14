@@ -903,7 +903,9 @@ mod tests {
 
     #[test]
     fn sqlite_fetch_stream_returns_chunked_rows() {
-        let executor = SqliteMutationExecutor::new(Arc::new(Mutex::new(Connection::open_in_memory().unwrap())));
+        let executor = SqliteMutationExecutor::new(Arc::new(Mutex::new(
+            Connection::open_in_memory().unwrap(),
+        )));
         let entity = entity();
 
         // Create table and insert 25 rows
@@ -966,7 +968,9 @@ mod tests {
 
     #[test]
     fn sqlite_fetch_stream_handles_empty_result() {
-        let executor = SqliteMutationExecutor::new(Arc::new(Mutex::new(Connection::open_in_memory().unwrap())));
+        let executor = SqliteMutationExecutor::new(Arc::new(Mutex::new(
+            Connection::open_in_memory().unwrap(),
+        )));
 
         executor
             .execute(&CompiledQuery {
@@ -994,7 +998,9 @@ mod tests {
 
     #[test]
     fn sqlite_fetch_stream_exact_chunk_boundary() {
-        let executor = SqliteMutationExecutor::new(Arc::new(Mutex::new(Connection::open_in_memory().unwrap())));
+        let executor = SqliteMutationExecutor::new(Arc::new(Mutex::new(
+            Connection::open_in_memory().unwrap(),
+        )));
         let entity = entity();
 
         executor

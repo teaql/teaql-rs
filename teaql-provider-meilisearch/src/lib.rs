@@ -39,7 +39,10 @@ impl MeilisearchProvider {
         builder
     }
 
-    pub async fn sync_schema(&self, _descriptor: &EntityDescriptor) -> Result<(), MeilisearchError> {
+    pub async fn sync_schema(
+        &self,
+        _descriptor: &EntityDescriptor,
+    ) -> Result<(), MeilisearchError> {
         Ok(())
     }
 }
@@ -56,16 +59,18 @@ fn json_to_value(json: serde_json::Value) -> Value {
     match json {
         serde_json::Value::Null => Value::Null,
         serde_json::Value::Bool(b) => Value::Bool(b),
-        serde_json::Value::Number(n) => {
-            n.as_i64().map(Value::I64)
-                .or_else(|| n.as_f64().map(Value::F64))
-                .unwrap_or(Value::Null)
-        }
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .map(Value::I64)
+            .or_else(|| n.as_f64().map(Value::F64))
+            .unwrap_or(Value::Null),
         serde_json::Value::String(s) => Value::Text(s),
         serde_json::Value::Array(arr) => Value::List(arr.into_iter().map(json_to_value).collect()),
         serde_json::Value::Object(map) => {
             let mut record = Record::new();
-            for (k, v) in map { record.insert(k, json_to_value(v)); }
+            for (k, v) in map {
+                record.insert(k, json_to_value(v));
+            }
             Value::Object(record)
         }
     }
@@ -75,29 +80,41 @@ impl QueryExecutor for MeilisearchProvider {
     async fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
         let started_at = std::time::SystemTime::now();
         let entity = request.query.entity.clone();
-        let search = request.query.search_with_text.clone().unwrap_or_else(String::new);
-        
+        let search = request
+            .query
+            .search_with_text
+            .clone()
+            .unwrap_or_else(String::new);
+
         let url = format!("{}/indexes/{}/search", self.host, entity);
         let payload = serde_json::json!({
             "q": search,
             "limit": 100
         });
-        
-        println!("[MeilisearchProvider] Sending HTTP SEARCH to {} with payload: {}", url, serde_json::to_string_pretty(&payload).unwrap_or_default());
-        
-        let res = self.request_builder(reqwest::Method::POST, &url)
+
+        println!(
+            "[MeilisearchProvider] Sending HTTP SEARCH to {} with payload: {}",
+            url,
+            serde_json::to_string_pretty(&payload).unwrap_or_default()
+        );
+
+        let res = self
+            .request_builder(reqwest::Method::POST, &url)
             .json(&payload)
             .send()
             .await
             .map_err(|e| MeilisearchError(e.to_string()))?;
-            
+
         if !res.status().is_success() {
             let err = res.text().await.unwrap_or_default();
             return Err(MeilisearchError(format!("Search failed: {}", err)));
         }
-        
-        let json: serde_json::Value = res.json().await.map_err(|e| MeilisearchError(e.to_string()))?;
-        
+
+        let json: serde_json::Value = res
+            .json()
+            .await
+            .map_err(|e| MeilisearchError(e.to_string()))?;
+
         let mut rows = Vec::new();
         if let Some(hits) = json.get("hits").and_then(|h| h.as_array()) {
             for hit in hits {
@@ -120,7 +137,12 @@ impl QueryExecutor for MeilisearchProvider {
                 started_at,
                 ended_at: std::time::SystemTime::now(),
                 affected_rows: None,
-                result_count: Some(json.get("hits").and_then(|h| h.as_array()).map(|a| a.len()).unwrap_or(0)),
+                result_count: Some(
+                    json.get("hits")
+                        .and_then(|h| h.as_array())
+                        .map(|a| a.len())
+                        .unwrap_or(0),
+                ),
                 trace_chain: Vec::new(),
                 comment: None,
                 backend_request_id: None,
@@ -132,31 +154,36 @@ impl QueryExecutor for MeilisearchProvider {
 impl MutationExecutor for MeilisearchProvider {
     async fn mutate(&self, request: MutationRequest) -> Result<MutationResult, Self::Error> {
         let started_at = std::time::SystemTime::now();
-        
+
         match request {
             MutationRequest::Insert(cmd) => {
                 let entity = cmd.entity.clone();
                 let url = format!("{}/indexes/{}/documents?primaryKey=id", self.host, entity);
-                
+
                 let mut map = serde_json::Map::new();
                 for (k, v) in &cmd.values {
                     map.insert(k.clone(), v.to_json_value());
                 }
                 let payload = serde_json::Value::Array(vec![serde_json::Value::Object(map)]);
-                
-                println!("[MeilisearchProvider] Sending HTTP POST to {} with payload: {}", url, serde_json::to_string_pretty(&payload).unwrap_or_default());
-                
-                let res = self.request_builder(reqwest::Method::POST, &url)
+
+                println!(
+                    "[MeilisearchProvider] Sending HTTP POST to {} with payload: {}",
+                    url,
+                    serde_json::to_string_pretty(&payload).unwrap_or_default()
+                );
+
+                let res = self
+                    .request_builder(reqwest::Method::POST, &url)
                     .json(&payload)
                     .send()
                     .await
                     .map_err(|e| MeilisearchError(e.to_string()))?;
-                    
+
                 if !res.status().is_success() {
                     let err = res.text().await.unwrap_or_default();
                     return Err(MeilisearchError(format!("Insert failed: {}", err)));
                 }
-                
+
                 Ok(MutationResult {
                     affected_rows: 1,
                     generated_values: Record::new(),
@@ -173,7 +200,7 @@ impl MutationExecutor for MeilisearchProvider {
                         backend_request_id: None,
                     },
                 })
-            },
+            }
             _ => {
                 // Ignore other mutations or return an error depending on strictness
                 Ok(MutationResult {

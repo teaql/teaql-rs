@@ -35,8 +35,9 @@ impl LogFormatter for HumanReaderFormatter {
     fn format_sql_log(&self, trace_chain: &[TraceNode], entry: &SqlLogEntry) -> String {
         let ts = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f");
         let trace_str = self.format_trace_chain(trace_chain);
-        let trace_display =
-            (!trace_str.is_empty()).then(|| format!(" - [{}]", trace_str)).unwrap_or_default();
+        let trace_display = (!trace_str.is_empty())
+            .then(|| format!(" - [{}]", trace_str))
+            .unwrap_or_default();
 
         let elapsed_us = (entry.elapsed.as_secs_f64() * 1_000_000.0).round() as u64;
         format!(
@@ -52,8 +53,9 @@ impl LogFormatter for HumanReaderFormatter {
     fn format_audit_log(&self, event: &RawAuditEvent) -> String {
         let ts = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f");
         let trace_str = self.format_trace_chain(&event.trace_chain);
-        let trace_display =
-            (!trace_str.is_empty()).then(|| format!(" (Trace: {})", trace_str)).unwrap_or_default();
+        let trace_display = (!trace_str.is_empty())
+            .then(|| format!(" (Trace: {})", trace_str))
+            .unwrap_or_default();
 
         let mut field_changes = Vec::new();
         for change in &event.changes {
@@ -273,18 +275,18 @@ impl LogManager {
                 std::env::var("TEAQL_LOG_ENDPOINT")
                     .ok()
                     .filter(|v| !v.is_empty())
-                .or_else(|| {
-                    if let Ok(val) = std::env::var("TEAQL_DOMAIN") {
-                        if !val.is_empty() {
-                            return Some(format!("{}.log", val));
+                    .or_else(|| {
+                        if let Ok(val) = std::env::var("TEAQL_DOMAIN") {
+                            if !val.is_empty() {
+                                return Some(format!("{}.log", val));
+                            }
                         }
-                    }
-                    let exe_name = std::env::current_exe()
-                        .ok()
-                        .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
-                        .unwrap_or_else(|| "teaql".to_string());
-                    Some(format!("{}.log", exe_name))
-                })
+                        let exe_name = std::env::current_exe()
+                            .ok()
+                            .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
+                            .unwrap_or_else(|| "teaql".to_string());
+                        Some(format!("{}.log", exe_name))
+                    })
             })
             .as_deref()
     }

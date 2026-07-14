@@ -31,10 +31,7 @@ impl LinuxDataServiceExecutor {
     /// Create a new executor with the default set of collectors.
     pub fn new() -> Self {
         let mut collectors: HashMap<String, Box<dyn Collector>> = HashMap::new();
-        collectors.insert(
-            "SystemInfo".to_owned(),
-            Box::new(SystemInfoCollector),
-        );
+        collectors.insert("SystemInfo".to_owned(), Box::new(SystemInfoCollector));
         collectors.insert("Process".to_owned(), Box::new(ProcessCollector));
         collectors.insert("Thread".to_owned(), Box::new(ThreadCollector));
         Self { collectors }
@@ -81,8 +78,7 @@ impl QueryExecutor for LinuxDataServiceExecutor {
         let rows = self.collect_records(entity)?;
 
         // Build a MemoryDataService with the entity registered so fetch_all succeeds.
-        let metadata = InMemoryMetadataStore::new()
-            .with_entity(EntityDescriptor::new(entity));
+        let metadata = InMemoryMetadataStore::new().with_entity(EntityDescriptor::new(entity));
         let mut mem = MemoryDataService::new(metadata);
         mem.seed(entity.clone(), rows);
 
@@ -112,11 +108,10 @@ impl QueryExecutor for LinuxDataServiceExecutor {
 }
 
 impl MutationExecutor for LinuxDataServiceExecutor {
-    async fn mutate(
-        &self,
-        _request: MutationRequest,
-    ) -> Result<MutationResult, Self::Error> {
-        Err(LinuxProviderError::ProcFs("Linux provider is read-only".to_owned()))
+    async fn mutate(&self, _request: MutationRequest) -> Result<MutationResult, Self::Error> {
+        Err(LinuxProviderError::ProcFs(
+            "Linux provider is read-only".to_owned(),
+        ))
     }
 }
 
@@ -135,12 +130,20 @@ impl TransactionExecutor for LinuxDataServiceExecutor {
     type Tx<'a> = LinuxDataServiceExecutor;
 
     async fn begin(&self) -> Result<Self::Tx<'_>, Self::Error> {
-        Err(LinuxProviderError::ProcFs("Linux provider does not support transactions".to_owned()))
+        Err(LinuxProviderError::ProcFs(
+            "Linux provider does not support transactions".to_owned(),
+        ))
     }
 }
 
 impl StreamQueryExecutor for LinuxDataServiceExecutor {
-    async fn query_stream(&self, _request: QueryRequest, _chunk_size: usize) -> Result<Vec<StreamChunk>, Self::Error> {
-        Err(LinuxProviderError::ProcFs("Linux provider does not support streaming".to_owned()))
+    async fn query_stream(
+        &self,
+        _request: QueryRequest,
+        _chunk_size: usize,
+    ) -> Result<Vec<StreamChunk>, Self::Error> {
+        Err(LinuxProviderError::ProcFs(
+            "Linux provider does not support streaming".to_owned(),
+        ))
     }
 }

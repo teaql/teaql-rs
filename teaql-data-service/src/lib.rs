@@ -2,7 +2,7 @@
 
 use std::time::SystemTime;
 use teaql_core::{
-    DeleteCommand, InsertCommand, RecoverCommand, UpdateCommand, SelectQuery, TraceNode, Record,
+    DeleteCommand, InsertCommand, Record, RecoverCommand, SelectQuery, TraceNode, UpdateCommand,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -99,7 +99,10 @@ pub trait DataServiceExecutor {
 }
 
 pub trait QueryExecutor: DataServiceExecutor {
-    fn query(&self, request: QueryRequest) -> impl std::future::Future<Output = Result<QueryResult, Self::Error>> + Send;
+    fn query(
+        &self,
+        request: QueryRequest,
+    ) -> impl std::future::Future<Output = Result<QueryResult, Self::Error>> + Send;
 }
 
 /// Result of a single streaming chunk.
@@ -120,7 +123,10 @@ pub trait StreamQueryExecutor: DataServiceExecutor {
 }
 
 pub trait MutationExecutor: DataServiceExecutor {
-    fn mutate(&self, request: MutationRequest) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send;
+    fn mutate(
+        &self,
+        request: MutationRequest,
+    ) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send;
 }
 
 pub trait TransactionExecutor: DataServiceExecutor {
@@ -151,11 +157,17 @@ pub struct SchemaResult {
 }
 
 pub trait SchemaExecutor: DataServiceExecutor {
-    fn ensure_schema(&self, request: SchemaRequest) -> impl std::future::Future<Output = Result<SchemaResult, Self::Error>> + Send;
+    fn ensure_schema(
+        &self,
+        request: SchemaRequest,
+    ) -> impl std::future::Future<Output = Result<SchemaResult, Self::Error>> + Send;
 }
 
 pub trait IdGeneratorExecutor: DataServiceExecutor {
-    fn next_id(&self, entity: &str) -> impl std::future::Future<Output = Result<u64, Self::Error>> + Send;
+    fn next_id(
+        &self,
+        entity: &str,
+    ) -> impl std::future::Future<Output = Result<u64, Self::Error>> + Send;
 }
 
 pub trait SchemaProvider: Send + Sync {

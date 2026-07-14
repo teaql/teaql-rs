@@ -10,11 +10,11 @@ mod event;
 pub mod generated_support;
 mod graph;
 mod id;
+pub mod inmemory_engine;
 mod language;
 pub mod log_formatter;
 mod memory;
 mod registry;
-pub mod inmemory_engine;
 
 pub use context::{
     DataStore, InMemoryDataStore, InfoLogEntry, LogPayload, SchemaProvider, SqlLogEntry,
@@ -27,10 +27,7 @@ pub use data_service::{
 pub use entity_runtime::{
     ChangeSetStack, EntityChangeSet, EntityKey, EntityRoot, LedgerEntity, RootContext,
 };
-pub use entity_save::{
-    AuditedSaveExt, DynGraphSaver, GraphSaverFor,
-    graph_node_from_entity,
-};
+pub use entity_save::{AuditedSaveExt, DynGraphSaver, GraphSaverFor, graph_node_from_entity};
 pub use entity_status::{EntityAction, EntityStatus};
 pub use error::{ContextError, DataServiceError, RuntimeError};
 pub use event::{
@@ -44,6 +41,7 @@ pub use graph::{
 };
 pub(crate) use id::local_id_generator;
 pub use id::{InternalIdGenerator, SnowflakeIdGenerator};
+pub use inmemory_engine::{ExprEvaluator, InMemoryQueryEngine};
 pub use language::{
     BuiltinTranslator, Language, MessageTranslator, translate_check_result, translate_location,
 };
@@ -53,7 +51,6 @@ pub use registry::{
     InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityRegistry, InMemoryMetadataStore,
     MetadataStore, RequestPolicy, RuntimeModule,
 };
-pub use inmemory_engine::{InMemoryQueryEngine, ExprEvaluator};
 
 #[cfg(test)]
 mod tests {
