@@ -451,3 +451,47 @@ fn append_record_action(record: &mut Record, action: serde_json::Value) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_web_response_constructors_and_json_shape() {
+        let success_resp = WebResponse::success();
+        assert_eq!(success_resp.result_code, 0);
+        assert_eq!(success_resp.status.as_deref(), Some("YES"));
+        assert_eq!(success_resp.message, None);
+        assert_eq!(success_resp.version, WEB_RESPONSE_VERSION);
+        assert_eq!(success_resp.data.len(), 0);
+        assert_eq!(success_resp.record_count, 0);
+
+        let fail_resp = WebResponse::fail("Internal Error");
+        assert_eq!(fail_resp.result_code, 1);
+        assert_eq!(fail_resp.status.as_deref(), Some("NO"));
+        assert_eq!(fail_resp.message.as_deref(), Some("Internal Error"));
+        assert_eq!(fail_resp.data.len(), 0);
+        assert_eq!(fail_resp.record_count, 0);
+
+        let empty_list_resp = WebResponse::empty_list("No items found");
+        assert_eq!(empty_list_resp.result_code, 0);
+        assert_eq!(empty_list_resp.status, None);
+        assert_eq!(empty_list_resp.message.as_deref(), Some("No items found"));
+        assert_eq!(empty_list_resp.data.len(), 0);
+        assert_eq!(empty_list_resp.record_count, 0);
+
+        let json = success_resp.to_json_value();
+        assert!(json.is_object());
+        let obj = json.as_object().unwrap();
+        assert_eq!(obj.get("resultCode").unwrap().as_i64().unwrap(), 0);
+        assert_eq!(obj.get("status").unwrap().as_str().unwrap(), "YES");
+        assert!(!obj.contains_key("message")); // skip_serializing_if = "Option::is_none"
+        assert_eq!(
+            obj.get("version").unwrap().as_str().unwrap(),
+            WEB_RESPONSE_VERSION
+        );
+        assert_eq!(obj.get("recordCount").unwrap().as_i64().unwrap(), 0);
+        assert!(obj.get("data").unwrap().as_array().unwrap().is_empty());
+        assert!(obj.get("facets").unwrap().as_object().unwrap().is_empty());
+    }
+}
