@@ -181,3 +181,84 @@ impl EntityDescriptor {
         self.properties.iter().filter(|property| !property.is_id)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_property_descriptor_builder() {
+        let prop = PropertyDescriptor::new("username", DataType::Text)
+            .column_name("user_name")
+            .not_null()
+            .id()
+            .version();
+
+        assert_eq!(prop.name, "username");
+        assert_eq!(prop.column_name, "user_name");
+        assert_eq!(prop.data_type, DataType::Text);
+        assert!(!prop.nullable);
+        assert!(prop.is_id);
+        assert!(prop.is_version);
+    }
+
+    #[test]
+    fn test_relation_descriptor_builder() {
+        let rel = RelationDescriptor::new("orders", "Order")
+            .local_key("user_id")
+            .foreign_key("customer_id")
+            .many()
+            .detached()
+            .keep_missing();
+
+        assert_eq!(rel.name, "orders");
+        assert_eq!(rel.target_entity, "Order");
+        assert_eq!(rel.local_key, "user_id");
+        assert_eq!(rel.foreign_key, "customer_id");
+        assert!(rel.many);
+        assert!(!rel.attach);
+        assert!(!rel.delete_missing);
+    }
+
+    #[test]
+    fn test_entity_descriptor_builder_and_lookups() {
+        let mut entity = EntityDescriptor::new("User")
+            .table_name("users")
+            .data_service("auth_db")
+            .audit_mask_fields(vec!["password".to_string()])
+            .audit_value_max_len(Some(255));
+
+        let id_prop = PropertyDescriptor::new("id", DataType::I64).id();
+        let name_prop = PropertyDescriptor::new("name", DataType::Text);
+        let version_prop = PropertyDescriptor::new("version", DataType::I64).version();
+
+        let orders_rel = RelationDescriptor::new("orders", "Order");
+
+        entity = entity
+            .property(id_prop.clone())
+            .property(name_prop.clone())
+            .property(version_prop.clone())
+            .relation(orders_rel.clone());
+
+        assert_eq!(entity.name, "User");
+        assert_eq!(entity.table_name, "users");
+        assert_eq!(entity.data_service, Some("auth_db".to_string()));
+        assert_eq!(entity.audit_mask_fields, vec!["password".to_string()]);
+        assert_eq!(entity.audit_value_max_len, Some(255));
+
+        // Lookups
+        assert_eq!(entity.property_by_name("name"), Some(&name_prop));
+        assert_eq!(entity.property_by_name("missing"), None);
+
+        assert_eq!(entity.relation_by_name("orders"), Some(&orders_rel));
+        assert_eq!(entity.relation_by_name("missing"), None);
+
+        assert_eq!(entity.id_property(), Some(&id_prop));
+        assert_eq!(entity.version_property(), Some(&version_prop));
+
+        let writable: Vec<_> = entity.writable_properties().collect();
+        assert_eq!(writable.len(), 2);
+        assert!(writable.contains(&&name_prop));
+        assert!(writable.contains(&&version_prop));
+    }
+}
