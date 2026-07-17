@@ -218,3 +218,90 @@ where
         self.apply_optional(move |list| list.get(index).cloned())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::SafeExpression;
+
+    #[test]
+    fn safe_expression_eval_with_uses_the_supplied_root() {
+        let expression = SafeExpression::new(2_i32, |root| Some(root * 3));
+
+        assert_eq!(expression.eval(), Some(6));
+        assert_eq!(expression.eval_with(&4), Some(12));
+    }
+
+    #[test]
+    fn safe_expression_apply_optional_short_circuits_remaining_mappers() {
+        let optional_calls = Arc::new(AtomicUsize::new(0));
+        let remaining_calls = Arc::new(AtomicUsize::new(0));
+
+        let optional_calls_for_mapper = Arc::clone(&optional_calls);
+        let remaining_calls_for_mapper = Arc::clone(&remaining_calls);
+        let expression = SafeExpression::value(5_i32)
+            .apply_optional(move |_| {
+                optional_calls_for_mapper.fetch_add(1, Ordering::SeqCst);
+                None::<i32>
+            })
+            .apply(move |value| {
+                remaining_calls_for_mapper.fetch_add(1, Ordering::SeqCst);
+                value * 2
+            });
+
+        assert_eq!(expression.eval(), None);
+        assert_eq!(optional_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(remaining_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn safe_expression_lazy_fallback_and_error_only_run_for_missing_values() {
+        let mut present_fallback_calls = 0;
+        let present = SafeExpression::value(7_i32);
+        assert_eq!(
+            present.or_else_with(|| {
+                present_fallback_calls += 1;
+                9
+            }),
+            7
+        );
+        assert_eq!(present_fallback_calls, 0);
+        assert_eq!(present.or_else_throw(|| "unused error"), Ok(7));
+
+        let missing = SafeExpression::new((), |_| None::<i32>);
+        let mut missing_fallback_calls = 0;
+        assert_eq!(
+            missing.or_else_with(|| {
+                missing_fallback_calls += 1;
+                9
+            }),
+            9
+        );
+        assert_eq!(missing_fallback_calls, 1);
+        assert_eq!(
+            missing.or_else_throw(|| "missing value"),
+            Err("missing value")
+        );
+    }
+
+    #[test]
+    fn safe_expression_callbacks_only_run_for_their_matching_branch() {
+        let present = SafeExpression::value("teaql".to_owned());
+        let mut present_null_calls = 0;
+        let mut present_value = None;
+        present.when_is_null(|| present_null_calls += 1);
+        present.when_is_not_null(|value| present_value = Some(value));
+        assert_eq!(present_null_calls, 0);
+        assert_eq!(present_value.as_deref(), Some("teaql"));
+
+        let missing = SafeExpression::new((), |_| None::<String>);
+        let mut missing_null_calls = 0;
+        let mut missing_value_calls = 0;
+        missing.when_is_null(|| missing_null_calls += 1);
+        missing.when_is_not_null(|_| missing_value_calls += 1);
+        assert_eq!(missing_null_calls, 1);
+        assert_eq!(missing_value_calls, 0);
+    }
+}
