@@ -388,3 +388,48 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn test_check_object_status_inference_and_explicit_markers() {
+        let mut record = BTreeMap::new();
+
+        // No id -> Create
+        assert_eq!(
+            CheckObjectStatus::from_record(&record),
+            CheckObjectStatus::Create
+        );
+
+        // Has id -> Update
+        record.insert("id".to_string(), Value::I64(1));
+        assert_eq!(
+            CheckObjectStatus::from_record(&record),
+            CheckObjectStatus::Update
+        );
+
+        // Explicit marker Create overrides id
+        mark_record_status(&mut record, CheckObjectStatus::Create);
+        assert_eq!(
+            CheckObjectStatus::from_record(&record),
+            CheckObjectStatus::Create
+        );
+
+        // Explicit marker Update
+        mark_record_status(&mut record, CheckObjectStatus::Update);
+        assert_eq!(
+            CheckObjectStatus::from_record(&record),
+            CheckObjectStatus::Update
+        );
+
+        // Clear marker
+        clear_record_status(&mut record);
+        assert_eq!(
+            CheckObjectStatus::from_record(&record),
+            CheckObjectStatus::Update
+        ); // falls back to id -> Update
+    }
+}
