@@ -449,3 +449,40 @@ fn format_value(value: &Value) -> String {
         Value::List(_) => "<list>".to_owned(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_language_code_aliases_and_canonical_codes() {
+        // Test canonical codes
+        assert_eq!(Language::English.code(), "en");
+        assert_eq!(Language::Chinese.code(), "zh-CN");
+        assert_eq!(Language::TraditionalChinese.code(), "zh-TW");
+        assert_eq!(Language::Filipino.code(), "fil");
+
+        // Test from_code with canonical codes
+        assert_eq!(Language::from_code("en"), Some(Language::English));
+        assert_eq!(Language::from_code("zh-CN"), Some(Language::Chinese));
+
+        // Test from_code with aliases
+        assert_eq!(Language::from_code("en-US"), Some(Language::English));
+        assert_eq!(Language::from_code("en-GB"), Some(Language::English));
+        assert_eq!(Language::from_code("zh"), Some(Language::Chinese));
+        assert_eq!(Language::from_code("cn"), Some(Language::Chinese));
+        assert_eq!(
+            Language::from_code("zh-HK"),
+            Some(Language::TraditionalChinese)
+        );
+        assert_eq!(
+            Language::from_code("tw"),
+            Some(Language::TraditionalChinese)
+        );
+        assert_eq!(Language::from_code("tl"), Some(Language::Filipino));
+        assert_eq!(Language::from_code("pt-BR"), Some(Language::Portuguese));
+
+        // Test invalid code
+        assert_eq!(Language::from_code("invalid-code"), None);
+    }
+}
