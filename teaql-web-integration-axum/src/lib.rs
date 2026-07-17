@@ -120,6 +120,7 @@ impl<T: Serialize> IntoResponse for WebResponse<T> {
 }
 
 /// A wrapper around standard errors to provide automatic HTTP status code mapping.
+#[derive(Debug)]
 pub struct AxumTeaError(pub String);
 
 impl<E: std::error::Error> From<E> for AxumTeaError {
@@ -227,5 +228,53 @@ where
         ctx.insert_resource(web_info);
 
         Ok(TeaContext(ctx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::Request;
+
+    struct MockContextProvider;
+    impl ContextProvider for MockContextProvider {
+        fn build_context(&self) -> UserContext {
+            UserContext::new()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_teacontext_request_header_extraction() {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/test")
+            .header("X-User-Id", "user123")
+            .header("X-Trace-Id", "trace456")
+            .header("X-Forwarded-For", "192.168.1.1, 10.0.0.1")
+            .header("User-Agent", "TestAgent/1.0")
+            .body(())
+            .unwrap();
+
+        let (mut parts, _) = request.into_parts();
+        let state = MockContextProvider;
+
+        let tea_context_result = TeaContext::from_request_parts(&mut parts, &state).await;
+        assert!(tea_context_result.is_ok());
+
+        let tea_context = tea_context_result.unwrap();
+        let ctx = tea_context.0;
+
+        assert_eq!(ctx.user_identifier(), Some("user123"));
+        assert_eq!(ctx.trace_id(), "trace456");
+
+        let web_info = ctx.web_info().unwrap();
+        assert_eq!(web_info.client_ip.as_deref(), Some("192.168.1.1"));
+        assert_eq!(web_info.user_agent.as_deref(), Some("TestAgent/1.0"));
+        assert_eq!(web_info.request_uri, "/api/test");
+        assert_eq!(web_info.method, "POST");
+
+        assert_eq!(ctx.client_ip(), Some("192.168.1.1"));
+        assert_eq!(ctx.request_uri(), Some("/api/test"));
+        assert_eq!(ctx.method(), Some("POST"));
     }
 }
