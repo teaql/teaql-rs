@@ -173,3 +173,85 @@ pub trait IdGeneratorExecutor: DataServiceExecutor {
 pub trait SchemaProvider: Send + Sync {
     fn get_entity(&self, name: &str) -> Option<std::sync::Arc<teaql_core::EntityDescriptor>>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mutation_request_trace_and_comment_accessors() {
+        let trace1 = TraceNode {
+            entity_type: "User".to_string(),
+            entity_id: Some(1),
+            comment: "Create User".to_string(),
+        };
+        let trace2 = TraceNode {
+            entity_type: "Profile".to_string(),
+            entity_id: None,
+            comment: "Create Profile".to_string(),
+        };
+        let trace_chain = vec![trace1.clone(), trace2.clone()];
+
+        // Test Insert
+        let insert_cmd = InsertCommand {
+            entity: "User".to_string(),
+            values: Record::new(),
+            trace_chain: trace_chain.clone(),
+        };
+        let req_insert = MutationRequest::Insert(insert_cmd);
+        assert_eq!(req_insert.trace_chain().len(), 2);
+        assert_eq!(req_insert.trace_chain()[1], trace2);
+        assert_eq!(req_insert.comment(), Some("Create Profile"));
+
+        // Test Update
+        let update_cmd = UpdateCommand {
+            entity: "User".to_string(),
+            id: teaql_core::Value::I64(1),
+            values: Record::new(),
+            expected_version: None,
+            old_values: None,
+            trace_chain: trace_chain.clone(),
+        };
+        let req_update = MutationRequest::Update(update_cmd);
+        assert_eq!(req_update.trace_chain().len(), 2);
+        assert_eq!(req_update.comment(), Some("Create Profile"));
+
+        // Test Delete
+        let delete_cmd = DeleteCommand {
+            entity: "User".to_string(),
+            id: teaql_core::Value::I64(1),
+            expected_version: None,
+            soft_delete: true,
+            trace_chain: trace_chain.clone(),
+        };
+        let req_delete = MutationRequest::Delete(delete_cmd);
+        assert_eq!(req_delete.trace_chain().len(), 2);
+        assert_eq!(req_delete.comment(), Some("Create Profile"));
+
+        // Test Recover
+        let recover_cmd = RecoverCommand {
+            entity: "User".to_string(),
+            id: teaql_core::Value::I64(1),
+            expected_version: 1,
+            trace_chain: trace_chain.clone(),
+        };
+        let req_recover = MutationRequest::Recover(recover_cmd);
+        assert_eq!(req_recover.trace_chain().len(), 2);
+        assert_eq!(req_recover.comment(), Some("Create Profile"));
+
+        // Test Batch
+        let req_batch = MutationRequest::Batch(vec![req_insert, req_update]);
+        assert_eq!(req_batch.trace_chain().len(), 0);
+        assert_eq!(req_batch.comment(), None);
+
+        // Test empty trace chain
+        let insert_empty = InsertCommand {
+            entity: "User".to_string(),
+            values: Record::new(),
+            trace_chain: vec![],
+        };
+        let req_empty = MutationRequest::Insert(insert_empty);
+        assert_eq!(req_empty.trace_chain().len(), 0);
+        assert_eq!(req_empty.comment(), None);
+    }
+}
