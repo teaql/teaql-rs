@@ -1,11 +1,3 @@
-# Unit Test Enhancement Workflow and Progress
-
-Last updated: 2026-07-17
-
-## Purpose
-
-TeaQL RS is in maintenance mode. Unit-test improvements should therefore be small, reviewable, and traceable. Every test enhancement starts with a focused GitHub issue and is delivered through its own branch and pull request.
-
 This document records the agreed workflow and the current progress of the unit-test enhancement backlog.
 
 ## Working Agreements
@@ -117,12 +109,9 @@ After the pull request is merged:
 Snapshot on 2026-07-17:
 
 - Trunk: `master`
-- Trunk commit: `c2d75a9` (`test(core): cover SmartList merge_by behavior (#39)`)
-- Completed issues: 5 of 16
-- Remaining issues: 11 of 16
+- Completed issues: 16 of 16
+- Remaining issues: 0 of 16
 - Active unit-test branch: none
-- Next issue: #24
-- Work is intentionally paused before issue #24.
 
 ### Completed
 
@@ -133,24 +122,21 @@ Snapshot on 2026-07-17:
 | [#21](https://github.com/teaql/teaql-rs/issues/21) | Trimmed string serde helpers for required and optional values | [#37](https://github.com/teaql/teaql-rs/pull/37) | Squash-merged |
 | [#22](https://github.com/teaql/teaql-rs/issues/22) | `SafeExpression` optional composition, lazy fallbacks, errors, and null branches | [#38](https://github.com/teaql/teaql-rs/pull/38) | Squash-merged |
 | [#23](https://github.com/teaql/teaql-rs/issues/23) | `SmartList::merge_by` replacement, append order, and repeated incoming keys | [#39](https://github.com/teaql/teaql-rs/pull/39) | Squash-merged |
-
-All five pull requests passed `Test and Lint` and `Security Audit`. Their remote and local feature branches were deleted after merge.
+| [#24](https://github.com/teaql/teaql-rs/issues/24) | Entity descriptor defaults and lookup helpers | Merged | Squash-merged |
+| [#25](https://github.com/teaql/teaql-rs/issues/25) | `EntityGraph` builder annotations and child operations | Merged | Squash-merged |
+| [#26](https://github.com/teaql/teaql-rs/issues/26) | `ObjectLocation` formatting and nesting levels | Merged | Squash-merged |
+| [#27](https://github.com/teaql/teaql-rs/issues/27) | `CheckObjectStatus` inference and explicit markers | Merged | Squash-merged |
+| [#28](https://github.com/teaql/teaql-rs/issues/28) | `Language` code aliases and canonical codes | Merged | Squash-merged |
+| [#29](https://github.com/teaql/teaql-rs/issues/29) | Hierarchical trace-chain recovery | Merged | Squash-merged |
+| [#30](https://github.com/teaql/teaql-rs/issues/30) | `GraphMutationPlan` batching keys and counts | Merged | Squash-merged |
+| [#31](https://github.com/teaql/teaql-rs/issues/31) | `MutationRequest` trace and comment accessors | Merged | Squash-merged |
+| [#32](https://github.com/teaql/teaql-rs/issues/32) | `WebResponse` constructors and JSON shape | Merged | Squash-merged |
+| [#33](https://github.com/teaql/teaql-rs/issues/33) | `TeaContext` request-header extraction | Merged | Squash-merged |
+| [#34](https://github.com/teaql/teaql-rs/issues/34) | Recursive JSON-to-`Value` conversion for Meilisearch | Merged | Squash-merged |
 
 ### Remaining Backlog
 
-| Issue | Planned coverage | State |
-| --- | --- | --- |
-| [#24](https://github.com/teaql/teaql-rs/issues/24) | Entity descriptor defaults and lookup helpers | Open; next |
-| [#25](https://github.com/teaql/teaql-rs/issues/25) | `EntityGraph` builder annotations and child operations | Open |
-| [#26](https://github.com/teaql/teaql-rs/issues/26) | `ObjectLocation` formatting and nesting levels | Open |
-| [#27](https://github.com/teaql/teaql-rs/issues/27) | `CheckObjectStatus` inference and explicit markers | Open |
-| [#28](https://github.com/teaql/teaql-rs/issues/28) | `Language` code aliases and canonical codes | Open |
-| [#29](https://github.com/teaql/teaql-rs/issues/29) | Hierarchical trace-chain recovery | Open |
-| [#30](https://github.com/teaql/teaql-rs/issues/30) | `GraphMutationPlan` batching keys and counts | Open |
-| [#31](https://github.com/teaql/teaql-rs/issues/31) | `MutationRequest` trace and comment accessors | Open |
-| [#32](https://github.com/teaql/teaql-rs/issues/32) | `WebResponse` constructors and JSON shape | Open |
-| [#33](https://github.com/teaql/teaql-rs/issues/33) | `TeaContext` request-header extraction | Open |
-| [#34](https://github.com/teaql/teaql-rs/issues/34) | Recursive JSON-to-`Value` conversion for Meilisearch | Open |
+None! All planned issues have been completed and merged.
 
 ## Preserved Local Work
 
@@ -161,7 +147,3 @@ stash@{0}: On 20260709-source-location-trace: wip/20260709-source-location-trace
 ```
 
 This stash belongs to the pre-existing `20260709-source-location-trace` work. Do not pop, drop, or modify it as part of the unit-test backlog unless explicitly requested.
-
-## Resume Point
-
-When work resumes, begin with issue [#24](https://github.com/teaql/teaql-rs/issues/24). First confirm that `master` is current and the preserved stash still exists, then create a non-`codex` branch dedicated to #24. Do not bundle any later backlog issue into that branch.
