@@ -89,3 +89,64 @@ impl EntityGraph {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{DataType, EntityDescriptor, EntityError, PropertyDescriptor, Value};
+    use std::collections::BTreeMap;
+
+    // A dummy entity for testing
+    #[derive(Debug, Clone)]
+    struct DummyEntity {
+        record: Record,
+    }
+
+    impl Entity for DummyEntity {
+        fn into_record(self) -> Record {
+            self.record
+        }
+
+        fn from_record(record: Record) -> Result<Self, EntityError> {
+            Ok(Self { record })
+        }
+    }
+
+    impl TeaqlEntity for DummyEntity {
+        fn entity_descriptor() -> EntityDescriptor {
+            EntityDescriptor::new("Dummy")
+                .property(PropertyDescriptor::new("id", DataType::I64).id())
+        }
+    }
+
+    #[test]
+    fn test_entity_graph_builder_annotations_and_child_operations() {
+        let mut rec1 = BTreeMap::new();
+        rec1.insert("id".to_string(), Value::I64(1));
+        let entity1 = DummyEntity { record: rec1 };
+
+        let mut rec2 = BTreeMap::new();
+        rec2.insert("id".to_string(), Value::I64(2));
+        let entity2 = DummyEntity { record: rec2 };
+
+        let graph = EntityGraph::new(entity1)
+            .comment("Parent creation")
+            .child(
+                "dummy_items",
+                EntityGraph::new(entity2).comment("Child deletion").delete(),
+            )
+            .build();
+
+        let root = graph.root;
+        assert_eq!(root.entity_type, "Dummy");
+        assert_eq!(root.comment.as_deref(), Some("Parent creation"));
+        assert_eq!(root.operation, EntityGraphOperation::Save);
+        assert_eq!(root.children.len(), 1);
+
+        let (rel_name, child_node) = &root.children[0];
+        assert_eq!(rel_name, "dummy_items");
+        assert_eq!(child_node.entity_type, "Dummy");
+        assert_eq!(child_node.comment.as_deref(), Some("Child deletion"));
+        assert_eq!(child_node.operation, EntityGraphOperation::Delete);
+    }
+}
