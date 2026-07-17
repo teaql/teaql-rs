@@ -294,3 +294,70 @@ impl<'a> ScopedCommentNode<'a> {
         chain
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hierarchical_trace_chain_recovery() {
+        let root_trace = TraceNode {
+            entity_type: "User".to_string(),
+            entity_id: Some(1),
+            comment: "Create User".to_string(),
+        };
+
+        let child_trace = TraceNode {
+            entity_type: "Profile".to_string(),
+            entity_id: None,
+            comment: "Create Profile".to_string(),
+        };
+
+        let empty_comment_trace = TraceNode {
+            entity_type: "AuditLog".to_string(),
+            entity_id: None,
+            comment: "".to_string(),
+        };
+
+        // Test ScopedCommentNode
+        let root_scope = ScopedCommentNode {
+            parent: None,
+            track: root_trace.clone(),
+        };
+        let child_scope = ScopedCommentNode {
+            parent: Some(&root_scope),
+            track: child_trace.clone(),
+        };
+        let empty_scope = ScopedCommentNode {
+            parent: Some(&child_scope),
+            track: empty_comment_trace.clone(),
+        };
+
+        let chain = empty_scope.to_trace_chain();
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0], root_trace);
+        assert_eq!(chain[1], child_trace);
+
+        // Test TraceScopeToken
+        let root_token = Arc::new(TraceScopeToken {
+            parent: None,
+            track: root_trace.clone(),
+            node_index: 0,
+        });
+        let child_token = Arc::new(TraceScopeToken {
+            parent: Some(root_token),
+            track: child_trace.clone(),
+            node_index: 1,
+        });
+        let empty_token = Arc::new(TraceScopeToken {
+            parent: Some(child_token),
+            track: empty_comment_trace,
+            node_index: 2,
+        });
+
+        let chain = empty_token.recover_trace_chain();
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0], root_trace);
+        assert_eq!(chain[1], child_trace);
+    }
+}
