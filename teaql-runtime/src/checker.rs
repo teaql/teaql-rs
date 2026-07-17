@@ -388,3 +388,39 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_object_location_formatting_and_nesting_levels() {
+        // Test root
+        let root = ObjectLocation::root();
+        assert_eq!(root.to_string(), "$");
+        assert!(root.is_root());
+        assert_eq!(root.level(), 0);
+
+        // Test hash_root
+        let hash = ObjectLocation::hash_root("user");
+        assert_eq!(hash.to_string(), "user");
+        assert!(!hash.is_root());
+        assert_eq!(hash.level(), 1);
+
+        // Test array_root
+        let arr = ObjectLocation::array_root(5);
+        assert_eq!(arr.to_string(), "[5]");
+        assert!(!arr.is_root());
+        assert_eq!(arr.level(), 1);
+
+        // Test nesting
+        let nested = ObjectLocation::root()
+            .member("users")
+            .element(2)
+            .member("address")
+            .member("city");
+
+        assert_eq!(nested.to_string(), "users[2].address.city");
+        assert_eq!(nested.level(), 4);
+    }
+}
