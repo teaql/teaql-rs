@@ -241,3 +241,87 @@ impl Value {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn value_try_i64_accepts_representable_numeric_variants() {
+        assert_eq!(Value::I64(i64::MIN).try_i64(), Some(i64::MIN));
+        assert_eq!(Value::I64(i64::MAX).try_i64(), Some(i64::MAX));
+        assert_eq!(Value::U64(i64::MAX as u64).try_i64(), Some(i64::MAX));
+        assert_eq!(Value::Decimal(Decimal::from(-42)).try_i64(), Some(-42));
+    }
+
+    #[test]
+    fn value_try_i64_rejects_unsigned_overflow_and_unrelated_variants() {
+        assert_eq!(Value::U64(i64::MAX as u64 + 1).try_i64(), None);
+        assert_eq!(Value::U64(u64::MAX).try_i64(), None);
+        assert_eq!(Value::F64(42.0).try_i64(), None);
+        assert_eq!(Value::Text("42".to_owned()).try_i64(), None);
+        assert_eq!(Value::Null.try_i64(), None);
+    }
+
+    #[test]
+    fn value_try_u64_accepts_representable_numeric_variants() {
+        assert_eq!(Value::U64(0).try_u64(), Some(0));
+        assert_eq!(Value::U64(u64::MAX).try_u64(), Some(u64::MAX));
+        assert_eq!(Value::I64(i64::MAX).try_u64(), Some(i64::MAX as u64));
+        assert_eq!(Value::Decimal(Decimal::from(42)).try_u64(), Some(42));
+    }
+
+    #[test]
+    fn value_try_u64_rejects_negative_and_unrelated_variants() {
+        assert_eq!(Value::I64(-1).try_u64(), None);
+        assert_eq!(Value::Decimal(Decimal::from(-1)).try_u64(), None);
+        assert_eq!(Value::F64(42.0).try_u64(), None);
+        assert_eq!(Value::Text("42".to_owned()).try_u64(), None);
+        assert_eq!(Value::Null.try_u64(), None);
+    }
+
+    #[test]
+    fn value_try_decimal_accepts_decimal_integer_and_text_variants() {
+        let decimal = Decimal::from_str("123.450").expect("valid decimal");
+
+        assert_eq!(Value::Decimal(decimal).try_decimal(), Some(decimal));
+        assert_eq!(
+            Value::I64(i64::MIN).try_decimal(),
+            Some(Decimal::from(i64::MIN))
+        );
+        assert_eq!(
+            Value::U64(u64::MAX).try_decimal(),
+            Some(Decimal::from(u64::MAX))
+        );
+        assert_eq!(
+            Value::Text("123.450".to_owned()).try_decimal(),
+            Some(decimal)
+        );
+    }
+
+    #[test]
+    fn value_try_decimal_rejects_invalid_text_and_unrelated_variants() {
+        assert_eq!(Value::Text("not-a-decimal".to_owned()).try_decimal(), None);
+        assert_eq!(Value::Bool(true).try_decimal(), None);
+        assert_eq!(Value::F64(1.5).try_decimal(), None);
+        assert_eq!(Value::Null.try_decimal(), None);
+    }
+
+    #[test]
+    fn value_try_f64_accepts_supported_numeric_variants() {
+        assert_eq!(Value::F64(1.25).try_f64(), Some(1.25));
+        assert_eq!(Value::I64(-2).try_f64(), Some(-2.0));
+        assert_eq!(Value::U64(2).try_f64(), Some(2.0));
+        assert_eq!(
+            Value::Decimal(Decimal::from_str("1.5").expect("valid decimal")).try_f64(),
+            Some(1.5)
+        );
+    }
+
+    #[test]
+    fn value_try_f64_rejects_unrelated_variants() {
+        assert_eq!(Value::Text("1.5".to_owned()).try_f64(), None);
+        assert_eq!(Value::Bool(true).try_f64(), None);
+        assert_eq!(Value::Null.try_f64(), None);
+    }
+}
