@@ -324,4 +324,79 @@ mod tests {
         assert_eq!(Value::Bool(true).try_f64(), None);
         assert_eq!(Value::Null.try_f64(), None);
     }
+
+    #[test]
+    fn value_try_date_accepts_date_and_iso_date_text() {
+        let leap_day = NaiveDate::from_ymd_opt(2024, 2, 29).expect("valid leap day");
+
+        assert_eq!(Value::Date(leap_day).try_date(), Some(leap_day));
+        assert_eq!(
+            Value::Text("2024-02-29".to_owned()).try_date(),
+            Some(leap_day)
+        );
+    }
+
+    #[test]
+    fn value_try_date_rejects_invalid_dates_and_unrelated_variants() {
+        assert_eq!(Value::Text("2023-02-29".to_owned()).try_date(), None);
+        assert_eq!(
+            Value::Text("2024-02-29T00:00:00Z".to_owned()).try_date(),
+            None
+        );
+        assert_eq!(Value::I64(20240229).try_date(), None);
+        assert_eq!(Value::Null.try_date(), None);
+    }
+
+    #[test]
+    fn value_try_timestamp_accepts_timestamp_and_supported_text_formats() {
+        let utc_timestamp = DateTime::parse_from_rfc3339("2024-01-02T03:04:05Z")
+            .expect("valid RFC 3339 timestamp")
+            .with_timezone(&Utc);
+        let offset_timestamp = DateTime::parse_from_rfc3339("2024-01-02T03:04:05+08:00")
+            .expect("valid RFC 3339 timestamp")
+            .with_timezone(&Utc);
+        let naive_timestamp = NaiveDate::from_ymd_opt(2024, 1, 2)
+            .expect("valid date")
+            .and_hms_opt(3, 4, 5)
+            .expect("valid time");
+        let midnight = NaiveDate::from_ymd_opt(2024, 1, 2)
+            .expect("valid date")
+            .and_hms_opt(0, 0, 0)
+            .expect("valid time");
+
+        assert_eq!(
+            Value::Timestamp(utc_timestamp).try_timestamp(),
+            Some(utc_timestamp)
+        );
+        assert_eq!(
+            Value::Text("2024-01-02T03:04:05+08:00".to_owned()).try_timestamp(),
+            Some(offset_timestamp)
+        );
+        assert_eq!(
+            Value::Text("2024-01-02 03:04:05".to_owned()).try_timestamp(),
+            Some(DateTime::from_naive_utc_and_offset(naive_timestamp, Utc))
+        );
+        assert_eq!(
+            Value::Text("2024-01-02".to_owned()).try_timestamp(),
+            Some(DateTime::from_naive_utc_and_offset(midnight, Utc))
+        );
+    }
+
+    #[test]
+    fn value_try_timestamp_normalizes_offsets_and_rejects_invalid_input() {
+        let expected_utc = DateTime::parse_from_rfc3339("2024-01-01T19:04:05Z")
+            .expect("valid RFC 3339 timestamp")
+            .with_timezone(&Utc);
+
+        assert_eq!(
+            Value::Text("2024-01-02T03:04:05+08:00".to_owned()).try_timestamp(),
+            Some(expected_utc)
+        );
+        assert_eq!(
+            Value::Text("2024-13-40 25:61:61".to_owned()).try_timestamp(),
+            None
+        );
+        assert_eq!(Value::Bool(true).try_timestamp(), None);
+        assert_eq!(Value::Null.try_timestamp(), None);
+    }
 }
