@@ -360,4 +360,92 @@ mod tests {
         assert_eq!(chain[0], root_trace);
         assert_eq!(chain[1], child_trace);
     }
+
+    #[test]
+    fn test_graph_mutation_plan_batching_keys_and_counts() {
+        let mut plan = GraphMutationPlan::default();
+
+        // Push 2 creates for User
+        plan.push(
+            "User",
+            GraphMutationKind::Create,
+            Record::new(),
+            vec![],
+            None,
+            None,
+        );
+        plan.push(
+            "User",
+            GraphMutationKind::Create,
+            Record::new(),
+            vec![],
+            None,
+            None,
+        );
+
+        // Push 2 updates for User with same fields
+        plan.push(
+            "User",
+            GraphMutationKind::Update,
+            Record::new(),
+            vec!["name".to_string()],
+            None,
+            None,
+        );
+        plan.push(
+            "User",
+            GraphMutationKind::Update,
+            Record::new(),
+            vec!["name".to_string()],
+            None,
+            None,
+        );
+
+        // Push 1 update for User with different fields (should be separate batch)
+        plan.push(
+            "User",
+            GraphMutationKind::Update,
+            Record::new(),
+            vec!["email".to_string()],
+            None,
+            None,
+        );
+
+        // Push 1 create for Profile
+        plan.push(
+            "Profile",
+            GraphMutationKind::Create,
+            Record::new(),
+            vec![],
+            None,
+            None,
+        );
+
+        assert_eq!(plan.len(), 6);
+
+        // Rebuild batches
+        plan.rebuild_batches();
+
+        // We expect 4 batches:
+        // 1. User Create (2 items)
+        // 2. User Update ["email"] (1 item)
+        // 3. User Update ["name"] (2 items)
+        // 4. Profile Create (1 item)
+        assert_eq!(plan.batch_count(), 4);
+
+        let counts = plan.grouped_counts();
+        assert_eq!(counts.len(), 3);
+        assert_eq!(
+            counts.get(&("User".to_string(), GraphMutationKind::Create)),
+            Some(&2)
+        );
+        assert_eq!(
+            counts.get(&("User".to_string(), GraphMutationKind::Update)),
+            Some(&3)
+        );
+        assert_eq!(
+            counts.get(&("Profile".to_string(), GraphMutationKind::Create)),
+            Some(&1)
+        );
+    }
 }
