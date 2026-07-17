@@ -3,7 +3,7 @@ use serde::{Deserialize, Deserializer, Serializer};
 pub mod trimmed_string {
     use super::*;
 
-    pub fn serialize<S>(value: &String, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(value: &str, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
