@@ -402,3 +402,104 @@ fn id_key(value: &Value) -> String {
         Value::List(_) => "list".to_owned(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::SmartList;
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct Item {
+        id: u64,
+        value: &'static str,
+    }
+
+    #[test]
+    fn smart_list_merge_by_replaces_in_place_and_appends_new_keys() {
+        let mut items = SmartList::from(vec![
+            Item {
+                id: 1,
+                value: "one",
+            },
+            Item {
+                id: 2,
+                value: "old two",
+            },
+            Item {
+                id: 4,
+                value: "four",
+            },
+        ]);
+
+        items.merge_by(
+            [
+                Item {
+                    id: 2,
+                    value: "new two",
+                },
+                Item {
+                    id: 3,
+                    value: "three",
+                },
+            ],
+            |item| item.id,
+        );
+
+        assert_eq!(
+            items.into_vec(),
+            vec![
+                Item {
+                    id: 1,
+                    value: "one",
+                },
+                Item {
+                    id: 2,
+                    value: "new two",
+                },
+                Item {
+                    id: 4,
+                    value: "four",
+                },
+                Item {
+                    id: 3,
+                    value: "three",
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn smart_list_merge_by_keeps_one_position_for_repeated_incoming_keys() {
+        let mut items = SmartList::from(vec![Item {
+            id: 1,
+            value: "one",
+        }]);
+
+        items.merge_by(
+            [
+                Item {
+                    id: 2,
+                    value: "first two",
+                },
+                Item {
+                    id: 2,
+                    value: "final two",
+                },
+            ],
+            |item| item.id,
+        );
+
+        assert_eq!(
+            items.into_vec(),
+            vec![
+                Item {
+                    id: 1,
+                    value: "one",
+                },
+                Item {
+                    id: 2,
+                    value: "final two",
+                },
+            ]
+        );
+    }
+}
