@@ -128,7 +128,7 @@ fn test_incremental_ledger_observability() {
     // Simulate batching deletes
     if !deleted.is_empty() {
         let mut ids: Vec<_> = deleted.iter().map(|k| k.id.clone()).collect();
-        ids.sort_by(|a, b| a.try_u64().unwrap().cmp(&b.try_u64().unwrap()));
+        ids.sort_by_key(|a| a.try_u64().unwrap());
         // Note: in a real executor, it groups by the expected version or uses parameter binding
         println!(
             "> BATCH DELETE FROM Task WHERE id IN {:?} AND version = [各自的基准版本]",
@@ -151,7 +151,7 @@ fn test_incremental_ledger_observability() {
     }
 
     for (sig, mut keys) in batches {
-        keys.sort_by(|a, b| a.id.try_u64().unwrap().cmp(&b.id.try_u64().unwrap()));
+        keys.sort_by_key(|a| a.id.try_u64().unwrap());
         println!(
             "> BATCH UPDATE/INSERT Task SET [{}] FOR IDs: {:?}",
             sig,

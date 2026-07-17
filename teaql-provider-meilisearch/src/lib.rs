@@ -230,7 +230,7 @@ mod tests {
             "null_val": null,
             "bool_val": true,
             "int_val": 42,
-            "float_val": 3.14,
+            "float_val": 1.23,
             "str_val": "hello",
             "arr_val": [1, "two", null],
             "obj_val": {
@@ -244,7 +244,7 @@ mod tests {
                 assert_eq!(record.get("null_val"), Some(&Value::Null));
                 assert_eq!(record.get("bool_val"), Some(&Value::Bool(true)));
                 assert_eq!(record.get("int_val"), Some(&Value::I64(42)));
-                assert_eq!(record.get("float_val"), Some(&Value::F64(3.14)));
+                assert_eq!(record.get("float_val"), Some(&Value::F64(1.23)));
                 assert_eq!(
                     record.get("str_val"),
                     Some(&Value::Text("hello".to_string()))

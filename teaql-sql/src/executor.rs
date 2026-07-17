@@ -1,3 +1,4 @@
+#![allow(clippy::manual_async_fn)]
 #![allow(async_fn_in_trait)]
 
 use std::time::SystemTime;
