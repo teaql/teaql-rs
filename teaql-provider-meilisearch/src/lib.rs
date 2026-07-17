@@ -219,3 +219,58 @@ impl MutationExecutor for MeilisearchProvider {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_recursive_json_to_value_conversion_for_meilisearch() {
+        let json = serde_json::json!({
+            "null_val": null,
+            "bool_val": true,
+            "int_val": 42,
+            "float_val": 3.14,
+            "str_val": "hello",
+            "arr_val": [1, "two", null],
+            "obj_val": {
+                "nested": "value"
+            }
+        });
+
+        let val = json_to_value(json);
+        match val {
+            Value::Object(record) => {
+                assert_eq!(record.get("null_val"), Some(&Value::Null));
+                assert_eq!(record.get("bool_val"), Some(&Value::Bool(true)));
+                assert_eq!(record.get("int_val"), Some(&Value::I64(42)));
+                assert_eq!(record.get("float_val"), Some(&Value::F64(3.14)));
+                assert_eq!(
+                    record.get("str_val"),
+                    Some(&Value::Text("hello".to_string()))
+                );
+
+                let arr = record.get("arr_val").unwrap();
+                if let Value::List(list) = arr {
+                    assert_eq!(list.len(), 3);
+                    assert_eq!(list[0], Value::I64(1));
+                    assert_eq!(list[1], Value::Text("two".to_string()));
+                    assert_eq!(list[2], Value::Null);
+                } else {
+                    panic!("Expected List");
+                }
+
+                let obj = record.get("obj_val").unwrap();
+                if let Value::Object(nested) = obj {
+                    assert_eq!(
+                        nested.get("nested"),
+                        Some(&Value::Text("value".to_string()))
+                    );
+                } else {
+                    panic!("Expected Object");
+                }
+            }
+            _ => panic!("Expected Object"),
+        }
+    }
+}
