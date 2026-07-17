@@ -77,6 +77,7 @@ pub struct EntityGraph {
 
 impl EntityGraph {
     /// Start building from an entity.
+    #[allow(clippy::new_ret_no_self)]
     pub fn new<T: Entity + TeaqlEntity>(entity: T) -> EntityGraphBuilder {
         EntityGraphBuilder {
             node: EntityGraphNode {

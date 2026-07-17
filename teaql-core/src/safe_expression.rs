@@ -55,6 +55,7 @@ impl TeaqlEmpty for Value {
 #[derive(Clone)]
 pub struct SafeExpression<R, T> {
     root: Arc<R>,
+    #[allow(clippy::type_complexity)]
     evaluator: Arc<dyn Fn(&R) -> Option<T> + Send + Sync>,
 }
 
