@@ -2708,6 +2708,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "teaql-cloud-actuator"
+version = "4.1.1"
+dependencies = [
+ "async-trait",
+ "axum",
+ "serde",
+ "serde_json",
+ "teaql-cloud-core",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "teaql-cloud-core"
 version = "4.1.1"
 dependencies = [
