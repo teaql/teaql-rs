@@ -9,6 +9,11 @@ members = [
     "teaql-macros",
     "examples", "teaql-data-service", "teaql-web-integration-axum", "teaql-cache-integration-redis", "teaql-provider-meilisearch",
     "teaql-provider-linux",
+    "teaql-cloud-core",
+    "teaql-cloud-actuator",
+    "teaql-cloud-nacos",
+    "teaql-cloud-starter",
+    "teaql-cloud-tests",
 ]
 resolver = "2"
 

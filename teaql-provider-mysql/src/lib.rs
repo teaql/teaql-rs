@@ -643,6 +643,7 @@ fn bind_mysql(value: &Value) -> Result<mysql_async::Value, MutationExecutorError
         )),
         Value::Object(_) => Err(MutationExecutorError::UnsupportedValue("object")),
         Value::List(_) => Err(MutationExecutorError::UnsupportedValue("list")),
+        Value::TypedNull(_) => Ok(mysql_async::Value::NULL),
     }
 }
 

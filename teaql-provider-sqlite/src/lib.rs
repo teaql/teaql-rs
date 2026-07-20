@@ -637,6 +637,7 @@ fn bind_sqlite_value(value: &Value) -> Result<SqliteValue, MutationExecutorError
         Value::Timestamp(v) => Ok(SqliteValue::Text(v.to_rfc3339())),
         Value::Object(_) => Err(MutationExecutorError::UnsupportedValue("object")),
         Value::List(_) => Err(MutationExecutorError::UnsupportedValue("list")),
+        Value::TypedNull(_) => Ok(SqliteValue::Null),
     }
 }
 

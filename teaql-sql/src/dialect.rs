@@ -288,7 +288,11 @@ pub trait SqlDialect {
         for property in &entity.properties {
             if let Some(value) = command.values.get(&property.name) {
                 columns.push(self.quote_ident(&property.column_name));
-                params.push(value.clone());
+                let mut v = value.clone();
+                if let Value::Null = v {
+                    v = Value::TypedNull(property.data_type);
+                }
+                params.push(v);
                 placeholders.push(self.placeholder(params.len()));
             }
         }
@@ -341,10 +345,13 @@ pub trait SqlDialect {
         for record in &command.batch_values {
             let mut row_placeholders = Vec::new();
             for property in &columns {
-                let value = record
+                let mut value = record
                     .get(&property.name)
                     .cloned()
                     .unwrap_or(teaql_core::Value::Null);
+                if let Value::Null = value {
+                    value = Value::TypedNull(property.data_type);
+                }
                 params.push(value);
                 row_placeholders.push(self.placeholder(params.len()));
             }
@@ -382,7 +389,11 @@ pub trait SqlDialect {
                 continue;
             }
             if let Some(value) = command.values.get(&property.name) {
-                params.push(value.clone());
+                let mut v = value.clone();
+                if let Value::Null = v {
+                    v = Value::TypedNull(property.data_type);
+                }
+                params.push(v);
                 assignments.push(format!(
                     "{} = {}",
                     self.quote_ident(&property.column_name),
@@ -468,10 +479,13 @@ pub trait SqlDialect {
 
             for (i, record) in command.batch_values.iter().enumerate() {
                 let id = &command.batch_ids[i];
-                let val = record
+                let mut val = record
                     .get(field_name)
                     .cloned()
                     .unwrap_or(teaql_core::Value::Null);
+                if let Value::Null = val {
+                    val = Value::TypedNull(property.data_type);
+                }
 
                 params.push(id.clone());
                 let id_ph = self.placeholder(params.len());
@@ -1106,5 +1120,47 @@ pub trait SqlDialect {
             true => Ok("*".to_owned()),
             false => self.column_sql(entity, &aggregate.field),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use teaql_core::{DataType, EntityDescriptor, InsertCommand, PropertyDescriptor, Value};
+    use crate::DatabaseKind;
+
+    struct TestDialect;
+    impl crate::SqlDialect for TestDialect {
+        fn kind(&self) -> DatabaseKind {
+            DatabaseKind::PostgreSql
+        }
+        fn quote_ident(&self, ident: &str) -> String {
+            ident.to_owned()
+        }
+        fn placeholder(&self, index: usize) -> String {
+            format!("${index}")
+        }
+        fn schema_type_sql(
+            &self,
+            _data_type: DataType,
+            _property: &PropertyDescriptor,
+        ) -> Result<&'static str, SqlCompileError> {
+            Ok("TEST")
+        }
+    }
+
+    #[test]
+    fn test_regression_issue_56_typed_null_conversion() {
+        let dialect = TestDialect;
+        let mut entity = EntityDescriptor::new("User");
+        entity.properties.push(PropertyDescriptor::new("paid_at", DataType::Timestamp));
+
+        let mut command = InsertCommand::new("User");
+        command = command.value("paid_at", Value::Null);
+
+        let query = dialect.compile_insert(&entity, &command).unwrap();
+        // The value should be converted to TypedNull(Timestamp)
+        assert_eq!(query.params.len(), 1);
+        assert_eq!(query.params[0], Value::TypedNull(DataType::Timestamp));
     }
 }

@@ -1,0 +1,16 @@
+[package]
+name = "teaql-cloud-starter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "One-line cloud bootstrap for TeaQL Rust services (Spring Boot Starter equivalent)"
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+teaql-cloud-core = { path = "../teaql-cloud-core", version = "4.1.1" }
+teaql-cloud-actuator = { path = "../teaql-cloud-actuator", version = "4.1.1" }
+teaql-cloud-nacos = { path = "../teaql-cloud-nacos", version = "4.1.1" }
+axum = { version = "0.7" }
+tokio = { version = "1", features = ["full"] }

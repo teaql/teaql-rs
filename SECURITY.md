@@ -19,6 +19,10 @@ We take the security of TeaQL seriously. If you discover a security vulnerabilit
 2. Provide a detailed description of the vulnerability, including steps to reproduce it.
 3. Provide details about your environment (e.g., OS, TeaQL version).
 
-### Response Timeline
+### Response Timeline and Resolution
 
-We aim to respond to security reports within 48 hours. We will keep you informed of our progress towards a fix and a public announcement.
+We aim to respond to security reports within 48 hours. We will keep you informed of our progress towards a fix and coordinate a public announcement. Once a patch is developed, we will follow responsible disclosure practices before publicly disclosing the vulnerability.
+
+### Vulnerability Report Credit
+
+We greatly appreciate the efforts of security researchers and users who report vulnerabilities. Whenever a vulnerability is responsibly disclosed and fixed, we will publicly acknowledge and credit the reporter in our release notes and security advisories, unless they prefer to remain anonymous.
