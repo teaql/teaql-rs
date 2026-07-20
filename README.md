@@ -50,6 +50,36 @@ Progress tracking lives in [PROGRESS.md](./PROGRESS.md).
 
 Current published release: `4.0.0`.
 
+## Cloud Integration
+
+TeaQL provides cloud-native crates for embedding Rust services into Java (Spring Cloud) microservice architectures:
+
+```rust
+use teaql_cloud_starter::CloudApp;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    CloudApp::new()
+        .nacos("127.0.0.1:8848")
+        .namespace("production")
+        .service_name("order-service-rust")
+        .port(8080)
+        .routes(my_business_routes())
+        .start()
+        .await?;
+    Ok(())
+}
+```
+
+| Crate | Purpose |
+|-------|---------|
+| `teaql-cloud-core` | Backend-agnostic traits (ServiceRegistry, ServiceDiscovery, ConfigSource, HealthIndicator, MetricsCollector) |
+| `teaql-cloud-actuator` | Spring Boot Actuator-compatible endpoints (health, info, metrics) |
+| `teaql-cloud-nacos` | Nacos v2 gRPC implementation |
+| `teaql-cloud-starter` | One-line bootstrap — connects Nacos, registers service, starts HTTP, graceful shutdown |
+
+See [design document](docs/2026-07-20-cloud-integration-design.md) for details.
+
 ## Build & Install
 
 To build TeaQL from source:
