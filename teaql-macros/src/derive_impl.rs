@@ -409,13 +409,9 @@ pub fn expand_teaql_reverse_relations(input: DeriveInput) -> proc_macro2::TokenS
         let field_name = field_ident.to_string();
 
         let parsed = crate::attr::parse_field_attrs(&field.attrs);
-        let mut rel_local_key = "id".to_owned();
-        let mut rel_foreign_key = "id".to_owned();
         if let Some(relation) = parsed.relation {
             let local_key = relation.local_key.unwrap_or_else(|| "id".to_owned());
             let foreign_key = relation.foreign_key.unwrap_or_else(|| "id".to_owned());
-            rel_local_key = local_key.clone();
-            rel_foreign_key = foreign_key.clone();
             let target = relation.target;
             let many = relation.many;
             let attach = relation.attach;
