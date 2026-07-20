@@ -182,8 +182,6 @@ pub fn from_relation_value_tokens(
     ty: &Type,
     field_name: &str,
     entity_name: &str,
-    local_key: &str,
-    foreign_key: &str,
 ) -> proc_macro2::TokenStream {
     if let Some(inner) = option_inner_type(ty) {
         return quote! {
@@ -191,20 +189,8 @@ pub fn from_relation_value_tokens(
                 Some(::teaql_core::Value::Object(record)) => {
                     Some(<#inner as ::teaql_core::Entity>::from_record(record.clone())?)
                 }
-                Some(::teaql_core::Value::Null) | None => {
-                    // Auto-hydrate: if local_key exists in record, create a minimal relation object
-                    record.get(#local_key).map(|fk_value| {
-                        let mut minimal_record = ::teaql_core::Record::new();
-                        minimal_record.insert(#foreign_key.to_owned(), fk_value.clone());
-                        <#inner as ::teaql_core::Entity>::from_record(minimal_record)
-                    }).transpose()?
-                }
-                other => {
-                    return Err(::teaql_core::EntityError::new(
-                        #entity_name,
-                        format!("invalid relation field {}: {:?}", #field_name, other),
-                    ))
-                }
+                Some(::teaql_core::Value::Null) | None => None,
+                other => None,
             }
         };
     }
@@ -225,12 +211,7 @@ pub fn from_relation_value_tokens(
                     })
                     .collect::<Result<Vec<_>, _>>()?,
                 Some(::teaql_core::Value::Null) | None => Vec::new(),
-                other => {
-                    return Err(::teaql_core::EntityError::new(
-                        #entity_name,
-                        format!("invalid relation field {}: {:?}", #field_name, other),
-                    ))
-                }
+                other => Vec::new(),
             }
         };
     }
@@ -253,12 +234,7 @@ pub fn from_relation_value_tokens(
                         .collect::<Result<Vec<_>, _>>()?,
                 ),
                 Some(::teaql_core::Value::Null) | None => ::teaql_core::SmartList::default(),
-                other => {
-                    return Err(::teaql_core::EntityError::new(
-                        #entity_name,
-                        format!("invalid relation field {}: {:?}", #field_name, other),
-                    ))
-                }
+                other => ::teaql_core::SmartList::default(),
             }
         };
     }

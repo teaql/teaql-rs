@@ -144,8 +144,6 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 &field.ty,
                 &field_name,
                 &entity_name,
-                &local_key,
-                &foreign_key,
             );
             let into_relation = into_relation_value_tokens(&field.ty, quote! { self.#field_ident });
             from_record_fields.push(quote! {
@@ -442,8 +440,6 @@ pub fn expand_teaql_reverse_relations(input: DeriveInput) -> proc_macro2::TokenS
             &field.ty,
             &field_name,
             &entity_name,
-            &rel_local_key,
-            &rel_foreign_key,
         );
         let into_value =
             crate::mapping::into_relation_value_tokens(&field.ty, quote! { self.#field_ident });
