@@ -153,7 +153,10 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             continue;
         }
 
-        let data_type = rust_type_to_data_type(&field.ty);
+        let mut data_type = rust_type_to_data_type(&field.ty);
+        if parsed.large_text {
+            data_type = quote! { ::teaql_core::DataType::LargeText };
+        }
         let column_name = parsed.column.unwrap_or_else(|| field_name.clone());
         let nullable = is_option(&field.ty);
         let id = parsed.id;

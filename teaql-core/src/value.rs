@@ -13,6 +13,7 @@ pub enum DataType {
     F64,
     Decimal,
     Text,
+    LargeText,
     Json,
     Date,
     Timestamp,

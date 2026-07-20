@@ -95,6 +95,7 @@ fn default_table_name(entity_name: &str) -> String {
 pub struct ParsedFieldAttrs {
     pub id: bool,
     pub version: bool,
+    pub large_text: bool,
     pub dynamic: bool,
     pub skip: bool,
     pub boxed_relations: bool,
@@ -125,6 +126,8 @@ pub fn parse_field_attrs(attrs: &[syn::Attribute]) -> ParsedFieldAttrs {
                 parsed.id = true;
             } else if meta.path.is_ident("version") {
                 parsed.version = true;
+            } else if meta.path.is_ident("large_text") {
+                parsed.large_text = true;
             } else if meta.path.is_ident("dynamic") {
                 parsed.dynamic = true;
             } else if meta.path.is_ident("skip") {

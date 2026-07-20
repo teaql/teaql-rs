@@ -65,7 +65,8 @@ pub trait SqlDialect {
             DataType::I64 | DataType::U64 => Ok("INTEGER"),
             DataType::F64 => Ok("REAL"),
             DataType::Decimal => Ok("NUMERIC"),
-            DataType::Text | DataType::Json | DataType::Date | DataType::Timestamp => Ok("TEXT"),
+            DataType::Text => Ok("VARCHAR(255)"),
+            DataType::LargeText | DataType::Json | DataType::Date | DataType::Timestamp => Ok("TEXT"),
         }
     }
 
@@ -152,7 +153,7 @@ pub trait SqlDialect {
         match data_type {
             DataType::Bool => "FALSE",
             DataType::I64 | DataType::U64 | DataType::F64 | DataType::Decimal => "0",
-            DataType::Text => "''",
+            DataType::Text | DataType::LargeText => "''",
             DataType::Json => "'{}'",
             DataType::Date => "'1970-01-01'",
             DataType::Timestamp => "'1970-01-01 00:00:00Z'",
@@ -216,7 +217,9 @@ pub trait SqlDialect {
             let mut or_parts = Vec::new();
             let like_value = format!("%{}%", search_text);
             for property in &entity.properties {
-                if property.data_type == teaql_core::DataType::Text {
+                if property.data_type == teaql_core::DataType::Text
+                    || property.data_type == teaql_core::DataType::LargeText
+                {
                     params.push(teaql_core::Value::from(like_value.clone()));
                     or_parts.push(format!(
                         "{} LIKE {}",
