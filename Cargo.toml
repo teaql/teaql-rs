@@ -13,6 +13,7 @@ members = [
     "teaql-cloud-actuator",
     "teaql-cloud-nacos",
     "teaql-cloud-starter",
+    "teaql-cloud-tests",
 ]
 resolver = "2"
 
