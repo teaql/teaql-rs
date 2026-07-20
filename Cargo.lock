@@ -3015,6 +3015,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "teaql-cloud-tests"
+version = "4.1.1"
+dependencies = [
+ "async-trait",
+ "axum 0.7.9",
+ "serde_json",
+ "teaql-cloud-actuator",
+ "teaql-cloud-core",
+ "teaql-cloud-nacos",
+ "teaql-cloud-starter",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "teaql-core"
 version = "4.1.1"
 dependencies = [
