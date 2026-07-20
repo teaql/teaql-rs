@@ -140,11 +140,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                         #delete_missing
                 );
             });
-            let from_relation = from_relation_value_tokens(
-                &field.ty,
-                &field_name,
-                &entity_name,
-            );
+            let from_relation = from_relation_value_tokens(&field.ty, &field_name, &entity_name);
             let into_relation = into_relation_value_tokens(&field.ty, quote! { self.#field_ident });
             from_record_fields.push(quote! {
                 #field_ident: #from_relation
@@ -436,11 +432,8 @@ pub fn expand_teaql_reverse_relations(input: DeriveInput) -> proc_macro2::TokenS
             });
         }
 
-        let from_value = crate::mapping::from_relation_value_tokens(
-            &field.ty,
-            &field_name,
-            &entity_name,
-        );
+        let from_value =
+            crate::mapping::from_relation_value_tokens(&field.ty, &field_name, &entity_name);
         let into_value =
             crate::mapping::into_relation_value_tokens(&field.ty, quote! { self.#field_ident });
 

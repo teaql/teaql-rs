@@ -1126,8 +1126,8 @@ pub trait SqlDialect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use teaql_core::{DataType, EntityDescriptor, InsertCommand, PropertyDescriptor, Value};
     use crate::DatabaseKind;
+    use teaql_core::{DataType, EntityDescriptor, InsertCommand, PropertyDescriptor, Value};
 
     struct TestDialect;
     impl crate::SqlDialect for TestDialect {
@@ -1153,7 +1153,9 @@ mod tests {
     fn test_regression_issue_56_typed_null_conversion() {
         let dialect = TestDialect;
         let mut entity = EntityDescriptor::new("User");
-        entity.properties.push(PropertyDescriptor::new("paid_at", DataType::Timestamp));
+        entity
+            .properties
+            .push(PropertyDescriptor::new("paid_at", DataType::Timestamp));
 
         let mut command = InsertCommand::new("User");
         command = command.value("paid_at", Value::Null);
