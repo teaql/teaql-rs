@@ -139,6 +139,7 @@ fn sql_literal(value: &Value, kind: DatabaseKind) -> String {
                 _ => format!("({values})"),
             }
         }
+        Value::TypedNull(_) => "NULL".to_owned(),
     }
 }
 

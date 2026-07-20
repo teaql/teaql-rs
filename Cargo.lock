@@ -3112,6 +3112,7 @@ dependencies = [
 name = "teaql-provider-postgres"
 version = "4.1.1"
 dependencies = [
+ "bytes",
  "chrono",
  "deadpool-postgres",
  "rust_decimal",

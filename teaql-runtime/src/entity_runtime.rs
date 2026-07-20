@@ -57,6 +57,7 @@ fn value_key(value: &Value) -> String {
         Value::Timestamp(value) => format!("timestamp:{}", value.to_rfc3339()),
         Value::Object(_) => "object".to_owned(),
         Value::List(_) => "list".to_owned(),
+        Value::TypedNull(_) => "null".to_owned(),
     }
 }
 

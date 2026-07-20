@@ -674,6 +674,31 @@ fn try_parse_datetime_from_str(s: &str) -> Option<chrono::DateTime<chrono::Utc>>
     None
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PgNull;
+
+impl tokio_postgres::types::ToSql for PgNull {
+    fn to_sql(
+        &self,
+        ty: &tokio_postgres::types::Type,
+        out: &mut bytes::BytesMut,
+    ) -> Result<tokio_postgres::types::IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        Ok(tokio_postgres::types::IsNull::Yes)
+    }
+
+    fn accepts(ty: &tokio_postgres::types::Type) -> bool {
+        true
+    }
+
+    fn to_sql_checked(
+        &self,
+        ty: &tokio_postgres::types::Type,
+        out: &mut bytes::BytesMut,
+    ) -> Result<tokio_postgres::types::IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        Ok(tokio_postgres::types::IsNull::Yes)
+    }
+}
+
 struct PgArgs {
     values: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>>,
 }
@@ -689,7 +714,7 @@ impl PgArgs {
 fn bind_pg(args: &mut PgArgs, value: &Value) -> Result<(), MutationExecutorError> {
     match value {
         Value::Null => {
-            args.add(Option::<i32>::None);
+            args.add(PgNull);
         }
         Value::Bool(v) => args.add(*v),
         Value::I64(v) => args.add(*v),
@@ -714,6 +739,16 @@ fn bind_pg(args: &mut PgArgs, value: &Value) -> Result<(), MutationExecutorError
         Value::Timestamp(v) => args.add(*v),
         Value::Object(_) => return Err(MutationExecutorError::UnsupportedValue("object")),
         Value::List(values) => bind_pg_list(args, values)?,
+        Value::TypedNull(dt) => match dt {
+            DataType::Bool => args.add(Option::<bool>::None),
+            DataType::I64 | DataType::U64 => args.add(Option::<i64>::None),
+            DataType::F64 => args.add(Option::<f64>::None),
+            DataType::Decimal => args.add(Option::<Decimal>::None),
+            DataType::Text => args.add(Option::<String>::None),
+            DataType::Json => args.add(Option::<serde_json::Value>::None),
+            DataType::Date => args.add(Option::<NaiveDate>::None),
+            DataType::Timestamp => args.add(Option::<DateTime<Utc>>::None),
+        },
     }
     Ok(())
 }
@@ -813,6 +848,7 @@ fn bind_pg_list(args: &mut PgArgs, values: &[Value]) -> Result<(), MutationExecu
         Value::Json(_) => return Err(MutationExecutorError::UnsupportedValue("json list")),
         Value::Object(_) => return Err(MutationExecutorError::UnsupportedValue("object list")),
         Value::List(_) => return Err(MutationExecutorError::UnsupportedValue("nested list")),
+        Value::TypedNull(_) => return Err(MutationExecutorError::UnsupportedValue("null list")),
     }
     Ok(())
 }

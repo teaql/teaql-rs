@@ -32,6 +32,7 @@ pub enum Value {
     Timestamp(DateTime<Utc>),
     Object(BTreeMap<String, Value>),
     List(Vec<Value>),
+    TypedNull(DataType),
 }
 
 impl From<&str> for Value {
@@ -238,6 +239,7 @@ impl Value {
             Self::List(values) => {
                 serde_json::Value::Array(values.iter().map(Value::to_json_value).collect())
             }
+            Self::TypedNull(_) => serde_json::Value::Null,
         }
     }
 }

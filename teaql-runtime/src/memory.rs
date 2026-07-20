@@ -1024,6 +1024,7 @@ fn value_key(value: &Value) -> String {
         Value::Timestamp(value) => format!("ts:{}", value.to_rfc3339()),
         Value::Object(_) => "object".to_owned(),
         Value::List(_) => "list".to_owned(),
+        Value::TypedNull(_) => "null".to_owned(),
     }
 }
 
@@ -1049,5 +1050,6 @@ fn local_graph_identity_key(value: &Value) -> String {
         Value::Timestamp(v) => format!("ts:{}", v.to_rfc3339()),
         Value::Object(_) => "o".to_owned(),
         Value::List(_) => "l".to_owned(),
+        Value::TypedNull(_) => "null".to_owned(),
     }
 }
