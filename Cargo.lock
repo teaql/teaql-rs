@@ -3004,6 +3004,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "teaql-cloud-starter"
+version = "4.1.1"
+dependencies = [
+ "axum 0.7.9",
+ "teaql-cloud-actuator",
+ "teaql-cloud-core",
+ "teaql-cloud-nacos",
+ "tokio",
+]
+
+[[package]]
 name = "teaql-core"
 version = "4.1.1"
 dependencies = [
@@ -3271,6 +3282,7 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
+ "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2 0.6.5",
