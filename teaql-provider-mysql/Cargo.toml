@@ -12,7 +12,7 @@ readme = "README.md"
 chrono = { workspace = true }
 rust_decimal = { workspace = true }
 serde_json = { workspace = true }
-mysql_async = { version = "0.34", default-features = false, features = ["default-rustls", "chrono"] }
+mysql_async = { version = "0.37", default-features = false, features = ["default-rustls", "chrono"] }
 mysql_common = { version = "0.32" }
 teaql-core = { workspace = true }
 teaql-runtime = { workspace = true }
