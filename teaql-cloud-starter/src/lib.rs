@@ -81,8 +81,8 @@ impl CloudApp {
     /// Create a new CloudApp builder with sensible defaults.
     pub fn new() -> Self {
         Self {
-            registry_type: RegistryType::Nacos,
-            registry_addr: "127.0.0.1:8848".to_string(),
+            registry_type: RegistryType::Consul,
+            registry_addr: "127.0.0.1:8500".to_string(),
             namespace: String::new(),
             service_name: "teaql-service".to_string(),
             ip: "0.0.0.0".to_string(),
@@ -306,7 +306,7 @@ mod tests {
     #[test]
     fn test_cloud_app_defaults() {
         let app = CloudApp::new();
-        assert_eq!(app.registry_addr, "127.0.0.1:8848");
+        assert_eq!(app.registry_addr, "127.0.0.1:8500");
         assert_eq!(app.namespace, "");
         assert_eq!(app.port, 8080);
         assert_eq!(app.ip, "0.0.0.0");
