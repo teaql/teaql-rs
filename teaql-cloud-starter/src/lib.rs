@@ -41,11 +41,18 @@ use teaql_cloud_core::{
     ServiceRegistry, wait_for_shutdown_signal,
 };
 use teaql_cloud_nacos::{NacosCloud, NacosConfig};
+use teaql_cloud_consul::{ConsulCloud, ConsulConfig};
 
 // Re-export key types for convenience
 pub use teaql_cloud_actuator::{self as actuator};
 pub use teaql_cloud_core::{self as core};
 pub use teaql_cloud_nacos::{self as nacos};
+pub use teaql_cloud_consul::{self as consul};
+
+pub enum RegistryType {
+    Nacos,
+    Consul,
+}
 
 /// Cloud application builder — one-line bootstrap for all cloud capabilities.
 ///
@@ -56,7 +63,8 @@ pub use teaql_cloud_nacos::{self as nacos};
 /// 4. Bind port, start HTTP server
 /// 5. Listen for SIGINT/SIGTERM → graceful shutdown → deregister
 pub struct CloudApp {
-    nacos_addr: String,
+    registry_type: RegistryType,
+    registry_addr: String,
     namespace: String,
     service_name: String,
     ip: String,
@@ -73,7 +81,8 @@ impl CloudApp {
     /// Create a new CloudApp builder with sensible defaults.
     pub fn new() -> Self {
         Self {
-            nacos_addr: "127.0.0.1:8848".to_string(),
+            registry_type: RegistryType::Nacos,
+            registry_addr: "127.0.0.1:8848".to_string(),
             namespace: String::new(),
             service_name: "teaql-service".to_string(),
             ip: "0.0.0.0".to_string(),
@@ -89,7 +98,15 @@ impl CloudApp {
 
     /// Set the Nacos server address (e.g. "127.0.0.1:8848").
     pub fn nacos(mut self, addr: impl Into<String>) -> Self {
-        self.nacos_addr = addr.into();
+        self.registry_type = RegistryType::Nacos;
+        self.registry_addr = addr.into();
+        self
+    }
+
+    /// Set the Consul server address (e.g. "127.0.0.1:8500").
+    pub fn consul(mut self, addr: impl Into<String>) -> Self {
+        self.registry_type = RegistryType::Consul;
+        self.registry_addr = addr.into();
         self
     }
 
@@ -172,31 +189,50 @@ impl CloudApp {
     ///
     /// This method blocks until the application shuts down.
     pub async fn start(self) -> Result<(), CloudError> {
-        // 1. Build Nacos config and connect
-        let mut nacos_config = NacosConfig::new(&self.nacos_addr)
-            .with_namespace(&self.namespace)
-            .with_app_name(&self.service_name)
-            .with_group(&self.nacos_group);
+        // 1. Build Config and Connect based on registry type
+        let (registry, health_indicator, metrics_collector): (
+            Arc<dyn ServiceRegistry>,
+            Arc<dyn HealthIndicator>,
+            Arc<dyn MetricsCollector>,
+        ) = match self.registry_type {
+            RegistryType::Nacos => {
+                let mut nacos_config = NacosConfig::new(&self.registry_addr)
+                    .with_namespace(&self.namespace)
+                    .with_app_name(&self.service_name)
+                    .with_group(&self.nacos_group);
 
-        if let Some((username, password)) = &self.nacos_auth {
-            nacos_config = nacos_config.with_auth(username, password);
-        }
+                if let Some((username, password)) = &self.nacos_auth {
+                    nacos_config = nacos_config.with_auth(username, password);
+                }
 
-        let cloud = Arc::new(NacosCloud::connect(nacos_config).await?);
+                let cloud = Arc::new(NacosCloud::connect(nacos_config).await?);
+                (cloud.clone(), cloud.clone(), cloud.clone())
+            }
+            RegistryType::Consul => {
+                let mut consul_config = ConsulConfig::new(&self.registry_addr);
+                
+                if let Some((token, _)) = &self.nacos_auth {
+                    consul_config = consul_config.with_token(token);
+                }
+                
+                let cloud = Arc::new(ConsulCloud::connect(consul_config).await?);
+                (cloud.clone(), cloud.clone(), cloud.clone())
+            }
+        };
 
         // 2. Build service instance
         let instance = ServiceInstance::new(&self.service_name, &self.ip, self.port);
 
         // 3. Start lifecycle (register + heartbeat loop)
         let lifecycle =
-            ServiceLifecycle::start(cloud.clone() as Arc<dyn ServiceRegistry>, instance).await?;
+            ServiceLifecycle::start(registry, instance).await?;
 
-        // 4. Build actuator state — include NacosCloud as indicator + collector
+        // 4. Build actuator state — include Cloud as indicator + collector
         let mut indicators = self.indicators;
-        indicators.push(cloud.clone() as Arc<dyn HealthIndicator>);
+        indicators.push(health_indicator);
 
         let mut collectors = self.collectors;
-        collectors.push(cloud.clone() as Arc<dyn MetricsCollector>);
+        collectors.push(metrics_collector);
 
         let actuator_state = ActuatorState {
             indicators,
@@ -256,7 +292,7 @@ mod tests {
             .group("MY_GROUP")
             .auth("admin", "secret");
 
-        assert_eq!(app.nacos_addr, "10.0.0.1:8848");
+        assert_eq!(app.registry_addr, "10.0.0.1:8848");
         assert_eq!(app.namespace, "production");
         assert_eq!(app.service_name, "order-service");
         assert_eq!(app.ip, "192.168.1.10");
@@ -270,7 +306,7 @@ mod tests {
     #[test]
     fn test_cloud_app_defaults() {
         let app = CloudApp::new();
-        assert_eq!(app.nacos_addr, "127.0.0.1:8848");
+        assert_eq!(app.registry_addr, "127.0.0.1:8848");
         assert_eq!(app.namespace, "");
         assert_eq!(app.port, 8080);
         assert_eq!(app.ip, "0.0.0.0");

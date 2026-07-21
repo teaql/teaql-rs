@@ -1,0 +1,19 @@
+[package]
+name = "teaql-cloud-consul"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+reqwest = { version = "0.13.4", features = ["json"] }
+serde_json.workspace = true
+teaql-cloud-core = { version = "4.1.1", path = "../teaql-cloud-core" }
+tokio = { workspace = true, features = ["full"] }
