@@ -10,7 +10,7 @@ repository.workspace = true
 [dependencies]
 teaql-runtime = { workspace = true }
 teaql-core = { workspace = true }
-axum = { version = "0.7", features = ["macros"] }
+axum = { version = "0.8", features = ["macros"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
