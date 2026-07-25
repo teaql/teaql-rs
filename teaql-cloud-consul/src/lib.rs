@@ -1,11 +1,11 @@
-use std::time::Duration;
 use async_trait::async_trait;
-use serde_json::json;
 use reqwest::Client;
+use serde_json::json;
+use std::time::Duration;
 
 use teaql_cloud_core::{
-    CloudError, HealthIndicator, MetricsCollector, Metric, ServiceInstance, ServiceRegistry,
-    HealthDetail,
+    CloudError, HealthDetail, HealthIndicator, Metric, MetricsCollector, ServiceInstance,
+    ServiceRegistry,
 };
 
 pub struct ConsulConfig {
@@ -20,7 +20,7 @@ impl ConsulConfig {
             token: None,
         }
     }
-    
+
     pub fn with_token(mut self, token: impl Into<String>) -> Self {
         self.token = Some(token.into());
         self
@@ -37,13 +37,18 @@ impl ConsulCloud {
         let client = Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
-            .map_err(|e| CloudError::Network { source: Box::new(e) })?;
-            
+            .map_err(|e| CloudError::Network {
+                source: Box::new(e),
+            })?;
+
         Ok(Self { config, client })
     }
-    
+
     fn format_service_id(instance: &ServiceInstance) -> String {
-        format!("{}-{}-{}", instance.service_name, instance.ip, instance.port)
+        format!(
+            "{}-{}-{}",
+            instance.service_name, instance.ip, instance.port
+        )
     }
 }
 
@@ -51,8 +56,11 @@ impl ConsulCloud {
 impl ServiceRegistry for ConsulCloud {
     async fn register(&self, instance: &ServiceInstance) -> Result<(), CloudError> {
         let service_id = Self::format_service_id(instance);
-        let url = format!("http://{}/v1/agent/service/register", self.config.server_addr);
-        
+        let url = format!(
+            "http://{}/v1/agent/service/register",
+            self.config.server_addr
+        );
+
         let payload = json!({
             "ID": service_id,
             "Name": instance.service_name,
@@ -65,36 +73,51 @@ impl ServiceRegistry for ConsulCloud {
                 "DeregisterCriticalServiceAfter": "30s"
             }
         });
-        
+
         let mut req = self.client.put(&url).json(&payload);
         if let Some(token) = &self.config.token {
             req = req.header("X-Consul-Token", token);
         }
-        
-        let resp = req.send().await.map_err(|e| CloudError::Registration(e.to_string()))?;
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| CloudError::Registration(e.to_string()))?;
         if !resp.status().is_success() {
             let error = resp.text().await.unwrap_or_default();
-            return Err(CloudError::Registration(format!("Consul register failed: {}", error)));
+            return Err(CloudError::Registration(format!(
+                "Consul register failed: {}",
+                error
+            )));
         }
-        
+
         Ok(())
     }
 
     async fn deregister(&self, instance: &ServiceInstance) -> Result<(), CloudError> {
         let service_id = Self::format_service_id(instance);
-        let url = format!("http://{}/v1/agent/service/deregister/{}", self.config.server_addr, service_id);
-        
+        let url = format!(
+            "http://{}/v1/agent/service/deregister/{}",
+            self.config.server_addr, service_id
+        );
+
         let mut req = self.client.put(&url);
         if let Some(token) = &self.config.token {
             req = req.header("X-Consul-Token", token);
         }
-        
-        let resp = req.send().await.map_err(|e| CloudError::Registration(e.to_string()))?;
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| CloudError::Registration(e.to_string()))?;
         if !resp.status().is_success() {
             let error = resp.text().await.unwrap_or_default();
-            return Err(CloudError::Registration(format!("Consul deregister failed: {}", error)));
+            return Err(CloudError::Registration(format!(
+                "Consul deregister failed: {}",
+                error
+            )));
         }
-        
+
         Ok(())
     }
 
@@ -120,15 +143,11 @@ impl HealthIndicator for ConsulCloud {
         if let Some(token) = &self.config.token {
             req = req.header("X-Consul-Token", token);
         }
-        
+
         match req.send().await {
             Ok(resp) if resp.status().is_success() => HealthDetail::up(),
-            Ok(resp) => {
-                HealthDetail::down(resp.status().to_string())
-            },
-            Err(e) => {
-                HealthDetail::down(e.to_string())
-            }
+            Ok(resp) => HealthDetail::down(resp.status().to_string()),
+            Err(e) => HealthDetail::down(e.to_string()),
         }
     }
 }

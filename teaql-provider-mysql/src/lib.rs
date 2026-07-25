@@ -845,7 +845,7 @@ mod tests {
         let create = MysqlDialect.compile_create_table(&entity()).unwrap();
         assert_eq!(
             create,
-            "CREATE TABLE IF NOT EXISTS orders (id BIGINT PRIMARY KEY NOT NULL, version BIGINT NOT NULL, name TEXT)"
+            "CREATE TABLE IF NOT EXISTS orders (id BIGINT PRIMARY KEY NOT NULL, version BIGINT NOT NULL, name VARCHAR(255))"
         );
 
         let json = MysqlDialect
