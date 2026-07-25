@@ -48,7 +48,7 @@ The Rust rewrite keeps the scope deliberately narrow:
 
 Progress tracking lives in [PROGRESS.md](./PROGRESS.md).
 
-Current published release: `4.0.0`.
+Current published release: `4.2.1`.
 
 ## Cloud Integration
 
@@ -94,7 +94,7 @@ To use TeaQL in your project, add the relevant crates to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-teaql-core = "4.1.1"
+teaql-core = "4.2.1"
 # Add other providers as needed
 ```
 
