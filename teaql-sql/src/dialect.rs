@@ -66,7 +66,9 @@ pub trait SqlDialect {
             DataType::F64 => Ok("REAL"),
             DataType::Decimal => Ok("NUMERIC"),
             DataType::Text => Ok("VARCHAR(255)"),
-            DataType::LargeText | DataType::Json | DataType::Date | DataType::Timestamp => Ok("TEXT"),
+            DataType::LargeText | DataType::Json | DataType::Date | DataType::Timestamp => {
+                Ok("TEXT")
+            }
         }
     }
 

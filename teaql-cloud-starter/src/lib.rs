@@ -36,18 +36,18 @@ use std::sync::Arc;
 use axum::Router;
 
 use teaql_cloud_actuator::{ActuatorState, ServiceInfo, actuator_routes};
+use teaql_cloud_consul::{ConsulCloud, ConsulConfig};
 use teaql_cloud_core::{
     CloudError, HealthIndicator, MetricsCollector, ServiceInstance, ServiceLifecycle,
     ServiceRegistry, wait_for_shutdown_signal,
 };
 use teaql_cloud_nacos::{NacosCloud, NacosConfig};
-use teaql_cloud_consul::{ConsulCloud, ConsulConfig};
 
 // Re-export key types for convenience
 pub use teaql_cloud_actuator::{self as actuator};
+pub use teaql_cloud_consul::{self as consul};
 pub use teaql_cloud_core::{self as core};
 pub use teaql_cloud_nacos::{self as nacos};
-pub use teaql_cloud_consul::{self as consul};
 
 pub enum RegistryType {
     Nacos,
@@ -210,11 +210,11 @@ impl CloudApp {
             }
             RegistryType::Consul => {
                 let mut consul_config = ConsulConfig::new(&self.registry_addr);
-                
+
                 if let Some((token, _)) = &self.nacos_auth {
                     consul_config = consul_config.with_token(token);
                 }
-                
+
                 let cloud = Arc::new(ConsulCloud::connect(consul_config).await?);
                 (cloud.clone(), cloud.clone(), cloud.clone())
             }
@@ -224,8 +224,7 @@ impl CloudApp {
         let instance = ServiceInstance::new(&self.service_name, &self.ip, self.port);
 
         // 3. Start lifecycle (register + heartbeat loop)
-        let lifecycle =
-            ServiceLifecycle::start(registry, instance).await?;
+        let lifecycle = ServiceLifecycle::start(registry, instance).await?;
 
         // 4. Build actuator state — include Cloud as indicator + collector
         let mut indicators = self.indicators;
