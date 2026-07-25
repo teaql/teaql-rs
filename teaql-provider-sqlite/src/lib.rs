@@ -812,7 +812,7 @@ mod tests {
         let create = SqliteDialect.compile_create_table(&entity()).unwrap();
         assert_eq!(
             create,
-            "CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY NOT NULL, version INTEGER NOT NULL, name TEXT)"
+            "CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY NOT NULL, version INTEGER NOT NULL, name VARCHAR(255))"
         );
     }
 
@@ -913,7 +913,7 @@ mod tests {
         // Create table and insert 25 rows
         executor
             .execute(&CompiledQuery {
-                sql: "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER, name TEXT)"
+                sql: "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER, name VARCHAR(255))"
                     .to_owned(),
                 params: Vec::new(),
                 comment: None,
@@ -976,7 +976,7 @@ mod tests {
 
         executor
             .execute(&CompiledQuery {
-                sql: "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER, name TEXT)"
+                sql: "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER, name VARCHAR(255))"
                     .to_owned(),
                 params: Vec::new(),
                 comment: None,
@@ -1007,7 +1007,7 @@ mod tests {
 
         executor
             .execute(&CompiledQuery {
-                sql: "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER, name TEXT)"
+                sql: "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER, name VARCHAR(255))"
                     .to_owned(),
                 params: Vec::new(),
                 comment: None,
