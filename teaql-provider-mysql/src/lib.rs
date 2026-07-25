@@ -18,8 +18,8 @@ use tokio::sync::Mutex;
 
 pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";
 
+use mysql_async::consts::ColumnType;
 use mysql_async::prelude::Queryable;
-use mysql_common::constants::ColumnType;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MysqlDialect;
