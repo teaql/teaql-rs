@@ -13,4 +13,4 @@ teaql-core = { workspace = true }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
-redis = { version = "0.27", features = ["tokio-comp"] }
+redis = { version = "1.4", features = ["tokio-comp"] }

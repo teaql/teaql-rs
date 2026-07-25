@@ -15,7 +15,7 @@ impl RedisDataStore {
     /// URL format: redis://[<username>][:<password>@]<hostname>[:port][/<db>]
     pub async fn new(redis_url: &str) -> Result<Self, redis::RedisError> {
         let client = redis::Client::open(redis_url)?;
-        let conn = client.get_multiplexed_tokio_connection().await?;
+        let conn = client.get_multiplexed_async_connection().await?;
         Ok(Self { client, conn })
     }
 
