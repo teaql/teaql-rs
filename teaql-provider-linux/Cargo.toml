@@ -11,5 +11,5 @@ description = "TeaQL data service provider for Linux system information via /pro
 teaql-core = { workspace = true }
 teaql-data-service = { workspace = true }
 teaql-runtime = { workspace = true }
-procfs = "0.17"
+procfs = "0.18"
 chrono.workspace = true
