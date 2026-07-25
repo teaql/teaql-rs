@@ -183,7 +183,6 @@ impl WebContextExt for UserContext {
 pub struct TeaContext(pub UserContext);
 
 /// Extractor implementation for TeaContext
-
 impl<S> FromRequestParts<S> for TeaContext
 where
     S: ContextProvider + Send + Sync,
