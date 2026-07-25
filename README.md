@@ -126,8 +126,10 @@ let platforms = Q::platforms()
     .select_merchant_list_with(
         Q::merchants()
             .select_name()
-            .which_names_contain("TeaQL"),
+            .with_name_containing("TeaQL"),
     )
+    .comment("Load platforms with filtered merchant names")
+    .purpose("Displaying platform-merchant overview for dashboard")
     .execute_for_list(&ctx)
     .await?;
 ```
