@@ -3,7 +3,7 @@ use teaql_macros::TeaqlEntity;
 use teaql_provider_sqlite::{SqliteDialect, SqliteMutationExecutor, SqliteProviderExt};
 use teaql_runtime::{
     AuditedSaveExt, EntityDataServiceBehavior, InMemoryEntityDataServiceBehaviorRegistry,
-    InMemoryEntityRegistry, InMemoryMetadataStore, UserContext,
+    InMemoryEntityRegistry, InMemoryMetadataStore, PurposedSelectQuery, UserContext,
 };
 use teaql_sql::SqlDataServiceExecutor;
 
@@ -125,8 +125,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         teaql_runtime::InMemoryMetadataStore,
     >>("School")?;
 
+    let query = PurposedSelectQuery::new(
+        SelectQuery::new("School").order_asc("id"),
+        "Verify the saved school graph",
+    );
     let schools = data_service
-        .fetch_enhanced_entities::<School>(&SelectQuery::new("School").order_asc("id"))
+        .fetch_enhanced_entities::<School>(&query)
         .await?;
 
     println!("school.audit_as(\"创建学校\").save(&ctx) succeeded!");

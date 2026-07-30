@@ -21,13 +21,13 @@ pub use context::{
     SqlLogOperation, SqlLogOptions, UnifiedLogBuffer, UnifiedLogEntry, UserContext,
 };
 pub use data_service::{
-    AggregationCacheBackend, ContextDataService, EntityDataService, GraphTransactionBoundary,
-    InMemoryAggregationCache, RelationLoadPlan, RuntimeDataService,
+    AggregationCacheBackend, EntityDataService, GraphTransactionBoundary, InMemoryAggregationCache,
+    RelationLoadPlan,
 };
 pub use entity_runtime::{
     ChangeSetStack, EntityChangeSet, EntityKey, EntityRoot, LedgerEntity, RootContext,
 };
-pub use entity_save::{AuditedSaveExt, DynGraphSaver, GraphSaverFor, graph_node_from_entity};
+pub use entity_save::{AuditedSaveExt, graph_node_from_entity, save_audited_ledger_entity};
 pub use entity_status::{EntityAction, EntityStatus};
 pub use error::{ContextError, DataServiceError, RuntimeError};
 pub use event::{
@@ -45,7 +45,7 @@ pub use inmemory_engine::{ExprEvaluator, InMemoryQueryEngine};
 pub use language::{
     BuiltinTranslator, Language, MessageTranslator, translate_check_result, translate_location,
 };
-pub use memory::{MemoryDataService, MemoryDataServiceError};
+pub(crate) use memory::MemoryDataService;
 pub use registry::{
     EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry, EntityRegistry,
     InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityRegistry, InMemoryMetadataStore,
@@ -63,10 +63,11 @@ mod tests {
         GraphMutationKind, GraphNode, InMemoryAggregationCache, InMemoryCheckerRegistry,
         InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityRegistry, InMemoryMetadataStore,
         InternalIdGenerator, Language, MemoryDataService, MetadataStore, ObjectLocation,
-        RawAuditEvent, RawAuditEventKind, RawAuditEventSink, RequestPolicy, RuntimeDataService,
-        RuntimeError, RuntimeModule, SqlLogOperation, SqlLogOptions, TypedChecker,
-        TypedEntityChecker, UserContext, translate_check_result,
+        RawAuditEvent, RawAuditEventKind, RawAuditEventSink, RequestPolicy, RuntimeError,
+        RuntimeModule, SqlLogOperation, SqlLogOptions, TypedChecker, TypedEntityChecker,
+        UserContext, translate_check_result,
     };
+    use crate::data_service::RuntimeDataService;
     use teaql_core::{
         Aggregate, AggregateFunction, BinaryOp, DataType, Decimal, DeleteCommand, Entity,
         EntityDescriptor, EntityError, Expr, InsertCommand, OrderBy, PropertyDescriptor, Record,
@@ -801,7 +802,7 @@ mod tests {
             rows: Vec::new(),
         });
 
-        let repo = ctx.data_service::<StubExecutor>().unwrap();
+        let repo = ctx.data_service_internal::<StubExecutor>().unwrap();
         let affected = repo
             .update(
                 &UpdateCommand::new("Order", 1_u64)
@@ -830,7 +831,7 @@ mod tests {
         assert_eq!(repo.select().entity, "Order");
 
         let affected = repo
-            .insert(
+            .insert_internal(
                 &repo
                     .insert_command()
                     .value("id", 1_u64)
@@ -868,7 +869,7 @@ mod tests {
         // assert!(compiled.sql.contains("WHERE (version = $1)"));
 
         let insert = repo.insert_command().value("id", 1_u64).value("name", "n");
-        let affected = repo.insert(&insert).await.unwrap();
+        let affected = repo.insert_internal(&insert).await.unwrap();
         assert_eq!(affected, 1);
         assert_eq!(repo.relation_loads(), vec!["lines".to_owned()]);
     }
@@ -1187,10 +1188,10 @@ mod tests {
         });
 
         let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
-        repo.insert(&repo.insert_command().value("name", "created"))
+        repo.insert_internal(&repo.insert_command().value("name", "created"))
             .await
             .unwrap();
-        repo.update(
+        repo.update_internal(
             &repo
                 .update_command(88_u64)
                 .expected_version(1)
@@ -1198,10 +1199,10 @@ mod tests {
         )
         .await
         .unwrap();
-        repo.delete(&repo.delete_command(88_u64).expected_version(2))
+        repo.delete_internal(&repo.delete_command(88_u64).expected_version(2))
             .await
             .unwrap();
-        repo.recover(&repo.recover_command(88_u64, -3))
+        repo.recover_internal(&repo.recover_command(88_u64, -3))
             .await
             .unwrap();
 
@@ -1365,7 +1366,7 @@ mod tests {
             Record::from([(String::from("id"), Value::U64(12))]),
         ];
 
-        repo.enhance_relations(&mut parents).await.unwrap();
+        repo.enhance_relations_internal(&mut parents).await.unwrap();
 
         match parents[0].get("lines") {
             Some(Value::List(lines)) => assert_eq!(lines.len(), 2),
@@ -1408,7 +1409,7 @@ mod tests {
             .entity_data_service::<QueueExecutor>("OrderLine")
             .unwrap();
         let rows = repo
-            .fetch_enhanced_entities::<OrderLineWithProductEntityRow>(
+            .fetch_enhanced_entities_internal::<OrderLineWithProductEntityRow>(
                 &SelectQuery::new("OrderLine").relation("product"),
             )
             .await
@@ -1436,7 +1437,7 @@ mod tests {
 
         let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
         let rows = repo
-            .fetch_entities::<OrderEntity>(&repo.select())
+            .fetch_entities_internal::<OrderEntity>(&repo.select())
             .await
             .unwrap();
 
@@ -1471,7 +1472,7 @@ mod tests {
             .entity_data_service::<StubExecutor>("CatalogProduct")
             .unwrap();
         let rows = repo
-            .fetch_entities::<CatalogProductRow>(&repo.select())
+            .fetch_entities_internal::<CatalogProductRow>(&repo.select())
             .await
             .unwrap();
 
@@ -1507,7 +1508,7 @@ mod tests {
             .entity_data_service::<StubExecutor>("OrderAggregate")
             .unwrap();
         let rows = repo
-            .fetch_entities::<OrderAggregateDynamic>(&repo.select())
+            .fetch_entities_internal::<OrderAggregateDynamic>(&repo.select())
             .await
             .unwrap();
 
@@ -1561,7 +1562,7 @@ mod tests {
 
         let repo = ctx.entity_data_service::<QueueExecutor>("Order").unwrap();
         let rows = repo
-            .fetch_all_with_relation_aggregates(
+            .fetch_all_with_relation_aggregates_internal(
                 &repo
                     .select()
                     .project("id")
@@ -1621,7 +1622,7 @@ mod tests {
 
         let repo = ctx.entity_data_service::<QueueExecutor>("Order").unwrap();
         let rows = repo
-            .fetch_all_with_relation_aggregates(
+            .fetch_all_with_relation_aggregates_internal(
                 &repo
                     .select()
                     .project("id")
@@ -1668,8 +1669,8 @@ mod tests {
             .count("count")
             .enable_aggregation_cache_for(60_000);
 
-        let first = repo.fetch_all(&query).await.unwrap();
-        let second = repo.fetch_all(&query).await.unwrap();
+        let first = repo.fetch_all_internal(&query).await.unwrap();
+        let second = repo.fetch_all_internal(&query).await.unwrap();
 
         assert_eq!(first, second);
         let executor = ctx.get_resource::<QueueExecutor>().unwrap();
@@ -1702,9 +1703,9 @@ mod tests {
             .count("count")
             .enable_aggregation_cache_for(60_000);
 
-        let first = repo.fetch_all(&query).await.unwrap();
-        let cached = repo.fetch_all(&query).await.unwrap();
-        repo.insert(
+        let first = repo.fetch_all_internal(&query).await.unwrap();
+        let cached = repo.fetch_all_internal(&query).await.unwrap();
+        repo.insert_internal(
             &InsertCommand::new("Order")
                 .value("id", 9_u64)
                 .value("version", 1_i64)
@@ -1712,7 +1713,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let refreshed = repo.fetch_all(&query).await.unwrap();
+        let refreshed = repo.fetch_all_internal(&query).await.unwrap();
 
         assert_eq!(first, cached);
         assert_ne!(cached, refreshed);
@@ -1766,11 +1767,11 @@ mod tests {
             RelationAggregate::new("lines", "lineCount", SelectQuery::new("OrderLine"), true);
 
         let first = repo
-            .fetch_all_with_relation_aggregates(&query, &[aggregate.clone()])
+            .fetch_all_with_relation_aggregates_internal(&query, &[aggregate.clone()])
             .await
             .unwrap();
         let second = repo
-            .fetch_all_with_relation_aggregates(&query, &[aggregate])
+            .fetch_all_with_relation_aggregates_internal(&query, &[aggregate])
             .await
             .unwrap();
 

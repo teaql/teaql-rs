@@ -13,11 +13,11 @@ where
     M: MetadataStore,
     E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor,
 {
-    pub fn new(metadata: &'a M, executor: &'a E) -> Self {
+    pub(crate) fn new(metadata: &'a M, executor: &'a E) -> Self {
         Self { metadata, executor }
     }
 
-    pub async fn fetch_all(
+    pub(crate) async fn fetch_all(
         &self,
         query: &SelectQuery,
     ) -> Result<Vec<Record>, DataServiceError<E::Error>> {
@@ -34,7 +34,7 @@ where
         Ok(res.rows)
     }
 
-    pub async fn fetch_smart_list(
+    pub(crate) async fn fetch_smart_list(
         &self,
         query: &SelectQuery,
     ) -> Result<SmartList<Record>, DataServiceError<E::Error>> {
@@ -52,7 +52,7 @@ where
         Ok(SmartList::from(res.rows))
     }
 
-    pub async fn fetch_entities<T>(
+    pub(crate) async fn fetch_entities<T>(
         &self,
         query: &SelectQuery,
     ) -> Result<SmartList<T>, DataServiceError<E::Error>>
@@ -68,7 +68,7 @@ where
             .map_err(DataServiceError::Entity)
     }
 
-    pub async fn fetch_enhanced_entities<T>(
+    pub(crate) async fn fetch_enhanced_entities<T>(
         &self,
         query: &SelectQuery,
     ) -> Result<SmartList<T>, DataServiceError<E::Error>>
@@ -78,7 +78,10 @@ where
         self.fetch_entities(query).await
     }
 
-    pub async fn insert(&self, command: &InsertCommand) -> Result<u64, DataServiceError<E::Error>> {
+    pub(crate) async fn insert(
+        &self,
+        command: &InsertCommand,
+    ) -> Result<u64, DataServiceError<E::Error>> {
         let request = MutationRequest::Insert(command.clone());
         let res = self
             .executor
@@ -89,7 +92,10 @@ where
         Ok(res.affected_rows)
     }
 
-    pub async fn update(&self, command: &UpdateCommand) -> Result<u64, DataServiceError<E::Error>> {
+    pub(crate) async fn update(
+        &self,
+        command: &UpdateCommand,
+    ) -> Result<u64, DataServiceError<E::Error>> {
         let request = MutationRequest::Update(command.clone());
         let res = self
             .executor
@@ -119,7 +125,10 @@ where
         Ok(affected)
     }
 
-    pub async fn delete(&self, command: &DeleteCommand) -> Result<u64, DataServiceError<E::Error>> {
+    pub(crate) async fn delete(
+        &self,
+        command: &DeleteCommand,
+    ) -> Result<u64, DataServiceError<E::Error>> {
         let request = MutationRequest::Delete(command.clone());
         let res = self
             .executor
@@ -141,7 +150,7 @@ where
         Ok(affected)
     }
 
-    pub async fn batch_insert(
+    pub(crate) async fn batch_insert(
         &self,
         command: &teaql_core::BatchInsertCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
@@ -164,7 +173,7 @@ where
         Ok(affected)
     }
 
-    pub async fn batch_update(
+    pub(crate) async fn batch_update(
         &self,
         command: &teaql_core::BatchUpdateCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
@@ -218,7 +227,7 @@ where
         Ok(affected)
     }
 
-    pub async fn recover(
+    pub(crate) async fn recover(
         &self,
         command: &RecoverCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
@@ -243,7 +252,7 @@ where
         Ok(affected)
     }
 
-    pub async fn insert_many(
+    pub(crate) async fn insert_many(
         &self,
         commands: &[InsertCommand],
     ) -> Result<u64, DataServiceError<E::Error>> {
@@ -254,7 +263,7 @@ where
         Ok(total)
     }
 
-    pub async fn update_many(
+    pub(crate) async fn update_many(
         &self,
         commands: &[UpdateCommand],
     ) -> Result<u64, DataServiceError<E::Error>> {
@@ -265,7 +274,7 @@ where
         Ok(total)
     }
 
-    pub async fn delete_many(
+    pub(crate) async fn delete_many(
         &self,
         commands: &[DeleteCommand],
     ) -> Result<u64, DataServiceError<E::Error>> {
@@ -276,7 +285,7 @@ where
         Ok(total)
     }
 
-    pub async fn recover_many(
+    pub(crate) async fn recover_many(
         &self,
         commands: &[RecoverCommand],
     ) -> Result<u64, DataServiceError<E::Error>> {

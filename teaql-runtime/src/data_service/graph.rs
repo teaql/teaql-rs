@@ -39,7 +39,7 @@ where
         + Sync
         + 'static,
 {
-    pub async fn save_graph(
+    pub(crate) async fn save_graph_internal(
         &self,
         node: GraphNode,
     ) -> Result<GraphNode, DataServiceError<E::Error>> {
@@ -50,10 +50,10 @@ where
             ))));
         }
         let plan = self.plan_graph(node).await?;
-        self.execute_graph_plan(plan).await
+        self.execute_graph_plan_internal(plan).await
     }
 
-    pub async fn save_entity_graph_from(
+    pub(crate) async fn save_entity_graph_from_internal(
         &self,
         graph: teaql_core::EntityGraph,
     ) -> Result<GraphNode, DataServiceError<E::Error>> {
@@ -78,10 +78,10 @@ where
                 original_values: None,
             }
         }
-        self.save_graph(convert(graph.root)).await
+        self.save_graph_internal(convert(graph.root)).await
     }
 
-    pub async fn save_entity_graph<T>(
+    pub(crate) async fn save_entity_graph_internal<T>(
         &self,
         entity: T,
     ) -> Result<GraphNode, DataServiceError<E::Error>>
@@ -91,10 +91,10 @@ where
         let node = self
             .graph_node_from_entity(entity)
             .map_err(DataServiceError::Runtime)?;
-        self.save_graph(node).await
+        self.save_graph_internal(node).await
     }
 
-    pub async fn save_entity<T>(
+    pub(crate) async fn save_entity_internal<T>(
         &self,
         entity: T,
         status: EntityStatus,
@@ -111,11 +111,11 @@ where
                 .map_err(DataServiceError::Runtime)?;
             node.operation = GraphOperation::Remove;
             node.relations.clear();
-            return self.save_graph(node).await;
+            return self.save_graph_internal(node).await;
         }
-        self.save_entity_graph(entity).await
+        self.save_entity_graph_internal(entity).await
     }
-    pub async fn save_entity_with_comment<T>(
+    pub(crate) async fn save_entity_with_comment_internal<T>(
         &self,
         entity: T,
         status: EntityStatus,
@@ -131,11 +131,12 @@ where
             node.operation = GraphOperation::Remove;
             node.relations.clear();
             node.set_comment(comment);
-            return self.save_graph(node).await;
+            return self.save_graph_internal(node).await;
         }
-        self.save_entity_graph_with_comment(entity, comment).await
+        self.save_entity_graph_with_comment_internal(entity, comment)
+            .await
     }
-    pub async fn save_entity_graph_with_comment<T>(
+    pub(crate) async fn save_entity_graph_with_comment_internal<T>(
         &self,
         entity: T,
         comment: impl Into<String>,
@@ -147,13 +148,13 @@ where
             .graph_node_from_entity(entity)
             .map_err(DataServiceError::Runtime)?;
         node.set_comment(comment);
-        self.save_graph(node).await
+        self.save_graph_internal(node).await
     }
 
     /// Create a new entity graph with an annotation comment on the root node.
     /// This assumes all new nodes do not exist in the database, skipping existence checks
     /// and throwing an exception on primary key conflict.
-    pub async fn create_entity_graph_with_comment<T>(
+    pub(crate) async fn create_entity_graph_with_comment_internal<T>(
         &self,
         entity: T,
         comment: impl Into<String>,
@@ -166,7 +167,7 @@ where
             .map_err(DataServiceError::Runtime)?;
         node.operation = GraphOperation::Create;
         node.set_comment(comment);
-        self.save_graph(node).await
+        self.save_graph_internal(node).await
     }
 
     pub async fn plan_graph(
@@ -188,7 +189,7 @@ where
         Ok(plan)
     }
 
-    pub async fn execute_graph_plan(
+    pub(crate) async fn execute_graph_plan_internal(
         &self,
         plan: GraphMutationPlan,
     ) -> Result<GraphNode, DataServiceError<E::Error>> {
@@ -255,7 +256,7 @@ where
                             cmd = cmd.expected_version(*version);
                         }
                         let trace_chain = recover_trace_or_default(&item.scope_token);
-                        self.delete_scoped(&cmd, trace_chain).await?;
+                        self.delete_scoped_internal(&cmd, trace_chain).await?;
                     }
                 }
                 GraphMutationKind::Reference => {
@@ -380,7 +381,7 @@ where
                 true => false,
                 false => match (id_property.as_ref(), id.as_ref()) {
                     (Some(id_property), Some(id)) => self
-                        .fetch_graph_current_row(
+                        .fetch_graph_current_row_internal(
                             &node.entity,
                             &id_property.name,
                             id,
@@ -465,7 +466,7 @@ where
                         relation: name.clone(),
                     })
                 })?;
-                let child_repo = self.scoped_data_service(relation.target_entity.clone());
+                let child_repo = self.scoped_data_service_internal(relation.target_entity.clone());
                 for child in children {
                     ensure_relation_target(&node.entity, name, &relation.target_entity, child)?;
                     child_repo
@@ -562,7 +563,7 @@ where
                 let mut saved_children = Vec::new();
                 for child in children {
                     ensure_relation_target(&node.entity, &name, &relation.target_entity, &child)?;
-                    let child_repo = self.scoped_data_service(child.entity.clone());
+                    let child_repo = self.scoped_data_service_internal(child.entity.clone());
                     let saved_child = child_repo
                         .insert_graph_node_scoped(child, active_scope)
                         .await?;
@@ -616,7 +617,7 @@ where
                             .values
                             .insert(relation.foreign_key.clone(), local_value.clone());
                     }
-                    let child_repo = self.scoped_data_service(child.entity.clone());
+                    let child_repo = self.scoped_data_service_internal(child.entity.clone());
                     saved_children.push(
                         child_repo
                             .insert_graph_node_scoped(child, active_scope)
@@ -703,7 +704,7 @@ where
 
             if node.operation == GraphOperation::Create
                 || self
-                    .fetch_graph_current_row(
+                    .fetch_graph_current_row_internal(
                         &node.entity,
                         &id_property.name,
                         &id,
@@ -743,7 +744,7 @@ where
                 let mut saved_children = Vec::new();
                 for child in children {
                     ensure_relation_target(&node.entity, &name, &relation.target_entity, &child)?;
-                    let child_repo = self.scoped_data_service(child.entity.clone());
+                    let child_repo = self.scoped_data_service_internal(child.entity.clone());
                     let saved_child = child_repo
                         .upsert_graph_node_scoped(child, active_scope)
                         .await?;
@@ -798,7 +799,7 @@ where
                                 node.entity, relation.local_key, name
                             )))
                         })?;
-                let child_repo = self.scoped_data_service(relation.target_entity.clone());
+                let child_repo = self.scoped_data_service_internal(relation.target_entity.clone());
                 let child_descriptor = self
                     .data_service
                     .metadata
@@ -901,7 +902,7 @@ where
         }
 
         let current = self
-            .fetch_graph_current_row(&node.entity, &id_property.name, &id, trace_chain)
+            .fetch_graph_current_row_internal(&node.entity, &id_property.name, &id, trace_chain)
             .await?
             .ok_or_else(|| {
                 DataServiceError::Runtime(RuntimeError::Graph(format!(
@@ -984,7 +985,7 @@ where
                 )))
             })?;
         let current = self
-            .fetch_graph_current_row(&node.entity, &id_property.name, &id, trace_chain)
+            .fetch_graph_current_row_internal(&node.entity, &id_property.name, &id, trace_chain)
             .await?
             .ok_or_else(|| {
                 DataServiceError::Runtime(RuntimeError::Graph(format!(
@@ -1174,7 +1175,7 @@ where
             let active_scope = current_scope.as_ref().or(parent_scope);
             let lineage = active_scope.map(|s| s.to_trace_chain()).unwrap_or_default();
 
-            self.delete_scoped(&delete, lineage).await
+            self.delete_scoped_internal(&delete, lineage).await
         })
     }
 
@@ -1188,11 +1189,11 @@ where
         let mut query =
             SelectQuery::new(entity).filter(Expr::eq(foreign_key, parent_value.clone()));
         query.trace_chain = trace_chain;
-        self.scoped_data_service(entity.to_owned())
-            .fetch_all(&query)
+        self.scoped_data_service_internal(entity.to_owned())
+            .fetch_all_internal(&query)
             .await
     }
-    pub async fn fetch_graph_current_row(
+    pub(crate) async fn fetch_graph_current_row_internal(
         &self,
         entity: &str,
         id_property: &str,
@@ -1203,13 +1204,13 @@ where
             .filter(teaql_core::Expr::eq(id_property, id.clone()));
         query.trace_chain = trace_chain;
         let mut rows = self
-            .scoped_data_service(entity.to_owned())
-            .fetch_all(&query)
+            .scoped_data_service_internal(entity.to_owned())
+            .fetch_all_internal(&query)
             .await?;
         Ok(rows.pop())
     }
 
-    pub async fn execute_ledger_plan(
+    pub(crate) async fn execute_ledger_plan_internal(
         &self,
         root: crate::EntityRoot,
     ) -> Result<(), DataServiceError<E::Error>> {
@@ -1236,7 +1237,7 @@ where
                 cmd = cmd.expected_version(version);
             }
             cmd.trace_chain = resolve_trace_chain(root.get_trace_chain(key), &trace_chain);
-            self.delete(&cmd).await?;
+            self.delete_internal(&cmd).await?;
         }
 
         // 2. Execute Updates and Inserts
@@ -1268,7 +1269,12 @@ where
                 })?;
                 let my_trace = resolve_trace_chain(root.get_trace_chain(key), &trace_chain);
                 let current_row = self
-                    .fetch_graph_current_row(&key.entity, &id_property.name, &key.id, my_trace)
+                    .fetch_graph_current_row_internal(
+                        &key.entity,
+                        &id_property.name,
+                        &key.id,
+                        my_trace,
+                    )
                     .await?;
                 if current_row.is_none() {
                     is_new = true;

@@ -17,12 +17,19 @@ use crate::{DataServiceError, GraphNode, GraphOperation, RuntimeError, UserConte
 /// A concrete implementation is registered in [`UserContext`] during setup so
 /// that [`Audited::save`] can persist entities without exposing the underlying
 /// executor type to business code.
-pub trait DynGraphSaver: Send + Sync {
+pub(crate) trait DynGraphSaver: Send + Sync {
     fn save_graph_dyn<'a>(
         &'a self,
         ctx: &'a UserContext,
         entity: &'a str,
         node: GraphNode,
+    ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>>;
+
+    fn save_ledger_dyn<'a>(
+        &'a self,
+        ctx: &'a UserContext,
+        entity: &'a str,
+        root: crate::EntityRoot,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>>;
 }
 
@@ -31,12 +38,12 @@ pub trait DynGraphSaver: Send + Sync {
 /// `E` is the full executor type (e.g. `SqlDataServiceExecutor<SqliteDialect, …>`).
 /// The struct itself is zero-sized; the actual executor is retrieved from
 /// [`UserContext`] at call time.
-pub struct GraphSaverFor<E> {
+pub(crate) struct GraphSaverFor<E> {
     _marker: PhantomData<fn() -> E>,
 }
 
 impl<E> GraphSaverFor<E> {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             _marker: PhantomData,
         }
@@ -61,10 +68,30 @@ where
             let eds = ctx
                 .entity_data_service::<E>(entity)
                 .map_err(|e| RuntimeError::Graph(e.to_string()))?;
-            eds.save_graph(node).await.map_err(|e| match e {
+            eds.save_graph_internal(node).await.map_err(|e| match e {
                 DataServiceError::Runtime(r) => r,
                 other => RuntimeError::Graph(other.to_string()),
             })
+        })
+    }
+
+    fn save_ledger_dyn<'a>(
+        &'a self,
+        ctx: &'a UserContext,
+        entity: &'a str,
+        root: crate::EntityRoot,
+    ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>> {
+        Box::pin(async move {
+            let eds = ctx
+                .entity_data_service::<E>(entity)
+                .map_err(|e| RuntimeError::Graph(e.to_string()))?;
+            eds.execute_ledger_plan_internal(root)
+                .await
+                .map_err(|e| match e {
+                    DataServiceError::Runtime(r) => r,
+                    other => RuntimeError::Graph(other.to_string()),
+                })?;
+            Ok(GraphNode::new(entity))
         })
     }
 }
@@ -219,4 +246,42 @@ where
             saver.save_graph_dyn(ctx, &entity_name, node).await
         })
     }
+}
+
+/// Persist an audited generated entity, including pending ledger changes that
+/// may span multiple related entities sharing the same [`EntityRoot`](crate::EntityRoot).
+///
+/// Generated service crates use this as the implementation behind
+/// `entity.audit_as("why").save(&ctx)`. The audited wrapper is required by the
+/// function signature; no unaudited entity write entry point is exposed.
+#[doc(hidden)]
+pub async fn save_audited_ledger_entity<T>(
+    audited: teaql_core::Audited<T>,
+    ctx: &UserContext,
+) -> Result<GraphNode, RuntimeError>
+where
+    T: crate::LedgerEntity + Send + 'static,
+{
+    let entity_name = T::entity_descriptor().name;
+    let entity = audited.into_entity();
+    let root = entity.entity_root();
+    let node = graph_node_from_entity(ctx, entity)?;
+    let saver = ctx
+        .require_resource::<Arc<dyn DynGraphSaver>>()
+        .map_err(|e| {
+            RuntimeError::Graph(format!(
+                "no DynGraphSaver registered — did you call register_executor()? ({e})"
+            ))
+        })?;
+
+    if let Some(root) = root {
+        let has_ledger_changes = !root.current_change_set().changes().is_empty()
+            || !root.deleted_keys().is_empty()
+            || !root.new_keys().is_empty();
+        if has_ledger_changes {
+            return saver.save_ledger_dyn(ctx, &entity_name, root).await;
+        }
+    }
+
+    saver.save_graph_dyn(ctx, &entity_name, node).await
 }

@@ -16,47 +16,39 @@ pub trait TeaqlRecordDataService {
 
     async fn fetch_all(
         &self,
-        query: &SelectQuery,
+        query: &PurposedSelectQuery,
     ) -> Result<Vec<Record>, DataServiceError<Self::Error>>;
 
     async fn fetch_smart_list(
         &self,
-        query: &SelectQuery,
+        query: &PurposedSelectQuery,
     ) -> Result<SmartList<Record>, DataServiceError<Self::Error>>;
 
     async fn fetch_smart_list_with_relation_aggregates(
         &self,
-        query: &SelectQuery,
+        query: &PurposedSelectQuery,
         relation_aggregates: &[RuntimeRelationAggregate],
     ) -> Result<SmartList<Record>, DataServiceError<Self::Error>>;
 
     async fn fetch_stream(
         &self,
-        query: &SelectQuery,
+        query: &PurposedSelectQuery,
     ) -> Result<Vec<teaql_data_service::StreamChunk>, DataServiceError<Self::Error>>;
 }
 
 pub trait TeaqlEntityDataService: TeaqlRecordDataService {
     async fn fetch_enhanced_entities<T>(
         &self,
-        query: &SelectQuery,
+        query: &PurposedSelectQuery,
     ) -> Result<SmartList<T>, DataServiceError<Self::Error>>
     where
         T: teaql_core::Entity;
 
     async fn fetch_enhanced_entities_with_relation_aggregates<T>(
         &self,
-        query: &SelectQuery,
+        query: &PurposedSelectQuery,
         relation_aggregates: &[RuntimeRelationAggregate],
     ) -> Result<SmartList<T>, DataServiceError<Self::Error>>
-    where
-        T: teaql_core::Entity;
-
-    #[doc(hidden)]
-    async fn save_entity_graph<T>(
-        &self,
-        entity: T,
-    ) -> Result<GraphNode, DataServiceError<Self::Error>>
     where
         T: teaql_core::Entity;
 }
@@ -74,21 +66,21 @@ where
 
     async fn fetch_all(
         &self,
-        query: &SelectQuery,
+        query: &PurposedSelectQuery,
     ) -> Result<Vec<Record>, DataServiceError<Self::Error>> {
         crate::EntityDataService::fetch_all(self, query).await
     }
 
     async fn fetch_smart_list(
         &self,
-        query: &SelectQuery,
+        query: &PurposedSelectQuery,
     ) -> Result<SmartList<Record>, DataServiceError<Self::Error>> {
         crate::EntityDataService::fetch_smart_list(self, query).await
     }
 
     async fn fetch_smart_list_with_relation_aggregates(
         &self,
-        query: &SelectQuery,
+        query: &PurposedSelectQuery,
         relation_aggregates: &[RuntimeRelationAggregate],
     ) -> Result<SmartList<Record>, DataServiceError<Self::Error>> {
         crate::EntityDataService::fetch_smart_list_with_relation_aggregates(
@@ -101,7 +93,7 @@ where
 
     async fn fetch_stream(
         &self,
-        query: &SelectQuery,
+        query: &PurposedSelectQuery,
     ) -> Result<Vec<teaql_data_service::StreamChunk>, DataServiceError<Self::Error>> {
         crate::EntityDataService::fetch_stream(self, query).await
     }
@@ -118,7 +110,7 @@ where
 {
     async fn fetch_enhanced_entities<T>(
         &self,
-        query: &SelectQuery,
+        query: &PurposedSelectQuery,
     ) -> Result<SmartList<T>, DataServiceError<Self::Error>>
     where
         T: teaql_core::Entity,
@@ -128,7 +120,7 @@ where
 
     async fn fetch_enhanced_entities_with_relation_aggregates<T>(
         &self,
-        query: &SelectQuery,
+        query: &PurposedSelectQuery,
         relation_aggregates: &[RuntimeRelationAggregate],
     ) -> Result<SmartList<T>, DataServiceError<Self::Error>>
     where
@@ -141,17 +133,6 @@ where
         )
         .await
     }
-
-    #[doc(hidden)]
-    async fn save_entity_graph<T>(
-        &self,
-        entity: T,
-    ) -> Result<GraphNode, DataServiceError<Self::Error>>
-    where
-        T: teaql_core::Entity,
-    {
-        crate::EntityDataService::save_entity_graph(self, entity).await
-    }
 }
 
 pub type TeaqlDataServiceError<R> = DataServiceError<<R as TeaqlRecordDataService>::Error>;
@@ -162,7 +143,7 @@ pub trait TeaqlRuntime {
     fn fetch_facet_smart_list(
         &self,
         entity: &str,
-        query: &SelectQuery,
+        query: &PurposedSelectQuery,
         relation_aggregates: &[RuntimeRelationAggregate],
         trace_context: Vec<TraceNode>,
     ) -> impl std::future::Future<Output = Result<SmartList<Record>, RuntimeError>> + Send;
@@ -195,6 +176,41 @@ impl<T> PurposedQuery<T> {
     }
 }
 
+/// A low-level select query carrying an explicit, non-empty execution purpose.
+///
+/// Generated request builders construct this type after `.purpose(...)` unlocks
+/// their terminal methods. Runtime execution APIs accept this wrapper rather
+/// than a bare [`SelectQuery`], so infrastructure callers must also declare
+/// intent explicitly.
+#[derive(Debug, Clone)]
+pub struct PurposedSelectQuery {
+    query: SelectQuery,
+}
+
+impl PurposedSelectQuery {
+    pub fn new(mut query: SelectQuery, purpose: impl Into<String>) -> Self {
+        let purpose = purpose.into();
+        assert!(
+            !purpose.trim().is_empty(),
+            "query purpose must not be empty"
+        );
+        query.trace_chain.push(TraceNode {
+            entity_type: query.entity.clone(),
+            entity_id: None,
+            comment: purpose,
+        });
+        Self { query }
+    }
+
+    pub fn as_query(&self) -> &SelectQuery {
+        &self.query
+    }
+
+    pub fn into_query(self) -> SelectQuery {
+        self.query
+    }
+}
+
 pub async fn execute_facets<C>(
     ctx: &C,
     outer_query: &SelectQuery,
@@ -217,6 +233,7 @@ where
             &selection.query_options,
             &selection.child_enhancements,
         );
+        let entity = query.entity.clone();
         let mut chain = outer_query.trace_chain.clone();
         chain.push(TraceNode {
             entity_type: query.entity.clone(),
@@ -224,8 +241,10 @@ where
             comment: facet.facet_name.clone(),
         });
 
+        let query =
+            PurposedSelectQuery::new(query, format!("Calculate facet {}", facet.facet_name));
         let facet_rows = ctx
-            .fetch_facet_smart_list(&query.entity, &query, &relation_aggregates, chain)
+            .fetch_facet_smart_list(&entity, &query, &relation_aggregates, chain)
             .await?;
         facets.insert(facet.facet_name.clone(), facet_rows);
     }

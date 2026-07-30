@@ -15,7 +15,7 @@ use super::{
 };
 
 impl UserContext {
-    pub fn data_service<E>(&self) -> Result<ContextDataService<'_, E>, ContextError>
+    pub(crate) fn data_service_internal<E>(&self) -> Result<ContextDataService<'_, E>, ContextError>
     where
         E: teaql_data_service::QueryExecutor
             + teaql_data_service::MutationExecutor
@@ -51,13 +51,13 @@ impl UserContext {
         }
         Ok(EntityDataService {
             entity,
-            data_service: self.data_service::<E>()?,
+            data_service: self.data_service_internal::<E>()?,
             trace_context: Vec::new(),
         })
     }
 
     /// Register a data-service executor and automatically set up the
-    /// type-erased [`DynGraphSaver`](crate::DynGraphSaver) so that
+    /// type-erased graph saver so that
     /// [`Audited::save`](crate::AuditedSaveExt::save) works.
     pub fn register_executor<E>(&mut self, executor: E)
     where
@@ -68,7 +68,7 @@ impl UserContext {
             + 'static,
     {
         use std::sync::Arc;
-        self.insert_resource::<Arc<dyn crate::DynGraphSaver>>(Arc::new(
+        self.insert_resource::<Arc<dyn crate::entity_save::DynGraphSaver>>(Arc::new(
             crate::entity_save::GraphSaverFor::<E>::new(),
         ));
         self.insert_resource(executor);
@@ -87,7 +87,7 @@ where
         RuntimeDataService::new(&self.metadata, self.executor)
     }
 
-    pub async fn fetch_all(
+    pub(crate) async fn fetch_all(
         &self,
         mut query: SelectQuery,
     ) -> Result<Vec<Record>, DataServiceError<E::Error>> {
@@ -96,14 +96,14 @@ where
         self.data_service().fetch_all(&query).await
     }
 
-    pub async fn fetch_smart_list(
+    pub(crate) async fn fetch_smart_list(
         &self,
         query: &SelectQuery,
     ) -> Result<SmartList<Record>, DataServiceError<E::Error>> {
         self.data_service().fetch_smart_list(query).await
     }
 
-    pub async fn fetch_entities<T>(
+    pub(crate) async fn fetch_entities<T>(
         &self,
         query: &SelectQuery,
     ) -> Result<SmartList<T>, DataServiceError<E::Error>>
@@ -113,7 +113,7 @@ where
         self.data_service().fetch_entities(query).await
     }
 
-    pub async fn fetch_enhanced_entities<T>(
+    pub(crate) async fn fetch_enhanced_entities<T>(
         &self,
         query: &SelectQuery,
     ) -> Result<SmartList<T>, DataServiceError<E::Error>>
@@ -123,19 +123,25 @@ where
         self.data_service().fetch_enhanced_entities(query).await
     }
 
-    pub async fn insert(&self, command: &InsertCommand) -> Result<u64, DataServiceError<E::Error>> {
+    pub(crate) async fn insert(
+        &self,
+        command: &InsertCommand,
+    ) -> Result<u64, DataServiceError<E::Error>> {
         let affected = self.data_service().insert(command).await?;
         self.invalidate_aggregation_cache_for(&command.entity);
         Ok(affected)
     }
 
-    pub async fn update(&self, command: &UpdateCommand) -> Result<u64, DataServiceError<E::Error>> {
+    pub(crate) async fn update(
+        &self,
+        command: &UpdateCommand,
+    ) -> Result<u64, DataServiceError<E::Error>> {
         let affected = self.data_service().update(command).await?;
         self.invalidate_aggregation_cache_for(&command.entity);
         Ok(affected)
     }
 
-    pub async fn batch_insert(
+    pub(crate) async fn batch_insert(
         &self,
         command: &teaql_core::BatchInsertCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
@@ -144,7 +150,7 @@ where
         Ok(affected)
     }
 
-    pub async fn batch_update(
+    pub(crate) async fn batch_update(
         &self,
         command: &teaql_core::BatchUpdateCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
@@ -153,13 +159,16 @@ where
         Ok(affected)
     }
 
-    pub async fn delete(&self, command: &DeleteCommand) -> Result<u64, DataServiceError<E::Error>> {
+    pub(crate) async fn delete(
+        &self,
+        command: &DeleteCommand,
+    ) -> Result<u64, DataServiceError<E::Error>> {
         let affected = self.data_service().delete(command).await?;
         self.invalidate_aggregation_cache_for(&command.entity);
         Ok(affected)
     }
 
-    pub async fn recover(
+    pub(crate) async fn recover(
         &self,
         command: &RecoverCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {

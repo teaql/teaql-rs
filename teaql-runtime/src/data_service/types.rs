@@ -2,12 +2,12 @@ use teaql_core::{EntityDescriptor, SelectQuery};
 
 use crate::{MetadataStore, UserContext};
 
-pub struct RuntimeDataService<'a, M, E> {
+pub(crate) struct RuntimeDataService<'a, M, E> {
     pub(super) metadata: &'a M,
     pub(super) executor: &'a E,
 }
 
-pub struct ContextDataService<'a, E> {
+pub(crate) struct ContextDataService<'a, E> {
     pub(super) metadata: UserContextMetadata<'a>,
     pub(crate) executor: &'a E,
 }

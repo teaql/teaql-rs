@@ -23,10 +23,10 @@ typed domain APIs instead of hand-written repository boilerplate.
 
 The Rust workspace provides the runtime pieces: entity metadata, a query AST,
 SQL compilation, relation enhancement, graph writes, checkers, mutation events,
-and PostgreSQL/SQLite executors. The sibling `teaql-code-gen` project can turn a
-compact domain model into a typed Rust service crate with entity structs,
-`Q::merchants()`-style query builders, behavior/checker hooks, and graph-save
-entrypoints.
+and PostgreSQL, MySQL, and SQLite executors. The sibling `teaql-code-gen`
+project can turn a compact domain model into a typed Rust service crate with
+entity structs, `Q::merchants()`-style query builders, behavior/checker hooks,
+and audited graph-save entrypoints.
 
 TeaQL is not trying to be a general replacement for Diesel, SeaORM, or direct
 `sqlx` use:
@@ -40,9 +40,9 @@ TeaQL is not trying to be a general replacement for Diesel, SeaORM, or direct
 
 The Rust rewrite keeps the scope deliberately narrow:
 
-- PostgreSQL and SQLite only
+- PostgreSQL, MySQL, and SQLite database providers
 - Rust-native metadata and query AST
-- SQL compiler and runtime separated from web/framework concerns
+- SQL compiler and runtime separated from optional web and cache integrations
 - compatibility with every Java implementation detail is not a goal, but the
   high-level TeaQL programming model is being carried over where it is useful
 
@@ -87,8 +87,10 @@ To build TeaQL from source:
 ```bash
 git clone https://github.com/teaql/teaql-rs.git
 cd teaql-rs
-cargo build --all-targets
+cargo build --workspace --all-targets --exclude teaql-provider-linux
 ```
+
+On Linux, include the `/proc` data provider with `cargo build --all-targets`.
 
 To use TeaQL in your project, add the relevant crates to your `Cargo.toml`:
 
@@ -106,9 +108,8 @@ The quickest demo uses SQLite in memory and needs no database server:
 cargo run -p teaql-examples --bin sqlite_relations_graph
 ```
 
-It bootstraps the schema, saves an `Order` graph with nested `OrderLine` and
-`Product` objects, reloads the relation path `lines.product`, and prints the
-typed result.
+It bootstraps the schema, submits an `Order` graph containing `OrderLine` and
+`Product` objects, fetches the order again, and prints the typed result.
 
 For a smaller schema/bootstrap and CRUD path:
 
@@ -142,21 +143,12 @@ let platforms = Q::platforms()
 - `teaql-provider-postgres`: PostgreSQL native adapter (deadpool-postgres), schema bootstrap, transaction wrapper, row decoding, and ID-space generator
 - `teaql-provider-sqlite`: SQLite native adapter (rusqlite), schema bootstrap, transaction wrapper, row decoding, and ID-space generator
 - `teaql-provider-mysql`: MySQL native adapter (mysql_async), schema bootstrap, transaction wrapper, row decoding, and ID-space generator
-- `teaql-provider-rusqlite`: synchronous SQLite adapter for embedded and multi-architecture deployments such as routers, robots, and appliance controllers
+- `teaql-data-service`: database-neutral query and mutation service contracts
+- `teaql-web-integration-axum`: Axum integration for TeaQL web responses and request contexts
+- `teaql-cache-integration-redis`: Redis-backed runtime cache integration
+- `teaql-provider-meilisearch`: Meilisearch query provider
+- `teaql-provider-linux`: Linux `/proc` data provider
 - `teaql-macros`: `TeaqlEntity` derive macro plus attribute parsing and record/entity mapping generation
-
-The large crates are now split by function instead of keeping all implementation in a single
-`lib.rs`:
-
-- `teaql-core/src`: `entity.rs`, `expr.rs`, `list.rs`, `meta.rs`, `mutation.rs`, `naming.rs`, `query.rs`, `value.rs`
-- `teaql-sql/src`: `dialect.rs`, `types.rs`
-- `teaql-runtime/src`: `checker.rs`, `context.rs`, `error.rs`, `event.rs`, `graph.rs`, `id.rs`, `memory.rs`, `registry.rs`, `repository/`
-- `teaql-provider-postgres/src`: PostgreSQL provider adapter
-- `teaql-provider-sqlite/src`: SQLite provider adapter
-- `teaql-provider-mysql/src`: MySQL provider adapter
-- `teaql-provider-rusqlite/src`: synchronous rusqlite provider adapter
-- `teaql-runtime/src/repository`: `base.rs`, `cache.rs`, `context.rs`, `executor.rs`, `graph.rs`, `helpers.rs`, `relation.rs`, `resolved.rs`, `types.rs`
-- `teaql-macros/src`: `attr.rs`, `derive_impl.rs`, `mapping.rs`, `types.rs`
 
 ## Current scope
 
@@ -197,13 +189,13 @@ The current implementation focuses on the Rust-native core runtime:
 - `TeaqlEntity` derive support for declarative entity descriptors
 - typed entity mapping through `Entity` and `SmartList<T>`
 - typed nested relation enhancement through `fetch_enhanced_entities::<T>()`
-- unified graph write path through `GraphNode` and `save_graph()`, covering create and upsert requests
-- graph upsert path through `save_graph()`, including parent update, child merge, child insert, and missing-child soft delete
+- unified internal graph write path through `GraphNode`, covering create and upsert requests
+- audited graph upserts, including parent update, child merge, child insert, and missing-child soft delete
 - graph writes build a `GraphMutationPlan` classified by entity type and operation before execution
 - graph planning is available through `UserContext::plan_for_save_graph()` for debugging
 - graph planning assigns missing create ids before batching; creates/deletes merge by entity type, updates merge only when the updated field set is identical
-- `save_graph()` requires a transactional executor and rolls back the graph write when any planned operation fails
-- typed entity graph extraction through `graph_node_from_entity()` and `save_entity_graph()`
+- audited graph saves require a transactional executor and roll back when any planned operation fails
+- typed entity graph extraction through `graph_node_from_entity()` and audited persistence through `.audit_as(...).save(...)`
 - graph write state hints: `Upsert`, `Reference`, and `Remove`
 - stricter graph state semantics: reference nodes validate existence/version/deleted state, remove nodes validate existence, and many-relation merge rejects duplicate child ids
 - relation metadata for graph writes: `attach/detached` and `delete_missing/keep_missing`
@@ -212,7 +204,7 @@ The current implementation focuses on the Rust-native core runtime:
 - built-in `SnowflakeIdGenerator` and `UserContext`-driven id generation; native `teaql_id_space` generators live in the per-database provider crates
 - `BaseEntityData` / `BaseEntity` for shared `id + version + dynamic` entity state
 - dynamic-property capture through `#[teaql(dynamic)]`, with JSON flattening for aggregate-style outputs
-- `MemoryRepository` for no-database tests and lightweight in-memory execution
+- `InMemoryQueryEngine` for no-database query tests and lightweight in-memory evaluation
 - PostgreSQL, SQLite, and MySQL execution moved to per-database provider crates using native drivers
 - SQLite `ensure_schema` support for create-table and add-missing-column flows in `teaql-provider-sqlite`
 - PostgreSQL `ensure_schema` support with real multi-table integration validation, including `soundex(text)` and `teaql_id_space` bootstrap, in `teaql-provider-postgres`
@@ -223,16 +215,17 @@ The current implementation focuses on the Rust-native core runtime:
 - SQLite integration coverage for nested graph update diff
 - SQLite integration coverage for reference-only nodes, explicit remove, keep-missing relation metadata, and transaction rollback
 - SQLite relation aggregate coverage through generated high-level `Q` APIs in an external generated service crate
-- PostgreSQL integration coverage for graph-write transaction rollback when `TEAQL_TEST_PG_URL` is provided
-- PostgreSQL integration tests in the provider when `TEAQL_TEST_PG_URL` is provided
 
 ## Typed entities and `SmartList<T>`
 
-`TeaqlEntity` derive now generates both metadata and typed `Entity` mapping. Repository APIs can
-return either raw `Record` rows or typed `SmartList<T>` collections.
+`TeaqlEntity` derive now generates both metadata and typed `Entity` mapping.
+Entity data-service APIs can return either raw `Record` rows or typed
+`SmartList<T>` collections.
 
 ```rust
 use teaql_core::{Expr, SelectQuery, SmartList, TeaqlEntity};
+use teaql_macros::TeaqlEntity;
+use teaql_runtime::PurposedSelectQuery;
 
 #[derive(Clone, Debug, Default, TeaqlEntity)]
 #[teaql(entity = "CatalogProduct", table = "catalog_product_data")]
@@ -245,15 +238,14 @@ struct CatalogProductRow {
     name: String,
 }
 
-fn query() -> SelectQuery {
-    SelectQuery::new("CatalogProduct").filter(Expr::eq("name", "desk"))
-}
-
-async fn fetch_products(
-    repo: &teaql_runtime::ResolvedRepository<'_>,
-) -> Result<SmartList<CatalogProductRow>, teaql_runtime::RepositoryError> {
-    repo.fetch_entities::<CatalogProductRow>(&query())
-}
+let query = PurposedSelectQuery::new(
+    SelectQuery::new("CatalogProduct")
+        .filter(Expr::eq("name", "desk"))
+        .comment("Load catalog products named desk"),
+    "Display matching catalog products",
+);
+let products: SmartList<CatalogProductRow> =
+    data_service.fetch_entities::<CatalogProductRow>(&query).await?;
 ```
 
 `SmartList<T>` keeps TeaQL-style list metadata alongside the typed rows:
@@ -276,6 +268,8 @@ result into typed nested entities.
 
 ```rust
 use teaql_core::{SelectQuery, SmartList, TeaqlEntity};
+use teaql_macros::TeaqlEntity;
+use teaql_runtime::PurposedSelectQuery;
 
 #[derive(Clone, Debug, Default, TeaqlEntity)]
 #[teaql(entity = "Product", table = "product_data")]
@@ -297,6 +291,8 @@ struct OrderLineRow {
     version: i64,
     #[teaql(column = "order_id")]
     order_id: u64,
+    #[teaql(column = "product_id")]
+    product_id: u64,
     #[teaql(
         relation(
             target = "Product",
@@ -325,11 +321,12 @@ struct OrderRow {
     lines: SmartList<OrderLineRow>,
 }
 
-async fn fetch_orders(
-    repo: &teaql_runtime::ResolvedRepository<'_>,
-) -> Result<SmartList<OrderRow>, teaql_runtime::RepositoryError> {
-    repo.fetch_enhanced_entities::<OrderRow>(&SelectQuery::new("Order"))
-}
+let query = PurposedSelectQuery::new(
+    SelectQuery::new("Order").comment("Load orders and configured relations"),
+    "Display orders and configured relations",
+);
+let orders: SmartList<OrderRow> =
+    data_service.fetch_enhanced_entities::<OrderRow>(&query).await?;
 ```
 
 For nested enhancement, register relation paths from repository behavior, for example:
@@ -363,9 +360,11 @@ ctx.ensure_schema().await?;
 SQLite:
 
 ```rust
+use rusqlite::Connection;
 use teaql_provider_sqlite::{SqliteMutationExecutor, SqliteProviderExt};
 
-ctx.use_sqlite_provider(SqliteMutationExecutor::new(sqlite_pool));
+let executor = SqliteMutationExecutor::from_connection(Connection::open("app.db")?);
+ctx.use_sqlite_provider(executor);
 ctx.ensure_schema().await?;
 ```
 
@@ -377,17 +376,6 @@ use teaql_provider_mysql::{
 };
 
 ctx.use_mysql_provider(MysqlMutationExecutor::new(mysql_pool));
-ctx.ensure_schema().await?;
-```
-
-rusqlite:
-
-```rust
-use rusqlite::Connection;
-use teaql_provider_rusqlite::{RusqliteMutationExecutor, RusqliteProviderExt};
-
-let executor = RusqliteMutationExecutor::new(Connection::open("app.db")?);
-ctx.use_rusqlite_provider(executor);
 ctx.ensure_schema().await?;
 ```
 
@@ -404,31 +392,24 @@ Runnable examples live in the `teaql-examples` workspace package:
 ```bash
 cargo run -p teaql-examples --bin sqlite_schema_crud
 cargo run -p teaql-examples --bin sqlite_relations_graph
-```
-
-The PostgreSQL example uses real schema bootstrap and PG query features. Set
-`TEAQL_TEST_PG_URL` before running it:
-
-```bash
-TEAQL_TEST_PG_URL=postgres://postgres:postgres@127.0.0.1:55440/teaql_examples \
-  cargo run -p teaql-examples --bin pg_query_features
+cargo run -p teaql-examples --bin school_example
+cargo run -p teaql-examples --bin test_default_log
 ```
 
 Current examples cover:
 
-- SQLite schema bootstrap, CRUD, optimistic lock delete/recover, and typed entity fetch
-- SQLite typed entity graph writes through `save_entity_graph()`
-- SQLite relation enhancement through `fetch_enhanced_entities::<T>()`
-- PostgreSQL `soundlike`/`SOUNDEX`, array-bound large IN, expression projection/sort, extended aggregates, and `HAVING`
-- Generated-service validation with high-level `Q` APIs covers complex object commit, subtrait-style DDD methods, JSON serialization, JSON-expression search, and simple-to-relation statistics against SQLite
+- SQLite schema bootstrap, audited create/update/delete, and typed entity fetch
+- SQLite entity graph writes and typed relation enhancement
+- audited graph saves through `entity.audit_as("why").save(&ctx)`
+- default SQL trace-log output
 
 ## Environment Variables
 
 TeaQL supports the following environment variables for configuration and debugging:
 
-- `TEAQL_LOG_ENDPOINT`: If set, specifies an absolute file path where TeaQL will append all internal execution logs (e.g., SQL queries, audit events). This allows external AI agents or log-collectors to analyze the runtime execution of the framework directly.
+- `TEAQL_LOG_ENDPOINT`: Sends internal execution logs to `stdout` or appends them to the specified file path.
 - `TEAQL_LOG_FORMAT`: Controls the format of the output log specified by `TEAQL_LOG_ENDPOINT`. Can be set to `json` (or `debug`) for structured JSON logging, or `human` (default) for human-readable output.
-- `TEAQL_TEST_PG_URL`: The PostgreSQL connection URL used during tests and examples.
+- `TEAQL_DOMAIN`: Sets the default log filename to `<domain>.log` when `TEAQL_LOG_ENDPOINT` is not set.
 
 ## Reporting Bugs
 

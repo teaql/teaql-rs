@@ -1,6 +1,7 @@
-use teaql_core::{DeleteCommand, Expr, RecoverCommand, UpdateCommand};
+use teaql_core::{Entity, Expr, SmartList};
 use teaql_examples::{Order, reset_sqlite_schema, sqlite_context};
 use teaql_provider_sqlite::{SqliteDialect, SqliteMutationExecutor};
+use teaql_runtime::{AuditedSaveExt, EntityKey, PurposedSelectQuery};
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -15,39 +16,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         teaql_runtime::InMemoryMetadataStore,
     >>("Order")?;
 
-    data_service
-        .insert(
-            &data_service
-                .insert_command()
-                .value("id", 1_u64)
-                .value("version", 1_i64)
-                .value("name", "draft"),
-        )
-        .await?;
-    data_service
-        .update(
-            &UpdateCommand::new("Order", 1_u64)
-                .expected_version(1)
-                .value("name", "submitted"),
-        )
-        .await?;
-    data_service
-        .delete(&DeleteCommand::new("Order", 1_u64).expected_version(2))
-        .await?;
-    data_service
-        .recover(&RecoverCommand::new("Order", 1_u64, -3))
+    Order {
+        root: Default::default(),
+        id: 1,
+        version: 1,
+        name: "draft".to_owned(),
+        lines: SmartList::default(),
+    }
+    .audit_as("Create the example order")
+    .save(&ctx)
+    .await?;
+
+    Order {
+        root: Default::default(),
+        id: 1,
+        version: 1,
+        name: "submitted".to_owned(),
+        lines: SmartList::default(),
+    }
+    .audit_as("Submit the example order")
+    .save(&ctx)
+    .await?;
+
+    let deleted = Order {
+        root: Default::default(),
+        id: 1,
+        version: 2,
+        name: "submitted".to_owned(),
+        lines: SmartList::default(),
+    };
+    deleted.root.mark_as_delete(EntityKey::new("Order", 1_u64));
+    deleted
+        .audit_as("Delete the example order")
+        .save(&ctx)
         .await?;
 
-    let orders = data_service
-        .fetch_entities::<Order>(
-            &data_service
-                .select()
-                .project("id")
-                .project("version")
-                .project("name")
-                .filter(Expr::eq("id", 1_u64)),
-        )
-        .await?;
+    let query = PurposedSelectQuery::new(
+        data_service
+            .select()
+            .project("id")
+            .project("version")
+            .project("name")
+            .filter(Expr::eq("id", 1_u64)),
+        "Inspect the soft-deleted example order",
+    );
+    let orders = data_service.fetch_entities::<Order>(&query).await?;
 
     println!("schema+crud example rows: {orders:?}");
     Ok(())

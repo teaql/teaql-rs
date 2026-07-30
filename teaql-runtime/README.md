@@ -11,7 +11,7 @@ Database execution is supplied by provider crates.
 - `UserContext` for metadata, typed resources, request locals, and runtime options
 - request policy hooks for platform-level security, observability, and resource limits
 - repository registry and behavior registry
-- memory repository for tests and lightweight execution
+- in-memory query engine plus an internal data-service test harness
 - checker registry and translated validation results
 - entity event sink support
 - graph save planning and execution

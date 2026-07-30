@@ -6,8 +6,8 @@ use teaql_core::{
 };
 
 use crate::{
-    CheckObjectStatus, DataServiceError, EntityDataServiceBehavior, RawAuditEvent, RuntimeError,
-    clear_record_status, mark_record_status,
+    CheckObjectStatus, DataServiceError, EntityDataServiceBehavior, PurposedSelectQuery,
+    RawAuditEvent, RuntimeError, clear_record_status, mark_record_status,
 };
 
 use super::{
@@ -176,7 +176,7 @@ where
         RecoverCommand::new(self.entity.clone(), id, expected_version)
     }
 
-    pub async fn fetch_all(
+    pub(crate) async fn fetch_all_internal(
         &self,
         query: &SelectQuery,
     ) -> Result<Vec<Record>, DataServiceError<E::Error>> {
@@ -190,7 +190,7 @@ where
     /// Returns a Vec of chunks, each chunk containing up to `chunk_size` rows.
     /// Each chunk is enhanced (relations, children) before returning.
     /// Requires E to implement StreamQueryExecutor.
-    pub async fn fetch_stream(
+    pub(crate) async fn fetch_stream_internal(
         &self,
         query: &SelectQuery,
     ) -> Result<Vec<teaql_data_service::StreamChunk>, DataServiceError<E::Error>>
@@ -229,19 +229,19 @@ where
         // Enhance each chunk
         let mut enhanced_chunks = Vec::with_capacity(chunks.len());
         for mut chunk in chunks {
-            self.enhance_object_group_bys(
+            self.enhance_object_group_bys_internal(
                 &mut chunk.rows,
                 &query.object_group_bys,
                 &query.trace_chain,
             )
             .await?;
-            self.enhance_child_queries(
+            self.enhance_child_queries_internal(
                 &mut chunk.rows,
                 &query.child_enhancements,
                 &query.trace_chain,
             )
             .await?;
-            self.enhance_query_relations(&mut chunk.rows, &query)
+            self.enhance_query_relations_internal(&mut chunk.rows, &query)
                 .await?;
             enhanced_chunks.push(chunk);
         }
@@ -254,11 +254,20 @@ where
         query: &SelectQuery,
     ) -> Result<Vec<Record>, DataServiceError<E::Error>> {
         let mut rows = self.fetch_prepared_query(query).await?;
-        self.enhance_object_group_bys(&mut rows, &query.object_group_bys, &query.trace_chain)
+        self.enhance_object_group_bys_internal(
+            &mut rows,
+            &query.object_group_bys,
+            &query.trace_chain,
+        )
+        .await?;
+        self.enhance_child_queries_internal(
+            &mut rows,
+            &query.child_enhancements,
+            &query.trace_chain,
+        )
+        .await?;
+        self.enhance_query_relations_internal(&mut rows, query)
             .await?;
-        self.enhance_child_queries(&mut rows, &query.child_enhancements, &query.trace_chain)
-            .await?;
-        self.enhance_query_relations(&mut rows, query).await?;
         Ok(rows)
     }
 
@@ -345,7 +354,7 @@ where
         Ok(rows)
     }
 
-    pub async fn fetch_all_with_relation_aggregates(
+    pub(crate) async fn fetch_all_with_relation_aggregates_internal(
         &self,
         query: &SelectQuery,
         relation_aggregates: &[RelationAggregate],
@@ -355,7 +364,7 @@ where
             .map_err(DataServiceError::Runtime)?;
 
         let mut rows = self.fetch_prepared_all(&query).await?;
-        self.enhance_relation_aggregates(
+        self.enhance_relation_aggregates_internal(
             &mut rows,
             relation_aggregates,
             query.aggregation_cache,
@@ -365,7 +374,7 @@ where
         Ok(rows)
     }
 
-    pub async fn fetch_smart_list(
+    pub(crate) async fn fetch_smart_list_internal(
         &self,
         query: &SelectQuery,
     ) -> Result<SmartList<Record>, DataServiceError<E::Error>> {
@@ -376,17 +385,17 @@ where
         self.data_service.fetch_smart_list(&query).await
     }
 
-    pub async fn fetch_smart_list_with_relation_aggregates(
+    pub(crate) async fn fetch_smart_list_with_relation_aggregates_internal(
         &self,
         query: &SelectQuery,
         relation_aggregates: &[RelationAggregate],
     ) -> Result<SmartList<Record>, DataServiceError<E::Error>> {
-        self.fetch_all_with_relation_aggregates(query, relation_aggregates)
+        self.fetch_all_with_relation_aggregates_internal(query, relation_aggregates)
             .await
             .map(SmartList::from)
     }
 
-    pub async fn fetch_entities<T>(
+    pub(crate) async fn fetch_entities_internal<T>(
         &self,
         query: &SelectQuery,
     ) -> Result<SmartList<T>, DataServiceError<E::Error>>
@@ -400,7 +409,7 @@ where
         self.data_service.fetch_entities(&query).await
     }
 
-    pub async fn fetch_entities_with_relation_aggregates<T>(
+    pub(crate) async fn fetch_entities_with_relation_aggregates_internal<T>(
         &self,
         query: &SelectQuery,
         relation_aggregates: &[RelationAggregate],
@@ -408,7 +417,7 @@ where
     where
         T: Entity,
     {
-        self.fetch_all_with_relation_aggregates(query, relation_aggregates)
+        self.fetch_all_with_relation_aggregates_internal(query, relation_aggregates)
             .await?
             .into_iter()
             .map(|record| {
@@ -422,7 +431,7 @@ where
             .map_err(DataServiceError::Entity)
     }
 
-    pub async fn fetch_enhanced_entities_with_relation_aggregates<T>(
+    pub(crate) async fn fetch_enhanced_entities_with_relation_aggregates_internal<T>(
         &self,
         query: &SelectQuery,
         relation_aggregates: &[RelationAggregate],
@@ -435,14 +444,14 @@ where
             .map_err(DataServiceError::Runtime)?;
 
         let mut rows = self.fetch_prepared_all(&query).await?;
-        self.enhance_relation_aggregates(
+        self.enhance_relation_aggregates_internal(
             &mut rows,
             relation_aggregates,
             query.aggregation_cache,
             &query.trace_chain,
         )
         .await?;
-        self.enhance_relations(&mut rows).await?;
+        self.enhance_relations_internal(&mut rows).await?;
         rows.into_iter()
             .map(|record| {
                 let mut entity = T::from_record(record)?;
@@ -455,7 +464,7 @@ where
             .map_err(DataServiceError::Entity)
     }
 
-    pub async fn fetch_enhanced_entities<T>(
+    pub(crate) async fn fetch_enhanced_entities_internal<T>(
         &self,
         query: &SelectQuery,
     ) -> Result<SmartList<T>, DataServiceError<E::Error>>
@@ -467,7 +476,7 @@ where
             .map_err(DataServiceError::Runtime)?;
 
         let mut rows = self.fetch_prepared_all(&query).await?;
-        self.enhance_relations(&mut rows).await?;
+        self.enhance_relations_internal(&mut rows).await?;
         let root = self
             .data_service
             .metadata
@@ -487,7 +496,89 @@ where
             .map_err(DataServiceError::Entity)
     }
 
-    pub async fn insert(&self, command: &InsertCommand) -> Result<u64, DataServiceError<E::Error>> {
+    #[doc(hidden)]
+    pub async fn fetch_all(
+        &self,
+        query: &PurposedSelectQuery,
+    ) -> Result<Vec<Record>, DataServiceError<E::Error>> {
+        self.fetch_all_internal(query.as_query()).await
+    }
+
+    #[doc(hidden)]
+    pub async fn fetch_stream(
+        &self,
+        query: &PurposedSelectQuery,
+    ) -> Result<Vec<teaql_data_service::StreamChunk>, DataServiceError<E::Error>>
+    where
+        E: teaql_data_service::StreamQueryExecutor,
+    {
+        self.fetch_stream_internal(query.as_query()).await
+    }
+
+    #[doc(hidden)]
+    pub async fn fetch_smart_list(
+        &self,
+        query: &PurposedSelectQuery,
+    ) -> Result<SmartList<Record>, DataServiceError<E::Error>> {
+        self.fetch_smart_list_internal(query.as_query()).await
+    }
+
+    #[doc(hidden)]
+    pub async fn fetch_smart_list_with_relation_aggregates(
+        &self,
+        query: &PurposedSelectQuery,
+        relation_aggregates: &[RelationAggregate],
+    ) -> Result<SmartList<Record>, DataServiceError<E::Error>> {
+        self.fetch_smart_list_with_relation_aggregates_internal(
+            query.as_query(),
+            relation_aggregates,
+        )
+        .await
+    }
+
+    #[doc(hidden)]
+    pub async fn fetch_entities<T>(
+        &self,
+        query: &PurposedSelectQuery,
+    ) -> Result<SmartList<T>, DataServiceError<E::Error>>
+    where
+        T: Entity,
+    {
+        self.fetch_entities_internal(query.as_query()).await
+    }
+
+    #[doc(hidden)]
+    pub async fn fetch_enhanced_entities<T>(
+        &self,
+        query: &PurposedSelectQuery,
+    ) -> Result<SmartList<T>, DataServiceError<E::Error>>
+    where
+        T: Entity,
+    {
+        self.fetch_enhanced_entities_internal(query.as_query())
+            .await
+    }
+
+    #[doc(hidden)]
+    pub async fn fetch_enhanced_entities_with_relation_aggregates<T>(
+        &self,
+        query: &PurposedSelectQuery,
+        relation_aggregates: &[RelationAggregate],
+    ) -> Result<SmartList<T>, DataServiceError<E::Error>>
+    where
+        T: Entity,
+    {
+        self.fetch_enhanced_entities_with_relation_aggregates_internal(
+            query.as_query(),
+            relation_aggregates,
+        )
+        .await
+    }
+
+    pub(crate) async fn insert_internal(
+        &self,
+        command: &InsertCommand,
+    ) -> Result<u64, DataServiceError<E::Error>> {
         let command = self
             .prepare_insert_command(command)
             .map_err(DataServiceError::Runtime)?;
@@ -495,7 +586,10 @@ where
             .await
     }
 
-    pub async fn update(&self, command: &UpdateCommand) -> Result<u64, DataServiceError<E::Error>> {
+    pub(crate) async fn update_internal(
+        &self,
+        command: &UpdateCommand,
+    ) -> Result<u64, DataServiceError<E::Error>> {
         let command = self
             .prepare_update_command(command)
             .map_err(DataServiceError::Runtime)?;
@@ -503,12 +597,15 @@ where
             .await
     }
 
-    pub async fn delete(&self, command: &DeleteCommand) -> Result<u64, DataServiceError<E::Error>> {
-        self.delete_scoped(command, self.trace_context.clone())
+    pub(crate) async fn delete_internal(
+        &self,
+        command: &DeleteCommand,
+    ) -> Result<u64, DataServiceError<E::Error>> {
+        self.delete_scoped_internal(command, self.trace_context.clone())
             .await
     }
 
-    pub async fn delete_scoped(
+    pub(crate) async fn delete_scoped_internal(
         &self,
         command: &DeleteCommand,
         trace_chain: Vec<teaql_core::TraceNode>,
@@ -538,7 +635,7 @@ where
         Ok(affected)
     }
 
-    pub async fn recover(
+    pub(crate) async fn recover_internal(
         &self,
         command: &RecoverCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
@@ -711,7 +808,7 @@ where
         Ok(None)
     }
 
-    pub fn scoped_data_service(&self, entity: String) -> EntityDataService<'a, E> {
+    pub(crate) fn scoped_data_service_internal(&self, entity: String) -> EntityDataService<'a, E> {
         EntityDataService {
             entity,
             data_service: ContextDataService {

@@ -43,7 +43,7 @@ where
         Ok(self.query_for_plan(&plan, parent_rows))
     }
 
-    pub async fn enhance_relations(
+    pub(crate) async fn enhance_relations_internal(
         &self,
         parent_rows: &mut [Record],
     ) -> Result<(), DataServiceError<E::Error>> {
@@ -54,7 +54,7 @@ where
         Ok(())
     }
 
-    pub async fn enhance_query_relations(
+    pub(crate) async fn enhance_query_relations_internal(
         &self,
         parent_rows: &mut [Record],
         query: &SelectQuery,
@@ -68,7 +68,7 @@ where
         Ok(())
     }
 
-    pub fn enhance_relation_aggregates<'b>(
+    pub(crate) fn enhance_relation_aggregates_internal<'b>(
         &'b self,
         parent_rows: &'b mut [Record],
         relation_aggregates: &'b [RelationAggregate],
@@ -91,7 +91,7 @@ where
         })
     }
 
-    pub fn enhance_object_group_bys<'b>(
+    pub(crate) fn enhance_object_group_bys_internal<'b>(
         &'b self,
         rows: &'b mut [Record],
         object_group_bys: &'b [ObjectGroupBy],
@@ -112,9 +112,9 @@ where
                 ensure_projection(&mut query, "id");
                 query = query.and_filter(Expr::in_list("id", ids));
                 let object_rows = self
-                    .scoped_data_service(query.entity.clone())
+                    .scoped_data_service_internal(query.entity.clone())
                     .with_trace_context(parent_trace_chain.to_vec())
-                    .fetch_all(&query)
+                    .fetch_all_internal(&query)
                     .await?
                     .into_iter()
                     .filter_map(|row| {
@@ -138,7 +138,7 @@ where
         })
     }
 
-    pub fn enhance_child_queries<'b>(
+    pub(crate) fn enhance_child_queries_internal<'b>(
         &'b self,
         rows: &'b mut [Record],
         child_queries: &'b [SelectQuery],
@@ -159,9 +159,9 @@ where
                 ensure_projection(&mut query, "id");
                 query = query.and_filter(Expr::in_list("id", ids));
                 let child_rows = self
-                    .scoped_data_service(query.entity.clone())
+                    .scoped_data_service_internal(query.entity.clone())
                     .with_trace_context(parent_trace_chain.to_vec())
-                    .fetch_all(&query)
+                    .fetch_all_internal(&query)
                     .await?
                     .into_iter()
                     .filter_map(|row| {
@@ -216,7 +216,7 @@ where
             return Ok(());
         }
 
-        let child_repo = self.scoped_data_service(plan.target_entity.clone());
+        let child_repo = self.scoped_data_service_internal(plan.target_entity.clone());
         let mut query = aggregate.query.clone();
         query.entity = plan.target_entity.clone();
         if query.aggregation_cache.is_none() {
@@ -253,7 +253,7 @@ where
 
         let mut aggregate_rows = child_repo
             .with_trace_context(chain)
-            .fetch_all(&query)
+            .fetch_all_internal(&query)
             .await?;
         let foreign_key_column = self
             .data_service
@@ -312,7 +312,7 @@ where
                         relation: name.clone(),
                     }
                 })?;
-                let child_repo = self.scoped_data_service(relation.target_entity.clone());
+                let child_repo = self.scoped_data_service_internal(relation.target_entity.clone());
                 let children =
                     child_repo.build_relation_plans(&relation.target_entity, &child_loads)?;
                 Ok(RelationLoadPlan {
@@ -350,7 +350,7 @@ where
                     .as_ref()
                     .map(|query| query.relations.as_slice())
                     .unwrap_or_default();
-                let child_repo = self.scoped_data_service(relation.target_entity.clone());
+                let child_repo = self.scoped_data_service_internal(relation.target_entity.clone());
                 let children = child_repo
                     .build_relation_plans_from_loads(&relation.target_entity, child_loads)?;
                 Ok(RelationLoadPlan {
@@ -375,9 +375,9 @@ where
         Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
     > {
         Box::pin(async move {
-            let child_repo = self.scoped_data_service(plan.target_entity.clone());
+            let child_repo = self.scoped_data_service_internal(plan.target_entity.clone());
             let query = self.query_for_plan(plan, parent_rows);
-            let child_rows = child_repo.fetch_all(&query).await?;
+            let child_rows = child_repo.fetch_all_internal(&query).await?;
             self.attach_relation_rows(parent_rows, plan, child_rows);
 
             if !plan.children.is_empty() {

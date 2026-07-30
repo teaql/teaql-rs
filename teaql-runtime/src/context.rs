@@ -770,7 +770,7 @@ impl UserContext {
         Ok(())
     }
 
-    pub async fn commit_changes<E>(&self) -> Result<(), DataServiceError<E::Error>>
+    pub(crate) async fn commit_changes_internal<E>(&self) -> Result<(), DataServiceError<E::Error>>
     where
         E: teaql_data_service::MutationExecutor + Send + Sync + 'static,
     {

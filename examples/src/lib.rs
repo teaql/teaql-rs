@@ -91,9 +91,9 @@ pub fn sqlite_context(executor: SqliteMutationExecutor) -> UserContext {
         .with_entity_data_service_behavior_registry(behavior_registry());
     ctx.use_sqlite_provider(executor.clone());
 
-    // Build and inject SqlDataServiceExecutor instead of the data service executor
+    // Register the executor and the audited graph-save capability.
     let data_service = SqlDataServiceExecutor::new(SqliteDialect, executor, metadata());
-    ctx.insert_resource(data_service);
+    ctx.register_executor(data_service);
     ctx
 }
 
