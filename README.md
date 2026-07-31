@@ -46,7 +46,7 @@ The Rust rewrite keeps the scope deliberately narrow:
 - compatibility with every Java implementation detail is not a goal, but the
   high-level TeaQL programming model is being carried over where it is useful
 
-Current published release: `4.2.1`.
+Current published release: `4.2.2`.
 
 ## Cloud Integration
 
@@ -94,7 +94,7 @@ To use TeaQL in your project, add the relevant crates to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-teaql-core = "4.2.1"
+teaql-core = "4.2.2"
 # Add other providers as needed
 ```
 

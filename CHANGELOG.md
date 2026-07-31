@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.2.2] - 2026-07-31
+
+### Changed
+- Simplify README current scope documentation
+- Refactor runtime: enforce purposed reads and audited saves
+
+### Fixed
+- Fix Linux provider: use public in-memory query engine
+- Bump axum dependency to 0.8.9
+
 ## [4.2.0] - 2025-07-25
 
 ### Added
