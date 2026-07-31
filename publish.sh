@@ -14,6 +14,11 @@ CRATES=(
   "teaql-cache-integration-redis"
   "teaql-web-integration-axum"
   "teaql-provider-linux"
+  "teaql-cloud-core"
+  "teaql-cloud-actuator"
+  "teaql-cloud-nacos"
+  "teaql-cloud-consul"
+  "teaql-cloud-starter"
 )
 
 for crate in "${CRATES[@]}"; do
