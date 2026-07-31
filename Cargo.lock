@@ -3355,6 +3355,7 @@ dependencies = [
  "teaql-core",
  "teaql-data-service",
  "teaql-runtime",
+ "tokio",
 ]
 
 [[package]]

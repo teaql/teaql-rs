@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::time::SystemTime;
 
-use teaql_core::{EntityDescriptor, Record};
+use teaql_core::Record;
 use teaql_data_service::{
-    DataServiceCapabilities, DataServiceExecutor, DataServiceOperation, ExecutionMetadata,
-    MutationExecutor, MutationRequest, MutationResult, QueryExecutor, QueryRequest, QueryResult,
-    StreamChunk, StreamQueryExecutor, Transaction, TransactionExecutor,
+    DataServiceCapabilities, DataServiceExecutor, MutationExecutor, MutationRequest,
+    MutationResult, QueryExecutor, QueryRequest, QueryResult, StreamChunk, StreamQueryExecutor,
+    Transaction, TransactionExecutor,
 };
-use teaql_runtime::{InMemoryMetadataStore, MemoryDataService};
+use teaql_runtime::InMemoryQueryEngine;
 
 use crate::collector::{Collector, ProcessCollector, SystemInfoCollector, ThreadCollector};
 use crate::error::LinuxProviderError;
@@ -16,7 +16,7 @@ use crate::error::LinuxProviderError;
 ///
 /// Routes queries to the appropriate collector by entity name, collects all records,
 /// then delegates in-memory query processing (filter, sort, project, aggregate) to
-/// `MemoryDataService`.
+/// `InMemoryQueryEngine`.
 pub struct LinuxDataServiceExecutor {
     collectors: HashMap<String, Box<dyn Collector>>,
 }
@@ -77,33 +77,13 @@ impl QueryExecutor for LinuxDataServiceExecutor {
         // Collect raw records from the matching collector.
         let rows = self.collect_records(entity)?;
 
-        // Build a MemoryDataService with the entity registered so fetch_all succeeds.
-        let metadata = InMemoryMetadataStore::new().with_entity(EntityDescriptor::new(entity));
-        let mut mem = MemoryDataService::new(metadata);
-        mem.seed(entity.clone(), rows);
-
-        let result_rows = mem
-            .fetch_all(&request.query)
-            .map_err(|e| LinuxProviderError::ProcFs(e.to_string()))?;
-
-        let ended_at = SystemTime::now();
-        let count = result_rows.len();
-
-        Ok(QueryResult {
-            rows: result_rows,
-            metadata: ExecutionMetadata {
-                backend: "linux-proc".to_owned(),
-                operation: DataServiceOperation::Query,
-                started_at,
-                ended_at,
-                affected_rows: None,
-                result_count: Some(count),
-                trace_chain: request.trace_chain,
-                comment: request.comment,
-                backend_request_id: None,
-                debug_query: None,
-            },
-        })
+        let mut result = InMemoryQueryEngine::execute(&request.query, rows);
+        result.metadata.backend = "linux-proc".to_owned();
+        result.metadata.started_at = started_at;
+        result.metadata.ended_at = SystemTime::now();
+        result.metadata.trace_chain = request.trace_chain;
+        result.metadata.comment = request.comment;
+        Ok(result)
     }
 }
 
@@ -145,5 +125,90 @@ impl StreamQueryExecutor for LinuxDataServiceExecutor {
         Err(LinuxProviderError::ProcFs(
             "Linux provider does not support streaming".to_owned(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use teaql_core::{Aggregate, Expr, OrderBy, SelectQuery, TraceNode, Value};
+    use teaql_data_service::DataServiceOperation;
+
+    struct StaticCollector {
+        rows: Vec<Record>,
+    }
+
+    impl Collector for StaticCollector {
+        fn entity_name(&self) -> &str {
+            "Fixture"
+        }
+
+        fn collect_all(&self) -> Result<Vec<Record>, LinuxProviderError> {
+            Ok(self.rows.clone())
+        }
+    }
+
+    fn row(name: &str, score: i64) -> Record {
+        [
+            ("name".to_owned(), Value::Text(name.to_owned())),
+            ("score".to_owned(), Value::I64(score)),
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    fn executor() -> LinuxDataServiceExecutor {
+        LinuxDataServiceExecutor::new().with_collector(Box::new(StaticCollector {
+            rows: vec![row("low", 5), row("middle", 15), row("high", 25)],
+        }))
+    }
+
+    #[tokio::test]
+    async fn query_processes_rows_and_preserves_request_metadata() {
+        let trace = TraceNode::new("Fixture", None, "Inspect fixture rows");
+        let request = QueryRequest {
+            query: SelectQuery::new("Fixture")
+                .filter(Expr::gt("score", 10_i64))
+                .order_by(OrderBy::desc("score"))
+                .page(1, 1)
+                .projects(["name"]),
+            trace_chain: vec![trace.clone()],
+            comment: Some("Load the second matching fixture".to_owned()),
+        };
+
+        let result = executor().query(request).await.unwrap();
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("name"),
+            Some(&Value::Text("middle".to_owned()))
+        );
+        assert_eq!(result.rows[0].len(), 1);
+        assert_eq!(result.metadata.backend, "linux-proc");
+        assert_eq!(result.metadata.operation, DataServiceOperation::Query);
+        assert_eq!(result.metadata.result_count, Some(1));
+        assert_eq!(result.metadata.trace_chain, vec![trace]);
+        assert_eq!(
+            result.metadata.comment.as_deref(),
+            Some("Load the second matching fixture")
+        );
+        assert!(result.metadata.started_at <= result.metadata.ended_at);
+    }
+
+    #[tokio::test]
+    async fn query_supports_aggregates() {
+        let request = QueryRequest {
+            query: SelectQuery::new("Fixture")
+                .filter(Expr::gt("score", 10_i64))
+                .aggregate(Aggregate::count("matching")),
+            trace_chain: Vec::new(),
+            comment: None,
+        };
+
+        let result = executor().query(request).await.unwrap();
+
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("matching"), Some(&Value::I64(2)));
+        assert_eq!(result.metadata.result_count, Some(1));
     }
 }
