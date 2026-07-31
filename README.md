@@ -46,8 +46,6 @@ The Rust rewrite keeps the scope deliberately narrow:
 - compatibility with every Java implementation detail is not a goal, but the
   high-level TeaQL programming model is being carried over where it is useful
 
-Progress tracking lives in [PROGRESS.md](./PROGRESS.md).
-
 Current published release: `4.2.1`.
 
 ## Cloud Integration
@@ -152,69 +150,24 @@ let platforms = Q::platforms()
 
 ## Current scope
 
-The current implementation focuses on the Rust-native core runtime:
+The Rust implementation currently covers the core TeaQL runtime:
 
-- entity and relation descriptors
-- query projection, filter, sort, group-by, limit, offset
-- aggregate projection
-- richer query builders for expressions, projections, sort, pagination, relation loads, and aggregates
-- Java-style null-safe value expressions through `SafeExpression`, including `apply`, `or_else`, empty checks, callbacks, `BaseEntity` id/version helpers, and `SmartList` size/first/get helpers
-- Java-style web API payload helpers through `WebStyle`, `WebAction`, and `WebResponse` for server-controlled display metadata and frontend response data
-- Java-style simplified Excel block model through `XlsBlock`, `XlsBlockBuildContext`, `XlsPage`, and `XlsWorkbook`
-- extended predicates including `between`, `is null`, `is not null`, Java-style `contain`/`begin_with`/`end_with`, `not like`, `not in`, and `soundlike` through `SOUNDEX`
-- grouped aggregate SQL and memory execution, including `COUNT(*)`
-- aggregate decimal results use `Value::Decimal`/PostgreSQL `NUMERIC` instead of lossy `f64`
-- `u64`, signed integers, and Decimal now have explicit checked conversion behavior in entity mapping and database bind/decode paths
-- PostgreSQL `IN_LARGE`/`NOT_IN_LARGE` compile to array binds with `ANY`/`ALL`
-- subquery filters can compile `field IN (SELECT ...)` / `field NOT IN (SELECT ...)`
-- expression projections, expression/function ordering, extended aggregates, and `HAVING`
-- PostgreSQL and SQLite placeholder differences
-- insert, update, delete, and recover command models
-- optimistic locking through `id + version` predicates on update/delete/recover
-- recover and batch mutation helpers
-- in-memory metadata store for bootstrapping descriptors
-- Rust-native `UserContext` for metadata resolution, typed resources, named resources, and local request-scope storage
-- `UserContext` can assemble a repository from registered dialect and executor resources, making it the main runtime entry point
-- `UserContext` can also resolve repositories by entity type through `RepositoryRegistry`
-- per-entity `RepositoryBehavior` hooks can mutate queries/commands and expose relation-load plans
-- Java-style checker infrastructure through `Checker`, `CheckResult`, `ObjectLocation`, object status, and `CheckerRegistry`
-- repository insert/update preparation invokes the single `UserContext::check_and_fix_record()` path and lets checkers distinguish create/update by object status
-- Java-style natural-language checker message translation with 15 built-in languages and `UserContext` language switching
-- Java-style entity mutation events through `EntityEvent`, `EntityEventKind`, and `EntityEventSink`
-- `UserContext` can dispatch created/updated/deleted/recovered events from ordinary repository mutations and graph writes
-- relation preload plans can now be resolved from behavior hooks and converted into child batch queries from parent rows
-- relation enhancement supports batch child-query generation and backfilling related records into parent records
-- nested relation enhancement supports paths like `lines.product`
-- relation aggregate enhancement supports count/statistic properties on parent rows, including cases where the database column name differs from the entity property name
-- `TeaqlEntity` derive support for declarative entity descriptors
-- typed entity mapping through `Entity` and `SmartList<T>`
-- typed nested relation enhancement through `fetch_enhanced_entities::<T>()`
-- unified internal graph write path through `GraphNode`, covering create and upsert requests
-- audited graph upserts, including parent update, child merge, child insert, and missing-child soft delete
-- graph writes build a `GraphMutationPlan` classified by entity type and operation before execution
-- graph planning is available through `UserContext::plan_for_save_graph()` for debugging
-- graph planning assigns missing create ids before batching; creates/deletes merge by entity type, updates merge only when the updated field set is identical
-- audited graph saves require a transactional executor and roll back when any planned operation fails
-- typed entity graph extraction through `graph_node_from_entity()` and audited persistence through `.audit_as(...).save(...)`
-- graph write state hints: `Upsert`, `Reference`, and `Remove`
-- stricter graph state semantics: reference nodes validate existence/version/deleted state, remove nodes validate existence, and many-relation merge rejects duplicate child ids
-- relation metadata for graph writes: `attach/detached` and `delete_missing/keep_missing`
-- native transaction boundary helpers for graph-write wrapping and rollback testing live in the per-database provider crates
-- declarative runtime assembly through `RuntimeModule` and `module!`
-- built-in `SnowflakeIdGenerator` and `UserContext`-driven id generation; native `teaql_id_space` generators live in the per-database provider crates
-- `BaseEntityData` / `BaseEntity` for shared `id + version + dynamic` entity state
-- dynamic-property capture through `#[teaql(dynamic)]`, with JSON flattening for aggregate-style outputs
-- `InMemoryQueryEngine` for no-database query tests and lightweight in-memory evaluation
-- PostgreSQL, SQLite, and MySQL execution moved to per-database provider crates using native drivers
-- SQLite `ensure_schema` support for create-table and add-missing-column flows in `teaql-provider-sqlite`
-- PostgreSQL `ensure_schema` support with real multi-table integration validation, including `soundex(text)` and `teaql_id_space` bootstrap, in `teaql-provider-postgres`
-- `UserContext::ensure_schema()` as the database-neutral schema entry point after a provider is registered
-- JSON, Decimal, date, and timestamp bind/decode support in the per-database providers
-- SQLite in-memory integration tests for CRUD and relation enhancement in the provider
-- SQLite integration coverage for nested create-graph writes
-- SQLite integration coverage for nested graph update diff
-- SQLite integration coverage for reference-only nodes, explicit remove, keep-missing relation metadata, and transaction rollback
-- SQLite relation aggregate coverage through generated high-level `Q` APIs in an external generated service crate
+- **Typed domain model** — Entity and relation metadata, `TeaqlEntity`
+  derive support, typed entity mapping, and `SmartList<T>`.
+- **Queries and aggregates** — Filters, projections, sorting, pagination,
+  subqueries, relation loading, grouped aggregates, and `HAVING`.
+- **Audited persistence** — Create, update, soft delete, recover,
+  optimistic locking, transactions, and audited entity-graph saves.
+- **Runtime governance** — `UserContext`, repository behavior hooks,
+  checkers, translated validation messages, mutation events, and ID generation.
+- **Relation graphs** — Typed nested relation enhancement, aggregate
+  relations, graph planning, references, removal, and missing-child handling.
+- **Providers and integrations** — PostgreSQL, MySQL, SQLite, in-memory,
+  Meilisearch, Linux `/proc`, Axum, Redis, and cloud integration crates.
+
+See [Workspace layout](#workspace-layout) for crate responsibilities,
+[Typed entities](#typed-entities-and-smartlistt), and
+[Typed relation enhancement](#typed-relation-enhancement) for examples.
 
 ## Typed entities and `SmartList<T>`
 
