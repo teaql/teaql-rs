@@ -203,7 +203,7 @@ impl Value {
             }
             Self::U64(value) => i64::try_from(*value)
                 .ok()
-                .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms))
+                .and_then(chrono::DateTime::from_timestamp_millis)
                 .map(|dt| dt.naive_utc().date()),
             _ => None,
         }

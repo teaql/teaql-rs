@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use rusqlite::types::{Value as SqliteValue, ValueRef};
 use rusqlite::{Connection, Row, params_from_iter};
 use rust_decimal::Decimal;
@@ -724,7 +724,7 @@ fn infer_sqlite_text(value: &str) -> Result<Value, MutationExecutorError> {
     }
     if let Ok(timestamp) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
         return Ok(Value::Timestamp(teaql_core::time::Timestamp(
-            timestamp.timestamp_millis(),
+            timestamp.and_utc().timestamp_millis(),
         )));
     }
     Ok(Value::Text(value.to_owned()))
@@ -746,7 +746,7 @@ fn parse_sqlite_timestamp(value: &str) -> Result<Value, MutationExecutorError> {
     }
     NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
         .map(|timestamp| {
-            Value::Timestamp(teaql_core::time::Timestamp(timestamp.timestamp_millis()))
+            Value::Timestamp(teaql_core::time::Timestamp(timestamp.and_utc().timestamp_millis()))
         })
         .map_err(|err| MutationExecutorError::Bind(format!("invalid sqlite timestamp: {err}")))
 }
