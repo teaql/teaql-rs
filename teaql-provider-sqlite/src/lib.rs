@@ -746,7 +746,9 @@ fn parse_sqlite_timestamp(value: &str) -> Result<Value, MutationExecutorError> {
     }
     NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
         .map(|timestamp| {
-            Value::Timestamp(teaql_core::time::Timestamp(timestamp.and_utc().timestamp_millis()))
+            Value::Timestamp(teaql_core::time::Timestamp(
+                timestamp.and_utc().timestamp_millis(),
+            ))
         })
         .map_err(|err| MutationExecutorError::Bind(format!("invalid sqlite timestamp: {err}")))
 }
