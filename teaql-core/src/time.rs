@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
 #[serde(transparent)]
 pub struct Timestamp(pub i64);
 
@@ -42,7 +44,7 @@ mod tests {
         assert_eq!(ts.as_millis(), 1000);
         let dt = ts.to_datetime();
         assert_eq!(dt.timestamp_millis(), 1000);
-        
+
         let ts2 = Timestamp::from(2000u64);
         assert_eq!(ts2.as_millis(), 2000);
     }

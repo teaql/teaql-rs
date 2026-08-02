@@ -1344,8 +1344,7 @@ where
                 .map_err(DataServiceError::Runtime)?;
             let mut update_fields: Vec<String> =
                 signature.1.split(',').map(|s| s.to_string()).collect();
-            let mut cmd =
-                teaql_core::BatchUpdateCommand::new(&descriptor.name, update_fields);
+            let mut cmd = teaql_core::BatchUpdateCommand::new(&descriptor.name, update_fields);
             let mut traces = Vec::new();
             for key in keys {
                 let record = change_set.changes().get(key).unwrap();
@@ -1362,7 +1361,8 @@ where
                 // DEBUG PRINT
                 cmd.batch_values.push(db_record);
                 cmd.batch_ids.push(key.id.clone());
-                cmd.batch_expected_versions.push(root.get_original_version(key));
+                cmd.batch_expected_versions
+                    .push(root.get_original_version(key));
                 cmd.batch_old_values.push(None); // or fetch from original state if needed
                 let my_trace = resolve_trace_chain(root.get_trace_chain(key), &trace_chain);
                 traces.push(my_trace);

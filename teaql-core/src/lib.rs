@@ -294,7 +294,10 @@ mod tests {
             Value::Json(serde_json::json!({"a": 1}))
         );
         assert_eq!(Value::from(birthday), Value::Date(birthday));
-        assert_eq!(Value::from(happened_at), Value::Timestamp(crate::time::Timestamp(happened_at.timestamp_millis())));
+        assert_eq!(
+            Value::from(happened_at),
+            Value::Timestamp(crate::time::Timestamp(happened_at.timestamp_millis()))
+        );
     }
 
     #[test]

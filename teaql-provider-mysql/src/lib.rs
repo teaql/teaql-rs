@@ -746,7 +746,9 @@ fn decode_mysql_row(row: mysql_async::Row) -> Result<Record, MutationExecutorErr
                     .get_opt(index)
                     .unwrap()
                     .map_err(|e| MutationExecutorError::Bind(e.to_string()))?;
-                Value::Timestamp(teaql_core::time::Timestamp(Utc.from_utc_datetime(&dt).timestamp_millis()))
+                Value::Timestamp(teaql_core::time::Timestamp(
+                    Utc.from_utc_datetime(&dt).timestamp_millis(),
+                ))
             }
             ColumnType::MYSQL_TYPE_STRING
             | ColumnType::MYSQL_TYPE_VAR_STRING

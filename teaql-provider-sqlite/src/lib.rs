@@ -718,23 +718,36 @@ fn infer_sqlite_text(value: &str) -> Result<Value, MutationExecutorError> {
         return Ok(Value::Date(date));
     }
     if let Ok(timestamp) = DateTime::parse_from_rfc3339(value) {
-        return Ok(Value::Timestamp(teaql_core::time::Timestamp(timestamp.timestamp_millis())));
+        return Ok(Value::Timestamp(teaql_core::time::Timestamp(
+            timestamp.timestamp_millis(),
+        )));
     }
     if let Ok(timestamp) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
-        return Ok(Value::Timestamp(teaql_core::time::Timestamp(timestamp.timestamp_millis())));
+        return Ok(Value::Timestamp(teaql_core::time::Timestamp(
+            timestamp.timestamp_millis(),
+        )));
     }
     Ok(Value::Text(value.to_owned()))
 }
 
 fn parse_sqlite_timestamp(value: &str) -> Result<Value, MutationExecutorError> {
     if let Ok(timestamp) = DateTime::parse_from_rfc3339(value) {
-        return Ok(Value::Timestamp(teaql_core::time::Timestamp(timestamp.timestamp_millis())));
+        return Ok(Value::Timestamp(teaql_core::time::Timestamp(
+            timestamp.timestamp_millis(),
+        )));
     }
     if let Ok(date) = NaiveDate::parse_from_str(value, "%Y-%m-%d") {
-        return Ok(Value::Timestamp(teaql_core::time::Timestamp(date.and_hms_opt(0, 0, 0).unwrap_or_default().and_utc().timestamp_millis())));
+        return Ok(Value::Timestamp(teaql_core::time::Timestamp(
+            date.and_hms_opt(0, 0, 0)
+                .unwrap_or_default()
+                .and_utc()
+                .timestamp_millis(),
+        )));
     }
     NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
-        .map(|timestamp| Value::Timestamp(teaql_core::time::Timestamp(timestamp.timestamp_millis())))
+        .map(|timestamp| {
+            Value::Timestamp(teaql_core::time::Timestamp(timestamp.timestamp_millis()))
+        })
         .map_err(|err| MutationExecutorError::Bind(format!("invalid sqlite timestamp: {err}")))
 }
 
