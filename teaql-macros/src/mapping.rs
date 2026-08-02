@@ -148,7 +148,7 @@ pub fn decode_value_tokens(
                 other => return Err(::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: {:?}", #field_name, other))),
             }
         },
-        Some("DateTime") => quote! {
+        Some("DateTime") | Some("Timestamp") => quote! {
             match #value_expr {
                 ::teaql_core::Value::Timestamp(v) => *v,
                 other => return Err(::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: {:?}", #field_name, other))),

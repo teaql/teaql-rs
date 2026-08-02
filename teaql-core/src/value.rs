@@ -30,7 +30,7 @@ pub enum Value {
     Text(String),
     Json(serde_json::Value),
     Date(NaiveDate),
-    Timestamp(DateTime<Utc>),
+    Timestamp(crate::time::Timestamp),
     Object(BTreeMap<String, Value>),
     List(Vec<Value>),
     TypedNull(DataType),
@@ -120,9 +120,15 @@ impl From<NaiveDate> for Value {
     }
 }
 
+impl From<crate::time::Timestamp> for Value {
+    fn from(value: crate::time::Timestamp) -> Self {
+        Self::Timestamp(value)
+    }
+}
+
 impl From<DateTime<Utc>> for Value {
     fn from(value: DateTime<Utc>) -> Self {
-        Self::Timestamp(value)
+        Self::Timestamp(crate::time::Timestamp(value.timestamp_millis()))
     }
 }
 
@@ -192,32 +198,42 @@ impl Value {
                 }
                 None
             }
+            Self::I64(value) => chrono::DateTime::from_timestamp_millis(*value)
+                .map(|dt| dt.naive_utc().date()),
+            Self::U64(value) => {
+                i64::try_from(*value)
+                    .ok()
+                    .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms))
+                    .map(|dt| dt.naive_utc().date())
+            }
             _ => None,
         }
     }
 
-    pub fn try_timestamp(&self) -> Option<DateTime<Utc>> {
+    pub fn try_timestamp(&self) -> Option<crate::time::Timestamp> {
         match self {
             Self::Timestamp(value) => Some(*value),
             Self::Text(value) => {
                 if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(value) {
-                    return Some(dt.with_timezone(&chrono::Utc));
+                    return Some(crate::time::Timestamp(dt.timestamp_millis()));
                 }
                 if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
-                    return Some(chrono::DateTime::from_naive_utc_and_offset(
+                    return Some(crate::time::Timestamp(chrono::DateTime::<Utc>::from_naive_utc_and_offset(
                         ndt,
                         chrono::Utc,
-                    ));
+                    ).timestamp_millis()));
                 }
                 if let Ok(nd) = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d") {
                     let ndt = nd.and_hms_opt(0, 0, 0)?;
-                    return Some(chrono::DateTime::from_naive_utc_and_offset(
+                    return Some(crate::time::Timestamp(chrono::DateTime::<Utc>::from_naive_utc_and_offset(
                         ndt,
                         chrono::Utc,
-                    ));
+                    ).timestamp_millis()));
                 }
                 None
             }
+            Self::I64(value) => Some(crate::time::Timestamp(*value)),
+            Self::U64(value) => i64::try_from(*value).ok().map(crate::time::Timestamp),
             _ => None,
         }
     }
@@ -235,7 +251,7 @@ impl Value {
             Self::Text(value) => serde_json::Value::String(value.clone()),
             Self::Json(value) => value.clone(),
             Self::Date(value) => serde_json::Value::String(value.to_string()),
-            Self::Timestamp(value) => serde_json::Value::String(value.to_rfc3339()),
+            Self::Timestamp(value) => serde_json::Value::from(value.0),
             Self::Object(record) => crate::record_to_json_value(record),
             Self::List(values) => {
                 serde_json::Value::Array(values.iter().map(Value::to_json_value).collect())
@@ -337,6 +353,9 @@ mod tests {
             Value::Text("2024-02-29".to_owned()).try_date(),
             Some(leap_day)
         );
+        let millis = leap_day.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp_millis();
+        assert_eq!(Value::I64(millis).try_date(), Some(leap_day));
+        assert_eq!(Value::U64(millis as u64).try_date(), Some(leap_day));
     }
 
     #[test]
@@ -346,18 +365,17 @@ mod tests {
             Value::Text("2024-02-29T00:00:00Z".to_owned()).try_date(),
             None
         );
-        assert_eq!(Value::I64(20240229).try_date(), None);
         assert_eq!(Value::Null.try_date(), None);
     }
 
     #[test]
     fn value_try_timestamp_accepts_timestamp_and_supported_text_formats() {
-        let utc_timestamp = DateTime::parse_from_rfc3339("2024-01-02T03:04:05Z")
+        let utc_timestamp = crate::time::Timestamp(DateTime::parse_from_rfc3339("2024-01-02T03:04:05Z")
             .expect("valid RFC 3339 timestamp")
-            .with_timezone(&Utc);
-        let offset_timestamp = DateTime::parse_from_rfc3339("2024-01-02T03:04:05+08:00")
+            .with_timezone(&Utc).timestamp_millis());
+        let offset_timestamp = crate::time::Timestamp(DateTime::parse_from_rfc3339("2024-01-02T03:04:05+08:00")
             .expect("valid RFC 3339 timestamp")
-            .with_timezone(&Utc);
+            .with_timezone(&Utc).timestamp_millis());
         let naive_timestamp = NaiveDate::from_ymd_opt(2024, 1, 2)
             .expect("valid date")
             .and_hms_opt(3, 4, 5)
@@ -377,19 +395,23 @@ mod tests {
         );
         assert_eq!(
             Value::Text("2024-01-02 03:04:05".to_owned()).try_timestamp(),
-            Some(DateTime::from_naive_utc_and_offset(naive_timestamp, Utc))
+            Some(crate::time::Timestamp(DateTime::<Utc>::from_naive_utc_and_offset(naive_timestamp, Utc).timestamp_millis()))
         );
         assert_eq!(
             Value::Text("2024-01-02".to_owned()).try_timestamp(),
-            Some(DateTime::from_naive_utc_and_offset(midnight, Utc))
+            Some(crate::time::Timestamp(DateTime::<Utc>::from_naive_utc_and_offset(midnight, Utc).timestamp_millis()))
         );
+        
+        let millis = utc_timestamp.0;
+        assert_eq!(Value::I64(millis).try_timestamp(), Some(utc_timestamp));
+        assert_eq!(Value::U64(millis as u64).try_timestamp(), Some(utc_timestamp));
     }
 
     #[test]
     fn value_try_timestamp_normalizes_offsets_and_rejects_invalid_input() {
-        let expected_utc = DateTime::parse_from_rfc3339("2024-01-01T19:04:05Z")
+        let expected_utc = crate::time::Timestamp(DateTime::parse_from_rfc3339("2024-01-01T19:04:05Z")
             .expect("valid RFC 3339 timestamp")
-            .with_timezone(&Utc);
+            .with_timezone(&Utc).timestamp_millis());
 
         assert_eq!(
             Value::Text("2024-01-02T03:04:05+08:00".to_owned()).try_timestamp(),

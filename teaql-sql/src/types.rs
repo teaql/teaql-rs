@@ -124,7 +124,7 @@ fn sql_literal(value: &Value, kind: DatabaseKind) -> String {
         Value::Text(value) => quoted_sql_string(value),
         Value::Json(value) => quoted_sql_string(&value.to_string()),
         Value::Date(value) => quoted_sql_string(&value.to_string()),
-        Value::Timestamp(value) => quoted_sql_string(&value.to_rfc3339()),
+        Value::Timestamp(value) => value.0.to_string(),
         Value::Object(value) => {
             quoted_sql_string(&Value::Object(value.clone()).to_json_value().to_string())
         }

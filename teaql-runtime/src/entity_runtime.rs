@@ -54,7 +54,7 @@ fn value_key(value: &Value) -> String {
         Value::Text(value) => format!("text:{value}"),
         Value::Json(value) => format!("json:{value}"),
         Value::Date(value) => format!("date:{value}"),
-        Value::Timestamp(value) => format!("timestamp:{}", value.to_rfc3339()),
+        Value::Timestamp(value) => format!("timestamp:{}", value.0),
         Value::Object(_) => "object".to_owned(),
         Value::List(_) => "list".to_owned(),
         Value::TypedNull(_) => "null".to_owned(),

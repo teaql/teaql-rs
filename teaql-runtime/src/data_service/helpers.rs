@@ -31,7 +31,7 @@ pub(super) fn relation_bucket_key(value: &Value) -> String {
         Value::Text(v) => format!("t:{v}"),
         Value::Json(v) => format!("j:{v}"),
         Value::Date(v) => format!("d:{v}"),
-        Value::Timestamp(v) => format!("ts:{}", v.to_rfc3339()),
+        Value::Timestamp(v) => format!("ts:{}", v.0),
         Value::Object(_) => "o".to_owned(),
         Value::List(_) => "l".to_owned(),
         Value::TypedNull(_) => "null".to_owned(),

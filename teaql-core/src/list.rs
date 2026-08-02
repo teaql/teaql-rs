@@ -397,7 +397,7 @@ fn id_key(value: &Value) -> String {
         Value::Text(value) => format!("t:{value}"),
         Value::Json(value) => format!("j:{value}"),
         Value::Date(value) => format!("date:{value}"),
-        Value::Timestamp(value) => format!("ts:{}", value.to_rfc3339()),
+        Value::Timestamp(value) => format!("ts:{}", value.0),
         Value::Object(_) => "object".to_owned(),
         Value::List(_) => "list".to_owned(),
         Value::TypedNull(_) => "null".to_owned(),

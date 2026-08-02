@@ -11,6 +11,7 @@ mod query;
 pub mod request;
 mod safe_expression;
 pub mod serde_utils;
+pub mod time;
 mod trace;
 mod value;
 mod web;
@@ -240,7 +241,7 @@ mod tests {
         id: u64,
         payload: serde_json::Value,
         birthday: NaiveDate,
-        happened_at: chrono::DateTime<Utc>,
+        happened_at: crate::time::Timestamp,
     }
 
     #[allow(dead_code)]
@@ -293,7 +294,7 @@ mod tests {
             Value::Json(serde_json::json!({"a": 1}))
         );
         assert_eq!(Value::from(birthday), Value::Date(birthday));
-        assert_eq!(Value::from(happened_at), Value::Timestamp(happened_at));
+        assert_eq!(Value::from(happened_at), Value::Timestamp(crate::time::Timestamp(happened_at.timestamp_millis())));
     }
 
     #[test]

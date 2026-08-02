@@ -737,7 +737,7 @@ fn bind_pg(args: &mut PgArgs, value: &Value) -> Result<(), MutationExecutorError
             args.add(j_val);
         }
         Value::Date(v) => args.add(*v),
-        Value::Timestamp(v) => args.add(*v),
+        Value::Timestamp(v) => args.add(v.to_datetime()),
         Value::Object(_) => return Err(MutationExecutorError::UnsupportedValue("object")),
         Value::List(values) => bind_pg_list(args, values)?,
         Value::TypedNull(dt) => match dt {
@@ -837,7 +837,7 @@ fn bind_pg_list(args: &mut PgArgs, values: &[Value]) -> Result<(), MutationExecu
             let values = values
                 .iter()
                 .map(|value| match value {
-                    Value::Timestamp(value) => Ok(*value),
+                    Value::Timestamp(value) => Ok(value.to_datetime()),
                     _ => Err(MutationExecutorError::UnsupportedValue(
                         "mixed timestamp list",
                     )),
@@ -927,7 +927,7 @@ fn decode_pg_row(row: &tokio_postgres::Row) -> Result<Record, MutationExecutorEr
             "TIMESTAMP" | "TIMESTAMPTZ" => {
                 let v: Option<DateTime<Utc>> = row.try_get(index)?;
                 match v {
-                    Some(v) => Value::Timestamp(v),
+                    Some(v) => Value::Timestamp(teaql_core::time::Timestamp(v.timestamp_millis())),
                     None => Value::Null,
                 }
             }

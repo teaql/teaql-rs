@@ -63,8 +63,8 @@ impl Collector for ProcessCollector {
             let create_time_secs = boot_time_secs + (stat.starttime / ticks_per_second);
             if let Some(create_time) = chrono::DateTime::from_timestamp(create_time_secs as i64, 0)
             {
-                record.insert("create_time".to_owned(), Value::Timestamp(create_time));
-                record.insert("update_time".to_owned(), Value::Timestamp(create_time));
+                record.insert("create_time".to_owned(), Value::from(create_time));
+                record.insert("update_time".to_owned(), Value::from(create_time));
             }
 
             records.push(record);

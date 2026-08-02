@@ -635,7 +635,7 @@ fn bind_sqlite_value(value: &Value) -> Result<SqliteValue, MutationExecutorError
         Value::Text(v) => Ok(SqliteValue::Text(v.clone())),
         Value::Json(v) => Ok(SqliteValue::Text(v.to_string())),
         Value::Date(v) => Ok(SqliteValue::Text(v.format("%Y-%m-%d").to_string())),
-        Value::Timestamp(v) => Ok(SqliteValue::Text(v.to_rfc3339())),
+        Value::Timestamp(v) => Ok(SqliteValue::Text(v.0.to_string())),
         Value::Object(_) => Err(MutationExecutorError::UnsupportedValue("object")),
         Value::List(_) => Err(MutationExecutorError::UnsupportedValue("list")),
         Value::TypedNull(_) => Ok(SqliteValue::Null),
@@ -718,20 +718,23 @@ fn infer_sqlite_text(value: &str) -> Result<Value, MutationExecutorError> {
         return Ok(Value::Date(date));
     }
     if let Ok(timestamp) = DateTime::parse_from_rfc3339(value) {
-        return Ok(Value::Timestamp(timestamp.with_timezone(&Utc)));
+        return Ok(Value::Timestamp(teaql_core::time::Timestamp(timestamp.timestamp_millis())));
     }
     if let Ok(timestamp) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
-        return Ok(Value::Timestamp(Utc.from_utc_datetime(&timestamp)));
+        return Ok(Value::Timestamp(teaql_core::time::Timestamp(timestamp.timestamp_millis())));
     }
     Ok(Value::Text(value.to_owned()))
 }
 
 fn parse_sqlite_timestamp(value: &str) -> Result<Value, MutationExecutorError> {
     if let Ok(timestamp) = DateTime::parse_from_rfc3339(value) {
-        return Ok(Value::Timestamp(timestamp.with_timezone(&Utc)));
+        return Ok(Value::Timestamp(teaql_core::time::Timestamp(timestamp.timestamp_millis())));
+    }
+    if let Ok(date) = NaiveDate::parse_from_str(value, "%Y-%m-%d") {
+        return Ok(Value::Timestamp(teaql_core::time::Timestamp(date.and_hms_opt(0, 0, 0).unwrap_or_default().and_utc().timestamp_millis())));
     }
     NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
-        .map(|timestamp| Value::Timestamp(Utc.from_utc_datetime(&timestamp)))
+        .map(|timestamp| Value::Timestamp(teaql_core::time::Timestamp(timestamp.timestamp_millis())))
         .map_err(|err| MutationExecutorError::Bind(format!("invalid sqlite timestamp: {err}")))
 }
 
@@ -1045,5 +1048,19 @@ mod tests {
         assert!(!chunks[1].is_last);
         assert_eq!(chunks[2].rows.len(), 0);
         assert!(chunks[2].is_last);
+    }
+
+    #[test]
+    fn test_parse_sqlite_timestamp() {
+        let ts1 = parse_sqlite_timestamp("2023-01-01 12:30:45").unwrap();
+        assert!(matches!(ts1, Value::Timestamp(_)));
+
+        let ts2 = parse_sqlite_timestamp("2023-01-01").unwrap();
+        assert!(matches!(ts2, Value::Timestamp(_)));
+
+        let ts3 = parse_sqlite_timestamp("2023-01-01T12:30:45Z").unwrap();
+        assert!(matches!(ts3, Value::Timestamp(_)));
+
+        assert!(parse_sqlite_timestamp("invalid").is_err());
     }
 }

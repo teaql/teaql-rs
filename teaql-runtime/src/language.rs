@@ -444,7 +444,7 @@ fn format_value(value: &Value) -> String {
         Value::Text(value) => value.clone(),
         Value::Json(value) => value.to_string(),
         Value::Date(value) => value.to_string(),
-        Value::Timestamp(value) => value.to_rfc3339(),
+        Value::Timestamp(value) => value.0.to_string(),
         Value::Object(_) => "<object>".to_owned(),
         Value::List(_) => "<list>".to_owned(),
         Value::TypedNull(_) => "null".to_owned(),
