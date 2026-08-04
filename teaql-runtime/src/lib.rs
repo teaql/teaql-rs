@@ -40,7 +40,7 @@ pub use graph::{
     GraphOperation, ScopedCommentNode, TraceScopeToken, sorted_update_fields,
 };
 pub(crate) use id::local_id_generator;
-pub use id::{InternalIdGenerator, SnowflakeIdGenerator};
+pub use id::{AtomicCounterIdGenerator, InternalIdGenerator, SnowflakeIdGenerator};
 pub use inmemory_engine::{ExprEvaluator, InMemoryQueryEngine};
 pub use language::{
     BuiltinTranslator, Language, MessageTranslator, translate_check_result, translate_location,

@@ -410,6 +410,9 @@ where
                     }
                 }
                 ensure_initial_version(&mut node.values, descriptor);
+                crate::data_service::helpers::ensure_timestamps(&mut node.values, descriptor, true);
+            } else {
+                crate::data_service::helpers::ensure_timestamps(&mut node.values, descriptor, false);
             }
             let update_fields = is_update
                 .then(|| {
@@ -1213,7 +1216,8 @@ where
     pub(crate) async fn execute_ledger_plan_internal(
         &self,
         root: crate::EntityRoot,
-    ) -> Result<(), DataServiceError<E::Error>> {
+    ) -> Result<std::collections::BTreeMap<crate::EntityKey, Value>, DataServiceError<E::Error>> {
+        let mut generated_ids = std::collections::BTreeMap::new();
         let comment = root.get_comment();
         let trace_chain = comment
             .map(|c| {
@@ -1317,11 +1321,20 @@ where
             for key in keys {
                 let record = change_set.changes().get(key).unwrap();
                 let mut db_record = Record::new();
-                db_record.insert("id".to_owned(), key.id.clone());
+                let mut real_id = key.id.clone();
+                if crate::data_service::helpers::is_unassigned_id_value(&real_id) {
+                    let gen_id = self.data_service.metadata.context
+                        .next_id(&entity)
+                        .map_err(DataServiceError::Runtime)?;
+                    real_id = Value::U64(gen_id);
+                    generated_ids.insert(key.clone(), real_id.clone());
+                }
+                db_record.insert("id".to_owned(), real_id);
                 for (field, value) in record {
                     db_record.insert(field.clone(), value.clone());
                 }
                 crate::data_service::helpers::ensure_initial_version(&mut db_record, descriptor);
+                crate::data_service::helpers::ensure_timestamps(&mut db_record, descriptor, true);
                 cmd.batch_values.push(db_record);
                 let my_trace = resolve_trace_chain(root.get_trace_chain(key), &trace_chain);
                 traces.push(my_trace);
@@ -1344,6 +1357,9 @@ where
                 .map_err(DataServiceError::Runtime)?;
             let mut update_fields: Vec<String> =
                 signature.1.split(',').map(|s| s.to_string()).collect();
+            if descriptor.properties.iter().any(|p| p.name == "update_time") && !update_fields.contains(&"update_time".to_owned()) {
+                update_fields.push("update_time".to_owned());
+            }
             let mut cmd = teaql_core::BatchUpdateCommand::new(&descriptor.name, update_fields);
             let mut traces = Vec::new();
             for key in keys {
@@ -1358,6 +1374,7 @@ where
                     descriptor,
                     root.get_original_version(key),
                 );
+                crate::data_service::helpers::ensure_timestamps(&mut db_record, descriptor, false);
                 // DEBUG PRINT
                 cmd.batch_values.push(db_record);
                 cmd.batch_ids.push(key.id.clone());
@@ -1371,6 +1388,6 @@ where
             self.execute_prepared_batch_update(cmd).await?;
         }
 
-        Ok(())
+        Ok(generated_ids)
     }
 }

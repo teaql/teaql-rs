@@ -21,14 +21,13 @@ pub(crate) trait DynGraphSaver: Send + Sync {
     fn save_graph_dyn<'a>(
         &'a self,
         ctx: &'a UserContext,
-        entity: &'a str,
         node: GraphNode,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>>;
 
     fn save_ledger_dyn<'a>(
         &'a self,
         ctx: &'a UserContext,
-        entity: &'a str,
+        node: GraphNode,
         root: crate::EntityRoot,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>>;
 }
@@ -61,10 +60,10 @@ where
     fn save_graph_dyn<'a>(
         &'a self,
         ctx: &'a UserContext,
-        entity: &'a str,
         node: GraphNode,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
+            let entity = node.entity.clone();
             let eds = ctx
                 .entity_data_service::<E>(entity)
                 .map_err(|e| RuntimeError::Graph(e.to_string()))?;
@@ -78,20 +77,30 @@ where
     fn save_ledger_dyn<'a>(
         &'a self,
         ctx: &'a UserContext,
-        entity: &'a str,
+        mut node: GraphNode,
         root: crate::EntityRoot,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
+            let entity = node.entity.clone();
             let eds = ctx
-                .entity_data_service::<E>(entity)
+                .entity_data_service::<E>(&entity)
                 .map_err(|e| RuntimeError::Graph(e.to_string()))?;
-            eds.execute_ledger_plan_internal(root)
+            let generated_ids = eds.execute_ledger_plan_internal(root)
                 .await
                 .map_err(|e| match e {
                     DataServiceError::Runtime(r) => r,
                     other => RuntimeError::Graph(other.to_string()),
                 })?;
-            Ok(GraphNode::new(entity))
+                
+            let descriptor = ctx.require_entity(&entity).unwrap();
+            if let Some(id_prop) = descriptor.id_property() {
+                let current_id = node.values.get(&id_prop.name).cloned().unwrap_or(Value::I64(0));
+                let root_key = crate::EntityKey::new(entity.clone(), current_id);
+                if let Some(new_id) = generated_ids.get(&root_key) {
+                    node.values.insert(id_prop.name.clone(), new_id.clone());
+                }
+            }
+            Ok(node)
         })
     }
 }
@@ -243,7 +252,7 @@ where
                         e
                     ))
                 })?;
-            saver.save_graph_dyn(ctx, &entity_name, node).await
+            saver.save_graph_dyn(ctx, node).await
         })
     }
 }
@@ -279,9 +288,9 @@ where
             || !root.deleted_keys().is_empty()
             || !root.new_keys().is_empty();
         if has_ledger_changes {
-            return saver.save_ledger_dyn(ctx, &entity_name, root).await;
+            return saver.save_ledger_dyn(ctx, node, root).await;
         }
     }
 
-    saver.save_graph_dyn(ctx, &entity_name, node).await
+    saver.save_graph_dyn(ctx, node).await
 }

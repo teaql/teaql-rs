@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -6,6 +7,46 @@ use crate::RuntimeError;
 pub trait InternalIdGenerator: Send + Sync {
     fn generate_id(&self, entity: &str) -> Result<u64, RuntimeError>;
 }
+
+// ---------------------------------------------------------------------------
+// AtomicCounterIdGenerator — process-level counter, suitable for in-memory use
+// ---------------------------------------------------------------------------
+
+/// A simple atomic counter that produces sequential IDs starting from a
+/// configurable base value (default 1000).
+///
+/// Suitable for in-memory / test / single-process scenarios where readable,
+/// compact IDs are preferred over globally unique snowflake IDs.
+#[derive(Debug)]
+pub struct AtomicCounterIdGenerator {
+    counter: AtomicU64,
+}
+
+impl Default for AtomicCounterIdGenerator {
+    fn default() -> Self {
+        Self::new(1000)
+    }
+}
+
+impl AtomicCounterIdGenerator {
+    /// Create a new counter starting from `start`.
+    /// The first call to `generate_id` will return `start + 1`.
+    pub fn new(start: u64) -> Self {
+        Self {
+            counter: AtomicU64::new(start),
+        }
+    }
+}
+
+impl InternalIdGenerator for AtomicCounterIdGenerator {
+    fn generate_id(&self, _entity: &str) -> Result<u64, RuntimeError> {
+        Ok(self.counter.fetch_add(1, Ordering::Relaxed) + 1)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SnowflakeIdGenerator — distributed-friendly, timestamp-based
+// ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 pub struct SnowflakeIdGenerator {
@@ -108,7 +149,8 @@ impl InternalIdGenerator for SnowflakeIdGenerator {
     }
 }
 
-pub(crate) fn local_id_generator() -> &'static SnowflakeIdGenerator {
-    static LOCAL_ID_GENERATOR: OnceLock<SnowflakeIdGenerator> = OnceLock::new();
-    LOCAL_ID_GENERATOR.get_or_init(SnowflakeIdGenerator::default)
+pub(crate) fn local_id_generator() -> &'static AtomicCounterIdGenerator {
+    static LOCAL_ID_GENERATOR: OnceLock<AtomicCounterIdGenerator> = OnceLock::new();
+    LOCAL_ID_GENERATOR.get_or_init(AtomicCounterIdGenerator::default)
 }
+

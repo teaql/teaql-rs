@@ -3,6 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{Decimal, EntityDescriptor, Record, Value, record_to_json_value};
 
 pub trait TeaqlEntity {
+    const ENTITY_NAME: &'static str;
+
     fn entity_descriptor() -> EntityDescriptor;
 
     fn register_into(store: &mut impl EntityDescriptorStore) {

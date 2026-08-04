@@ -140,6 +140,35 @@ pub(super) fn ensure_initial_version(record: &mut Record, descriptor: &EntityDes
     }
 }
 
+pub(super) fn ensure_timestamps(record: &mut Record, descriptor: &EntityDescriptor, is_new: bool) {
+    let now = Value::Timestamp(teaql_core::time::Timestamp::now());
+    let has_property = |name: &str| -> bool {
+        descriptor.properties.iter().any(|p| p.name == name)
+    };
+    
+    if is_new && has_property("create_time") {
+        let needs_time = match record.get("create_time") {
+            None | Some(Value::Null) => true,
+            Some(Value::I64(0)) | Some(Value::U64(0)) => true,
+            _ => false,
+        };
+        if needs_time {
+            record.insert("create_time".to_owned(), now.clone());
+        }
+    }
+    
+    if has_property("update_time") {
+        let needs_time = match record.get("update_time") {
+            None | Some(Value::Null) => true,
+            Some(Value::I64(0)) | Some(Value::U64(0)) => true,
+            _ => false,
+        };
+        if needs_time {
+            record.insert("update_time".to_owned(), now);
+        }
+    }
+}
+
 pub(super) fn is_unassigned_id(value: Option<&Value>) -> bool {
     matches!(
         value,

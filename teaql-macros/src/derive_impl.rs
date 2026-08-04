@@ -323,6 +323,8 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
 
     quote! {
         impl ::teaql_core::TeaqlEntity for #struct_name {
+            const ENTITY_NAME: &'static str = #entity_name;
+
             fn entity_descriptor() -> ::teaql_core::EntityDescriptor {
                 let mut descriptor = ::teaql_core::EntityDescriptor::new(#entity_name)
                     .table_name(#table_name);
