@@ -1306,7 +1306,7 @@ where
 
         let mut insert_order: Vec<String> = insert_batches.keys().cloned().collect();
         insert_order.sort();
-        println!("execute_ledger_plan: insert_batches={:?}", insert_order);
+
 
         for entity in insert_order {
             let keys = insert_batches.get(&entity).unwrap();
@@ -1345,7 +1345,7 @@ where
 
         let mut update_order: Vec<(String, String)> = update_batches.keys().cloned().collect();
         update_order.sort();
-        println!("execute_ledger_plan: update_batches={:?}", update_order);
+
 
         for signature in update_order {
             let keys = update_batches.get(&signature).unwrap();
