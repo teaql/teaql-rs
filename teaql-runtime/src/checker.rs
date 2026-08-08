@@ -463,4 +463,118 @@ mod tests {
             CheckObjectStatus::Update
         ); // falls back to id -> Update
     }
+
+    #[test]
+    fn test_check_object_status_extra() {
+        assert_eq!(CheckObjectStatus::Unknown.as_str(), "unknown");
+        assert!(!CheckObjectStatus::Unknown.is_create());
+        assert!(!CheckObjectStatus::Unknown.is_update());
+        
+        let val: Value = CheckObjectStatus::Create.into();
+        assert_eq!(val, Value::Text("create".to_string()));
+    }
+
+    #[test]
+    fn test_check_result_methods() {
+        let loc = ObjectLocation::root().member("field");
+        
+        // required
+        let req = CheckResult::required(loc.clone());
+        assert_eq!(req.rule, CheckRule::Required);
+        assert_eq!(req.location, loc.clone());
+        assert_eq!(req.input_value, None);
+        assert_eq!(req.system_value, None);
+        assert_eq!(req.message, None);
+        assert_eq!(req.to_string(), "field: Required");
+
+        // min
+        let min = CheckResult::min(loc.clone(), Value::I64(10), Value::I64(5));
+        assert_eq!(min.rule, CheckRule::Min);
+        assert_eq!(min.system_value, Some(Value::I64(10)));
+        assert_eq!(min.input_value, Some(Value::I64(5)));
+        assert_eq!(min.to_string(), "field: Min");
+
+        // max
+        let max = CheckResult::max(loc.clone(), Value::I64(10), Value::I64(15));
+        assert_eq!(max.rule, CheckRule::Max);
+        assert_eq!(max.system_value, Some(Value::I64(10)));
+        assert_eq!(max.input_value, Some(Value::I64(15)));
+
+        // min_str
+        let min_str = CheckResult::min_str(loc.clone(), 5, "abc");
+        assert_eq!(min_str.rule, CheckRule::MinStringLength);
+        assert_eq!(min_str.system_value, Some(Value::U64(5)));
+        assert_eq!(min_str.input_value, Some(Value::Text("abc".to_owned())));
+
+        // max_str
+        let max_str = CheckResult::max_str(loc.clone(), 5, "abcdef");
+        assert_eq!(max_str.rule, CheckRule::MaxStringLength);
+        assert_eq!(max_str.system_value, Some(Value::U64(5)));
+        assert_eq!(max_str.input_value, Some(Value::Text("abcdef".to_owned())));
+
+        // with_message
+        let msg = CheckResult::new(CheckRule::Required, loc.clone()).with_message("custom error");
+        assert_eq!(msg.message, Some("custom error".to_owned()));
+        assert_eq!(msg.to_string(), "custom error");
+    }
+
+    struct DummyChecker;
+    impl Checker for DummyChecker {
+        fn entity(&self) -> &str {
+            "Dummy"
+        }
+        fn check_and_fix(
+            &self,
+            _ctx: &crate::UserContext,
+            _record: &mut Record,
+            _location: &ObjectLocation,
+            _results: &mut CheckResults,
+        ) {}
+    }
+
+    #[test]
+    fn test_checker_default_methods() {
+        let checker = DummyChecker;
+        let loc = ObjectLocation::root();
+        
+        let mut record = Record::default();
+        let mut results = vec![];
+        
+        // required
+        checker.required(&record, "field", &loc, &mut results);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].rule, CheckRule::Required);
+        
+        record.insert("field".to_string(), Value::Text("abc".to_string()));
+        results.clear();
+        checker.required(&record, "field", &loc, &mut results);
+        assert!(results.is_empty());
+        
+        // min_string_length
+        checker.min_string_length(&record, "field", 5, &loc, &mut results);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].rule, CheckRule::MinStringLength);
+        
+        results.clear();
+        checker.min_string_length(&record, "field", 3, &loc, &mut results);
+        assert!(results.is_empty());
+        
+        // max_string_length
+        checker.max_string_length(&record, "field", 2, &loc, &mut results);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].rule, CheckRule::MaxStringLength);
+        
+        results.clear();
+        checker.max_string_length(&record, "field", 5, &loc, &mut results);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_checker_registry() {
+        let mut registry = InMemoryCheckerRegistry::new();
+        registry = registry.with_checker(DummyChecker);
+        
+        assert!(registry.checker("Dummy").is_some());
+        assert!(registry.checker("Unknown").is_none());
+    }
 }

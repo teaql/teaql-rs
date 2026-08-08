@@ -154,3 +154,33 @@ impl RecoverCommand {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_insert_command_builder() {
+        let cmd = InsertCommand::new("User").value("name", "Alice");
+        assert_eq!(cmd.entity, "User");
+        assert_eq!(cmd.values.get("name").unwrap(), &Value::Text("Alice".to_owned()));
+    }
+
+    #[test]
+    fn test_update_command_builder() {
+        let cmd = UpdateCommand::new("User", 1).expected_version(5).value("name", "Bob");
+        assert_eq!(cmd.entity, "User");
+        assert_eq!(cmd.id, Value::I64(1));
+        assert_eq!(cmd.expected_version, Some(5));
+        assert_eq!(cmd.values.get("name").unwrap(), &Value::Text("Bob".to_owned()));
+    }
+
+    #[test]
+    fn test_delete_command_builder() {
+        let cmd = DeleteCommand::new("User", 1).expected_version(5).hard_delete();
+        assert_eq!(cmd.entity, "User");
+        assert_eq!(cmd.id, Value::I64(1));
+        assert_eq!(cmd.expected_version, Some(5));
+        assert_eq!(cmd.soft_delete, false);
+    }
+}

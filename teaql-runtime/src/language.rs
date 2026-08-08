@@ -486,4 +486,97 @@ mod tests {
         // Test invalid code
         assert_eq!(Language::from_code("invalid-code"), None);
     }
+    #[test]
+    fn test_format_value_all() {
+        assert_eq!(format_value(&Value::Null), "null");
+        assert_eq!(format_value(&Value::Bool(true)), "true");
+        assert_eq!(format_value(&Value::I64(-1)), "-1");
+        assert_eq!(format_value(&Value::U64(1)), "1");
+        assert_eq!(format_value(&Value::F64(1.5)), "1.5");
+        assert_eq!(
+            format_value(&Value::Decimal(rust_decimal::Decimal::new(1, 0))),
+            "1"
+        );
+        assert_eq!(format_value(&Value::Text("abc".into())), "abc");
+        assert_eq!(format_value(&Value::Json("{}".into())), "\"{}\"");
+        assert_eq!(
+            format_value(&Value::Date(
+                chrono::NaiveDate::from_ymd_opt(2020, 1, 1).unwrap()
+            )),
+            "2020-01-01"
+        );
+        assert_eq!(
+            format_value(&Value::Timestamp(teaql_core::time::Timestamp::now())),
+            teaql_core::time::Timestamp::now().0.to_string()
+        );
+        assert_eq!(
+            format_value(&Value::Object(teaql_core::Record::new())),
+            "<object>"
+        );
+        assert_eq!(format_value(&Value::List(vec![])), "<list>");
+        assert_eq!(
+            format_value(&Value::TypedNull(teaql_core::DataType::I64)),
+            "null"
+        );
+    }
+
+    #[test]
+    fn test_translate_location() {
+        let loc = ObjectLocation::hash_root("property.user_name[0].firstName");
+        assert_eq!(
+            translate_location(Language::English, &loc),
+            "Property.User_name[0].First name"
+        );
+    }
+
+    #[test]
+    fn test_builtin_translator() {
+        let t = BuiltinTranslator::new(Language::English);
+        assert_eq!(t.language(), Language::English);
+
+        let res = CheckResult {
+            location: ObjectLocation::hash_root("foo"),
+            rule: CheckRule::Required,
+            system_value: None,
+            input_value: None,
+            message: None,
+        };
+        assert_eq!(t.translate_check_result(&res), "The Foo is required");
+    }
+
+    #[test]
+    fn test_translations_all_rules_and_languages() {
+        let res = |rule: CheckRule| CheckResult {
+            location: ObjectLocation::hash_root("field"),
+            rule,
+            system_value: Some(Value::I64(10)),
+            input_value: Some(Value::Text("123".into())),
+            message: None,
+        };
+
+        for &lang in &Language::ALL {
+            let _ = translate_check_result(lang, &res(CheckRule::Required));
+            let _ = translate_check_result(lang, &res(CheckRule::Min));
+            let _ = translate_check_result(lang, &res(CheckRule::Max));
+            let _ = translate_check_result(lang, &res(CheckRule::MinStringLength));
+            let _ = translate_check_result(lang, &res(CheckRule::MaxStringLength));
+        }
+    }
+
+    #[test]
+    fn test_from_code_all() {
+        for &lang in &Language::ALL {
+            assert_eq!(Language::from_code(lang.code()), Some(lang));
+        }
+        assert_eq!(Language::from_code("ja-JP"), Some(Language::Japanese));
+        assert_eq!(Language::from_code("ko-KR"), Some(Language::Korean));
+        assert_eq!(Language::from_code("de-DE"), Some(Language::German));
+        assert_eq!(Language::from_code("fr-FR"), Some(Language::French));
+        assert_eq!(Language::from_code("es-ES"), Some(Language::Spanish));
+        assert_eq!(Language::from_code("pt-PT"), Some(Language::Portuguese));
+        assert_eq!(Language::from_code("th-TH"), Some(Language::Thai));
+        assert_eq!(Language::from_code("id-ID"), Some(Language::Indonesian));
+        assert_eq!(Language::from_code("uk-UA"), Some(Language::Ukrainian));
+        assert_eq!(Language::from_code("vi-VN"), Some(Language::Vietnamese));
+    }
 }

@@ -338,3 +338,186 @@ macro_rules! module {
         $module.entity::<$entity>()
     };
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{GraphNode, GraphOperation, Language};
+    use std::collections::BTreeMap;
+    use teaql_core::{
+        DeleteCommand, EntityDescriptor, InsertCommand, RecoverCommand, SelectQuery, UpdateCommand,
+    };
+    use teaql_data_service::SchemaProvider;
+
+    struct DummyPolicy;
+    impl RequestPolicy for DummyPolicy {}
+
+    struct DummyBehavior;
+    impl EntityDataServiceBehavior for DummyBehavior {}
+
+    struct DummyEntity;
+    impl teaql_core::TeaqlEntity for DummyEntity {
+        const ENTITY_NAME: &'static str = "DummyEntity";
+        fn entity_descriptor() -> EntityDescriptor {
+            EntityDescriptor {
+                name: Self::ENTITY_NAME.to_string(),
+                table_name: "dummy_entity".to_string(),
+                data_service: None,
+                properties: vec![],
+                relations: vec![],
+                audit_mask_fields: vec![],
+                audit_value_max_len: None,
+            }
+        }
+        fn register_into(_store: &mut impl teaql_core::EntityDescriptorStore) {}
+    }
+
+    #[test]
+    fn test_request_policy_defaults() {
+        let policy = DummyPolicy;
+        let ctx = UserContext::new();
+
+        let mut sq = SelectQuery::new("Test");
+        assert!(policy.enforce_select(&ctx, &mut sq).is_ok());
+
+        let mut ic = InsertCommand::new("Test");
+        assert!(policy.enforce_insert(&ctx, &mut ic).is_ok());
+
+        let mut uc = UpdateCommand::new("Test", 1);
+        assert!(policy.enforce_update(&ctx, &mut uc).is_ok());
+
+        let mut dc = DeleteCommand::new("Test", 1);
+        assert!(policy.enforce_delete(&ctx, &mut dc).is_ok());
+
+        let mut rc = RecoverCommand::new("Test", 1, 1);
+        assert!(policy.enforce_recover(&ctx, &mut rc).is_ok());
+    }
+
+    #[test]
+    fn test_behavior_defaults() {
+        let behavior = DummyBehavior;
+        let ctx = UserContext::new();
+
+        let mut sq = SelectQuery::new("Test");
+        assert!(behavior.before_select(&ctx, &mut sq).is_ok());
+
+        let mut ic = InsertCommand::new("Test");
+        assert!(behavior.before_insert(&ctx, &mut ic).is_ok());
+
+        let mut uc = UpdateCommand::new("Test", 1);
+        assert!(behavior.before_update(&ctx, &mut uc).is_ok());
+
+        let mut dc = DeleteCommand::new("Test", 1);
+        assert!(behavior.before_delete(&ctx, &mut dc).is_ok());
+
+        let mut rc = RecoverCommand::new("Test", 1, 1);
+        assert!(behavior.before_recover(&ctx, &mut rc).is_ok());
+
+        assert_eq!(behavior.relation_loads(&ctx).len(), 0);
+    }
+
+    #[test]
+    fn test_metadata_registry_register_and_get() {
+        let mut registry = InMemoryMetadataStore::new();
+        let desc = EntityDescriptor {
+            name: "TestEntity".to_owned(),
+            table_name: "test_entity".to_owned(),
+            data_service: None,
+            properties: vec![],
+            relations: vec![],
+            audit_mask_fields: vec![],
+            audit_value_max_len: None,
+        };
+
+        registry.register_descriptor(desc.clone());
+
+        // Assert we can get it via get_entity
+        let fetched = registry.get_entity("TestEntity").unwrap();
+        assert_eq!(fetched.name, "TestEntity");
+
+        // Assert it exists in all_entities
+        let all = registry.all_entities();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].name, "TestEntity");
+
+        // Assert MetadataStore trait method works
+        let trait_fetched = registry.entity("TestEntity").unwrap();
+        assert_eq!(trait_fetched.name, "TestEntity");
+
+        // record_metadata_log default
+        registry.record_metadata_log(&teaql_data_service::ExecutionMetadata {
+            backend: "".into(),
+            operation: teaql_data_service::DataServiceOperation::Batch,
+            started_at: std::time::SystemTime::now(),
+            ended_at: std::time::SystemTime::now(),
+            affected_rows: None,
+            result_count: None,
+            trace_chain: vec![],
+            comment: None,
+            backend_request_id: None,
+            debug_query: None,
+        });
+
+        // with_entity
+        let registry2 = InMemoryMetadataStore::new().with_entity(desc);
+        assert_eq!(registry2.all_entities().len(), 1);
+    }
+
+    #[test]
+    fn test_entity_registry_contains() {
+        let mut registry = InMemoryEntityRegistry::new();
+        assert!(!registry.contains("UnknownEntity"));
+
+        registry.register("KnownEntity");
+        assert!(registry.contains("KnownEntity"));
+
+        let registry2 = InMemoryEntityRegistry::new().with_entity("KnownEntity2");
+        assert!(registry2.contains("KnownEntity2"));
+    }
+
+    #[test]
+    fn test_entity_behavior_registry() {
+        let mut registry = InMemoryEntityDataServiceBehaviorRegistry::new();
+        assert!(registry.behavior("Test").is_none());
+
+        registry.register("Test", DummyBehavior);
+        assert!(registry.behavior("Test").is_some());
+
+        let registry2 =
+            InMemoryEntityDataServiceBehaviorRegistry::new().with_behavior("Test2", DummyBehavior);
+        assert!(registry2.behavior("Test2").is_some());
+    }
+
+    #[test]
+    fn test_runtime_module() {
+        let desc = EntityDescriptor {
+            name: "TestEntity".to_owned(),
+            table_name: "test_entity".to_owned(),
+            data_service: None,
+            properties: vec![],
+            relations: vec![],
+            audit_mask_fields: vec![],
+            audit_value_max_len: None,
+        };
+
+        let mut node = GraphNode::new("TestEntity");
+        node.operation = GraphOperation::Upsert;
+
+        let module = RuntimeModule::new()
+            .entity::<DummyEntity>()
+            .entity_with_behavior::<DummyEntity, _>(DummyBehavior)
+            .descriptor(desc)
+            .behavior("TestEntity", DummyBehavior)
+            .language(Language::English)
+            .initial_graph(node.clone())
+            .initial_graphs(vec![node]);
+
+        let mut ctx = UserContext::new();
+        module.apply_to(&mut ctx);
+
+        // Also test into_context
+        let _ctx2 = RuntimeModule::new()
+            .language(Language::English)
+            .into_context();
+    }
+}

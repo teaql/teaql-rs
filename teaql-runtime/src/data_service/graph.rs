@@ -412,7 +412,11 @@ where
                 ensure_initial_version(&mut node.values, descriptor);
                 crate::data_service::helpers::ensure_timestamps(&mut node.values, descriptor, true);
             } else {
-                crate::data_service::helpers::ensure_timestamps(&mut node.values, descriptor, false);
+                crate::data_service::helpers::ensure_timestamps(
+                    &mut node.values,
+                    descriptor,
+                    false,
+                );
             }
             let update_fields = is_update
                 .then(|| {
@@ -1216,7 +1220,8 @@ where
     pub(crate) async fn execute_ledger_plan_internal(
         &self,
         root: crate::EntityRoot,
-    ) -> Result<std::collections::BTreeMap<crate::EntityKey, Value>, DataServiceError<E::Error>> {
+    ) -> Result<std::collections::BTreeMap<crate::EntityKey, Value>, DataServiceError<E::Error>>
+    {
         let mut generated_ids = std::collections::BTreeMap::new();
         let comment = root.get_comment();
         let trace_chain = comment
@@ -1307,7 +1312,6 @@ where
         let mut insert_order: Vec<String> = insert_batches.keys().cloned().collect();
         insert_order.sort();
 
-
         for entity in insert_order {
             let keys = insert_batches.get(&entity).unwrap();
             let descriptor = self
@@ -1323,7 +1327,10 @@ where
                 let mut db_record = Record::new();
                 let mut real_id = key.id.clone();
                 if crate::data_service::helpers::is_unassigned_id_value(&real_id) {
-                    let gen_id = self.data_service.metadata.context
+                    let gen_id = self
+                        .data_service
+                        .metadata
+                        .context
                         .next_id(&entity)
                         .map_err(DataServiceError::Runtime)?;
                     real_id = Value::U64(gen_id);
@@ -1346,7 +1353,6 @@ where
         let mut update_order: Vec<(String, String)> = update_batches.keys().cloned().collect();
         update_order.sort();
 
-
         for signature in update_order {
             let keys = update_batches.get(&signature).unwrap();
             let descriptor = self
@@ -1357,7 +1363,12 @@ where
                 .map_err(DataServiceError::Runtime)?;
             let mut update_fields: Vec<String> =
                 signature.1.split(',').map(|s| s.to_string()).collect();
-            if descriptor.properties.iter().any(|p| p.name == "update_time") && !update_fields.contains(&"update_time".to_owned()) {
+            if descriptor
+                .properties
+                .iter()
+                .any(|p| p.name == "update_time")
+                && !update_fields.contains(&"update_time".to_owned())
+            {
                 update_fields.push("update_time".to_owned());
             }
             let mut cmd = teaql_core::BatchUpdateCommand::new(&descriptor.name, update_fields);
@@ -1389,5 +1400,483 @@ where
         }
 
         Ok(generated_ids)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::EntityKey;
+    use crate::EntityRoot;
+    use crate::entity_status::EntityStatus;
+    use crate::{
+        InMemoryMetadataStore, UserContext,
+        data_service::types::{ContextDataService, UserContextMetadata},
+    };
+    use std::sync::Arc;
+    use teaql_core::{
+        DataType, Entity, EntityDescriptor, PropertyDescriptor, Record, RelationDescriptor, Value,
+    };
+    use teaql_data_service::{
+        DataServiceCapabilities, DataServiceExecutor, DataServiceOperation, ExecutionMetadata,
+        MutationExecutor, MutationRequest, MutationResult, QueryExecutor, QueryRequest,
+        QueryResult,
+    };
+
+    #[derive(Debug)]
+    pub struct MyError;
+    impl std::fmt::Display for MyError {
+        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            write!(f, "MyError")
+        }
+    }
+    impl std::error::Error for MyError {}
+
+    struct MyExecutor {
+        rows: Vec<Record>,
+    }
+
+    impl DataServiceExecutor for MyExecutor {
+        type Error = MyError;
+        fn capabilities(&self) -> DataServiceCapabilities {
+            DataServiceCapabilities::default()
+        }
+    }
+
+    impl QueryExecutor for MyExecutor {
+        async fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
+            Ok(QueryResult {
+                rows: self.rows.clone(),
+                metadata: ExecutionMetadata {
+                    debug_query: None,
+                    backend: "stub".to_owned(),
+                    operation: DataServiceOperation::Query,
+                    started_at: std::time::SystemTime::now(),
+                    ended_at: std::time::SystemTime::now(),
+                    affected_rows: None,
+                    result_count: Some(self.rows.len()),
+                    trace_chain: Vec::new(),
+                    comment: None,
+                    backend_request_id: None,
+                },
+            })
+        }
+    }
+
+    impl MutationExecutor for MyExecutor {
+        async fn mutate(&self, request: MutationRequest) -> Result<MutationResult, Self::Error> {
+            Ok(MutationResult {
+                affected_rows: 1,
+                generated_values: Record::new(),
+                metadata: ExecutionMetadata {
+                    debug_query: None,
+                    backend: "stub".to_owned(),
+                    operation: DataServiceOperation::Update,
+                    started_at: std::time::SystemTime::now(),
+                    ended_at: std::time::SystemTime::now(),
+                    affected_rows: Some(1),
+                    result_count: None,
+                    trace_chain: Vec::new(),
+                    comment: None,
+                    backend_request_id: None,
+                },
+            })
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct DummyEntity {
+        values: Record,
+        dirty: std::collections::BTreeSet<String>,
+        deleted: bool,
+    }
+    impl teaql_core::TeaqlEntity for DummyEntity {
+        const ENTITY_NAME: &'static str = "User";
+        fn entity_descriptor() -> EntityDescriptor {
+            let mut user = EntityDescriptor::new("User");
+            user.properties
+                .push(PropertyDescriptor::new("id", DataType::U64).id());
+            user.properties
+                .push(PropertyDescriptor::new("version", DataType::I64).version());
+            user.relations.push(RelationDescriptor {
+                name: "posts".to_string(),
+                target_entity: "Post".to_string(),
+                local_key: "id".to_string(),
+                foreign_key: "user_id".to_string(),
+                many: true,
+                attach: true, // test attach
+                delete_missing: false,
+            });
+            user
+        }
+    }
+
+    impl teaql_core::Entity for DummyEntity {
+        fn from_record(record: Record) -> Result<Self, teaql_core::EntityError> {
+            Ok(Self {
+                values: record,
+                dirty: Default::default(),
+                deleted: false,
+            })
+        }
+        fn into_record(self) -> Record {
+            self.values
+        }
+        fn dirty_fields(&self) -> Option<std::collections::BTreeSet<String>> {
+            Some(self.dirty.clone())
+        }
+        fn original_values(&self) -> Option<Record> {
+            None
+        }
+        fn is_marked_as_delete(&self) -> bool {
+            self.deleted
+        }
+        fn get_comment(&self) -> Option<String> {
+            None
+        }
+    }
+
+    fn setup_context() -> UserContext {
+        let mut user = EntityDescriptor::new("User");
+        user.properties
+            .push(PropertyDescriptor::new("id", DataType::U64).id());
+        user.properties
+            .push(PropertyDescriptor::new("version", DataType::I64).version());
+        user.relations.push(RelationDescriptor {
+            name: "posts".to_string(),
+            target_entity: "Post".to_string(),
+            local_key: "id".to_string(),
+            foreign_key: "user_id".to_string(),
+            many: true,
+            attach: true,
+            delete_missing: false,
+        });
+        user.relations.push(RelationDescriptor {
+            name: "profile".to_string(),
+            target_entity: "Profile".to_string(),
+            local_key: "id".to_string(),
+            foreign_key: "user_id".to_string(),
+            many: false,
+            attach: true,
+            delete_missing: false,
+        });
+
+        let mut post = EntityDescriptor::new("Post");
+        post.properties
+            .push(PropertyDescriptor::new("id", DataType::U64).id());
+        post.properties
+            .push(PropertyDescriptor::new("user_id", DataType::U64));
+
+        let mut profile = EntityDescriptor::new("Profile");
+        profile
+            .properties
+            .push(PropertyDescriptor::new("id", DataType::U64).id());
+        profile
+            .properties
+            .push(PropertyDescriptor::new("user_id", DataType::U64));
+
+        let store = InMemoryMetadataStore::new()
+            .with_entity(user)
+            .with_entity(post)
+            .with_entity(profile);
+        let mut ctx = UserContext::new().with_metadata(store);
+        ctx.insert_resource(MyExecutor { rows: vec![] });
+        ctx
+    }
+
+    fn service(ctx: &UserContext) -> EntityDataService<'_, MyExecutor> {
+        let executor = ctx.get_resource::<MyExecutor>().unwrap();
+        EntityDataService {
+            entity: "User".to_string(),
+            data_service: ContextDataService {
+                metadata: UserContextMetadata { context: ctx },
+                executor,
+            },
+            trace_context: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_save_graph_internal_wrong_entity() {
+        let ctx = setup_context();
+        let svc = service(&ctx);
+        let node = GraphNode::new("Post");
+        let res = svc.save_graph_internal(node).await;
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_plan_graph_wrong_entity() {
+        let ctx = setup_context();
+        let svc = service(&ctx);
+        let node = GraphNode::new("Post");
+        let res = svc.plan_graph(node).await;
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_save_entity_graph_from_internal() {
+        let ctx = setup_context();
+        let svc = service(&ctx);
+        let mut root = teaql_core::EntityGraphNode {
+            entity_type: "User".into(),
+            record: Record::new(),
+            operation: teaql_core::EntityGraphOperation::Save,
+            children: vec![],
+            comment: None,
+        };
+        root.children.push((
+            "posts".to_string(),
+            teaql_core::EntityGraphNode {
+                entity_type: "Post".into(),
+                record: Record::new(),
+                operation: teaql_core::EntityGraphOperation::Save,
+                children: vec![],
+                comment: None,
+            },
+        ));
+        let graph = teaql_core::EntityGraph { root };
+        let res = svc.save_entity_graph_from_internal(graph).await;
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_save_entity_internal_not_persist() {
+        let ctx = setup_context();
+        let svc = service(&ctx);
+        let entity = DummyEntity::default();
+        let res = svc
+            .save_entity_internal(entity, EntityStatus::Persisted)
+            .await;
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_save_entity_internal_deleted() {
+        let ctx = setup_context();
+        let svc = service(&ctx);
+        let mut entity = DummyEntity::default();
+        entity.deleted = true;
+        entity.values.insert("id".to_string(), Value::U64(1));
+        let res = svc
+            .save_entity_internal(entity, EntityStatus::PersistedDeleted)
+            .await;
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_save_entity_with_comment_internal_deleted() {
+        let ctx = setup_context();
+        let svc = service(&ctx);
+        let mut entity = DummyEntity::default();
+        entity.deleted = true;
+        entity.values.insert("id".to_string(), Value::U64(1));
+        let res = svc
+            .save_entity_with_comment_internal(entity, EntityStatus::PersistedDeleted, "comment")
+            .await;
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_save_entity_with_comment_internal() {
+        let ctx = setup_context();
+        let svc = service(&ctx);
+        let entity = DummyEntity::default();
+        let res = svc
+            .save_entity_with_comment_internal(entity, EntityStatus::New, "comment")
+            .await;
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_create_entity_graph_with_comment_internal() {
+        let ctx = setup_context();
+        let svc = service(&ctx);
+        let entity = DummyEntity::default();
+        let res = svc
+            .create_entity_graph_with_comment_internal(entity, "comment")
+            .await;
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_execute_graph_plan_internal_empty() {
+        let ctx = setup_context();
+        let svc = service(&ctx);
+        let mut plan = GraphMutationPlan::default();
+        plan.planned_root = Some(GraphNode::new("User"));
+        let res = svc.execute_graph_plan_internal(plan).await;
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_graph_node_from_entity() {
+        let ctx = setup_context();
+        let svc = service(&ctx);
+        let mut entity = DummyEntity::default();
+        entity.values.insert("id".to_string(), Value::U64(1));
+        entity.values.insert("unknown".to_string(), Value::U64(1));
+        let node = svc.graph_node_from_entity(entity).unwrap();
+        assert_eq!(node.entity, "User");
+    }
+
+    #[tokio::test]
+    async fn test_execute_ledger_plan_internal() {
+        let ctx = setup_context();
+        let svc = service(&ctx);
+        let mut root = EntityRoot::default();
+        root.mark_as_delete(EntityKey::new("User", Value::U64(1)));
+
+        let mut changes = Record::new();
+        changes.insert("name".to_string(), Value::Text("abc".to_string()));
+        root.set(
+            EntityKey::new("User", Value::U64(2)),
+            "name",
+            Value::Text("abc".to_string()),
+        ); // Update
+
+        let new_key = EntityKey::new("User", Value::Null);
+        root.mark_as_new(new_key.clone());
+        root.set(new_key, "name", Value::Text("abc".to_string())); // Insert
+
+        let res = svc.execute_ledger_plan_internal(root).await;
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_execute_graph_plan_internal_with_ops() {
+        let ctx = setup_context();
+        let svc = service(&ctx);
+
+        let mut plan = GraphMutationPlan::default();
+        plan.planned_root = Some(GraphNode::new("User"));
+
+        // Add create
+        let mut rec1 = Record::new();
+        rec1.insert("id".to_string(), Value::U64(1));
+        plan.push(
+            "User".to_string(),
+            crate::GraphMutationKind::Create,
+            rec1,
+            vec![],
+            None,
+            None,
+        );
+
+        // Add update
+        let mut rec2 = Record::new();
+        rec2.insert("id".to_string(), Value::U64(2));
+        plan.push(
+            "User".to_string(),
+            crate::GraphMutationKind::Update,
+            rec2,
+            vec!["name".to_string()],
+            None,
+            None,
+        );
+
+        // Add delete
+        let mut rec3 = Record::new();
+        rec3.insert("id".to_string(), Value::U64(3));
+        plan.push(
+            "User".to_string(),
+            crate::GraphMutationKind::Delete,
+            rec3,
+            vec![],
+            None,
+            None,
+        );
+
+        plan.rebuild_batches();
+        let res = svc.execute_graph_plan_internal(plan).await;
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_execute_graph_plan_internal_missing_id() {
+        let ctx = setup_context();
+        let svc = service(&ctx);
+        let mut plan = GraphMutationPlan::default();
+        plan.planned_root = Some(GraphNode::new("User"));
+
+        let rec2 = Record::new();
+        plan.push(
+            "User".to_string(),
+            crate::GraphMutationKind::Update,
+            rec2,
+            vec!["name".to_string()],
+            None,
+            None,
+        );
+
+        plan.rebuild_batches();
+        let res = svc.execute_graph_plan_internal(plan).await;
+        assert!(res.is_err()); // missing id
+    }
+
+    #[tokio::test]
+    async fn test_save_entity_graph_internal_success() {
+        let ctx = setup_context();
+        let svc = service(&ctx);
+        let mut entity = DummyEntity::default();
+        entity.values.insert("id".to_string(), Value::U64(1));
+        let res = svc.save_entity_graph_internal(entity).await;
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_graph_node_operations() {
+        let mut node = GraphNode::new("User");
+        node = node.reference();
+        assert_eq!(node.operation, GraphOperation::Reference);
+        node = node.remove();
+        assert_eq!(node.operation, GraphOperation::Remove);
+    }
+
+    #[tokio::test]
+    async fn test_scoped_functions_full() {
+        let ctx = setup_context();
+        let svc = service(&ctx);
+        
+        let mut node = GraphNode::new("User");
+        node.values.insert("id".to_string(), Value::U64(10));
+        
+        let mut child1 = GraphNode::new("Post");
+        child1.values.insert("id".to_string(), Value::U64(11));
+        node.relations.insert("posts".to_string(), vec![child1]);
+
+        let mut child2 = GraphNode::new("Profile");
+        child2.values.insert("id".to_string(), Value::U64(12));
+        node.relations.insert("profile".to_string(), vec![child2]);
+        
+        let _ = svc.insert_graph_node_scoped(node.clone(), None).await;
+        let _ = svc.upsert_graph_node_scoped(node.clone(), None).await;
+        let _ = svc.delete_graph_node(&node, None).await;
+        let _ = svc.validate_remove_node(&node, vec![]).await;
+
+        let mut ref_node = node.clone();
+        ref_node.operation = GraphOperation::Reference;
+        let _ = svc.validate_reference_node(ref_node.clone(), vec![]).await;
+        let _ = svc.insert_graph_node_scoped(ref_node.clone(), None).await;
+        let _ = svc.upsert_graph_node_scoped(ref_node, None).await;
+
+        let mut rm_node = node.clone();
+        rm_node.operation = GraphOperation::Remove;
+        let _ = svc.upsert_graph_node_scoped(rm_node.clone(), None).await;
+        let _ = svc.insert_graph_node_scoped(rm_node, None).await;
+    }
+
+    #[test]
+    fn test_graph_mutation_plan_utils() {
+        let mut plan = GraphMutationPlan::default();
+        assert!(plan.is_empty());
+        assert_eq!(plan.len(), 0);
+        assert_eq!(plan.batch_count(), 0);
+        let counts = plan.grouped_counts();
+        assert_eq!(counts.len(), 0);
+        
+        plan.push("User".to_string(), crate::GraphMutationKind::Create, Record::new(), vec![], None, None);
+        assert!(!plan.is_empty());
+        assert_eq!(plan.len(), 1);
     }
 }

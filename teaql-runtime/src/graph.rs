@@ -448,4 +448,81 @@ mod tests {
             Some(&1)
         );
     }
+
+    #[test]
+    fn test_graph_mutation_kind() {
+        assert_eq!(
+            GraphMutationKind::for_update(true),
+            GraphMutationKind::Update
+        );
+        assert_eq!(
+            GraphMutationKind::for_update(false),
+            GraphMutationKind::Create
+        );
+    }
+
+    #[test]
+    fn test_graph_mutation_plan_is_empty() {
+        let mut plan = GraphMutationPlan::default();
+        assert!(plan.is_empty());
+        plan.push(
+            "User",
+            GraphMutationKind::Create,
+            Record::new(),
+            vec![],
+            None,
+            None,
+        );
+        assert!(!plan.is_empty());
+    }
+
+    #[test]
+    fn test_sorted_update_fields() {
+        let mut record = Record::new();
+        record.insert("c".to_string(), Value::Null);
+        record.insert("a".to_string(), Value::Null);
+        record.insert("b".to_string(), Value::Null);
+
+        let fields = sorted_update_fields(&record, vec!["b".to_string()]);
+        assert_eq!(fields, vec!["a".to_string(), "c".to_string()]);
+    }
+
+    #[test]
+    fn test_graph_node_builder() {
+        let mut node = GraphNode::new("User")
+            .operation(GraphOperation::Create)
+            .value("id", Value::I64(123))
+            .value("name", "Alice");
+
+        assert_eq!(node.entity, "User");
+        assert_eq!(node.operation, GraphOperation::Create);
+        assert_eq!(node.id(), Some(&Value::I64(123)));
+        assert_eq!(node.values.get("name"), Some(&Value::Text("Alice".to_string())));
+        assert_eq!(node.comment, None);
+
+        node = node.comment("Initial creation");
+        assert_eq!(node.comment.as_deref(), Some("Initial creation"));
+
+        node.set_comment("Updated comment");
+        assert_eq!(node.comment.as_deref(), Some("Updated comment"));
+
+        let ref_node = GraphNode::new("User").reference();
+        assert_eq!(ref_node.operation, GraphOperation::Reference);
+
+        let rem_node = GraphNode::new("User").remove();
+        assert_eq!(rem_node.operation, GraphOperation::Remove);
+
+        let child1 = GraphNode::new("Profile").value("id", Value::I64(1));
+        let child2 = GraphNode::new("Profile").value("id", Value::I64(2));
+        let child3 = GraphNode::new("Profile").value("id", Value::I64(3));
+
+        node = node.relation("profiles", child1);
+        assert_eq!(node.relations.get("profiles").unwrap().len(), 1);
+
+        node = node.relations("profiles", vec![child2, child3]);
+        assert_eq!(node.relations.get("profiles").unwrap().len(), 3);
+
+        let node_no_id = GraphNode::new("User");
+        assert_eq!(node_no_id.id(), None);
+    }
 }

@@ -525,3 +525,550 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data_service::{ContextDataService, UserContextMetadata};
+    use crate::{InMemoryMetadataStore, UserContext};
+    use teaql_core::{
+        Aggregate, AggregationCacheOptions, DataType, EntityDescriptor, Expr, ObjectGroupBy,
+        PropertyDescriptor, Record, RelationAggregate, RelationDescriptor, RelationLoad,
+        SelectQuery, Value,
+    };
+    use teaql_data_service::{
+        DataServiceCapabilities, DataServiceExecutor, DataServiceOperation, ExecutionMetadata,
+        MutationExecutor, MutationRequest, MutationResult, QueryExecutor, QueryRequest,
+        QueryResult,
+    };
+
+    #[derive(Debug)]
+    struct MyError;
+    impl std::fmt::Display for MyError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "MyError")
+        }
+    }
+    impl std::error::Error for MyError {}
+
+    struct MyExecutor {
+        rows: Vec<Record>,
+    }
+
+    impl DataServiceExecutor for MyExecutor {
+        type Error = MyError;
+        fn capabilities(&self) -> DataServiceCapabilities {
+            DataServiceCapabilities::default()
+        }
+    }
+
+    impl QueryExecutor for MyExecutor {
+        async fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
+            let mut rows = self.rows.clone();
+            if request.query.entity == "Profile" {
+                rows = vec![Record::from([
+                    ("id".to_string(), Value::U64(1)),
+                    ("user_id".to_string(), Value::U64(1)),
+                ])];
+            } else if request.query.entity == "Post" {
+                rows = vec![Record::from([
+                    ("id".to_string(), Value::U64(100)),
+                    ("author_id".to_string(), Value::U64(1)),
+                ])];
+            }
+            Ok(QueryResult {
+                rows,
+                metadata: ExecutionMetadata {
+                    debug_query: None,
+                    backend: "stub".to_owned(),
+                    operation: DataServiceOperation::Query,
+                    started_at: std::time::SystemTime::now(),
+                    ended_at: std::time::SystemTime::now(),
+                    affected_rows: None,
+                    result_count: Some(1),
+                    trace_chain: Vec::new(),
+                    comment: None,
+                    backend_request_id: None,
+                },
+            })
+        }
+    }
+
+    impl MutationExecutor for MyExecutor {
+        async fn mutate(&self, _request: MutationRequest) -> Result<MutationResult, Self::Error> {
+            Ok(MutationResult {
+                affected_rows: 1,
+                generated_values: Record::new(),
+                metadata: ExecutionMetadata {
+                    debug_query: None,
+                    backend: "stub".to_owned(),
+                    operation: DataServiceOperation::Update,
+                    started_at: std::time::SystemTime::now(),
+                    ended_at: std::time::SystemTime::now(),
+                    affected_rows: Some(1),
+                    result_count: None,
+                    trace_chain: Vec::new(),
+                    comment: None,
+                    backend_request_id: None,
+                },
+            })
+        }
+    }
+
+    fn setup_context() -> UserContext {
+        let mut user = EntityDescriptor::new("User");
+        user.properties
+            .push(PropertyDescriptor::new("id", DataType::U64).id());
+        user.properties
+            .push(PropertyDescriptor::new("profile_id", DataType::U64));
+        user.relations.push(RelationDescriptor {
+            name: "Profile".to_string(),
+            target_entity: "Profile".to_string(),
+            local_key: "id".to_string(),
+            foreign_key: "user_id".to_string(),
+            many: false,
+            attach: false,
+            delete_missing: false,
+        });
+        user.relations.push(RelationDescriptor {
+            name: "Posts".to_string(),
+            target_entity: "Post".to_string(),
+            local_key: "id".to_string(),
+            foreign_key: "author_id".to_string(),
+            many: true,
+            attach: false,
+            delete_missing: false,
+        });
+        user.relations.push(RelationDescriptor {
+            name: "Child".to_string(),
+            target_entity: "Child".to_string(),
+            local_key: "id".to_string(),
+            foreign_key: "parent_id".to_string(),
+            many: false,
+            attach: false,
+            delete_missing: false,
+        });
+
+        let mut profile = EntityDescriptor::new("Profile");
+        profile
+            .properties
+            .push(PropertyDescriptor::new("id", DataType::U64).id());
+        profile
+            .properties
+            .push(PropertyDescriptor::new("user_id", DataType::U64));
+        // Inverse relation mapping
+        profile.relations.push(RelationDescriptor {
+            name: "User".to_string(),
+            target_entity: "User".to_string(),
+            local_key: "user_id".to_string(),
+            foreign_key: "id".to_string(),
+            many: false,
+            attach: false,
+            delete_missing: false,
+        });
+
+        let mut post = EntityDescriptor::new("Post");
+        post.properties
+            .push(PropertyDescriptor::new("id", DataType::U64).id());
+        post.properties
+            .push(PropertyDescriptor::new("author_id", DataType::U64));
+        post.relations.push(RelationDescriptor {
+            name: "Author".to_string(),
+            target_entity: "User".to_string(),
+            local_key: "author_id".to_string(),
+            foreign_key: "id".to_string(),
+            many: true,
+            attach: false,
+            delete_missing: false,
+        });
+
+        let store = InMemoryMetadataStore::new()
+            .with_entity(user)
+            .with_entity(profile)
+            .with_entity(post);
+
+        let mut ctx = UserContext::new().with_metadata(store);
+        ctx.insert_resource(MyExecutor {
+            rows: vec![Record::from([
+                ("id".to_string(), Value::U64(1)),
+                ("profile_id".to_string(), Value::U64(10)),
+            ])],
+        });
+        ctx
+    }
+
+    #[tokio::test]
+    async fn test_relation_query_missing() {
+        let ctx = setup_context();
+        let executor = ctx.get_resource::<MyExecutor>().unwrap();
+        let ds = EntityDataService {
+            entity: "User".to_string(),
+            data_service: ContextDataService {
+                metadata: UserContextMetadata { context: &ctx },
+                executor,
+            },
+            trace_context: Vec::new(),
+        };
+
+        let err = ds.relation_query("UnknownRel", &[]).unwrap_err();
+        assert!(matches!(err, RuntimeError::MissingRelation { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_enhance_object_group_bys_internal() {
+        let ctx = setup_context();
+        let executor = ctx.get_resource::<MyExecutor>().unwrap();
+        let ds = EntityDataService {
+            entity: "User".to_string(),
+            data_service: ContextDataService {
+                metadata: UserContextMetadata { context: &ctx },
+                executor,
+            },
+            trace_context: Vec::new(),
+        };
+
+        let mut rows = vec![Record::from([("profile_id".to_string(), Value::U64(1))])];
+
+        let group_by = ObjectGroupBy {
+            property_name: "profile_obj".to_string(),
+            storage_field: "profile_id".to_string(),
+            query: SelectQuery::new("Profile"),
+        };
+
+        ds.enhance_object_group_bys_internal(&mut rows, &[group_by], &[])
+            .await
+            .unwrap();
+
+        // Assert Profile was joined
+        let obj = rows[0].get("profile_obj").unwrap();
+        assert!(matches!(obj, Value::Object(_)));
+    }
+
+    #[tokio::test]
+    async fn test_enhance_child_queries_internal() {
+        let ctx = setup_context();
+        let executor = ctx.get_resource::<MyExecutor>().unwrap();
+        let ds = EntityDataService {
+            entity: "User".to_string(),
+            data_service: ContextDataService {
+                metadata: UserContextMetadata { context: &ctx },
+                executor,
+            },
+            trace_context: Vec::new(),
+        };
+
+        let mut rows = vec![Record::from([("id".to_string(), Value::U64(1))])];
+
+        let child_query = SelectQuery::new("Profile"); // We query profile to merge back
+        ds.enhance_child_queries_internal(&mut rows, &[child_query], &[])
+            .await
+            .unwrap();
+
+        // Assert profile properties merged into rows
+        assert!(rows[0].contains_key("user_id"));
+    }
+
+    #[tokio::test]
+    async fn test_enhance_relation_aggregate() {
+        let ctx = setup_context();
+        let executor = ctx.get_resource::<MyExecutor>().unwrap();
+        let ds = EntityDataService {
+            entity: "User".to_string(),
+            data_service: ContextDataService {
+                metadata: UserContextMetadata { context: &ctx },
+                executor,
+            },
+            trace_context: Vec::new(),
+        };
+
+        // 1. empty ids
+        let mut rows = vec![];
+        let agg = RelationAggregate {
+            alias: "count".to_string(),
+            relation_name: "Posts".to_string(),
+            query: SelectQuery::new("Post"),
+            single_result: true,
+        };
+        ds.enhance_relation_aggregates_internal(&mut rows, &[agg.clone()], None, &[])
+            .await
+            .unwrap();
+
+        // 2. missing relation
+        let mut rows2 = vec![Record::from([("id".to_string(), Value::U64(1))])];
+        let agg2 = RelationAggregate {
+            alias: "count".to_string(),
+            relation_name: "MissingRel".to_string(),
+            query: SelectQuery::new("Post"),
+            single_result: true,
+        };
+        assert!(
+            ds.enhance_relation_aggregates_internal(&mut rows2, &[agg2], None, &[])
+                .await
+                .is_err()
+        );
+
+        // 3. valid propagation
+        let cache_opt = AggregationCacheOptions {
+            propagate: true,
+            propagate_cache_expired_millis: 100,
+            enabled: true,
+            cache_expired_millis: 0,
+        };
+        ds.enhance_relation_aggregates_internal(&mut rows2, &[agg], Some(cache_opt), &[])
+            .await
+            .unwrap();
+        assert!(rows2[0].contains_key("count"));
+    }
+
+    #[tokio::test]
+    async fn test_build_relation_plans() {
+        let ctx = setup_context();
+        let executor = ctx.get_resource::<MyExecutor>().unwrap();
+        let ds = EntityDataService {
+            entity: "User".to_string(),
+            data_service: ContextDataService {
+                metadata: UserContextMetadata { context: &ctx },
+                executor,
+            },
+            trace_context: Vec::new(),
+        };
+
+        let plans = ds.build_relation_plans(
+            "User",
+            &[
+                "Profile".to_string(),
+                "Posts".to_string(),
+                "Unknown".to_string(),
+            ],
+        );
+        assert!(plans.is_err());
+
+        // Nested loads
+        let plans2 = ds
+            .build_relation_plans("User", &["Profile.User".to_string()])
+            .unwrap();
+        assert_eq!(plans2.len(), 1);
+        assert_eq!(plans2[0].relation_name, "Profile");
+        assert_eq!(plans2[0].children.len(), 1);
+        assert_eq!(plans2[0].children[0].relation_name, "User");
+    }
+
+    #[tokio::test]
+    async fn test_build_relation_plans_from_loads() {
+        let ctx = setup_context();
+        let executor = ctx.get_resource::<MyExecutor>().unwrap();
+        let ds = EntityDataService {
+            entity: "User".to_string(),
+            data_service: ContextDataService {
+                metadata: UserContextMetadata { context: &ctx },
+                executor,
+            },
+            trace_context: Vec::new(),
+        };
+
+        let loads = vec![RelationLoad {
+            name: "Unknown".to_string(),
+            query: None,
+        }];
+        assert!(ds.build_relation_plans_from_loads("User", &loads).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_enhance_plan() {
+        let ctx = setup_context();
+        let executor = ctx.get_resource::<MyExecutor>().unwrap();
+        let ds = EntityDataService {
+            entity: "User".to_string(),
+            data_service: ContextDataService {
+                metadata: UserContextMetadata { context: &ctx },
+                executor,
+            },
+            trace_context: Vec::new(),
+        };
+
+        // Test enhance_plan with child (Profile has User child)
+        let mut rows = vec![Record::from([("id".to_string(), Value::U64(1))])];
+        let plan = ds
+            .build_relation_plans("User", &["Profile.User".to_string()])
+            .unwrap();
+        ds.enhance_plan(&mut rows, &plan[0]).await.unwrap();
+
+        assert!(rows[0].contains_key("Profile"));
+
+        let mut rows2 = vec![Record::from([("id".to_string(), Value::U64(1))])];
+        let plan2 = ds
+            .build_relation_plans("User", &["Posts.Author".to_string()])
+            .unwrap();
+        ds.enhance_plan(&mut rows2, &plan2[0]).await.unwrap();
+
+        assert!(rows2[0].contains_key("Posts"));
+    }
+    #[tokio::test]
+    async fn test_relation_loads_and_plans() {
+        let ctx = setup_context();
+        let executor = ctx.get_resource::<MyExecutor>().unwrap();
+        let ds = EntityDataService {
+            entity: "User".to_string(),
+            data_service: ContextDataService {
+                metadata: UserContextMetadata { context: &ctx },
+                executor,
+            },
+            trace_context: Vec::new(),
+        };
+
+        // By default, behavior relation_loads is empty unless behavior is defined, but we can just test relation_plans returns ok
+        let loads = ds.relation_loads();
+        assert!(loads.is_empty());
+        let plans = ds.relation_plans().unwrap();
+        assert!(plans.is_empty());
+
+        let err = ds.relation_query("Missing", &[]).unwrap_err();
+        assert!(matches!(err, RuntimeError::MissingRelation { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_enhance_relations_internal() {
+        let ctx = setup_context();
+        let executor = ctx.get_resource::<MyExecutor>().unwrap();
+        let ds = EntityDataService {
+            entity: "User".to_string(),
+            data_service: ContextDataService {
+                metadata: UserContextMetadata { context: &ctx },
+                executor,
+            },
+            trace_context: Vec::new(),
+        };
+        let mut rows = vec![Record::from([("id".to_string(), Value::U64(1))])];
+        // behavior relation loads empty, so it does nothing
+        ds.enhance_relations_internal(&mut rows).await.unwrap();
+
+        let mut query = SelectQuery::new("User");
+        query.relations.push(RelationLoad { name: "Profile".to_string(), query: None });
+        ds.enhance_query_relations_internal(&mut rows, &query).await.unwrap();
+        assert!(rows[0].contains_key("Profile"));
+    }
+
+    #[tokio::test]
+    async fn test_enhance_object_group_bys_empty_and_missing() {
+        let ctx = setup_context();
+        let executor = ctx.get_resource::<MyExecutor>().unwrap();
+        let ds = EntityDataService {
+            entity: "User".to_string(),
+            data_service: ContextDataService {
+                metadata: UserContextMetadata { context: &ctx },
+                executor,
+            },
+            trace_context: Vec::new(),
+        };
+
+        let mut rows_empty = vec![];
+        let group_by = ObjectGroupBy {
+            property_name: "profile_obj".to_string(),
+            storage_field: "profile_id".to_string(),
+            query: SelectQuery::new("Profile"),
+        };
+        // empty ids branch
+        ds.enhance_object_group_bys_internal(&mut rows_empty, &[group_by.clone()], &[]).await.unwrap();
+
+        let mut rows_missing = vec![Record::from([("id".to_string(), Value::U64(1))])];
+        // storage_field is missing
+        ds.enhance_object_group_bys_internal(&mut rows_missing, &[group_by.clone()], &[]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_enhance_child_queries_empty() {
+        let ctx = setup_context();
+        let executor = ctx.get_resource::<MyExecutor>().unwrap();
+        let ds = EntityDataService {
+            entity: "User".to_string(),
+            data_service: ContextDataService {
+                metadata: UserContextMetadata { context: &ctx },
+                executor,
+            },
+            trace_context: Vec::new(),
+        };
+        let mut rows = vec![];
+        ds.enhance_child_queries_internal(&mut rows, &[SelectQuery::new("Profile")], &[]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_attach_relation_rows_branches() {
+        let ctx = setup_context();
+        let executor = ctx.get_resource::<MyExecutor>().unwrap();
+        let ds = EntityDataService {
+            entity: "User".to_string(),
+            data_service: ContextDataService {
+                metadata: UserContextMetadata { context: &ctx },
+                executor,
+            },
+            trace_context: Vec::new(),
+        };
+
+        let mut rows = vec![Record::from([("id".to_string(), Value::U64(1))])];
+        let plan = RelationLoadPlan {
+            parent_entity: "User".to_string(),
+            relation_name: "Posts".to_string(),
+            path: "Posts".to_string(),
+            target_entity: "Post".to_string(),
+            local_key: "id".to_string(),
+            foreign_key: "author_id".to_string(),
+            many: true,
+            query: None,
+            children: vec![],
+        };
+        let child_rows = vec![
+            Record::from([("id".to_string(), Value::U64(100)), ("author_id".to_string(), Value::U64(1))]),
+            Record::from([("id".to_string(), Value::U64(101)), ("author_id".to_string(), Value::U64(1))]),
+        ];
+        
+        // This exercises attach_relation_rows with many=true and an inverse relation Author (many=true in setup, wait actually Author is many: true in setup_context? Let's assume yes)
+        ds.attach_relation_rows(&mut rows, &plan, child_rows);
+        if let Some(Value::List(l)) = rows[0].get("Posts") {
+            assert_eq!(l.len(), 2);
+        } else {
+            panic!("Expected Value::List");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_enhance_plan_deep() {
+        let ctx = setup_context();
+        let executor = ctx.get_resource::<MyExecutor>().unwrap();
+        let ds = EntityDataService {
+            entity: "User".to_string(),
+            data_service: ContextDataService {
+                metadata: UserContextMetadata { context: &ctx },
+                executor,
+            },
+            trace_context: Vec::new(),
+        };
+
+        let mut rows = vec![Record::from([("id".to_string(), Value::U64(1))])];
+        // Profile doesn't have User in this test's child data natively returned from executor, but we can test the structure
+        let plan = RelationLoadPlan {
+            parent_entity: "User".to_string(),
+            relation_name: "Posts".to_string(),
+            path: "Posts".to_string(),
+            target_entity: "Post".to_string(),
+            local_key: "id".to_string(),
+            foreign_key: "author_id".to_string(),
+            many: true,
+            query: None,
+            children: vec![
+                RelationLoadPlan {
+                    parent_entity: "Post".to_string(),
+                    relation_name: "Author".to_string(),
+                    path: "Author".to_string(),
+                    target_entity: "User".to_string(),
+                    local_key: "author_id".to_string(),
+                    foreign_key: "id".to_string(),
+                    many: true,
+                    query: None,
+                    children: vec![],
+                }
+            ],
+        };
+        ds.enhance_plan(&mut rows, &plan).await.unwrap();
+        assert!(rows[0].contains_key("Posts"));
+    }
+}

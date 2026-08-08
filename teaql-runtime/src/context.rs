@@ -935,3 +935,83 @@ fn pretty_sql(sql: &str) -> String {
     }
     pretty.replace(" AND ", "\n  AND ")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_id_from_sql() {
+        assert_eq!(
+            extract_id_from_sql("SELECT * FROM users WHERE id=123"),
+            Some("123".to_owned())
+        );
+        assert_eq!(
+            extract_id_from_sql("SELECT * FROM users WHERE id = 'abc'"),
+            Some("abc".to_owned())
+        );
+        assert_eq!(
+            extract_id_from_sql("SELECT * FROM users WHERE id   =   456"),
+            Some("456".to_owned())
+        );
+        assert_eq!(
+            extract_id_from_sql("SELECT * FROM users WHERE  id= 789 "),
+            Some("789".to_owned())
+        );
+        assert_eq!(extract_id_from_sql("SELECT * FROM users WHERE foo=1"), None);
+    }
+
+    #[test]
+    fn test_sql_result_summary() {
+        // Select, count 0
+        assert_eq!(
+            sql_result_summary(SqlLogOperation::Select, Some(0), Some("User"), None, ""),
+            "MISS"
+        );
+
+        // Select, count 1, with ID extracted
+        assert_eq!(
+            sql_result_summary(
+                SqlLogOperation::Select,
+                Some(1),
+                Some("User"),
+                None,
+                "SELECT * FROM User WHERE id=42"
+            ),
+            "User(42)"
+        );
+
+        // Select, count 1, no ID extracted
+        assert_eq!(
+            sql_result_summary(
+                SqlLogOperation::Select,
+                Some(1),
+                Some("User"),
+                None,
+                "SELECT * FROM User WHERE name='foo'"
+            ),
+            "User"
+        );
+
+        // Select, multiple results
+        assert_eq!(
+            sql_result_summary(SqlLogOperation::Select, Some(5), Some("User"), None, ""),
+            "5*User"
+        );
+
+        // Update/Insert/Delete
+        assert_eq!(
+            sql_result_summary(SqlLogOperation::Update, None, None, Some(3), ""),
+            "3 UPDATED"
+        );
+    }
+
+    #[test]
+    fn test_pretty_sql() {
+        let raw_sql =
+            "SELECT id FROM users WHERE age > 18 AND status = 'active' ORDER BY id LIMIT 10";
+        let expected =
+            "SELECT id\nFROM users\nWHERE age > 18\n  AND status = 'active'\nORDER BY id\nLIMIT 10";
+        assert_eq!(pretty_sql(raw_sql), expected);
+    }
+}

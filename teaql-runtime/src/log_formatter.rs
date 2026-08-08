@@ -363,3 +363,223 @@ impl LogManager {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, SystemTime};
+    use teaql_core::Record;
+    use teaql_core::TraceNode;
+
+    #[test]
+    fn test_human_reader_sql_log() {
+        let formatter = HumanReaderFormatter;
+        let trace = vec![TraceNode::new("User", Some(1), "login")];
+        let entry = SqlLogEntry {
+            operation: SqlLogOperation::Select,
+            sql: "SELECT * FROM users".into(),
+            params: vec![],
+            debug_sql: "SELECT * FROM users".into(),
+            pretty_sql: "SELECT *\nFROM users".into(),
+            started_at: SystemTime::now(),
+            ended_at: SystemTime::now(),
+            elapsed: Duration::from_micros(150),
+            result_count: Some(1),
+            result_type: Some("User".into()),
+            affected_rows: None,
+            result_summary: "1*row".into(),
+        };
+        let log = formatter.format_sql_log(&trace, &entry);
+        assert!(log.contains("[DEBUG]-SqlLogEntry - [login]"));
+        assert!(log.contains("1*row"));
+        assert!(log.contains("SELECT * FROM users"));
+    }
+
+    #[test]
+    fn test_human_reader_audit_log() {
+        let formatter = HumanReaderFormatter;
+        let trace = vec![TraceNode::new("User", Some(1), "login")];
+        let mut event = RawAuditEvent::updated("User", Record::new());
+        event.trace_chain = trace;
+        let log = formatter.format_audit_log(&event);
+        assert!(log.contains("[AUDIT]-Entity [User:Unknown] Update"));
+        assert!(log.contains("(Trace: login)"));
+    }
+
+    #[test]
+    fn test_debug_reader_sql_log() {
+        let formatter = DebugReaderFormatter;
+        let entry = SqlLogEntry {
+            operation: SqlLogOperation::Update,
+            sql: "UPDATE users".into(),
+            params: vec![],
+            debug_sql: "UPDATE users".into(),
+            pretty_sql: "UPDATE users".into(),
+            started_at: SystemTime::now(),
+            ended_at: SystemTime::now(),
+            elapsed: Duration::from_millis(5),
+            result_count: None,
+            result_type: None,
+            affected_rows: Some(1),
+            result_summary: "1 UPDATED".into(),
+        };
+        let log = formatter.format_sql_log(&[], &entry);
+        assert!(log.contains("[SQL_LOG] (Trace: None)"));
+        assert!(log.contains("UPDATE users"));
+        assert!(log.contains("1 UPDATED"));
+    }
+
+    #[test]
+    fn test_human_reader_audit_log_advanced() {
+        use crate::event::{EntityPropertyChange, RawAuditEventKind};
+        let formatter = HumanReaderFormatter;
+        let mut event = RawAuditEvent::updated("User", Record::new());
+        event.changes = vec![
+            EntityPropertyChange::new("name", None, Some(teaql_core::Value::Text("Alice".into()))),
+            EntityPropertyChange::new("_hidden", None, Some(teaql_core::Value::I64(1))),
+            EntityPropertyChange::new("deleted_field", Some(teaql_core::Value::I64(1)), None),
+        ];
+        
+        let mut new_vals = Record::new();
+        new_vals.insert("id".to_string(), teaql_core::Value::I64(42));
+        event.new_values = Some(new_vals);
+        event.trace_chain = vec![];
+        
+        let log = formatter.format_audit_log(&event);
+        assert!(log.contains("Entity [User:I64(42)] Updated"));
+        assert!(!log.contains("_hidden"));
+        assert!(log.contains("name: Text(\"Alice\")"));
+        assert!(log.contains("deleted_field: null"));
+        assert!(!log.contains("(Trace:"));
+    }
+
+    #[test]
+    fn test_debug_reader_audit_log() {
+        let formatter = DebugReaderFormatter;
+        let mut event = RawAuditEvent::updated("User", Record::new());
+        event.trace_chain = vec![TraceNode::new("Sys", None, "t1")];
+        let log = formatter.format_audit_log(&event);
+        assert!(log.contains("[AUDIT_LOG]"));
+        assert!(log.contains("(Trace: t1)"));
+        assert!(log.contains("User"));
+    }
+
+    #[test]
+    fn test_log_formatter_factory() {
+        let formatter = LogFormatterFactory::get_formatter();
+        let log = formatter.format_sql_log(&[], &SqlLogEntry {
+            operation: SqlLogOperation::Select,
+            sql: "".into(),
+            params: vec![],
+            debug_sql: "".into(),
+            pretty_sql: "".into(),
+            started_at: SystemTime::now(),
+            ended_at: SystemTime::now(),
+            elapsed: Duration::from_secs(0),
+            result_count: None,
+            result_type: None,
+            affected_rows: None,
+            result_summary: "".into(),
+        });
+        assert!(!log.is_empty());
+    }
+
+    #[test]
+    fn test_log_level_parse() {
+        assert_eq!(LogLevel::parse("_silent", LogLevel::Full), LogLevel::Silent);
+        assert_eq!(LogLevel::parse("_summary", LogLevel::Full), LogLevel::Summary);
+        assert_eq!(LogLevel::parse("_full", LogLevel::Summary), LogLevel::Full);
+        assert_eq!(LogLevel::parse("_full_with_payload", LogLevel::Silent), LogLevel::FullWithPayload);
+        assert_eq!(LogLevel::parse("unknown", LogLevel::Summary), LogLevel::Summary);
+    }
+
+    #[test]
+    fn test_log_config_filtering() {
+        let mut config = LogConfig {
+            audit_level: LogLevel::Silent,
+            sql_level: LogLevel::Silent,
+            tool_level: LogLevel::Silent,
+            audit_entities: None,
+            sql_tables: None,
+            tool_focus: None,
+        };
+
+        assert!(!config.should_log_audit("User"));
+        assert!(!config.should_log_sql("SELECT * FROM users"));
+        assert!(!config.should_log_tool("migration"));
+
+        config.audit_level = LogLevel::Full;
+        config.sql_level = LogLevel::Summary;
+        config.tool_level = LogLevel::FullWithPayload;
+
+        assert!(config.should_log_audit("User"));
+        assert!(config.should_log_sql("SELECT * FROM users"));
+        assert!(config.should_log_tool("migration"));
+
+        config.audit_entities = Some(vec!["Admin".to_string()]);
+        config.sql_tables = Some(vec!["orders".to_string()]);
+        config.tool_focus = Some(vec!["schema".to_string()]);
+
+        assert!(!config.should_log_audit("User"));
+        assert!(config.should_log_audit("Admin"));
+        assert!(config.should_log_audit("admin"));
+
+        assert!(!config.should_log_sql("SELECT * FROM users"));
+        assert!(config.should_log_sql("SELECT * FROM ORDERS"));
+        assert!(config.should_log_sql("update orders set status=1"));
+
+        assert!(!config.should_log_tool("migration"));
+        assert!(config.should_log_tool("schema"));
+        assert!(config.should_log_tool("SCHEMA"));
+    }
+
+    #[test]
+    fn test_log_config_load_env_vars() {
+        // We set env vars temporarily to test the map logic.
+        // Rust's test runner is parallel so env var modification can be flaky,
+        // but since this is just a best effort for coverage, it's acceptable.
+        unsafe {
+            unsafe {
+            std::env::set_var("TEAQL_AUDIT_LOG_ENTITIES", "User,Admin ");
+            std::env::set_var("TEAQL_SQL_LOG_TABLES", "users, orders ");
+            std::env::set_var("TEAQL_TOOL_LOG_FOCUS", "schema,migration");
+        }
+        }
+        
+        let config = LogConfig::load();
+        
+        assert_eq!(config.audit_entities, Some(vec!["User".to_string(), "Admin".to_string()]));
+        assert_eq!(config.sql_tables, Some(vec!["users".to_string(), "orders".to_string()]));
+        assert_eq!(config.tool_focus, Some(vec!["schema".to_string(), "migration".to_string()]));
+        
+        unsafe {
+            std::env::remove_var("TEAQL_AUDIT_LOG_ENTITIES");
+            std::env::remove_var("TEAQL_SQL_LOG_TABLES");
+            std::env::remove_var("TEAQL_TOOL_LOG_FOCUS");
+        }
+    }
+    
+    #[test]
+    fn test_log_manager() {
+        let _config = LogManager::config();
+        
+        let entry = SqlLogEntry {
+            operation: SqlLogOperation::Select,
+            sql: "SELECT 1".into(),
+            params: vec![],
+            debug_sql: "SELECT 1".into(),
+            pretty_sql: "SELECT 1".into(),
+            started_at: SystemTime::now(),
+            ended_at: SystemTime::now(),
+            elapsed: Duration::from_secs(0),
+            result_count: None,
+            result_type: None,
+            affected_rows: None,
+            result_summary: "".into(),
+        };
+        LogManager::write_sql_log(&[], &entry);
+        
+        let event = RawAuditEvent::updated("User", Record::new());
+        LogManager::write_audit_log(&event);
+    }
+}

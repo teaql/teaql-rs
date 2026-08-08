@@ -520,4 +520,38 @@ mod tests {
             "UPDATE \"orders\" SET \"name\" = 'Alice''s Shop' WHERE ((\"id\" = 7) AND ('?' = '?'))"
         );
     }
+
+    #[test]
+    fn test_compile_error_branches() {
+        use crate::SqlCompileError;
+        use teaql_core::{Expr, ExprFunction, BinaryOp, SelectQuery, Value};
+
+        // Empty insert mutation
+        let err = TestDialect.compile_insert(&entity(), &InsertCommand::new("Order")).unwrap_err();
+        assert_eq!(err, SqlCompileError::EmptyMutation("insert".to_owned()));
+
+        // Empty update mutation
+        let err = TestDialect.compile_update(&entity(), &UpdateCommand::new("Order", 1_u64)).unwrap_err();
+        assert_eq!(err, SqlCompileError::EmptyMutation("update".to_owned()));
+
+        // Invalid recover version (positive instead of negative)
+        let err = TestDialect.compile_recover(&entity(), &RecoverCommand::new("Order", 1_u64, 1)).unwrap_err();
+        assert_eq!(err, SqlCompileError::InvalidRecoverVersion(1));
+
+        // Invalid function arguments
+        let expr = Expr::function(ExprFunction::Count, vec![Expr::value(1), Expr::value(2)]);
+        let err = TestDialect.compile_expr(&entity(), &expr, &mut vec![]).unwrap_err();
+        assert_eq!(err, SqlCompileError::InvalidFunctionArguments("COUNT expects exactly one argument".to_owned()));
+
+        // Invalid subquery operator
+        let subquery = SelectQuery::new("User");
+        let expr = Expr::subquery(Expr::column("id"), BinaryOp::Like, entity(), subquery, "User");
+        let err = TestDialect.compile_expr(&entity(), &expr, &mut vec![]).unwrap_err();
+        assert_eq!(err, SqlCompileError::InvalidSubQueryOperator("Like".to_owned()));
+
+        // Empty IN list
+        let expr = Expr::in_list("id", vec![]);
+        let err = TestDialect.compile_expr(&entity(), &expr, &mut vec![]).unwrap_err();
+        assert_eq!(err, SqlCompileError::EmptyInList);
+    }
 }

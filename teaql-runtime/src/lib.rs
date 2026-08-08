@@ -52,8 +52,8 @@ pub use registry::{
     MetadataStore, RequestPolicy, RuntimeModule,
 };
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "test-utils"))]
+pub mod tests {
     use std::collections::{BTreeMap, VecDeque};
     use std::sync::{Arc, Mutex};
 
@@ -189,9 +189,9 @@ mod tests {
     }
 
     #[derive(Debug, Default)]
-    struct StubExecutor {
-        affected: u64,
-        rows: Vec<Record>,
+    pub struct StubExecutor {
+        pub affected: u64,
+        pub rows: Vec<Record>,
     }
 
     #[derive(Debug, Default)]
@@ -348,6 +348,7 @@ mod tests {
     }
 
     impl teaql_core::TeaqlEntity for OrderEntity {
+        const ENTITY_NAME: &'static str = "Order";
         fn entity_descriptor() -> EntityDescriptor {
             entity()
         }
@@ -396,7 +397,7 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct StubError;
+    pub struct StubError;
 
     impl std::fmt::Display for StubError {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2274,6 +2275,104 @@ mod tests {
 
         let ctx4 = UserContext::new().with_user_identifier_option(Some("user-abc".to_owned()));
         assert_eq!(ctx4.user_identifier(), Some("user-abc"));
+    }
+
+    #[tokio::test]
+    async fn test_extreme_error_branches_in_graph() {
+        let mut ctx = UserContext::new()
+            .with_metadata(crate::InMemoryMetadataStore::new().with_entity(crate::tests::entity()));
+        ctx.insert_resource(crate::tests::StubExecutor {
+            rows: vec![],
+            affected: 0,
+        });
+
+        let data_service = ctx
+            .entity_data_service::<crate::tests::StubExecutor>("Order")
+            .unwrap();
+
+        // Test saving a graph root that doesn't match the data service entity
+        let node = crate::GraphNode::new("User");
+        let err = data_service.save_graph_internal(node).await.unwrap_err();
+        assert!(
+            matches!(err, crate::DataServiceError::Runtime(crate::RuntimeError::Graph(msg)) if msg.contains("cannot save graph root User"))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_comprehensive_graph_mutations() {
+        use crate::{GraphNode, GraphOperation};
+        use teaql_core::{
+            DataType, EntityDescriptor, EntityGraph, EntityGraphNode, EntityGraphOperation,
+            PropertyDescriptor, Record, RelationDescriptor, Value,
+        };
+        let mut user = EntityDescriptor::new("User");
+        user.properties
+            .push(PropertyDescriptor::new("id", DataType::U64).id());
+        user.relations
+            .push(RelationDescriptor::new("profile", "Profile"));
+        user.relations
+            .push(RelationDescriptor::new("posts", "Post").many());
+
+        let mut profile = EntityDescriptor::new("Profile");
+        profile
+            .properties
+            .push(PropertyDescriptor::new("id", DataType::U64).id());
+
+        let mut post = EntityDescriptor::new("Post");
+        post.properties
+            .push(PropertyDescriptor::new("id", DataType::U64).id());
+
+        let mut ctx = UserContext::new().with_metadata(
+            crate::InMemoryMetadataStore::new()
+                .with_entity(user)
+                .with_entity(profile)
+                .with_entity(post),
+        );
+        ctx.insert_resource(crate::tests::StubExecutor {
+            rows: vec![],
+            affected: 1,
+        });
+
+        let data_service = ctx
+            .entity_data_service::<crate::tests::StubExecutor>("User")
+            .unwrap();
+
+        let mut node = GraphNode::new("User");
+        node.values.insert("id".into(), Value::U64(1));
+        node.operation = GraphOperation::Create;
+
+        let mut profile_node = GraphNode::new("Profile");
+        profile_node.values.insert("id".into(), Value::U64(2));
+        profile_node.operation = GraphOperation::Upsert;
+        node.relations.insert("profile".into(), vec![profile_node]);
+
+        let mut post_node = GraphNode::new("Post");
+        post_node.values.insert("id".into(), Value::U64(3));
+        post_node.operation = GraphOperation::Remove;
+        node.relations.insert("posts".into(), vec![post_node]);
+
+        let plan = data_service.plan_graph(node).await.unwrap();
+        assert!(plan.planned_root.is_some());
+
+        let result = data_service
+            .execute_graph_plan_internal(plan)
+            .await
+            .unwrap();
+        assert_eq!(result.entity, "User");
+
+        let mut eg_node = EntityGraphNode {
+            entity_type: "User".into(),
+            record: Record::new(),
+            operation: EntityGraphOperation::Save,
+            comment: None,
+            children: vec![],
+        };
+        eg_node.record.insert("id".into(), Value::U64(10));
+        let eg = EntityGraph { root: eg_node };
+        data_service
+            .save_entity_graph_from_internal(eg)
+            .await
+            .unwrap();
     }
 }
 
