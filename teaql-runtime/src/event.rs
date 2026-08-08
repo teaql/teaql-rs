@@ -501,3 +501,340 @@ pub trait SafeAuditEventSink: Send + Sync {
         event: &SafeAuditEvent,
     ) -> Result<(), crate::RuntimeError>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{RuntimeError, UserContext};
+    use teaql_core::{Record, Value};
+
+    #[test]
+    fn test_entity_property_change() {
+        let change = EntityPropertyChange::new("field1", None, Some(Value::I64(1)));
+        assert_eq!(change.field, "field1");
+        assert_eq!(change.old_value, None);
+        assert_eq!(change.new_value, Some(Value::I64(1)));
+    }
+
+    #[test]
+    fn test_raw_audit_event_created() {
+        let mut values = Record::new();
+        values.insert("a".to_owned(), Value::I64(1));
+        let event = RawAuditEvent::created("User", values.clone());
+        assert_eq!(event.kind, RawAuditEventKind::Created);
+        assert_eq!(event.entity, "User");
+        assert_eq!(event.values, values);
+        assert_eq!(event.updated_fields.len(), 0);
+        assert_eq!(event.old_values, None);
+        assert_eq!(event.new_values, Some(values.clone()));
+        assert_eq!(event.changes.len(), 1);
+        assert_eq!(event.changes[0].field, "a");
+        assert_eq!(event.changes[0].old_value, None);
+        assert_eq!(event.changes[0].new_value, Some(Value::I64(1)));
+    }
+
+    #[test]
+    fn test_raw_audit_event_updated() {
+        let mut values = Record::new();
+        values.insert("a".to_owned(), Value::I64(2));
+        let event = RawAuditEvent::updated("User", values.clone());
+        assert_eq!(event.kind, RawAuditEventKind::Updated);
+        assert_eq!(event.entity, "User");
+        assert_eq!(event.values, values);
+        assert_eq!(event.updated_fields, vec!["a".to_owned()]);
+        assert_eq!(event.old_values, None);
+        assert_eq!(event.new_values, Some(values.clone()));
+        assert_eq!(event.changes.len(), 1);
+    }
+
+    #[test]
+    fn test_raw_audit_event_updated_with_old_values() {
+        let mut values = Record::new();
+        values.insert("a".to_owned(), Value::I64(2));
+        let mut old_values = Record::new();
+        old_values.insert("a".to_owned(), Value::I64(1));
+        let mut new_values = Record::new();
+        new_values.insert("a".to_owned(), Value::I64(2));
+
+        let event = RawAuditEvent::updated_with_old_values(
+            "User",
+            values.clone(),
+            Some(old_values),
+            new_values.clone(),
+            vec!["a".to_owned()],
+        );
+        assert_eq!(event.kind, RawAuditEventKind::Updated);
+        assert_eq!(event.changes.len(), 1);
+        assert_eq!(event.changes[0].old_value, Some(Value::I64(1)));
+        assert_eq!(event.changes[0].new_value, Some(Value::I64(2)));
+    }
+
+    #[test]
+    fn test_raw_audit_event_deleted() {
+        let event = RawAuditEvent::deleted("User", Value::I64(10), Some(1));
+        assert_eq!(event.kind, RawAuditEventKind::Deleted);
+        assert_eq!(event.values.get("id"), Some(&Value::I64(10)));
+        assert_eq!(event.values.get("version"), Some(&Value::I64(1)));
+    }
+
+    #[test]
+    fn test_raw_audit_event_deleted_with_old_values() {
+        let mut old_values = Record::new();
+        old_values.insert("name".to_owned(), Value::Text("Alice".to_owned()));
+        let event =
+            RawAuditEvent::deleted_with_old_values("User", Value::I64(10), None, Some(old_values));
+        assert_eq!(event.kind, RawAuditEventKind::Deleted);
+        assert_eq!(event.changes.len(), 1);
+        assert_eq!(
+            event.changes[0].old_value,
+            Some(Value::Text("Alice".to_owned()))
+        );
+        assert_eq!(event.changes[0].new_value, None);
+    }
+
+    #[test]
+    fn test_raw_audit_event_recovered() {
+        let event = RawAuditEvent::recovered("User", Value::I64(10), 1);
+        assert_eq!(event.kind, RawAuditEventKind::Recovered);
+        assert_eq!(event.values.get("version"), Some(&Value::I64(1)));
+    }
+
+    #[test]
+    fn test_raw_audit_event_recovered_with_old_values() {
+        let mut old_values = Record::new();
+        old_values.insert("name".to_owned(), Value::Text("Alice".to_owned()));
+        let event =
+            RawAuditEvent::recovered_with_old_values("User", Value::I64(10), 2, Some(old_values));
+        assert_eq!(event.kind, RawAuditEventKind::Recovered);
+        assert_eq!(event.changes.len(), 1);
+        assert_eq!(event.changes[0].field, "version");
+        assert_eq!(event.changes[0].old_value, None);
+        assert_eq!(event.changes[0].new_value, Some(Value::I64(-1)));
+    }
+
+    #[test]
+    fn test_raw_audit_event_schema_created() {
+        let event = RawAuditEvent::schema_created("System", "users", 5);
+        assert_eq!(event.kind, RawAuditEventKind::SchemaCreated);
+        assert_eq!(
+            event.values.get("table_name"),
+            Some(&Value::Text("users".to_owned()))
+        );
+        assert_eq!(event.values.get("field_count"), Some(&Value::I64(5)));
+    }
+
+    #[test]
+    fn test_raw_audit_event_schema_verified() {
+        let event = RawAuditEvent::schema_verified("System", "users", 5);
+        assert_eq!(event.kind, RawAuditEventKind::SchemaVerified);
+    }
+
+    #[test]
+    fn test_raw_audit_event_field_added() {
+        let event = RawAuditEvent::field_added("System", "users", "age");
+        assert_eq!(event.kind, RawAuditEventKind::FieldAdded);
+        assert_eq!(
+            event.values.get("field_name"),
+            Some(&Value::Text("age".to_owned()))
+        );
+    }
+
+    #[test]
+    fn test_raw_audit_event_data_seeded() {
+        let event = RawAuditEvent::data_seeded("System", "users", 10, 2);
+        assert_eq!(event.kind, RawAuditEventKind::DataSeeded);
+        assert_eq!(event.values.get("inserted"), Some(&Value::I64(10)));
+        assert_eq!(event.values.get("updated"), Some(&Value::I64(2)));
+    }
+
+    #[test]
+    fn test_mask_audit_value() {
+        assert_eq!(mask_audit_value(""), "");
+        assert_eq!(mask_audit_value("123456"), "******");
+        assert_eq!(mask_audit_value("short"), "*****");
+        assert_eq!(mask_audit_value("password123"), "pa*******23");
+    }
+
+    #[test]
+    fn test_limit_audit_value() {
+        assert_eq!(limit_audit_value("hello", 10), ("hello".to_string(), false));
+        assert_eq!(limit_audit_value("abc", 2), ("**".to_string(), true));
+        assert_eq!(
+            limit_audit_value("this is a very long string", 10),
+            ("thi...ring".to_string(), true)
+        );
+    }
+
+    #[test]
+    fn test_build_safe_audit_field() {
+        let field = build_safe_audit_field(
+            "password",
+            Some("mysecret"),
+            &["password".to_string()],
+            None,
+        );
+        assert_eq!(field.masked, true);
+        assert_eq!(field.value, Some("my****et".to_string()));
+
+        let field_unmasked =
+            build_safe_audit_field("username", Some("alice"), &["password".to_string()], None);
+        assert_eq!(field_unmasked.masked, false);
+        assert_eq!(field_unmasked.value, Some("alice".to_string()));
+
+        let field_truncated =
+            build_safe_audit_field("desc", Some("long description here"), &[], Some(10));
+        assert_eq!(field_truncated.truncated, true);
+        assert_eq!(field_truncated.value, Some("lon...here".to_string()));
+
+        let field_none = build_safe_audit_field("empty", None, &[], None);
+        assert_eq!(field_none.value, None);
+    }
+
+    #[test]
+    fn test_build_safe_event() {
+        let mut values = Record::new();
+        values.insert("pwd".to_owned(), Value::Text("12345678".to_owned()));
+        values.insert("age".to_owned(), Value::I64(30));
+        values.insert("_hidden".to_owned(), Value::I64(1));
+
+        let event = RawAuditEvent::created("User", values);
+        let safe_event = event.build_safe_event(&["pwd".to_string()], Some(20));
+
+        assert_eq!(safe_event.kind, RawAuditEventKind::Created);
+        assert_eq!(safe_event.fields.len(), 2);
+
+        let pwd_field = safe_event.fields.iter().find(|f| f.name == "pwd").unwrap();
+        assert_eq!(pwd_field.masked, true);
+    }
+
+    struct DummySink {
+        called: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl RawAuditEventSink for DummySink {
+        fn on_event(&self, _ctx: &UserContext, _event: &RawAuditEvent) -> Result<(), RuntimeError> {
+            self.called.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_in_memory_raw_audit_event_sink() {
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sink1 = DummySink {
+            called: called.clone(),
+        };
+        let mut in_memory = InMemoryRawAuditEventSink::new();
+        in_memory.register(sink1);
+
+        let ctx = UserContext::default();
+        let event = RawAuditEvent::schema_verified("Sys", "t", 1);
+        let _ = in_memory.on_event(&ctx, &event);
+
+        assert!(called.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_in_memory_with_sink() {
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sink1 = DummySink {
+            called: called.clone(),
+        };
+        let in_memory = InMemoryRawAuditEventSink::new().with_sink(sink1);
+
+        let ctx = UserContext::default();
+        let event = RawAuditEvent::schema_verified("Sys", "t", 1);
+        let _ = in_memory.on_event(&ctx, &event);
+
+        assert!(called.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_derived_traits() {
+        let kind1 = RawAuditEventKind::Created;
+        let kind2 = kind1.clone();
+        assert_eq!(kind1, kind2);
+        assert_eq!(format!("{:?}", kind1), "Created");
+
+        let change1 = EntityPropertyChange::new("a", None, None);
+        let change2 = change1.clone();
+        assert_eq!(change1, change2);
+        assert_eq!(format!("{:?}", change1).contains("EntityPropertyChange"), true);
+
+        let event1 = RawAuditEvent::created("Entity", Record::new());
+        let event2 = event1.clone();
+        assert_eq!(event1, event2);
+        assert_eq!(format!("{:?}", event1).contains("RawAuditEvent"), true);
+
+        let safe_field1 = SafeAuditField {
+            name: "f".to_string(),
+            value: None,
+            masked: false,
+            truncated: false,
+            raw_length: None,
+            output_length: None,
+            mask_reason: None,
+            truncate_reason: None,
+        };
+        let safe_field2 = safe_field1.clone();
+        assert_eq!(safe_field1, safe_field2);
+        assert_eq!(format!("{:?}", safe_field1).contains("SafeAuditField"), true);
+
+        let safe_event1 = SafeAuditEvent {
+            kind: RawAuditEventKind::Created,
+            entity: "Entity".to_string(),
+            fields: vec![],
+            trace_chain: vec![],
+        };
+        let safe_event2 = safe_event1.clone();
+        assert_eq!(safe_event1, safe_event2);
+        assert_eq!(format!("{:?}", safe_event1).contains("SafeAuditEvent"), true);
+
+        let sink1 = InMemoryRawAuditEventSink::default();
+        let sink2 = sink1.clone();
+        let _ = sink2;
+    }
+
+    #[test]
+    fn test_deleted_event_edges() {
+        let event1 = RawAuditEvent::deleted("User", Value::I64(1), None);
+        assert_eq!(event1.values.get("version"), None);
+
+        let event2 = RawAuditEvent::deleted_with_old_values("User", Value::I64(1), None, None);
+        assert_eq!(event2.old_values, None);
+        assert_eq!(event2.changes.len(), 0);
+    }
+
+    #[test]
+    fn test_recovered_with_old_values_none() {
+        let event = RawAuditEvent::recovered_with_old_values("User", Value::I64(1), 2, None);
+        assert_eq!(event.old_values, None);
+        assert_eq!(event.new_values.as_ref().unwrap().get("version"), Some(&Value::I64(-1)));
+    }
+
+    #[test]
+    fn test_limit_audit_value_edges() {
+        assert_eq!(limit_audit_value("abcd", 4), ("abcd".to_string(), false));
+        assert_eq!(limit_audit_value("abcd", 3), ("***".to_string(), true));
+    }
+
+    #[test]
+    fn test_build_safe_event_deleted() {
+        // A deleted event has changes where new_value is None.
+        let mut old_values = Record::new();
+        old_values.insert("name".to_owned(), Value::Text("Alice".to_owned()));
+        let event = RawAuditEvent::deleted_with_old_values("User", Value::I64(1), None, Some(old_values));
+        
+        let safe_event = event.build_safe_event(&[], None);
+        assert_eq!(safe_event.fields.len(), 1);
+        assert_eq!(safe_event.fields[0].name, "name");
+        assert_eq!(safe_event.fields[0].value, None);
+    }
+
+    #[test]
+    fn test_changes_for_fields_none() {
+        let changes = RawAuditEvent::changes_for_fields(None, None, &["missing".to_string()]);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].old_value, None);
+        assert_eq!(changes[0].new_value, None);
+    }
+}

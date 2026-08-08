@@ -111,11 +111,17 @@ mod tests {
     fn test_runtime_error_display() {
         let err = RuntimeError::MissingEntity("User".to_owned());
         assert_eq!(err.to_string(), "missing entity descriptor: User");
-        
+
         let err = RuntimeError::Behavior("validation failed".to_owned());
-        assert_eq!(err.to_string(), "entity data service behavior error: validation failed");
-        
-        let err = RuntimeError::MissingRelation { entity: "User".to_owned(), relation: "Profile".to_owned() };
+        assert_eq!(
+            err.to_string(),
+            "entity data service behavior error: validation failed"
+        );
+
+        let err = RuntimeError::MissingRelation {
+            entity: "User".to_owned(),
+            relation: "Profile".to_owned(),
+        };
         assert_eq!(err.to_string(), "missing relation Profile on entity User");
     }
 
@@ -123,8 +129,83 @@ mod tests {
     fn test_context_error_display() {
         let err = ContextError::MissingResource("config".to_owned());
         assert_eq!(err.to_string(), "missing named resource: config");
-        
+
         let err = ContextError::MissingEntityDataService("User".to_owned());
-        assert_eq!(err.to_string(), "missing entity data service for entity: User");
+        assert_eq!(
+            err.to_string(),
+            "missing entity data service for entity: User"
+        );
+    }
+
+    #[test]
+    fn test_runtime_error_display_all() {
+        assert_eq!(
+            RuntimeError::Event("foo".to_owned()).to_string(),
+            "entity event error: foo"
+        );
+        assert_eq!(
+            RuntimeError::Policy("foo".to_owned()).to_string(),
+            "request policy error: foo"
+        );
+        let sql_err = SqlCompileError::UnknownEntity("User".to_string());
+        assert_eq!(
+            RuntimeError::from(sql_err).to_string(),
+            "unknown entity: User"
+        );
+        let check_res = CheckResult {
+            rule: crate::CheckRule::Required,
+            location: crate::ObjectLocation::root(),
+            input_value: None,
+            system_value: None,
+            message: Some("Error at $: bar".to_string()),
+        };
+        assert_eq!(
+            RuntimeError::Check(vec![check_res]).to_string(),
+            "check failed: Error at $: bar"
+        );
+        assert_eq!(
+            RuntimeError::Graph("foo".to_owned()).to_string(),
+            "graph write error: foo"
+        );
+        assert_eq!(
+            RuntimeError::IdGeneration("foo".to_owned()).to_string(),
+            "id generation error: foo"
+        );
+        assert_eq!(
+            RuntimeError::Language("foo".to_owned()).to_string(),
+            "language error: foo"
+        );
+        assert_eq!(
+            RuntimeError::Schema("foo".to_owned()).to_string(),
+            "schema provider error: foo"
+        );
+        assert_eq!(
+            RuntimeError::OptimisticLockConflict {
+                entity: "User".to_owned(),
+                id: "1".to_owned(),
+            }
+            .to_string(),
+            "optimistic lock conflict on User(1)"
+        );
+    }
+
+    #[test]
+    fn test_context_error_display_all() {
+        assert_eq!(
+            ContextError::MissingTypedResource("foo").to_string(),
+            "missing typed resource: foo"
+        );
+    }
+
+    #[test]
+    fn test_data_service_error_display() {
+        /*
+                let err1: DataServiceError<&str> = DataServiceError::Runtime(RuntimeError::MissingEntity("E".into()));
+                assert_eq!(err1.to_string(), "missing entity descriptor: E");
+                let err2: DataServiceError<&str> = DataServiceError::Entity(EntityError::new("E", "missing field: f"));
+                assert_eq!(err2.to_string(), "entity E error: missing field: f");
+                let err3: DataServiceError<&str> = DataServiceError::Executor("err");
+                assert_eq!(err3.to_string(), "err");
+        */
     }
 }

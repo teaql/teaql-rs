@@ -87,3 +87,37 @@ impl InMemoryAggregationCache {
         AggregationCacheBackend::invalidate_namespace(self, namespace);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use teaql_core::Record;
+
+    #[test]
+    fn test_in_memory_aggregation_cache() {
+        let cache = InMemoryAggregationCache::with_namespace("test_ns");
+        assert_eq!(cache.namespace(), "test_ns");
+
+        let mut row = Record::new();
+        row.insert("count".into(), teaql_core::Value::I64(42));
+
+        let key = "test_ns::User::count".to_string();
+        cache.put(key.clone(), vec![row.clone()]);
+
+        // Should retrieve valid cache
+        let cached = cache.get(&key, 1000);
+        assert!(cached.is_some());
+        assert_eq!(cached.unwrap().len(), 1);
+
+        // Expired max_age
+        let expired = cache.get(&key, 0); // 0 acts as infinite in some systems, wait, here max_age_millis == 0 || elapsed <= max_age
+        assert!(expired.is_some());
+
+        // Invalid key
+        assert!(cache.get("invalid", 1000).is_none());
+
+        // Invalidate namespace
+        cache.invalidate_namespace("test_ns");
+        assert!(cache.get(&key, 1000).is_none());
+    }
+}

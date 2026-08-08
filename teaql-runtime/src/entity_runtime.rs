@@ -367,3 +367,151 @@ impl EntityRoot {
 pub trait LedgerEntity: teaql_core::Entity {
     fn entity_root(&self) -> Option<EntityRoot>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_entity_key() {
+        let key1 = EntityKey::new("User", 1_i64);
+        let key2 = EntityKey::new("User", 1_i64);
+        let key3 = EntityKey::new("User", "1".to_owned());
+
+        assert_eq!(key1, key2);
+        assert_ne!(key1, key3); // i64 vs text
+
+        assert_eq!(key1.cmp(&key2), std::cmp::Ordering::Equal);
+        assert_eq!(key1.partial_cmp(&key2), Some(std::cmp::Ordering::Equal));
+        assert!(key1 < key3 || key1 > key3); // test ord
+    }
+
+    #[test]
+    fn test_value_key_variants() {
+        let _ = EntityKey::new("e", Value::Null);
+        let _ = EntityKey::new("e", Value::Bool(true));
+        let _ = EntityKey::new("e", Value::I64(1));
+        let _ = EntityKey::new("e", Value::U64(1));
+        let _ = EntityKey::new("e", Value::Text("t".into()));
+        let _ = EntityKey::new("e", Value::Object(BTreeMap::new()));
+        let _ = EntityKey::new("e", Value::List(vec![]));
+        let _ = EntityKey::new("e", Value::TypedNull(teaql_core::DataType::I64));
+        let _ = EntityKey::new("e", Value::Json(serde_json::json!({})));
+
+        use std::str::FromStr;
+        if let Ok(d) = rust_decimal::Decimal::from_str("1.23") {
+            let _ = EntityKey::new("e", Value::Decimal(d));
+        }
+    }
+
+    #[test]
+    fn test_entity_change_set() {
+        let mut changes = EntityChangeSet::default();
+        let key = EntityKey::new("User", 1_i64);
+
+        assert!(changes.is_empty());
+        changes.set(key.clone(), "name", Value::Text("Alice".into()));
+        assert!(!changes.is_empty());
+
+        assert_eq!(
+            changes.get(&key, "name"),
+            Some(&Value::Text("Alice".into()))
+        );
+        assert_eq!(changes.get(&key, "age"), None);
+
+        let field_names = changes.field_names(&key);
+        assert!(field_names.contains("name"));
+
+        let mut expected_map = BTreeMap::new();
+        expected_map.insert("name".to_string(), Value::Text("Alice".into()));
+        assert_eq!(changes.changes().get(&key), Some(&expected_map));
+
+        changes.clear_entity(&key);
+        assert!(changes.is_empty());
+        assert!(changes.field_names(&key).is_empty());
+    }
+
+    #[test]
+    fn test_change_set_stack() {
+        let mut stack = ChangeSetStack::default();
+        let key = EntityKey::new("User", 1_i64);
+
+        assert!(stack.current().is_none());
+        stack.set(key.clone(), "name", Value::Text("Alice".into()));
+        assert!(stack.current().is_some());
+
+        stack.push();
+        stack.set(key.clone(), "name", Value::Text("Bob".into()));
+        stack.set(key.clone(), "age", Value::I64(30));
+
+        assert_eq!(stack.get(&key, "name"), Some(Value::Text("Bob".into())));
+        assert_eq!(stack.get(&key, "age"), Some(Value::I64(30)));
+
+        let fields = stack.changed_field_names(&key);
+        assert!(fields.contains("name"));
+        assert!(fields.contains("age"));
+
+        stack.clear_current();
+        assert_eq!(stack.get(&key, "name"), Some(Value::Text("Alice".into())));
+        assert_eq!(stack.get(&key, "age"), None);
+
+        stack.set(key.clone(), "age", Value::I64(40));
+        stack.clear_entity(&key);
+        assert_eq!(stack.get(&key, "name"), None);
+        assert_eq!(stack.get(&key, "age"), None);
+
+        stack.push();
+        let popped = stack.pop();
+        assert!(popped.is_some());
+
+        // drain rest
+        stack.pop();
+        stack.pop();
+        assert!(stack.pop().is_none());
+    }
+
+    #[test]
+    fn test_entity_root() {
+        let root = EntityRoot::default();
+        let root2 = root.clone();
+        assert_eq!(root, root2);
+
+        let key = EntityKey::new("User", 1_i64);
+
+        root.set(key.clone(), "name", Value::Text("Bob".into()));
+        assert_eq!(root.get(&key, "name"), Some(Value::Text("Bob".into())));
+        assert!(root.changed_field_names(&key).contains("name"));
+
+        let cs = root.current_change_set();
+        assert!(!cs.is_empty());
+
+        root.push_change_set();
+        root.set(key.clone(), "age", Value::I64(20));
+        assert_eq!(root.get(&key, "age"), Some(Value::I64(20)));
+        root.clear_current_change_set();
+        assert_eq!(root.get(&key, "age"), None);
+        let _ = root.pop_change_set();
+
+        root.set_comment("test comment");
+        assert_eq!(root.get_comment(), Some("test comment".into()));
+
+        root.mark_as_new(key.clone());
+        assert!(root.is_new(&key));
+        assert!(root.new_keys().contains(&key));
+
+        let mut rec = Record::new();
+        rec.insert("id".to_string(), Value::I64(1));
+        root.set_original_record(rec.clone());
+        assert_eq!(root.original_record(), Some(rec));
+
+        root.mark_as_delete(key.clone());
+        assert!(root.is_marked_as_delete(&key));
+        assert!(root.deleted_keys().contains(&key));
+
+        root.set_original_version(key.clone(), 42);
+        assert_eq!(root.get_original_version(&key), Some(42));
+
+        let trace = root.get_trace_chain(&key);
+        assert!(trace.is_empty());
+    }
+}

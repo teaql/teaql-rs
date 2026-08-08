@@ -177,11 +177,10 @@ mod tests {
     fn test_local_id_generator_singleton() {
         let gen1 = local_id_generator();
         let gen2 = local_id_generator();
-        
+
         let id1 = gen1.generate_id("Entity").unwrap();
         let id2 = gen2.generate_id("Entity").unwrap();
-        
+
         assert_eq!(id2, id1 + 1);
     }
 }
-

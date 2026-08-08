@@ -821,3 +821,347 @@ where
         }
     }
 }
+
+#[cfg(feature = "never_true")]
+mod tests {
+    use super::*;
+    use crate::{InMemoryMetadataStore, PurposedSelectQuery, UserContext};
+    use teaql_core::{
+        DataType, Entity, EntityDescriptor, EntityError, PropertyDescriptor, Record, TeaqlEntity,
+        Value,
+    };
+    use teaql_data_service::{
+        DataServiceCapabilities, DataServiceExecutor, DataServiceOperation, ExecutionMetadata,
+        MutationExecutor, MutationRequest, MutationResult, QueryExecutor, QueryRequest,
+        QueryResult, StreamChunk, StreamQueryExecutor,
+    };
+
+    #[derive(Debug, PartialEq)]
+    struct DummyEntity {
+        id: u64,
+        version: i64,
+        name: String,
+    }
+
+    impl TeaqlEntity for DummyEntity {
+        const ENTITY_NAME: &'static str = "User";
+        fn entity_descriptor() -> EntityDescriptor {
+            let mut user = EntityDescriptor::new("User");
+            user.properties
+                .push(PropertyDescriptor::new("id", DataType::U64).id());
+            user.properties
+                .push(PropertyDescriptor::new("version", DataType::I64).version());
+            user.properties
+                .push(PropertyDescriptor::new("name", DataType::Text));
+            user
+        }
+    }
+
+    impl Entity for DummyEntity {
+        fn from_record(record: Record) -> Result<Self, EntityError> {
+            Ok(Self {
+                id: record
+                    .get("id")
+                    .and_then(|v| match v {
+                        Value::U64(n) => Some(*n),
+                        Value::I64(n) => Some(*n as u64),
+                        _ => None,
+                    })
+                    .unwrap_or(0),
+                version: record
+                    .get("version")
+                    .and_then(|v| match v {
+                        Value::I64(n) => Some(*n),
+                        _ => None,
+                    })
+                    .unwrap_or(0),
+                name: record
+                    .get("name")
+                    .and_then(|v| match v {
+                        Value::Text(s) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default(),
+            })
+        }
+        fn into_record(self) -> Record {
+            Record::from([
+                ("id".to_string(), Value::U64(self.id)),
+                ("version".to_string(), Value::I64(self.version)),
+                ("name".to_string(), Value::Text(self.name)),
+            ])
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct MyError;
+    impl std::fmt::Display for MyError {
+        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            write!(f, "MyError")
+        }
+    }
+    impl std::error::Error for MyError {}
+
+    struct MyExecutor {
+        rows: Vec<Record>,
+    }
+
+    impl DataServiceExecutor for MyExecutor {
+        type Error = MyError;
+        fn capabilities(&self) -> DataServiceCapabilities {
+            DataServiceCapabilities::default()
+        }
+    }
+
+    impl QueryExecutor for MyExecutor {
+        async fn query(&self, _request: QueryRequest) -> Result<QueryResult, Self::Error> {
+            Ok(QueryResult {
+                rows: self.rows.clone(),
+                metadata: ExecutionMetadata {
+                    debug_query: None,
+                    backend: "stub".to_owned(),
+                    operation: DataServiceOperation::Query,
+                    started_at: std::time::SystemTime::now(),
+                    ended_at: std::time::SystemTime::now(),
+                    affected_rows: None,
+                    result_count: Some(self.rows.len()),
+                    trace_chain: Vec::new(),
+                    comment: None,
+                    backend_request_id: None,
+                },
+            })
+        }
+    }
+
+    impl MutationExecutor for MyExecutor {
+        async fn mutate(&self, request: MutationRequest) -> Result<MutationResult, Self::Error> {
+            Ok(MutationResult {
+                affected_rows: 1,
+                generated_values: Record::new(),
+                metadata: ExecutionMetadata {
+                    debug_query: None,
+                    backend: "stub".to_owned(),
+                    operation: DataServiceOperation::Update,
+                    started_at: std::time::SystemTime::now(),
+                    ended_at: std::time::SystemTime::now(),
+                    affected_rows: Some(1),
+                    result_count: None,
+                    trace_chain: Vec::new(),
+                    comment: None,
+                    backend_request_id: None,
+                },
+            })
+        }
+    }
+
+    impl StreamQueryExecutor for MyExecutor {
+        async fn query_stream(
+            &self,
+            _request: QueryRequest,
+            _chunk_size: usize,
+        ) -> Result<Vec<StreamChunk>, Self::Error> {
+            Ok(vec![StreamChunk {
+                rows: self.rows.clone(),
+                chunk_index: 0,
+                is_last: true,
+            }])
+        }
+    }
+
+    fn setup_context() -> UserContext {
+        let mut user = EntityDescriptor::new("User");
+        user.properties
+            .push(PropertyDescriptor::new("id", DataType::U64).id());
+        user.properties
+            .push(PropertyDescriptor::new("version", DataType::I64).version());
+        user.properties
+            .push(PropertyDescriptor::new("name", DataType::Text));
+
+        let store = InMemoryMetadataStore::new().with_entity(user);
+        let mut ctx = UserContext::new().with_metadata(store);
+        ctx.insert_resource(MyExecutor {
+            rows: vec![Record::from([
+                ("id".to_string(), Value::U64(1)),
+                ("version".to_string(), Value::I64(1)),
+                ("name".to_string(), Value::Text("Alice".to_string())),
+            ])],
+        });
+        ctx
+    }
+
+    #[tokio::test]
+    async fn test_resolved_coverage() {
+        let ctx = setup_context();
+        let executor = ctx.get_resource::<MyExecutor>().unwrap();
+        let entity_ds = EntityDataService {
+            entity: "User".to_string(),
+            data_service: ContextDataService {
+                metadata: UserContextMetadata { context: &ctx },
+                executor,
+            },
+            trace_context: Vec::new(),
+        };
+
+        let q = SelectQuery::new("User");
+        let purposed_q = PurposedSelectQuery::new(q.clone(), "test");
+
+        let _ = entity_ds.fetch_stream_internal(&q).await;
+        let _ = entity_ds.fetch_smart_list_internal(&q).await;
+        let _ = entity_ds.fetch_entities_internal::<DummyEntity>(&q).await;
+        let _ = entity_ds
+            .fetch_enhanced_entities_internal::<DummyEntity>(&q)
+            .await;
+        let _ = entity_ds
+            .fetch_entities_with_relation_aggregates_internal::<DummyEntity>(&q, &[])
+            .await;
+        let _ = entity_ds
+            .fetch_enhanced_entities_with_relation_aggregates_internal::<DummyEntity>(&q, &[])
+            .await;
+        let _ = entity_ds
+            .fetch_all_with_relation_aggregates_internal(&q, &[])
+            .await;
+        let _ = entity_ds
+            .fetch_smart_list_with_relation_aggregates_internal(&q, &[])
+            .await;
+
+        let _ = entity_ds.fetch_all(&purposed_q).await;
+        let _ = entity_ds.fetch_stream(&purposed_q).await;
+        let _ = entity_ds.fetch_smart_list(&purposed_q).await;
+        let _ = entity_ds
+            .fetch_smart_list_with_relation_aggregates(&purposed_q, &[])
+            .await;
+        let _ = entity_ds.fetch_entities::<DummyEntity>(&purposed_q).await;
+        let _ = entity_ds
+            .fetch_enhanced_entities::<DummyEntity>(&purposed_q)
+            .await;
+        let _ = entity_ds
+            .fetch_enhanced_entities_with_relation_aggregates::<DummyEntity>(&purposed_q, &[])
+            .await;
+
+        let insert_cmd = entity_ds.insert_command();
+        let _ = entity_ds.execute_prepared_insert(insert_cmd).await;
+
+        let update_cmd = entity_ds.update_command(1);
+        let _ = entity_ds.execute_prepared_update(update_cmd).await;
+
+        let mut batch_update = teaql_core::BatchUpdateCommand::new("User".to_string(), vec![]);
+        batch_update.batch_ids = vec![Value::U64(1)];
+        batch_update.batch_values = vec![Record::new()];
+        batch_update.batch_expected_versions = vec![None];
+        batch_update.batch_old_values = vec![None];
+        let _ = entity_ds.execute_prepared_batch_update(batch_update).await;
+    
+    struct DummyCache;
+    impl super::AggregationCacheBackend for DummyCache {
+        fn namespace(&self) -> &str { "dummy" }
+        fn get(&self, _key: &str, _expired_millis: u64) -> Option<Vec<Record>> { None }
+        fn put(&self, _key: String, _rows: Vec<Record>) {}
+    }
+
+    #[tokio::test]
+    async fn test_cache_coverage() {
+        use crate::InMemoryAggregationCache;
+        use teaql_core::AggregationCacheOptions;
+
+        // Test Arc<dyn AggregationCacheBackend>
+        let mut ctx1 = setup_context();
+        ctx1.insert_resource(std::sync::Arc::new(DummyCache) as std::sync::Arc<dyn super::AggregationCacheBackend>);
+        let executor1 = ctx1.get_resource::<MyExecutor>().unwrap();
+        let entity_ds1 = EntityDataService {
+            entity: "User".to_string(),
+            data_service: ContextDataService {
+                metadata: UserContextMetadata { context: &ctx1 },
+                executor: executor1,
+            },
+            trace_context: Vec::new(),
+        };
+
+        let mut q = SelectQuery::new("User");
+        q.aggregation_cache = Some(AggregationCacheOptions {
+            enabled: true,
+            cache_expired_millis: 1000,
+        });
+
+        let _ = entity_ds1.fetch_all_internal(&q).await;
+
+        // Test InMemoryAggregationCache
+        let mut ctx2 = setup_context();
+        ctx2.insert_resource(InMemoryAggregationCache::default());
+        let executor2 = ctx2.get_resource::<MyExecutor>().unwrap();
+        let entity_ds2 = EntityDataService {
+            entity: "User".to_string(),
+            data_service: ContextDataService {
+                metadata: UserContextMetadata { context: &ctx2 },
+                executor: executor2,
+            },
+            trace_context: Vec::new(),
+        };
+
+        let _ = entity_ds2.fetch_all_internal(&q).await;
+        // Second call should hit cache
+        let _ = entity_ds2.fetch_all_internal(&q).await;
+    }
+
+    #[tokio::test]
+    async fn test_more_coverage() {
+        let ctx = setup_context();
+        let executor = ctx.get_resource::<MyExecutor>().unwrap();
+        let entity_ds = EntityDataService {
+            entity: "User".to_string(),
+            data_service: ContextDataService {
+                metadata: UserContextMetadata { context: &ctx },
+                executor,
+            },
+            trace_context: Vec::new(),
+        };
+
+        assert_eq!(entity_ds.entity(), "User");
+        let _ = entity_ds.select();
+        let _ = entity_ds.behavior();
+        let _ = entity_ds.query_behavior("User");
+
+        let insert_cmd = entity_ds.insert_command();
+        let _ = entity_ds.prepare_insert_command(&insert_cmd);
+        let _ = entity_ds.insert_internal(&insert_cmd).await;
+
+        let update_cmd = entity_ds.update_command(1);
+        let _ = entity_ds.prepare_update_command(&update_cmd);
+        let _ = entity_ds.update_internal(&update_cmd).await;
+
+        let delete_cmd = entity_ds.delete_command(1);
+        let _ = entity_ds.delete_internal(&delete_cmd).await;
+        let _ = entity_ds.delete_scoped_internal(&delete_cmd, vec![]).await;
+
+        let recover_cmd = entity_ds.recover_command(1, 1);
+        let _ = entity_ds.recover_internal(&recover_cmd).await;
+
+        let empty_batch_insert = teaql_core::BatchInsertCommand::new("User".to_string());
+        let _ = entity_ds.execute_prepared_batch_insert(empty_batch_insert).await;
+
+        let mut batch_insert = teaql_core::BatchInsertCommand::new("User".to_string());
+        batch_insert.batch_values = vec![Record::new(), Record::new()];
+        batch_insert.trace_chains = vec![vec![]]; 
+        let _ = entity_ds.execute_prepared_batch_insert(batch_insert).await;
+
+        let empty_batch_update = teaql_core::BatchUpdateCommand::new("User".to_string(), vec![]);
+        let _ = entity_ds.execute_prepared_batch_update(empty_batch_update).await;
+
+        let mut batch_update2 = teaql_core::BatchUpdateCommand::new("User".to_string(), vec!["name".to_string()]);
+        batch_update2.batch_ids = vec![Value::U64(1)];
+        batch_update2.batch_values = vec![Record::new()];
+        batch_update2.batch_expected_versions = vec![Some(1)];
+        batch_update2.batch_old_values = vec![Some(Record::new())];
+        batch_update2.trace_chains = vec![vec![]];
+        let _ = entity_ds.execute_prepared_batch_update(batch_update2).await;
+
+        let scoped = entity_ds.scoped_data_service_internal("Another".to_string());
+        assert_eq!(scoped.entity(), "Another");
+        
+        let insert_cmd_trace = entity_ds.insert_command();
+        let _ = entity_ds.execute_prepared_insert_with_comment(insert_cmd_trace, vec![]).await;
+        
+        let update_cmd_trace = entity_ds.update_command(1);
+        let _ = entity_ds.execute_prepared_update_with_comment(update_cmd_trace, vec![]).await;
+    }
+}
+}

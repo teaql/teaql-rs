@@ -23,8 +23,8 @@ impl InMemoryQueryEngine {
             Self::filter(&mut rows, filter);
         }
 
-        // 2. Aggregation short-circuits the normal pipeline.
-        if !query.aggregates.is_empty() {
+        // 2. Aggregation and GROUP BY short-circuit the normal pipeline.
+        if !query.aggregates.is_empty() || !query.group_by.is_empty() {
             let mut result = Self::aggregate(query, rows);
             result.metadata.started_at = started_at;
             result.metadata.ended_at = SystemTime::now();
@@ -701,5 +701,440 @@ mod tests {
 
         let expr_miss = Expr::in_list("status", vec![Value::Text("closed".to_owned())]);
         assert!(!ExprEvaluator::eval(&expr_miss, &row));
+    }
+
+    #[test]
+    fn test_execute_group_by() {
+        let mut query = SelectQuery::new("User");
+        query.group_by = vec!["age".to_owned()];
+        query.aggregates = vec![Aggregate::sum("age", "sum_age")];
+
+        let rows = vec![
+            make_row(vec![("age", Value::I64(30))]),
+            make_row(vec![("age", Value::I64(30))]),
+            make_row(vec![("age", Value::I64(25))]),
+        ];
+        let result = InMemoryQueryEngine::execute(&query, rows);
+        assert_eq!(result.rows.len(), 2);
+    }
+
+    #[test]
+    fn test_execute_group_by_no_aggregate() {
+        let mut query = SelectQuery::new("User");
+        query.group_by = vec!["age".to_owned()];
+
+        let rows = vec![
+            make_row(vec![("age", Value::I64(30))]),
+            make_row(vec![("age", Value::I64(30))]),
+        ];
+        let result = InMemoryQueryEngine::execute(&query, rows);
+        // aggregate_grouped includes group-by fields even if no aggregates are provided
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("age"), Some(&Value::I64(30)));
+    }
+
+    #[test]
+    fn test_aggregates_unsupported() {
+        let unsupported = vec![
+            AggregateFunction::Stddev,
+            AggregateFunction::StddevPop,
+            AggregateFunction::VarSamp,
+            AggregateFunction::VarPop,
+            AggregateFunction::BitAnd,
+            AggregateFunction::BitOr,
+            AggregateFunction::BitXor,
+        ];
+        for func in unsupported {
+            let mut query = SelectQuery::new("User");
+            query.aggregates = vec![Aggregate {
+                function: func,
+                field: "age".to_owned(),
+                alias: "res".to_owned(),
+            }];
+            let result = InMemoryQueryEngine::execute(&query, sample_rows());
+            assert_eq!(result.rows[0].get("res"), Some(&Value::Null));
+        }
+    }
+
+    #[test]
+    fn test_aggregate_min_max_null_handling() {
+        let mut query = SelectQuery::new("User");
+        query.aggregates = vec![
+            Aggregate::max("age", "max_age"),
+            Aggregate::min("age", "min_age"),
+        ];
+        let rows = vec![
+            make_row(vec![("age", Value::Null)]),
+            make_row(vec![("age", Value::I64(10))]),
+        ];
+        let result = InMemoryQueryEngine::execute(&query, rows);
+        assert_eq!(result.rows[0].get("max_age"), Some(&Value::I64(10)));
+        assert_eq!(result.rows[0].get("min_age"), Some(&Value::I64(10)));
+    }
+
+    #[test]
+    fn test_sort_multiple_columns() {
+        let mut query = SelectQuery::new("User");
+        query.order_by = vec![
+            teaql_core::OrderBy::asc("age"),
+            teaql_core::OrderBy::desc("id"),
+        ];
+        let rows = vec![
+            make_row(vec![("id", Value::U64(1)), ("age", Value::I64(30))]),
+            make_row(vec![("id", Value::U64(2)), ("age", Value::I64(30))]),
+        ];
+        let result = InMemoryQueryEngine::execute(&query, rows);
+        assert_eq!(result.rows[0].get("id"), Some(&Value::U64(2)));
+    }
+
+    #[test]
+    fn test_paginate_no_limit() {
+        let mut query = SelectQuery::new("User");
+        query.slice = Some(teaql_core::Slice {
+            offset: 1,
+            limit: None,
+        });
+        let result = InMemoryQueryEngine::execute(&query, sample_rows());
+        assert_eq!(result.rows.len(), 2);
+    }
+
+    #[test]
+    fn test_compare_values_edge_cases() {
+        use chrono::{NaiveDate, TimeZone, Utc};
+        use rust_decimal::Decimal;
+        use std::cmp::Ordering;
+
+        assert_eq!(
+            super::compare_values(&Value::Null, &Value::Null),
+            Ordering::Equal
+        );
+        assert_eq!(
+            super::compare_values(&Value::Null, &Value::I64(1)),
+            Ordering::Less
+        );
+        assert_eq!(
+            super::compare_values(&Value::I64(1), &Value::Null),
+            Ordering::Greater
+        );
+
+        assert_eq!(
+            super::compare_values(&Value::Bool(false), &Value::Bool(true)),
+            Ordering::Less
+        );
+
+        assert_eq!(
+            super::compare_values(&Value::I64(-1), &Value::U64(1)),
+            Ordering::Less
+        );
+        assert_eq!(
+            super::compare_values(&Value::U64(1), &Value::I64(-1)),
+            Ordering::Greater
+        );
+
+        // F64 vs F64 with nan fallback
+        assert_eq!(
+            super::compare_values(&Value::F64(f64::NAN), &Value::F64(f64::NAN)),
+            Ordering::Equal
+        );
+
+        let d1 = Value::Decimal(Decimal::new(100, 2));
+        let d2 = Value::Decimal(Decimal::new(200, 2));
+        assert_eq!(super::compare_values(&d1, &d2), Ordering::Less);
+
+        let date1 = Value::Date(NaiveDate::from_ymd_opt(2020, 1, 1).unwrap());
+        let date2 = Value::Date(NaiveDate::from_ymd_opt(2021, 1, 1).unwrap());
+        assert_eq!(super::compare_values(&date1, &date2), Ordering::Less);
+
+        let t1 = Value::Timestamp(teaql_core::time::Timestamp(100));
+        let t2 = Value::Timestamp(teaql_core::time::Timestamp(200));
+        assert_eq!(super::compare_values(&t1, &t2), Ordering::Less);
+
+        assert_eq!(
+            super::compare_values(&Value::Text("a".into()), &Value::Text("b".into())),
+            Ordering::Less
+        );
+
+        // Cross type numeric (e.g. I64 vs F64)
+        assert_eq!(
+            super::compare_values(&Value::I64(1), &Value::F64(2.0)),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn test_expr_eval_additional_ops() {
+        let row = make_row(vec![
+            ("a", Value::I64(10)),
+            ("b", Value::Text("foo".to_owned())),
+        ]);
+
+        assert!(ExprEvaluator::eval(
+            &Expr::Binary {
+                left: Box::new(Expr::Column("a".into())),
+                op: BinaryOp::Ne,
+                right: Box::new(Expr::Value(Value::I64(20)))
+            },
+            &row
+        ));
+        assert!(!ExprEvaluator::eval(
+            &Expr::Binary {
+                left: Box::new(Expr::Column("a".into())),
+                op: BinaryOp::Gt,
+                right: Box::new(Expr::Value(Value::I64(10)))
+            },
+            &row
+        ));
+        assert!(ExprEvaluator::eval(
+            &Expr::Binary {
+                left: Box::new(Expr::Column("a".into())),
+                op: BinaryOp::Gte,
+                right: Box::new(Expr::Value(Value::I64(10)))
+            },
+            &row
+        ));
+        assert!(!ExprEvaluator::eval(
+            &Expr::Binary {
+                left: Box::new(Expr::Column("a".into())),
+                op: BinaryOp::Lt,
+                right: Box::new(Expr::Value(Value::I64(10)))
+            },
+            &row
+        ));
+        assert!(ExprEvaluator::eval(
+            &Expr::Binary {
+                left: Box::new(Expr::Column("a".into())),
+                op: BinaryOp::Lte,
+                right: Box::new(Expr::Value(Value::I64(10)))
+            },
+            &row
+        ));
+
+        assert!(ExprEvaluator::eval(
+            &Expr::Binary {
+                left: Box::new(Expr::Column("b".into())),
+                op: BinaryOp::Like,
+                right: Box::new(Expr::Value(Value::Text("f%".into())))
+            },
+            &row
+        ));
+        assert!(ExprEvaluator::eval(
+            &Expr::Binary {
+                left: Box::new(Expr::Column("b".into())),
+                op: BinaryOp::NotLike,
+                right: Box::new(Expr::Value(Value::Text("x%".into())))
+            },
+            &row
+        ));
+        assert!(ExprEvaluator::eval(
+            &Expr::Binary {
+                left: Box::new(Expr::Column("a".into())),
+                op: BinaryOp::NotLike,
+                right: Box::new(Expr::Value(Value::Text("x%".into())))
+            },
+            &row
+        ));
+        assert!(ExprEvaluator::eval(
+            &Expr::Binary {
+                left: Box::new(Expr::Column("a".into())),
+                op: BinaryOp::InLarge,
+                right: Box::new(Expr::Value(Value::List(vec![Value::I64(10)])))
+            },
+            &row
+        ));
+        assert!(ExprEvaluator::eval(
+            &Expr::Binary {
+                left: Box::new(Expr::Column("a".into())),
+                op: BinaryOp::NotInLarge,
+                right: Box::new(Expr::Value(Value::List(vec![Value::I64(20)])))
+            },
+            &row
+        ));
+
+        assert!(ExprEvaluator::eval(
+            &Expr::Binary {
+                left: Box::new(Expr::Column("a".into())),
+                op: BinaryOp::In,
+                right: Box::new(Expr::Value(Value::I64(10)))
+            },
+            &row
+        ));
+        assert!(ExprEvaluator::eval(
+            &Expr::Binary {
+                left: Box::new(Expr::Column("a".into())),
+                op: BinaryOp::NotIn,
+                right: Box::new(Expr::Value(Value::I64(20)))
+            },
+            &row
+        ));
+    }
+
+    #[test]
+    fn test_expr_resolve() {
+        let row = make_row(vec![("a", Value::Bool(true)), ("b", Value::Bool(false))]);
+
+        assert_eq!(
+            ExprEvaluator::resolve(&Expr::Column("a".into()), &row),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            ExprEvaluator::resolve(&Expr::Value(Value::I64(10)), &row),
+            Value::I64(10)
+        );
+        assert_eq!(
+            ExprEvaluator::resolve(
+                &Expr::Binary {
+                    left: Box::new(Expr::Column("a".into())),
+                    op: BinaryOp::Eq,
+                    right: Box::new(Expr::Value(Value::Bool(true)))
+                },
+                &row
+            ),
+            Value::Bool(true)
+        );
+
+        assert_eq!(
+            ExprEvaluator::resolve(
+                &Expr::and([Expr::Column("a".into()), Expr::Column("a".into())]),
+                &row
+            ),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            ExprEvaluator::resolve(
+                &Expr::or([Expr::Column("a".into()), Expr::Column("b".into())]),
+                &row
+            ),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            ExprEvaluator::resolve(&Expr::negate(Expr::Column("b".into())), &row),
+            Value::Bool(true)
+        );
+
+        assert_eq!(
+            ExprEvaluator::resolve(&Expr::is_null("a"), &row),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            ExprEvaluator::resolve(&Expr::is_not_null("a"), &row),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            ExprEvaluator::resolve(
+                &Expr::between("a", Value::Bool(false), Value::Bool(true)),
+                &row
+            ),
+            Value::Bool(true)
+        );
+
+        assert_eq!(
+            ExprEvaluator::resolve(
+                &Expr::SubQuery {
+                    left: Box::new(Expr::Column("a".into())),
+                    op: BinaryOp::In,
+                    entity: teaql_core::EntityDescriptor::new("User"),
+                    query: Box::new(SelectQuery::new("User"))
+                },
+                &row
+            ),
+            Value::Null
+        );
+        assert_eq!(
+            ExprEvaluator::resolve(
+                &Expr::Function {
+                    function: teaql_core::ExprFunction::Count,
+                    args: vec![]
+                },
+                &row
+            ),
+            Value::Null
+        );
+        assert!(!ExprEvaluator::eval(
+            &Expr::SubQuery {
+                left: Box::new(Expr::Column("a".into())),
+                op: BinaryOp::In,
+                entity: teaql_core::EntityDescriptor::new("User"),
+                query: Box::new(SelectQuery::new("User"))
+            },
+            &row
+        ));
+        assert!(!ExprEvaluator::eval(
+            &Expr::Function {
+                function: teaql_core::ExprFunction::Count,
+                args: vec![]
+            },
+            &row
+        ));
+
+        assert!(ExprEvaluator::eval(&Expr::Column("a".into()), &row));
+    }
+
+    #[test]
+    fn test_like_match_wildcards() {
+        assert!(super::ExprEvaluator::like_match("hello", "hello%"));
+        assert!(super::ExprEvaluator::like_match("hello", "he%o"));
+        assert!(super::ExprEvaluator::like_match("hello", "h_ll_"));
+        assert!(!super::ExprEvaluator::like_match("hello", "h_ll_x"));
+        assert!(!super::ExprEvaluator::like_match("hello", "x%"));
+        assert!(super::ExprEvaluator::like_match("hello", "he%%o"));
+    }
+
+    #[test]
+    fn test_like_match_underscore_out_of_bounds() {
+        assert!(!super::ExprEvaluator::like_match("a", "a_"));
+    }
+
+    #[test]
+    fn test_like_match_mismatch() {
+        assert!(!super::ExprEvaluator::like_match("a", "b"));
+    }
+
+    #[test]
+    fn test_aggregate_count_field_nulls() {
+        let mut query = SelectQuery::new("User");
+        query.aggregates = vec![Aggregate {
+            function: AggregateFunction::Count,
+            field: "age".to_owned(),
+            alias: "count_age".to_owned(),
+        }];
+        let rows = vec![
+            make_row(vec![("age", Value::I64(30))]),
+            make_row(vec![("age", Value::Null)]),
+        ];
+        let result = InMemoryQueryEngine::execute(&query, rows);
+        assert_eq!(result.rows[0].get("count_age"), Some(&Value::I64(1)));
+    }
+
+    #[test]
+    fn test_aggregate_sum_avg_nulls() {
+        let mut query = SelectQuery::new("User");
+        query.aggregates = vec![
+            Aggregate::sum("age", "sum_age"),
+            Aggregate::avg("age", "avg_age"),
+        ];
+        let rows = vec![
+            make_row(vec![("age", Value::Null)]),
+            make_row(vec![("age", Value::I64(10))]),
+            make_row(vec![("age", Value::Text("not_a_number".into()))]),
+        ];
+        let result = InMemoryQueryEngine::execute(&query, rows);
+        assert_eq!(result.rows[0].get("sum_age"), Some(&Value::F64(10.0)));
+        assert_eq!(result.rows[0].get("avg_age"), Some(&Value::F64(10.0)));
+    }
+
+    #[test]
+    fn test_aggregate_empty_rows() {
+        let mut query = SelectQuery::new("User");
+        query.aggregates = vec![
+            Aggregate::sum("age", "sum_age"),
+            Aggregate::avg("age", "avg_age"),
+            Aggregate::max("age", "max_age"),
+            Aggregate::min("age", "min_age"),
+        ];
+        let result = InMemoryQueryEngine::execute(&query, vec![]);
+        assert_eq!(result.rows[0].get("sum_age"), Some(&Value::Null));
+        assert_eq!(result.rows[0].get("avg_age"), Some(&Value::Null));
+        assert_eq!(result.rows[0].get("max_age"), Some(&Value::Null));
+        assert_eq!(result.rows[0].get("min_age"), Some(&Value::Null));
     }
 }
