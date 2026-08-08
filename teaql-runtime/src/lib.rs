@@ -2276,6 +2276,20 @@ mod tests {
         let ctx4 = UserContext::new().with_user_identifier_option(Some("user-abc".to_owned()));
         assert_eq!(ctx4.user_identifier(), Some("user-abc"));
     }
+
+    #[tokio::test]
+    async fn test_extreme_error_branches_in_graph() {
+        let mut ctx = UserContext::new()
+            .with_metadata(crate::InMemoryMetadataStore::new().with_entity(crate::tests::entity()));
+        ctx.insert_resource(crate::tests::StubExecutor { rows: vec![], affected: 0 });
+        
+        let data_service = ctx.entity_data_service::<crate::tests::StubExecutor>("Order").unwrap();
+
+        // Test saving a graph root that doesn't match the data service entity
+        let node = crate::GraphNode::new("User");
+        let err = data_service.save_graph_internal(node).await.unwrap_err();
+        assert!(matches!(err, crate::DataServiceError::Runtime(crate::RuntimeError::Graph(msg)) if msg.contains("cannot save graph root User")));
+    }
 }
 
 pub use checker::{
