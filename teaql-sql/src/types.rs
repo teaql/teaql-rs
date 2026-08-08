@@ -187,3 +187,45 @@ impl std::fmt::Display for SqlCompileError {
 }
 
 impl std::error::Error for SqlCompileError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sql_with_comment() {
+        let query = CompiledQuery {
+            sql: "SELECT 1".to_owned(),
+            params: vec![],
+            comment: Some("my comment */ block".to_owned()),
+        };
+        assert_eq!(query.sql_with_comment(), "/* my comment * / block */ SELECT 1");
+    }
+
+    #[test]
+    fn test_postgres_debug_sql() {
+        let query = CompiledQuery {
+            sql: "SELECT * FROM users WHERE id = $1 AND name = $2".to_owned(),
+            params: vec![Value::I64(1), Value::Text("Alice".to_owned())],
+            comment: None,
+        };
+        assert_eq!(query.debug_sql(DatabaseKind::PostgreSql), "SELECT * FROM users WHERE id = 1 AND name = 'Alice'");
+    }
+
+    #[test]
+    fn test_positional_debug_sql() {
+        let query = CompiledQuery {
+            sql: "SELECT * FROM users WHERE id = ? AND name = ?".to_owned(),
+            params: vec![Value::I64(1), Value::Text("Alice".to_owned())],
+            comment: None,
+        };
+        assert_eq!(query.debug_sql(DatabaseKind::Sqlite), "SELECT * FROM users WHERE id = 1 AND name = 'Alice'");
+        assert_eq!(query.debug_sql(DatabaseKind::MySql), "SELECT * FROM users WHERE id = 1 AND name = 'Alice'");
+    }
+
+    #[test]
+    fn test_compile_error_display() {
+        let err = SqlCompileError::UnknownEntity("User".to_owned());
+        assert_eq!(err.to_string(), "unknown entity: User");
+    }
+}
