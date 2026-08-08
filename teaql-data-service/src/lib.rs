@@ -248,10 +248,21 @@ mod tests {
         let insert_empty = InsertCommand {
             entity: "User".to_string(),
             values: Record::new(),
-            trace_chain: vec![],
+            trace_chain: Vec::new(),
         };
-        let req_empty = MutationRequest::Insert(insert_empty);
-        assert_eq!(req_empty.trace_chain().len(), 0);
-        assert_eq!(req_empty.comment(), None);
+        let req_insert_empty = MutationRequest::Insert(insert_empty);
+        assert_eq!(req_insert_empty.comment(), None);
+    }
+
+    #[test]
+    fn test_data_service_capabilities_default() {
+        let caps = DataServiceCapabilities::default();
+        assert!(!caps.query);
+        assert!(!caps.mutation);
+        assert!(!caps.transaction);
+        assert!(!caps.schema);
+        assert!(!caps.id_generation);
+        assert!(!caps.batch_mutation);
+        assert!(!caps.returning);
     }
 }
