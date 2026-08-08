@@ -154,3 +154,34 @@ pub(crate) fn local_id_generator() -> &'static AtomicCounterIdGenerator {
     LOCAL_ID_GENERATOR.get_or_init(AtomicCounterIdGenerator::default)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_atomic_counter_id_generator() {
+        let generator = AtomicCounterIdGenerator::new(100);
+        assert_eq!(generator.generate_id("Order").unwrap(), 101);
+        assert_eq!(generator.generate_id("Order").unwrap(), 102);
+    }
+
+    #[test]
+    fn test_snowflake_id_generator() {
+        let generator = SnowflakeIdGenerator::new(1, 1);
+        let id1 = generator.generate_id("Order").unwrap();
+        let id2 = generator.generate_id("Order").unwrap();
+        assert!(id2 > id1);
+    }
+
+    #[test]
+    fn test_local_id_generator_singleton() {
+        let gen1 = local_id_generator();
+        let gen2 = local_id_generator();
+        
+        let id1 = gen1.generate_id("Entity").unwrap();
+        let id2 = gen2.generate_id("Entity").unwrap();
+        
+        assert_eq!(id2, id1 + 1);
+    }
+}
+

@@ -102,3 +102,29 @@ impl<ExecError> std::error::Error for DataServiceError<ExecError> where
     ExecError: std::error::Error + 'static
 {
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_runtime_error_display() {
+        let err = RuntimeError::MissingEntity("User".to_owned());
+        assert_eq!(err.to_string(), "missing entity descriptor: User");
+        
+        let err = RuntimeError::Behavior("validation failed".to_owned());
+        assert_eq!(err.to_string(), "entity data service behavior error: validation failed");
+        
+        let err = RuntimeError::MissingRelation { entity: "User".to_owned(), relation: "Profile".to_owned() };
+        assert_eq!(err.to_string(), "missing relation Profile on entity User");
+    }
+
+    #[test]
+    fn test_context_error_display() {
+        let err = ContextError::MissingResource("config".to_owned());
+        assert_eq!(err.to_string(), "missing named resource: config");
+        
+        let err = ContextError::MissingEntityDataService("User".to_owned());
+        assert_eq!(err.to_string(), "missing entity data service for entity: User");
+    }
+}

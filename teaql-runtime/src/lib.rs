@@ -348,6 +348,7 @@ mod tests {
     }
 
     impl teaql_core::TeaqlEntity for OrderEntity {
+        const ENTITY_NAME: &'static str = "Order";
         fn entity_descriptor() -> EntityDescriptor {
             entity()
         }
