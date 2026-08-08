@@ -574,8 +574,10 @@ mod tests {
     }
 
     impl TeaqlEntity for SafeExpressionEntity {
+        const ENTITY_NAME: &'static str = "SafeExpression";
         fn entity_descriptor() -> EntityDescriptor {
-            EntityDescriptor::new("SafeExpressionEntity")
+            EntityDescriptor::new("SafeExpression")
+                .property(PropertyDescriptor::new("id", DataType::I64).id())
         }
     }
 
