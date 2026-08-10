@@ -1,0 +1,18 @@
+[package]
+name = "teaql-tfp-endpoint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+teaql-core = { workspace = true }
+teaql-runtime = { workspace = true }
+teaql-data-service = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
