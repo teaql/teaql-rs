@@ -222,6 +222,8 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         });
     }
 
+    let tracks_original_version = has_root_field && id_impl.is_some() && version_impl.is_some();
+
     let identifiable_impl_tokens = id_impl.map(|id_value| {
         quote! {
             impl ::teaql_core::IdentifiableEntity for #struct_name {
@@ -293,6 +295,20 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         Default::default()
     };
 
+    let set_original_version_impl = if tracks_original_version {
+        quote! {
+            entity.root.set_original_version(
+                ::teaql_runtime::EntityKey::new(
+                    #entity_name,
+                    ::teaql_core::IdentifiableEntity::id_value(&entity),
+                ),
+                ::teaql_core::VersionedEntity::version(&entity),
+            );
+        }
+    } else {
+        Default::default()
+    };
+
     let root_methods_impl = if has_root_field {
         {
             quote! {
@@ -346,6 +362,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 };
                 #set_load_state_impl
                 #set_original_record_impl
+                #set_original_version_impl
                 Ok(entity)
             }
 
@@ -377,6 +394,50 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         #identifiable_impl_tokens
         #versioned_impl_tokens
         #ledger_entity_impl_tokens
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::parse_quote;
+
+    #[test]
+    fn loaded_versioned_entity_records_its_occ_baseline() {
+        let input: DeriveInput = parse_quote! {
+            #[teaql(entity = "Task", table = "task_data")]
+            struct Task {
+                #[teaql(id)]
+                id: u64,
+                name: String,
+                #[teaql(version)]
+                version: i64,
+                #[teaql(skip)]
+                root: teaql_runtime::EntityRoot,
+            }
+        };
+
+        let expanded = expand_teaql_entity(input).to_string();
+        assert!(expanded.contains("set_original_record"));
+        assert!(expanded.contains("set_original_version"));
+        assert!(expanded.contains("IdentifiableEntity :: id_value"));
+        assert!(expanded.contains("VersionedEntity :: version"));
+    }
+
+    #[test]
+    fn entity_without_version_does_not_record_occ_baseline() {
+        let input: DeriveInput = parse_quote! {
+            #[teaql(entity = "Event", table = "event_data")]
+            struct Event {
+                #[teaql(id)]
+                id: u64,
+                #[teaql(skip)]
+                root: teaql_runtime::EntityRoot,
+            }
+        };
+
+        let expanded = expand_teaql_entity(input).to_string();
+        assert!(!expanded.contains("set_original_version"));
     }
 }
 
