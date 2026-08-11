@@ -21,3 +21,4 @@ app.log
 
 # Binaries / Temp
 test_str_cmp
+.code-graph/
