@@ -48,6 +48,8 @@ pub fn decode_value_tokens(
         Some("bool") => quote! {
             match #value_expr {
                 ::teaql_core::Value::Bool(v) => *v,
+                ::teaql_core::Value::I64(0) | ::teaql_core::Value::U64(0) => false,
+                ::teaql_core::Value::I64(1) | ::teaql_core::Value::U64(1) => true,
                 other => return Err(::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: {:?}", #field_name, other))),
             }
         },

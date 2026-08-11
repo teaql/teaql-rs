@@ -17,3 +17,6 @@ teaql-core = { workspace = true }
 teaql-data-service = { workspace = true }
 teaql-runtime = { workspace = true }
 teaql-sql = { workspace = true }
+
+[dev-dependencies]
+teaql-macros = { workspace = true }

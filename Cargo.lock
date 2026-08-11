@@ -3412,6 +3412,7 @@ dependencies = [
  "serde_json",
  "teaql-core",
  "teaql-data-service",
+ "teaql-macros",
  "teaql-runtime",
  "teaql-sql",
 ]

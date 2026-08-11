@@ -46,7 +46,7 @@ impl SqlDialect for SqliteDialect {
         property: &PropertyDescriptor,
     ) -> Result<&'static str, SqlCompileError> {
         match data_type {
-            DataType::Bool => Ok("INTEGER"),
+            DataType::Bool => Ok("BOOLEAN"),
             DataType::I64 | DataType::U64 if property.is_id => Ok("INTEGER"),
             DataType::I64 | DataType::U64 => Ok("INTEGER"),
             DataType::F64 => Ok("REAL"),
@@ -764,6 +764,7 @@ fn column_decl_type(column: &ColumnInfo) -> Option<String> {
 mod tests {
     use super::*;
     use teaql_core::{DeleteCommand, RecoverCommand};
+    use teaql_macros::TeaqlEntity;
     use teaql_runtime::InMemoryMetadataStore;
 
     fn entity() -> EntityDescriptor {
@@ -782,6 +783,27 @@ mod tests {
                     .not_null(),
             )
             .property(PropertyDescriptor::new("name", DataType::Text).column_name("name"))
+    }
+
+    #[allow(dead_code)]
+    #[derive(Debug, PartialEq, TeaqlEntity)]
+    #[teaql(entity = "FeatureFlag", table = "feature_flags")]
+    struct FeatureFlagRow {
+        #[teaql(id)]
+        id: u64,
+        #[teaql(version)]
+        version: i64,
+        enabled: bool,
+        optional_enabled: Option<bool>,
+    }
+
+    fn feature_flag_record(enabled: Value, optional_enabled: Value) -> Record {
+        Record::from([
+            ("id".to_owned(), Value::U64(1)),
+            ("version".to_owned(), Value::I64(1)),
+            ("enabled".to_owned(), enabled),
+            ("optional_enabled".to_owned(), optional_enabled),
+        ])
     }
 
     #[test]
@@ -869,6 +891,133 @@ mod tests {
         assert_eq!(rows[0].get("id"), Some(&Value::I64(1)));
         assert_eq!(rows[0].get("version"), Some(&Value::I64(1)));
         assert_eq!(rows[0].get("name"), Some(&Value::Text("draft".to_owned())));
+    }
+
+    #[test]
+    fn sqlite_boolean_new_schema_roundtrips_as_bool() {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        let entity = <FeatureFlagRow as teaql_core::TeaqlEntity>::entity_descriptor();
+        let ddl = SqliteDialect.compile_create_table(&entity).unwrap();
+        assert!(ddl.contains("enabled BOOLEAN NOT NULL"), "{ddl}");
+        assert!(ddl.contains("optional_enabled BOOLEAN"), "{ddl}");
+        assert!(!ddl.contains("enabled INTEGER"), "{ddl}");
+
+        executor.ensure_schema(&SqliteDialect, &[&entity]).unwrap();
+        for (id, enabled, optional_enabled) in [(1_u64, false, true), (2_u64, true, false)] {
+            let insert = SqliteDialect
+                .compile_insert(
+                    &entity,
+                    &InsertCommand::new("FeatureFlag")
+                        .value("id", id)
+                        .value("version", 1_i64)
+                        .value("enabled", enabled)
+                        .value("optional_enabled", optional_enabled),
+                )
+                .unwrap();
+            assert_eq!(executor.execute(&insert).unwrap(), 1);
+        }
+
+        let select = SqliteDialect
+            .compile_select(&entity, &SelectQuery::new("FeatureFlag").order_asc("id"))
+            .unwrap();
+        let rows = executor.fetch_all(&select).unwrap();
+        assert_eq!(rows[0].get("enabled"), Some(&Value::Bool(false)));
+        assert_eq!(rows[0].get("optional_enabled"), Some(&Value::Bool(true)));
+        assert_eq!(rows[1].get("enabled"), Some(&Value::Bool(true)));
+        assert_eq!(rows[1].get("optional_enabled"), Some(&Value::Bool(false)));
+
+        let first = <FeatureFlagRow as teaql_core::Entity>::from_record(rows[0].clone()).unwrap();
+        let second = <FeatureFlagRow as teaql_core::Entity>::from_record(rows[1].clone()).unwrap();
+        assert!(!first.enabled);
+        assert_eq!(first.optional_enabled, Some(true));
+        assert!(second.enabled);
+        assert_eq!(second.optional_enabled, Some(false));
+    }
+
+    #[test]
+    fn sqlite_boolean_legacy_integer_schema_maps_only_binary_values() {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        let entity = <FeatureFlagRow as teaql_core::TeaqlEntity>::entity_descriptor();
+        executor
+            .execute(&CompiledQuery {
+                sql: "CREATE TABLE feature_flags (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, enabled INTEGER NOT NULL, optional_enabled INTEGER)"
+                    .to_owned(),
+                params: Vec::new(),
+                comment: None,
+            })
+            .unwrap();
+
+        let insert = SqliteDialect
+            .compile_insert(
+                &entity,
+                &InsertCommand::new("FeatureFlag")
+                    .value("id", 1_u64)
+                    .value("version", 1_i64)
+                    .value("enabled", true)
+                    .value("optional_enabled", false),
+            )
+            .unwrap();
+        executor.execute(&insert).unwrap();
+        executor
+            .execute(&CompiledQuery {
+                sql: "INSERT INTO feature_flags (id, version, enabled, optional_enabled) VALUES (?, ?, ?, ?)"
+                    .to_owned(),
+                params: vec![
+                    Value::U64(2),
+                    Value::I64(1),
+                    Value::I64(2),
+                    Value::Null,
+                ],
+                comment: None,
+            })
+            .unwrap();
+        let select = SqliteDialect
+            .compile_select(&entity, &SelectQuery::new("FeatureFlag").order_asc("id"))
+            .unwrap();
+        let rows = executor.fetch_all(&select).unwrap();
+        assert_eq!(rows[0].get("version"), Some(&Value::I64(1)));
+        assert_eq!(rows[0].get("enabled"), Some(&Value::I64(1)));
+        assert_eq!(rows[0].get("optional_enabled"), Some(&Value::I64(0)));
+
+        let decoded = <FeatureFlagRow as teaql_core::Entity>::from_record(rows[0].clone()).unwrap();
+        assert!(decoded.enabled);
+        assert_eq!(decoded.optional_enabled, Some(false));
+        assert_eq!(rows[1].get("enabled"), Some(&Value::I64(2)));
+        let error =
+            <FeatureFlagRow as teaql_core::Entity>::from_record(rows[1].clone()).unwrap_err();
+        assert!(error.message.contains("invalid field enabled"));
+
+        for (value, expected) in [
+            (Value::I64(0), false),
+            (Value::I64(1), true),
+            (Value::U64(0), false),
+            (Value::U64(1), true),
+        ] {
+            let decoded = <FeatureFlagRow as teaql_core::Entity>::from_record(feature_flag_record(
+                value,
+                Value::Null,
+            ))
+            .unwrap();
+            assert_eq!(decoded.enabled, expected);
+            assert_eq!(decoded.optional_enabled, None);
+        }
+
+        for invalid in [Value::I64(-1), Value::I64(2), Value::U64(2)] {
+            let error = <FeatureFlagRow as teaql_core::Entity>::from_record(feature_flag_record(
+                invalid,
+                Value::Null,
+            ))
+            .unwrap_err();
+            assert!(error.message.contains("invalid field enabled"));
+        }
+        let error = <FeatureFlagRow as teaql_core::Entity>::from_record(feature_flag_record(
+            Value::Bool(true),
+            Value::U64(2),
+        ))
+        .unwrap_err();
+        assert!(error.message.contains("invalid field optional_enabled"));
     }
 
     #[test]
