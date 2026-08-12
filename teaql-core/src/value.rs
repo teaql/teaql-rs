@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use chrono::{DateTime, NaiveDate, Utc};
 pub use rust_decimal::Decimal;
-use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
+use rust_decimal::prelude::ToPrimitive;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataType {

@@ -412,7 +412,11 @@ where
                 ensure_initial_version(&mut node.values, descriptor);
                 crate::data_service::helpers::ensure_timestamps(&mut node.values, descriptor, true);
             } else {
-                crate::data_service::helpers::ensure_timestamps(&mut node.values, descriptor, false);
+                crate::data_service::helpers::ensure_timestamps(
+                    &mut node.values,
+                    descriptor,
+                    false,
+                );
             }
             let update_fields = is_update
                 .then(|| {
@@ -1216,7 +1220,8 @@ where
     pub(crate) async fn execute_ledger_plan_internal(
         &self,
         root: crate::EntityRoot,
-    ) -> Result<std::collections::BTreeMap<crate::EntityKey, Value>, DataServiceError<E::Error>> {
+    ) -> Result<std::collections::BTreeMap<crate::EntityKey, Value>, DataServiceError<E::Error>>
+    {
         let mut generated_ids = std::collections::BTreeMap::new();
         let comment = root.get_comment();
         let trace_chain = comment
@@ -1307,7 +1312,6 @@ where
         let mut insert_order: Vec<String> = insert_batches.keys().cloned().collect();
         insert_order.sort();
 
-
         for entity in insert_order {
             let keys = insert_batches.get(&entity).unwrap();
             let descriptor = self
@@ -1323,7 +1327,10 @@ where
                 let mut db_record = Record::new();
                 let mut real_id = key.id.clone();
                 if crate::data_service::helpers::is_unassigned_id_value(&real_id) {
-                    let gen_id = self.data_service.metadata.context
+                    let gen_id = self
+                        .data_service
+                        .metadata
+                        .context
                         .next_id(&entity)
                         .map_err(DataServiceError::Runtime)?;
                     real_id = Value::U64(gen_id);
@@ -1346,7 +1353,6 @@ where
         let mut update_order: Vec<(String, String)> = update_batches.keys().cloned().collect();
         update_order.sort();
 
-
         for signature in update_order {
             let keys = update_batches.get(&signature).unwrap();
             let descriptor = self
@@ -1357,7 +1363,12 @@ where
                 .map_err(DataServiceError::Runtime)?;
             let mut update_fields: Vec<String> =
                 signature.1.split(',').map(|s| s.to_string()).collect();
-            if descriptor.properties.iter().any(|p| p.name == "update_time") && !update_fields.contains(&"update_time".to_owned()) {
+            if descriptor
+                .properties
+                .iter()
+                .any(|p| p.name == "update_time")
+                && !update_fields.contains(&"update_time".to_owned())
+            {
                 update_fields.push("update_time".to_owned());
             }
             let mut cmd = teaql_core::BatchUpdateCommand::new(&descriptor.name, update_fields);

@@ -764,11 +764,16 @@ mod tests {
 
     #[test]
     fn decimal_bind_is_numeric_and_comparable() {
-        let value = bind_sqlite_value(&Value::Decimal(Decimal::from_str("123.450").unwrap())).unwrap();
+        let value =
+            bind_sqlite_value(&Value::Decimal(Decimal::from_str("123.450").unwrap())).unwrap();
         assert_eq!(value, SqliteValue::Text("123.450".to_owned()));
         let connection = Connection::open_in_memory().unwrap();
         let matches: i64 = connection
-            .query_row("SELECT 1 WHERE CAST(? AS NUMERIC) BETWEEN 120 AND 130", [value], |row| row.get(0))
+            .query_row(
+                "SELECT 1 WHERE CAST(? AS NUMERIC) BETWEEN 120 AND 130",
+                [value],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(matches, 1);
     }

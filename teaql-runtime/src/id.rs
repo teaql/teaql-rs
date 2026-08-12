@@ -153,4 +153,3 @@ pub(crate) fn local_id_generator() -> &'static AtomicCounterIdGenerator {
     static LOCAL_ID_GENERATOR: OnceLock<AtomicCounterIdGenerator> = OnceLock::new();
     LOCAL_ID_GENERATOR.get_or_init(AtomicCounterIdGenerator::default)
 }
-

@@ -85,16 +85,21 @@ where
             let eds = ctx
                 .entity_data_service::<E>(&entity)
                 .map_err(|e| RuntimeError::Graph(e.to_string()))?;
-            let generated_ids = eds.execute_ledger_plan_internal(root)
-                .await
-                .map_err(|e| match e {
-                    DataServiceError::Runtime(r) => r,
-                    other => RuntimeError::Graph(other.to_string()),
-                })?;
-                
+            let generated_ids =
+                eds.execute_ledger_plan_internal(root)
+                    .await
+                    .map_err(|e| match e {
+                        DataServiceError::Runtime(r) => r,
+                        other => RuntimeError::Graph(other.to_string()),
+                    })?;
+
             let descriptor = ctx.require_entity(&entity).unwrap();
             if let Some(id_prop) = descriptor.id_property() {
-                let current_id = node.values.get(&id_prop.name).cloned().unwrap_or(Value::I64(0));
+                let current_id = node
+                    .values
+                    .get(&id_prop.name)
+                    .cloned()
+                    .unwrap_or(Value::I64(0));
                 let root_key = crate::EntityKey::new(entity.clone(), current_id);
                 if let Some(new_id) = generated_ids.get(&root_key) {
                     node.values.insert(id_prop.name.clone(), new_id.clone());

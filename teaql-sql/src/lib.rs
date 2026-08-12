@@ -169,7 +169,11 @@ mod tests {
                     .partition_by("order_id"),
             )
             .unwrap();
-        assert_eq!(query.sql.matches("\"id\"").count(), 2, "one projection and one window order");
+        assert_eq!(
+            query.sql.matches("\"id\"").count(),
+            2,
+            "one projection and one window order"
+        );
         assert!(!query.sql.contains("\"id\", \"order_id\", \"id\""));
     }
 

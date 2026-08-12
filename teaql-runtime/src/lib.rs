@@ -1230,9 +1230,10 @@ mod tests {
         let events = Arc::new(Mutex::new(Vec::new()));
         let safe_events = Arc::new(Mutex::new(Vec::new()));
         let mut ctx = UserContext::new()
-            .with_metadata(InMemoryMetadataStore::new().with_entity(
-                entity().audit_mask_fields(vec!["name".to_owned()]),
-            ))
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(entity().audit_mask_fields(vec!["name".to_owned()])),
+            )
             .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"))
             .with_internal_id_generator(FixedIdGenerator(88))
             .with_event_sink(RecordingEventSink {
