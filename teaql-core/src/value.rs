@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use chrono::{DateTime, NaiveDate, Utc};
 pub use rust_decimal::Decimal;
-use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataType {
@@ -160,6 +160,7 @@ impl Value {
             Self::Decimal(value) => Some(*value),
             Self::I64(value) => Some(Decimal::from(*value)),
             Self::U64(value) => Some(Decimal::from(*value)),
+            Self::F64(value) if value.is_finite() => Decimal::from_f64_retain(*value),
             Self::Text(value) => Decimal::from_str(value).ok(),
             _ => None,
         }
@@ -299,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn value_try_decimal_accepts_decimal_integer_and_text_variants() {
+    fn value_try_decimal_accepts_decimal_numeric_and_text_variants() {
         let decimal = Decimal::from_str("123.450").expect("valid decimal");
 
         assert_eq!(Value::Decimal(decimal).try_decimal(), Some(decimal));
@@ -315,13 +316,17 @@ mod tests {
             Value::Text("123.450".to_owned()).try_decimal(),
             Some(decimal)
         );
+        assert_eq!(
+            Value::F64(136.25).try_decimal(),
+            Decimal::from_f64_retain(136.25)
+        );
     }
 
     #[test]
     fn value_try_decimal_rejects_invalid_text_and_unrelated_variants() {
         assert_eq!(Value::Text("not-a-decimal".to_owned()).try_decimal(), None);
         assert_eq!(Value::Bool(true).try_decimal(), None);
-        assert_eq!(Value::F64(1.5).try_decimal(), None);
+        assert_eq!(Value::F64(f64::NAN).try_decimal(), None);
         assert_eq!(Value::Null.try_decimal(), None);
     }
 

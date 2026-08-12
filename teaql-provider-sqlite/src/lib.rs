@@ -22,8 +22,6 @@ use teaql_sql::{
 
 pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";
 
-const SQLITE_DECIMAL_PREFIX: &str = "__teaql_decimal__:";
-
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SqliteDialect;
 
@@ -631,7 +629,10 @@ fn bind_sqlite_value(value: &Value) -> Result<SqliteValue, MutationExecutorError
             .map(SqliteValue::Integer)
             .map_err(|_| MutationExecutorError::Bind(format!("u64 value {v} exceeds i64 range"))),
         Value::F64(v) => Ok(SqliteValue::Real(*v)),
-        Value::Decimal(v) => Ok(SqliteValue::Text(format!("{SQLITE_DECIMAL_PREFIX}{v}"))),
+        // Bind the canonical numeric spelling. SQLite NUMERIC affinity keeps
+        // predicates and aggregates numeric; an application-only text prefix
+        // makes range comparisons silently return the wrong result.
+        Value::Decimal(v) => Ok(SqliteValue::Text(v.to_string())),
         Value::Text(v) => Ok(SqliteValue::Text(v.clone())),
         Value::Json(v) => Ok(SqliteValue::Text(v.to_string())),
         Value::Date(v) => Ok(SqliteValue::Text(v.format("%Y-%m-%d").to_string())),
@@ -692,12 +693,6 @@ fn decode_sqlite_integer(value: i64, column: &ColumnInfo) -> Value {
 fn decode_sqlite_text(value: &[u8], column: &ColumnInfo) -> Result<Value, MutationExecutorError> {
     let value = std::str::from_utf8(value)
         .map_err(|err| MutationExecutorError::Bind(format!("invalid sqlite text: {err}")))?;
-    if let Some(decimal) = value.strip_prefix(SQLITE_DECIMAL_PREFIX) {
-        return Decimal::from_str(decimal)
-            .map(Value::Decimal)
-            .map_err(|err| MutationExecutorError::Bind(format!("invalid sqlite decimal: {err}")));
-    }
-
     match column_decl_type(column).as_deref() {
         Some("NUMERIC") | Some("DECIMAL") => Decimal::from_str(value)
             .map(Value::Decimal)
@@ -767,6 +762,17 @@ mod tests {
     use teaql_macros::TeaqlEntity;
     use teaql_runtime::InMemoryMetadataStore;
 
+    #[test]
+    fn decimal_bind_is_numeric_and_comparable() {
+        let value = bind_sqlite_value(&Value::Decimal(Decimal::from_str("123.450").unwrap())).unwrap();
+        assert_eq!(value, SqliteValue::Text("123.450".to_owned()));
+        let connection = Connection::open_in_memory().unwrap();
+        let matches: i64 = connection
+            .query_row("SELECT 1 WHERE CAST(? AS NUMERIC) BETWEEN 120 AND 130", [value], |row| row.get(0))
+            .unwrap();
+        assert_eq!(matches, 1);
+    }
+
     fn entity() -> EntityDescriptor {
         EntityDescriptor::new("Order")
             .table_name("orders")
@@ -780,6 +786,23 @@ mod tests {
                 PropertyDescriptor::new("version", DataType::I64)
                     .column_name("version")
                     .version()
+                    .not_null(),
+            )
+            .property(PropertyDescriptor::new("name", DataType::Text).column_name("name"))
+    }
+
+    fn order_line_entity() -> EntityDescriptor {
+        EntityDescriptor::new("OrderLine")
+            .table_name("order_line")
+            .property(
+                PropertyDescriptor::new("id", DataType::U64)
+                    .column_name("id")
+                    .id()
+                    .not_null(),
+            )
+            .property(
+                PropertyDescriptor::new("order_id", DataType::U64)
+                    .column_name("order_id")
                     .not_null(),
             )
             .property(PropertyDescriptor::new("name", DataType::Text).column_name("name"))
@@ -891,6 +914,56 @@ mod tests {
         assert_eq!(rows[0].get("id"), Some(&Value::I64(1)));
         assert_eq!(rows[0].get("version"), Some(&Value::I64(1)));
         assert_eq!(rows[0].get("name"), Some(&Value::Text("draft".to_owned())));
+    }
+
+    #[test]
+    fn sqlite_executes_partitioned_relation_limit_per_parent() {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        let entity = order_line_entity();
+        executor.ensure_schema(&SqliteDialect, &[&entity]).unwrap();
+
+        for order_id in [11_u64, 12_u64] {
+            for index in 1_u64..=5 {
+                let id = order_id * 100 + index;
+                let insert = SqliteDialect
+                    .compile_insert(
+                        &entity,
+                        &InsertCommand::new("OrderLine")
+                            .value("id", id)
+                            .value("order_id", order_id)
+                            .value("name", format!("line-{id}")),
+                    )
+                    .unwrap();
+                executor.execute(&insert).unwrap();
+            }
+        }
+
+        let query = SelectQuery::new("OrderLine")
+            .project("id")
+            .project("order_id")
+            .order_desc("id")
+            .limit(3)
+            .partition_by("order_id");
+        let compiled = SqliteDialect.compile_select(&entity, &query).unwrap();
+        let rows = executor.fetch_all(&compiled).unwrap();
+
+        assert_eq!(rows.len(), 6);
+        for order_id in [11_i64, 12_i64] {
+            let ids = rows
+                .iter()
+                .filter(|row| row.get("order_id") == Some(&Value::I64(order_id)))
+                .filter_map(|row| row.get("id").cloned())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                ids,
+                vec![
+                    Value::I64(order_id * 100 + 5),
+                    Value::I64(order_id * 100 + 4),
+                    Value::I64(order_id * 100 + 3),
+                ]
+            );
+        }
     }
 
     #[test]

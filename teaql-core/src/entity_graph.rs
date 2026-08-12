@@ -114,6 +114,8 @@ mod tests {
     }
 
     impl TeaqlEntity for DummyEntity {
+        const ENTITY_NAME: &'static str = "Dummy";
+
         fn entity_descriptor() -> EntityDescriptor {
             EntityDescriptor::new("Dummy")
                 .property(PropertyDescriptor::new("id", DataType::I64).id())

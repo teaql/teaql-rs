@@ -1,24 +1,28 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use teaql_core::{
-    Expr, InsertCommand, OrderBy, Record, RecoverCommand, SelectQuery, SortDirection, TraceNode, UpdateCommand, DeleteCommand
+    Aggregate, AggregateFunction, Expr, InsertCommand, OrderBy, Record, RecoverCommand,
+    SelectQuery, SortDirection, TraceNode, UpdateCommand, DeleteCommand, Value
 };
 use teaql_data_service::MutationRequest;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct TfpOrderBy {
+    #[serde(alias = "f")]
     pub field: String,
+    #[serde(default)]
     pub expr: Option<JsonValue>,
+    #[serde(alias = "d")]
     pub direction: String,
 }
 
 impl TfpOrderBy {
     pub fn to_core(&self) -> OrderBy {
         let dir = match self.direction.as_str() {
-            "Asc" => SortDirection::Asc,
-            "Desc" => SortDirection::Desc,
-            _ => SortDirection::Asc, // default
+            value if value.eq_ignore_ascii_case("asc") => SortDirection::Asc,
+            value if value.eq_ignore_ascii_case("desc") => SortDirection::Desc,
+            _ => SortDirection::Asc,
         };
         OrderBy {
             field: self.field.clone(),
@@ -33,33 +37,69 @@ impl TfpOrderBy {
 pub struct TfpSelectQuery {
     pub entity: String,
     pub filter_condition: Option<JsonValue>,
+    #[serde(default, rename = "_filters")]
+    pub filters: Vec<JsonValue>,
+    #[serde(alias = "_limit")]
     pub limit_value: Option<usize>,
+    #[serde(alias = "_offset")]
     pub offset_value: Option<usize>,
-    #[serde(default)]
+    #[serde(default, alias = "_orderBy")]
     pub order_items: Vec<TfpOrderBy>,
     #[serde(default)]
     pub select_items: Vec<String>,
-    #[serde(default)]
+    #[serde(default, alias = "_groupBy")]
     pub group_by_items: Vec<String>,
-    #[serde(default)]
+    #[serde(default, alias = "_aggregates")]
     pub aggregate_items: Vec<TfpAggregateItem>,
     pub comment_text: Option<String>,
+    #[serde(default, rename = "_comment")]
+    pub generated_comment: Option<String>,
+    #[serde(default)]
+    pub purpose_text: Option<String>,
+    #[serde(default, rename = "_purpose")]
+    pub generated_purpose: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct TfpAggregateItem {
+    #[serde(alias = "func")]
     pub function: String,
     pub field: String,
+    #[serde(alias = "retName")]
     pub alias: String,
 }
 
 impl TfpSelectQuery {
-    pub fn to_core(&self) -> SelectQuery {
-        let filter = self.filter_condition.as_ref().and_then(parse_json_filter);
+    pub fn map_fields(&mut self, fields: &std::collections::BTreeMap<String, String>) -> Result<(), String> {
+        if let Some(filter) = &mut self.filter_condition { map_filter_fields(filter, fields)?; }
+        for filter in &mut self.filters { map_filter_fields(filter, fields)?; }
+        for order in &mut self.order_items {
+            order.field = fields.get(&order.field).ok_or_else(|| format!("Unknown field: {}", order.field))?.clone();
+        }
+        for field in &mut self.group_by_items {
+            *field = fields.get(field).ok_or_else(|| format!("Unknown field: {field}"))?.clone();
+        }
+        for aggregate in &mut self.aggregate_items {
+            if aggregate.field != "*" {
+                aggregate.field = fields.get(&aggregate.field)
+                    .ok_or_else(|| format!("Unknown field: {}", aggregate.field))?.clone();
+            }
+        }
+        Ok(())
+    }
+
+    pub fn to_core(&self) -> Result<SelectQuery, String> {
+        let mut filters = Vec::new();
+        if let Some(filter) = &self.filter_condition {
+            filters.push(parse_json_filter(filter)?);
+        }
+        for filter in &self.filters {
+            filters.push(parse_json_filter(filter)?);
+        }
         
         let mut q = SelectQuery::new(&self.entity);
-        q.filter = filter;
+        q.filter = combine_and(filters);
         
         if let Some(l) = self.limit_value {
             if l > 0 {
@@ -85,17 +125,108 @@ impl TfpSelectQuery {
             q.group_by = self.group_by_items.clone();
         }
         
-        // TODO: Map aggregate items properly if teaql_core SelectQuery supports it natively
+        for item in &self.aggregate_items {
+            let function = match item.function.to_ascii_lowercase().as_str() {
+                "count" => AggregateFunction::Count,
+                "sum" => AggregateFunction::Sum,
+                "avg" => AggregateFunction::Avg,
+                "min" => AggregateFunction::Min,
+                "max" => AggregateFunction::Max,
+                "stddev" => AggregateFunction::Stddev,
+                "stddevpop" | "stddev_pop" => AggregateFunction::StddevPop,
+                "varsamp" | "var_samp" => AggregateFunction::VarSamp,
+                "varpop" | "var_pop" => AggregateFunction::VarPop,
+                other => return Err(format!("Unsupported aggregate function: {other}")),
+            };
+            q.aggregates.push(Aggregate::new(function, &item.field, &item.alias));
+        }
         
-        q
+        Ok(q)
     }
 }
 
-pub fn parse_json_filter(_val: &JsonValue) -> Option<Expr> {
-    // A simplified JSON to Expr parser.
-    // Real implementation would recurse over the condition structure generated by teaql-ts.
-    // E.g., { "op": "Eq", "left": { "field": "id" }, "right": { "value": 123 } }
-    None // Placeholder
+fn map_filter_fields(
+    value: &mut JsonValue,
+    fields: &std::collections::BTreeMap<String, String>,
+) -> Result<(), String> {
+    let object = value.as_object_mut().ok_or("Filter must be an object")?;
+    let logical_key = if object.contains_key("$and") { Some("$and") }
+        else if object.contains_key("$or") { Some("$or") } else { None };
+    if let Some(key) = logical_key {
+        let items = object.get_mut(key).unwrap();
+        for item in items.as_array_mut().ok_or("Logical filter must be an array")? {
+            map_filter_fields(item, fields)?;
+        }
+        return Ok(());
+    }
+    let old = std::mem::take(object);
+    for (field, predicate) in old {
+        let mapped = fields.get(&field).ok_or_else(|| format!("Unknown or forbidden field: {field}"))?;
+        object.insert(mapped.clone(), predicate);
+    }
+    Ok(())
+}
+
+fn combine_and(mut expressions: Vec<Expr>) -> Option<Expr> {
+    match expressions.len() {
+        0 => None,
+        1 => expressions.pop(),
+        _ => Some(Expr::And(expressions)),
+    }
+}
+
+fn json_value(value: &JsonValue) -> Result<Value, String> {
+    Ok(match value {
+        JsonValue::Null => Value::Null,
+        JsonValue::Bool(value) => Value::Bool(*value),
+        JsonValue::Number(value) if value.is_i64() => Value::I64(value.as_i64().unwrap()),
+        JsonValue::Number(value) if value.is_u64() => Value::U64(value.as_u64().unwrap()),
+        JsonValue::Number(value) => Value::F64(value.as_f64().ok_or("Invalid number")?),
+        JsonValue::String(value) => Value::Text(value.clone()),
+        JsonValue::Array(values) => Value::List(values.iter().map(json_value).collect::<Result<_, _>>()?),
+        JsonValue::Object(value) if value.len() == 1 && value.contains_key("id") => {
+            json_value(value.get("id").unwrap())?
+        }
+        JsonValue::Object(_) => return Err("Object values are forbidden except entity references".into()),
+    })
+}
+
+pub fn parse_json_filter(value: &JsonValue) -> Result<Expr, String> {
+    let object = value.as_object().ok_or("Filter must be an object")?;
+    if let Some(items) = object.get("$and") {
+        let items = items.as_array().ok_or("$and must be an array")?;
+        if items.is_empty() { return Err("$and must not be empty".into()); }
+        return Ok(Expr::And(items.iter().map(parse_json_filter).collect::<Result<_, _>>()?));
+    }
+    if let Some(items) = object.get("$or") {
+        let items = items.as_array().ok_or("$or must be an array")?;
+        if items.is_empty() { return Err("$or must not be empty".into()); }
+        return Ok(Expr::Or(items.iter().map(parse_json_filter).collect::<Result<_, _>>()?));
+    }
+    if object.is_empty() { return Err("Filter must not be empty".into()); }
+    let mut expressions = Vec::new();
+    for (field, predicate) in object {
+        if field.starts_with('$') || field.contains('.') {
+            return Err(format!("Unknown or deep filter field: {field}"));
+        }
+        let predicates = predicate.as_object().ok_or_else(|| format!("Predicate for {field} must be an object"))?;
+        if predicates.len() != 1 { return Err(format!("Predicate for {field} must contain exactly one operator")); }
+        let (operator, operand) = predicates.iter().next().unwrap();
+        let expression = match operator.as_str() {
+            "$eq" => Expr::eq(field, json_value(operand)?),
+            "$gte" => Expr::gte(field, json_value(operand)?),
+            "$lte" => Expr::lte(field, json_value(operand)?),
+            "$contains" => Expr::contain(field, operand.as_str().ok_or("$contains requires a string")?),
+            "$in" => {
+                let values = operand.as_array().ok_or("$in requires an array")?;
+                if values.is_empty() || values.len() > 100 { return Err("$in size must be between 1 and 100".into()); }
+                Expr::in_list(field, values.iter().map(json_value).collect::<Result<Vec<_>, _>>()?)
+            }
+            _ => return Err(format!("Unsupported predicate operator: {operator}")),
+        };
+        expressions.push(expression);
+    }
+    Ok(combine_and(expressions).unwrap())
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -166,5 +297,61 @@ impl TfpMutationQuery {
             }
             _ => Err("Unknown mutation action".into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn translates_generated_typescript_query_without_broadening() {
+        let payload = json!({
+            "entity": "CustomerOrder",
+            "_filters": [{"$and": [
+                {"commercePlatform": {"$eq": 1}},
+                {"orderNumber": {"$contains": "ORD-00"}},
+                {"totalAmount": {"$gte": 130}},
+                {"status": {"$in": [1001, 1002]}}
+            ]}],
+            "_limit": 10,
+            "_offset": 5,
+            "_orderBy": [{"f":"orderNumber","d":"asc"}],
+            "_groupBy": ["status"],
+            "_aggregates": [{"func":"count","field":"id","retName":"record_count"}],
+            "_comment": "federated query",
+            "_purpose": "requested purpose"
+        });
+        let mut query: TfpSelectQuery = serde_json::from_value(payload).unwrap();
+        let fields = BTreeMap::from([
+            ("id".into(), "id".into()),
+            ("commercePlatform".into(), "commerce_platform_id".into()),
+            ("orderNumber".into(), "order_number".into()),
+            ("totalAmount".into(), "total_amount".into()),
+            ("status".into(), "status_id".into()),
+        ]);
+        query.map_fields(&fields).unwrap();
+        let core = query.to_core().unwrap();
+        assert!(core.filter.is_some());
+        assert_eq!(core.slice.unwrap().limit, Some(10));
+        assert_eq!(core.group_by, vec!["status_id"]);
+        assert_eq!(core.aggregates[0].field, "id");
+        assert_eq!(core.aggregates[0].alias, "record_count");
+        assert_eq!(core.order_by[0].field, "order_number");
+    }
+
+    #[test]
+    fn rejects_unknown_operator_field_deep_path_and_excessive_in() {
+        assert!(parse_json_filter(&json!({"id":{"$wat":1}})).is_err());
+        assert!(parse_json_filter(&json!({"customer.email":{"$eq":"masked"}})).is_err());
+        assert!(parse_json_filter(&json!({"id":{"$in":[]}})).is_err());
+        let values: Vec<_> = (0..101).collect();
+        assert!(parse_json_filter(&json!({"id":{"$in":values}})).is_err());
+        let mut query: TfpSelectQuery = serde_json::from_value(json!({
+            "entity":"CustomerOrder", "_filters":[{"unknown":{"$eq":1}}]
+        })).unwrap();
+        assert!(query.map_fields(&BTreeMap::from([("id".into(), "id".into())])).is_err());
     }
 }

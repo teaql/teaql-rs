@@ -6,6 +6,18 @@ use thiserror::Error;
 pub mod models;
 use models::{TfpMutationQuery, TfpSelectQuery};
 
+#[derive(Clone, Debug)]
+pub struct TrustedQueryContext {
+    pub tenant_field: String,
+    pub tenant_id: teaql_core::Value,
+    pub authenticated_user: String,
+    pub approved_purpose: String,
+    pub allowed_entities: std::collections::BTreeSet<String>,
+    /// Per entity mapping from public TFP field names to trusted core field names.
+    pub field_mappings: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    pub max_page_size: usize,
+}
+
 #[derive(Error, Debug)]
 pub enum TfpEndpointError {
     #[error("Failed to parse JSON payload: {0}")]
@@ -42,16 +54,45 @@ where
     }
 
     /// Handles a TFP Query request (usually mapped to /query).
-    pub async fn handle_query(&self, json_payload: JsonValue) -> Result<JsonValue, TfpEndpointError> {
-        let tfp_query: TfpSelectQuery = serde_json::from_value(json_payload)
+    pub async fn handle_query(
+        &self,
+        trusted: &TrustedQueryContext,
+        json_payload: JsonValue,
+    ) -> Result<JsonValue, TfpEndpointError> {
+        reject_privileged_input(&json_payload).map_err(TfpEndpointError::TranslationError)?;
+        let mut tfp_query: TfpSelectQuery = serde_json::from_value(json_payload)
             .map_err(TfpEndpointError::ParseError)?;
 
-        let core_query = tfp_query.to_core();
+        validate_policy(trusted, &tfp_query).map_err(TfpEndpointError::TranslationError)?;
+        let mappings = trusted.field_mappings.get(&tfp_query.entity)
+            .ok_or_else(|| TfpEndpointError::TranslationError(format!("No field policy for entity: {}", tfp_query.entity)))?;
+        tfp_query.map_fields(mappings).map_err(TfpEndpointError::TranslationError)?;
+        let client_comment = tfp_query.generated_comment.clone().or(tfp_query.comment_text.clone())
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| TfpEndpointError::TranslationError("Query comment is required".into()))?;
+        let requested_purpose = tfp_query.generated_purpose.clone().or(tfp_query.purpose_text.clone())
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| TfpEndpointError::TranslationError("Query purpose is required".into()))?;
+        let mut core_query = tfp_query.to_core().map_err(TfpEndpointError::TranslationError)?;
+        let tenant = teaql_core::Expr::eq(&trusted.tenant_field, trusted.tenant_id.clone());
+        core_query.filter = Some(match core_query.filter.take() {
+            Some(filter) => teaql_core::Expr::And(vec![tenant, filter]),
+            None => tenant,
+        });
+        let trace = teaql_core::TraceNode {
+            entity_type: tfp_query.entity.clone(),
+            entity_id: None,
+            comment: format!(
+                "approved-purpose={}; authenticated-user={}; requested-purpose={}",
+                trusted.approved_purpose, trusted.authenticated_user, requested_purpose,
+            ),
+        };
+        core_query.trace_chain.push(trace.clone());
 
         let request = QueryRequest {
             query: core_query,
-            trace_chain: vec![],
-            comment: tfp_query.comment_text,
+            trace_chain: vec![trace],
+            comment: Some(client_comment),
         };
 
         let result = self.query_executor
@@ -67,6 +108,16 @@ where
         response_obj.insert("data".to_string(), JsonValue::Array(rows_json));
         response_obj.insert("resultCode".to_string(), JsonValue::Number(0.into()));
         response_obj.insert("status".to_string(), JsonValue::String("YES".to_string()));
+        let trace_json = result.metadata.trace_chain.iter().map(|node| serde_json::json!({
+            "entity": node.entity_type,
+            "comment": node.comment,
+        })).collect::<Vec<_>>();
+        response_obj.insert("execution".to_string(), serde_json::json!({
+            "backend": result.metadata.backend,
+            "resultCount": result.metadata.result_count,
+            "trace": trace_json,
+            "sqlShape": result.metadata.debug_query.as_deref().map(redact_sql_literals),
+        }));
         
         Ok(JsonValue::Object(response_obj))
     }
@@ -96,5 +147,104 @@ where
         response_obj.insert("data".to_string(), JsonValue::Array(data_arr));
 
         Ok(JsonValue::Object(response_obj))
+    }
+}
+
+fn redact_sql_literals(sql: &str) -> String {
+    let mut output = String::with_capacity(sql.len());
+    let mut chars = sql.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\'' { output.push(ch); continue; }
+        output.push('\'');
+        while let Some(value) = chars.next() {
+            if value == '\'' {
+                if chars.peek() == Some(&'\'') { chars.next(); continue; }
+                break;
+            }
+        }
+        output.push('?');
+        output.push('\'');
+    }
+    output
+}
+
+fn reject_privileged_input(payload: &JsonValue) -> Result<(), String> {
+    const FORBIDDEN: &[&str] = &["tenant", "tenantId", "merchant", "merchantId", "user",
+        "userId", "permissions", "requestPolicy", "purposePolicy", "trustedContext"];
+    let object = payload.as_object().ok_or("TFP payload must be an object")?;
+    if let Some(field) = FORBIDDEN.iter().find(|field| object.contains_key(**field)) {
+        return Err(format!("Client cannot provide trusted field: {field}"));
+    }
+    Ok(())
+}
+
+fn validate_policy(trusted: &TrustedQueryContext, query: &TfpSelectQuery) -> Result<(), String> {
+    if !trusted.allowed_entities.contains(&query.entity) {
+        return Err(format!("Entity is not allowed by federation policy: {}", query.entity));
+    }
+    if query.limit_value.unwrap_or(0) > trusted.max_page_size {
+        return Err("Page size exceeds federation policy".into());
+    }
+    let allowed = trusted.field_mappings.get(&query.entity)
+        .ok_or_else(|| format!("No field policy for entity: {}", query.entity))?;
+    for field in query.order_items.iter().map(|value| &value.field)
+        .chain(query.group_by_items.iter())
+        .chain(query.aggregate_items.iter().map(|value| &value.field)) {
+        if field != "*" && !allowed.contains_key(field) {
+            return Err(format!("Field is not allowed by federation policy: {field}"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn trusted() -> TrustedQueryContext {
+        TrustedQueryContext {
+            tenant_field: "commerce_platform_id".into(),
+            tenant_id: teaql_core::Value::I64(1),
+            authenticated_user: "operator-42".into(),
+            approved_purpose: "approved-order-search".into(),
+            allowed_entities: BTreeSet::from(["CustomerOrder".into()]),
+            field_mappings: BTreeMap::from([("CustomerOrder".into(), BTreeMap::from([
+                ("id".into(), "id".into()),
+                ("orderNumber".into(), "order_number".into()),
+            ]))]),
+            max_page_size: 100,
+        }
+    }
+
+    #[test]
+    fn client_cannot_override_trusted_context() {
+        for field in ["tenantId", "merchant", "user", "permissions", "requestPolicy",
+            "purposePolicy", "trustedContext"] {
+            assert!(reject_privileged_input(&json!({(field): "attacker"})).is_err());
+        }
+        assert!(reject_privileged_input(&json!({"entity":"CustomerOrder","_purpose":"requested"})).is_ok());
+    }
+
+    #[test]
+    fn policy_rejects_entity_field_and_page_size() {
+        let context = trusted();
+        let query = |value| serde_json::from_value::<TfpSelectQuery>(value).unwrap();
+        assert!(validate_policy(&context, &query(json!({"entity":"Other"}))).is_err());
+        assert!(validate_policy(&context, &query(json!({
+            "entity":"CustomerOrder", "_limit":101
+        }))).is_err());
+        assert!(validate_policy(&context, &query(json!({
+            "entity":"CustomerOrder", "_orderBy":[{"f":"secret","d":"asc"}]
+        }))).is_err());
+    }
+
+    #[test]
+    fn sql_shape_redacts_string_literals() {
+        let shape = redact_sql_literals("select * from t where email = 'private-address' and name = 'private-name'");
+        assert!(!shape.contains('@'));
+        assert!(!shape.contains("Brien"));
+        assert_eq!(shape, "select * from t where email = '?' and name = '?'");
     }
 }

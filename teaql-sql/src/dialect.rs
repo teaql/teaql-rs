@@ -203,7 +203,26 @@ pub trait SqlDialect {
             return Ok(raw_sql.clone());
         }
 
-        let projection = self.compile_projection(entity, query, params)?;
+        let mut projection = self.compile_projection(entity, query, params)?;
+        let partitioned_slice = query.partition_by.as_deref().zip(query.slice);
+        if let Some((partition_by, _)) = partitioned_slice {
+            let partition_column = self.column_sql(entity, partition_by)?;
+            let window_order = if query.order_by.is_empty() {
+                String::new()
+            } else {
+                let order_by = query
+                    .order_by
+                    .iter()
+                    .map(|order| self.order_by_sql(entity, order, params))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join(", ");
+                format!(" ORDER BY {order_by}")
+            };
+            let rank = self.quote_ident(teaql_core::PARTITION_RANK_PROPERTY);
+            projection.push_str(&format!(
+                ", ROW_NUMBER() OVER (PARTITION BY {partition_column}{window_order}) AS {rank}"
+            ));
+        }
 
         let mut sql = format!(
             "SELECT {projection} FROM {}",
@@ -239,6 +258,19 @@ pub trait SqlDialect {
         if !where_parts.is_empty() {
             sql.push_str(" WHERE ");
             sql.push_str(&where_parts.join(" AND "));
+        }
+
+        if let Some((_, slice)) = partitioned_slice {
+            let rank = self.quote_ident(teaql_core::PARTITION_RANK_PROPERTY);
+            let alias = self.quote_ident("__teaql_partitioned");
+            let mut predicates = vec![format!("{rank} > {}", slice.offset)];
+            if let Some(limit) = slice.limit {
+                predicates.push(format!("{rank} <= {}", slice.offset.saturating_add(limit)));
+            }
+            return Ok(format!(
+                "SELECT * FROM ({sql}) AS {alias} WHERE {} ORDER BY {rank}",
+                predicates.join(" AND ")
+            ));
         }
 
         if !query.group_by.is_empty() {
@@ -770,16 +802,21 @@ pub trait SqlDialect {
                 .collect::<Vec<_>>()
                 .join(", "));
         }
-        let mut parts = query
-            .projection
-            .iter()
-            .map(|field| {
-                let property = entity
-                    .property_by_name(field)
-                    .ok_or_else(|| SqlCompileError::UnknownField(field.to_owned()))?;
-                Ok(property_projection(property))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        // Generated relation selections may request an identity field both as
+        // a base projection and as part of the selected entity graph. MySQL
+        // rejects duplicate column names inside the partition/window derived
+        // table, so preserve first-seen order while removing duplicates.
+        let mut seen_fields = std::collections::BTreeSet::new();
+        let mut parts = Vec::new();
+        for field in &query.projection {
+            if !seen_fields.insert(field.as_str()) {
+                continue;
+            }
+            let property = entity
+                .property_by_name(field)
+                .ok_or_else(|| SqlCompileError::UnknownField(field.to_owned()))?;
+            parts.push(property_projection(property));
+        }
         for projection in &query.expr_projection {
             let expr = self.compile_expr(entity, &projection.expr, params)?;
             parts.push(format!("{expr} AS {}", self.quote_ident(&projection.alias)));
@@ -805,7 +842,11 @@ pub trait SqlDialect {
         params: &mut Vec<Value>,
     ) -> Result<String, SqlCompileError> {
         let mut parts = Vec::new();
-        for field in query.group_by.iter().chain(query.projection.iter()) {
+        // Aggregate queries must not inherit the entity's ordinary/default projection.
+        // Only grouping keys may be projected alongside aggregate expressions;
+        // otherwise generated requests produce invalid SQL such as
+        // `SELECT id, COUNT(id) ...` without grouping by `id`.
+        for field in &query.group_by {
             let column = self.column_sql(entity, field)?;
             if !parts.contains(&column) {
                 parts.push(column);

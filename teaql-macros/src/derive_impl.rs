@@ -79,6 +79,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     let mut version_impl = None;
     let mut has_root_field = false;
     let mut id_field_ident: Option<syn::Ident> = None;
+    let mut version_field_ident: Option<syn::Ident> = None;
     let explicit_field_names: Vec<String> = named_fields
         .iter()
         .filter_map(|field| {
@@ -181,6 +182,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         };
         let version_tokens = if version {
             {
+                version_field_ident = Some(field_ident.clone());
                 version_impl = Some(quote! { self.#field_ident });
                 quote! { .version() }
             }
@@ -288,7 +290,19 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     };
 
     let set_original_record_impl = if has_root_field {
-        quote! { entity.root.set_original_record(record); }
+        let original_version = match (&id_field_ident, &version_field_ident) {
+            (Some(id_ident), Some(version_ident)) => quote! {
+                entity.root.set_original_version(
+                    ::teaql_runtime::EntityKey::new(#entity_name, entity.#id_ident),
+                    entity.#version_ident,
+                );
+            },
+            _ => quote! {},
+        };
+        quote! {
+            entity.root.set_original_record(record);
+            #original_version
+        }
     } else {
         Default::default()
     };

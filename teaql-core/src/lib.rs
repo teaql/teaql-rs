@@ -32,8 +32,8 @@ pub use mutation::{
 pub use naming::default_table_name;
 pub use query::{
     Aggregate, AggregateFunction, AggregationCacheOptions, NamedExpr, ObjectGroupBy, OrderBy,
-    RawSqlProjection, Record, RelationAggregate, RelationLoad, SelectQuery, Slice, SortDirection,
-    StreamConfig, record_to_json_value,
+    PARTITION_RANK_PROPERTY, RawSqlProjection, Record, RelationAggregate, RelationLoad,
+    SelectQuery, Slice, SortDirection, StreamConfig, record_to_json_value,
 };
 pub use safe_expression::{SafeExpression, TeaqlEmpty};
 pub use trace::TraceNode;
@@ -574,6 +574,8 @@ mod tests {
     }
 
     impl TeaqlEntity for SafeExpressionEntity {
+        const ENTITY_NAME: &'static str = "SafeExpressionEntity";
+
         fn entity_descriptor() -> EntityDescriptor {
             EntityDescriptor::new("SafeExpressionEntity")
         }

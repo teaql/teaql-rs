@@ -130,11 +130,73 @@ mod tests {
     }
 
     #[test]
+    fn compiles_partitioned_relation_limit_per_parent() {
+        let query = TestDialect
+            .compile_select(
+                &line_entity(),
+                &SelectQuery::new("OrderLine")
+                    .project("id")
+                    .project("order_id")
+                    .project("name")
+                    .filter(Expr::in_list(
+                        "order_id",
+                        vec![Value::U64(11), Value::U64(12)],
+                    ))
+                    .order_by(OrderBy::desc("id"))
+                    .page(1, 3)
+                    .partition_by("order_id"),
+            )
+            .unwrap();
+
+        assert_eq!(
+            query.sql,
+            "SELECT * FROM (SELECT \"id\", \"order_id\", \"name\", ROW_NUMBER() OVER (PARTITION BY \"order_id\" ORDER BY \"id\" DESC) AS \"__teaql_partition_rank\" FROM \"orderline\" WHERE (\"order_id\" IN ($1, $2))) AS \"__teaql_partitioned\" WHERE \"__teaql_partition_rank\" > 1 AND \"__teaql_partition_rank\" <= 4 ORDER BY \"__teaql_partition_rank\""
+        );
+        assert_eq!(query.params, vec![Value::U64(11), Value::U64(12)]);
+    }
+
+    #[test]
+    fn deduplicates_partition_projection_for_mysql_derived_tables() {
+        let query = TestDialect
+            .compile_select(
+                &line_entity(),
+                &SelectQuery::new("OrderLine")
+                    .project("id")
+                    .project("order_id")
+                    .project("id")
+                    .order_by(OrderBy::asc("id"))
+                    .limit(3)
+                    .partition_by("order_id"),
+            )
+            .unwrap();
+        assert_eq!(query.sql.matches("\"id\"").count(), 2, "one projection and one window order");
+        assert!(!query.sql.contains("\"id\", \"order_id\", \"id\""));
+    }
+
+    #[test]
     fn compiles_aggregate_projection() {
         let query = TestDialect
             .compile_select(
                 &entity(),
                 &SelectQuery::new("Order").count_field("id", "count"),
+            )
+            .unwrap();
+
+        assert_eq!(
+            query.sql,
+            "SELECT COUNT(\"id\") AS \"count\" FROM \"orders\""
+        );
+    }
+
+    #[test]
+    fn aggregate_projection_ignores_ordinary_selected_fields() {
+        let query = TestDialect
+            .compile_select(
+                &entity(),
+                &SelectQuery::new("Order")
+                    .project("id")
+                    .project("name")
+                    .count_field("id", "count"),
             )
             .unwrap();
 

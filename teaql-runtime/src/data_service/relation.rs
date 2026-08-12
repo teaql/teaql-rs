@@ -377,7 +377,10 @@ where
         Box::pin(async move {
             let child_repo = self.scoped_data_service_internal(plan.target_entity.clone());
             let query = self.query_for_plan(plan, parent_rows);
-            let child_rows = child_repo.fetch_all_internal(&query).await?;
+            let mut child_rows = child_repo.fetch_all_internal(&query).await?;
+            for child in &mut child_rows {
+                child.remove(teaql_core::PARTITION_RANK_PROPERTY);
+            }
             self.attach_relation_rows(parent_rows, plan, child_rows);
 
             if !plan.children.is_empty() {
@@ -437,6 +440,9 @@ where
         }
         if !ids.is_empty() {
             query = query.and_filter(Expr::in_list(plan.foreign_key.clone(), ids));
+        }
+        if query.slice.is_some() {
+            query.partition_by = Some(plan.foreign_key.clone());
         }
         query
     }
