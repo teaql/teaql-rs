@@ -64,8 +64,8 @@ mod tests {
         InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityRegistry, InMemoryMetadataStore,
         InternalIdGenerator, Language, MemoryDataService, MetadataStore, ObjectLocation,
         RawAuditEvent, RawAuditEventKind, RawAuditEventSink, RequestPolicy, RuntimeError,
-        RuntimeModule, SqlLogOperation, SqlLogOptions, TypedChecker, TypedEntityChecker,
-        UserContext, translate_check_result,
+        RuntimeModule, SafeAuditEvent, SafeAuditEventSink, SqlLogOperation, SqlLogOptions,
+        TypedChecker, TypedEntityChecker, UserContext, translate_check_result,
     };
     use crate::data_service::RuntimeDataService;
     use teaql_core::{
@@ -584,6 +584,10 @@ mod tests {
     struct RecordingEventSink {
         events: Arc<Mutex<Vec<RawAuditEvent>>>,
     }
+    #[derive(Clone)]
+    struct RecordingSafeEventSink {
+        events: Arc<Mutex<Vec<SafeAuditEvent>>>,
+    }
 
     impl EntityDataServiceBehavior for ContextAwareOrderBehavior {
         fn before_insert(
@@ -716,6 +720,17 @@ mod tests {
 
     impl RawAuditEventSink for RecordingEventSink {
         fn on_event(&self, _ctx: &UserContext, event: &RawAuditEvent) -> Result<(), RuntimeError> {
+            self.events.lock().unwrap().push(event.clone());
+            Ok(())
+        }
+    }
+
+    impl SafeAuditEventSink for RecordingSafeEventSink {
+        fn on_safe_event(
+            &self,
+            _ctx: &UserContext,
+            event: &SafeAuditEvent,
+        ) -> Result<(), RuntimeError> {
             self.events.lock().unwrap().push(event.clone());
             Ok(())
         }
@@ -1213,12 +1228,18 @@ mod tests {
     #[tokio::test]
     async fn user_context_event_sink_receives_data_service_mutation_events() {
         let events = Arc::new(Mutex::new(Vec::new()));
+        let safe_events = Arc::new(Mutex::new(Vec::new()));
         let mut ctx = UserContext::new()
-            .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
+            .with_metadata(InMemoryMetadataStore::new().with_entity(
+                entity().audit_mask_fields(vec!["name".to_owned()]),
+            ))
             .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"))
             .with_internal_id_generator(FixedIdGenerator(88))
             .with_event_sink(RecordingEventSink {
                 events: events.clone(),
+            })
+            .with_custom_event_sink(RecordingSafeEventSink {
+                events: safe_events.clone(),
             });
         ctx.insert_resource(PostgresDialect);
         ctx.insert_resource(StubExecutor {
@@ -1301,6 +1322,18 @@ mod tests {
             Some(&Value::I64(4))
         );
         assert_eq!(events[3].changes[0].field, "version");
+        drop(events);
+
+        let safe_events = safe_events.lock().unwrap();
+        assert_eq!(safe_events.len(), 4);
+        assert_eq!(safe_events[0].kind, RawAuditEventKind::Created);
+        let name = safe_events[0]
+            .fields
+            .iter()
+            .find(|field| field.name == "name")
+            .expect("application audit event should contain the changed name field");
+        assert!(name.masked);
+        assert_ne!(name.value.as_deref(), Some("created"));
     }
 
     #[tokio::test]
