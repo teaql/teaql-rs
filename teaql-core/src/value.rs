@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use chrono::{DateTime, NaiveDate, Utc};
 pub use rust_decimal::Decimal;
-use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataType {
@@ -160,7 +160,11 @@ impl Value {
             Self::Decimal(value) => Some(*value),
             Self::I64(value) => Some(Decimal::from(*value)),
             Self::U64(value) => Some(Decimal::from(*value)),
-            Self::F64(value) if value.is_finite() => Decimal::from_f64_retain(*value),
+            // SQL drivers commonly return NUMERIC values as f64. Convert using
+            // the shortest human decimal representation instead of retaining
+            // the binary floating-point expansion (for example 129.95 must not
+            // become 129.949999999999988...).
+            Self::F64(value) if value.is_finite() => Decimal::from_f64(*value),
             Self::Text(value) => Decimal::from_str(value).ok(),
             _ => None,
         }
@@ -328,6 +332,14 @@ mod tests {
         assert_eq!(Value::Bool(true).try_decimal(), None);
         assert_eq!(Value::F64(f64::NAN).try_decimal(), None);
         assert_eq!(Value::Null.try_decimal(), None);
+    }
+
+    #[test]
+    fn value_try_decimal_uses_human_decimal_for_f64() {
+        assert_eq!(
+            Value::F64(129.95).try_decimal(),
+            Some(Decimal::from_str("129.95").unwrap())
+        );
     }
 
     #[test]
