@@ -231,12 +231,38 @@ fn reject_privileged_input(payload: &JsonValue) -> Result<(), String> {
         "requestPolicy",
         "purposePolicy",
         "trustedContext",
+        "hardLimit",
+        "hard_limit",
+        "hardLimitValue",
+        "hard_limit_value",
     ];
-    let object = payload.as_object().ok_or("TFP payload must be an object")?;
-    if let Some(field) = FORBIDDEN.iter().find(|field| object.contains_key(**field)) {
-        return Err(format!("Client cannot provide trusted field: {field}"));
+
+    fn reject_at(value: &JsonValue, path: &str, forbidden: &[&str]) -> Result<(), String> {
+        match value {
+            JsonValue::Object(object) => {
+                for (field, child) in object {
+                    if forbidden.contains(&field.as_str()) {
+                        return Err(format!(
+                            "Client cannot provide trusted or server-local field: {path}.{field}"
+                        ));
+                    }
+                    reject_at(child, &format!("{path}.{field}"), forbidden)?;
+                }
+            }
+            JsonValue::Array(values) => {
+                for (index, child) in values.iter().enumerate() {
+                    reject_at(child, &format!("{path}[{index}]"), forbidden)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
-    Ok(())
+
+    if !payload.is_object() {
+        return Err("TFP payload must be an object".into());
+    }
+    reject_at(payload, "$", FORBIDDEN)
 }
 
 fn validate_policy(trusted: &TrustedQueryContext, query: &TfpSelectQuery) -> Result<(), String> {
@@ -310,6 +336,30 @@ mod tests {
             reject_privileged_input(&json!({"entity":"CustomerOrder","_purpose":"requested"}))
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn client_cannot_override_hard_limit_at_any_depth() {
+        for field in [
+            "hardLimit",
+            "hard_limit",
+            "hardLimitValue",
+            "hard_limit_value",
+        ] {
+            let error = reject_privileged_input(&json!({
+                "entity": "CustomerOrder",
+                (field): 20_000
+            }))
+            .unwrap_err();
+            assert!(error.contains(field));
+
+            let nested_error = reject_privileged_input(&json!({
+                "entity": "CustomerOrder",
+                "relations": [{"query": {(field): 20_000}}]
+            }))
+            .unwrap_err();
+            assert!(nested_error.contains(field));
+        }
     }
 
     #[test]
