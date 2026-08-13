@@ -14,9 +14,28 @@ mod hard_limit_tests {
 
     #[test]
     fn list_limit_defaults_rejects_and_allows_explicit_override() {
-        assert_eq!(SelectQuery::new("Order").prepare_for_list().unwrap().slice.unwrap().limit, Some(10_000));
-        assert!(SelectQuery::new("Order").limit(10_001).prepare_for_list().is_err());
-        assert!(SelectQuery::new("Order").limit(10_001).hard_limit(20_000).prepare_for_list().is_ok());
+        assert_eq!(
+            SelectQuery::new("Order")
+                .prepare_for_list()
+                .unwrap()
+                .slice
+                .unwrap()
+                .limit,
+            Some(10_000)
+        );
+        assert!(
+            SelectQuery::new("Order")
+                .limit(10_001)
+                .prepare_for_list()
+                .is_err()
+        );
+        assert!(
+            SelectQuery::new("Order")
+                .limit(10_001)
+                .hard_limit(20_000)
+                .prepare_for_list()
+                .is_ok()
+        );
     }
 }
 
@@ -617,11 +636,16 @@ impl SelectQuery {
     }
 
     fn apply_list_limit(&mut self, ceiling: u64, outer: bool) -> Result<(), String> {
-        let slice = self.slice.get_or_insert(Slice { limit: None, offset: 0 });
+        let slice = self.slice.get_or_insert(Slice {
+            limit: None,
+            offset: 0,
+        });
         match slice.limit {
-            Some(limit) if limit > ceiling => return Err(format!(
-                "QUERY_HARD_LIMIT_EXCEEDED: requested limit {limit} exceeds hard limit {ceiling}"
-            )),
+            Some(limit) if limit > ceiling => {
+                return Err(format!(
+                    "QUERY_HARD_LIMIT_EXCEEDED: requested limit {limit} exceeds hard limit {ceiling}"
+                ));
+            }
             None => slice.limit = Some(ceiling),
             _ => {}
         }

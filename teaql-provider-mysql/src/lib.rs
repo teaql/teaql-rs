@@ -296,6 +296,27 @@ impl teaql_sql::SqlTransport for MysqlMutationExecutor {
     }
 }
 
+impl teaql_sql::StreamingSqlTransport for MysqlMutationExecutor {
+    fn stream_sql(
+        &self,
+        query: CompiledQuery,
+        chunk_size: usize,
+    ) -> teaql_data_service::QueryStream<'_, Self::Error> {
+        let pool = self.pool.clone();
+        Box::pin(async_stream::try_stream! {
+            use futures_util::StreamExt;
+            let params = query.params.iter().map(bind_mysql).collect::<Result<Vec<_>, _>>()?;
+            let mut conn = pool.get_conn().await?;
+            let mut stream = conn
+                .exec_stream::<mysql_async::Row, _, _>(query.sql_with_comment(), params)
+                .await?;
+            let mut chunk=Vec::with_capacity(chunk_size); let mut index=0;
+            while let Some(row) = stream.next().await { chunk.push(decode_mysql_row(row?)?); if chunk.len()==chunk_size { yield teaql_data_service::StreamChunk { rows:std::mem::take(&mut chunk), chunk_index:index, is_last:false }; index+=1; } }
+            if !chunk.is_empty() { yield teaql_data_service::StreamChunk { rows:chunk, chunk_index:index, is_last:true }; }
+        })
+    }
+}
+
 impl teaql_sql::SqlTransaction for MysqlTransactionExecutor {
     type Error = MutationExecutorError;
 
@@ -502,6 +523,28 @@ pub async fn ensure_mysql_schema_for(ctx: &UserContext) -> Result<(), MutationEx
 
     executor.ensure_schema(dialect, &entities).await?;
     ensure_initial_graphs_mysql(executor, dialect, ctx).await
+}
+
+#[cfg(test)]
+mod streaming_tests {
+    use super::*;
+    use futures_util::StreamExt;
+    use teaql_sql::StreamingSqlTransport;
+
+    #[tokio::test]
+    async fn streams_from_real_mysql_when_configured() {
+        let Ok(url) = std::env::var("TEAQL_TEST_MYSQL_URL") else {
+            return;
+        };
+        let executor = MysqlMutationExecutor::new(mysql_async::Pool::new(url.as_str()));
+        let query = CompiledQuery { sql: "SELECT id FROM (SELECT 1 id UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5) fixture ORDER BY id".to_owned(), params: vec![], comment: None };
+        let mut stream = executor.stream_sql(query, 2);
+        let mut sizes = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            sizes.push(chunk.unwrap().rows.len());
+        }
+        assert_eq!(sizes, vec![2, 2, 1]);
+    }
 }
 
 impl MysqlSchemaExt for UserContext {

@@ -5,7 +5,7 @@ mod types;
 pub use dialect::{SqlDialect, quote_identifier_if_needed};
 pub use executor::{
     SqlDataServiceExecutor, SqlDataServiceTransaction, SqlExecutorError, SqlTransaction,
-    SqlTransactionTransport, SqlTransport,
+    SqlTransactionTransport, SqlTransport, StreamingSqlTransport,
 };
 pub use types::{CompiledQuery, DatabaseKind, SqlCompileError};
 

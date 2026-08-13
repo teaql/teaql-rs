@@ -15,6 +15,10 @@ serde_json = { workspace = true }
 mysql_async = { version = "0.37", default-features = false, features = ["default-rustls", "chrono"] }
 mysql_common = { version = "0.32" }
 teaql-core = { workspace = true }
+teaql-data-service = { workspace = true }
 teaql-runtime = { workspace = true }
 teaql-sql = { workspace = true }
 tokio = { workspace = true }
+async-stream = "0.3"
+futures-core = "0.3"
+futures-util = "0.3"

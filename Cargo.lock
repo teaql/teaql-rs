@@ -3321,6 +3321,7 @@ dependencies = [
 name = "teaql-data-service"
 version = "4.2.9"
 dependencies = [
+ "futures-core",
  "teaql-core",
 ]
 
@@ -3351,6 +3352,7 @@ name = "teaql-provider-linux"
 version = "4.2.9"
 dependencies = [
  "chrono",
+ "futures-util",
  "procfs",
  "teaql-core",
  "teaql-data-service",
@@ -3375,12 +3377,16 @@ dependencies = [
 name = "teaql-provider-mysql"
 version = "4.2.9"
 dependencies = [
+ "async-stream",
  "chrono",
+ "futures-core",
+ "futures-util",
  "mysql_async",
  "mysql_common 0.32.4",
  "rust_decimal",
  "serde_json",
  "teaql-core",
+ "teaql-data-service",
  "teaql-runtime",
  "teaql-sql",
  "tokio",
@@ -3390,12 +3396,16 @@ dependencies = [
 name = "teaql-provider-postgres"
 version = "4.2.9"
 dependencies = [
+ "async-stream",
  "bytes",
  "chrono",
  "deadpool-postgres",
+ "futures-core",
+ "futures-util",
  "rust_decimal",
  "serde_json",
  "teaql-core",
+ "teaql-data-service",
  "teaql-runtime",
  "teaql-sql",
  "tokio",
@@ -3406,7 +3416,11 @@ dependencies = [
 name = "teaql-provider-sqlite"
 version = "4.2.9"
 dependencies = [
+ "async-stream",
  "chrono",
+ "futures-core",
+ "futures-executor",
+ "futures-util",
  "rusqlite",
  "rust_decimal",
  "serde_json",
@@ -3423,6 +3437,8 @@ version = "4.2.9"
 dependencies = [
  "async-trait",
  "chrono",
+ "futures-core",
+ "futures-util",
  "rust_decimal",
  "serde_json",
  "teaql-core",
@@ -3436,6 +3452,8 @@ dependencies = [
 name = "teaql-sql"
 version = "4.2.9"
 dependencies = [
+ "futures-core",
+ "futures-util",
  "teaql-core",
  "teaql-data-service",
 ]

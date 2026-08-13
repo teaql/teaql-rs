@@ -13,6 +13,7 @@ teaql-data-service = { workspace = true }
 teaql-runtime = { workspace = true }
 procfs = "0.18"
 chrono.workspace = true
+futures-util = "0.3"
 
 [dev-dependencies]
 tokio.workspace = true

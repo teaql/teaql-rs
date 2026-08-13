@@ -4,7 +4,7 @@ use std::time::SystemTime;
 use teaql_core::Record;
 use teaql_data_service::{
     DataServiceCapabilities, DataServiceExecutor, MutationExecutor, MutationRequest,
-    MutationResult, QueryExecutor, QueryRequest, QueryResult, StreamChunk, StreamQueryExecutor,
+    MutationResult, QueryExecutor, QueryRequest, QueryResult, QueryStream, StreamQueryExecutor,
     Transaction, TransactionExecutor,
 };
 use teaql_runtime::InMemoryQueryEngine;
@@ -117,14 +117,16 @@ impl TransactionExecutor for LinuxDataServiceExecutor {
 }
 
 impl StreamQueryExecutor for LinuxDataServiceExecutor {
-    async fn query_stream(
+    fn query_stream(
         &self,
         _request: QueryRequest,
         _chunk_size: usize,
-    ) -> Result<Vec<StreamChunk>, Self::Error> {
-        Err(LinuxProviderError::ProcFs(
-            "Linux provider does not support streaming".to_owned(),
-        ))
+    ) -> QueryStream<'_, Self::Error> {
+        Box::pin(futures_util::stream::once(async {
+            Err(LinuxProviderError::ProcFs(
+                "Linux provider does not support streaming".to_owned(),
+            ))
+        }))
     }
 }
 

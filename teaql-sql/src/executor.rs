@@ -23,6 +23,14 @@ pub trait SqlTransport: Send + Sync {
     ) -> impl std::future::Future<Output = Result<u64, Self::Error>> + Send;
 }
 
+pub trait StreamingSqlTransport: SqlTransport {
+    fn stream_sql(
+        &self,
+        query: CompiledQuery,
+        chunk_size: usize,
+    ) -> teaql_data_service::QueryStream<'_, Self::Error>;
+}
+
 pub trait SqlTransactionTransport: SqlTransport {
     type Tx<'a>: SqlTransport<Error = Self::Error>
         + SqlTransaction<Error = Self::Error>
@@ -502,39 +510,35 @@ impl<
 
 impl<
     D: SqlDialect + Send + Sync,
-    T: SqlTransport + Send + Sync,
+    T: StreamingSqlTransport + Send + Sync,
     S: teaql_data_service::SchemaProvider + Send + Sync,
 > teaql_data_service::StreamQueryExecutor for SqlDataServiceExecutor<D, T, S>
 {
-    async fn query_stream(
+    fn query_stream(
         &self,
         request: teaql_data_service::QueryRequest,
         chunk_size: usize,
-    ) -> Result<Vec<teaql_data_service::StreamChunk>, Self::Error> {
-        use teaql_data_service::QueryExecutor;
-        let query_result = self.query(request).await?;
-        let mut chunks = Vec::new();
-        let mut current_chunk = Vec::new();
-        let mut chunk_index = 0;
-
-        for row in query_result.rows {
-            current_chunk.push(row);
-            if current_chunk.len() >= chunk_size {
-                chunks.push(teaql_data_service::StreamChunk {
-                    rows: std::mem::take(&mut current_chunk),
-                    chunk_index,
-                    is_last: false,
-                });
-                chunk_index += 1;
+    ) -> teaql_data_service::QueryStream<'_, Self::Error> {
+        use futures_util::StreamExt;
+        let entity = match self.schema_provider.get_entity(&request.query.entity) {
+            Some(entity) => entity,
+            None => {
+                return Box::pin(futures_util::stream::once(async {
+                    Err(SqlExecutorError::Compile(SqlCompileError::UnknownEntity(
+                        request.query.entity,
+                    )))
+                }));
             }
+        };
+        match self.dialect.compile_select(&entity, &request.query) {
+            Ok(compiled) => Box::pin(
+                self.transport
+                    .stream_sql(compiled, chunk_size)
+                    .map(|r| r.map_err(SqlExecutorError::Transport)),
+            ),
+            Err(error) => Box::pin(futures_util::stream::once(async {
+                Err(SqlExecutorError::Compile(error))
+            })),
         }
-
-        chunks.push(teaql_data_service::StreamChunk {
-            rows: current_chunk,
-            chunk_index,
-            is_last: true,
-        });
-
-        Ok(chunks)
     }
 }

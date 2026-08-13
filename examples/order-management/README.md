@@ -21,3 +21,14 @@ Edit the typed filter or ordering in `src/main.rs`. Compiler errors lead directl
 ### Materialized-list hard limit
 
 `execute_for_list` protects the service by applying a default hard limit of 10,000 rows. A requested page size above that ceiling fails explicitly. Trusted application code can call `hard_limit(...)` to override the outer-query ceiling. **Caution:** most applications should not override it; do so only for a reviewed, exceptional requirement. This setting does not describe streaming execution.
+
+### Streaming large root queries
+
+`execute_for_stream` returns a lazy stream of generated entities. The cursor is released when the stream finishes or is dropped:
+
+```rust
+let mut orders = request.stream(500).comment("export orders").purpose("reviewed export").execute_for_stream(&ctx).await?;
+while let Some(order) = orders.next().await { write_order(order?); }
+```
+
+The chunk size controls provider fetch batches, not a client-visible collection. **Caution:** normally keep the default 1,000. Streaming relation or aggregate enhancement is rejected; use a root query or `execute_for_list`. Ordinary TFP federation does not transport this stream and requires a separate protocol.
