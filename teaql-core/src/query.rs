@@ -37,6 +37,22 @@ mod hard_limit_tests {
                 .is_ok()
         );
     }
+
+    #[test]
+    fn continuous_page_fetch_is_explicit_and_validated() {
+        assert!(SelectQuery::new("Order").continuous_page_fetch.is_none());
+        let query =
+            SelectQuery::new("Order").optimize_for_continuous_page_fetch_with("recent-orders", 30);
+        let options = query.continuous_page_fetch.unwrap();
+        assert_eq!(options.namespace, "recent-orders");
+        assert_eq!(options.ttl_seconds, 30);
+    }
+
+    #[test]
+    #[should_panic(expected = "continuous page namespace must not be empty")]
+    fn continuous_page_fetch_rejects_empty_namespace() {
+        let _ = SelectQuery::new("Order").optimize_for_continuous_page_fetch_with(" ", 30);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -310,6 +326,32 @@ pub struct StreamConfig {
     pub chunk_size: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContinuousPageFetchOptions {
+    pub namespace: String,
+    pub ttl_seconds: u64,
+}
+
+impl ContinuousPageFetchOptions {
+    pub const DEFAULT_TTL_SECONDS: u64 = 600;
+
+    pub fn new(namespace: impl Into<String>, ttl_seconds: u64) -> Self {
+        let namespace = namespace.into();
+        assert!(
+            !namespace.trim().is_empty(),
+            "continuous page namespace must not be empty"
+        );
+        assert!(
+            ttl_seconds > 0,
+            "continuous page ttl_seconds must be positive"
+        );
+        Self {
+            namespace,
+            ttl_seconds,
+        }
+    }
+}
+
 impl Default for StreamConfig {
     fn default() -> Self {
         Self { chunk_size: 1000 }
@@ -343,6 +385,8 @@ pub struct SelectQuery {
     pub object_group_bys: Vec<ObjectGroupBy>,
     pub child_enhancements: Vec<SelectQuery>,
     pub stream_config: Option<StreamConfig>,
+    /// Explicit, process-local hint for transparent seek pagination of outer list queries.
+    pub continuous_page_fetch: Option<ContinuousPageFetchOptions>,
 }
 
 impl SelectQuery {
@@ -371,6 +415,7 @@ impl SelectQuery {
             object_group_bys: Vec::new(),
             child_enhancements: Vec::new(),
             stream_config: None,
+            continuous_page_fetch: None,
         }
     }
 
@@ -672,6 +717,23 @@ impl SelectQuery {
 
     pub fn page(self, offset: u64, limit: u64) -> Self {
         self.offset(offset).limit(limit)
+    }
+
+    pub fn optimize_for_continuous_page_fetch(mut self) -> Self {
+        self.continuous_page_fetch = Some(ContinuousPageFetchOptions::new(
+            "default",
+            ContinuousPageFetchOptions::DEFAULT_TTL_SECONDS,
+        ));
+        self
+    }
+
+    pub fn optimize_for_continuous_page_fetch_with(
+        mut self,
+        namespace: impl Into<String>,
+        ttl_seconds: u64,
+    ) -> Self {
+        self.continuous_page_fetch = Some(ContinuousPageFetchOptions::new(namespace, ttl_seconds));
+        self
     }
 
     /// Scope pagination to each distinct value of `field`.
