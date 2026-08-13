@@ -7,6 +7,7 @@ CRATES=(
   "teaql-data-service"
   "teaql-sql"
   "teaql-runtime"
+  "teaql-tfp-endpoint"
   "teaql-provider-meilisearch"
   "teaql-provider-mysql"
   "teaql-provider-postgres"
