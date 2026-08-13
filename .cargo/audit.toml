@@ -1,0 +1,5 @@
+[advisories]
+# rust_decimal declares rkyv 0.7 as an optional integration. It is present in
+# Cargo.lock metadata but is not enabled in TeaQL's resolved feature graph
+# (`cargo tree --all-features --target all -i rkyv` is empty).
+ignore = ["RUSTSEC-2026-0235"]
