@@ -316,6 +316,10 @@ impl SqlTransport for SqliteMutationExecutor {
 }
 
 impl teaql_sql::StreamingSqlTransport for SqliteMutationExecutor {
+    // A rusqlite statement and its rows borrow the guarded connection for the
+    // lifetime of the stream. This stream is intentionally local/non-Send, so
+    // retaining the synchronous guard across yields is required and safe.
+    #[allow(clippy::await_holding_lock)]
     fn stream_sql(
         &self,
         query: CompiledQuery,
