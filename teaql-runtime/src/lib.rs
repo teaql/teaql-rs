@@ -2053,6 +2053,7 @@ mod tests {
         );
 
         let query = teaql_core::SelectQuery {
+            hard_limit: 10_000,
             entity: String::from("Order"),
             projection: Vec::new(),
             expr_projection: Vec::new(),

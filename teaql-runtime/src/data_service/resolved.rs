@@ -183,6 +183,9 @@ where
         let query = self
             .prepare_select_query(query)
             .map_err(DataServiceError::Runtime)?;
+        let query = query
+            .prepare_for_list()
+            .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
         self.fetch_prepared_all(&query).await
     }
 

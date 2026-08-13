@@ -8,6 +8,18 @@ pub enum SortDirection {
     Desc,
 }
 
+#[cfg(test)]
+mod hard_limit_tests {
+    use super::*;
+
+    #[test]
+    fn list_limit_defaults_rejects_and_allows_explicit_override() {
+        assert_eq!(SelectQuery::new("Order").prepare_for_list().unwrap().slice.unwrap().limit, Some(10_000));
+        assert!(SelectQuery::new("Order").limit(10_001).prepare_for_list().is_err());
+        assert!(SelectQuery::new("Order").limit(10_001).hard_limit(20_000).prepare_for_list().is_ok());
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NamedExpr {
     pub alias: String,
@@ -287,6 +299,8 @@ impl Default for StreamConfig {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectQuery {
+    /// Safety ceiling for a fully materialized outer query.
+    pub hard_limit: u64,
     pub entity: String,
     pub projection: Vec<String>,
     pub expr_projection: Vec<NamedExpr>,
@@ -315,6 +329,7 @@ pub struct SelectQuery {
 impl SelectQuery {
     pub fn new(entity: impl Into<String>) -> Self {
         Self {
+            hard_limit: 10_000,
             entity: entity.into(),
             projection: Vec::new(),
             expr_projection: Vec::new(),
@@ -585,6 +600,41 @@ impl SelectQuery {
         });
         slice.limit = Some(limit);
         self
+    }
+
+    /// Override the outer materialized-list ceiling. Most callers should keep 10,000.
+    pub fn hard_limit(mut self, hard_limit: u64) -> Self {
+        assert!(hard_limit > 0, "hard_limit must be positive");
+        self.hard_limit = hard_limit;
+        self
+    }
+
+    /// Apply and validate list-materialization limits. This is intentionally not
+    /// used by streaming execution.
+    pub fn prepare_for_list(mut self) -> Result<Self, String> {
+        self.apply_list_limit(self.hard_limit, true)?;
+        Ok(self)
+    }
+
+    fn apply_list_limit(&mut self, ceiling: u64, outer: bool) -> Result<(), String> {
+        let slice = self.slice.get_or_insert(Slice { limit: None, offset: 0 });
+        match slice.limit {
+            Some(limit) if limit > ceiling => return Err(format!(
+                "QUERY_HARD_LIMIT_EXCEEDED: requested limit {limit} exceeds hard limit {ceiling}"
+            )),
+            None => slice.limit = Some(ceiling),
+            _ => {}
+        }
+        for relation in &mut self.relations {
+            if let Some(query) = relation.query.as_mut() {
+                query.apply_list_limit(10_000, false)?;
+            }
+        }
+        for query in &mut self.child_enhancements {
+            query.apply_list_limit(10_000, false)?;
+        }
+        let _ = outer;
+        Ok(())
     }
 
     pub fn offset(mut self, offset: u64) -> Self {
