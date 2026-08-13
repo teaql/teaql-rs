@@ -16,6 +16,10 @@ tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_j
 deadpool-postgres = "0.14"
 bytes = "1"
 teaql-core = { workspace = true }
+teaql-data-service = { workspace = true }
 teaql-runtime = { workspace = true }
 teaql-sql = { workspace = true }
 tokio = { workspace = true }
+async-stream = "0.3"
+futures-core = "0.3"
+futures-util = "0.3"

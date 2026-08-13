@@ -183,23 +183,47 @@ where
         let query = self
             .prepare_select_query(query)
             .map_err(DataServiceError::Runtime)?;
+        let query = query
+            .prepare_for_list()
+            .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
         self.fetch_prepared_all(&query).await
     }
 
-    /// Fetch records in streaming mode (chunked).
-    /// Returns a Vec of chunks, each chunk containing up to `chunk_size` rows.
-    /// Each chunk is enhanced (relations, children) before returning.
-    /// Requires E to implement StreamQueryExecutor.
+    /// Fetch root records from the provider cursor without materializing them.
+    /// Relation and aggregate enhancement needs a separate batched protocol and
+    /// is rejected here instead of silently returning incomplete entities.
     pub(crate) async fn fetch_stream_internal(
         &self,
         query: &SelectQuery,
-    ) -> Result<Vec<teaql_data_service::StreamChunk>, DataServiceError<E::Error>>
+    ) -> Result<
+        std::pin::Pin<
+            Box<
+                dyn futures_core::Stream<
+                        Item = Result<teaql_data_service::StreamChunk, DataServiceError<E::Error>>,
+                    > + '_,
+            >,
+        >,
+        DataServiceError<E::Error>,
+    >
     where
         E: teaql_data_service::StreamQueryExecutor,
     {
         let query = self
             .prepare_select_query(query)
             .map_err(DataServiceError::Runtime)?;
+        let query = query
+            .prepare_for_list()
+            .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
+
+        if !query.relations.is_empty()
+            || !query.child_enhancements.is_empty()
+            || !query.object_group_bys.is_empty()
+        {
+            return Err(DataServiceError::Runtime(RuntimeError::Graph(
+                "streaming relation or aggregate enhancement is not supported; stream a root query or use execute_for_list"
+                    .to_owned(),
+            )));
+        }
 
         let chunk_size = query
             .stream_config
@@ -219,34 +243,11 @@ where
             comment: query.comment.clone(),
         };
 
-        let chunks = self
-            .data_service
-            .executor
-            .query_stream(request, chunk_size)
-            .await
-            .map_err(DataServiceError::Executor)?;
-
-        // Enhance each chunk
-        let mut enhanced_chunks = Vec::with_capacity(chunks.len());
-        for mut chunk in chunks {
-            self.enhance_object_group_bys_internal(
-                &mut chunk.rows,
-                &query.object_group_bys,
-                &query.trace_chain,
-            )
-            .await?;
-            self.enhance_child_queries_internal(
-                &mut chunk.rows,
-                &query.child_enhancements,
-                &query.trace_chain,
-            )
-            .await?;
-            self.enhance_query_relations_internal(&mut chunk.rows, &query)
-                .await?;
-            enhanced_chunks.push(chunk);
-        }
-
-        Ok(enhanced_chunks)
+        let chunks = self.data_service.executor.query_stream(request, chunk_size);
+        use futures_util::StreamExt;
+        Ok(Box::pin(
+            chunks.map(|item| item.map_err(DataServiceError::Executor)),
+        ))
     }
 
     async fn fetch_prepared_all(
@@ -508,7 +509,16 @@ where
     pub async fn fetch_stream(
         &self,
         query: &PurposedSelectQuery,
-    ) -> Result<Vec<teaql_data_service::StreamChunk>, DataServiceError<E::Error>>
+    ) -> Result<
+        std::pin::Pin<
+            Box<
+                dyn futures_core::Stream<
+                        Item = Result<teaql_data_service::StreamChunk, DataServiceError<E::Error>>,
+                    > + '_,
+            >,
+        >,
+        DataServiceError<E::Error>,
+    >
     where
         E: teaql_data_service::StreamQueryExecutor,
     {

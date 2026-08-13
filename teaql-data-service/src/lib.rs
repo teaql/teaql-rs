@@ -113,13 +113,16 @@ pub struct StreamChunk {
     pub is_last: bool,
 }
 
+pub type QueryStream<'a, E> =
+    std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<StreamChunk, E>> + 'a>>;
+
 /// Streaming query executor. Returns rows in chunks rather than all at once.
 pub trait StreamQueryExecutor: DataServiceExecutor {
     fn query_stream(
         &self,
         request: QueryRequest,
         chunk_size: usize,
-    ) -> impl std::future::Future<Output = Result<Vec<StreamChunk>, Self::Error>> + Send;
+    ) -> QueryStream<'_, Self::Error>;
 }
 
 pub trait MutationExecutor: DataServiceExecutor {

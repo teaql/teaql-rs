@@ -33,7 +33,19 @@ pub trait TeaqlRecordDataService {
     async fn fetch_stream(
         &self,
         query: &PurposedSelectQuery,
-    ) -> Result<Vec<teaql_data_service::StreamChunk>, DataServiceError<Self::Error>>;
+    ) -> Result<
+        std::pin::Pin<
+            Box<
+                dyn futures_core::Stream<
+                        Item = Result<
+                            teaql_data_service::StreamChunk,
+                            DataServiceError<Self::Error>,
+                        >,
+                    > + '_,
+            >,
+        >,
+        DataServiceError<Self::Error>,
+    >;
 }
 
 pub trait TeaqlEntityDataService: TeaqlRecordDataService {
@@ -94,7 +106,19 @@ where
     async fn fetch_stream(
         &self,
         query: &PurposedSelectQuery,
-    ) -> Result<Vec<teaql_data_service::StreamChunk>, DataServiceError<Self::Error>> {
+    ) -> Result<
+        std::pin::Pin<
+            Box<
+                dyn futures_core::Stream<
+                        Item = Result<
+                            teaql_data_service::StreamChunk,
+                            DataServiceError<Self::Error>,
+                        >,
+                    > + '_,
+            >,
+        >,
+        DataServiceError<Self::Error>,
+    > {
         crate::EntityDataService::fetch_stream(self, query).await
     }
 }

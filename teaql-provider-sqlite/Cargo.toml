@@ -17,6 +17,10 @@ teaql-core = { workspace = true }
 teaql-data-service = { workspace = true }
 teaql-runtime = { workspace = true }
 teaql-sql = { workspace = true }
+async-stream = "0.3"
+futures-core = "0.3"
+futures-util = "0.3"
 
 [dev-dependencies]
+futures-executor = "0.3"
 teaql-macros = { workspace = true }

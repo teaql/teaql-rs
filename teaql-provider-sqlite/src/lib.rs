@@ -315,19 +315,46 @@ impl SqlTransport for SqliteMutationExecutor {
     }
 }
 
+impl teaql_sql::StreamingSqlTransport for SqliteMutationExecutor {
+    fn stream_sql(
+        &self,
+        query: CompiledQuery,
+        chunk_size: usize,
+    ) -> teaql_data_service::QueryStream<'_, Self::Error> {
+        let connection = self.connection.clone();
+        Box::pin(async_stream::try_stream! {
+            let params = bind_values(&query.params)?;
+            let guard = connection.lock().map_err(|err| MutationExecutorError::Lock(err.to_string()))?;
+            let mut statement = guard.prepare(&query.sql_with_comment())?;
+            let columns = statement_columns(&statement);
+            let mut rows = statement.query(params_from_iter(params.iter()))?;
+            let mut chunk = Vec::with_capacity(chunk_size); let mut index = 0;
+            while let Some(row) = rows.next()? {
+                chunk.push(decode_sqlite_row(row, &columns)?);
+                if chunk.len() == chunk_size { yield teaql_data_service::StreamChunk { rows: std::mem::take(&mut chunk), chunk_index: index, is_last: false }; index += 1; }
+            }
+            if !chunk.is_empty() { yield teaql_data_service::StreamChunk { rows: chunk, chunk_index: index, is_last: true }; }
+        })
+    }
+}
+
 impl teaql_data_service::StreamQueryExecutor for SqliteMutationExecutor {
-    async fn query_stream(
+    fn query_stream(
         &self,
         request: teaql_data_service::QueryRequest,
         chunk_size: usize,
-    ) -> Result<Vec<teaql_data_service::StreamChunk>, Self::Error> {
+    ) -> teaql_data_service::QueryStream<'_, Self::Error> {
         let dialect = SqliteDialect;
         // Use a dummy entity descriptor for compilation
         let entity_desc = teaql_core::EntityDescriptor::new(&request.query.entity);
-        let compiled = dialect
-            .compile_select(&entity_desc, &request.query)
-            .map_err(MutationExecutorError::SqlCompile)?;
-        SqliteMutationExecutor::fetch_stream(self, &compiled, chunk_size)
+        match dialect.compile_select(&entity_desc, &request.query) {
+            Ok(compiled) => {
+                teaql_sql::StreamingSqlTransport::stream_sql(self, compiled, chunk_size)
+            }
+            Err(error) => Box::pin(futures_util::stream::once(async {
+                Err(MutationExecutorError::SqlCompile(error))
+            })),
+        }
     }
 }
 
@@ -758,9 +785,54 @@ fn column_decl_type(column: &ColumnInfo) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::StreamExt;
     use teaql_core::{DeleteCommand, RecoverCommand};
     use teaql_macros::TeaqlEntity;
     use teaql_runtime::InMemoryMetadataStore;
+
+    #[test]
+    fn streaming_sql_yields_bounded_chunks_and_releases_cursor_on_drop() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE stream_fixture(id INTEGER);\
+                 INSERT INTO stream_fixture VALUES (1), (2), (3), (4), (5);",
+            )
+            .unwrap();
+        let executor = SqliteMutationExecutor::from_connection(connection);
+        let query = CompiledQuery {
+            sql: "SELECT id FROM stream_fixture ORDER BY id".to_owned(),
+            params: vec![],
+            comment: None,
+        };
+        let mut stream = teaql_sql::StreamingSqlTransport::stream_sql(&executor, query.clone(), 2);
+        let sizes = futures_executor::block_on(async {
+            let mut result = Vec::new();
+            while let Some(chunk) = stream.next().await {
+                result.push(chunk.unwrap().rows.len());
+            }
+            result
+        });
+        assert_eq!(sizes, vec![2, 2, 1]);
+
+        let mut early = teaql_sql::StreamingSqlTransport::stream_sql(&executor, query, 2);
+        assert_eq!(
+            futures_executor::block_on(early.next())
+                .unwrap()
+                .unwrap()
+                .rows
+                .len(),
+            2
+        );
+        drop(early);
+        let count: i64 = executor
+            .connection()
+            .lock()
+            .unwrap()
+            .query_row("SELECT count(*) FROM stream_fixture", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 5);
+    }
 
     #[test]
     fn decimal_bind_is_numeric_and_comparable() {

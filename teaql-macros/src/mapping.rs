@@ -135,8 +135,9 @@ pub fn decode_value_tokens(
                 ::teaql_core::Value::Decimal(v) => *v,
                 ::teaql_core::Value::I64(v) => ::teaql_core::Decimal::from(*v),
                 ::teaql_core::Value::U64(v) => ::teaql_core::Decimal::from(*v),
-                ::teaql_core::Value::F64(v) => ::teaql_core::Decimal::from_f64_retain(*v)
-                    .ok_or_else(|| ::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: non-finite f64", #field_name)))?,
+                ::teaql_core::Value::F64(v) if v.is_finite() => v.to_string().parse::<::teaql_core::Decimal>()
+                    .map_err(|_| ::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: decimal conversion failed", #field_name)))?,
+                ::teaql_core::Value::F64(_) => return Err(::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: non-finite f64", #field_name))),
                 other => return Err(::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: {:?}", #field_name, other))),
             }
         },

@@ -236,6 +236,27 @@ impl SqlTransport for PgMutationExecutor {
     }
 }
 
+impl teaql_sql::StreamingSqlTransport for PgMutationExecutor {
+    fn stream_sql(
+        &self,
+        query: CompiledQuery,
+        chunk_size: usize,
+    ) -> teaql_data_service::QueryStream<'_, Self::Error> {
+        let pool = self.pool.clone();
+        Box::pin(async_stream::try_stream! {
+            use futures_util::TryStreamExt;
+            let mut args = PgArgs { values: Vec::new() }; for value in &query.params { bind_pg(&mut args, value)?; }
+            let client = pool.get().await.map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
+            let params = args.as_refs();
+            let rows = client.query_raw(&query.sql, params).await?;
+            futures_util::pin_mut!(rows);
+            let mut chunk = Vec::with_capacity(chunk_size); let mut index = 0;
+            while let Some(row) = rows.try_next().await? { chunk.push(decode_pg_row(&row)?); if chunk.len()==chunk_size { yield teaql_data_service::StreamChunk { rows: std::mem::take(&mut chunk), chunk_index:index, is_last:false }; index+=1; } }
+            if !chunk.is_empty() { yield teaql_data_service::StreamChunk { rows:chunk, chunk_index:index, is_last:true }; }
+        })
+    }
+}
+
 impl teaql_sql::SqlTransaction for PgMutationExecutor {
     type Error = MutationExecutorError;
 
@@ -499,6 +520,41 @@ pub async fn ensure_postgres_schema_for(ctx: &UserContext) -> Result<(), Mutatio
 
     executor.ensure_schema(dialect, &entities).await?;
     ensure_initial_graphs_postgres(executor, dialect, ctx).await
+}
+
+#[cfg(test)]
+mod streaming_tests {
+    use super::*;
+    use futures_util::StreamExt;
+    use teaql_sql::StreamingSqlTransport;
+
+    #[tokio::test]
+    async fn streams_from_real_postgres_when_configured() {
+        let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let mut config = deadpool_postgres::Config::new();
+        config.url = Some(url);
+        let pool = config
+            .create_pool(
+                Some(deadpool_postgres::Runtime::Tokio1),
+                tokio_postgres::NoTls,
+            )
+            .unwrap();
+        let executor = PgMutationExecutor::new(pool);
+        let query = CompiledQuery {
+            sql: "SELECT id FROM (VALUES (1), (2), (3), (4), (5)) AS fixture(id) ORDER BY id"
+                .to_owned(),
+            params: vec![],
+            comment: None,
+        };
+        let mut stream = executor.stream_sql(query, 2);
+        let mut sizes = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            sizes.push(chunk.unwrap().rows.len());
+        }
+        assert_eq!(sizes, vec![2, 2, 1]);
+    }
 }
 
 impl PostgresSchemaExt for UserContext {
