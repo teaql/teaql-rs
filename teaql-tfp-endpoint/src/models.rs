@@ -303,16 +303,23 @@ pub struct TfpMutationQuery {
 
 impl TfpMutationQuery {
     pub fn to_core(&self) -> Result<MutationRequest, String> {
+        let comment = self
+            .comment
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or("Mutation audit reason is required")?;
         let trace = vec![TraceNode {
             entity_type: self.entity.clone(),
             entity_id: None, // Can be populated if needed
-            comment: self.comment.clone().unwrap_or_default(),
+            comment: comment.to_owned(),
         }];
 
         let id_val = self
             .id
             .as_ref()
-            .map(|v| teaql_core::Value::from(v.clone()))
+            .map(json_value)
+            .transpose()?
             .unwrap_or(teaql_core::Value::Null);
 
         match self.action.as_str() {
@@ -320,8 +327,10 @@ impl TfpMutationQuery {
                 let mut record = Record::new();
                 if let JsonValue::Object(map) = &self.payload {
                     for (k, v) in map {
-                        record.insert(k.clone(), v.clone().into());
+                        record.insert(k.clone(), json_value(v)?);
                     }
+                } else {
+                    return Err("Mutation payload must be an object".into());
                 }
                 Ok(MutationRequest::Insert(InsertCommand {
                     entity: self.entity.clone(),
@@ -333,8 +342,10 @@ impl TfpMutationQuery {
                 let mut record = Record::new();
                 if let JsonValue::Object(map) = &self.payload {
                     for (k, v) in map {
-                        record.insert(k.clone(), v.clone().into());
+                        record.insert(k.clone(), json_value(v)?);
                     }
+                } else {
+                    return Err("Mutation payload must be an object".into());
                 }
                 Ok(MutationRequest::Update(UpdateCommand {
                     entity: self.entity.clone(),
@@ -421,6 +432,41 @@ mod tests {
             query
                 .map_fields(&BTreeMap::from([("id".into(), "id".into())]))
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn mutation_converts_json_scalars_and_requires_audit_reason() {
+        let mutation = TfpMutationQuery {
+            entity: "OrderSearchPreset".into(),
+            action: "Update".into(),
+            payload: json!({"name":"Swift verified", "version":2, "active":true}),
+            id: Some(json!(900001)),
+            comment: Some("Verify Swift audited mutation".into()),
+        };
+        let request = mutation.to_core().unwrap();
+        let teaql_data_service::MutationRequest::Update(command) = request else {
+            panic!("expected update command")
+        };
+        assert_eq!(command.id, Value::I64(900001));
+        assert_eq!(
+            command.values.get("name"),
+            Some(&Value::Text("Swift verified".into()))
+        );
+        assert_eq!(command.values.get("version"), Some(&Value::I64(2)));
+        assert_eq!(command.values.get("active"), Some(&Value::Bool(true)));
+        assert_eq!(
+            command.trace_chain[0].comment,
+            "Verify Swift audited mutation"
+        );
+
+        let missing_reason = TfpMutationQuery {
+            comment: Some(" ".into()),
+            ..mutation
+        };
+        assert_eq!(
+            missing_reason.to_core().unwrap_err(),
+            "Mutation audit reason is required"
         );
     }
 }
