@@ -17,8 +17,9 @@ mod memory;
 mod registry;
 
 pub use context::{
-    DataStore, InMemoryDataStore, InfoLogEntry, LogPayload, SchemaProvider, SqlLogEntry,
-    SqlLogOperation, SqlLogOptions, UnifiedLogBuffer, UnifiedLogEntry, UserContext,
+    ContinuousPageCursor, ContinuousPageCursorStore, DataStore, InMemoryContinuousPageCursorStore,
+    InMemoryDataStore, InfoLogEntry, LogPayload, SchemaProvider, SqlLogEntry, SqlLogOperation,
+    SqlLogOptions, UnifiedLogBuffer, UnifiedLogEntry, UserContext,
 };
 pub use data_service::{
     AggregationCacheBackend, EntityDataService, GraphTransactionBoundary, InMemoryAggregationCache,
@@ -1822,6 +1823,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn continuous_page_fetch_uses_id_seek_for_the_next_page() {
+        let rows = (91_u64..=100)
+            .rev()
+            .map(|id| {
+                Record::from([
+                    (String::from("id"), Value::U64(id)),
+                    (String::from("version"), Value::I64(1)),
+                    (String::from("name"), Value::Text(format!("order-{id}"))),
+                ])
+            })
+            .collect();
+        let mut ctx = UserContext::new()
+            .with_user_identifier("tenant-1:user-1")
+            .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(CapturingQueryExecutor {
+            rows,
+            queries: Mutex::new(Vec::new()),
+        });
+        let repo = ctx
+            .entity_data_service::<CapturingQueryExecutor>("Order")
+            .unwrap();
+
+        let first = SelectQuery::new("Order")
+            .order_desc("id")
+            .page(0, 10)
+            .optimize_for_continuous_page_fetch_with("recent-orders", 60);
+        repo.fetch_all_internal(&first).await.unwrap();
+        assert_eq!(
+            ctx.continuous_page_plan().as_deref(),
+            Some("OFFSET_FALLBACK:FIRST_PAGE")
+        );
+
+        let second = SelectQuery::new("Order")
+            .order_desc("id")
+            .page(10, 10)
+            .optimize_for_continuous_page_fetch_with("recent-orders", 60);
+        repo.fetch_all_internal(&second).await.unwrap();
+        assert_eq!(ctx.continuous_page_plan().as_deref(), Some("CURSOR_SEEK"));
+        assert!(ctx.continuous_page_cursor_id().is_some());
+
+        let captured = ctx
+            .get_resource::<CapturingQueryExecutor>()
+            .unwrap()
+            .queries
+            .lock()
+            .unwrap();
+        assert_eq!(
+            captured[1].slice.as_ref().map(|slice| slice.offset),
+            Some(0)
+        );
+        assert!(format!("{:?}", captured[1].filter).contains("Lt"));
+        assert!(format!("{:?}", captured[1].filter).contains("U64(91)"));
+    }
+
+    #[tokio::test]
     async fn aggregation_cache_is_namespaced_and_invalidated_after_write() {
         let executor = QueueExecutor {
             affected: 1,
@@ -2087,6 +2145,7 @@ mod tests {
             search_with_text: None,
             child_enhancements: Vec::new(),
             stream_config: None,
+            continuous_page_fetch: None,
         };
 
         let rows = data_service.fetch_all(&query).unwrap();

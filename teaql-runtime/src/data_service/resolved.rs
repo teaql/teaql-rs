@@ -1,19 +1,32 @@
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use teaql_core::{
-    AggregationCacheOptions, DeleteCommand, Entity, InsertCommand, Record, RecoverCommand,
-    RelationAggregate, SelectQuery, SmartList, UpdateCommand, Value,
+    AggregationCacheOptions, DeleteCommand, Entity, Expr, InsertCommand, Record, RecoverCommand,
+    RelationAggregate, SelectQuery, SmartList, SortDirection, UpdateCommand, Value,
 };
 
 use crate::{
-    CheckObjectStatus, DataServiceError, EntityDataServiceBehavior, PurposedSelectQuery,
-    RawAuditEvent, RuntimeError, clear_record_status, mark_record_status,
+    CheckObjectStatus, ContinuousPageCursor, DataServiceError, EntityDataServiceBehavior,
+    PurposedSelectQuery, RawAuditEvent, RuntimeError, clear_record_status, mark_record_status,
 };
 
 use super::{
     AggregationCacheBackend, ContextDataService, EntityDataService, InMemoryAggregationCache,
     UserContextMetadata, helpers::*,
 };
+
+#[derive(Debug, Clone)]
+struct ContinuousPageExecution {
+    query_key: String,
+    direction: SortDirection,
+    page_size: u64,
+    original_offset: u64,
+    ttl_seconds: u64,
+    optimized: bool,
+    seek_cursor_id: Option<String>,
+}
 
 impl<'a, E> EntityDataService<'a, E>
 where
@@ -189,6 +202,199 @@ where
         self.fetch_prepared_all(&query).await
     }
 
+    async fn prepare_continuous_page(
+        &self,
+        query: SelectQuery,
+    ) -> (SelectQuery, Option<ContinuousPageExecution>) {
+        let Some(options) = query.continuous_page_fetch.as_ref() else {
+            self.data_service
+                .metadata
+                .context
+                .observe_continuous_page("DISABLED", None);
+            return (query, None);
+        };
+        let Some(slice) = query.slice.as_ref() else {
+            self.data_service
+                .metadata
+                .context
+                .observe_continuous_page("OFFSET_FALLBACK:INVALID_SLICE", None);
+            return (query, None);
+        };
+        let Some(page_size) = slice.limit else {
+            self.data_service
+                .metadata
+                .context
+                .observe_continuous_page("OFFSET_FALLBACK:INVALID_SLICE", None);
+            return (query, None);
+        };
+        if query.partition_by.is_some()
+            || !query.aggregates.is_empty()
+            || !query.group_by.is_empty()
+        {
+            self.data_service
+                .metadata
+                .context
+                .observe_continuous_page("OFFSET_FALLBACK:UNSUPPORTED_QUERY_SHAPE", None);
+            return (query, None);
+        }
+        if query.order_by.len() != 1
+            || query.order_by[0].field != "id"
+            || query.order_by[0].expr.is_some()
+        {
+            self.data_service
+                .metadata
+                .context
+                .observe_continuous_page("OFFSET_FALLBACK:ORDER_NOT_SEEKABLE_ID", None);
+            return (query, None);
+        }
+        let direction = query.order_by[0].direction;
+        let query_key = self.continuous_page_query_key(&query, &options.namespace);
+        let execution = ContinuousPageExecution {
+            query_key: query_key.clone(),
+            direction,
+            page_size,
+            original_offset: slice.offset,
+            ttl_seconds: options.ttl_seconds,
+            optimized: false,
+            seek_cursor_id: None,
+        };
+        if slice.offset == 0 {
+            self.data_service
+                .metadata
+                .context
+                .observe_continuous_page("OFFSET_FALLBACK:FIRST_PAGE", None);
+            return (query, Some(execution));
+        }
+        let cursor = match self
+            .data_service
+            .metadata
+            .context
+            .continuous_page_cursor_store()
+            .get(&query_key, slice.offset)
+            .await
+        {
+            Ok(Some(cursor)) => cursor,
+            Ok(None) => {
+                self.data_service
+                    .metadata
+                    .context
+                    .observe_continuous_page("OFFSET_FALLBACK:CACHE_MISS", None);
+                return (query, Some(execution));
+            }
+            Err(_) => {
+                self.data_service
+                    .metadata
+                    .context
+                    .observe_continuous_page("OFFSET_FALLBACK:STORE_UNAVAILABLE", None);
+                return (query, Some(execution));
+            }
+        };
+        if cursor.entity != query.entity
+            || cursor.direction != direction
+            || cursor.page_size != page_size
+            || cursor.next_offset != slice.offset
+            || cursor.expires_at <= SystemTime::now()
+        {
+            self.data_service
+                .metadata
+                .context
+                .observe_continuous_page("OFFSET_FALLBACK:CURSOR_INVALID", None);
+            return (query, Some(execution));
+        }
+        let mut optimized = query;
+        optimized.slice.as_mut().expect("validated slice").offset = 0;
+        optimized = optimized.and_filter(match direction {
+            SortDirection::Asc => Expr::gt("id", cursor.boundary.clone()),
+            SortDirection::Desc => Expr::lt("id", cursor.boundary.clone()),
+        });
+        let seek_cursor_id = cursor.cursor_id;
+        self.data_service
+            .metadata
+            .context
+            .observe_continuous_page("CURSOR_SEEK", Some(seek_cursor_id.clone()));
+        (
+            optimized,
+            Some(ContinuousPageExecution {
+                optimized: true,
+                seek_cursor_id: Some(seek_cursor_id),
+                ..execution
+            }),
+        )
+    }
+
+    async fn register_continuous_page(
+        &self,
+        execution: &Option<ContinuousPageExecution>,
+        rows: &[Record],
+    ) {
+        let Some(execution) = execution else { return };
+        if rows.len() as u64 != execution.page_size {
+            return;
+        }
+        let Some(boundary) = rows.last().and_then(|row| row.get("id")).cloned() else {
+            return;
+        };
+        let cursor_id = format!(
+            "cpg_{:x}",
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let cursor = ContinuousPageCursor {
+            cursor_id,
+            query_key: execution.query_key.clone(),
+            entity: self.entity.clone(),
+            direction: execution.direction,
+            boundary,
+            page_size: execution.page_size,
+            next_offset: execution.original_offset + rows.len() as u64,
+            expires_at: SystemTime::now() + Duration::from_secs(execution.ttl_seconds),
+        };
+        if self
+            .data_service
+            .metadata
+            .context
+            .continuous_page_cursor_store()
+            .put(cursor)
+            .await
+            .is_err()
+        {
+            self.data_service
+                .metadata
+                .context
+                .observe_continuous_page("OFFSET_FALLBACK:STORE_UNAVAILABLE", None);
+        } else if execution.optimized {
+            self.data_service
+                .metadata
+                .context
+                .observe_continuous_page("CURSOR_SEEK", execution.seek_cursor_id.clone());
+        } else {
+            self.data_service
+                .metadata
+                .context
+                .observe_continuous_page("OFFSET_FALLBACK:FIRST_PAGE", None);
+        }
+    }
+
+    fn continuous_page_query_key(&self, query: &SelectQuery, namespace: &str) -> String {
+        let mut normalized = query.clone();
+        if let Some(slice) = normalized.slice.as_mut() {
+            slice.offset = 0;
+        }
+        normalized.comment = None;
+        normalized.trace_chain.clear();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        namespace.hash(&mut hasher);
+        format!("{normalized:?}").hash(&mut hasher);
+        self.data_service
+            .metadata
+            .context
+            .user_identifier()
+            .hash(&mut hasher);
+        format!("teaql:continuous-page:v1:{:016x}", hasher.finish())
+    }
+
     /// Fetch root records from the provider cursor without materializing them.
     /// Relation and aggregate enhancement needs a separate batched protocol and
     /// is rejected here instead of silently returning incomplete entities.
@@ -254,21 +460,27 @@ where
         &self,
         query: &SelectQuery,
     ) -> Result<Vec<Record>, DataServiceError<E::Error>> {
-        let mut rows = self.fetch_prepared_query(query).await?;
+        let query = query
+            .clone()
+            .prepare_for_list()
+            .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
+        let (execution_query, continuous) = self.prepare_continuous_page(query).await;
+        let mut rows = self.fetch_prepared_query(&execution_query).await?;
         self.enhance_object_group_bys_internal(
             &mut rows,
-            &query.object_group_bys,
-            &query.trace_chain,
+            &execution_query.object_group_bys,
+            &execution_query.trace_chain,
         )
         .await?;
         self.enhance_child_queries_internal(
             &mut rows,
-            &query.child_enhancements,
-            &query.trace_chain,
+            &execution_query.child_enhancements,
+            &execution_query.trace_chain,
         )
         .await?;
-        self.enhance_query_relations_internal(&mut rows, query)
+        self.enhance_query_relations_internal(&mut rows, &execution_query)
             .await?;
+        self.register_continuous_page(&continuous, &rows).await;
         Ok(rows)
     }
 

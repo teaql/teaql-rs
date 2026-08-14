@@ -17,6 +17,87 @@ use crate::{
 };
 use crate::{DataServiceError, EntityRoot};
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContinuousPageCursor {
+    pub cursor_id: String,
+    pub query_key: String,
+    pub entity: String,
+    pub direction: teaql_core::SortDirection,
+    pub boundary: Value,
+    pub page_size: u64,
+    pub next_offset: u64,
+    pub expires_at: SystemTime,
+}
+
+#[async_trait::async_trait]
+pub trait ContinuousPageCursorStore: Send + Sync + 'static {
+    async fn get(
+        &self,
+        query_key: &str,
+        target_offset: u64,
+    ) -> Result<Option<ContinuousPageCursor>, String>;
+    async fn put(&self, cursor: ContinuousPageCursor) -> Result<(), String>;
+    async fn invalidate(&self, query_key: &str) -> Result<(), String>;
+}
+
+pub struct InMemoryContinuousPageCursorStore {
+    cursors: Mutex<HashMap<String, ContinuousPageCursor>>,
+    max_entries: usize,
+}
+
+impl Default for InMemoryContinuousPageCursorStore {
+    fn default() -> Self {
+        Self {
+            cursors: Mutex::new(HashMap::new()),
+            max_entries: 4096,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ContinuousPageCursorStore for InMemoryContinuousPageCursorStore {
+    async fn get(
+        &self,
+        query_key: &str,
+        target_offset: u64,
+    ) -> Result<Option<ContinuousPageCursor>, String> {
+        let key = format!("{query_key}:{target_offset}");
+        let mut cursors = self.cursors.lock().map_err(|e| e.to_string())?;
+        if cursors
+            .get(&key)
+            .is_some_and(|cursor| cursor.expires_at <= SystemTime::now())
+        {
+            cursors.remove(&key);
+        }
+        Ok(cursors.get(&key).cloned())
+    }
+
+    async fn put(&self, cursor: ContinuousPageCursor) -> Result<(), String> {
+        let key = format!("{}:{}", cursor.query_key, cursor.next_offset);
+        let mut cursors = self.cursors.lock().map_err(|e| e.to_string())?;
+        if cursors.len() >= self.max_entries {
+            if let Some(expired_or_oldest) = cursors
+                .iter()
+                .min_by_key(|(_, value)| value.expires_at)
+                .map(|(key, _)| key.clone())
+            {
+                cursors.remove(&expired_or_oldest);
+            }
+        }
+        cursors.insert(key, cursor);
+        Ok(())
+    }
+
+    async fn invalidate(&self, query_key: &str) -> Result<(), String> {
+        let prefix = format!("{query_key}:");
+        self.cursors
+            .lock()
+            .map_err(|e| e.to_string())?
+            .retain(|key, _| !key.starts_with(&prefix));
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SqlLogOperation {
     Select,
@@ -148,6 +229,8 @@ pub struct UserContext {
     user_identifier: Option<String>,
     timezone: Option<String>,
     trace_id: String,
+    continuous_page_cursor_store: std::sync::Arc<dyn ContinuousPageCursorStore>,
+    continuous_page_observation: Mutex<(String, Option<String>)>,
 }
 
 impl Default for UserContext {
@@ -189,6 +272,10 @@ impl Default for UserContext {
                     .unwrap_or_default()
                     .as_micros()
             ),
+            continuous_page_cursor_store: std::sync::Arc::new(
+                InMemoryContinuousPageCursorStore::default(),
+            ),
+            continuous_page_observation: Mutex::new(("DISABLED".to_owned(), None)),
         }
     }
 }
@@ -244,6 +331,41 @@ impl UserContext {
 
     pub fn set_user_identifier(&mut self, user_identifier: impl Into<String>) {
         self.user_identifier = Some(user_identifier.into());
+    }
+
+    pub fn set_continuous_page_cursor_store(
+        &mut self,
+        store: std::sync::Arc<dyn ContinuousPageCursorStore>,
+    ) {
+        self.continuous_page_cursor_store = store;
+    }
+
+    pub fn continuous_page_plan(&self) -> Option<String> {
+        self.continuous_page_observation
+            .lock()
+            .ok()
+            .map(|value| value.0.clone())
+    }
+
+    pub fn continuous_page_cursor_id(&self) -> Option<String> {
+        self.continuous_page_observation
+            .lock()
+            .ok()
+            .and_then(|value| value.1.clone())
+    }
+
+    pub(crate) fn observe_continuous_page(
+        &self,
+        plan: impl Into<String>,
+        cursor_id: Option<String>,
+    ) {
+        if let Ok(mut observation) = self.continuous_page_observation.lock() {
+            *observation = (plan.into(), cursor_id);
+        }
+    }
+
+    pub(crate) fn continuous_page_cursor_store(&self) -> &dyn ContinuousPageCursorStore {
+        self.continuous_page_cursor_store.as_ref()
     }
 
     pub fn with_user_identifier(mut self, user_identifier: impl Into<String>) -> Self {

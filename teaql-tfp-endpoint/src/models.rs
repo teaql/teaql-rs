@@ -403,6 +403,7 @@ mod tests {
         assert_eq!(core.aggregates[0].field, "id");
         assert_eq!(core.aggregates[0].alias, "record_count");
         assert_eq!(core.order_by[0].field, "order_number");
+        assert!(core.continuous_page_fetch.is_none());
     }
 
     #[test]
