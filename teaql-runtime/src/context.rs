@@ -655,8 +655,8 @@ impl UserContext {
                     teaql_data_service::DataServiceOperation::Batch => SqlLogOperation::Update,
                     teaql_data_service::DataServiceOperation::Schema => SqlLogOperation::Update,
                 },
-                sql: String::new(), // Not available in metadata
-                params: Vec::new(), // Not available in metadata
+                sql: metadata.parameterized_query.clone().unwrap_or_default(),
+                params: metadata.params.clone(),
                 pretty_sql: pretty_sql(debug_sql),
                 debug_sql: debug_sql.clone(),
                 started_at: metadata.started_at,

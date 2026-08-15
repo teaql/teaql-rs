@@ -142,6 +142,8 @@ impl QueryExecutor for MeilisearchProvider {
                 trace_chain: Vec::new(),
                 comment: None,
                 backend_request_id: None,
+                parameterized_query: None,
+                params: Vec::new(),
             },
         })
     }
@@ -194,6 +196,8 @@ impl MutationExecutor for MeilisearchProvider {
                         trace_chain: Vec::new(),
                         comment: None,
                         backend_request_id: None,
+                        parameterized_query: None,
+                        params: Vec::new(),
                     },
                 })
             }
@@ -213,6 +217,8 @@ impl MutationExecutor for MeilisearchProvider {
                         trace_chain: Vec::new(),
                         comment: None,
                         backend_request_id: None,
+                        parameterized_query: None,
+                        params: Vec::new(),
                     },
                 })
             }

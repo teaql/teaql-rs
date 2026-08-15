@@ -89,6 +89,11 @@ pub struct ExecutionMetadata {
     pub trace_chain: Vec<TraceNode>,
     pub comment: Option<String>,
     pub backend_request_id: Option<String>,
+    /// Provider-native parameterized request text. For SQL this contains
+    /// placeholders and never interpolated bind values.
+    pub parameterized_query: Option<String>,
+    /// Structured bind values corresponding to `parameterized_query`.
+    pub params: Vec<teaql_core::Value>,
     pub debug_query: Option<String>,
 }
 

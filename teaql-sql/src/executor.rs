@@ -148,6 +148,8 @@ impl<
                 trace_chain: request.trace_chain,
                 comment: request.comment,
                 backend_request_id: None,
+                parameterized_query: Some(compiled.sql.clone()),
+                params: compiled.params.clone(),
                 debug_query: Some(compiled.debug_sql(self.dialect.kind())),
             };
 
@@ -174,10 +176,16 @@ impl<
                 MutationRequest::Recover(cmd) => &cmd.entity,
                 MutationRequest::Batch(mutations) => {
                     let mut total_affected = 0;
+                    let mut parameterized_queries = Vec::new();
+                    let mut params = Vec::new();
+                    let mut debug_queries = Vec::new();
                     let start = SystemTime::now();
                     for req in mutations {
                         let res = Box::pin(self.mutate(req.clone())).await?;
                         total_affected += res.affected_rows;
+                        if let Some(query) = res.metadata.parameterized_query { parameterized_queries.push(query); }
+                        params.extend(res.metadata.params);
+                        if let Some(query) = res.metadata.debug_query { debug_queries.push(query); }
                     }
                     let end = SystemTime::now();
                     return Ok(MutationResult {
@@ -193,7 +201,9 @@ impl<
                             trace_chain: Vec::new(),
                             comment: None,
                             backend_request_id: None,
-                            debug_query: None,
+                            parameterized_query: (!parameterized_queries.is_empty()).then(|| parameterized_queries.join("; ")),
+                            params,
+                            debug_query: (!debug_queries.is_empty()).then(|| debug_queries.join("; ")),
                         },
                     });
                 }
@@ -252,6 +262,8 @@ impl<
                 trace_chain: request.trace_chain().to_vec(),
                 comment: request.comment().map(|s| s.to_owned()),
                 backend_request_id: None,
+                parameterized_query: Some(compiled.sql.clone()),
+                params: compiled.params.clone(),
                 debug_query: Some(compiled.debug_sql(self.dialect.kind())),
             };
 
@@ -336,6 +348,8 @@ impl<
                 trace_chain: request.trace_chain,
                 comment: request.comment,
                 backend_request_id: None,
+                parameterized_query: Some(compiled.sql.clone()),
+                params: compiled.params.clone(),
                 debug_query: Some(compiled.debug_sql(self.dialect.kind())),
             };
 
@@ -363,10 +377,16 @@ impl<
                 MutationRequest::Recover(cmd) => &cmd.entity,
                 MutationRequest::Batch(mutations) => {
                     let mut total_affected = 0;
+                    let mut parameterized_queries = Vec::new();
+                    let mut params = Vec::new();
+                    let mut debug_queries = Vec::new();
                     let start = SystemTime::now();
                     for req in mutations {
                         let res = Box::pin(self.mutate(req.clone())).await?;
                         total_affected += res.affected_rows;
+                        if let Some(query) = res.metadata.parameterized_query { parameterized_queries.push(query); }
+                        params.extend(res.metadata.params);
+                        if let Some(query) = res.metadata.debug_query { debug_queries.push(query); }
                     }
                     let end = SystemTime::now();
                     return Ok(MutationResult {
@@ -382,7 +402,9 @@ impl<
                             trace_chain: Vec::new(),
                             comment: None,
                             backend_request_id: None,
-                            debug_query: None,
+                            parameterized_query: (!parameterized_queries.is_empty()).then(|| parameterized_queries.join("; ")),
+                            params,
+                            debug_query: (!debug_queries.is_empty()).then(|| debug_queries.join("; ")),
                         },
                     });
                 }
@@ -441,6 +463,8 @@ impl<
                 trace_chain: request.trace_chain().to_vec(),
                 comment: request.comment().map(|s| s.to_owned()),
                 backend_request_id: None,
+                parameterized_query: Some(compiled.sql.clone()),
+                params: compiled.params.clone(),
                 debug_query: Some(compiled.debug_sql(self.dialect.kind())),
             };
 
