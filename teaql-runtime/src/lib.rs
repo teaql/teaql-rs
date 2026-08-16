@@ -1089,6 +1089,61 @@ mod tests {
         }
     }
 
+    #[test]
+    fn metadata_not_null_constraints_are_checked_without_a_custom_checker() {
+        let ctx = UserContext::new().with_metadata(
+            InMemoryMetadataStore::new().with_entity(
+                EntityDescriptor::new("School")
+                    .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+                    .property(PropertyDescriptor::new("contact_phone", DataType::Text).not_null()),
+            ),
+        );
+        let mut record = Record::from([
+            ("id".to_owned(), Value::U64(1)),
+            (
+                CHECK_OBJECT_STATUS_FIELD.to_owned(),
+                Value::from(CheckObjectStatus::Create),
+            ),
+        ]);
+
+        let error = ctx.check_and_fix_record("School", &mut record).unwrap_err();
+
+        match error {
+            RuntimeError::Check(results) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].rule, CheckRule::Required);
+                assert_eq!(results[0].location.to_string(), "contact_phone");
+            }
+            other => panic!("unexpected validation error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn metadata_not_null_constraints_allow_omitted_fields_on_partial_update() {
+        let ctx = UserContext::new().with_metadata(
+            InMemoryMetadataStore::new().with_entity(
+                EntityDescriptor::new("School")
+                    .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+                    .property(PropertyDescriptor::new("contact_phone", DataType::Text).not_null()),
+            ),
+        );
+        let mut record = Record::from([
+            ("id".to_owned(), Value::U64(1)),
+            (
+                CHECK_OBJECT_STATUS_FIELD.to_owned(),
+                Value::from(CheckObjectStatus::Update),
+            ),
+        ]);
+
+        ctx.check_and_fix_record("School", &mut record).unwrap();
+
+        record.insert("contact_phone".to_owned(), Value::Null);
+        assert!(matches!(
+            ctx.check_and_fix_record("School", &mut record),
+            Err(RuntimeError::Check(_))
+        ));
+    }
+
     #[tokio::test]
     async fn typed_checker_validates_and_fixes_derived_entities_without_record_access() {
         let mut ctx = UserContext::new()

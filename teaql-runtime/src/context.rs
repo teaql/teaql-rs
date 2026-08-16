@@ -11,10 +11,10 @@ use teaql_core::{EntityDescriptor, Record, UpdateCommand, Value};
 use teaql_sql::{CompiledQuery, DatabaseKind};
 
 use crate::{
-    CheckResults, CheckerRegistry, ContextError, EntityDataServiceBehavior,
-    EntityDataServiceBehaviorRegistry, EntityRegistry, GraphNode, InternalIdGenerator, Language,
-    MetadataStore, ObjectLocation, RawAuditEvent, RawAuditEventSink, RequestPolicy, RuntimeError,
-    local_id_generator, translate_check_result,
+    CheckObjectStatus, CheckResult, CheckResults, CheckerRegistry, ContextError,
+    EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry, EntityRegistry, GraphNode,
+    InternalIdGenerator, Language, MetadataStore, ObjectLocation, RawAuditEvent, RawAuditEventSink,
+    RequestPolicy, RuntimeError, local_id_generator, translate_check_result,
 };
 use crate::{DataServiceError, EntityRoot};
 
@@ -916,15 +916,42 @@ impl UserContext {
         record: &mut Record,
         location: &ObjectLocation,
     ) -> Result<(), RuntimeError> {
-        let Some(checker) = self
+        let status = CheckObjectStatus::from_record(record);
+        let checker = self
             .checker_registry
             .as_ref()
-            .and_then(|registry| registry.checker(entity))
-        else {
-            return Ok(());
-        };
+            .and_then(|registry| registry.checker(entity));
         let mut results = CheckResults::new();
-        checker.check_and_fix(self, record, location, &mut results);
+        if let Some(checker) = checker {
+            checker.check_and_fix(self, record, location, &mut results);
+        }
+
+        // Keep runtime validation aligned with the schema generated from the
+        // same metadata. Custom checkers get the first chance to supply or fix
+        // a value; afterwards every NOT NULL property must be present on a
+        // create, and an update must not explicitly clear one.
+        if let Some(descriptor) = self
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.entity(entity))
+        {
+            for property in descriptor
+                .properties
+                .iter()
+                .filter(|property| !property.nullable)
+            {
+                let missing = !record.contains_key(&property.name);
+                let null = matches!(record.get(&property.name), Some(Value::Null));
+                let property_location = location.clone().member(&property.name);
+                let already_reported = results.iter().any(|result| {
+                    result.rule == crate::CheckRule::Required
+                        && result.location == property_location
+                });
+                if ((status.is_create() && missing) || null) && !already_reported {
+                    results.push(CheckResult::required(property_location));
+                }
+            }
+        }
         if results.is_empty() {
             return Ok(());
         }
