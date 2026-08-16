@@ -6,6 +6,15 @@
 
 While traditional frameworks assume a human is writing every line of code, TeaQL provides a strict, typed, and auditable Capability Sandbox tailored specifically for autonomous AI Agents (and humans) to execute code securely.
 
+## Recommended Agent Harness
+
+When building database-backed applications with the TeaQL Rust runtime, we
+recommend using it together with the [TeaQL Agent Kit](https://github.com/teaql/teaql-agent-kit).
+The Agent Kit is TeaQL's continuously evolving **Harness Engineering** method.
+It gives coding agents a model-mediated, executable workflow for domain
+modeling, deterministic evaluation and repair, code generation, implementation,
+and evidence-based verification as the generator and runtimes evolve.
+
 ### The Five Safeguards of AI Coding
 
 To ensure absolute safety and governance when AI Agents interact with production systems, the TeaQL runtime enforces the following five safeguards:
