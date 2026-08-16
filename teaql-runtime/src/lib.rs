@@ -2490,6 +2490,23 @@ mod tests {
         let ctx4 = UserContext::new().with_user_identifier_option(Some("user-abc".to_owned()));
         assert_eq!(ctx4.user_identifier(), Some("user-abc"));
     }
+
+    #[test]
+    fn local_lock_enforces_ownership_timeout_and_lease_expiry() {
+        let first = UserContext::new();
+        let second = UserContext::new();
+        let key = format!("local-lock-{:?}", std::time::SystemTime::now());
+
+        assert!(first.try_local_lock(&key, 0, 50));
+        assert!(!second.try_local_lock(&key, 0, 50));
+        second.unlock_local(&key);
+        assert!(!second.try_local_lock(&key, 0, 50));
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        assert!(second.try_local_lock(&key, 0, 50));
+        second.unlock_local(&key);
+        assert!(first.try_local_lock(&key, 0, 50));
+        first.unlock_local(&key);
+    }
 }
 
 pub use checker::{

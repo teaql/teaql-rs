@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 
 use std::pin::Pin;
-use std::sync::Mutex;
-use std::time::{Duration, SystemTime};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime};
 
 use teaql_core::{EntityDescriptor, Record, UpdateCommand, Value};
 use teaql_sql::{CompiledQuery, DatabaseKind};
@@ -231,7 +232,23 @@ pub struct UserContext {
     trace_id: String,
     continuous_page_cursor_store: std::sync::Arc<dyn ContinuousPageCursorStore>,
     continuous_page_observation: Mutex<(String, Option<String>)>,
+    local_lock_owner: u64,
 }
+
+#[derive(Clone, Copy)]
+struct LocalLockEntry {
+    owner: u64,
+    expires_at: Option<Instant>,
+}
+
+#[derive(Default)]
+struct ProcessLocalLocks {
+    entries: Mutex<HashMap<String, LocalLockEntry>>,
+    changed: Condvar,
+}
+
+static PROCESS_LOCAL_LOCKS: OnceLock<ProcessLocalLocks> = OnceLock::new();
+static NEXT_LOCAL_LOCK_OWNER: AtomicU64 = AtomicU64::new(1);
 
 impl Default for UserContext {
     fn default() -> Self {
@@ -276,6 +293,7 @@ impl Default for UserContext {
                 InMemoryContinuousPageCursorStore::default(),
             ),
             continuous_page_observation: Mutex::new(("DISABLED".to_owned(), None)),
+            local_lock_owner: NEXT_LOCAL_LOCK_OWNER.fetch_add(1, Ordering::Relaxed),
         }
     }
 }
@@ -323,6 +341,55 @@ impl DataStore for InMemoryDataStore {
 impl UserContext {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn try_local_lock(&self, key: &str, timeout_millis: u64, expire_millis: u64) -> bool {
+        let locks = PROCESS_LOCAL_LOCKS.get_or_init(ProcessLocalLocks::default);
+        let deadline = Instant::now() + Duration::from_millis(timeout_millis);
+        let mut entries = locks.entries.lock().expect("local lock state poisoned");
+        loop {
+            let now = Instant::now();
+            match entries.get(key).copied() {
+                None => {
+                    entries.insert(key.to_owned(), LocalLockEntry {
+                        owner: self.local_lock_owner,
+                        expires_at: (expire_millis > 0)
+                            .then(|| now + Duration::from_millis(expire_millis)),
+                    });
+                    return true;
+                }
+                Some(current)
+                    if current.owner == self.local_lock_owner
+                        || current.expires_at.is_some_and(|expiry| now >= expiry) =>
+                {
+                    entries.insert(key.to_owned(), LocalLockEntry {
+                        owner: self.local_lock_owner,
+                        expires_at: (expire_millis > 0)
+                            .then(|| now + Duration::from_millis(expire_millis)),
+                    });
+                    return true;
+                }
+                Some(current) => {
+                    if timeout_millis == 0 || now >= deadline { return false; }
+                    let wake_after = current.expires_at
+                        .map(|expiry| expiry.saturating_duration_since(now))
+                        .unwrap_or_else(|| deadline.saturating_duration_since(now))
+                        .min(deadline.saturating_duration_since(now));
+                    let waited = locks.changed.wait_timeout(entries, wake_after)
+                        .expect("local lock state poisoned");
+                    entries = waited.0;
+                }
+            }
+        }
+    }
+
+    pub fn unlock_local(&self, key: &str) {
+        let locks = PROCESS_LOCAL_LOCKS.get_or_init(ProcessLocalLocks::default);
+        let mut entries = locks.entries.lock().expect("local lock state poisoned");
+        if entries.get(key).is_some_and(|entry| entry.owner == self.local_lock_owner) {
+            entries.remove(key);
+            locks.changed.notify_all();
+        }
     }
 
     pub fn user_identifier(&self) -> Option<&str> {
