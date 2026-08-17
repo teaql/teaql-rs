@@ -604,6 +604,24 @@ where
             self.execute_prepared_insert_with_comment(command.clone(), lineage)
                 .await?;
             node.values = command.values;
+            if let Some(id_property) = descriptor.id_property() {
+                if let Some(id) = node.values.get(&id_property.name).cloned() {
+                    node.values = self
+                        .fetch_graph_current_row_internal(
+                            &node.entity,
+                            &id_property.name,
+                            &id,
+                            active_scope.map(|s| s.to_trace_chain()).unwrap_or_default(),
+                        )
+                        .await?
+                        .ok_or_else(|| {
+                            DataServiceError::Runtime(RuntimeError::Graph(format!(
+                                "persisted {} record could not be read back",
+                                node.entity
+                            )))
+                        })?;
+                }
+            }
 
             for (name, relation, children) in many_relations {
                 let local_value =
@@ -793,6 +811,20 @@ where
                         );
                     }
                 }
+                node.values = self
+                    .fetch_graph_current_row_internal(
+                        &node.entity,
+                        &id_property.name,
+                        &id,
+                        active_scope.map(|s| s.to_trace_chain()).unwrap_or_default(),
+                    )
+                    .await?
+                    .ok_or_else(|| {
+                        DataServiceError::Runtime(RuntimeError::Graph(format!(
+                            "persisted {} record could not be read back",
+                            node.entity
+                        )))
+                    })?;
             }
 
             for (name, relation, children) in many_relations {

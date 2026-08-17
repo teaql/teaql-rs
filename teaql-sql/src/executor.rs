@@ -2,7 +2,7 @@
 #![allow(async_fn_in_trait)]
 
 use std::time::SystemTime;
-use teaql_core::Record;
+use teaql_core::{Expr, Record, SelectQuery};
 use teaql_data_service::{
     DataServiceCapabilities, DataServiceExecutor, DataServiceOperation, ExecutionMetadata,
     MutationExecutor, MutationRequest, MutationResult, QueryExecutor, QueryRequest, QueryResult,
@@ -55,6 +55,7 @@ pub trait SqlTransaction {
 pub enum SqlExecutorError<E: std::error::Error + Send + Sync + 'static> {
     Compile(SqlCompileError),
     Transport(E),
+    PersistedRecord(String),
 }
 
 impl<E: std::error::Error + Send + Sync + 'static> std::fmt::Display for SqlExecutorError<E> {
@@ -62,6 +63,7 @@ impl<E: std::error::Error + Send + Sync + 'static> std::fmt::Display for SqlExec
         match self {
             SqlExecutorError::Compile(e) => write!(f, "SQL compile error: {}", e),
             SqlExecutorError::Transport(e) => write!(f, "Transport error: {}", e),
+            SqlExecutorError::PersistedRecord(e) => write!(f, "Persisted record error: {}", e),
         }
     }
 }
@@ -183,14 +185,19 @@ impl<
                     for req in mutations {
                         let res = Box::pin(self.mutate(req.clone())).await?;
                         total_affected += res.affected_rows;
-                        if let Some(query) = res.metadata.parameterized_query { parameterized_queries.push(query); }
+                        if let Some(query) = res.metadata.parameterized_query {
+                            parameterized_queries.push(query);
+                        }
                         params.extend(res.metadata.params);
-                        if let Some(query) = res.metadata.debug_query { debug_queries.push(query); }
+                        if let Some(query) = res.metadata.debug_query {
+                            debug_queries.push(query);
+                        }
                     }
                     let end = SystemTime::now();
                     return Ok(MutationResult {
                         affected_rows: total_affected,
                         generated_values: Record::default(),
+                        persisted_record: None,
                         metadata: ExecutionMetadata {
                             backend: "sql".to_string(),
                             operation: DataServiceOperation::Batch,
@@ -201,9 +208,11 @@ impl<
                             trace_chain: Vec::new(),
                             comment: None,
                             backend_request_id: None,
-                            parameterized_query: (!parameterized_queries.is_empty()).then(|| parameterized_queries.join("; ")),
+                            parameterized_query: (!parameterized_queries.is_empty())
+                                .then(|| parameterized_queries.join("; ")),
                             params,
-                            debug_query: (!debug_queries.is_empty()).then(|| debug_queries.join("; ")),
+                            debug_query: (!debug_queries.is_empty())
+                                .then(|| debug_queries.join("; ")),
                         },
                     });
                 }
@@ -270,6 +279,7 @@ impl<
             Ok(MutationResult {
                 affected_rows,
                 generated_values: Record::default(),
+                persisted_record: None,
                 metadata,
             })
         }
@@ -384,14 +394,19 @@ impl<
                     for req in mutations {
                         let res = Box::pin(self.mutate(req.clone())).await?;
                         total_affected += res.affected_rows;
-                        if let Some(query) = res.metadata.parameterized_query { parameterized_queries.push(query); }
+                        if let Some(query) = res.metadata.parameterized_query {
+                            parameterized_queries.push(query);
+                        }
                         params.extend(res.metadata.params);
-                        if let Some(query) = res.metadata.debug_query { debug_queries.push(query); }
+                        if let Some(query) = res.metadata.debug_query {
+                            debug_queries.push(query);
+                        }
                     }
                     let end = SystemTime::now();
                     return Ok(MutationResult {
                         affected_rows: total_affected,
                         generated_values: Record::default(),
+                        persisted_record: None,
                         metadata: ExecutionMetadata {
                             backend: "sql".to_string(),
                             operation: DataServiceOperation::Batch,
@@ -402,9 +417,11 @@ impl<
                             trace_chain: Vec::new(),
                             comment: None,
                             backend_request_id: None,
-                            parameterized_query: (!parameterized_queries.is_empty()).then(|| parameterized_queries.join("; ")),
+                            parameterized_query: (!parameterized_queries.is_empty())
+                                .then(|| parameterized_queries.join("; ")),
                             params,
-                            debug_query: (!debug_queries.is_empty()).then(|| debug_queries.join("; ")),
+                            debug_query: (!debug_queries.is_empty())
+                                .then(|| debug_queries.join("; ")),
                         },
                     });
                 }
@@ -453,6 +470,38 @@ impl<
                 MutationRequest::Batch(_) => DataServiceOperation::Batch,
             };
 
+            let persisted_id = match &request {
+                MutationRequest::Insert(cmd) => cmd.values.get("id").cloned(),
+                MutationRequest::Update(cmd) => Some(cmd.id.clone()),
+                MutationRequest::Delete(cmd) if cmd.soft_delete => Some(cmd.id.clone()),
+                MutationRequest::Recover(cmd) => Some(cmd.id.clone()),
+                MutationRequest::Delete(_) | MutationRequest::Batch(_) => None,
+            };
+            let persisted_record = if affected_rows == 1 {
+                if let Some(id) = persisted_id {
+                    let query = SelectQuery::new(entity_name.clone()).filter(Expr::eq("id", id));
+                    let compiled_readback = self
+                        .dialect
+                        .compile_select(&entity_desc, &query)
+                        .map_err(SqlExecutorError::Compile)?;
+                    let mut rows = self
+                        .transport
+                        .fetch_all_sql(&compiled_readback)
+                        .await
+                        .map_err(SqlExecutorError::Transport)?;
+                    if rows.len() != 1 {
+                        return Err(SqlExecutorError::PersistedRecord(format!(
+                            "persisted {entity_name} record could not be read back"
+                        )));
+                    }
+                    rows.pop()
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
             let metadata = ExecutionMetadata {
                 backend: "sql".to_string(),
                 operation,
@@ -471,6 +520,7 @@ impl<
             Ok(MutationResult {
                 affected_rows,
                 generated_values: Record::default(),
+                persisted_record,
                 metadata,
             })
         }

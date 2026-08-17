@@ -231,20 +231,24 @@ fn graph_node_from_record(
 /// school.audit_as("创建学校").save(&ctx).await?;
 /// ```
 pub trait AuditedSaveExt {
+    type Entity;
+
     fn save<'a>(
         self,
         ctx: &'a UserContext,
-    ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Self::Entity, RuntimeError>> + Send + 'a>>;
 }
 
 impl<T> AuditedSaveExt for teaql_core::Audited<T>
 where
     T: Entity + Send + 'static,
 {
+    type Entity = T;
+
     fn save<'a>(
         self,
         ctx: &'a UserContext,
-    ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Self::Entity, RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
             let entity_name = T::entity_descriptor().name;
             let entity = self.into_entity(); // applies comment onto the entity
@@ -257,7 +261,8 @@ where
                         e
                     ))
                 })?;
-            saver.save_graph_dyn(ctx, node).await
+            let saved = saver.save_graph_dyn(ctx, node).await?;
+            T::from_record(saved.values).map_err(|e| RuntimeError::Graph(e.to_string()))
         })
     }
 }
@@ -272,7 +277,7 @@ where
 pub async fn save_audited_ledger_entity<T>(
     audited: teaql_core::Audited<T>,
     ctx: &UserContext,
-) -> Result<GraphNode, RuntimeError>
+) -> Result<T, RuntimeError>
 where
     T: crate::LedgerEntity + Send + 'static,
 {
@@ -293,9 +298,11 @@ where
             || !root.deleted_keys().is_empty()
             || !root.new_keys().is_empty();
         if has_ledger_changes {
-            return saver.save_ledger_dyn(ctx, node, root).await;
+            let saved = saver.save_ledger_dyn(ctx, node, root).await?;
+            return T::from_record(saved.values).map_err(|e| RuntimeError::Graph(e.to_string()));
         }
     }
 
-    saver.save_graph_dyn(ctx, node).await
+    let saved = saver.save_graph_dyn(ctx, node).await?;
+    T::from_record(saved.values).map_err(|e| RuntimeError::Graph(e.to_string()))
 }

@@ -450,6 +450,7 @@ mod tests {
             Ok(MutationResult {
                 affected_rows: self.affected,
                 generated_values: Record::new(),
+                persisted_record: None,
                 metadata: ExecutionMetadata {
                     debug_query: None,
                     backend: "stub".to_owned(),
@@ -542,6 +543,7 @@ mod tests {
             Ok(MutationResult {
                 affected_rows: self.affected,
                 generated_values: Record::new(),
+                persisted_record: None,
                 metadata: ExecutionMetadata {
                     debug_query: None,
                     backend: "queue".to_owned(),

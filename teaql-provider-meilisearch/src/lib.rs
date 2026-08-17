@@ -185,6 +185,7 @@ impl MutationExecutor for MeilisearchProvider {
                 Ok(MutationResult {
                     affected_rows: 1,
                     generated_values: Record::new(),
+                    persisted_record: None,
                     metadata: ExecutionMetadata {
                         debug_query: Some(format!("POST {} to Meilisearch", entity)),
                         backend: "meilisearch".to_owned(),
@@ -206,6 +207,7 @@ impl MutationExecutor for MeilisearchProvider {
                 Ok(MutationResult {
                     affected_rows: 0,
                     generated_values: Record::new(),
+                    persisted_record: None,
                     metadata: ExecutionMetadata {
                         debug_query: Some("Skipped non-insert mutation".to_owned()),
                         backend: "meilisearch".to_owned(),

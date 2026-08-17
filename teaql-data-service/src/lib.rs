@@ -64,6 +64,7 @@ impl MutationRequest {
 pub struct MutationResult {
     pub affected_rows: u64,
     pub generated_values: Record,
+    pub persisted_record: Option<Record>,
     pub metadata: ExecutionMetadata,
 }
 
