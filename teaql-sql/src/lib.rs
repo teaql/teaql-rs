@@ -586,4 +586,18 @@ mod tests {
             "UPDATE \"orders\" SET \"name\" = 'Alice''s Shop' WHERE ((\"id\" = 7) AND ('?' = '?'))"
         );
     }
+
+    #[test]
+    fn debug_sql_renders_copy_paste_statement_with_shared_semantics() {
+        let query = CompiledQuery {
+            sql: "SELECT * FROM school WHERE name = $1 AND active = $2 AND phone IS $3 AND repeated = $1 AND note = '$2'".to_owned(),
+            params: vec![Value::from("O'Brien School"), Value::Bool(true), Value::Null],
+            comment: None,
+        };
+
+        assert_eq!(
+            query.debug_sql(crate::DatabaseKind::PostgreSql),
+            "SELECT * FROM school WHERE name = 'O''Brien School' AND active = TRUE AND phone IS NULL AND repeated = 'O''Brien School' AND note = '$2'"
+        );
+    }
 }
