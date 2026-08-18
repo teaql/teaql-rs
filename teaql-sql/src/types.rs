@@ -39,48 +39,64 @@ impl CompiledQuery {
     }
 }
 
-fn handle_sql_quote(
-    chars: &mut std::iter::Peekable<std::str::Chars>,
-    output: &mut String,
-    in_string: &mut bool,
-) {
-    output.push('\'');
-    match *in_string && matches!(chars.peek(), Some('\'')) {
-        true => {
-            output.push(chars.next().expect("peeked quote must exist"));
-        }
-        false => {
-            *in_string = !*in_string;
-        }
-    }
-}
-
 fn replace_postgres_placeholders(sql: &str, params: &[Value]) -> String {
     let mut output = String::with_capacity(sql.len());
     let mut chars = sql.chars().peekable();
-    let mut in_string = false;
+    let mut state = SqlScanState::Sql;
     while let Some(ch) = chars.next() {
-        if ch == '\'' {
-            handle_sql_quote(&mut chars, &mut output, &mut in_string);
-            continue;
-        }
-        if !in_string && ch == '$' && chars.peek().is_some_and(|next| next.is_ascii_digit()) {
-            let mut index = String::new();
-            while let Some(next) = chars.peek().copied().filter(char::is_ascii_digit) {
-                index.push(next);
-                chars.next();
+        match state {
+            SqlScanState::Sql => match (ch, chars.peek().copied()) {
+                ('\'', _) => { output.push(ch); state = SqlScanState::SingleQuote; }
+                ('"', _) => { output.push(ch); state = SqlScanState::DoubleQuote; }
+                ('-', Some('-')) => {
+                    output.push_str("--"); chars.next(); state = SqlScanState::LineComment;
+                }
+                ('/', Some('*')) => {
+                    output.push_str("/*"); chars.next(); state = SqlScanState::BlockComment;
+                }
+                ('$', Some(next)) if next.is_ascii_digit() => {
+                    let mut index = String::new();
+                    while let Some(next) = chars.peek().copied().filter(char::is_ascii_digit) {
+                        index.push(next); chars.next();
+                    }
+                    if let Ok(index) = index.parse::<usize>()
+                        && let Some(value) = index.checked_sub(1).and_then(|idx| params.get(idx))
+                    {
+                        output.push_str(&sql_literal(value, DatabaseKind::PostgreSql));
+                    } else {
+                        output.push('$'); output.push_str(&index);
+                    }
+                }
+                _ => output.push(ch),
+            },
+            SqlScanState::SingleQuote => {
+                output.push(ch);
+                if ch == '\'' {
+                    if matches!(chars.peek(), Some('\'')) {
+                        output.push(chars.next().expect("peeked escaped quote"));
+                    } else { state = SqlScanState::Sql; }
+                }
             }
-            if let Ok(index) = index.parse::<usize>()
-                && let Some(value) = index.checked_sub(1).and_then(|idx| params.get(idx))
-            {
-                output.push_str(&sql_literal(value, DatabaseKind::PostgreSql));
-                continue;
+            SqlScanState::DoubleQuote => {
+                output.push(ch);
+                if ch == '"' {
+                    if matches!(chars.peek(), Some('"')) {
+                        output.push(chars.next().expect("peeked escaped identifier"));
+                    } else { state = SqlScanState::Sql; }
+                }
             }
-            output.push('$');
-            output.push_str(&index);
-            continue;
+            SqlScanState::LineComment => {
+                output.push(ch);
+                if matches!(ch, '\r' | '\n') { state = SqlScanState::Sql; }
+            }
+            SqlScanState::BlockComment => {
+                output.push(ch);
+                if ch == '*' && matches!(chars.peek(), Some('/')) {
+                    output.push(chars.next().expect("peeked comment end"));
+                    state = SqlScanState::Sql;
+                }
+            }
         }
-        output.push(ch);
     }
     output
 }
@@ -181,8 +197,22 @@ fn sql_literal(value: &Value, kind: DatabaseKind) -> String {
         Value::Decimal(value) => value.to_string(),
         Value::Text(value) => quoted_sql_string(value),
         Value::Json(value) => quoted_sql_string(&value.to_string()),
-        Value::Date(value) => quoted_sql_string(&value.to_string()),
-        Value::Timestamp(value) => value.0.to_string(),
+        Value::Date(value) => match kind {
+            DatabaseKind::PostgreSql => format!("DATE '{}'", value),
+            DatabaseKind::MySql => format!("CAST('{}' AS DATE)", value),
+            DatabaseKind::Sqlite => quoted_sql_string(&value.to_string()),
+        },
+        Value::Timestamp(value) => match kind {
+            DatabaseKind::Sqlite => value.0.to_string(),
+            DatabaseKind::PostgreSql => format!(
+                "TIMESTAMPTZ '{}'",
+                value.to_datetime().format("%Y-%m-%d %H:%M:%S%.3fZ")
+            ),
+            DatabaseKind::MySql => format!(
+                "CAST('{}' AS DATETIME(3))",
+                value.to_datetime().naive_utc().format("%Y-%m-%d %H:%M:%S%.3f")
+            ),
+        },
         Value::Object(value) => {
             quoted_sql_string(&Value::Object(value.clone()).to_json_value().to_string())
         }

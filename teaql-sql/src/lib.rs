@@ -617,4 +617,30 @@ mod tests {
             "/* teaql purpose=temporal.verify ? $1 */ -- line ? $1\nSELECT '?', \"identifier?\", '2024-02-29', 1787110200123 /* block ? */"
         );
     }
+
+    #[test]
+    fn postgres_and_mysql_debug_sql_use_typed_temporal_literals() {
+        let params = vec![
+            Value::Date("2024-02-29".parse().unwrap()),
+            Value::Timestamp(teaql_core::time::Timestamp(-315_521_754_322)),
+        ];
+        let postgres = CompiledQuery {
+            sql: "-- ignored $1\nSELECT $1, $2 /* ignored $2 */".to_owned(),
+            params: params.clone(),
+            comment: None,
+        };
+        assert_eq!(
+            postgres.debug_sql(crate::DatabaseKind::PostgreSql),
+            "-- ignored $1\nSELECT DATE '2024-02-29', TIMESTAMPTZ '1960-01-02 03:04:05.678Z' /* ignored $2 */"
+        );
+        let mysql = CompiledQuery {
+            sql: "SELECT ?, ? /* ignored ? */".to_owned(),
+            params,
+            comment: None,
+        };
+        assert_eq!(
+            mysql.debug_sql(crate::DatabaseKind::MySql),
+            "SELECT CAST('2024-02-29' AS DATE), CAST('1960-01-02 03:04:05.678' AS DATETIME(3)) /* ignored ? */"
+        );
+    }
 }

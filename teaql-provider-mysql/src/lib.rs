@@ -529,7 +529,7 @@ pub async fn ensure_mysql_schema_for(ctx: &UserContext) -> Result<(), MutationEx
 mod streaming_tests {
     use super::*;
     use futures_util::StreamExt;
-    use teaql_sql::StreamingSqlTransport;
+    use teaql_sql::{SqlTransport, StreamingSqlTransport};
 
     #[tokio::test]
     async fn streams_from_real_mysql_when_configured() {
@@ -544,6 +544,24 @@ mod streaming_tests {
             sizes.push(chunk.unwrap().rows.len());
         }
         assert_eq!(sizes, vec![2, 2, 1]);
+    }
+
+    #[tokio::test]
+    async fn temporal_debug_sql_matches_real_mysql_when_configured() {
+        let Ok(url) = std::env::var("TEAQL_TEST_MYSQL_URL") else { return; };
+        let executor = MysqlMutationExecutor::new(mysql_async::Pool::new(url.as_str()));
+        executor.execute_sql(&CompiledQuery { sql: "DROP TABLE IF EXISTS teaql_temporal_runtime_fixture".to_owned(), params: vec![], comment: None }).await.unwrap();
+        executor.execute_sql(&CompiledQuery { sql: "CREATE TABLE teaql_temporal_runtime_fixture(id INTEGER, d DATE, t DATETIME(3))".to_owned(), params: vec![], comment: None }).await.unwrap();
+        let prepared = CompiledQuery {
+            sql: "INSERT INTO teaql_temporal_runtime_fixture VALUES (?, ?, ?)".to_owned(),
+            params: vec![Value::I64(1), Value::Date("2024-02-29".parse().unwrap()), Value::Timestamp(teaql_core::time::Timestamp(-315_521_754_322))],
+            comment: Some("teaql source=temporal.verify ?".to_owned()),
+        };
+        executor.execute_sql(&prepared).await.unwrap();
+        executor.execute_sql(&CompiledQuery { sql: prepared.debug_sql(DatabaseKind::MySql).replace("VALUES (1,", "VALUES (2,"), params: vec![], comment: None }).await.unwrap();
+        let rows = executor.fetch_all_sql(&CompiledQuery { sql: "SELECT d, t FROM teaql_temporal_runtime_fixture ORDER BY id".to_owned(), params: vec![], comment: None }).await.unwrap();
+        assert_eq!(rows[0], rows[1]);
+        executor.execute_sql(&CompiledQuery { sql: "DROP TABLE teaql_temporal_runtime_fixture".to_owned(), params: vec![], comment: None }).await.unwrap();
     }
 }
 
