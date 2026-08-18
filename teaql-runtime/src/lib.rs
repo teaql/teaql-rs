@@ -932,7 +932,7 @@ mod tests {
         assert_eq!(affected, 1);
         assert_eq!(
             telemetry_events.lock().unwrap().as_slice(),
-            ["start:mutation", "success"]
+            ["start:mutation", "start:provider", "success", "success"]
         );
     }
 

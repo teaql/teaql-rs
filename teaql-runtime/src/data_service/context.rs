@@ -97,7 +97,27 @@ where
         let operation = crate::RuntimeOperation::new(family, name)
             .attribute("teaql.entity.type", entity.to_owned());
         let scope = self.metadata.context.start_runtime_operation(operation);
-        match scope.run(work).await {
+        let provider_kind = std::any::type_name::<E>().to_owned();
+        let provider_operation = family.to_owned();
+        let result = scope
+            .run(async {
+                let provider_scope = self.metadata.context.start_runtime_operation(
+                    crate::RuntimeOperation::new(
+                        "provider",
+                        format!("{provider_kind}.{provider_operation}"),
+                    )
+                    .attribute("teaql.provider.kind", provider_kind)
+                    .attribute("teaql.provider.operation", provider_operation),
+                );
+                let result = provider_scope.run(work).await;
+                match &result {
+                    Ok(_) => provider_scope.success(BTreeMap::new()),
+                    Err(_) => provider_scope.failure("data_service_error"),
+                }
+                result
+            })
+            .await;
+        match result {
             Ok(value) => {
                 scope.success(BTreeMap::new());
                 Ok(value)
