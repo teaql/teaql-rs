@@ -5,13 +5,13 @@ use std::time::Instant;
 use opentelemetry::global::BoxedTracer;
 use opentelemetry::logs::{AnyValue, LogRecord, Logger, Severity};
 use opentelemetry::metrics::{Counter, Histogram, Meter};
-use opentelemetry::trace::{Span, Status, TraceContextExt, Tracer};
 use opentelemetry::propagation::Extractor;
+use opentelemetry::trace::{Span, Status, TraceContextExt, Tracer};
 use opentelemetry::{global, Context, KeyValue, Value};
 
 use crate::{
-    RuntimeAttributeValue, RuntimeOperation, RuntimeTelemetry,
-    RuntimeTelemetryPropagationContext, RuntimeTelemetryScope,
+    RuntimeAttributeValue, RuntimeOperation, RuntimeTelemetry, RuntimeTelemetryPropagationContext,
+    RuntimeTelemetryScope,
 };
 
 pub struct OpenTelemetryRuntimeTelemetry {
@@ -19,6 +19,8 @@ pub struct OpenTelemetryRuntimeTelemetry {
     duration: Histogram<f64>,
     operations: Counter<u64>,
     log_emitter: Option<RuntimeLogEmitter>,
+    flush: Arc<dyn Fn() + Send + Sync>,
+    shutdown: Arc<dyn Fn() + Send + Sync>,
 }
 
 type RuntimeLogEmitter = Arc<dyn Fn(&str, &str, &str, f64) + Send + Sync>;
@@ -38,7 +40,19 @@ impl OpenTelemetryRuntimeTelemetry {
                 .with_unit("{operation}")
                 .build(),
             log_emitter: None,
+            flush: Arc::new(|| {}),
+            shutdown: Arc::new(|| {}),
         }
+    }
+
+    pub fn with_lifecycle<F, S>(mut self, flush: F, shutdown: S) -> Self
+    where
+        F: Fn() + Send + Sync + 'static,
+        S: Fn() + Send + Sync + 'static,
+    {
+        self.flush = Arc::new(flush);
+        self.shutdown = Arc::new(shutdown);
+        self
     }
 
     pub fn with_logger<L>(mut self, logger: L) -> Self
@@ -93,15 +107,23 @@ impl RuntimeTelemetry for OpenTelemetryRuntimeTelemetry {
         });
         Box::new(OpenTelemetryPropagationContext { context })
     }
+
+    fn flush(&self) {
+        (self.flush)();
+    }
+
+    fn shutdown(&self) {
+        (self.shutdown)();
+    }
 }
 
 struct CaseInsensitiveCarrier<'a>(&'a BTreeMap<String, String>);
 
 impl Extractor for CaseInsensitiveCarrier<'_> {
     fn get(&self, key: &str) -> Option<&str> {
-        self.0.iter().find_map(|(name, value)| {
-            name.eq_ignore_ascii_case(key).then_some(value.as_str())
-        })
+        self.0
+            .iter()
+            .find_map(|(name, value)| name.eq_ignore_ascii_case(key).then_some(value.as_str()))
     }
 
     fn keys(&self) -> Vec<&str> {
@@ -198,6 +220,7 @@ fn otel_value(value: &RuntimeAttributeValue) -> Value {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
     use opentelemetry::global;
@@ -269,12 +292,10 @@ mod tests {
         let log_context = query_log.record.trace_context().expect("log trace context");
         assert_eq!(log_context.trace_id, query.span_context.trace_id());
         assert_eq!(log_context.span_id, query.span_context.span_id());
-        assert!(
-            query_log
-                .record
-                .attributes_iter()
-                .all(|(key, _)| key.as_str() != "teaql.entity.id")
-        );
+        assert!(query_log
+            .record
+            .attributes_iter()
+            .all(|(key, _)| key.as_str() != "teaql.entity.id"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -317,5 +338,31 @@ mod tests {
             .expect("server span");
         assert_eq!(server.span_context.trace_id().to_string(), trace_id);
         assert_eq!(server.parent_span_id.to_string(), parent_span_id);
+    }
+
+    #[test]
+    fn delegates_explicit_application_owned_lifecycle() {
+        let flushes = Arc::new(AtomicUsize::new(0));
+        let shutdowns = Arc::new(AtomicUsize::new(0));
+        let flush_probe = Arc::clone(&flushes);
+        let shutdown_probe = Arc::clone(&shutdowns);
+        let telemetry = OpenTelemetryRuntimeTelemetry::new(
+            global::tracer("io.teaql.runtime.lifecycle"),
+            global::meter("io.teaql.runtime.lifecycle"),
+        )
+        .with_lifecycle(
+            move || {
+                flush_probe.fetch_add(1, Ordering::SeqCst);
+            },
+            move || {
+                shutdown_probe.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+
+        telemetry.flush();
+        telemetry.shutdown();
+
+        assert_eq!(flushes.load(Ordering::SeqCst), 1);
+        assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
     }
 }
