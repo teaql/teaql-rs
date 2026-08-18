@@ -15,6 +15,9 @@ mod language;
 pub mod log_formatter;
 mod memory;
 mod registry;
+mod telemetry;
+#[cfg(feature = "opentelemetry")]
+mod telemetry_opentelemetry;
 
 pub use context::{
     ContinuousPageCursor, ContinuousPageCursorStore, DataStore, InMemoryContinuousPageCursorStore,
@@ -52,6 +55,12 @@ pub use registry::{
     InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityRegistry, InMemoryMetadataStore,
     MetadataStore, RequestPolicy, RuntimeModule,
 };
+pub use telemetry::{
+    FailOpenRuntimeTelemetryScope, NoopRuntimeTelemetry, RuntimeAttributeValue, RuntimeOperation,
+    RuntimeTelemetry, RuntimeTelemetryScope, start_runtime_operation,
+};
+#[cfg(feature = "opentelemetry")]
+pub use telemetry_opentelemetry::OpenTelemetryRuntimeTelemetry;
 
 #[cfg(test)]
 mod tests {
@@ -801,7 +810,11 @@ mod tests {
         );
         assert!(context.entity("CatalogProduct").is_some());
         assert!(context.has_entity_data_service("CatalogProduct"));
-        assert!(context.entity_data_service_behavior("CatalogProduct").is_some());
+        assert!(
+            context
+                .entity_data_service_behavior("CatalogProduct")
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -816,7 +829,11 @@ mod tests {
         let context =
             UserContext::new().with_module(crate::module!(CatalogProductRow => OrderBehavior));
         assert!(context.entity("CatalogProduct").is_some());
-        assert!(context.entity_data_service_behavior("CatalogProduct").is_some());
+        assert!(
+            context
+                .entity_data_service_behavior("CatalogProduct")
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -897,7 +914,9 @@ mod tests {
             rows: Vec::new(),
         });
 
-        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context
+            .entity_data_service::<StubExecutor>("Order")
+            .unwrap();
         assert_eq!(repo.entity(), "Order");
         assert_eq!(repo.select().entity, "Order");
 
@@ -934,7 +953,9 @@ mod tests {
             rows: Vec::new(),
         });
 
-        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context
+            .entity_data_service::<StubExecutor>("Order")
+            .unwrap();
 
         // let compiled = repo.compile(&repo.select()).unwrap();
         // assert!(compiled.sql.contains("WHERE (version = $1)"));
@@ -967,7 +988,9 @@ mod tests {
             rows: Vec::new(),
         });
 
-        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context
+            .entity_data_service::<StubExecutor>("Order")
+            .unwrap();
 
         // let compiled = repo.compile(&repo.select()).unwrap();
         // assert!(compiled.sql.contains("version = $1"));
@@ -999,7 +1022,9 @@ mod tests {
             rows: Vec::new(),
         });
 
-        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context
+            .entity_data_service::<StubExecutor>("Order")
+            .unwrap();
 
         let prepared = repo
             .prepare_insert_command(&repo.insert_command().value("id", 0_u64).value("name", "n"))
@@ -1046,7 +1071,9 @@ mod tests {
             rows: Vec::new(),
         });
 
-        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context
+            .entity_data_service::<StubExecutor>("Order")
+            .unwrap();
         let prepared = repo.prepare_insert_command(&repo.insert_command()).unwrap();
 
         assert_eq!(prepared.values.get("id"), Some(&Value::U64(99)));
@@ -1070,7 +1097,9 @@ mod tests {
             rows: Vec::new(),
         });
 
-        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context
+            .entity_data_service::<StubExecutor>("Order")
+            .unwrap();
         let prepared = repo
             .prepare_insert_command(&repo.insert_command().value("name", "valid"))
             .unwrap();
@@ -1108,7 +1137,9 @@ mod tests {
             ),
         ]);
 
-        let error = context.check_and_fix_record("School", &mut record).unwrap_err();
+        let error = context
+            .check_and_fix_record("School", &mut record)
+            .unwrap_err();
 
         match error {
             RuntimeError::Check(results) => {
@@ -1162,7 +1193,9 @@ mod tests {
             rows: Vec::new(),
         });
 
-        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context
+            .entity_data_service::<StubExecutor>("Order")
+            .unwrap();
         let prepared = repo
             .prepare_insert_command(
                 &repo
@@ -1225,12 +1258,13 @@ mod tests {
         }
 
         child.insert("name".to_owned(), Value::Text("valid child".to_owned()));
-        context.check_and_fix_record_at(
-            "Order",
-            &mut child,
-            &ObjectLocation::hash_root("lines").element(0),
-        )
-        .unwrap();
+        context
+            .check_and_fix_record_at(
+                "Order",
+                &mut child,
+                &ObjectLocation::hash_root("lines").element(0),
+            )
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1271,7 +1305,9 @@ mod tests {
             rows: Vec::new(),
         });
 
-        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context
+            .entity_data_service::<StubExecutor>("Order")
+            .unwrap();
         let error = repo
             .prepare_insert_command(&repo.insert_command())
             .unwrap_err();
@@ -1320,7 +1356,9 @@ mod tests {
             ])],
         });
 
-        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context
+            .entity_data_service::<StubExecutor>("Order")
+            .unwrap();
         repo.insert_internal(&repo.insert_command().value("name", "created"))
             .await
             .unwrap();
@@ -1425,7 +1463,9 @@ mod tests {
             rows: Vec::new(),
         });
 
-        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context
+            .entity_data_service::<StubExecutor>("Order")
+            .unwrap();
         let plans = repo.relation_plans().unwrap();
 
         assert_eq!(plans.len(), 1);
@@ -1456,7 +1496,9 @@ mod tests {
             rows: Vec::new(),
         });
 
-        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context
+            .entity_data_service::<StubExecutor>("Order")
+            .unwrap();
         let parent_rows = vec![
             Record::from([(String::from("id"), Value::U64(11))]),
             Record::from([(String::from("id"), Value::U64(12))]),
@@ -1505,7 +1547,9 @@ mod tests {
             ],
         });
 
-        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context
+            .entity_data_service::<StubExecutor>("Order")
+            .unwrap();
         let mut parents = vec![
             Record::from([(String::from("id"), Value::U64(11))]),
             Record::from([(String::from("id"), Value::U64(12))]),
@@ -1647,7 +1691,9 @@ mod tests {
             ])],
         });
 
-        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context
+            .entity_data_service::<StubExecutor>("Order")
+            .unwrap();
         let rows = repo
             .fetch_entities_internal::<OrderEntity>(&repo.select())
             .await
@@ -1772,7 +1818,9 @@ mod tests {
         context.insert_resource(PostgresDialect);
         context.insert_resource(executor);
 
-        let repo = context.entity_data_service::<QueueExecutor>("Order").unwrap();
+        let repo = context
+            .entity_data_service::<QueueExecutor>("Order")
+            .unwrap();
         let rows = repo
             .fetch_all_with_relation_aggregates_internal(
                 &repo
@@ -1832,7 +1880,9 @@ mod tests {
         context.insert_resource(PostgresDialect);
         context.insert_resource(executor);
 
-        let repo = context.entity_data_service::<QueueExecutor>("Order").unwrap();
+        let repo = context
+            .entity_data_service::<QueueExecutor>("Order")
+            .unwrap();
         let rows = repo
             .fetch_all_with_relation_aggregates_internal(
                 &repo
@@ -1875,7 +1925,9 @@ mod tests {
         context.insert_resource(executor);
         context.insert_resource(InMemoryAggregationCache::default());
 
-        let repo = context.entity_data_service::<QueueExecutor>("Order").unwrap();
+        let repo = context
+            .entity_data_service::<QueueExecutor>("Order")
+            .unwrap();
         let query = repo
             .select()
             .count("count")
@@ -1929,7 +1981,10 @@ mod tests {
             .page(10, 10)
             .optimize_for_continuous_page_fetch_with("recent-orders", 60);
         repo.fetch_all_internal(&second).await.unwrap();
-        assert_eq!(context.continuous_page_plan().as_deref(), Some("CURSOR_SEEK"));
+        assert_eq!(
+            context.continuous_page_plan().as_deref(),
+            Some("CURSOR_SEEK")
+        );
         assert!(context.continuous_page_cursor_id().is_some());
 
         let captured = context
@@ -1966,7 +2021,9 @@ mod tests {
                 as Arc<dyn AggregationCacheBackend>,
         );
 
-        let repo = context.entity_data_service::<QueueExecutor>("Order").unwrap();
+        let repo = context
+            .entity_data_service::<QueueExecutor>("Order")
+            .unwrap();
         let query = repo
             .select()
             .count("count")
@@ -2024,7 +2081,9 @@ mod tests {
         context.insert_resource(executor);
         context.insert_resource(InMemoryAggregationCache::default());
 
-        let repo = context.entity_data_service::<QueueExecutor>("Order").unwrap();
+        let repo = context
+            .entity_data_service::<QueueExecutor>("Order")
+            .unwrap();
         let query = repo
             .select()
             .project("id")
