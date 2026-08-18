@@ -97,7 +97,7 @@ where
         let operation = crate::RuntimeOperation::new(family, name)
             .attribute("teaql.entity.type", entity.to_owned());
         let scope = self.metadata.context.start_runtime_operation(operation);
-        match work.await {
+        match scope.run(work).await {
             Ok(value) => {
                 scope.success(BTreeMap::new());
                 Ok(value)

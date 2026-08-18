@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
 
@@ -90,6 +91,9 @@ fn is_forbidden_attribute(key: &str) -> bool {
 }
 
 pub trait RuntimeTelemetryScope: Send {
+    fn with_context(&self, callback: &mut dyn FnMut()) {
+        callback();
+    }
     fn success(&mut self, attributes: BTreeMap<String, RuntimeAttributeValue>);
     fn failure(&mut self, error_type: &str);
 }
@@ -121,6 +125,33 @@ pub struct FailOpenRuntimeTelemetryScope {
 }
 
 impl FailOpenRuntimeTelemetryScope {
+    pub async fn run<F: Future>(&self, future: F) -> F::Output {
+        futures_util::pin_mut!(future);
+        futures_util::future::poll_fn(|task_context| {
+            let mut result = None;
+            let Ok(delegate) = self.delegate.lock() else {
+                return future.as_mut().poll(task_context);
+            };
+            let Some(scope) = delegate.as_ref() else {
+                return future.as_mut().poll(task_context);
+            };
+            let mut invoked = false;
+            let mut callback = || {
+                invoked = true;
+                result = Some(future.as_mut().poll(task_context));
+            };
+            let context_result = catch_unwind(AssertUnwindSafe(|| {
+                scope.with_context(&mut callback);
+            }));
+            match (context_result, result) {
+                (_, Some(result)) => result,
+                (Err(payload), None) if invoked => std::panic::resume_unwind(payload),
+                _ => future.as_mut().poll(task_context),
+            }
+        })
+        .await
+    }
+
     pub fn success(&self, attributes: BTreeMap<String, RuntimeAttributeValue>) {
         self.finish(|scope| scope.success(attributes));
     }
@@ -161,6 +192,21 @@ mod tests {
         }
     }
 
+    struct BrokenContextTelemetry;
+    impl RuntimeTelemetry for BrokenContextTelemetry {
+        fn start(&self, _operation: RuntimeOperation) -> Box<dyn RuntimeTelemetryScope> {
+            Box::new(BrokenContextScope)
+        }
+    }
+    struct BrokenContextScope;
+    impl RuntimeTelemetryScope for BrokenContextScope {
+        fn with_context(&self, _callback: &mut dyn FnMut()) {
+            panic!("context adapter failed")
+        }
+        fn success(&mut self, _attributes: BTreeMap<String, RuntimeAttributeValue>) {}
+        fn failure(&mut self, _error_type: &str) {}
+    }
+
     #[test]
     fn strips_forbidden_attributes_and_is_fail_open() {
         let operation = RuntimeOperation::new("query", "School.list")
@@ -176,5 +222,13 @@ mod tests {
         let scope = start_runtime_operation(&telemetry, operation);
         scope.success(BTreeMap::new());
         scope.failure("late");
+    }
+
+    #[tokio::test]
+    async fn context_activation_is_fail_open() {
+        let telemetry: Arc<dyn RuntimeTelemetry> = Arc::new(BrokenContextTelemetry);
+        let scope =
+            start_runtime_operation(&telemetry, RuntimeOperation::new("query", "School.list"));
+        assert_eq!(scope.run(async { 42 }).await, 42);
     }
 }
