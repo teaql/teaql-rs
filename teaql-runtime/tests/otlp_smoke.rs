@@ -8,7 +8,7 @@ use opentelemetry::logs::LoggerProvider;
 use opentelemetry_otlp::{Protocol, WithExportConfig};
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
-use opentelemetry_sdk::trace::SdkTracerProvider;
+use opentelemetry_sdk::trace::{BatchSpanProcessor, SdkTracerProvider};
 use opentelemetry_sdk::Resource;
 use teaql_runtime::{
     start_runtime_operation, OpenTelemetryRuntimeTelemetry, RuntimeAttributeValue,
@@ -38,9 +38,17 @@ fn exports_query_trace_metric_and_log_through_otlp_http() {
         .with_endpoint(format!("{endpoint}/v1/traces"))
         .build()
         .expect("span exporter");
+    let span_processor = BatchSpanProcessor::builder(span_exporter)
+        .with_batch_config(
+            opentelemetry_sdk::trace::BatchConfigBuilder::default()
+                .with_max_queue_size(64)
+                .with_max_export_batch_size(16)
+                .build(),
+        )
+        .build();
     let tracer_provider = SdkTracerProvider::builder()
         .with_resource(resource.clone())
-        .with_simple_exporter(span_exporter)
+        .with_span_processor(span_processor)
         .build();
     global::set_tracer_provider(tracer_provider.clone());
 
@@ -62,15 +70,25 @@ fn exports_query_trace_metric_and_log_through_otlp_http() {
         .with_endpoint(format!("{endpoint}/v1/logs"))
         .build()
         .expect("log exporter");
+    let log_processor = opentelemetry_sdk::logs::BatchLogProcessor::builder(log_exporter)
+        .with_batch_config(
+            opentelemetry_sdk::logs::BatchConfigBuilder::default()
+                .with_max_queue_size(64)
+                .with_max_export_batch_size(16)
+                .build(),
+        )
+        .build();
     let logger_provider = SdkLoggerProvider::builder()
         .with_resource(resource)
-        .with_simple_exporter(log_exporter)
+        .with_log_processor(log_processor)
         .build();
-    let telemetry: Arc<dyn RuntimeTelemetry> = Arc::new(OpenTelemetryRuntimeTelemetry::new(
-        global::tracer("io.teaql.runtime"),
-        global::meter("io.teaql.runtime"),
-    )
-    .with_logger(logger_provider.logger("io.teaql.runtime")));
+    let telemetry: Arc<dyn RuntimeTelemetry> = Arc::new(
+        OpenTelemetryRuntimeTelemetry::new(
+            global::tracer("io.teaql.runtime"),
+            global::meter("io.teaql.runtime"),
+        )
+        .with_logger(logger_provider.logger("io.teaql.runtime")),
+    );
 
     let operations = [
         RuntimeOperation::new("query", "ConformanceProbe.list")
@@ -84,8 +102,7 @@ fn exports_query_trace_metric_and_log_through_otlp_http() {
         RuntimeOperation::new("provider", "sqlite.query")
             .attribute("teaql.provider.kind", "sqlite")
             .attribute("teaql.provider.operation", "query"),
-        RuntimeOperation::new("cache", "local.get")
-            .attribute("teaql.cache.operation", "get"),
+        RuntimeOperation::new("cache", "local.get").attribute("teaql.cache.operation", "get"),
         RuntimeOperation::new("tfp", "server.query").attribute("teaql.tfp.role", "server"),
         RuntimeOperation::new("audit", "ConformanceProbe.audit")
             .attribute("teaql.entity.type", "ConformanceProbe")
