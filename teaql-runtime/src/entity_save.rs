@@ -20,13 +20,13 @@ use crate::{DataServiceError, GraphNode, GraphOperation, RuntimeError, UserConte
 pub(crate) trait DynGraphSaver: Send + Sync {
     fn save_graph_dyn<'a>(
         &'a self,
-        ctx: &'a UserContext,
+        context: &'a UserContext,
         node: GraphNode,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>>;
 
     fn save_ledger_dyn<'a>(
         &'a self,
-        ctx: &'a UserContext,
+        context: &'a UserContext,
         node: GraphNode,
         root: crate::EntityRoot,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>>;
@@ -59,12 +59,12 @@ where
 {
     fn save_graph_dyn<'a>(
         &'a self,
-        ctx: &'a UserContext,
+        context: &'a UserContext,
         node: GraphNode,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
             let entity = node.entity.clone();
-            let eds = ctx
+            let eds = context
                 .entity_data_service::<E>(entity)
                 .map_err(|e| RuntimeError::Graph(e.to_string()))?;
             eds.save_graph_internal(node).await.map_err(|e| match e {
@@ -76,13 +76,13 @@ where
 
     fn save_ledger_dyn<'a>(
         &'a self,
-        ctx: &'a UserContext,
+        context: &'a UserContext,
         mut node: GraphNode,
         root: crate::EntityRoot,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
             let entity = node.entity.clone();
-            let eds = ctx
+            let eds = context
                 .entity_data_service::<E>(&entity)
                 .map_err(|e| RuntimeError::Graph(e.to_string()))?;
             let generated_ids =
@@ -93,7 +93,7 @@ where
                         other => RuntimeError::Graph(other.to_string()),
                     })?;
 
-            let descriptor = ctx.require_entity(&entity).unwrap();
+            let descriptor = context.require_entity(&entity).unwrap();
             if let Some(id_prop) = descriptor.id_property() {
                 let current_id = node
                     .values
@@ -120,7 +120,7 @@ where
 /// **not** the database executor.  It is the standalone equivalent of
 /// [`EntityDataService::graph_node_from_entity`].
 pub fn graph_node_from_entity<T: Entity>(
-    ctx: &UserContext,
+    context: &UserContext,
     entity: T,
 ) -> Result<GraphNode, RuntimeError> {
     let descriptor = T::entity_descriptor();
@@ -128,7 +128,7 @@ pub fn graph_node_from_entity<T: Entity>(
     let original_values = entity.original_values();
     let is_deleted = entity.is_marked_as_delete();
     let comment = entity.get_comment();
-    let mut node = graph_node_from_record(ctx, &descriptor.name, entity.into_record())?;
+    let mut node = graph_node_from_record(context, &descriptor.name, entity.into_record())?;
     node.dirty_fields = dirty_fields;
     node.original_values = original_values;
     if is_deleted {
@@ -143,13 +143,13 @@ pub fn graph_node_from_entity<T: Entity>(
 
 /// Recursively convert a [`Record`] into a [`GraphNode`] tree.
 ///
-/// Relations are resolved via the entity descriptors stored in `ctx`.
+/// Relations are resolved via the entity descriptors stored in `context`.
 fn graph_node_from_record(
-    ctx: &UserContext,
+    context: &UserContext,
     entity: &str,
     record: Record,
 ) -> Result<GraphNode, RuntimeError> {
-    let descriptor = ctx.require_entity(entity)?;
+    let descriptor = context.require_entity(entity)?;
     let mut node = GraphNode::new(entity);
 
     for (field, value) in record {
@@ -187,7 +187,7 @@ fn graph_node_from_record(
                 node.relations.entry(field).or_default();
             }
             Value::Object(record) => {
-                let child = graph_node_from_record(ctx, &relation.target_entity, record)?;
+                let child = graph_node_from_record(context, &relation.target_entity, record)?;
                 node.relations.entry(field).or_default().push(child);
             }
             Value::List(values) => {
@@ -200,7 +200,7 @@ fn graph_node_from_record(
                         )));
                     };
                     children.push(graph_node_from_record(
-                        ctx,
+                        context,
                         &relation.target_entity,
                         record,
                     )?);
@@ -219,21 +219,21 @@ fn graph_node_from_record(
 }
 
 // ---------------------------------------------------------------------------
-// AuditedSaveExt — the `.save(&ctx)` method on `Audited<T>`
+// AuditedSaveExt — the `.save(&context)` method on `Audited<T>`
 // ---------------------------------------------------------------------------
 
-/// Extension trait that provides the `.save(&ctx)` method on [`Audited<T>`](teaql_core::Audited).
+/// Extension trait that provides the `.save(&context)` method on [`Audited<T>`](teaql_core::Audited).
 ///
 /// # Example
 /// ```ignore
 /// use teaql_runtime::AuditedSaveExt;
 ///
-/// school.audit_as("创建学校").save(&ctx).await?;
+/// school.audit_as("创建学校").save(&context).await?;
 /// ```
 pub trait AuditedSaveExt {
     fn save<'a>(
         self,
-        ctx: &'a UserContext,
+        context: &'a UserContext,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>>;
 }
 
@@ -243,13 +243,13 @@ where
 {
     fn save<'a>(
         self,
-        ctx: &'a UserContext,
+        context: &'a UserContext,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
             let entity_name = T::entity_descriptor().name;
             let entity = self.into_entity(); // applies comment onto the entity
-            let node = graph_node_from_entity(ctx, entity)?;
-            let saver = ctx
+            let node = graph_node_from_entity(context, entity)?;
+            let saver = context
                 .require_resource::<Arc<dyn DynGraphSaver>>()
                 .map_err(|e| {
                     RuntimeError::Graph(format!(
@@ -257,7 +257,7 @@ where
                         e
                     ))
                 })?;
-            saver.save_graph_dyn(ctx, node).await
+            saver.save_graph_dyn(context, node).await
         })
     }
 }
@@ -266,12 +266,12 @@ where
 /// may span multiple related entities sharing the same [`EntityRoot`](crate::EntityRoot).
 ///
 /// Generated service crates use this as the implementation behind
-/// `entity.audit_as("why").save(&ctx)`. The audited wrapper is required by the
+/// `entity.audit_as("why").save(&context)`. The audited wrapper is required by the
 /// function signature; no unaudited entity write entry point is exposed.
 #[doc(hidden)]
 pub async fn save_audited_ledger_entity<T>(
     audited: teaql_core::Audited<T>,
-    ctx: &UserContext,
+    context: &UserContext,
 ) -> Result<GraphNode, RuntimeError>
 where
     T: crate::LedgerEntity + Send + 'static,
@@ -279,8 +279,8 @@ where
     let entity_name = T::entity_descriptor().name;
     let entity = audited.into_entity();
     let root = entity.entity_root();
-    let node = graph_node_from_entity(ctx, entity)?;
-    let saver = ctx
+    let node = graph_node_from_entity(context, entity)?;
+    let saver = context
         .require_resource::<Arc<dyn DynGraphSaver>>()
         .map_err(|e| {
             RuntimeError::Graph(format!(
@@ -293,9 +293,9 @@ where
             || !root.deleted_keys().is_empty()
             || !root.new_keys().is_empty();
         if has_ledger_changes {
-            return saver.save_ledger_dyn(ctx, node, root).await;
+            return saver.save_ledger_dyn(context, node, root).await;
         }
     }
 
-    saver.save_graph_dyn(ctx, node).await
+    saver.save_graph_dyn(context, node).await
 }

@@ -213,7 +213,7 @@ pub trait Checker: Send + Sync {
 
     fn check_and_fix(
         &self,
-        ctx: &UserContext,
+        context: &UserContext,
         record: &mut Record,
         location: &ObjectLocation,
         results: &mut CheckResults,
@@ -314,7 +314,7 @@ impl CheckerRegistry for InMemoryCheckerRegistry {
 pub trait TypedChecker<T>: Send + Sync {
     fn check_and_fix_typed(
         &self,
-        ctx: &UserContext,
+        context: &UserContext,
         entity: &mut T,
         status: CheckObjectStatus,
         location: &ObjectLocation,
@@ -362,7 +362,7 @@ where
 
     fn check_and_fix(
         &self,
-        ctx: &UserContext,
+        context: &UserContext,
         record: &mut Record,
         location: &ObjectLocation,
         results: &mut CheckResults,
@@ -374,7 +374,7 @@ where
         match T::from_record(owned_record) {
             Ok(mut entity) => {
                 self.checker
-                    .check_and_fix_typed(ctx, &mut entity, status, location, results);
+                    .check_and_fix_typed(context, &mut entity, status, location, results);
                 // Write mutated entity back into the original record slot.
                 *record = entity.into_record();
             }

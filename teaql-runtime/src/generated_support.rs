@@ -182,7 +182,7 @@ where
     type Error;
     fn save(
         self,
-        ctx: &'a C,
+        context: &'a C,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<GraphNode, Self::Error>> + '_>>;
 }
 
@@ -236,7 +236,7 @@ impl PurposedSelectQuery {
 }
 
 pub async fn execute_facets<C>(
-    ctx: &C,
+    context: &C,
     outer_query: &SelectQuery,
     options: &QueryOptions,
 ) -> Result<BTreeMap<String, SmartList<Record>>, RuntimeError>
@@ -249,7 +249,7 @@ where
         merge_outer_filter_into_facet_aggregates(&mut selection, outer_query);
         if !facet.include_all_facets {
             selection =
-                restrict_facet_to_outer_query(ctx, selection, outer_query, &facet.relation_name)?;
+                restrict_facet_to_outer_query(context, selection, outer_query, &facet.relation_name)?;
         }
         let relation_aggregates = runtime_relation_aggregates(&selection.query_options);
         let query = apply_runtime_metadata(
@@ -267,7 +267,7 @@ where
 
         let query =
             PurposedSelectQuery::new(query, format!("Calculate facet {}", facet.facet_name));
-        let facet_rows = ctx
+        let facet_rows = context
             .fetch_facet_smart_list(&entity, &query, &relation_aggregates, chain)
             .await?;
         facets.insert(facet.facet_name.clone(), facet_rows);
@@ -276,7 +276,7 @@ where
 }
 
 pub fn restrict_facet_to_outer_query<C>(
-    ctx: &C,
+    context: &C,
     mut selection: QuerySelection,
     outer_query: &SelectQuery,
     relation_name: &str,
@@ -284,7 +284,7 @@ pub fn restrict_facet_to_outer_query<C>(
 where
     C: TeaqlRuntime + ?Sized,
 {
-    let descriptor = ctx
+    let descriptor = context
         .user_context()
         .entity(&outer_query.entity)
         .cloned()

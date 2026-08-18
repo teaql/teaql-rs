@@ -85,24 +85,24 @@ pub fn behavior_registry() -> InMemoryEntityDataServiceBehaviorRegistry {
 }
 
 pub fn sqlite_context(executor: SqliteMutationExecutor) -> UserContext {
-    let mut ctx = UserContext::new()
+    let mut context = UserContext::new()
         .with_metadata(metadata())
         .with_entity_registry(entity_registry())
         .with_entity_data_service_behavior_registry(behavior_registry());
-    ctx.use_sqlite_provider(executor.clone());
+    context.use_sqlite_provider(executor.clone());
 
     // Register the executor and the audited graph-save capability.
     let data_service = SqlDataServiceExecutor::new(SqliteDialect, executor, metadata());
-    ctx.register_executor(data_service);
-    ctx
+    context.register_executor(data_service);
+    context
 }
 
 // pub fn postgres_context(executor: PgMutationExecutor) -> UserContext {
-//     let mut ctx = UserContext::new()
+//     let mut context = UserContext::new()
 //         .with_metadata(metadata())
 //         .with_entity_registry(entity_registry())
 //         .with_entity_data_service_behavior_registry(behavior_registry());
-//     ctx.use_postgres_provider(executor.clone());
+//     context.use_postgres_provider(executor.clone());
 //
 //     // Build and inject SqlDataServiceExecutor instead of the data service executor
 //     let data_service = SqlDataServiceExecutor::new(
@@ -110,8 +110,8 @@ pub fn sqlite_context(executor: SqliteMutationExecutor) -> UserContext {
 //         executor,
 //         metadata()
 //     );
-//     ctx.insert_resource(data_service);
-//     ctx
+//     context.insert_resource(data_service);
+//     context
 // }
 //
 // pub async fn reset_postgres_schema(

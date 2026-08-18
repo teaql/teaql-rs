@@ -116,13 +116,13 @@ where
 {
     fn check_and_fix_typed(
         &self,
-        ctx: &UserContext,
+        context: &UserContext,
         entity: &mut crate::OrderStatus,
         status: CheckObjectStatus,
         location: &ObjectLocation,
         results: &mut CheckResults,
     ) {
         self.logic
-            .check_and_fix_order_status(ctx, entity, status, location, results);
+            .check_and_fix_order_status(context, entity, status, location, results);
     }
 }

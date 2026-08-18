@@ -9,8 +9,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let executor = SqliteMutationExecutor::from_connection(connection);
     reset_sqlite_schema(&executor).await?;
 
-    let ctx = sqlite_context(executor);
-    let data_service = ctx.entity_data_service::<teaql_sql::SqlDataServiceExecutor<
+    let context = sqlite_context(executor);
+    let data_service = context.entity_data_service::<teaql_sql::SqlDataServiceExecutor<
         SqliteDialect,
         SqliteMutationExecutor,
         teaql_runtime::InMemoryMetadataStore,
@@ -49,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ]),
     }
     .audit_as("Create the example order graph")
-    .save(&ctx)
+    .save(&context)
     .await?;
 
     let query = PurposedSelectQuery::new(

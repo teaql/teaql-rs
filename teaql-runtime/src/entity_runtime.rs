@@ -297,9 +297,9 @@ impl EntityRoot {
     /// Any pending field changes for this entity are cleared — they are irrelevant
     /// when the entity is being deleted.
     pub fn mark_as_delete(&self, key: EntityKey) {
-        let mut ctx = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        ctx.change_sets.clear_entity(&key);
-        ctx.deleted_keys.insert(key);
+        let mut context = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        context.change_sets.clear_entity(&key);
+        context.deleted_keys.insert(key);
     }
 
     /// Check whether an entity has been marked for deletion.

@@ -124,7 +124,7 @@ impl SampleDataState {
 }
 
 pub async fn generate_sample_data<C>(
-    ctx: &C,
+    context: &C,
     plan: SampleDataPlan,
 ) -> Result<SampleDataReport, String>
 where
@@ -133,36 +133,36 @@ where
     log::info!("Starting sample data generation. Scale: {:?}, Seed: {}", plan.scale, plan.seed);
     let mut state = SampleDataState::new(plan);
 
-    load_root_commerce_platforms(ctx, &mut state).await?; //depth: 0
+    load_root_commerce_platforms(context, &mut state).await?; //depth: 0
 
-    load_constant_order_statuses(ctx, &mut state).await?;
+    load_constant_order_statuses(context, &mut state).await?;
 
-    ctx.user_context().transaction_data(|| async {
-        Box::pin(generate_customers(ctx, &mut state)).await.map_err(|e| {
+    context.user_context().transaction_data(|| async {
+        Box::pin(generate_customers(context, &mut state)).await.map_err(|e| {
             teaql_runtime::DataServiceError::Runtime(teaql_runtime::RuntimeError::Graph(e))
         })
     }).await.map_err(|e| e.to_string())?;
 
-    ctx.user_context().transaction_data(|| async {
-        Box::pin(generate_order_search_presets(ctx, &mut state)).await.map_err(|e| {
+    context.user_context().transaction_data(|| async {
+        Box::pin(generate_order_search_presets(context, &mut state)).await.map_err(|e| {
             teaql_runtime::DataServiceError::Runtime(teaql_runtime::RuntimeError::Graph(e))
         })
     }).await.map_err(|e| e.to_string())?;
 
-    ctx.user_context().transaction_data(|| async {
-        Box::pin(generate_products(ctx, &mut state)).await.map_err(|e| {
+    context.user_context().transaction_data(|| async {
+        Box::pin(generate_products(context, &mut state)).await.map_err(|e| {
             teaql_runtime::DataServiceError::Runtime(teaql_runtime::RuntimeError::Graph(e))
         })
     }).await.map_err(|e| e.to_string())?;
 
-    ctx.user_context().transaction_data(|| async {
-        Box::pin(generate_customer_orders(ctx, &mut state)).await.map_err(|e| {
+    context.user_context().transaction_data(|| async {
+        Box::pin(generate_customer_orders(context, &mut state)).await.map_err(|e| {
             teaql_runtime::DataServiceError::Runtime(teaql_runtime::RuntimeError::Graph(e))
         })
     }).await.map_err(|e| e.to_string())?;
 
-    ctx.user_context().transaction_data(|| async {
-        Box::pin(generate_order_lines(ctx, &mut state)).await.map_err(|e| {
+    context.user_context().transaction_data(|| async {
+        Box::pin(generate_order_lines(context, &mut state)).await.map_err(|e| {
             teaql_runtime::DataServiceError::Runtime(teaql_runtime::RuntimeError::Graph(e))
         })
     }).await.map_err(|e| e.to_string())?;
@@ -174,13 +174,13 @@ where
 }
 
 async fn load_root_commerce_platforms<C>(
-    ctx: &C,
+    context: &C,
     state: &mut SampleDataState,
 ) -> Result<(), String>
 where
     C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
 {
-    let list = Q::commerce_platforms().purpose("Init Sample Data").execute_for_list(ctx).await.unwrap_or_default();
+    let list = Q::commerce_platforms().purpose("Init Sample Data").execute_for_list(context).await.unwrap_or_default();
     for item in list {
         state.add_reference(crate::CommercePlatform::ENTITY_NAME, item.id().into_u64());
     }
@@ -188,13 +188,13 @@ where
 }
 
 async fn load_constant_order_statuses<C>(
-    ctx: &C,
+    context: &C,
     state: &mut SampleDataState,
 ) -> Result<(), String>
 where
     C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
 {
-    let list = Q::order_statuses().purpose("Init Sample Data").execute_for_list(ctx).await.unwrap_or_default();
+    let list = Q::order_statuses().purpose("Init Sample Data").execute_for_list(context).await.unwrap_or_default();
     for item in list {
         state.add_reference(crate::OrderStatus::ENTITY_NAME, item.id().into_u64());
     }
@@ -202,7 +202,7 @@ where
 }
 
 async fn generate_customers<C>(
-    ctx: &C,
+    context: &C,
     state: &mut SampleDataState,
 ) -> Result<(), String>
 where
@@ -227,7 +227,7 @@ where
     log::info!("Generating sample data for Customer (expected: {})...", fanout);
 
     for i in 0..fanout {
-        let mut entity = Q::customers().purpose("Init Sample Data").new_entity(ctx);
+        let mut entity = Q::customers().purpose("Init Sample Data").new_entity(context);
         let mut used_refs = std::collections::HashSet::new();
 
                 if let Some(ref_id) = state.pick_unused_id("Commerce Platform", i as usize, &used_refs) {
@@ -254,7 +254,7 @@ where
 
 
 
-        let entity = entity.audit_as("Init Sample Data").save(ctx).await.map_err(|e| e.to_string())?;
+        let entity = entity.audit_as("Init Sample Data").save(context).await.map_err(|e| e.to_string())?;
 
         state.record_generated(crate::Customer::ENTITY_NAME);
 
@@ -271,7 +271,7 @@ where
 
 
 async fn generate_order_search_presets<C>(
-    ctx: &C,
+    context: &C,
     state: &mut SampleDataState,
 ) -> Result<(), String>
 where
@@ -296,7 +296,7 @@ where
     log::info!("Generating sample data for Order Search Preset (expected: {})...", fanout);
 
     for i in 0..fanout {
-        let mut entity = Q::order_search_presets().purpose("Init Sample Data").new_entity(ctx);
+        let mut entity = Q::order_search_presets().purpose("Init Sample Data").new_entity(context);
         let mut used_refs = std::collections::HashSet::new();
 
                 if let Some(ref_id) = state.pick_unused_id("Commerce Platform", i as usize, &used_refs) {
@@ -327,7 +327,7 @@ where
 
 
 
-entity.audit_as("Init Sample Data").save(ctx).await.map_err(|e| e.to_string())?;
+entity.audit_as("Init Sample Data").save(context).await.map_err(|e| e.to_string())?;
 
         state.record_generated(crate::OrderSearchPreset::ENTITY_NAME);
 
@@ -343,7 +343,7 @@ entity.audit_as("Init Sample Data").save(ctx).await.map_err(|e| e.to_string())?;
 
 
 async fn generate_products<C>(
-    ctx: &C,
+    context: &C,
     state: &mut SampleDataState,
 ) -> Result<(), String>
 where
@@ -368,7 +368,7 @@ where
     log::info!("Generating sample data for Product (expected: {})...", fanout);
 
     for i in 0..fanout {
-        let mut entity = Q::products().purpose("Init Sample Data").new_entity(ctx);
+        let mut entity = Q::products().purpose("Init Sample Data").new_entity(context);
         let mut used_refs = std::collections::HashSet::new();
 
                 if let Some(ref_id) = state.pick_unused_id("Commerce Platform", i as usize, &used_refs) {
@@ -397,7 +397,7 @@ where
 
 
 
-        let entity = entity.audit_as("Init Sample Data").save(ctx).await.map_err(|e| e.to_string())?;
+        let entity = entity.audit_as("Init Sample Data").save(context).await.map_err(|e| e.to_string())?;
 
         state.record_generated(crate::Product::ENTITY_NAME);
 
@@ -414,7 +414,7 @@ where
 
 
 async fn generate_customer_orders<C>(
-    ctx: &C,
+    context: &C,
     state: &mut SampleDataState,
 ) -> Result<(), String>
 where
@@ -451,7 +451,7 @@ where
     log::info!("Generating sample data for Customer Order (expected: {})...", fanout);
 
     for i in 0..fanout {
-        let mut entity = Q::customer_orders().purpose("Init Sample Data").new_entity(ctx);
+        let mut entity = Q::customer_orders().purpose("Init Sample Data").new_entity(context);
         let mut used_refs = std::collections::HashSet::new();
 
                 if let Some(ref_id) = state.pick_unused_id("Order Status", i as usize, &used_refs) {
@@ -500,7 +500,7 @@ where
 
 
 
-        let entity = entity.audit_as("Init Sample Data").save(ctx).await.map_err(|e| e.to_string())?;
+        let entity = entity.audit_as("Init Sample Data").save(context).await.map_err(|e| e.to_string())?;
 
         state.record_generated(crate::CustomerOrder::ENTITY_NAME);
 
@@ -517,7 +517,7 @@ where
 
 
 async fn generate_order_lines<C>(
-    ctx: &C,
+    context: &C,
     state: &mut SampleDataState,
 ) -> Result<(), String>
 where
@@ -554,7 +554,7 @@ where
     log::info!("Generating sample data for Order Line (expected: {})...", fanout);
 
     for i in 0..fanout {
-        let mut entity = Q::order_lines().purpose("Init Sample Data").new_entity(ctx);
+        let mut entity = Q::order_lines().purpose("Init Sample Data").new_entity(context);
         let mut used_refs = std::collections::HashSet::new();
 
                 if let Some(ref_id) = state.pick_unused_id("Customer Order", i as usize, &used_refs) {
@@ -593,7 +593,7 @@ where
 
 
 
-entity.audit_as("Init Sample Data").save(ctx).await.map_err(|e| e.to_string())?;
+entity.audit_as("Init Sample Data").save(context).await.map_err(|e| e.to_string())?;
 
         state.record_generated(crate::OrderLine::ENTITY_NAME);
 

@@ -204,7 +204,7 @@ pub struct UnifiedLogBuffer {
 pub trait SchemaProvider: Send + Sync {
     fn ensure_schema<'a>(
         &'a self,
-        ctx: &'a UserContext,
+        context: &'a UserContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'a>>;
 }
 

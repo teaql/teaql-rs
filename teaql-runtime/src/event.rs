@@ -442,7 +442,7 @@ pub fn build_safe_audit_field(
 }
 
 pub trait RawAuditEventSink: Send + Sync {
-    fn on_event(&self, ctx: &UserContext, event: &RawAuditEvent) -> Result<(), RuntimeError>;
+    fn on_event(&self, context: &UserContext, event: &RawAuditEvent) -> Result<(), RuntimeError>;
 }
 
 #[derive(Default, Clone)]
@@ -466,9 +466,9 @@ impl InMemoryRawAuditEventSink {
 }
 
 impl RawAuditEventSink for InMemoryRawAuditEventSink {
-    fn on_event(&self, ctx: &UserContext, event: &RawAuditEvent) -> Result<(), RuntimeError> {
+    fn on_event(&self, context: &UserContext, event: &RawAuditEvent) -> Result<(), RuntimeError> {
         for sink in &self.sinks {
-            sink.on_event(ctx, event)?;
+            sink.on_event(context, event)?;
         }
         Ok(())
     }
@@ -497,7 +497,7 @@ pub struct SafeAuditEvent {
 pub trait SafeAuditEventSink: Send + Sync {
     fn on_safe_event(
         &self,
-        ctx: &crate::UserContext,
+        context: &crate::UserContext,
         event: &SafeAuditEvent,
     ) -> Result<(), crate::RuntimeError>;
 }

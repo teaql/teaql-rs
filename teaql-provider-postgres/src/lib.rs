@@ -431,10 +431,10 @@ impl PgMutationExecutor {
 async fn ensure_initial_graphs_postgres(
     executor: &PgMutationExecutor,
     dialect: &PostgresDialect,
-    ctx: &UserContext,
+    context: &UserContext,
 ) -> Result<(), MutationExecutorError> {
-    for graph in ctx.initial_graphs() {
-        let entity = ctx.entity(&graph.entity).ok_or_else(|| {
+    for graph in context.initial_graphs() {
+        let entity = context.entity(&graph.entity).ok_or_else(|| {
             MutationExecutorError::Bind(format!("missing entity: {}", graph.entity))
         })?;
         if initial_graph_exists_postgres(executor, dialect, entity, graph).await? {
@@ -508,18 +508,18 @@ pub trait PostgresSchemaExt {
     ) -> Pin<Box<dyn Future<Output = Result<(), MutationExecutorError>> + '_>>;
 }
 
-pub async fn ensure_postgres_schema_for(ctx: &UserContext) -> Result<(), MutationExecutorError> {
-    let dialect = ctx.get_resource::<PostgresDialect>().ok_or_else(|| {
+pub async fn ensure_postgres_schema_for(context: &UserContext) -> Result<(), MutationExecutorError> {
+    let dialect = context.get_resource::<PostgresDialect>().ok_or_else(|| {
         MutationExecutorError::Bind("missing typed resource: PostgresDialect".to_owned())
     })?;
-    let executor = ctx.get_resource::<PgMutationExecutor>().ok_or_else(|| {
+    let executor = context.get_resource::<PgMutationExecutor>().ok_or_else(|| {
         MutationExecutorError::Bind("missing typed resource: PgMutationExecutor".to_owned())
     })?;
 
-    let entities = ctx.all_entities();
+    let entities = context.all_entities();
 
     executor.ensure_schema(dialect, &entities).await?;
-    ensure_initial_graphs_postgres(executor, dialect, ctx).await
+    ensure_initial_graphs_postgres(executor, dialect, context).await
 }
 
 #[cfg(test)]
@@ -571,10 +571,10 @@ pub struct PostgresSchemaProvider;
 impl SchemaProvider for PostgresSchemaProvider {
     fn ensure_schema<'a>(
         &'a self,
-        ctx: &'a UserContext,
+        context: &'a UserContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
-            ensure_postgres_schema_for(ctx)
+            ensure_postgres_schema_for(context)
                 .await
                 .map_err(|err| RuntimeError::Schema(err.to_string()))
         })

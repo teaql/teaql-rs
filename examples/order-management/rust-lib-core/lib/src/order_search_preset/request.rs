@@ -102,13 +102,13 @@ impl<R> OrderSearchPresetRequest<R> {
 
     pub(crate) async fn _execute_for_list<'a, C>(
         self,
-        ctx: &'a C,
+        context: &'a C,
     ) -> Result<SmartList<R>, TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
         C: TeaqlRepositoryProvider + ?Sized,
         R: teaql_core::Entity,
     {
-        let repository = ctx
+        let repository = context
             .order_search_preset_repository()
             .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
         let query_options = self.query_options.clone();
@@ -122,7 +122,7 @@ impl<R> OrderSearchPresetRequest<R> {
             &query,
             &relation_aggregates,
         ).await?;
-        let facets = execute_facets(ctx, query.as_query(), &query_options)
+        let facets = execute_facets(context, query.as_query(), &query_options)
             .await
             .map_err(DataServiceError::Runtime)?;
         attach_facets(&mut rows, facets);
@@ -131,12 +131,12 @@ impl<R> OrderSearchPresetRequest<R> {
 
     pub(crate) async fn _execute_for_stream<'a, C>(
         self,
-        ctx: &'a C,
+        context: &'a C,
     ) -> Result<Vec<teaql_data_service::StreamChunk>, TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
         C: TeaqlRepositoryProvider + ?Sized,
     {
-        let repository = ctx
+        let repository = context
             .order_search_preset_repository()
             .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
         let query_options = self.query_options.clone();
@@ -152,31 +152,31 @@ impl<R> OrderSearchPresetRequest<R> {
 
     pub(crate) async fn _execute_for_first<'a, C>(
         self,
-        ctx: &'a C,
+        context: &'a C,
     ) -> Result<Option<R>, TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
         C: TeaqlRepositoryProvider + ?Sized,
         R: teaql_core::Entity,
     {
-        let rows = self.limit(1)._execute_for_list(ctx).await?;
+        let rows = self.limit(1)._execute_for_list(context).await?;
         Ok(rows.into_iter().next())
     }
 
     pub(crate) async fn _execute_for_one<'a, C>(
         self,
-        ctx: &'a C,
+        context: &'a C,
     ) -> Result<Option<R>, TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
         C: TeaqlRepositoryProvider + ?Sized,
         R: teaql_core::Entity,
     {
-        self._execute_for_first(ctx).await
+        self._execute_for_first(context).await
     }
 
 
     pub(crate) async fn _execute_for_page<'a, C>(
         self,
-        ctx: &'a C,
+        context: &'a C,
         offset: u64,
         limit: u64,
     ) -> Result<SmartList<R>, TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
@@ -184,20 +184,20 @@ impl<R> OrderSearchPresetRequest<R> {
         C: TeaqlRepositoryProvider + ?Sized,
         R: teaql_core::Entity,
     {
-        let total_count = self.clone()._execute_for_count(ctx).await?;
-        let mut rows = self.page_offset(offset, limit)._execute_for_list(ctx).await?;
+        let total_count = self.clone()._execute_for_count(context).await?;
+        let mut rows = self.page_offset(offset, limit)._execute_for_list(context).await?;
         rows.total_count = Some(total_count);
         Ok(rows)
     }
 
     pub(crate) async fn _execute_for_count<'a, C>(
         self,
-        ctx: &'a C,
+        context: &'a C,
     ) -> Result<u64, TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
         C: TeaqlRepositoryProvider + ?Sized,
     {
-        let repository = ctx
+        let repository = context
             .order_search_preset_repository()
             .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
         let mut query = self.query;
@@ -217,12 +217,12 @@ impl<R> OrderSearchPresetRequest<R> {
 
     pub(crate) async fn _execute_for_exists<'a, C>(
         self,
-        ctx: &'a C,
+        context: &'a C,
     ) -> Result<bool, TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
         C: TeaqlRepositoryProvider + ?Sized,
     {
-        let repository = ctx
+        let repository = context
             .order_search_preset_repository()
             .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
         let mut query = self.query.limit(1);
@@ -234,12 +234,12 @@ impl<R> OrderSearchPresetRequest<R> {
 
     pub(crate) async fn _execute_for_records<'a, C>(
         self,
-        ctx: &'a C,
+        context: &'a C,
     ) -> Result<SmartList<Record>, TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
         C: TeaqlRepositoryProvider + ?Sized,
     {
-        let repository = ctx
+        let repository = context
             .order_search_preset_repository()
             .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
         let query_options = self.query_options.clone();
@@ -251,7 +251,7 @@ impl<R> OrderSearchPresetRequest<R> {
             &self.child_enhancements,
         )).map_err(DataServiceError::Runtime)?;
         let mut rows = repository.fetch_smart_list_with_relation_aggregates(&query, &relation_aggregates).await?;
-        let facets = execute_facets(ctx, &outer_query, &query_options)
+        let facets = execute_facets(context, &outer_query, &query_options)
             .await
             .map_err(DataServiceError::Runtime)?;
         attach_facets(&mut rows, facets);
@@ -260,12 +260,12 @@ impl<R> OrderSearchPresetRequest<R> {
 
     pub(crate) async fn _execute_for_record<'a, C>(
         self,
-        ctx: &'a C,
+        context: &'a C,
     ) -> Result<Option<Record>, TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
         C: TeaqlRepositoryProvider + ?Sized,
     {
-        let records = self.limit(1)._execute_for_records(ctx).await?;
+        let records = self.limit(1)._execute_for_records(context).await?;
         Ok(records.into_iter().next())
     }
 
@@ -2624,9 +2624,9 @@ impl<'a, C> crate::request_support::AuditedSave<'a, C> for teaql_core::Audited<c
 where C: crate::request_support::TeaqlRepositoryProvider + ?Sized + 'a
 {
     type Error = crate::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>;
-    fn save(self, ctx: &'a C) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<teaql_runtime::GraphNode, Self::Error>> + '_>> {
+    fn save(self, context: &'a C) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<teaql_runtime::GraphNode, Self::Error>> + '_>> {
         Box::pin(async move {
-            teaql_runtime::save_audited_ledger_entity(self, ctx.user_context())
+            teaql_runtime::save_audited_ledger_entity(self, context.user_context())
                 .await
                 .map_err(DataServiceError::Runtime)
         })
@@ -2634,12 +2634,12 @@ where C: crate::request_support::TeaqlRepositoryProvider + ?Sized + 'a
 }
 
 impl<R: teaql_core::Entity> crate::PurposedQuery<OrderSearchPresetRequest<R>> {
-    pub fn new_entity<C>(&self, ctx: &C) -> crate::OrderSearchPreset
+    pub fn new_entity<C>(&self, context: &C) -> crate::OrderSearchPreset
     where
         C: crate::TeaqlRuntime + ?Sized,
     {
-        let mut entity = crate::OrderSearchPreset::runtime_new(ctx.user_context().entity_root());
-        if let Ok(id) = ctx.user_context().next_id(crate::OrderSearchPreset::ENTITY_NAME) {
+        let mut entity = crate::OrderSearchPreset::runtime_new(context.user_context().entity_root());
+        if let Ok(id) = context.user_context().next_id(crate::OrderSearchPreset::ENTITY_NAME) {
             entity.update_id(id);
         }
         entity
@@ -2656,76 +2656,76 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<OrderSearchPresetRequest<R>> {
 
     pub async fn execute_for_page<'a, C>(
         self,
-        ctx: &'a C,
+        context: &'a C,
         offset: u64,
         limit: u64,
     ) -> Result<teaql_core::SmartList<R>, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
         C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
-        self.into_inner_with_trace()._execute_for_page(ctx, offset, limit).await
+        self.into_inner_with_trace()._execute_for_page(context, offset, limit).await
     }
 
     pub async fn execute_for_exists<'a, C>(
         self,
-        ctx: &'a C,
+        context: &'a C,
     ) -> Result<bool, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
         C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
-        self.into_inner_with_trace()._execute_for_exists(ctx).await
+        self.into_inner_with_trace()._execute_for_exists(context).await
     }
 
-    pub async fn execute_for_list<'a, C>(self, ctx: &'a C) -> Result<teaql_core::SmartList<R>, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
+    pub async fn execute_for_list<'a, C>(self, context: &'a C) -> Result<teaql_core::SmartList<R>, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
         C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
-        self.into_inner_with_trace()._execute_for_list(ctx).await
+        self.into_inner_with_trace()._execute_for_list(context).await
     }
 
     /// Execute query in streaming mode (chunked).
     /// Returns a Vec of StreamChunk, each containing up to chunk_size rows.
     /// Set chunk size via .stream(chunk_size) or .stream_default() on the query.
-    pub async fn execute_for_stream<'a, C>(self, ctx: &'a C) -> Result<Vec<teaql_data_service::StreamChunk>, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
+    pub async fn execute_for_stream<'a, C>(self, context: &'a C) -> Result<Vec<teaql_data_service::StreamChunk>, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
         C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
-        self.into_inner_with_trace()._execute_for_stream(ctx).await
+        self.into_inner_with_trace()._execute_for_stream(context).await
     }
 
-    pub async fn execute_for_first<'a, C>(self, ctx: &'a C) -> Result<Option<R>, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
+    pub async fn execute_for_first<'a, C>(self, context: &'a C) -> Result<Option<R>, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
         C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
-        self.into_inner_with_trace()._execute_for_first(ctx).await
+        self.into_inner_with_trace()._execute_for_first(context).await
     }
 
-    pub async fn execute_for_one<'a, C>(self, ctx: &'a C) -> Result<Option<R>, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
+    pub async fn execute_for_one<'a, C>(self, context: &'a C) -> Result<Option<R>, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
         C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
-        self.into_inner_with_trace()._execute_for_one(ctx).await
+        self.into_inner_with_trace()._execute_for_one(context).await
     }
 
 
-    pub async fn execute_for_records<'a, C>(self, ctx: &'a C) -> Result<teaql_core::SmartList<teaql_core::Record>, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
+    pub async fn execute_for_records<'a, C>(self, context: &'a C) -> Result<teaql_core::SmartList<teaql_core::Record>, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
         C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
-        self.into_inner_with_trace()._execute_for_records(ctx).await
+        self.into_inner_with_trace()._execute_for_records(context).await
     }
 
-    pub async fn execute_for_record<'a, C>(self, ctx: &'a C) -> Result<Option<teaql_core::Record>, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
+    pub async fn execute_for_record<'a, C>(self, context: &'a C) -> Result<Option<teaql_core::Record>, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
         C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
-        self.into_inner_with_trace()._execute_for_record(ctx).await
+        self.into_inner_with_trace()._execute_for_record(context).await
     }
 
-    pub async fn execute_for_count<'a, C>(self, ctx: &'a C) -> Result<u64, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
+    pub async fn execute_for_count<'a, C>(self, context: &'a C) -> Result<u64, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
         C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
-        self.into_inner_with_trace()._execute_for_count(ctx).await
+        self.into_inner_with_trace()._execute_for_count(context).await
     }
 }
