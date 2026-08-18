@@ -72,16 +72,44 @@ fn exports_query_trace_metric_and_log_through_otlp_http() {
     )
     .with_logger(logger_provider.logger("io.teaql.runtime")));
 
-    let scope = start_runtime_operation(
-        &telemetry,
+    let operations = [
         RuntimeOperation::new("query", "ConformanceProbe.list")
+            .attribute("teaql.entity.type", "ConformanceProbe"),
+        RuntimeOperation::new("mutation", "ConformanceProbe.update")
             .attribute("teaql.entity.type", "ConformanceProbe")
-            .attribute("teaql.entity.id", "must-not-export"),
-    );
-    scope.success(BTreeMap::from([(
-        "teaql.result.cardinality".to_owned(),
-        RuntimeAttributeValue::Integer(1),
-    )]));
+            .attribute("teaql.mutation.kind", "update"),
+        RuntimeOperation::new("relation_load", "ConformanceProbe.children")
+            .attribute("teaql.entity.type", "ConformanceProbe")
+            .attribute("teaql.relation.name", "children"),
+        RuntimeOperation::new("provider", "sqlite.query")
+            .attribute("teaql.provider.kind", "sqlite")
+            .attribute("teaql.provider.operation", "query"),
+        RuntimeOperation::new("cache", "local.get")
+            .attribute("teaql.cache.operation", "get"),
+        RuntimeOperation::new("tfp", "server.query").attribute("teaql.tfp.role", "server"),
+        RuntimeOperation::new("audit", "ConformanceProbe.audit")
+            .attribute("teaql.entity.type", "ConformanceProbe")
+            .attribute("teaql.mutation.kind", "update")
+            .attribute("teaql.audit.changed_field_count", 1_i64),
+    ];
+    for operation in operations {
+        let family = operation.family.clone();
+        let scope = start_runtime_operation(
+            &telemetry,
+            operation.attribute("teaql.entity.id", "must-not-export"),
+        );
+        let mut completion = BTreeMap::from([(
+            "teaql.result.cardinality".to_owned(),
+            RuntimeAttributeValue::Integer(1),
+        )]);
+        if family == "cache" {
+            completion.insert(
+                "teaql.cache.result".to_owned(),
+                RuntimeAttributeValue::String("hit".to_owned()),
+            );
+        }
+        scope.success(completion);
+    }
 
     tracer_provider.force_flush().expect("flush traces");
     meter_provider.force_flush().expect("flush metrics");
