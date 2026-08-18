@@ -190,18 +190,18 @@ where
     type Rejection = AxumTeaError;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let mut ctx = state.build_context();
+        let mut context = state.build_context();
 
         if let Some(user_id) = parts.headers.get("X-User-Id")
             && let Ok(id_str) = user_id.to_str()
         {
-            ctx.set_user_identifier(id_str);
+            context.set_user_identifier(id_str);
         }
 
         if let Some(trace_id) = parts.headers.get("X-Trace-Id")
             && let Ok(trace_str) = trace_id.to_str()
         {
-            ctx.set_trace_id(trace_str);
+            context.set_trace_id(trace_str);
         }
 
         // Build WebRequestInfo
@@ -224,9 +224,9 @@ where
             method: parts.method.as_str().to_string(),
         };
 
-        ctx.insert_resource(web_info);
+        context.insert_resource(web_info);
 
-        Ok(TeaContext(ctx))
+        Ok(TeaContext(context))
     }
 }
 
@@ -261,19 +261,19 @@ mod tests {
         assert!(tea_context_result.is_ok());
 
         let tea_context = tea_context_result.unwrap();
-        let ctx = tea_context.0;
+        let context = tea_context.0;
 
-        assert_eq!(ctx.user_identifier(), Some("user123"));
-        assert_eq!(ctx.trace_id(), "trace456");
+        assert_eq!(context.user_identifier(), Some("user123"));
+        assert_eq!(context.trace_id(), "trace456");
 
-        let web_info = ctx.web_info().unwrap();
+        let web_info = context.web_info().unwrap();
         assert_eq!(web_info.client_ip.as_deref(), Some("192.168.1.1"));
         assert_eq!(web_info.user_agent.as_deref(), Some("TestAgent/1.0"));
         assert_eq!(web_info.request_uri, "/api/test");
         assert_eq!(web_info.method, "POST");
 
-        assert_eq!(ctx.client_ip(), Some("192.168.1.1"));
-        assert_eq!(ctx.request_uri(), Some("/api/test"));
-        assert_eq!(ctx.method(), Some("POST"));
+        assert_eq!(context.client_ip(), Some("192.168.1.1"));
+        assert_eq!(context.request_uri(), Some("/api/test"));
+        assert_eq!(context.method(), Some("POST"));
     }
 }

@@ -294,22 +294,22 @@ impl RuntimeModule {
         self
     }
 
-    pub fn apply_to(self, ctx: &mut UserContext) {
-        ctx.set_metadata(self.metadata);
-        ctx.set_entity_registry(self.entity_registry);
-        ctx.set_entity_data_service_behavior_registry(self.behaviors);
-        ctx.set_checker_registry(self.checkers);
-        ctx.set_event_sink(self.event_sinks);
-        ctx.set_initial_graphs(self.initial_graphs);
+    pub fn apply_to(self, context: &mut UserContext) {
+        context.set_metadata(self.metadata);
+        context.set_entity_registry(self.entity_registry);
+        context.set_entity_data_service_behavior_registry(self.behaviors);
+        context.set_checker_registry(self.checkers);
+        context.set_event_sink(self.event_sinks);
+        context.set_initial_graphs(self.initial_graphs);
         if let Some(language) = self.language {
-            ctx.set_language(language);
+            context.set_language(language);
         }
     }
 
     pub fn into_context(self) -> UserContext {
-        let mut ctx = UserContext::new();
-        self.apply_to(&mut ctx);
-        ctx
+        let mut context = UserContext::new();
+        self.apply_to(&mut context);
+        context
     }
 }
 

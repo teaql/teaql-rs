@@ -605,19 +605,19 @@ mod tests {
     impl EntityDataServiceBehavior for ContextAwareOrderBehavior {
         fn before_insert(
             &self,
-            ctx: &UserContext,
+            context: &UserContext,
             command: &mut InsertCommand,
         ) -> Result<(), RuntimeError> {
-            let tenant = ctx
+            let tenant = context
                 .get_named_resource::<String>("tenant")
                 .cloned()
                 .ok_or_else(|| RuntimeError::Behavior("missing tenant resource".to_owned()))?;
-            let version = *ctx
+            let version = *context
                 .get_named_resource::<i64>("initial_version")
                 .ok_or_else(|| {
                     RuntimeError::Behavior("missing initial_version resource".to_owned())
                 })?;
-            let trace_id = match ctx.local("trace_id") {
+            let trace_id = match context.local("trace_id") {
                 Some(Value::Text(value)) => value.clone(),
                 other => {
                     return Err(RuntimeError::Behavior(format!(
@@ -641,11 +641,11 @@ mod tests {
     impl RequestPolicy for TenantRequestPolicy {
         fn enforce_select(
             &self,
-            ctx: &UserContext,
+            context: &UserContext,
             query: &mut SelectQuery,
         ) -> Result<(), RuntimeError> {
             if query.entity == "Order" {
-                let tenant_id = ctx
+                let tenant_id = context
                     .get_named_resource::<u64>("tenant_id")
                     .copied()
                     .ok_or_else(|| RuntimeError::Policy("missing tenant_id".to_owned()))?;
@@ -659,11 +659,11 @@ mod tests {
 
         fn enforce_insert(
             &self,
-            ctx: &UserContext,
+            context: &UserContext,
             command: &mut InsertCommand,
         ) -> Result<(), RuntimeError> {
             if command.entity == "Order" {
-                let tenant_id = ctx
+                let tenant_id = context
                     .get_named_resource::<u64>("tenant_id")
                     .copied()
                     .ok_or_else(|| RuntimeError::Policy("missing tenant_id".to_owned()))?;
@@ -789,34 +789,34 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_module_registers_descriptor_into_context() {
-        let ctx = UserContext::new().with_module(RuntimeModule::new().descriptor(entity()));
-        assert!(ctx.entity("Order").is_some());
-        assert!(ctx.has_entity_data_service("Order"));
+        let context = UserContext::new().with_module(RuntimeModule::new().descriptor(entity()));
+        assert!(context.entity("Order").is_some());
+        assert!(context.has_entity_data_service("Order"));
     }
 
     #[tokio::test]
     async fn runtime_module_registers_derived_entity_and_behavior() {
-        let ctx = UserContext::new().with_module(
+        let context = UserContext::new().with_module(
             RuntimeModule::new().entity_with_behavior::<CatalogProductRow, _>(OrderBehavior),
         );
-        assert!(ctx.entity("CatalogProduct").is_some());
-        assert!(ctx.has_entity_data_service("CatalogProduct"));
-        assert!(ctx.entity_data_service_behavior("CatalogProduct").is_some());
+        assert!(context.entity("CatalogProduct").is_some());
+        assert!(context.has_entity_data_service("CatalogProduct"));
+        assert!(context.entity_data_service_behavior("CatalogProduct").is_some());
     }
 
     #[tokio::test]
     async fn module_macro_registers_multiple_entities() {
-        let ctx = UserContext::new().with_module(crate::module!(CatalogProductRow));
-        assert!(ctx.entity("CatalogProduct").is_some());
-        assert!(ctx.has_entity_data_service("CatalogProduct"));
+        let context = UserContext::new().with_module(crate::module!(CatalogProductRow));
+        assert!(context.entity("CatalogProduct").is_some());
+        assert!(context.has_entity_data_service("CatalogProduct"));
     }
 
     #[tokio::test]
     async fn module_macro_registers_entity_behavior_pairs() {
-        let ctx =
+        let context =
             UserContext::new().with_module(crate::module!(CatalogProductRow => OrderBehavior));
-        assert!(ctx.entity("CatalogProduct").is_some());
-        assert!(ctx.entity_data_service_behavior("CatalogProduct").is_some());
+        assert!(context.entity("CatalogProduct").is_some());
+        assert!(context.entity_data_service_behavior("CatalogProduct").is_some());
     }
 
     #[tokio::test]
@@ -845,35 +845,35 @@ mod tests {
 
     #[tokio::test]
     async fn user_context_indexes_resources_and_locals() {
-        let mut ctx =
+        let mut context =
             UserContext::new().with_metadata(InMemoryMetadataStore::new().with_entity(entity()));
-        ctx.insert_resource::<u64>(42);
-        ctx.insert_named_resource("tenant", String::from("acme"));
-        ctx.put_local("trace_id", "req-1");
+        context.insert_resource::<u64>(42);
+        context.insert_named_resource("tenant", String::from("acme"));
+        context.put_local("trace_id", "req-1");
 
-        assert!(ctx.entity("Order").is_some());
-        assert_eq!(ctx.get_resource::<u64>(), Some(&42));
+        assert!(context.entity("Order").is_some());
+        assert_eq!(context.get_resource::<u64>(), Some(&42));
         assert_eq!(
-            ctx.get_named_resource::<String>("tenant"),
+            context.get_named_resource::<String>("tenant"),
             Some(&String::from("acme"))
         );
         assert_eq!(
-            ctx.local("trace_id"),
+            context.local("trace_id"),
             Some(&Value::Text("req-1".to_owned()))
         );
     }
 
     #[tokio::test]
     async fn user_context_builds_context_data_service() {
-        let mut ctx =
+        let mut context =
             UserContext::new().with_metadata(InMemoryMetadataStore::new().with_entity(entity()));
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(StubExecutor {
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(StubExecutor {
             affected: 1,
             rows: Vec::new(),
         });
 
-        let repo = ctx.data_service_internal::<StubExecutor>().unwrap();
+        let repo = context.data_service_internal::<StubExecutor>().unwrap();
         let affected = repo
             .update(
                 &UpdateCommand::new("Order", 1_u64)
@@ -888,16 +888,16 @@ mod tests {
 
     #[tokio::test]
     async fn user_context_resolves_entity_data_service_by_entity_type() {
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
             .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(StubExecutor {
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(StubExecutor {
             affected: 1,
             rows: Vec::new(),
         });
 
-        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
         assert_eq!(repo.entity(), "Order");
         assert_eq!(repo.select().entity, "Order");
 
@@ -916,7 +916,7 @@ mod tests {
 
     #[tokio::test]
     async fn entity_data_service_applies_behavior_hooks() {
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
                     .with_entity(entity())
@@ -928,13 +928,13 @@ mod tests {
                 InMemoryEntityDataServiceBehaviorRegistry::new()
                     .with_behavior("Order", OrderBehavior),
             );
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(StubExecutor {
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(StubExecutor {
             affected: 1,
             rows: Vec::new(),
         });
 
-        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
 
         // let compiled = repo.compile(&repo.select()).unwrap();
         // assert!(compiled.sql.contains("WHERE (version = $1)"));
@@ -947,7 +947,7 @@ mod tests {
 
     #[tokio::test]
     async fn entity_data_service_applies_request_policy_after_behavior_hooks() {
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
                     .with_entity(entity())
@@ -960,14 +960,14 @@ mod tests {
                     .with_behavior("Order", OrderBehavior),
             )
             .with_request_policy(TenantRequestPolicy);
-        ctx.insert_named_resource("tenant_id", 9_u64);
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(StubExecutor {
+        context.insert_named_resource("tenant_id", 9_u64);
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(StubExecutor {
             affected: 1,
             rows: Vec::new(),
         });
 
-        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
 
         // let compiled = repo.compile(&repo.select()).unwrap();
         // assert!(compiled.sql.contains("version = $1"));
@@ -980,7 +980,7 @@ mod tests {
 
     #[tokio::test]
     async fn entity_data_service_prepares_insert_command_with_generated_id() {
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
                     .with_entity(entity())
@@ -993,13 +993,13 @@ mod tests {
                     .with_behavior("Order", OrderBehavior),
             )
             .with_internal_id_generator(FixedIdGenerator(42));
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(StubExecutor {
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(StubExecutor {
             affected: 1,
             rows: Vec::new(),
         });
 
-        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
 
         let prepared = repo
             .prepare_insert_command(&repo.insert_command().value("id", 0_u64).value("name", "n"))
@@ -1029,7 +1029,7 @@ mod tests {
 
     #[tokio::test]
     async fn custom_user_context_can_drive_insert_preparation() {
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
             .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"))
             .with_entity_data_service_behavior_registry(
@@ -1037,16 +1037,16 @@ mod tests {
                     .with_behavior("Order", ContextAwareOrderBehavior),
             )
             .with_internal_id_generator(FixedIdGenerator(99));
-        ctx.insert_named_resource("tenant", String::from("acme"));
-        ctx.insert_named_resource("initial_version", 7_i64);
-        ctx.put_local("trace_id", "req-9");
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(StubExecutor {
+        context.insert_named_resource("tenant", String::from("acme"));
+        context.insert_named_resource("initial_version", 7_i64);
+        context.put_local("trace_id", "req-9");
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(StubExecutor {
             affected: 1,
             rows: Vec::new(),
         });
 
-        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
         let prepared = repo.prepare_insert_command(&repo.insert_command()).unwrap();
 
         assert_eq!(prepared.values.get("id"), Some(&Value::U64(99)));
@@ -1059,18 +1059,18 @@ mod tests {
 
     #[tokio::test]
     async fn checker_registry_validates_and_fixes_insert_commands() {
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
             .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"))
             .with_checker_registry(InMemoryCheckerRegistry::new().with_checker(OrderChecker))
             .with_internal_id_generator(FixedIdGenerator(77));
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(StubExecutor {
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(StubExecutor {
             affected: 1,
             rows: Vec::new(),
         });
 
-        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
         let prepared = repo
             .prepare_insert_command(&repo.insert_command().value("name", "valid"))
             .unwrap();
@@ -1093,7 +1093,7 @@ mod tests {
 
     #[test]
     fn metadata_not_null_constraints_are_checked_without_a_custom_checker() {
-        let ctx = UserContext::new().with_metadata(
+        let context = UserContext::new().with_metadata(
             InMemoryMetadataStore::new().with_entity(
                 EntityDescriptor::new("School")
                     .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
@@ -1108,7 +1108,7 @@ mod tests {
             ),
         ]);
 
-        let error = ctx.check_and_fix_record("School", &mut record).unwrap_err();
+        let error = context.check_and_fix_record("School", &mut record).unwrap_err();
 
         match error {
             RuntimeError::Check(results) => {
@@ -1122,7 +1122,7 @@ mod tests {
 
     #[test]
     fn metadata_not_null_constraints_allow_omitted_fields_on_partial_update() {
-        let ctx = UserContext::new().with_metadata(
+        let context = UserContext::new().with_metadata(
             InMemoryMetadataStore::new().with_entity(
                 EntityDescriptor::new("School")
                     .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
@@ -1137,18 +1137,18 @@ mod tests {
             ),
         ]);
 
-        ctx.check_and_fix_record("School", &mut record).unwrap();
+        context.check_and_fix_record("School", &mut record).unwrap();
 
         record.insert("contact_phone".to_owned(), Value::Null);
         assert!(matches!(
-            ctx.check_and_fix_record("School", &mut record),
+            context.check_and_fix_record("School", &mut record),
             Err(RuntimeError::Check(_))
         ));
     }
 
     #[tokio::test]
     async fn typed_checker_validates_and_fixes_derived_entities_without_record_access() {
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(Order::entity_descriptor()))
             .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"))
             .with_checker_registry(
@@ -1156,13 +1156,13 @@ mod tests {
                     .with_checker(TypedEntityChecker::<Order, _>::new(TypedOrderChecker)),
             )
             .with_internal_id_generator(FixedIdGenerator(79));
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(StubExecutor {
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(StubExecutor {
             affected: 1,
             rows: Vec::new(),
         });
 
-        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
         let prepared = repo
             .prepare_insert_command(
                 &repo
@@ -1196,7 +1196,7 @@ mod tests {
 
     #[tokio::test]
     async fn checker_registry_reports_nested_create_locations_and_fixes_records() {
-        let ctx = UserContext::new()
+        let context = UserContext::new()
             .with_checker_registry(InMemoryCheckerRegistry::new().with_checker(OrderChecker));
 
         let mut child = Record::from([
@@ -1206,7 +1206,7 @@ mod tests {
                 Value::from(CheckObjectStatus::Create),
             ),
         ]);
-        let error = ctx
+        let error = context
             .check_and_fix_record_at(
                 "Order",
                 &mut child,
@@ -1225,7 +1225,7 @@ mod tests {
         }
 
         child.insert("name".to_owned(), Value::Text("valid child".to_owned()));
-        ctx.check_and_fix_record_at(
+        context.check_and_fix_record_at(
             "Order",
             &mut child,
             &ObjectLocation::hash_root("lines").element(0),
@@ -1259,19 +1259,19 @@ mod tests {
 
     #[tokio::test]
     async fn user_context_language_switch_translates_checker_errors() {
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
             .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"))
             .with_checker_registry(InMemoryCheckerRegistry::new().with_checker(OrderChecker))
             .with_internal_id_generator(FixedIdGenerator(77))
             .with_language(Language::Chinese);
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(StubExecutor {
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(StubExecutor {
             affected: 1,
             rows: Vec::new(),
         });
 
-        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
         let error = repo
             .prepare_insert_command(&repo.insert_command())
             .unwrap_err();
@@ -1288,16 +1288,16 @@ mod tests {
             other => panic!("unexpected checker error: {other:?}"),
         }
 
-        let mut ctx = UserContext::new().with_language(Language::English);
-        ctx.set_language_code("es").unwrap();
-        assert_eq!(ctx.language(), Language::Spanish);
+        let mut context = UserContext::new().with_language(Language::English);
+        context.set_language_code("es").unwrap();
+        assert_eq!(context.language(), Language::Spanish);
     }
 
     #[tokio::test]
     async fn user_context_event_sink_receives_data_service_mutation_events() {
         let events = Arc::new(Mutex::new(Vec::new()));
         let safe_events = Arc::new(Mutex::new(Vec::new()));
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
                     .with_entity(entity().audit_mask_fields(vec!["name".to_owned()])),
@@ -1310,8 +1310,8 @@ mod tests {
             .with_custom_event_sink(RecordingSafeEventSink {
                 events: safe_events.clone(),
             });
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(StubExecutor {
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(StubExecutor {
             affected: 1,
             rows: vec![Record::from([
                 ("id".to_owned(), Value::U64(88)),
@@ -1320,7 +1320,7 @@ mod tests {
             ])],
         });
 
-        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
         repo.insert_internal(&repo.insert_command().value("name", "created"))
             .await
             .unwrap();
@@ -1407,7 +1407,7 @@ mod tests {
 
     #[tokio::test]
     async fn entity_data_service_builds_relation_plans() {
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
                     .with_entity(entity())
@@ -1419,13 +1419,13 @@ mod tests {
                 InMemoryEntityDataServiceBehaviorRegistry::new()
                     .with_behavior("Order", OrderBehavior),
             );
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(StubExecutor {
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(StubExecutor {
             affected: 1,
             rows: Vec::new(),
         });
 
-        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
         let plans = repo.relation_plans().unwrap();
 
         assert_eq!(plans.len(), 1);
@@ -1438,7 +1438,7 @@ mod tests {
 
     #[tokio::test]
     async fn entity_data_service_builds_relation_query_from_parent_rows() {
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
                     .with_entity(entity())
@@ -1450,13 +1450,13 @@ mod tests {
                 InMemoryEntityDataServiceBehaviorRegistry::new()
                     .with_behavior("Order", OrderBehavior),
             );
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(StubExecutor {
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(StubExecutor {
             affected: 1,
             rows: Vec::new(),
         });
 
-        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
         let parent_rows = vec![
             Record::from([(String::from("id"), Value::U64(11))]),
             Record::from([(String::from("id"), Value::U64(12))]),
@@ -1471,7 +1471,7 @@ mod tests {
 
     #[tokio::test]
     async fn entity_data_service_enhances_parent_rows_with_relations() {
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
                     .with_entity(entity())
@@ -1483,8 +1483,8 @@ mod tests {
                 InMemoryEntityDataServiceBehaviorRegistry::new()
                     .with_behavior("Order", OrderBehavior),
             );
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(StubExecutor {
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(StubExecutor {
             affected: 1,
             rows: vec![
                 Record::from([
@@ -1505,7 +1505,7 @@ mod tests {
             ],
         });
 
-        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
         let mut parents = vec![
             Record::from([(String::from("id"), Value::U64(11))]),
             Record::from([(String::from("id"), Value::U64(12))]),
@@ -1539,20 +1539,20 @@ mod tests {
             }
         }
 
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
                     .with_entity(entity())
                     .with_entity(line_entity()),
             )
             .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(CapturingQueryExecutor {
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(CapturingQueryExecutor {
             rows,
             queries: Mutex::new(Vec::new()),
         });
 
-        let repo = ctx
+        let repo = context
             .entity_data_service::<CapturingQueryExecutor>("Order")
             .unwrap();
         let mut parents = vec![
@@ -1570,7 +1570,7 @@ mod tests {
             .await
             .unwrap();
 
-        let captured = &ctx
+        let captured = &context
             .get_resource::<CapturingQueryExecutor>()
             .unwrap()
             .queries
@@ -1592,15 +1592,15 @@ mod tests {
 
     #[tokio::test]
     async fn relation_enhancement_wraps_inverse_many_relation_as_list() {
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
                     .with_entity(OrderLineWithProductEntityRow::entity_descriptor())
                     .with_entity(ProductWithLinesEntityRow::entity_descriptor()),
             )
             .with_entity_registry(InMemoryEntityRegistry::new().with_entity("OrderLine"));
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(QueueExecutor {
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(QueueExecutor {
             affected: 1,
             rows: Mutex::new(VecDeque::from([
                 vec![Record::from([
@@ -1617,7 +1617,7 @@ mod tests {
             queries: Mutex::new(Vec::new()),
         });
 
-        let repo = ctx
+        let repo = context
             .entity_data_service::<QueueExecutor>("OrderLine")
             .unwrap();
         let rows = repo
@@ -1634,11 +1634,11 @@ mod tests {
 
     #[tokio::test]
     async fn entity_data_service_fetches_smart_list_of_entities() {
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
             .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(StubExecutor {
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(StubExecutor {
             affected: 1,
             rows: vec![Record::from([
                 (String::from("id"), Value::U64(7)),
@@ -1647,7 +1647,7 @@ mod tests {
             ])],
         });
 
-        let repo = ctx.entity_data_service::<StubExecutor>("Order").unwrap();
+        let repo = context.entity_data_service::<StubExecutor>("Order").unwrap();
         let rows = repo
             .fetch_entities_internal::<OrderEntity>(&repo.select())
             .await
@@ -1666,13 +1666,13 @@ mod tests {
 
     #[tokio::test]
     async fn entity_data_service_fetches_smart_list_of_derived_entities() {
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new().with_entity(CatalogProductRow::entity_descriptor()),
             )
             .with_entity_registry(InMemoryEntityRegistry::new().with_entity("CatalogProduct"));
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(StubExecutor {
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(StubExecutor {
             affected: 1,
             rows: vec![Record::from([
                 (String::from("id"), Value::U64(9)),
@@ -1680,7 +1680,7 @@ mod tests {
             ])],
         });
 
-        let repo = ctx
+        let repo = context
             .entity_data_service::<StubExecutor>("CatalogProduct")
             .unwrap();
         let rows = repo
@@ -1700,14 +1700,14 @@ mod tests {
 
     #[tokio::test]
     async fn entity_data_service_collects_dynamic_properties_for_aggregate_output() {
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
                     .with_entity(OrderAggregateDynamic::entity_descriptor()),
             )
             .with_entity_registry(InMemoryEntityRegistry::new().with_entity("OrderAggregate"));
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(StubExecutor {
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(StubExecutor {
             affected: 1,
             rows: vec![Record::from([
                 (String::from("id"), Value::U64(1)),
@@ -1716,7 +1716,7 @@ mod tests {
             ])],
         });
 
-        let repo = ctx
+        let repo = context
             .entity_data_service::<StubExecutor>("OrderAggregate")
             .unwrap();
         let rows = repo
@@ -1762,17 +1762,17 @@ mod tests {
             ])),
             queries: Mutex::new(Vec::new()),
         };
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
                     .with_entity(entity())
                     .with_entity(line_entity()),
             )
             .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(executor);
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(executor);
 
-        let repo = ctx.entity_data_service::<QueueExecutor>("Order").unwrap();
+        let repo = context.entity_data_service::<QueueExecutor>("Order").unwrap();
         let rows = repo
             .fetch_all_with_relation_aggregates_internal(
                 &repo
@@ -1793,7 +1793,7 @@ mod tests {
         assert_eq!(rows[0].get("lineCount"), Some(&Value::I64(3)));
         assert_eq!(rows[1].get("lineCount"), Some(&Value::U64(0)));
 
-        let executor = ctx.get_resource::<QueueExecutor>().unwrap();
+        let executor = context.get_resource::<QueueExecutor>().unwrap();
         let queries = executor.queries.lock().unwrap();
         assert_eq!(queries.len(), 2);
         assert_eq!(queries[1], "SELECT ... FROM OrderLine ...");
@@ -1822,17 +1822,17 @@ mod tests {
             ])),
             queries: Mutex::new(Vec::new()),
         };
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
                     .with_entity(entity())
                     .with_entity(line),
             )
             .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(executor);
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(executor);
 
-        let repo = ctx.entity_data_service::<QueueExecutor>("Order").unwrap();
+        let repo = context.entity_data_service::<QueueExecutor>("Order").unwrap();
         let rows = repo
             .fetch_all_with_relation_aggregates_internal(
                 &repo
@@ -1851,7 +1851,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(rows[0].get("lineCount"), Some(&Value::I64(3)));
-        let executor = ctx.get_resource::<QueueExecutor>().unwrap();
+        let executor = context.get_resource::<QueueExecutor>().unwrap();
         assert_eq!(
             executor.queries.lock().unwrap()[1],
             "SELECT ... FROM OrderLine ..."
@@ -1868,14 +1868,14 @@ mod tests {
             )])]])),
             queries: Mutex::new(Vec::new()),
         };
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
             .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(executor);
-        ctx.insert_resource(InMemoryAggregationCache::default());
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(executor);
+        context.insert_resource(InMemoryAggregationCache::default());
 
-        let repo = ctx.entity_data_service::<QueueExecutor>("Order").unwrap();
+        let repo = context.entity_data_service::<QueueExecutor>("Order").unwrap();
         let query = repo
             .select()
             .count("count")
@@ -1885,7 +1885,7 @@ mod tests {
         let second = repo.fetch_all_internal(&query).await.unwrap();
 
         assert_eq!(first, second);
-        let executor = ctx.get_resource::<QueueExecutor>().unwrap();
+        let executor = context.get_resource::<QueueExecutor>().unwrap();
         assert_eq!(executor.queries.lock().unwrap().len(), 1);
     }
 
@@ -1901,16 +1901,16 @@ mod tests {
                 ])
             })
             .collect();
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_user_identifier("tenant-1:user-1")
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
             .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(CapturingQueryExecutor {
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(CapturingQueryExecutor {
             rows,
             queries: Mutex::new(Vec::new()),
         });
-        let repo = ctx
+        let repo = context
             .entity_data_service::<CapturingQueryExecutor>("Order")
             .unwrap();
 
@@ -1920,7 +1920,7 @@ mod tests {
             .optimize_for_continuous_page_fetch_with("recent-orders", 60);
         repo.fetch_all_internal(&first).await.unwrap();
         assert_eq!(
-            ctx.continuous_page_plan().as_deref(),
+            context.continuous_page_plan().as_deref(),
             Some("OFFSET_FALLBACK:FIRST_PAGE")
         );
 
@@ -1929,10 +1929,10 @@ mod tests {
             .page(10, 10)
             .optimize_for_continuous_page_fetch_with("recent-orders", 60);
         repo.fetch_all_internal(&second).await.unwrap();
-        assert_eq!(ctx.continuous_page_plan().as_deref(), Some("CURSOR_SEEK"));
-        assert!(ctx.continuous_page_cursor_id().is_some());
+        assert_eq!(context.continuous_page_plan().as_deref(), Some("CURSOR_SEEK"));
+        assert!(context.continuous_page_cursor_id().is_some());
 
-        let captured = ctx
+        let captured = context
             .get_resource::<CapturingQueryExecutor>()
             .unwrap()
             .queries
@@ -1956,17 +1956,17 @@ mod tests {
             ])),
             queries: Mutex::new(Vec::new()),
         };
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
             .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(executor);
-        ctx.insert_resource(
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(executor);
+        context.insert_resource(
             Arc::new(InMemoryAggregationCache::with_namespace("tenant-a"))
                 as Arc<dyn AggregationCacheBackend>,
         );
 
-        let repo = ctx.entity_data_service::<QueueExecutor>("Order").unwrap();
+        let repo = context.entity_data_service::<QueueExecutor>("Order").unwrap();
         let query = repo
             .select()
             .count("count")
@@ -1986,7 +1986,7 @@ mod tests {
 
         assert_eq!(first, cached);
         assert_ne!(cached, refreshed);
-        let executor = ctx.get_resource::<QueueExecutor>().unwrap();
+        let executor = context.get_resource::<QueueExecutor>().unwrap();
         assert_eq!(executor.queries.lock().unwrap().len(), 2);
     }
 
@@ -2013,18 +2013,18 @@ mod tests {
             rows: Mutex::new(VecDeque::from([parent_rows, aggregate_rows])),
             queries: Mutex::new(Vec::new()),
         };
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
                     .with_entity(entity())
                     .with_entity(line_entity()),
             )
             .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
-        ctx.insert_resource(PostgresDialect);
-        ctx.insert_resource(executor);
-        ctx.insert_resource(InMemoryAggregationCache::default());
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(executor);
+        context.insert_resource(InMemoryAggregationCache::default());
 
-        let repo = ctx.entity_data_service::<QueueExecutor>("Order").unwrap();
+        let repo = context.entity_data_service::<QueueExecutor>("Order").unwrap();
         let query = repo
             .select()
             .project("id")
@@ -2045,7 +2045,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(first, second);
-        let executor = ctx.get_resource::<QueueExecutor>().unwrap();
+        let executor = context.get_resource::<QueueExecutor>().unwrap();
         assert_eq!(executor.queries.lock().unwrap().len(), 2);
     }
 
@@ -2519,7 +2519,7 @@ mod tests {
 
     #[tokio::test]
     async fn user_context_stores_and_exposes_user_identifier() {
-        let mut ctx = UserContext::new();
+        let mut context = UserContext::new();
         let pid = std::process::id();
         let thread_id_str = format!("{:?}", std::thread::current().id());
         let numeric_thread_id = thread_id_str
@@ -2530,10 +2530,10 @@ mod tests {
             .or_else(|_| std::env::var("USERNAME"))
             .unwrap_or_else(|_| "main".to_owned());
         let expected_default = format!("{os_user}@pid-{pid}.tid-{numeric_thread_id}");
-        assert_eq!(ctx.user_identifier(), Some(expected_default.as_str()));
+        assert_eq!(context.user_identifier(), Some(expected_default.as_str()));
 
-        ctx.set_user_identifier("user-123");
-        assert_eq!(ctx.user_identifier(), Some("user-123"));
+        context.set_user_identifier("user-123");
+        assert_eq!(context.user_identifier(), Some("user-123"));
 
         let ctx2 = UserContext::new().with_user_identifier("user-456");
         assert_eq!(ctx2.user_identifier(), Some("user-456"));

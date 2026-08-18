@@ -157,7 +157,7 @@ where
     C: TeaqlRepositoryProvider + ?Sized + 'a,
 {
     type Error;
-    fn save(self, ctx: &'a C) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<teaql_runtime::GraphNode, Self::Error>> + '_>>;
+    fn save(self, context: &'a C) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<teaql_runtime::GraphNode, Self::Error>> + '_>>;
 }
 
 
@@ -320,7 +320,7 @@ impl TeaqlRepositoryProvider for teaql_runtime::UserContext {
 }
 
 pub(crate) async fn execute_facets<C>(
-    ctx: &C,
+    context: &C,
     outer_query: &SelectQuery,
     options: &QueryOptions,
 ) -> Result<BTreeMap<String, SmartList<Record>>, RuntimeError>
@@ -332,7 +332,7 @@ where
         let mut selection = facet.query.clone();
         merge_outer_filter_into_facet_aggregates(&mut selection, outer_query);
         if !facet.include_all_facets {
-            selection = restrict_facet_to_outer_query(ctx, selection, outer_query, &facet.relation_name)?;
+            selection = restrict_facet_to_outer_query(context, selection, outer_query, &facet.relation_name)?;
         }
         let relation_aggregates = runtime_relation_aggregates(&selection.query_options);
         let query = apply_runtime_metadata(
@@ -352,14 +352,14 @@ where
             query,
             format!("Calculate facet {}", facet.facet_name),
         );
-        let facet_rows = ctx.fetch_facet_smart_list(&entity, &query, &relation_aggregates, chain).await?;
+        let facet_rows = context.fetch_facet_smart_list(&entity, &query, &relation_aggregates, chain).await?;
         facets.insert(facet.facet_name.clone(), facet_rows);
     }
     Ok(facets)
 }
 
 pub(crate) fn restrict_facet_to_outer_query<C>(
-    ctx: &C,
+    context: &C,
     mut selection: QuerySelection,
     outer_query: &SelectQuery,
     relation_name: &str,
@@ -367,7 +367,7 @@ pub(crate) fn restrict_facet_to_outer_query<C>(
 where
     C: TeaqlRuntime + ?Sized,
 {
-    let descriptor = ctx
+    let descriptor = context
         .user_context()
         .entity(&outer_query.entity)
         .cloned()

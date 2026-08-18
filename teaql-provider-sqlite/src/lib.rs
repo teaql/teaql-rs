@@ -445,17 +445,17 @@ pub trait SqliteSchemaExt {
     ) -> Pin<Box<dyn Future<Output = Result<(), MutationExecutorError>> + Send + '_>>;
 }
 
-pub fn ensure_sqlite_schema_for(ctx: &UserContext) -> Result<(), MutationExecutorError> {
-    let dialect = ctx.get_resource::<SqliteDialect>().ok_or_else(|| {
+pub fn ensure_sqlite_schema_for(context: &UserContext) -> Result<(), MutationExecutorError> {
+    let dialect = context.get_resource::<SqliteDialect>().ok_or_else(|| {
         MutationExecutorError::Bind("missing typed resource: SqliteDialect".to_owned())
     })?;
-    let executor = ctx
+    let executor = context
         .get_resource::<SqliteMutationExecutor>()
         .ok_or_else(|| {
             MutationExecutorError::Bind("missing typed resource: SqliteMutationExecutor".to_owned())
         })?;
 
-    let entities = ctx.all_entities();
+    let entities = context.all_entities();
 
     // Ensure id space table exists
     executor.ensure_id_space_table(DEFAULT_ID_SPACE_TABLE)?;
@@ -467,7 +467,7 @@ pub fn ensure_sqlite_schema_for(ctx: &UserContext) -> Result<(), MutationExecuto
             // New table: create it
             let sql = dialect.compile_create_table(entity)?;
             executor.lock()?.execute(&sql, [])?;
-            let _ = ctx.send_event(RawAuditEvent::schema_created(
+            let _ = context.send_event(RawAuditEvent::schema_created(
                 &entity.name,
                 &entity.table_name,
                 field_count,
@@ -484,14 +484,14 @@ pub fn ensure_sqlite_schema_for(ctx: &UserContext) -> Result<(), MutationExecuto
             }
             let sql = dialect.compile_add_column(entity, property)?;
             executor.lock()?.execute(&sql, [])?;
-            let _ = ctx.send_event(RawAuditEvent::field_added(
+            let _ = context.send_event(RawAuditEvent::field_added(
                 &entity.name,
                 &entity.table_name,
                 &property.column_name,
             ));
             fields_added += 1;
         }
-        let _ = ctx.send_event(RawAuditEvent::schema_verified(
+        let _ = context.send_event(RawAuditEvent::schema_verified(
             &entity.name,
             &entity.table_name,
             field_count,
@@ -501,8 +501,8 @@ pub fn ensure_sqlite_schema_for(ctx: &UserContext) -> Result<(), MutationExecuto
 
     // Seed initial data, tracking insert vs update counts per entity
     let mut seed_counts: BTreeMap<String, (usize, usize)> = BTreeMap::new(); // (inserted, updated)
-    for graph in ctx.initial_graphs() {
-        let entity = ctx.entity(&graph.entity).ok_or_else(|| {
+    for graph in context.initial_graphs() {
+        let entity = context.entity(&graph.entity).ok_or_else(|| {
             MutationExecutorError::Bind(format!("missing entity: {}", graph.entity))
         })?;
         let counts = seed_counts.entry(graph.entity.clone()).or_insert((0, 0));
@@ -520,10 +520,10 @@ pub fn ensure_sqlite_schema_for(ctx: &UserContext) -> Result<(), MutationExecuto
 
     // Fire DataSeeded events per entity type
     for (entity_name, (inserted, updated)) in &seed_counts {
-        let entity = ctx.entity(entity_name).ok_or_else(|| {
+        let entity = context.entity(entity_name).ok_or_else(|| {
             MutationExecutorError::Bind(format!("missing entity: {}", entity_name))
         })?;
-        let _ = ctx.send_event(RawAuditEvent::data_seeded(
+        let _ = context.send_event(RawAuditEvent::data_seeded(
             entity_name,
             &entity.table_name,
             *inserted,
@@ -548,10 +548,10 @@ pub struct SqliteSchemaProvider;
 impl SchemaProvider for SqliteSchemaProvider {
     fn ensure_schema<'a>(
         &'a self,
-        ctx: &'a UserContext,
+        context: &'a UserContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
-            ensure_sqlite_schema_for(ctx).map_err(|err| RuntimeError::Schema(err.to_string()))
+            ensure_sqlite_schema_for(context).map_err(|err| RuntimeError::Schema(err.to_string()))
         })
     }
 }
@@ -998,11 +998,11 @@ mod tests {
         let executor =
             SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
         let entity = entity();
-        let mut ctx = UserContext::new()
+        let mut context = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity.clone()));
 
-        ctx.use_sqlite_provider(executor.clone());
-        ensure_sqlite_schema_for(&ctx).unwrap();
+        context.use_sqlite_provider(executor.clone());
+        ensure_sqlite_schema_for(&context).unwrap();
 
         let insert = SqliteDialect
             .compile_insert(

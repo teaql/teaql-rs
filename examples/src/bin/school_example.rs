@@ -58,17 +58,17 @@ pub fn behavior_registry() -> InMemoryEntityDataServiceBehaviorRegistry {
 }
 
 pub fn sqlite_context(executor: SqliteMutationExecutor) -> UserContext {
-    let mut ctx = UserContext::new()
+    let mut context = UserContext::new()
         .with_metadata(metadata())
         .with_entity_registry(entity_registry())
         .with_entity_data_service_behavior_registry(behavior_registry());
-    ctx.use_sqlite_provider(executor.clone());
+    context.use_sqlite_provider(executor.clone());
 
     // register_executor replaces insert_resource — it also sets up DynGraphSaver
-    // so that Audited::save(&ctx) works.
+    // so that Audited::save(&context) works.
     let data_service = SqlDataServiceExecutor::new(SqliteDialect, executor, metadata());
-    ctx.register_executor(data_service);
-    ctx
+    context.register_executor(data_service);
+    context
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -89,9 +89,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .unwrap();
 
-    let ctx = sqlite_context(executor);
+    let context = sqlite_context(executor);
 
-    // ---- NEW API: school.audit_as("...").save(&ctx).await? ----
+    // ---- NEW API: school.audit_as("...").save(&context).await? ----
     use teaql_core::Entity;
 
     let school = School {
@@ -116,10 +116,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ]),
     };
 
-    school.audit_as("创建学校").save(&ctx).await?;
+    school.audit_as("创建学校").save(&context).await?;
 
     // Verify: fetch back with relations
-    let data_service = ctx.entity_data_service::<teaql_sql::SqlDataServiceExecutor<
+    let data_service = context.entity_data_service::<teaql_sql::SqlDataServiceExecutor<
         SqliteDialect,
         SqliteMutationExecutor,
         teaql_runtime::InMemoryMetadataStore,
@@ -133,7 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .fetch_enhanced_entities::<School>(&query)
         .await?;
 
-    println!("school.audit_as(\"创建学校\").save(&ctx) succeeded!");
+    println!("school.audit_as(\"创建学校\").save(&context) succeeded!");
     println!("Schools: {:#?}", schools);
     Ok(())
 }

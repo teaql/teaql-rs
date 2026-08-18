@@ -9,8 +9,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let executor = SqliteMutationExecutor::from_connection(connection);
     reset_sqlite_schema(&executor).await?;
 
-    let ctx = sqlite_context(executor);
-    let data_service = ctx.entity_data_service::<teaql_sql::SqlDataServiceExecutor<
+    let context = sqlite_context(executor);
+    let data_service = context.entity_data_service::<teaql_sql::SqlDataServiceExecutor<
         SqliteDialect,
         SqliteMutationExecutor,
         teaql_runtime::InMemoryMetadataStore,
@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         lines: SmartList::default(),
     }
     .audit_as("Create the example order")
-    .save(&ctx)
+    .save(&context)
     .await?;
 
     Order {
@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         lines: SmartList::default(),
     }
     .audit_as("Submit the example order")
-    .save(&ctx)
+    .save(&context)
     .await?;
 
     let deleted = Order {
@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     deleted.root.mark_as_delete(EntityKey::new("Order", 1_u64));
     deleted
         .audit_as("Delete the example order")
-        .save(&ctx)
+        .save(&context)
         .await?;
 
     let query = PurposedSelectQuery::new(
