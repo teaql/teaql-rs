@@ -2,6 +2,10 @@ use serde_json::Value as JsonValue;
 use std::sync::Arc;
 use teaql_data_service::{MutationExecutor, QueryExecutor, QueryRequest};
 use thiserror::Error;
+use teaql_runtime::{
+    NoopRuntimeTelemetry, RuntimeAttributeValue, RuntimeOperation, RuntimeTelemetry,
+    start_runtime_operation,
+};
 
 pub mod models;
 use models::{TfpMutationQuery, TfpSelectQuery};
@@ -40,6 +44,7 @@ where
 {
     query_executor: Arc<Q>,
     mutation_executor: Arc<M>,
+    telemetry: Arc<dyn RuntimeTelemetry>,
 }
 
 impl<Q, M> TfpEndpoint<Q, M>
@@ -51,11 +56,40 @@ where
         Self {
             query_executor,
             mutation_executor,
+            telemetry: Arc::new(NoopRuntimeTelemetry),
         }
+    }
+
+    pub fn with_runtime_telemetry(mut self, telemetry: Arc<dyn RuntimeTelemetry>) -> Self {
+        self.telemetry = telemetry;
+        self
     }
 
     /// Handles a TFP Query request (usually mapped to /query).
     pub async fn handle_query(
+        &self,
+        trusted: &TrustedQueryContext,
+        json_payload: JsonValue,
+    ) -> Result<JsonValue, TfpEndpointError> {
+        let scope = start_runtime_operation(
+            &self.telemetry,
+            RuntimeOperation::new("tfp", "server.query")
+                .attribute("teaql.tfp.role", "server"),
+        );
+        let result = scope.run(self.handle_query_inner(trusted, json_payload)).await;
+        match &result {
+            Ok(response) => scope.success(std::collections::BTreeMap::from([(
+                "teaql.result.cardinality".to_owned(),
+                RuntimeAttributeValue::Integer(
+                    response.get("data").and_then(JsonValue::as_array).map_or(0, Vec::len) as i64,
+                ),
+            )])),
+            Err(error) => scope.failure(tfp_error_type(error)),
+        }
+        result
+    }
+
+    async fn handle_query_inner(
         &self,
         trusted: &TrustedQueryContext,
         json_payload: JsonValue,
@@ -164,6 +198,23 @@ where
         &self,
         json_payload: JsonValue,
     ) -> Result<JsonValue, TfpEndpointError> {
+        let scope = start_runtime_operation(
+            &self.telemetry,
+            RuntimeOperation::new("tfp", "server.mutation")
+                .attribute("teaql.tfp.role", "server"),
+        );
+        let result = scope.run(self.handle_mutation_inner(json_payload)).await;
+        match &result {
+            Ok(_) => scope.success(std::collections::BTreeMap::new()),
+            Err(error) => scope.failure(tfp_error_type(error)),
+        }
+        result
+    }
+
+    async fn handle_mutation_inner(
+        &self,
+        json_payload: JsonValue,
+    ) -> Result<JsonValue, TfpEndpointError> {
         let tfp_mutation: TfpMutationQuery =
             serde_json::from_value(json_payload).map_err(TfpEndpointError::ParseError)?;
 
@@ -192,6 +243,14 @@ where
         response_obj.insert("data".to_string(), JsonValue::Array(data_arr));
 
         Ok(JsonValue::Object(response_obj))
+    }
+}
+
+fn tfp_error_type(error: &TfpEndpointError) -> &'static str {
+    match error {
+        TfpEndpointError::ParseError(_) => "ParseError",
+        TfpEndpointError::TranslationError(_) => "TranslationError",
+        TfpEndpointError::ExecutionError(_) => "ExecutionError",
     }
 }
 
@@ -300,6 +359,97 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::Mutex;
+    use teaql_core::Record;
+    use teaql_data_service::{
+        DataServiceCapabilities, DataServiceExecutor, DataServiceOperation, ExecutionMetadata,
+        MutationRequest, MutationResult, QueryResult,
+    };
+    use teaql_runtime::{RuntimeTelemetryScope, RuntimeOperation};
+
+    #[derive(Clone, Default)]
+    struct StubExecutor;
+
+    #[derive(Debug)]
+    struct StubError;
+    impl std::fmt::Display for StubError {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("stub error")
+        }
+    }
+    impl std::error::Error for StubError {}
+
+    impl DataServiceExecutor for StubExecutor {
+        type Error = StubError;
+        fn capabilities(&self) -> DataServiceCapabilities {
+            DataServiceCapabilities::default()
+        }
+    }
+
+    impl QueryExecutor for StubExecutor {
+        async fn query(&self, _request: QueryRequest) -> Result<QueryResult, Self::Error> {
+            Ok(QueryResult {
+                rows: vec![Record::new()],
+                metadata: metadata(DataServiceOperation::Query, Some(1), None),
+            })
+        }
+    }
+
+    impl MutationExecutor for StubExecutor {
+        async fn mutate(&self, _request: MutationRequest) -> Result<MutationResult, Self::Error> {
+            Ok(MutationResult {
+                affected_rows: 1,
+                generated_values: Record::new(),
+                persisted_record: None,
+                metadata: metadata(DataServiceOperation::Insert, None, Some(1)),
+            })
+        }
+    }
+
+    fn metadata(
+        operation: DataServiceOperation,
+        result_count: Option<usize>,
+        affected_rows: Option<u64>,
+    ) -> ExecutionMetadata {
+        ExecutionMetadata {
+            backend: "stub".into(), operation,
+            started_at: std::time::SystemTime::now(),
+            ended_at: std::time::SystemTime::now(), affected_rows, result_count,
+            trace_chain: Vec::new(), comment: None, backend_request_id: None,
+            parameterized_query: None, params: Vec::new(), debug_query: None,
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingTelemetry(Arc<Mutex<Vec<RecordedEvent>>>);
+
+    #[derive(Debug)]
+    struct RecordedEvent {
+        operation: RuntimeOperation,
+        completion: Option<BTreeMap<String, RuntimeAttributeValue>>,
+        failure: Option<String>,
+    }
+
+    impl RuntimeTelemetry for RecordingTelemetry {
+        fn start(&self, operation: RuntimeOperation) -> Box<dyn RuntimeTelemetryScope> {
+            let mut events = self.0.lock().expect("events");
+            events.push(RecordedEvent { operation, completion: None, failure: None });
+            Box::new(RecordingScope { events: self.0.clone(), index: events.len() - 1 })
+        }
+    }
+
+    struct RecordingScope {
+        events: Arc<Mutex<Vec<RecordedEvent>>>,
+        index: usize,
+    }
+    impl RuntimeTelemetryScope for RecordingScope {
+        fn success(&mut self, attributes: BTreeMap<String, RuntimeAttributeValue>) {
+            self.events.lock().expect("events")[self.index].completion = Some(attributes);
+        }
+        fn failure(&mut self, error_type: &str) {
+            self.events.lock().expect("events")[self.index].failure = Some(error_type.into());
+        }
+    }
 
     fn trusted() -> TrustedQueryContext {
         TrustedQueryContext {
@@ -395,5 +545,35 @@ mod tests {
         assert!(!shape.contains('@'));
         assert!(!shape.contains("Brien"));
         assert_eq!(shape, "select * from t where email = '?' and name = '?'");
+    }
+
+    #[tokio::test]
+    async fn records_tfp_server_query_mutation_and_failure_lifecycles() {
+        let telemetry = Arc::new(RecordingTelemetry::default());
+        let endpoint = TfpEndpoint::new(Arc::new(StubExecutor), Arc::new(StubExecutor))
+            .with_runtime_telemetry(telemetry.clone());
+
+        let response = endpoint.handle_query(&trusted(), json!({
+            "entity":"CustomerOrder", "_comment":"generated query",
+            "_purpose":"requested purpose", "_limit":10
+        })).await.expect("query response");
+        assert_eq!(response["data"].as_array().map(Vec::len), Some(1));
+        endpoint.handle_mutation(json!({
+            "entity":"CustomerOrder", "action":"Create", "payload":{},
+            "comment":"create order"
+        })).await.expect("mutation response");
+        let error = endpoint.handle_query(&trusted(), json!({"entity":"Other"}))
+            .await.expect_err("policy failure");
+        assert!(matches!(error, TfpEndpointError::TranslationError(_)));
+
+        let events = telemetry.0.lock().expect("events");
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].operation.family, "tfp");
+        assert_eq!(events[0].operation.name, "server.query");
+        assert_eq!(events[0].operation.attributes["teaql.tfp.role"], "server".into());
+        assert_eq!(events[0].completion.as_ref().unwrap()["teaql.result.cardinality"], 1usize.into());
+        assert_eq!(events[1].operation.name, "server.mutation");
+        assert!(events[1].completion.is_some());
+        assert_eq!(events[2].failure.as_deref(), Some("TranslationError"));
     }
 }
