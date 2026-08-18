@@ -1002,6 +1002,19 @@ impl UserContext {
     }
 
     pub fn send_event(&self, event: RawAuditEvent) -> Result<(), RuntimeError> {
+        let scope = self.start_runtime_operation(
+            crate::RuntimeOperation::new("audit", format!("{}.event", event.entity))
+                .attribute("teaql.entity.type", event.entity.clone()),
+        );
+        let result = self.send_event_inner(event);
+        match &result {
+            Ok(()) => scope.success(std::collections::BTreeMap::new()),
+            Err(_) => scope.failure("audit_error"),
+        }
+        result
+    }
+
+    fn send_event_inner(&self, event: RawAuditEvent) -> Result<(), RuntimeError> {
         if let Some(sink) = self.event_sink.as_ref() {
             sink.on_event(self, &event)?;
         }

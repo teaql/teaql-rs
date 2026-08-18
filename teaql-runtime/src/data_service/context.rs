@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::{collections::BTreeMap, future::Future};
 
 use teaql_core::{
     DeleteCommand, Entity, InsertCommand, Record, RecoverCommand, SelectQuery, SmartList,
@@ -83,6 +84,31 @@ where
         + Sync
         + 'static,
 {
+    async fn observe<T, F>(
+        &self,
+        family: &str,
+        name: String,
+        entity: &str,
+        work: F,
+    ) -> Result<T, DataServiceError<E::Error>>
+    where
+        F: Future<Output = Result<T, DataServiceError<E::Error>>>,
+    {
+        let operation = crate::RuntimeOperation::new(family, name)
+            .attribute("teaql.entity.type", entity.to_owned());
+        let scope = self.metadata.context.start_runtime_operation(operation);
+        match work.await {
+            Ok(value) => {
+                scope.success(BTreeMap::new());
+                Ok(value)
+            }
+            Err(error) => {
+                scope.failure("data_service_error");
+                Err(error)
+            }
+        }
+    }
+
     fn data_service(&self) -> RuntimeDataService<'_, UserContextMetadata<'_>, E> {
         RuntimeDataService::new(&self.metadata, self.executor)
     }
@@ -93,14 +119,26 @@ where
     ) -> Result<Vec<Record>, DataServiceError<E::Error>> {
         let final_comment = self.resolve_final_comment(&query.trace_chain, query.comment.clone());
         query.comment = final_comment;
-        self.data_service().fetch_all(&query).await
+        self.observe(
+            "query",
+            format!("{}.list", query.entity),
+            &query.entity,
+            self.data_service().fetch_all(&query),
+        )
+        .await
     }
 
     pub(crate) async fn fetch_smart_list(
         &self,
         query: &SelectQuery,
     ) -> Result<SmartList<Record>, DataServiceError<E::Error>> {
-        self.data_service().fetch_smart_list(query).await
+        self.observe(
+            "query",
+            format!("{}.list", query.entity),
+            &query.entity,
+            self.data_service().fetch_smart_list(query),
+        )
+        .await
     }
 
     pub(crate) async fn fetch_entities<T>(
@@ -110,7 +148,13 @@ where
     where
         T: Entity,
     {
-        self.data_service().fetch_entities(query).await
+        self.observe(
+            "query",
+            format!("{}.list", query.entity),
+            &query.entity,
+            self.data_service().fetch_entities(query),
+        )
+        .await
     }
 
     pub(crate) async fn fetch_enhanced_entities<T>(
@@ -120,14 +164,27 @@ where
     where
         T: Entity,
     {
-        self.data_service().fetch_enhanced_entities(query).await
+        self.observe(
+            "query",
+            format!("{}.list", query.entity),
+            &query.entity,
+            self.data_service().fetch_enhanced_entities(query),
+        )
+        .await
     }
 
     pub(crate) async fn insert(
         &self,
         command: &InsertCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
-        let affected = self.data_service().insert(command).await?;
+        let affected = self
+            .observe(
+                "mutation",
+                format!("{}.insert", command.entity),
+                &command.entity,
+                self.data_service().insert(command),
+            )
+            .await?;
         self.invalidate_aggregation_cache_for(&command.entity);
         Ok(affected)
     }
@@ -136,7 +193,14 @@ where
         &self,
         command: &UpdateCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
-        let affected = self.data_service().update(command).await?;
+        let affected = self
+            .observe(
+                "mutation",
+                format!("{}.update", command.entity),
+                &command.entity,
+                self.data_service().update(command),
+            )
+            .await?;
         self.invalidate_aggregation_cache_for(&command.entity);
         Ok(affected)
     }
@@ -145,7 +209,14 @@ where
         &self,
         command: &teaql_core::BatchInsertCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
-        let affected = self.data_service().batch_insert(command).await?;
+        let affected = self
+            .observe(
+                "mutation",
+                format!("{}.batch_insert", command.entity),
+                &command.entity,
+                self.data_service().batch_insert(command),
+            )
+            .await?;
         self.invalidate_aggregation_cache_for(&command.entity);
         Ok(affected)
     }
@@ -154,7 +225,14 @@ where
         &self,
         command: &teaql_core::BatchUpdateCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
-        let affected = self.data_service().batch_update(command).await?;
+        let affected = self
+            .observe(
+                "mutation",
+                format!("{}.batch_update", command.entity),
+                &command.entity,
+                self.data_service().batch_update(command),
+            )
+            .await?;
         self.invalidate_aggregation_cache_for(&command.entity);
         Ok(affected)
     }
@@ -163,7 +241,14 @@ where
         &self,
         command: &DeleteCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
-        let affected = self.data_service().delete(command).await?;
+        let affected = self
+            .observe(
+                "mutation",
+                format!("{}.delete", command.entity),
+                &command.entity,
+                self.data_service().delete(command),
+            )
+            .await?;
         self.invalidate_aggregation_cache_for(&command.entity);
         Ok(affected)
     }
@@ -172,7 +257,14 @@ where
         &self,
         command: &RecoverCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
-        let affected = self.data_service().recover(command).await?;
+        let affected = self
+            .observe(
+                "mutation",
+                format!("{}.recover", command.entity),
+                &command.entity,
+                self.data_service().recover(command),
+            )
+            .await?;
         self.invalidate_aggregation_cache_for(&command.entity);
         Ok(affected)
     }

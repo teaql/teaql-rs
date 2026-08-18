@@ -74,8 +74,9 @@ mod tests {
         InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityRegistry, InMemoryMetadataStore,
         InternalIdGenerator, Language, MemoryDataService, MetadataStore, ObjectLocation,
         RawAuditEvent, RawAuditEventKind, RawAuditEventSink, RequestPolicy, RuntimeError,
-        RuntimeModule, SafeAuditEvent, SafeAuditEventSink, SqlLogOperation, SqlLogOptions,
-        TypedChecker, TypedEntityChecker, UserContext, translate_check_result,
+        RuntimeModule, RuntimeOperation, RuntimeTelemetry, RuntimeTelemetryScope, SafeAuditEvent,
+        SafeAuditEventSink, SqlLogOperation, SqlLogOptions, TypedChecker, TypedEntityChecker,
+        UserContext, translate_check_result,
     };
     use crate::data_service::RuntimeDataService;
     use teaql_core::{
@@ -415,6 +416,30 @@ mod tests {
 
     #[derive(Debug)]
     struct StubError;
+
+    struct RecordingRuntimeTelemetry(Arc<Mutex<Vec<String>>>);
+
+    impl RuntimeTelemetry for RecordingRuntimeTelemetry {
+        fn start(&self, operation: RuntimeOperation) -> Box<dyn RuntimeTelemetryScope> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("start:{}", operation.family));
+            Box::new(RecordingRuntimeTelemetryScope(self.0.clone()))
+        }
+    }
+
+    struct RecordingRuntimeTelemetryScope(Arc<Mutex<Vec<String>>>);
+
+    impl RuntimeTelemetryScope for RecordingRuntimeTelemetryScope {
+        fn success(&mut self, _attributes: BTreeMap<String, crate::RuntimeAttributeValue>) {
+            self.0.lock().unwrap().push("success".to_owned());
+        }
+
+        fn failure(&mut self, _error_type: &str) {
+            self.0.lock().unwrap().push("failure".to_owned());
+        }
+    }
 
     impl std::fmt::Display for StubError {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -882,8 +907,12 @@ mod tests {
 
     #[tokio::test]
     async fn user_context_builds_context_data_service() {
-        let mut context =
-            UserContext::new().with_metadata(InMemoryMetadataStore::new().with_entity(entity()));
+        let telemetry_events = Arc::new(Mutex::new(Vec::new()));
+        let mut context = UserContext::new()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
+            .with_runtime_telemetry(Arc::new(RecordingRuntimeTelemetry(
+                telemetry_events.clone(),
+            )));
         context.insert_resource(PostgresDialect);
         context.insert_resource(StubExecutor {
             affected: 1,
@@ -901,6 +930,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(affected, 1);
+        assert_eq!(
+            telemetry_events.lock().unwrap().as_slice(),
+            ["start:mutation", "success"]
+        );
     }
 
     #[tokio::test]
