@@ -116,6 +116,12 @@ fn exports_query_trace_metric_and_log_through_otlp_http() {
     ];
     for operation in operations {
         let family = operation.family.clone();
+        let mut failed_operation = operation.clone();
+        failed_operation.name = format!("{}.failure", operation.name);
+        failed_operation.attributes.insert(
+            "teaql.operation.name".to_owned(),
+            RuntimeAttributeValue::String(failed_operation.name.clone()),
+        );
         let scope = start_runtime_operation(
             &telemetry,
             operation.attribute("teaql.entity.id", "must-not-export"),
@@ -131,6 +137,7 @@ fn exports_query_trace_metric_and_log_through_otlp_http() {
             );
         }
         scope.success(completion);
+        start_runtime_operation(&telemetry, failed_operation).failure("ConformanceProbeError");
     }
 
     let trace_flushed = tracer_provider.force_flush().is_ok();
