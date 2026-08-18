@@ -375,36 +375,52 @@ where
         Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
     > {
         Box::pin(async move {
-            let child_repo = self.scoped_data_service_internal(plan.target_entity.clone());
-            let query = self.query_for_plan(plan, parent_rows);
-            let mut child_rows = child_repo.fetch_all_internal(&query).await?;
-            for child in &mut child_rows {
-                child.remove(teaql_core::PARTITION_RANK_PROPERTY);
-            }
-            self.attach_relation_rows(parent_rows, plan, child_rows);
+            let scope = self.data_service.metadata.context.start_runtime_operation(
+                crate::RuntimeOperation::new(
+                    "relation_load",
+                    format!("{}.{}", plan.parent_entity, plan.path),
+                )
+                .attribute("teaql.entity.type", plan.parent_entity.clone())
+                .attribute("teaql.relation.name", plan.path.clone()),
+            );
+            let result = scope.run(async {
+                let child_repo = self.scoped_data_service_internal(plan.target_entity.clone());
+                let query = self.query_for_plan(plan, parent_rows);
+                let mut child_rows = child_repo.fetch_all_internal(&query).await?;
+                for child in &mut child_rows {
+                    child.remove(teaql_core::PARTITION_RANK_PROPERTY);
+                }
+                self.attach_relation_rows(parent_rows, plan, child_rows);
 
-            if !plan.children.is_empty() {
-                for parent in parent_rows.iter_mut() {
-                    match parent.get_mut(&plan.relation_name) {
-                        Some(Value::Object(child)) => {
-                            child_repo
-                                .enhance_child_record(child, &plan.children)
-                                .await?;
-                        }
-                        Some(Value::List(values)) => {
-                            for value in values.iter_mut() {
-                                if let Value::Object(child) = value {
-                                    child_repo
-                                        .enhance_child_record(child, &plan.children)
-                                        .await?;
+                if !plan.children.is_empty() {
+                    for parent in parent_rows.iter_mut() {
+                        match parent.get_mut(&plan.relation_name) {
+                            Some(Value::Object(child)) => {
+                                child_repo.enhance_child_record(child, &plan.children).await?;
+                            }
+                            Some(Value::List(values)) => {
+                                for value in values.iter_mut() {
+                                    if let Value::Object(child) = value {
+                                        child_repo
+                                            .enhance_child_record(child, &plan.children)
+                                            .await?;
+                                    }
                                 }
                             }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
+                Ok(())
+            }).await;
+            match &result {
+                Ok(_) => scope.success(BTreeMap::from([(
+                    "teaql.result.cardinality".to_owned(),
+                    crate::RuntimeAttributeValue::Integer(parent_rows.len() as i64),
+                )])),
+                Err(_) => scope.failure("relation_load_error"),
             }
-            Ok(())
+            result
         })
     }
 

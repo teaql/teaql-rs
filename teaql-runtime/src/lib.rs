@@ -1546,6 +1546,7 @@ mod tests {
 
     #[tokio::test]
     async fn entity_data_service_enhances_parent_rows_with_relations() {
+        let telemetry_events = Arc::new(Mutex::new(Vec::new()));
         let mut context = UserContext::new()
             .with_metadata(
                 InMemoryMetadataStore::new()
@@ -1557,7 +1558,10 @@ mod tests {
             .with_entity_data_service_behavior_registry(
                 InMemoryEntityDataServiceBehaviorRegistry::new()
                     .with_behavior("Order", OrderBehavior),
-            );
+            )
+            .with_runtime_telemetry(Arc::new(RecordingRuntimeTelemetry(
+                telemetry_events.clone(),
+            )));
         context.insert_resource(PostgresDialect);
         context.insert_resource(StubExecutor {
             affected: 1,
@@ -1598,6 +1602,8 @@ mod tests {
             Some(Value::List(lines)) => assert_eq!(lines.len(), 1),
             other => panic!("unexpected lines payload: {other:?}"),
         }
+        assert!(telemetry_events
+            .lock().unwrap().iter().any(|event| event == "start:relation_load"));
     }
 
     #[tokio::test]
@@ -1943,6 +1949,7 @@ mod tests {
 
     #[tokio::test]
     async fn entity_data_service_uses_aggregation_cache_when_resource_is_registered() {
+        let telemetry_events = Arc::new(Mutex::new(Vec::new()));
         let executor = QueueExecutor {
             affected: 1,
             rows: Mutex::new(VecDeque::from([vec![Record::from([(
@@ -1953,7 +1960,10 @@ mod tests {
         };
         let mut context = UserContext::new()
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
-            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"))
+            .with_runtime_telemetry(Arc::new(RecordingRuntimeTelemetry(
+                telemetry_events.clone(),
+            )));
         context.insert_resource(PostgresDialect);
         context.insert_resource(executor);
         context.insert_resource(InMemoryAggregationCache::default());
@@ -1972,6 +1982,9 @@ mod tests {
         assert_eq!(first, second);
         let executor = context.get_resource::<QueueExecutor>().unwrap();
         assert_eq!(executor.queries.lock().unwrap().len(), 1);
+        let events = telemetry_events.lock().unwrap();
+        assert_eq!(events.iter().filter(|event| event.as_str() == "start:cache").count(), 2);
+        assert_eq!(events.iter().filter(|event| event.as_str() == "start:provider").count(), 1);
     }
 
     #[tokio::test]

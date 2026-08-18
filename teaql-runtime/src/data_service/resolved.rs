@@ -544,27 +544,54 @@ where
             &aggregation_cache_namespace(&query.entity),
             query,
         );
-        if let Some(rows) = cache.get(&key, options.cache_expired_millis) {
-            return Ok(rows);
+        let scope = self.data_service.metadata.context.start_runtime_operation(
+            crate::RuntimeOperation::new("cache", format!("{}.aggregation.get", query.entity))
+                .attribute("teaql.cache.operation", "get"),
+        );
+        let result = scope.run(async {
+            if let Some(rows) = cache.get(&key, options.cache_expired_millis) {
+                return Ok((rows, "hit"));
+            }
+            let request = teaql_data_service::QueryRequest {
+                query: query.clone(),
+                trace_chain: query.trace_chain.clone(),
+                comment: query.comment.clone(),
+            };
+            let provider_kind = std::any::type_name::<E>().to_owned();
+            let provider_scope = self.data_service.metadata.context.start_runtime_operation(
+                crate::RuntimeOperation::new("provider", format!("{provider_kind}.query"))
+                    .attribute("teaql.provider.kind", provider_kind)
+                    .attribute("teaql.provider.operation", "query"),
+            );
+            let provider_result = provider_scope.run(self.data_service.executor.query(request)).await;
+            let res = match provider_result {
+                Ok(value) => {
+                    provider_scope.success(std::collections::BTreeMap::new());
+                    value
+                }
+                Err(error) => {
+                    provider_scope.failure("data_service_error");
+                    return Err(DataServiceError::Executor(error));
+                }
+            };
+            self.data_service.metadata.context.record_metadata_log(&res.metadata);
+            let rows = res.rows;
+            cache.put(key, rows.clone());
+            Ok((rows, "miss"))
+        }).await;
+        match result {
+            Ok((rows, cache_result)) => {
+                scope.success(std::collections::BTreeMap::from([(
+                    "teaql.cache.result".to_owned(),
+                    crate::RuntimeAttributeValue::from(cache_result),
+                )]));
+                Ok(rows)
+            }
+            Err(error) => {
+                scope.failure("cache_load_error");
+                Err(error)
+            }
         }
-        let request = teaql_data_service::QueryRequest {
-            query: query.clone(),
-            trace_chain: query.trace_chain.clone(),
-            comment: query.comment.clone(),
-        };
-        let res = self
-            .data_service
-            .executor
-            .query(request)
-            .await
-            .map_err(DataServiceError::Executor)?;
-        self.data_service
-            .metadata
-            .context
-            .record_metadata_log(&res.metadata);
-        let rows = res.rows;
-        cache.put(key, rows.clone());
-        Ok(rows)
     }
 
     pub(crate) async fn fetch_all_with_relation_aggregates_internal(
