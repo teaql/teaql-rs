@@ -6,9 +6,13 @@ use opentelemetry::global::BoxedTracer;
 use opentelemetry::logs::{AnyValue, LogRecord, Logger, Severity};
 use opentelemetry::metrics::{Counter, Histogram, Meter};
 use opentelemetry::trace::{Span, Status, TraceContextExt, Tracer};
-use opentelemetry::{Context, KeyValue, Value};
+use opentelemetry::propagation::Extractor;
+use opentelemetry::{global, Context, KeyValue, Value};
 
-use crate::{RuntimeAttributeValue, RuntimeOperation, RuntimeTelemetry, RuntimeTelemetryScope};
+use crate::{
+    RuntimeAttributeValue, RuntimeOperation, RuntimeTelemetry,
+    RuntimeTelemetryPropagationContext, RuntimeTelemetryScope,
+};
 
 pub struct OpenTelemetryRuntimeTelemetry {
     tracer: BoxedTracer,
@@ -78,6 +82,41 @@ impl RuntimeTelemetry for OpenTelemetryRuntimeTelemetry {
             operations: self.operations.clone(),
             log_emitter: self.log_emitter.clone(),
         })
+    }
+
+    fn extract_context(
+        &self,
+        carrier: &BTreeMap<String, String>,
+    ) -> Box<dyn RuntimeTelemetryPropagationContext> {
+        let context = global::get_text_map_propagator(|propagator| {
+            propagator.extract(&CaseInsensitiveCarrier(carrier))
+        });
+        Box::new(OpenTelemetryPropagationContext { context })
+    }
+}
+
+struct CaseInsensitiveCarrier<'a>(&'a BTreeMap<String, String>);
+
+impl Extractor for CaseInsensitiveCarrier<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.iter().find_map(|(name, value)| {
+            name.eq_ignore_ascii_case(key).then_some(value.as_str())
+        })
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0.keys().map(String::as_str).collect()
+    }
+}
+
+struct OpenTelemetryPropagationContext {
+    context: Context,
+}
+
+impl RuntimeTelemetryPropagationContext for OpenTelemetryPropagationContext {
+    fn with_context(&self, callback: &mut dyn FnMut()) {
+        let _guard = self.context.clone().attach();
+        callback();
     }
 }
 
@@ -164,13 +203,17 @@ mod tests {
     use opentelemetry::global;
     use opentelemetry::logs::LoggerProvider;
     use opentelemetry_sdk::logs::{InMemoryLogExporter, SdkLoggerProvider};
+    use opentelemetry_sdk::propagation::TraceContextPropagator;
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
 
     use super::*;
     use crate::start_runtime_operation;
 
-    #[tokio::test]
+    static GLOBAL_OTEL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[tokio::test(flavor = "current_thread")]
     async fn preserves_nested_context_across_async_polling() {
+        let _global_otel_guard = GLOBAL_OTEL_TEST_LOCK.lock().expect("OTel test lock");
         let exporter = InMemorySpanExporter::default();
         let provider = SdkTracerProvider::builder()
             .with_simple_exporter(exporter.clone())
@@ -232,5 +275,47 @@ mod tests {
                 .attributes_iter()
                 .all(|(key, _)| key.as_str() != "teaql.entity.id")
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn extracts_case_insensitive_w3c_carrier_as_direct_parent() {
+        let _global_otel_guard = GLOBAL_OTEL_TEST_LOCK.lock().expect("OTel test lock");
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        global::set_tracer_provider(provider.clone());
+        global::set_text_map_propagator(TraceContextPropagator::new());
+        let telemetry: Arc<dyn RuntimeTelemetry> = Arc::new(OpenTelemetryRuntimeTelemetry::new(
+            global::tracer("io.teaql.runtime"),
+            global::meter("io.teaql.runtime"),
+        ));
+        let trace_id = "0af7651916cd43dd8448eb211c80319c";
+        let parent_span_id = "b7ad6b7169203331";
+        let carrier = BTreeMap::from([(
+            "TraceParent".to_owned(),
+            format!("00-{trace_id}-{parent_span_id}-01"),
+        )]);
+        let propagated = crate::extract_runtime_context(&telemetry, &carrier);
+
+        propagated
+            .run(async {
+                let server = start_runtime_operation(
+                    &telemetry,
+                    RuntimeOperation::new("tfp", "server.query")
+                        .attribute("teaql.tfp.role", "server"),
+                );
+                server.success(BTreeMap::new());
+            })
+            .await;
+        provider.force_flush().expect("flush spans");
+
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        let server = spans
+            .iter()
+            .find(|span| span.name == "teaql.tfp")
+            .expect("server span");
+        assert_eq!(server.span_context.trace_id().to_string(), trace_id);
+        assert_eq!(server.parent_span_id.to_string(), parent_span_id);
     }
 }

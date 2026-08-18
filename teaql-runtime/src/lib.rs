@@ -56,8 +56,10 @@ pub use registry::{
     MetadataStore, RequestPolicy, RuntimeModule,
 };
 pub use telemetry::{
+    extract_runtime_context, FailOpenRuntimeTelemetryPropagationContext,
     FailOpenRuntimeTelemetryScope, NoopRuntimeTelemetry, RuntimeAttributeValue, RuntimeOperation,
-    RuntimeTelemetry, RuntimeTelemetryScope, start_runtime_operation,
+    RuntimeTelemetry, RuntimeTelemetryPropagationContext, RuntimeTelemetryScope,
+    start_runtime_operation,
 };
 #[cfg(feature = "opentelemetry")]
 pub use telemetry_opentelemetry::OpenTelemetryRuntimeTelemetry;

@@ -3,8 +3,8 @@ use std::sync::Arc;
 use teaql_data_service::{MutationExecutor, QueryExecutor, QueryRequest};
 use thiserror::Error;
 use teaql_runtime::{
-    NoopRuntimeTelemetry, RuntimeAttributeValue, RuntimeOperation, RuntimeTelemetry,
-    start_runtime_operation,
+    extract_runtime_context, start_runtime_operation, NoopRuntimeTelemetry,
+    RuntimeAttributeValue, RuntimeOperation, RuntimeTelemetry,
 };
 
 pub mod models;
@@ -67,6 +67,27 @@ where
 
     /// Handles a TFP Query request (usually mapped to /query).
     pub async fn handle_query(
+        &self,
+        trusted: &TrustedQueryContext,
+        json_payload: JsonValue,
+    ) -> Result<JsonValue, TfpEndpointError> {
+        self.handle_query_with_carrier(trusted, json_payload, &Default::default())
+            .await
+    }
+
+    pub async fn handle_query_with_carrier(
+        &self,
+        trusted: &TrustedQueryContext,
+        json_payload: JsonValue,
+        carrier: &std::collections::BTreeMap<String, String>,
+    ) -> Result<JsonValue, TfpEndpointError> {
+        let propagation = extract_runtime_context(&self.telemetry, carrier);
+        propagation
+            .run(self.handle_query_observed(trusted, json_payload))
+            .await
+    }
+
+    async fn handle_query_observed(
         &self,
         trusted: &TrustedQueryContext,
         json_payload: JsonValue,
@@ -195,6 +216,23 @@ where
 
     /// Handles a TFP Mutation request (usually mapped to /mutate).
     pub async fn handle_mutation(
+        &self,
+        json_payload: JsonValue,
+    ) -> Result<JsonValue, TfpEndpointError> {
+        self.handle_mutation_with_carrier(json_payload, &Default::default())
+            .await
+    }
+
+    pub async fn handle_mutation_with_carrier(
+        &self,
+        json_payload: JsonValue,
+        carrier: &std::collections::BTreeMap<String, String>,
+    ) -> Result<JsonValue, TfpEndpointError> {
+        let propagation = extract_runtime_context(&self.telemetry, carrier);
+        propagation.run(self.handle_mutation_observed(json_payload)).await
+    }
+
+    async fn handle_mutation_observed(
         &self,
         json_payload: JsonValue,
     ) -> Result<JsonValue, TfpEndpointError> {

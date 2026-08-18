@@ -100,8 +100,61 @@ pub trait RuntimeTelemetryScope: Send {
 
 pub trait RuntimeTelemetry: Send + Sync {
     fn start(&self, operation: RuntimeOperation) -> Box<dyn RuntimeTelemetryScope>;
+    fn extract_context(
+        &self,
+        _carrier: &BTreeMap<String, String>,
+    ) -> Box<dyn RuntimeTelemetryPropagationContext> {
+        Box::new(NoopRuntimeTelemetryPropagationContext)
+    }
     fn flush(&self) {}
     fn shutdown(&self) {}
+}
+
+pub trait RuntimeTelemetryPropagationContext: Send + Sync {
+    fn with_context(&self, callback: &mut dyn FnMut()) {
+        callback();
+    }
+}
+
+struct NoopRuntimeTelemetryPropagationContext;
+impl RuntimeTelemetryPropagationContext for NoopRuntimeTelemetryPropagationContext {}
+
+pub struct FailOpenRuntimeTelemetryPropagationContext {
+    delegate: Option<Box<dyn RuntimeTelemetryPropagationContext>>,
+}
+
+impl FailOpenRuntimeTelemetryPropagationContext {
+    pub async fn run<F: Future>(&self, future: F) -> F::Output {
+        futures_util::pin_mut!(future);
+        futures_util::future::poll_fn(|task_context| {
+            let Some(delegate) = self.delegate.as_ref() else {
+                return future.as_mut().poll(task_context);
+            };
+            let mut result = None;
+            let mut invoked = false;
+            let mut callback = || {
+                invoked = true;
+                result = Some(future.as_mut().poll(task_context));
+            };
+            let context_result = catch_unwind(AssertUnwindSafe(|| {
+                delegate.with_context(&mut callback);
+            }));
+            match (context_result, result) {
+                (_, Some(result)) => result,
+                (Err(payload), None) if invoked => std::panic::resume_unwind(payload),
+                _ => future.as_mut().poll(task_context),
+            }
+        })
+        .await
+    }
+}
+
+pub fn extract_runtime_context(
+    telemetry: &Arc<dyn RuntimeTelemetry>,
+    carrier: &BTreeMap<String, String>,
+) -> FailOpenRuntimeTelemetryPropagationContext {
+    let delegate = catch_unwind(AssertUnwindSafe(|| telemetry.extract_context(carrier))).ok();
+    FailOpenRuntimeTelemetryPropagationContext { delegate }
 }
 
 #[derive(Default)]
