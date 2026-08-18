@@ -4,7 +4,7 @@ use std::future::Future;
 
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use teaql_core::{EntityDescriptor, Record, UpdateCommand, Value};
@@ -233,6 +233,7 @@ pub struct UserContext {
     continuous_page_cursor_store: std::sync::Arc<dyn ContinuousPageCursorStore>,
     continuous_page_observation: Mutex<(String, Option<String>)>,
     local_lock_owner: u64,
+    runtime_telemetry: Arc<dyn crate::RuntimeTelemetry>,
 }
 
 #[derive(Clone, Copy)]
@@ -294,6 +295,7 @@ impl Default for UserContext {
             ),
             continuous_page_observation: Mutex::new(("DISABLED".to_owned(), None)),
             local_lock_owner: NEXT_LOCAL_LOCK_OWNER.fetch_add(1, Ordering::Relaxed),
+            runtime_telemetry: Arc::new(crate::NoopRuntimeTelemetry),
         }
     }
 }
@@ -343,6 +345,26 @@ impl UserContext {
         Self::default()
     }
 
+    pub fn with_runtime_telemetry(mut self, telemetry: Arc<dyn crate::RuntimeTelemetry>) -> Self {
+        self.runtime_telemetry = telemetry;
+        self
+    }
+
+    pub fn set_runtime_telemetry(&mut self, telemetry: Arc<dyn crate::RuntimeTelemetry>) {
+        self.runtime_telemetry = telemetry;
+    }
+
+    pub fn runtime_telemetry(&self) -> &Arc<dyn crate::RuntimeTelemetry> {
+        &self.runtime_telemetry
+    }
+
+    pub fn start_runtime_operation(
+        &self,
+        operation: crate::RuntimeOperation,
+    ) -> crate::FailOpenRuntimeTelemetryScope {
+        crate::start_runtime_operation(&self.runtime_telemetry, operation)
+    }
+
     pub fn try_local_lock(&self, key: &str, timeout_millis: u64, expire_millis: u64) -> bool {
         let locks = PROCESS_LOCAL_LOCKS.get_or_init(ProcessLocalLocks::default);
         let deadline = Instant::now() + Duration::from_millis(timeout_millis);
@@ -351,31 +373,42 @@ impl UserContext {
             let now = Instant::now();
             match entries.get(key).copied() {
                 None => {
-                    entries.insert(key.to_owned(), LocalLockEntry {
-                        owner: self.local_lock_owner,
-                        expires_at: (expire_millis > 0)
-                            .then(|| now + Duration::from_millis(expire_millis)),
-                    });
+                    entries.insert(
+                        key.to_owned(),
+                        LocalLockEntry {
+                            owner: self.local_lock_owner,
+                            expires_at: (expire_millis > 0)
+                                .then(|| now + Duration::from_millis(expire_millis)),
+                        },
+                    );
                     return true;
                 }
                 Some(current)
                     if current.owner == self.local_lock_owner
                         || current.expires_at.is_some_and(|expiry| now >= expiry) =>
                 {
-                    entries.insert(key.to_owned(), LocalLockEntry {
-                        owner: self.local_lock_owner,
-                        expires_at: (expire_millis > 0)
-                            .then(|| now + Duration::from_millis(expire_millis)),
-                    });
+                    entries.insert(
+                        key.to_owned(),
+                        LocalLockEntry {
+                            owner: self.local_lock_owner,
+                            expires_at: (expire_millis > 0)
+                                .then(|| now + Duration::from_millis(expire_millis)),
+                        },
+                    );
                     return true;
                 }
                 Some(current) => {
-                    if timeout_millis == 0 || now >= deadline { return false; }
-                    let wake_after = current.expires_at
+                    if timeout_millis == 0 || now >= deadline {
+                        return false;
+                    }
+                    let wake_after = current
+                        .expires_at
                         .map(|expiry| expiry.saturating_duration_since(now))
                         .unwrap_or_else(|| deadline.saturating_duration_since(now))
                         .min(deadline.saturating_duration_since(now));
-                    let waited = locks.changed.wait_timeout(entries, wake_after)
+                    let waited = locks
+                        .changed
+                        .wait_timeout(entries, wake_after)
                         .expect("local lock state poisoned");
                     entries = waited.0;
                 }
@@ -386,7 +419,10 @@ impl UserContext {
     pub fn unlock_local(&self, key: &str) {
         let locks = PROCESS_LOCAL_LOCKS.get_or_init(ProcessLocalLocks::default);
         let mut entries = locks.entries.lock().expect("local lock state poisoned");
-        if entries.get(key).is_some_and(|entry| entry.owner == self.local_lock_owner) {
+        if entries
+            .get(key)
+            .is_some_and(|entry| entry.owner == self.local_lock_owner)
+        {
             entries.remove(key);
             locks.changed.notify_all();
         }
