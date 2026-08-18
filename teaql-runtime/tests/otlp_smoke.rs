@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use opentelemetry::global;
 use opentelemetry::logs::LoggerProvider;
@@ -22,6 +23,7 @@ fn exports_query_trace_metric_and_log_through_otlp_http() {
     };
     let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
         .unwrap_or_else(|_| "http://localhost:4318".to_owned());
+    let expect_export_failure = std::env::var("TEAQL_EXPECT_EXPORT_FAILURE").as_deref() == Ok("1");
     let run_id = service_name.rsplit('-').next().expect("run id").to_owned();
     let resource = Resource::builder()
         .with_service_name(service_name)
@@ -36,6 +38,7 @@ fn exports_query_trace_metric_and_log_through_otlp_http() {
         .with_http()
         .with_protocol(Protocol::HttpBinary)
         .with_endpoint(format!("{endpoint}/v1/traces"))
+        .with_timeout(Duration::from_secs(1))
         .build()
         .expect("span exporter");
     let span_processor = BatchSpanProcessor::builder(span_exporter)
@@ -56,6 +59,7 @@ fn exports_query_trace_metric_and_log_through_otlp_http() {
         .with_http()
         .with_protocol(Protocol::HttpBinary)
         .with_endpoint(format!("{endpoint}/v1/metrics"))
+        .with_timeout(Duration::from_secs(1))
         .build()
         .expect("metric exporter");
     let meter_provider = SdkMeterProvider::builder()
@@ -68,6 +72,7 @@ fn exports_query_trace_metric_and_log_through_otlp_http() {
         .with_http()
         .with_protocol(Protocol::HttpBinary)
         .with_endpoint(format!("{endpoint}/v1/logs"))
+        .with_timeout(Duration::from_secs(1))
         .build()
         .expect("log exporter");
     let log_processor = opentelemetry_sdk::logs::BatchLogProcessor::builder(log_exporter)
@@ -128,7 +133,12 @@ fn exports_query_trace_metric_and_log_through_otlp_http() {
         scope.success(completion);
     }
 
-    tracer_provider.force_flush().expect("flush traces");
-    meter_provider.force_flush().expect("flush metrics");
-    logger_provider.force_flush().expect("flush logs");
+    let trace_flushed = tracer_provider.force_flush().is_ok();
+    let metric_flushed = meter_provider.force_flush().is_ok();
+    let log_flushed = logger_provider.force_flush().is_ok();
+    if expect_export_failure {
+        assert!(!(trace_flushed && metric_flushed && log_flushed));
+    } else {
+        assert!(trace_flushed && metric_flushed && log_flushed);
+    }
 }
