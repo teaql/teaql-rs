@@ -600,4 +600,21 @@ mod tests {
             "SELECT * FROM school WHERE name = 'O''Brien School' AND active = TRUE AND phone IS NULL AND repeated = 'O''Brien School' AND note = '$2'"
         );
     }
+
+    #[test]
+    fn sqlite_debug_sql_preserves_comments_and_temporal_storage_literals() {
+        let query = CompiledQuery {
+            sql: "-- line ? $1\nSELECT '?', \"identifier?\", ?, ? /* block ? */".to_owned(),
+            params: vec![
+                Value::Date("2024-02-29".parse().unwrap()),
+                Value::Timestamp(teaql_core::time::Timestamp(1_787_110_200_123)),
+            ],
+            comment: Some("teaql purpose=temporal.verify ? $1".to_owned()),
+        };
+
+        assert_eq!(
+            query.debug_sql(crate::DatabaseKind::Sqlite),
+            "/* teaql purpose=temporal.verify ? $1 */ -- line ? $1\nSELECT '?', \"identifier?\", '2024-02-29', 1787110200123 /* block ? */"
+        );
+    }
 }

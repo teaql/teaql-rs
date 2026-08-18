@@ -26,13 +26,14 @@ impl CompiledQuery {
     }
 
     pub fn debug_sql(&self, kind: DatabaseKind) -> String {
+        let sql = self.sql_with_comment();
         match kind {
-            DatabaseKind::PostgreSql => replace_postgres_placeholders(&self.sql, &self.params),
+            DatabaseKind::PostgreSql => replace_postgres_placeholders(&sql, &self.params),
             DatabaseKind::Sqlite => {
-                replace_positional_placeholders(&self.sql, &self.params, DatabaseKind::Sqlite)
+                replace_positional_placeholders(&sql, &self.params, DatabaseKind::Sqlite)
             }
             DatabaseKind::MySql => {
-                replace_positional_placeholders(&self.sql, &self.params, DatabaseKind::MySql)
+                replace_positional_placeholders(&sql, &self.params, DatabaseKind::MySql)
             }
         }
     }
@@ -87,23 +88,80 @@ fn replace_postgres_placeholders(sql: &str, params: &[Value]) -> String {
 fn replace_positional_placeholders(sql: &str, params: &[Value], kind: DatabaseKind) -> String {
     let mut output = String::with_capacity(sql.len());
     let mut params = params.iter();
-    let mut in_string = false;
+    let mut state = SqlScanState::Sql;
     let mut chars = sql.chars().peekable();
     while let Some(ch) = chars.next() {
-        if ch == '\'' {
-            handle_sql_quote(&mut chars, &mut output, &mut in_string);
-            continue;
-        }
-        if !in_string && ch == '?' {
-            match params.next() {
-                Some(value) => output.push_str(&sql_literal(value, kind)),
-                None => output.push(ch),
+        match state {
+            SqlScanState::Sql => match (ch, chars.peek().copied()) {
+                ('\'', _) => {
+                    output.push(ch);
+                    state = SqlScanState::SingleQuote;
+                }
+                ('"', _) => {
+                    output.push(ch);
+                    state = SqlScanState::DoubleQuote;
+                }
+                ('-', Some('-')) => {
+                    output.push(ch);
+                    output.push(chars.next().expect("peeked line comment"));
+                    state = SqlScanState::LineComment;
+                }
+                ('/', Some('*')) => {
+                    output.push(ch);
+                    output.push(chars.next().expect("peeked block comment"));
+                    state = SqlScanState::BlockComment;
+                }
+                ('?', _) => match params.next() {
+                    Some(value) => output.push_str(&sql_literal(value, kind)),
+                    None => output.push(ch),
+                },
+                _ => output.push(ch),
+            },
+            SqlScanState::SingleQuote => {
+                output.push(ch);
+                if ch == '\'' {
+                    if matches!(chars.peek(), Some('\'')) {
+                        output.push(chars.next().expect("peeked escaped quote"));
+                    } else {
+                        state = SqlScanState::Sql;
+                    }
+                }
             }
-            continue;
+            SqlScanState::DoubleQuote => {
+                output.push(ch);
+                if ch == '"' {
+                    if matches!(chars.peek(), Some('"')) {
+                        output.push(chars.next().expect("peeked escaped identifier quote"));
+                    } else {
+                        state = SqlScanState::Sql;
+                    }
+                }
+            }
+            SqlScanState::LineComment => {
+                output.push(ch);
+                if matches!(ch, '\r' | '\n') {
+                    state = SqlScanState::Sql;
+                }
+            }
+            SqlScanState::BlockComment => {
+                output.push(ch);
+                if ch == '*' && matches!(chars.peek(), Some('/')) {
+                    output.push(chars.next().expect("peeked block comment end"));
+                    state = SqlScanState::Sql;
+                }
+            }
         }
-        output.push(ch);
     }
     output
+}
+
+#[derive(Clone, Copy)]
+enum SqlScanState {
+    Sql,
+    SingleQuote,
+    DoubleQuote,
+    LineComment,
+    BlockComment,
 }
 
 fn sql_bool_literal(value: bool) -> &'static str {

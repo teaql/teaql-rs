@@ -667,7 +667,7 @@ fn bind_sqlite_value(value: &Value) -> Result<SqliteValue, MutationExecutorError
         Value::Text(v) => Ok(SqliteValue::Text(v.clone())),
         Value::Json(v) => Ok(SqliteValue::Text(v.to_string())),
         Value::Date(v) => Ok(SqliteValue::Text(v.format("%Y-%m-%d").to_string())),
-        Value::Timestamp(v) => Ok(SqliteValue::Text(v.0.to_string())),
+        Value::Timestamp(v) => Ok(SqliteValue::Integer(v.0)),
         Value::Object(_) => Err(MutationExecutorError::UnsupportedValue("object")),
         Value::List(_) => Err(MutationExecutorError::UnsupportedValue("list")),
         Value::TypedNull(_) => Ok(SqliteValue::Null),
@@ -852,6 +852,39 @@ mod tests {
             )
             .unwrap();
         assert_eq!(matches, 1);
+    }
+
+    #[test]
+    fn temporal_debug_sql_is_executable_and_matches_prepared_storage() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE temporal_fixture (id INTEGER PRIMARY KEY, d DATE, t TIMESTAMP)",
+        ).unwrap();
+        let query = CompiledQuery {
+            sql: "INSERT INTO temporal_fixture VALUES (?, ?, ?)".to_owned(),
+            params: vec![
+                Value::I64(1),
+                Value::Date(chrono::NaiveDate::from_ymd_opt(2024, 2, 29).unwrap()),
+                Value::Timestamp(teaql_core::time::Timestamp(1_787_110_200_123)),
+            ],
+            comment: None,
+        };
+        let values = bind_values(&query.params).unwrap();
+        connection.execute(&query.sql, rusqlite::params_from_iter(values)).unwrap();
+        connection.execute(
+            &query.debug_sql(teaql_sql::DatabaseKind::Sqlite).replace("VALUES (1,", "VALUES (2,"),
+            [],
+        ).unwrap();
+
+        let equal_count: i64 = connection.query_row(
+            "SELECT count(*) FROM temporal_fixture a JOIN temporal_fixture b ON a.d=b.d AND a.t=b.t WHERE a.id=1 AND b.id=2",
+            [], |row| row.get(0),
+        ).unwrap();
+        let storage_type: String = connection.query_row(
+            "SELECT typeof(t) FROM temporal_fixture WHERE id=1", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(equal_count, 1);
+        assert_eq!(storage_type, "integer");
     }
 
     fn entity() -> EntityDescriptor {
