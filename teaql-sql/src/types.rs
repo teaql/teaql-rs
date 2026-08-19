@@ -46,25 +46,37 @@ fn replace_postgres_placeholders(sql: &str, params: &[Value]) -> String {
     while let Some(ch) = chars.next() {
         match state {
             SqlScanState::Sql => match (ch, chars.peek().copied()) {
-                ('\'', _) => { output.push(ch); state = SqlScanState::SingleQuote; }
-                ('"', _) => { output.push(ch); state = SqlScanState::DoubleQuote; }
+                ('\'', _) => {
+                    output.push(ch);
+                    state = SqlScanState::SingleQuote;
+                }
+                ('"', _) => {
+                    output.push(ch);
+                    state = SqlScanState::DoubleQuote;
+                }
                 ('-', Some('-')) => {
-                    output.push_str("--"); chars.next(); state = SqlScanState::LineComment;
+                    output.push_str("--");
+                    chars.next();
+                    state = SqlScanState::LineComment;
                 }
                 ('/', Some('*')) => {
-                    output.push_str("/*"); chars.next(); state = SqlScanState::BlockComment;
+                    output.push_str("/*");
+                    chars.next();
+                    state = SqlScanState::BlockComment;
                 }
                 ('$', Some(next)) if next.is_ascii_digit() => {
                     let mut index = String::new();
                     while let Some(next) = chars.peek().copied().filter(char::is_ascii_digit) {
-                        index.push(next); chars.next();
+                        index.push(next);
+                        chars.next();
                     }
                     if let Ok(index) = index.parse::<usize>()
                         && let Some(value) = index.checked_sub(1).and_then(|idx| params.get(idx))
                     {
                         output.push_str(&sql_literal(value, DatabaseKind::PostgreSql));
                     } else {
-                        output.push('$'); output.push_str(&index);
+                        output.push('$');
+                        output.push_str(&index);
                     }
                 }
                 _ => output.push(ch),
@@ -74,7 +86,9 @@ fn replace_postgres_placeholders(sql: &str, params: &[Value]) -> String {
                 if ch == '\'' {
                     if matches!(chars.peek(), Some('\'')) {
                         output.push(chars.next().expect("peeked escaped quote"));
-                    } else { state = SqlScanState::Sql; }
+                    } else {
+                        state = SqlScanState::Sql;
+                    }
                 }
             }
             SqlScanState::DoubleQuote => {
@@ -82,12 +96,16 @@ fn replace_postgres_placeholders(sql: &str, params: &[Value]) -> String {
                 if ch == '"' {
                     if matches!(chars.peek(), Some('"')) {
                         output.push(chars.next().expect("peeked escaped identifier"));
-                    } else { state = SqlScanState::Sql; }
+                    } else {
+                        state = SqlScanState::Sql;
+                    }
                 }
             }
             SqlScanState::LineComment => {
                 output.push(ch);
-                if matches!(ch, '\r' | '\n') { state = SqlScanState::Sql; }
+                if matches!(ch, '\r' | '\n') {
+                    state = SqlScanState::Sql;
+                }
             }
             SqlScanState::BlockComment => {
                 output.push(ch);
@@ -210,7 +228,10 @@ fn sql_literal(value: &Value, kind: DatabaseKind) -> String {
             ),
             DatabaseKind::MySql => format!(
                 "CAST('{}' AS DATETIME(3))",
-                value.to_datetime().naive_utc().format("%Y-%m-%d %H:%M:%S%.3f")
+                value
+                    .to_datetime()
+                    .naive_utc()
+                    .format("%Y-%m-%d %H:%M:%S%.3f")
             ),
         },
         Value::Object(value) => {

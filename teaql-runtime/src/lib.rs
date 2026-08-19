@@ -56,9 +56,9 @@ pub use registry::{
     MetadataStore, RequestPolicy, RuntimeModule,
 };
 pub use telemetry::{
-    extract_runtime_context, FailOpenRuntimeTelemetryPropagationContext,
-    FailOpenRuntimeTelemetryScope, NoopRuntimeTelemetry, RuntimeAttributeValue, RuntimeOperation,
-    RuntimeTelemetry, RuntimeTelemetryPropagationContext, RuntimeTelemetryScope,
+    FailOpenRuntimeTelemetryPropagationContext, FailOpenRuntimeTelemetryScope,
+    NoopRuntimeTelemetry, RuntimeAttributeValue, RuntimeOperation, RuntimeTelemetry,
+    RuntimeTelemetryPropagationContext, RuntimeTelemetryScope, extract_runtime_context,
     runtime_error_category, start_runtime_operation,
 };
 #[cfg(feature = "opentelemetry")]
@@ -1604,8 +1604,13 @@ mod tests {
             Some(Value::List(lines)) => assert_eq!(lines.len(), 1),
             other => panic!("unexpected lines payload: {other:?}"),
         }
-        assert!(telemetry_events
-            .lock().unwrap().iter().any(|event| event == "start:relation_load"));
+        assert!(
+            telemetry_events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| event == "start:relation_load")
+        );
     }
 
     #[tokio::test]
@@ -1985,8 +1990,20 @@ mod tests {
         let executor = context.get_resource::<QueueExecutor>().unwrap();
         assert_eq!(executor.queries.lock().unwrap().len(), 1);
         let events = telemetry_events.lock().unwrap();
-        assert_eq!(events.iter().filter(|event| event.as_str() == "start:cache").count(), 2);
-        assert_eq!(events.iter().filter(|event| event.as_str() == "start:provider").count(), 1);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.as_str() == "start:cache")
+                .count(),
+            2
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.as_str() == "start:provider")
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]

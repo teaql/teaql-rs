@@ -7,7 +7,7 @@ use opentelemetry::logs::{AnyValue, LogRecord, Logger, Severity};
 use opentelemetry::metrics::{Counter, Histogram, Meter};
 use opentelemetry::propagation::Extractor;
 use opentelemetry::trace::{Span, Status, TraceContextExt, Tracer};
-use opentelemetry::{global, Context, KeyValue, Value};
+use opentelemetry::{Context, KeyValue, Value, global};
 
 use crate::{
     RuntimeAttributeValue, RuntimeOperation, RuntimeTelemetry, RuntimeTelemetryPropagationContext,
@@ -60,25 +60,28 @@ impl OpenTelemetryRuntimeTelemetry {
         L: Logger + Send + Sync + 'static,
         L::LogRecord: Send,
     {
-        self.log_emitter = Some(Arc::new(move |family, name, outcome, duration_ms, error_category| {
-            let mut record = logger.create_log_record();
-            record.set_severity_number(Severity::Info);
-            record.set_severity_text("INFO");
-            record.set_body("TeaQL runtime operation completed".into());
-            record.add_attributes([
-                ("teaql.operation.family", AnyValue::from(family.to_owned())),
-                ("teaql.operation.name", AnyValue::from(name.to_owned())),
-                (
-                    "teaql.operation.outcome",
-                    AnyValue::from(outcome.to_owned()),
-                ),
-                ("teaql.operation.duration_ms", AnyValue::from(duration_ms)),
-            ]);
-            if let Some(category) = error_category {
-                record.add_attribute("teaql.error.category", AnyValue::from(category.to_owned()));
-            }
-            logger.emit(record);
-        }));
+        self.log_emitter = Some(Arc::new(
+            move |family, name, outcome, duration_ms, error_category| {
+                let mut record = logger.create_log_record();
+                record.set_severity_number(Severity::Info);
+                record.set_severity_text("INFO");
+                record.set_body("TeaQL runtime operation completed".into());
+                record.add_attributes([
+                    ("teaql.operation.family", AnyValue::from(family.to_owned())),
+                    ("teaql.operation.name", AnyValue::from(name.to_owned())),
+                    (
+                        "teaql.operation.outcome",
+                        AnyValue::from(outcome.to_owned()),
+                    ),
+                    ("teaql.operation.duration_ms", AnyValue::from(duration_ms)),
+                ]);
+                if let Some(category) = error_category {
+                    record
+                        .add_attribute("teaql.error.category", AnyValue::from(category.to_owned()));
+                }
+                logger.emit(record);
+            },
+        ));
         self
     }
 }
@@ -181,7 +184,13 @@ impl OpenTelemetryScope {
         self.duration.record(duration_ms, &dimensions);
         self.operations.add(1, &dimensions);
         if let Some(log_emitter) = &self.log_emitter {
-            log_emitter(&self.family, &self.name, outcome, duration_ms, error_category);
+            log_emitter(
+                &self.family,
+                &self.name,
+                outcome,
+                duration_ms,
+                error_category,
+            );
         }
         self.context.span().end();
     }
@@ -226,8 +235,8 @@ fn otel_value(value: &RuntimeAttributeValue) -> Value {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use opentelemetry::global;
     use opentelemetry::logs::LoggerProvider;
@@ -298,10 +307,12 @@ mod tests {
         let log_context = query_log.record.trace_context().expect("log trace context");
         assert_eq!(log_context.trace_id, query.span_context.trace_id());
         assert_eq!(log_context.span_id, query.span_context.span_id());
-        assert!(query_log
-            .record
-            .attributes_iter()
-            .all(|(key, _)| key.as_str() != "teaql.entity.id"));
+        assert!(
+            query_log
+                .record
+                .attributes_iter()
+                .all(|(key, _)| key.as_str() != "teaql.entity.id")
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

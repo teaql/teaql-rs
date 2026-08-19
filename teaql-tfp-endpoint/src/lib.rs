@@ -1,11 +1,11 @@
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
 use teaql_data_service::{MutationExecutor, QueryExecutor, QueryRequest};
-use thiserror::Error;
 use teaql_runtime::{
-    extract_runtime_context, start_runtime_operation, NoopRuntimeTelemetry,
-    RuntimeAttributeValue, RuntimeOperation, RuntimeTelemetry,
+    NoopRuntimeTelemetry, RuntimeAttributeValue, RuntimeOperation, RuntimeTelemetry,
+    extract_runtime_context, start_runtime_operation,
 };
+use thiserror::Error;
 
 pub mod models;
 use models::{TfpMutationQuery, TfpSelectQuery};
@@ -94,15 +94,19 @@ where
     ) -> Result<JsonValue, TfpEndpointError> {
         let scope = start_runtime_operation(
             &self.telemetry,
-            RuntimeOperation::new("tfp", "server.query")
-                .attribute("teaql.tfp.role", "server"),
+            RuntimeOperation::new("tfp", "server.query").attribute("teaql.tfp.role", "server"),
         );
-        let result = scope.run(self.handle_query_inner(trusted, json_payload)).await;
+        let result = scope
+            .run(self.handle_query_inner(trusted, json_payload))
+            .await;
         match &result {
             Ok(response) => scope.success(std::collections::BTreeMap::from([(
                 "teaql.result.cardinality".to_owned(),
                 RuntimeAttributeValue::Integer(
-                    response.get("data").and_then(JsonValue::as_array).map_or(0, Vec::len) as i64,
+                    response
+                        .get("data")
+                        .and_then(JsonValue::as_array)
+                        .map_or(0, Vec::len) as i64,
                 ),
             )])),
             Err(error) => scope.failure(tfp_error_type(error)),
@@ -229,7 +233,9 @@ where
         carrier: &std::collections::BTreeMap<String, String>,
     ) -> Result<JsonValue, TfpEndpointError> {
         let propagation = extract_runtime_context(&self.telemetry, carrier);
-        propagation.run(self.handle_mutation_observed(json_payload)).await
+        propagation
+            .run(self.handle_mutation_observed(json_payload))
+            .await
     }
 
     async fn handle_mutation_observed(
@@ -238,8 +244,7 @@ where
     ) -> Result<JsonValue, TfpEndpointError> {
         let scope = start_runtime_operation(
             &self.telemetry,
-            RuntimeOperation::new("tfp", "server.mutation")
-                .attribute("teaql.tfp.role", "server"),
+            RuntimeOperation::new("tfp", "server.mutation").attribute("teaql.tfp.role", "server"),
         );
         let result = scope.run(self.handle_mutation_inner(json_payload)).await;
         match &result {
@@ -403,7 +408,7 @@ mod tests {
         DataServiceCapabilities, DataServiceExecutor, DataServiceOperation, ExecutionMetadata,
         MutationRequest, MutationResult, QueryResult,
     };
-    use teaql_runtime::{RuntimeTelemetryScope, RuntimeOperation};
+    use teaql_runtime::{RuntimeOperation, RuntimeTelemetryScope};
 
     #[derive(Clone, Default)]
     struct StubExecutor;
@@ -450,11 +455,18 @@ mod tests {
         affected_rows: Option<u64>,
     ) -> ExecutionMetadata {
         ExecutionMetadata {
-            backend: "stub".into(), operation,
+            backend: "stub".into(),
+            operation,
             started_at: std::time::SystemTime::now(),
-            ended_at: std::time::SystemTime::now(), affected_rows, result_count,
-            trace_chain: Vec::new(), comment: None, backend_request_id: None,
-            parameterized_query: None, params: Vec::new(), debug_query: None,
+            ended_at: std::time::SystemTime::now(),
+            affected_rows,
+            result_count,
+            trace_chain: Vec::new(),
+            comment: None,
+            backend_request_id: None,
+            parameterized_query: None,
+            params: Vec::new(),
+            debug_query: None,
         }
     }
 
@@ -471,8 +483,15 @@ mod tests {
     impl RuntimeTelemetry for RecordingTelemetry {
         fn start(&self, operation: RuntimeOperation) -> Box<dyn RuntimeTelemetryScope> {
             let mut events = self.0.lock().expect("events");
-            events.push(RecordedEvent { operation, completion: None, failure: None });
-            Box::new(RecordingScope { events: self.0.clone(), index: events.len() - 1 })
+            events.push(RecordedEvent {
+                operation,
+                completion: None,
+                failure: None,
+            });
+            Box::new(RecordingScope {
+                events: self.0.clone(),
+                index: events.len() - 1,
+            })
         }
     }
 
@@ -591,25 +610,42 @@ mod tests {
         let endpoint = TfpEndpoint::new(Arc::new(StubExecutor), Arc::new(StubExecutor))
             .with_runtime_telemetry(telemetry.clone());
 
-        let response = endpoint.handle_query(&trusted(), json!({
-            "entity":"CustomerOrder", "_comment":"generated query",
-            "_purpose":"requested purpose", "_limit":10
-        })).await.expect("query response");
+        let response = endpoint
+            .handle_query(
+                &trusted(),
+                json!({
+                    "entity":"CustomerOrder", "_comment":"generated query",
+                    "_purpose":"requested purpose", "_limit":10
+                }),
+            )
+            .await
+            .expect("query response");
         assert_eq!(response["data"].as_array().map(Vec::len), Some(1));
-        endpoint.handle_mutation(json!({
-            "entity":"CustomerOrder", "action":"Create", "payload":{},
-            "comment":"create order"
-        })).await.expect("mutation response");
-        let error = endpoint.handle_query(&trusted(), json!({"entity":"Other"}))
-            .await.expect_err("policy failure");
+        endpoint
+            .handle_mutation(json!({
+                "entity":"CustomerOrder", "action":"Create", "payload":{},
+                "comment":"create order"
+            }))
+            .await
+            .expect("mutation response");
+        let error = endpoint
+            .handle_query(&trusted(), json!({"entity":"Other"}))
+            .await
+            .expect_err("policy failure");
         assert!(matches!(error, TfpEndpointError::TranslationError(_)));
 
         let events = telemetry.0.lock().expect("events");
         assert_eq!(events.len(), 3);
         assert_eq!(events[0].operation.family, "tfp");
         assert_eq!(events[0].operation.name, "server.query");
-        assert_eq!(events[0].operation.attributes["teaql.tfp.role"], "server".into());
-        assert_eq!(events[0].completion.as_ref().unwrap()["teaql.result.cardinality"], 1usize.into());
+        assert_eq!(
+            events[0].operation.attributes["teaql.tfp.role"],
+            "server".into()
+        );
+        assert_eq!(
+            events[0].completion.as_ref().unwrap()["teaql.result.cardinality"],
+            1usize.into()
+        );
         assert_eq!(events[1].operation.name, "server.mutation");
         assert!(events[1].completion.is_some());
         assert_eq!(events[2].failure.as_deref(), Some("TranslationError"));

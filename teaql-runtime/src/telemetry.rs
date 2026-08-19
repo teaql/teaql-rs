@@ -97,11 +97,45 @@ pub fn runtime_error_category(error_type: &str) -> &'static str {
         ("timeout", &["timeout", "deadline"][..]),
         (
             "authorization",
-            &["authentication", "authorization", "unauthorized", "forbidden", "permission"],
+            &[
+                "authentication",
+                "authorization",
+                "unauthorized",
+                "forbidden",
+                "permission",
+            ],
         ),
-        ("validation", &["validation", "invalidargument", "valueerror", "parse", "format"]),
-        ("conflict", &["conflict", "optimistic", "version", "duplicate", "alreadyexists"]),
-        ("transport", &["transport", "network", "connection", "socket", "http", "ioerror"]),
+        (
+            "validation",
+            &[
+                "validation",
+                "invalidargument",
+                "valueerror",
+                "parse",
+                "format",
+            ],
+        ),
+        (
+            "conflict",
+            &[
+                "conflict",
+                "optimistic",
+                "version",
+                "duplicate",
+                "alreadyexists",
+            ],
+        ),
+        (
+            "transport",
+            &[
+                "transport",
+                "network",
+                "connection",
+                "socket",
+                "http",
+                "ioerror",
+            ],
+        ),
         ("provider", &["provider", "sql", "database", "jdbc"]),
     ] {
         if terms.iter().any(|term| error_type.contains(term)) {

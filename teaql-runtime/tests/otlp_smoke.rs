@@ -7,13 +7,13 @@ use std::time::Duration;
 use opentelemetry::global;
 use opentelemetry::logs::LoggerProvider;
 use opentelemetry_otlp::{Protocol, WithExportConfig};
+use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::trace::{BatchSpanProcessor, SdkTracerProvider};
-use opentelemetry_sdk::Resource;
 use teaql_runtime::{
-    start_runtime_operation, OpenTelemetryRuntimeTelemetry, RuntimeAttributeValue,
-    RuntimeOperation, RuntimeTelemetry,
+    OpenTelemetryRuntimeTelemetry, RuntimeAttributeValue, RuntimeOperation, RuntimeTelemetry,
+    start_runtime_operation,
 };
 
 #[test]

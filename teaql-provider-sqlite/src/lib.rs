@@ -857,9 +857,11 @@ mod tests {
     #[test]
     fn temporal_debug_sql_is_executable_and_matches_prepared_storage() {
         let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch(
-            "CREATE TABLE temporal_fixture (id INTEGER PRIMARY KEY, d DATE, t TIMESTAMP)",
-        ).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE temporal_fixture (id INTEGER PRIMARY KEY, d DATE, t TIMESTAMP)",
+            )
+            .unwrap();
         let query = CompiledQuery {
             sql: "INSERT INTO temporal_fixture VALUES (?, ?, ?)".to_owned(),
             params: vec![
@@ -870,19 +872,29 @@ mod tests {
             comment: None,
         };
         let values = bind_values(&query.params).unwrap();
-        connection.execute(&query.sql, rusqlite::params_from_iter(values)).unwrap();
-        connection.execute(
-            &query.debug_sql(teaql_sql::DatabaseKind::Sqlite).replace("VALUES (1,", "VALUES (2,"),
-            [],
-        ).unwrap();
+        connection
+            .execute(&query.sql, rusqlite::params_from_iter(values))
+            .unwrap();
+        connection
+            .execute(
+                &query
+                    .debug_sql(teaql_sql::DatabaseKind::Sqlite)
+                    .replace("VALUES (1,", "VALUES (2,"),
+                [],
+            )
+            .unwrap();
 
         let equal_count: i64 = connection.query_row(
             "SELECT count(*) FROM temporal_fixture a JOIN temporal_fixture b ON a.d=b.d AND a.t=b.t WHERE a.id=1 AND b.id=2",
             [], |row| row.get(0),
         ).unwrap();
-        let storage_type: String = connection.query_row(
-            "SELECT typeof(t) FROM temporal_fixture WHERE id=1", [], |row| row.get(0),
-        ).unwrap();
+        let storage_type: String = connection
+            .query_row(
+                "SELECT typeof(t) FROM temporal_fixture WHERE id=1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(equal_count, 1);
         assert_eq!(storage_type, "integer");
     }

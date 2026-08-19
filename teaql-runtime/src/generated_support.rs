@@ -248,8 +248,12 @@ where
         let mut selection = facet.query.clone();
         merge_outer_filter_into_facet_aggregates(&mut selection, outer_query);
         if !facet.include_all_facets {
-            selection =
-                restrict_facet_to_outer_query(context, selection, outer_query, &facet.relation_name)?;
+            selection = restrict_facet_to_outer_query(
+                context,
+                selection,
+                outer_query,
+                &facet.relation_name,
+            )?;
         }
         let relation_aggregates = runtime_relation_aggregates(&selection.query_options);
         let query = apply_runtime_metadata(
