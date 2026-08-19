@@ -11,7 +11,7 @@ use opentelemetry::{global, Context, KeyValue, Value};
 
 use crate::{
     RuntimeAttributeValue, RuntimeOperation, RuntimeTelemetry, RuntimeTelemetryPropagationContext,
-    RuntimeTelemetryScope,
+    RuntimeTelemetryScope, runtime_error_category,
 };
 
 pub struct OpenTelemetryRuntimeTelemetry {
@@ -23,7 +23,7 @@ pub struct OpenTelemetryRuntimeTelemetry {
     shutdown: Arc<dyn Fn() + Send + Sync>,
 }
 
-type RuntimeLogEmitter = Arc<dyn Fn(&str, &str, &str, f64) + Send + Sync>;
+type RuntimeLogEmitter = Arc<dyn Fn(&str, &str, &str, f64, Option<&str>) + Send + Sync>;
 
 impl OpenTelemetryRuntimeTelemetry {
     pub fn new(tracer: BoxedTracer, meter: Meter) -> Self {
@@ -60,7 +60,7 @@ impl OpenTelemetryRuntimeTelemetry {
         L: Logger + Send + Sync + 'static,
         L::LogRecord: Send,
     {
-        self.log_emitter = Some(Arc::new(move |family, name, outcome, duration_ms| {
+        self.log_emitter = Some(Arc::new(move |family, name, outcome, duration_ms, error_category| {
             let mut record = logger.create_log_record();
             record.set_severity_number(Severity::Info);
             record.set_severity_text("INFO");
@@ -74,6 +74,9 @@ impl OpenTelemetryRuntimeTelemetry {
                 ),
                 ("teaql.operation.duration_ms", AnyValue::from(duration_ms)),
             ]);
+            if let Some(category) = error_category {
+                record.add_attribute("teaql.error.category", AnyValue::from(category.to_owned()));
+            }
             logger.emit(record);
         }));
         self
@@ -157,6 +160,7 @@ impl OpenTelemetryScope {
     fn finish(
         &self,
         outcome: &'static str,
+        error_category: Option<&str>,
         action: impl FnOnce(opentelemetry::trace::SpanRef<'_>),
     ) {
         let Ok(mut ended) = self.ended.lock() else {
@@ -177,7 +181,7 @@ impl OpenTelemetryScope {
         self.duration.record(duration_ms, &dimensions);
         self.operations.add(1, &dimensions);
         if let Some(log_emitter) = &self.log_emitter {
-            log_emitter(&self.family, &self.name, outcome, duration_ms);
+            log_emitter(&self.family, &self.name, outcome, duration_ms, error_category);
         }
         self.context.span().end();
     }
@@ -190,7 +194,7 @@ impl RuntimeTelemetryScope for OpenTelemetryScope {
     }
 
     fn success(&mut self, attributes: BTreeMap<String, RuntimeAttributeValue>) {
-        self.finish("success", |mut span| {
+        self.finish("success", None, |mut span| {
             for (key, value) in attributes {
                 if key == "teaql.result.cardinality" || key == "teaql.cache.result" {
                     span.set_attribute(KeyValue::new(key, otel_value(&value)));
@@ -201,8 +205,10 @@ impl RuntimeTelemetryScope for OpenTelemetryScope {
     }
 
     fn failure(&mut self, error_type: &str) {
-        self.finish("failure", |mut span| {
+        let category = runtime_error_category(error_type);
+        self.finish("failure", Some(category), |mut span| {
             span.set_attribute(KeyValue::new("teaql.error.type", error_type.to_owned()));
+            span.set_attribute(KeyValue::new("teaql.error.category", category));
             span.set_status(Status::error("TeaQL operation failed"));
         });
     }

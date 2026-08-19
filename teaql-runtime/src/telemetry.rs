@@ -90,6 +90,27 @@ fn is_forbidden_attribute(key: &str) -> bool {
     )
 }
 
+/// Stable category derived from a native error type, never its message.
+pub fn runtime_error_category(error_type: &str) -> &'static str {
+    let error_type = error_type.to_ascii_lowercase();
+    for (category, terms) in [
+        ("timeout", &["timeout", "deadline"][..]),
+        (
+            "authorization",
+            &["authentication", "authorization", "unauthorized", "forbidden", "permission"],
+        ),
+        ("validation", &["validation", "invalidargument", "valueerror", "parse", "format"]),
+        ("conflict", &["conflict", "optimistic", "version", "duplicate", "alreadyexists"]),
+        ("transport", &["transport", "network", "connection", "socket", "http", "ioerror"]),
+        ("provider", &["provider", "sql", "database", "jdbc"]),
+    ] {
+        if terms.iter().any(|term| error_type.contains(term)) {
+            return category;
+        }
+    }
+    "internal"
+}
+
 pub trait RuntimeTelemetryScope: Send {
     fn with_context(&self, callback: &mut dyn FnMut()) {
         callback();
@@ -237,6 +258,13 @@ pub fn start_runtime_operation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classifies_native_error_types_without_messages() {
+        assert_eq!(runtime_error_category("DatabaseTimeoutError"), "timeout");
+        assert_eq!(runtime_error_category("PermissionError"), "authorization");
+        assert_eq!(runtime_error_category("UnknownTeaQLError"), "internal");
+    }
 
     struct BrokenTelemetry;
     impl RuntimeTelemetry for BrokenTelemetry {
