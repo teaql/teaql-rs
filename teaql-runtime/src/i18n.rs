@@ -19,10 +19,17 @@ struct LocaleCatalog {
 pub struct I18nCatalog {
     default_locale: String,
     locales: BTreeMap<String, LocaleCatalog>,
+    fallback: Option<Arc<I18nCatalog>>,
 }
 
 impl I18nCatalog {
     pub fn from_json(source: &str) -> Result<Self, RuntimeError> {
+        let mut catalog = Self::parse(source)?;
+        catalog.fallback = Some(Self::builtin().clone());
+        Ok(catalog)
+    }
+
+    fn parse(source: &str) -> Result<Self, RuntimeError> {
         let root: serde_json::Value = serde_json::from_str(source)
             .map_err(|error| RuntimeError::Language(format!("invalid i18n catalog: {error}")))?;
         let object = root.as_object().ok_or_else(|| {
@@ -102,6 +109,7 @@ impl I18nCatalog {
         Ok(Self {
             default_locale: default_language.code().to_owned(),
             locales,
+            fallback: None,
         })
     }
 
@@ -109,7 +117,7 @@ impl I18nCatalog {
         static BUILTIN: OnceLock<Arc<I18nCatalog>> = OnceLock::new();
         BUILTIN.get_or_init(|| {
             Arc::new(
-                I18nCatalog::from_json(BUILTIN_CATALOG_JSON)
+                I18nCatalog::parse(BUILTIN_CATALOG_JSON)
                     .expect("embedded TeaQL i18n catalog must be valid"),
             )
         })
@@ -165,16 +173,27 @@ impl I18nCatalog {
     }
 
     fn lookup(&self, locale: &str, namespace: &str, key: &str) -> Option<String> {
-        [locale, self.default_locale.as_str()]
-            .into_iter()
-            .find_map(|code| {
-                let catalog = self.locales.get(code)?;
-                match namespace {
-                    "messages" => catalog.messages.get(key).cloned(),
-                    "vocabulary" => catalog.vocabulary.get(key).cloned(),
-                    _ => None,
-                }
+        self.lookup_exact(locale, namespace, key)
+            .or_else(|| {
+                self.fallback
+                    .as_ref()
+                    .and_then(|fallback| fallback.lookup_exact(locale, namespace, key))
             })
+            .or_else(|| self.lookup_exact(&self.default_locale, namespace, key))
+            .or_else(|| {
+                self.fallback.as_ref().and_then(|fallback| {
+                    fallback.lookup_exact(&fallback.default_locale, namespace, key)
+                })
+            })
+    }
+
+    fn lookup_exact(&self, locale: &str, namespace: &str, key: &str) -> Option<String> {
+        let catalog = self.locales.get(locale)?;
+        match namespace {
+            "messages" => catalog.messages.get(key).cloned(),
+            "vocabulary" => catalog.vocabulary.get(key).cloned(),
+            _ => None,
+        }
     }
 }
 
@@ -312,5 +331,9 @@ mod tests {
         .unwrap();
         assert_eq!(catalog.message(Language::French, "known"), "English");
         assert_eq!(catalog.message(Language::French, "missing"), "missing");
+        assert_eq!(
+            catalog.message(Language::French, "checker.required"),
+            I18nCatalog::builtin().message(Language::French, "checker.required")
+        );
     }
 }
