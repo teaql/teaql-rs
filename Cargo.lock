@@ -3564,6 +3564,7 @@ name = "teaql-tfp-endpoint"
 version = "4.2.14"
 dependencies = [
  "async-trait",
+ "axum",
  "serde",
  "serde_json",
  "teaql-core",

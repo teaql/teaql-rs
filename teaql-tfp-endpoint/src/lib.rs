@@ -20,6 +20,9 @@ pub struct TrustedQueryContext {
     /// Per entity mapping from public TFP field names to trusted core field names.
     pub field_mappings:
         std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    pub writable_field_mappings:
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    pub allowed_actions: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     pub max_page_size: usize,
 }
 
@@ -31,6 +34,29 @@ pub enum TfpEndpointError {
     TranslationError(String),
     #[error("Data service error: {0}")]
     ExecutionError(String),
+}
+
+impl TfpEndpointError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::ParseError(_) => "TFP_INVALID_REQUEST",
+            Self::TranslationError(message) if message.contains("audit reason") => {
+                "TFP_AUDIT_REASON_REQUIRED"
+            }
+            Self::TranslationError(message) if message.starts_with("Entity is not allowed") => {
+                "TFP_FORBIDDEN_ENTITY"
+            }
+            Self::TranslationError(message)
+                if message.contains("Field is not allowed")
+                    || message.contains("not writable")
+                    || message.contains("Unknown field") =>
+            {
+                "TFP_FORBIDDEN_FIELD"
+            }
+            Self::TranslationError(_) => "TFP_POLICY_VIOLATION",
+            Self::ExecutionError(_) => "TFP_EXECUTION_FAILED",
+        }
+    }
 }
 
 /// The core TeaQL Federal Protocol Endpoint processor.
@@ -221,32 +247,37 @@ where
     /// Handles a TFP Mutation request (usually mapped to /mutate).
     pub async fn handle_mutation(
         &self,
+        trusted: &TrustedQueryContext,
         json_payload: JsonValue,
     ) -> Result<JsonValue, TfpEndpointError> {
-        self.handle_mutation_with_carrier(json_payload, &Default::default())
+        self.handle_mutation_with_carrier(trusted, json_payload, &Default::default())
             .await
     }
 
     pub async fn handle_mutation_with_carrier(
         &self,
+        trusted: &TrustedQueryContext,
         json_payload: JsonValue,
         carrier: &std::collections::BTreeMap<String, String>,
     ) -> Result<JsonValue, TfpEndpointError> {
         let propagation = extract_runtime_context(&self.telemetry, carrier);
         propagation
-            .run(self.handle_mutation_observed(json_payload))
+            .run(self.handle_mutation_observed(trusted, json_payload))
             .await
     }
 
     async fn handle_mutation_observed(
         &self,
+        trusted: &TrustedQueryContext,
         json_payload: JsonValue,
     ) -> Result<JsonValue, TfpEndpointError> {
         let scope = start_runtime_operation(
             &self.telemetry,
             RuntimeOperation::new("tfp", "server.mutation").attribute("teaql.tfp.role", "server"),
         );
-        let result = scope.run(self.handle_mutation_inner(json_payload)).await;
+        let result = scope
+            .run(self.handle_mutation_inner(trusted, json_payload))
+            .await;
         match &result {
             Ok(_) => scope.success(std::collections::BTreeMap::new()),
             Err(error) => scope.failure(tfp_error_type(error)),
@@ -256,10 +287,35 @@ where
 
     async fn handle_mutation_inner(
         &self,
+        trusted: &TrustedQueryContext,
         json_payload: JsonValue,
     ) -> Result<JsonValue, TfpEndpointError> {
-        let tfp_mutation: TfpMutationQuery =
+        reject_privileged_input(&json_payload).map_err(TfpEndpointError::TranslationError)?;
+        let mut tfp_mutation: TfpMutationQuery =
             serde_json::from_value(json_payload).map_err(TfpEndpointError::ParseError)?;
+
+        validate_mutation_policy(trusted, &tfp_mutation)
+            .map_err(TfpEndpointError::TranslationError)?;
+        let mappings = trusted
+            .writable_field_mappings
+            .get(&tfp_mutation.entity)
+            .ok_or_else(|| {
+                TfpEndpointError::TranslationError(format!(
+                    "No writable field policy for entity: {}",
+                    tfp_mutation.entity
+                ))
+            })?;
+        tfp_mutation
+            .map_writable_fields(mappings)
+            .map_err(TfpEndpointError::TranslationError)?;
+        if matches!(tfp_mutation.action.as_str(), "Create" | "Update") {
+            let tenant_json = value_as_json(&trusted.tenant_id);
+            tfp_mutation
+                .payload
+                .as_object_mut()
+                .expect("validated object")
+                .insert(trusted.tenant_field.clone(), tenant_json);
+        }
 
         let core_mutation = tfp_mutation
             .to_core()
@@ -290,11 +346,12 @@ where
 }
 
 fn tfp_error_type(error: &TfpEndpointError) -> &'static str {
-    match error {
-        TfpEndpointError::ParseError(_) => "ParseError",
-        TfpEndpointError::TranslationError(_) => "TranslationError",
-        TfpEndpointError::ExecutionError(_) => "ExecutionError",
-    }
+    error.code()
+}
+
+fn value_as_json(value: &teaql_core::Value) -> JsonValue {
+    let record = teaql_core::Record::from([("value".to_owned(), value.clone())]);
+    teaql_core::record_to_json_value(&record)["value"].clone()
 }
 
 fn redact_sql_literals(sql: &str) -> String {
@@ -393,6 +450,44 @@ fn validate_policy(trusted: &TrustedQueryContext, query: &TfpSelectQuery) -> Res
                 "Field is not allowed by federation policy: {field}"
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_mutation_policy(
+    trusted: &TrustedQueryContext,
+    mutation: &TfpMutationQuery,
+) -> Result<(), String> {
+    if !trusted.allowed_entities.contains(&mutation.entity) {
+        return Err(format!(
+            "Entity is not allowed by federation policy: {}",
+            mutation.entity
+        ));
+    }
+    let actions = trusted
+        .allowed_actions
+        .get(&mutation.entity)
+        .ok_or_else(|| format!("No action policy for entity: {}", mutation.entity))?;
+    if !actions.contains(&mutation.action) {
+        return Err(format!(
+            "Action is not allowed by federation policy: {}",
+            mutation.action
+        ));
+    }
+    if !mutation.payload.is_object() {
+        return Err("Mutation payload must be an object".into());
+    }
+    if mutation
+        .comment
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .is_none()
+    {
+        return Err("Mutation audit reason is required".into());
+    }
+    if mutation.payload.get(&trusted.tenant_field).is_some() {
+        return Err("Tenant field is server-owned and not allowed".into());
     }
     Ok(())
 }
@@ -522,6 +617,19 @@ mod tests {
                     ("orderNumber".into(), "order_number".into()),
                 ]),
             )]),
+            writable_field_mappings: BTreeMap::from([(
+                "CustomerOrder".into(),
+                BTreeMap::from([("orderNumber".into(), "order_number".into())]),
+            )]),
+            allowed_actions: BTreeMap::from([(
+                "CustomerOrder".into(),
+                BTreeSet::from([
+                    "Create".into(),
+                    "Update".into(),
+                    "Delete".into(),
+                    "Recover".into(),
+                ]),
+            )]),
             max_page_size: 100,
         }
     }
@@ -622,10 +730,14 @@ mod tests {
             .expect("query response");
         assert_eq!(response["data"].as_array().map(Vec::len), Some(1));
         endpoint
-            .handle_mutation(json!({
-                "entity":"CustomerOrder", "action":"Create", "payload":{},
-                "comment":"create order"
-            }))
+            .handle_mutation(
+                &trusted(),
+                json!({
+                    "entity":"CustomerOrder", "action":"Create",
+                    "payload":{"orderNumber":"O-1"},
+                    "comment":"create order"
+                }),
+            )
             .await
             .expect("mutation response");
         let error = endpoint
@@ -648,6 +760,20 @@ mod tests {
         );
         assert_eq!(events[1].operation.name, "server.mutation");
         assert!(events[1].completion.is_some());
-        assert_eq!(events[2].failure.as_deref(), Some("TranslationError"));
+        assert_eq!(events[2].failure.as_deref(), Some("TFP_FORBIDDEN_ENTITY"));
+    }
+
+    #[tokio::test]
+    async fn mutation_requires_trusted_entity_action_fields_and_audit_reason() {
+        let endpoint = TfpEndpoint::new(Arc::new(StubExecutor), Arc::new(StubExecutor));
+        for payload in [
+            json!({"entity":"Other","action":"Create","payload":{},"comment":"x"}),
+            json!({"entity":"CustomerOrder","action":"Publish","payload":{},"comment":"x"}),
+            json!({"entity":"CustomerOrder","action":"Create","payload":{"secret":"x"},"comment":"x"}),
+            json!({"entity":"CustomerOrder","action":"Create","payload":{"orderNumber":"x"},"comment":" "}),
+            json!({"entity":"CustomerOrder","action":"Create","payload":{"commerce_platform_id":99},"comment":"x"}),
+        ] {
+            assert!(endpoint.handle_mutation(&trusted(), payload).await.is_err());
+        }
     }
 }

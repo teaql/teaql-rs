@@ -7,7 +7,7 @@ use teaql_core::{
 use teaql_data_service::MutationRequest;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TfpOrderBy {
     #[serde(alias = "f")]
     pub field: String,
@@ -18,22 +18,22 @@ pub struct TfpOrderBy {
 }
 
 impl TfpOrderBy {
-    pub fn to_core(&self) -> OrderBy {
+    pub fn to_core(&self) -> Result<OrderBy, String> {
         let dir = match self.direction.as_str() {
             value if value.eq_ignore_ascii_case("asc") => SortDirection::Asc,
             value if value.eq_ignore_ascii_case("desc") => SortDirection::Desc,
-            _ => SortDirection::Asc,
+            _ => return Err(format!("Unsupported order direction: {}", self.direction)),
         };
-        OrderBy {
+        Ok(OrderBy {
             field: self.field.clone(),
             expr: None, // TODO: parse expression if needed
             direction: dir,
-        }
+        })
     }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TfpSelectQuery {
     pub entity: String,
     pub filter_condition: Option<JsonValue>,
@@ -61,7 +61,7 @@ pub struct TfpSelectQuery {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TfpAggregateItem {
     #[serde(alias = "func")]
     pub function: String,
@@ -129,7 +129,7 @@ impl TfpSelectQuery {
         }
 
         for o in &self.order_items {
-            q.order_by.push(o.to_core());
+            q.order_by.push(o.to_core()?);
         }
 
         if !self.select_items.is_empty() {
@@ -293,15 +293,36 @@ pub fn parse_json_filter(value: &JsonValue) -> Result<Expr, String> {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct TfpMutationQuery {
     pub entity: String,
     pub action: String, // "Create" | "Update" | "Delete" | "Recover"
     pub payload: JsonValue,
     pub id: Option<JsonValue>,
+    #[serde(default, rename = "expectedVersion")]
+    pub expected_version: Option<i64>,
     pub comment: Option<String>,
 }
 
 impl TfpMutationQuery {
+    pub fn map_writable_fields(
+        &mut self,
+        fields: &std::collections::BTreeMap<String, String>,
+    ) -> Result<(), String> {
+        let object = self
+            .payload
+            .as_object_mut()
+            .ok_or("Mutation payload must be an object")?;
+        let original = std::mem::take(object);
+        for (field, value) in original {
+            let mapped = fields
+                .get(&field)
+                .ok_or_else(|| format!("Field is not writable by federation policy: {field}"))?;
+            object.insert(mapped.clone(), value);
+        }
+        Ok(())
+    }
+
     pub fn to_core(&self) -> Result<MutationRequest, String> {
         let comment = self
             .comment
@@ -351,7 +372,7 @@ impl TfpMutationQuery {
                     entity: self.entity.clone(),
                     id: id_val,
                     values: record,
-                    expected_version: None,
+                    expected_version: self.expected_version,
                     old_values: None,
                     trace_chain: trace,
                 }))
@@ -359,14 +380,14 @@ impl TfpMutationQuery {
             "Delete" => Ok(MutationRequest::Delete(DeleteCommand {
                 entity: self.entity.clone(),
                 id: id_val,
-                expected_version: None,
+                expected_version: self.expected_version,
                 soft_delete: true,
                 trace_chain: trace,
             })),
             "Recover" => Ok(MutationRequest::Recover(RecoverCommand {
                 entity: self.entity.clone(),
                 id: id_val,
-                expected_version: 0,
+                expected_version: self.expected_version.unwrap_or(0),
                 trace_chain: trace,
             })),
             _ => Err("Unknown mutation action".into()),
@@ -442,6 +463,7 @@ mod tests {
             action: "Update".into(),
             payload: json!({"name":"Swift verified", "version":2, "active":true}),
             id: Some(json!(900001)),
+            expected_version: Some(2),
             comment: Some("Verify Swift audited mutation".into()),
         };
         let request = mutation.to_core().unwrap();
@@ -449,6 +471,7 @@ mod tests {
             panic!("expected update command")
         };
         assert_eq!(command.id, Value::I64(900001));
+        assert_eq!(command.expected_version, Some(2));
         assert_eq!(
             command.values.get("name"),
             Some(&Value::Text("Swift verified".into()))
