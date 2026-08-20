@@ -21,8 +21,8 @@ mod telemetry_opentelemetry;
 
 pub use context::{
     ContinuousPageCursor, ContinuousPageCursorStore, DataStore, InMemoryContinuousPageCursorStore,
-    InMemoryDataStore, InfoLogEntry, LogPayload, SchemaProvider, SqlLogEntry, SqlLogOperation,
-    SqlLogOptions, UnifiedLogBuffer, UnifiedLogEntry, UserContext,
+    InMemoryDataStore, InfoLogEntry, LogPayload, RemoteLockProvider, SchemaProvider, SqlLogEntry,
+    SqlLogOperation, SqlLogOptions, UnifiedLogBuffer, UnifiedLogEntry, UserContext,
 };
 pub use data_service::{
     AggregationCacheBackend, EntityDataService, GraphTransactionBoundary, InMemoryAggregationCache,
@@ -75,10 +75,10 @@ mod tests {
         GraphMutationKind, GraphNode, InMemoryAggregationCache, InMemoryCheckerRegistry,
         InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityRegistry, InMemoryMetadataStore,
         InternalIdGenerator, Language, MemoryDataService, MetadataStore, ObjectLocation,
-        RawAuditEvent, RawAuditEventKind, RawAuditEventSink, RequestPolicy, RuntimeError,
-        RuntimeModule, RuntimeOperation, RuntimeTelemetry, RuntimeTelemetryScope, SafeAuditEvent,
-        SafeAuditEventSink, SqlLogOperation, SqlLogOptions, TypedChecker, TypedEntityChecker,
-        UserContext, translate_check_result,
+        RawAuditEvent, RawAuditEventKind, RawAuditEventSink, RemoteLockProvider, RequestPolicy,
+        RuntimeError, RuntimeModule, RuntimeOperation, RuntimeTelemetry, RuntimeTelemetryScope,
+        SafeAuditEvent, SafeAuditEventSink, SqlLogOperation, SqlLogOptions, TypedChecker,
+        TypedEntityChecker, UserContext, translate_check_result,
     };
     use crate::data_service::RuntimeDataService;
     use teaql_core::{
@@ -2687,6 +2687,58 @@ mod tests {
         second.unlock_local(&key);
         assert!(first.try_local_lock(&key, 0, 50));
         first.unlock_local(&key);
+    }
+
+    #[derive(Default)]
+    struct TestRemoteLockProvider {
+        owners: Mutex<std::collections::HashMap<String, String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl RemoteLockProvider for TestRemoteLockProvider {
+        async fn try_remote_lock(
+            &self,
+            key: &str,
+            owner_token: &str,
+            _timeout_millis: u64,
+            _expire_millis: u64,
+        ) -> bool {
+            let mut owners = self.owners.lock().expect("remote lock state");
+            if owners.contains_key(key) {
+                return false;
+            }
+            owners.insert(key.to_owned(), owner_token.to_owned());
+            true
+        }
+
+        async fn unlock_remote(&self, key: &str, owner_token: &str) -> bool {
+            let mut owners = self.owners.lock().expect("remote lock state");
+            if owners.get(key).is_some_and(|owner| owner == owner_token) {
+                owners.remove(key);
+                return true;
+            }
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_lock_delegates_and_preserves_context_ownership() {
+        let provider: Arc<dyn RemoteLockProvider> = Arc::new(TestRemoteLockProvider::default());
+        let mut first = UserContext::new();
+        first.insert_resource(provider.clone());
+        let mut second = UserContext::new();
+        second.insert_resource(provider);
+        let key = format!("remote-lock-{:?}", std::time::SystemTime::now());
+
+        assert!(first.try_remote_lock(&key, 0, 1_000).await);
+        assert!(!second.try_remote_lock(&key, 0, 1_000).await);
+        assert!(!second.unlock_remote(&key).await);
+        assert!(!second.try_remote_lock(&key, 0, 1_000).await);
+        assert!(first.unlock_remote(&key).await);
+        assert!(second.try_remote_lock(&key, 0, 1_000).await);
+        assert!(second.unlock_remote(&key).await);
+
+        assert!(UserContext::new().try_remote_lock("optional", 0, 0).await);
     }
 }
 

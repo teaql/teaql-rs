@@ -152,7 +152,7 @@ let platforms = Q::platforms()
 - `teaql-provider-mysql`: MySQL native adapter (mysql_async), schema bootstrap, transaction wrapper, row decoding, and ID-space generator
 - `teaql-data-service`: database-neutral query and mutation service contracts
 - `teaql-web-integration-axum`: Axum integration for TeaQL web responses and request contexts
-- `teaql-cache-integration-redis`: Redis-backed runtime cache integration
+- `teaql-cache-integration-redis`: Redis-backed runtime cache and ownership-safe Remote Lock integration
 - `teaql-provider-meilisearch`: Meilisearch query provider
 - `teaql-provider-linux`: Linux `/proc` data provider
 - `teaql-macros`: `TeaqlEntity` derive macro plus attribute parsing and record/entity mapping generation

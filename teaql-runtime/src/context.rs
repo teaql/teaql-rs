@@ -233,6 +233,7 @@ pub struct UserContext {
     continuous_page_cursor_store: std::sync::Arc<dyn ContinuousPageCursorStore>,
     continuous_page_observation: Mutex<(String, Option<String>)>,
     local_lock_owner: u64,
+    remote_lock_owner: String,
     runtime_telemetry: Arc<dyn crate::RuntimeTelemetry>,
 }
 
@@ -263,6 +264,7 @@ impl Default for UserContext {
             .or_else(|_| std::env::var("USERNAME"))
             .unwrap_or_else(|_| "main".to_owned());
         let user_id = format!("{os_user}@pid-{pid}.tid-{numeric_thread_id}");
+        let owner_sequence = NEXT_LOCAL_LOCK_OWNER.fetch_add(1, Ordering::Relaxed);
         Self {
             metadata: None,
             entity_registry: None,
@@ -294,7 +296,14 @@ impl Default for UserContext {
                 InMemoryContinuousPageCursorStore::default(),
             ),
             continuous_page_observation: Mutex::new(("DISABLED".to_owned(), None)),
-            local_lock_owner: NEXT_LOCAL_LOCK_OWNER.fetch_add(1, Ordering::Relaxed),
+            local_lock_owner: owner_sequence,
+            remote_lock_owner: format!(
+                "teaql:{pid}:{owner_sequence}:{}",
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ),
             runtime_telemetry: Arc::new(crate::NoopRuntimeTelemetry),
         }
     }
@@ -305,6 +314,24 @@ pub trait DataStore: Send + Sync + 'static {
     async fn get(&self, key: &str) -> Option<Value>;
     async fn put(&self, key: &str, value: Value, timeout_seconds: Option<u64>);
     async fn remove(&self, key: &str);
+}
+
+/// Provider-neutral distributed lock boundary.
+///
+/// Implementations must associate an acquired lock with `owner_token` and
+/// release it only while that token still owns the key. A zero timeout is one
+/// non-blocking attempt; a zero expiry means no automatic lease expiry.
+#[async_trait::async_trait]
+pub trait RemoteLockProvider: Send + Sync + 'static {
+    async fn try_remote_lock(
+        &self,
+        key: &str,
+        owner_token: &str,
+        timeout_millis: u64,
+        expire_millis: u64,
+    ) -> bool;
+
+    async fn unlock_remote(&self, key: &str, owner_token: &str) -> bool;
 }
 
 #[derive(Default)]
@@ -425,6 +452,35 @@ impl UserContext {
         {
             entries.remove(key);
             locks.changed.notify_all();
+        }
+    }
+
+    /// Attempts to acquire a provider-backed distributed lock.
+    ///
+    /// A missing provider remains a no-op success, matching the optional
+    /// Remote Lock boundary in the other TeaQL runtimes. Install an
+    /// `Arc<dyn RemoteLockProvider>` resource to enable distributed exclusion.
+    pub async fn try_remote_lock(
+        &self,
+        key: &str,
+        timeout_millis: u64,
+        expire_millis: u64,
+    ) -> bool {
+        match self.get_resource::<Arc<dyn RemoteLockProvider>>() {
+            Some(provider) => {
+                provider
+                    .try_remote_lock(key, &self.remote_lock_owner, timeout_millis, expire_millis)
+                    .await
+            }
+            None => true,
+        }
+    }
+
+    /// Releases a distributed lock only when this context still owns it.
+    pub async fn unlock_remote(&self, key: &str) -> bool {
+        match self.get_resource::<Arc<dyn RemoteLockProvider>>() {
+            Some(provider) => provider.unlock_remote(key, &self.remote_lock_owner).await,
+            None => true,
         }
     }
 
