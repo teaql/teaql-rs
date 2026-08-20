@@ -9,6 +9,7 @@ mod error;
 mod event;
 pub mod generated_support;
 mod graph;
+mod i18n;
 mod id;
 pub mod inmemory_engine;
 mod language;
@@ -43,11 +44,13 @@ pub use graph::{
     GraphMutationBatch, GraphMutationKind, GraphMutationPlan, GraphMutationPlanItem, GraphNode,
     GraphOperation, ScopedCommentNode, TraceScopeToken, sorted_update_fields,
 };
+pub use i18n::I18nCatalog;
 pub(crate) use id::local_id_generator;
 pub use id::{AtomicCounterIdGenerator, InternalIdGenerator, SnowflakeIdGenerator};
 pub use inmemory_engine::{ExprEvaluator, InMemoryQueryEngine};
 pub use language::{
-    BuiltinTranslator, Language, MessageTranslator, translate_check_result, translate_location,
+    BuiltinTranslator, Language, Locale, MessageTranslator, translate_check_result,
+    translate_location,
 };
 pub(crate) use memory::MemoryDataService;
 pub use registry::{
@@ -72,13 +75,13 @@ mod tests {
     use super::{
         AggregationCacheBackend, CHECK_OBJECT_STATUS_FIELD, CheckObjectStatus, CheckResult,
         CheckResults, CheckRule, Checker, DataServiceError, EntityDataServiceBehavior,
-        GraphMutationKind, GraphNode, InMemoryAggregationCache, InMemoryCheckerRegistry,
-        InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityRegistry, InMemoryMetadataStore,
-        InternalIdGenerator, Language, MemoryDataService, MetadataStore, ObjectLocation,
-        RawAuditEvent, RawAuditEventKind, RawAuditEventSink, RemoteLockProvider, RequestPolicy,
-        RuntimeError, RuntimeModule, RuntimeOperation, RuntimeTelemetry, RuntimeTelemetryScope,
-        SafeAuditEvent, SafeAuditEventSink, SqlLogOperation, SqlLogOptions, TypedChecker,
-        TypedEntityChecker, UserContext, translate_check_result,
+        GraphMutationKind, GraphNode, I18nCatalog, InMemoryAggregationCache,
+        InMemoryCheckerRegistry, InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityRegistry,
+        InMemoryMetadataStore, InternalIdGenerator, Language, MemoryDataService, MetadataStore,
+        ObjectLocation, RawAuditEvent, RawAuditEventKind, RawAuditEventSink, RemoteLockProvider,
+        RequestPolicy, RuntimeError, RuntimeModule, RuntimeOperation, RuntimeTelemetry,
+        RuntimeTelemetryScope, SafeAuditEvent, SafeAuditEventSink, SqlLogOperation, SqlLogOptions,
+        TypedChecker, TypedEntityChecker, UserContext, translate_check_result,
     };
     use crate::data_service::RuntimeDataService;
     use teaql_core::{
@@ -1305,13 +1308,25 @@ mod tests {
     #[tokio::test]
     async fn built_in_language_translators_cover_fifteen_languages() {
         assert_eq!(Language::ALL.len(), 15);
-        let result = super::CheckResult::required(ObjectLocation::hash_root("name"));
+        let results = [
+            super::CheckResult::required(ObjectLocation::hash_root("name")),
+            super::CheckResult::min(ObjectLocation::hash_root("age"), 18_i64, 12_i64),
+            super::CheckResult::max(ObjectLocation::hash_root("age"), 65_i64, 70_i64),
+            super::CheckResult::min_str(ObjectLocation::hash_root("name"), 2, "x"),
+            super::CheckResult::max_str(ObjectLocation::hash_root("name"), 8, "too long name"),
+        ];
         let messages = Language::ALL
             .iter()
-            .map(|language| translate_check_result(*language, &result))
+            .flat_map(|language| {
+                results
+                    .iter()
+                    .map(|result| translate_check_result(*language, result))
+            })
             .collect::<Vec<_>>();
 
+        assert_eq!(messages.len(), 75);
         assert!(messages.iter().all(|message| !message.is_empty()));
+        assert!(messages.iter().all(|message| !message.contains('{')));
         assert!(messages.iter().any(|message| message.contains("required")));
         assert!(messages.iter().any(|message| message.contains("必填")));
         assert!(
@@ -1362,6 +1377,26 @@ mod tests {
         let mut context = UserContext::new().with_language(Language::English);
         context.set_language_code("es").unwrap();
         assert_eq!(context.language(), Language::Spanish);
+        assert!(context.set_locale_code("invalid-code").is_err());
+        assert_eq!(context.language(), Language::Spanish);
+
+        let catalog = I18nCatalog::from_json(
+            r#"{
+                "schema":"teaql.i18n/v1",
+                "defaultLocale":"en",
+                "locales":{
+                    "en":{"messages":{"checker.required":"EN {location}"},"vocabulary":{}},
+                    "es":{"messages":{"checker.required":"ES {location}"},"vocabulary":{}}
+                }
+            }"#,
+        )
+        .unwrap();
+        context.set_i18n_catalog(Arc::new(catalog));
+        let mut results = vec![super::CheckResult::required(ObjectLocation::hash_root(
+            "name",
+        ))];
+        context.translate_check_results(&mut results);
+        assert_eq!(results[0].message.as_deref(), Some("ES Name"));
     }
 
     #[tokio::test]

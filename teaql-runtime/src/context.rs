@@ -14,7 +14,7 @@ use crate::{
     CheckObjectStatus, CheckResult, CheckResults, CheckerRegistry, ContextError,
     EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry, EntityRegistry, GraphNode,
     InternalIdGenerator, Language, MetadataStore, ObjectLocation, RawAuditEvent, RawAuditEventSink,
-    RequestPolicy, RuntimeError, local_id_generator, translate_check_result,
+    RequestPolicy, RuntimeError, local_id_generator,
 };
 use crate::{DataServiceError, EntityRoot};
 
@@ -220,6 +220,7 @@ pub struct UserContext {
     pub(crate) internal_id_generator: Option<Box<dyn InternalIdGenerator>>,
     schema_provider: Option<Box<dyn SchemaProvider>>,
     language: Language,
+    i18n_catalog: Arc<crate::I18nCatalog>,
     typed_resources: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
     named_resources: BTreeMap<String, Box<dyn Any + Send + Sync>>,
     locals: BTreeMap<String, Value>,
@@ -276,6 +277,7 @@ impl Default for UserContext {
             internal_id_generator: None,
             schema_provider: None,
             language: Language::default(),
+            i18n_catalog: crate::I18nCatalog::builtin().clone(),
             typed_resources: HashMap::new(),
             named_resources: BTreeMap::new(),
             locals: BTreeMap::new(),
@@ -698,6 +700,15 @@ impl UserContext {
         self.language = language;
     }
 
+    pub fn with_i18n_catalog(mut self, catalog: Arc<crate::I18nCatalog>) -> Self {
+        self.i18n_catalog = catalog;
+        self
+    }
+
+    pub fn set_i18n_catalog(&mut self, catalog: Arc<crate::I18nCatalog>) {
+        self.i18n_catalog = catalog;
+    }
+
     pub fn with_sql_log_options(mut self, options: SqlLogOptions) -> Self {
         self.sql_log_options = options;
         self
@@ -866,12 +877,14 @@ impl UserContext {
 
     pub fn set_language_code(&mut self, code: &str) -> Result<(), RuntimeError> {
         let Some(language) = Language::from_code(code) else {
-            return Err(RuntimeError::Language(format!(
-                "unsupported language code: {code}"
-            )));
+            return Err(RuntimeError::UnsupportedLocale(code.to_owned()));
         };
         self.language = language;
         Ok(())
+    }
+
+    pub fn set_locale_code(&mut self, code: &str) -> Result<(), RuntimeError> {
+        self.set_language_code(code)
     }
 
     pub fn generate_id(&self, entity: &str) -> Result<Option<u64>, RuntimeError> {
@@ -1053,7 +1066,10 @@ impl UserContext {
 
     pub fn translate_check_results(&self, results: &mut CheckResults) {
         for result in results {
-            result.message = Some(translate_check_result(self.language, result));
+            result.message = Some(
+                self.i18n_catalog
+                    .translate_check_result(self.language, result),
+            );
         }
     }
 

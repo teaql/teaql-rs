@@ -1,0 +1,30 @@
+{
+  "canonical": ["en", "zh-CN", "zh-TW", "ja", "ko", "de", "fr", "es", "pt", "ar", "th", "id", "fil", "uk", "vi"],
+  "aliases": {
+    "EN_us": "en",
+    "en-GB": "en",
+    "zh": "zh-CN",
+    "ZH_hans": "zh-CN",
+    "zh-SG": "zh-CN",
+    "cn": "zh-CN",
+    "ZH_hant": "zh-TW",
+    "zh-HK": "zh-TW",
+    "zh-MO": "zh-TW",
+    "tw": "zh-TW",
+    "ja-JP": "ja",
+    "ko_KR": "ko",
+    "de-DE": "de",
+    "fr_FR": "fr",
+    "es-MX": "es",
+    "pt-BR": "pt",
+    "pt_PT": "pt",
+    "ar-SA": "ar",
+    "th-TH": "th",
+    "id_ID": "id",
+    "tl": "fil",
+    "fil-PH": "fil",
+    "uk-UA": "uk",
+    "vi_VN": "vi"
+  },
+  "unsupported": ["", "invalid-code", "xx", "zh-Latn"]
+}

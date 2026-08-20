@@ -1,0 +1,156 @@
+{
+  "schema": "teaql.i18n/v1",
+  "defaultLocale": "en",
+  "locales": {
+    "en": {
+      "messages": {
+        "checker.required": "The {location} is required",
+        "checker.min": "The {location} should be equal or greater than {system}, but input is {input}",
+        "checker.max": "The {location} should be equal or less than {system}, but input is {input}",
+        "checker.minLength": "The length of {location} should be equal or greater than {system}, but the length of {input} is {input_len}",
+        "checker.maxLength": "The length of {location} should be equal or less than {system}, but the length of {input} is {input_len}"
+      },
+      "vocabulary": {}
+    },
+    "zh-CN": {
+      "messages": {
+        "checker.required": "{location} 是必填项",
+        "checker.min": "{location} 应该大于等于 {system}，但输入值为 {input}",
+        "checker.max": "{location} 应该小于等于 {system}，但输入值为 {input}",
+        "checker.minLength": "{location} 的长度应大于等于 {system}，但实际长度为 {input_len}",
+        "checker.maxLength": "{location} 的长度应小于等于 {system}，但实际长度为 {input_len}"
+      },
+      "vocabulary": {}
+    },
+    "zh-TW": {
+      "messages": {
+        "checker.required": "{location} 是必填的",
+        "checker.min": "{location} 應該等於或大於 {system}，但輸入為 {input}",
+        "checker.max": "{location} 應該等於或小於 {system}，但輸入為 {input}",
+        "checker.minLength": "{location} 的長度應該等於或大於 {system}，但 {input} 的長度是 {input_len}",
+        "checker.maxLength": "{location} 的長度應該等於或小於 {system}，但 {input} 的長度是 {input_len}"
+      },
+      "vocabulary": {}
+    },
+    "ja": {
+      "messages": {
+        "checker.required": "{location} は必須です",
+        "checker.min": "{location} は {system} 以上である必要があります。入力値は {input} です",
+        "checker.max": "{location} は {system} 以下である必要があります。入力値は {input} です",
+        "checker.minLength": "{location} の長さは {system} 以上である必要があります。実際の長さは {input_len} です",
+        "checker.maxLength": "{location} の長さは {system} 以下である必要があります。実際の長さは {input_len} です"
+      },
+      "vocabulary": {}
+    },
+    "ko": {
+      "messages": {
+        "checker.required": "{location}은(는) 필수입니다",
+        "checker.min": "{location}은(는) {system} 이상이어야 하지만 입력값은 {input}입니다",
+        "checker.max": "{location}은(는) {system} 이하여야 하지만 입력값은 {input}입니다",
+        "checker.minLength": "{location}의 길이는 {system} 이상이어야 하지만 실제 길이는 {input_len}입니다",
+        "checker.maxLength": "{location}의 길이는 {system} 이하여야 하지만 실제 길이는 {input_len}입니다"
+      },
+      "vocabulary": {}
+    },
+    "de": {
+      "messages": {
+        "checker.required": "{location} ist erforderlich",
+        "checker.min": "{location} muss mindestens {system} sein, aber die Eingabe ist {input}",
+        "checker.max": "{location} darf höchstens {system} sein, aber die Eingabe ist {input}",
+        "checker.minLength": "Die Länge von {location} muss mindestens {system} sein, ist aber {input_len}",
+        "checker.maxLength": "Die Länge von {location} darf höchstens {system} sein, ist aber {input_len}"
+      },
+      "vocabulary": {}
+    },
+    "fr": {
+      "messages": {
+        "checker.required": "{location} est obligatoire",
+        "checker.min": "{location} doit être supérieur ou égal à {system}, mais la valeur saisie est {input}",
+        "checker.max": "{location} doit être inférieur ou égal à {system}, mais la valeur saisie est {input}",
+        "checker.minLength": "La longueur de {location} doit être supérieure ou égale à {system}, mais elle est {input_len}",
+        "checker.maxLength": "La longueur de {location} doit être inférieure ou égale à {system}, mais elle est {input_len}"
+      },
+      "vocabulary": {}
+    },
+    "es": {
+      "messages": {
+        "checker.required": "{location} es requerido/a",
+        "checker.min": "{location} debe ser mayor o igual que {system}, pero el valor ingresado es {input}",
+        "checker.max": "{location} debe ser menor o igual que {system}, pero el valor ingresado es {input}",
+        "checker.minLength": "La longitud de {location} debe ser mayor o igual que {system}, pero es {input_len}",
+        "checker.maxLength": "La longitud de {location} debe ser menor o igual que {system}, pero es {input_len}"
+      },
+      "vocabulary": {}
+    },
+    "pt": {
+      "messages": {
+        "checker.required": "{location} é obrigatório",
+        "checker.min": "{location} deve ser maior ou igual a {system}, mas a entrada é {input}",
+        "checker.max": "{location} deve ser menor ou igual a {system}, mas a entrada é {input}",
+        "checker.minLength": "O comprimento de {location} deve ser maior ou igual a {system}, mas é {input_len}",
+        "checker.maxLength": "O comprimento de {location} deve ser menor ou igual a {system}, mas é {input_len}"
+      },
+      "vocabulary": {}
+    },
+    "ar": {
+      "messages": {
+        "checker.required": "{location} مطلوب",
+        "checker.min": "يجب أن يكون {location} مساويًا أو أكبر من {system}، لكن المُدخل هو {input}",
+        "checker.max": "يجب أن يكون {location} مساويًا أو أصغر من {system}، لكن المُدخل هو {input}",
+        "checker.minLength": "يجب أن يكون طول {location} مساويًا أو أكبر من {system}، لكن الطول هو {input_len}",
+        "checker.maxLength": "يجب أن يكون طول {location} مساويًا أو أصغر من {system}، لكن الطول هو {input_len}"
+      },
+      "vocabulary": {}
+    },
+    "th": {
+      "messages": {
+        "checker.required": "{location} เป็นสิ่งจำเป็น",
+        "checker.min": "{location} ควรจะเท่ากับหรือมากกว่า {system} แต่ข้อมูลที่ป้อนคือ {input}",
+        "checker.max": "{location} ควรจะเท่ากับหรือน้อยกว่า {system} แต่ข้อมูลที่ป้อนคือ {input}",
+        "checker.minLength": "ความยาวของ {location} ควรจะเท่ากับหรือมากกว่า {system} แต่ความยาวคือ {input_len}",
+        "checker.maxLength": "ความยาวของ {location} ควรจะเท่ากับหรือน้อยกว่า {system} แต่ความยาวคือ {input_len}"
+      },
+      "vocabulary": {}
+    },
+    "id": {
+      "messages": {
+        "checker.required": "{location} wajib diisi",
+        "checker.min": "{location} harus sama dengan atau lebih besar dari {system}, tetapi input adalah {input}",
+        "checker.max": "{location} harus sama dengan atau lebih kecil dari {system}, tetapi input adalah {input}",
+        "checker.minLength": "Panjang {location} harus sama dengan atau lebih besar dari {system}, tetapi panjangnya {input_len}",
+        "checker.maxLength": "Panjang {location} harus sama dengan atau lebih kecil dari {system}, tetapi panjangnya {input_len}"
+      },
+      "vocabulary": {}
+    },
+    "fil": {
+      "messages": {
+        "checker.required": "Ang {location} ay kinakailangan",
+        "checker.min": "Ang {location} ay dapat katumbas o mas malaki kaysa {system}, ngunit ang input ay {input}",
+        "checker.max": "Ang {location} ay dapat katumbas o mas maliit kaysa {system}, ngunit ang input ay {input}",
+        "checker.minLength": "Ang haba ng {location} ay dapat katumbas o mas malaki kaysa {system}, ngunit ang haba ay {input_len}",
+        "checker.maxLength": "Ang haba ng {location} ay dapat katumbas o mas maliit kaysa {system}, ngunit ang haba ay {input_len}"
+      },
+      "vocabulary": {}
+    },
+    "uk": {
+      "messages": {
+        "checker.required": "{location} є обов'язковим",
+        "checker.min": "{location} повинен бути рівним або більшим за {system}, але ввідне значення {input}",
+        "checker.max": "{location} повинен бути рівним або меншим за {system}, але ввідне значення {input}",
+        "checker.minLength": "Довжина {location} повинна бути рівною або більшою за {system}, але довжина становить {input_len}",
+        "checker.maxLength": "Довжина {location} повинна бути рівною або меншою за {system}, але довжина становить {input_len}"
+      },
+      "vocabulary": {}
+    },
+    "vi": {
+      "messages": {
+        "checker.required": "{location} là bắt buộc",
+        "checker.min": "{location} phải lớn hơn hoặc bằng {system}, nhưng giá trị nhập là {input}",
+        "checker.max": "{location} phải nhỏ hơn hoặc bằng {system}, nhưng giá trị nhập là {input}",
+        "checker.minLength": "Độ dài của {location} phải lớn hơn hoặc bằng {system}, nhưng độ dài là {input_len}",
+        "checker.maxLength": "Độ dài của {location} phải nhỏ hơn hoặc bằng {system}, nhưng độ dài là {input_len}"
+      },
+      "vocabulary": {}
+    }
+  }
+}
