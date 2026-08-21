@@ -18,6 +18,42 @@ use crate::{
 };
 use crate::{DataServiceError, EntityRoot};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextEntityRef {
+    pub entity_type: String,
+    pub id: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextRootError {
+    pub expected_entity_type: String,
+    pub actual_root: Option<ContextEntityRef>,
+}
+
+impl std::fmt::Display for ContextRootError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.actual_root {
+            None => write!(formatter, "active root {} is missing from UserContext", self.expected_entity_type),
+            Some(actual) => write!(formatter, "active root type is {}, expected {}", actual.entity_type, self.expected_entity_type),
+        }
+    }
+}
+
+impl std::error::Error for ContextRootError {}
+
+#[cfg(test)]
+mod active_root_tests {
+    use super::UserContext;
+
+    #[test]
+    fn active_root_is_typed_and_fails_closed() {
+        let context = UserContext::new().with_active_root("Tenant", 42);
+        assert_eq!(context.require_active_root("Tenant").unwrap().id, 42);
+        assert!(context.require_active_root("Organization").is_err());
+        assert!(UserContext::new().require_active_root("Tenant").is_err());
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContinuousPageCursor {
     pub cursor_id: String,
@@ -209,6 +245,7 @@ pub trait SchemaProvider: Send + Sync {
 }
 
 pub struct UserContext {
+    active_root: Option<ContextEntityRef>,
     pub(crate) metadata: Option<Box<dyn MetadataStore>>,
     pub(crate) entity_registry: Option<Box<dyn EntityRegistry>>,
     pub(crate) entity_data_service_behavior_registry:
@@ -267,6 +304,7 @@ impl Default for UserContext {
         let user_id = format!("{os_user}@pid-{pid}.tid-{numeric_thread_id}");
         let owner_sequence = NEXT_LOCAL_LOCK_OWNER.fetch_add(1, Ordering::Relaxed);
         Self {
+            active_root: None,
             metadata: None,
             entity_registry: None,
             entity_data_service_behavior_registry: None,
@@ -372,6 +410,24 @@ impl DataStore for InMemoryDataStore {
 impl UserContext {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_active_root(mut self, entity_type: impl Into<String>, id: u64) -> Self {
+        let entity_type = entity_type.into();
+        assert!(!entity_type.trim().is_empty(), "active root entity type is required");
+        assert!(id > 0, "active root id must be positive");
+        self.active_root = Some(ContextEntityRef { entity_type, id });
+        self
+    }
+
+    pub fn require_active_root(&self, expected_entity_type: &str) -> Result<&ContextEntityRef, ContextRootError> {
+        match &self.active_root {
+            Some(root) if root.entity_type == expected_entity_type => Ok(root),
+            actual_root => Err(ContextRootError {
+                expected_entity_type: expected_entity_type.to_owned(),
+                actual_root: actual_root.clone(),
+            }),
+        }
     }
 
     pub fn with_runtime_telemetry(mut self, telemetry: Arc<dyn crate::RuntimeTelemetry>) -> Self {

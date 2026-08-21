@@ -140,6 +140,8 @@ impl I18nCatalog {
             CheckRule::Max => "checker.max",
             CheckRule::MinStringLength => "checker.minLength",
             CheckRule::MaxStringLength => "checker.maxLength",
+            CheckRule::ContextRootMissing => "checker.contextRootMissing",
+            CheckRule::ContextRootMismatch => "checker.contextRootMismatch",
         };
         let location = translate_location(&result.location);
         let system = result

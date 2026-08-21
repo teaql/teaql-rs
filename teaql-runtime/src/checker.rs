@@ -64,6 +64,8 @@ pub enum CheckRule {
     Max,
     MinStringLength,
     MaxStringLength,
+    ContextRootMissing,
+    ContextRootMismatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
