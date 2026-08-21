@@ -216,6 +216,20 @@ impl EntityRoot {
             .clear_current();
     }
 
+    /// Clear all state consumed by a successfully committed ledger save.
+    /// Failed saves must not call this method so their pending intent remains retryable.
+    pub fn clear_committed(&self) {
+        let mut context = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        context.change_sets = ChangeSetStack::default();
+        context.deleted_keys.clear();
+        context.new_keys.clear();
+        context.original_versions.clear();
+        context.trace_chains.clear();
+        context.original_record = None;
+        context.comment = None;
+        context.is_new = false;
+    }
+
     pub fn set(&self, key: EntityKey, field: impl Into<String>, value: impl Into<Value>) {
         self.inner
             .lock()

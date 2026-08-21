@@ -427,10 +427,9 @@ fn compile_initial_graph_update(
     };
     let mut command = UpdateCommand::new(&graph.entity, id.clone());
     for (field, value) in &graph.values {
-        if field == "id" {
-            continue;
+        if field != "id" {
+            command = command.value(field.clone(), value.clone());
         }
-        command = command.value(field.clone(), value.clone());
     }
     match dialect.compile_update(entity, &command) {
         Ok(query) => Ok(Some(query)),
@@ -499,7 +498,7 @@ pub fn ensure_sqlite_schema_for(context: &UserContext) -> Result<(), MutationExe
         let _ = fields_added; // used above for FieldAdded events
     }
 
-    // Seed initial data, tracking insert vs update counts per entity
+    // Constant graphs are reconciled so model changes are propagated.
     let mut seed_counts: BTreeMap<String, (usize, usize)> = BTreeMap::new(); // (inserted, updated)
     for graph in context.initial_graphs() {
         let entity = context.entity(&graph.entity).ok_or_else(|| {
@@ -510,12 +509,25 @@ pub fn ensure_sqlite_schema_for(context: &UserContext) -> Result<(), MutationExe
             if let Some(query) = compile_initial_graph_update(dialect, entity, graph)? {
                 executor.execute(&query)?;
             }
-            counts.1 += 1; // updated
+            counts.1 += 1;
             continue;
         }
         let query = compile_initial_graph_insert(dialect, entity, graph)?;
         executor.execute(&query)?;
         counts.0 += 1; // inserted
+    }
+
+    // Roots are create-if-absent. Once present, application-owned values win.
+    for graph in context.root_graphs() {
+        let entity = context.entity(&graph.entity).ok_or_else(|| {
+            MutationExecutorError::Bind(format!("missing entity: {}", graph.entity))
+        })?;
+        if initial_graph_exists_sqlite(executor, dialect, entity, graph)? {
+            continue;
+        }
+        let query = compile_initial_graph_insert(dialect, entity, graph)?;
+        executor.execute(&query)?;
+        seed_counts.entry(graph.entity.clone()).or_insert((0, 0)).0 += 1;
     }
 
     // Fire DataSeeded events per entity type
@@ -1040,6 +1052,83 @@ mod tests {
         assert_eq!(rows[0].get("id"), Some(&Value::I64(1)));
         assert_eq!(rows[0].get("version"), Some(&Value::I64(1)));
         assert_eq!(rows[0].get("name"), Some(&Value::Text("draft".to_owned())));
+    }
+
+    #[test]
+    fn repeated_schema_ensure_does_not_overwrite_existing_initial_graph() {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        let entity = entity();
+        let mut context = UserContext::new()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(entity.clone()));
+        context.set_root_graphs(vec![
+            GraphNode::new("Order")
+                .value("id", 1_u64)
+                .value("version", 1_i64)
+                .value("name", "module seed"),
+        ]);
+        context.use_sqlite_provider(executor.clone());
+
+        ensure_sqlite_schema_for(&context).unwrap();
+        let customize = SqliteDialect
+            .compile_update(
+                &entity,
+                &UpdateCommand::new("Order", 1_u64).value("name", "application value"),
+            )
+            .unwrap();
+        assert_eq!(executor.execute(&customize).unwrap(), 1);
+
+        ensure_sqlite_schema_for(&context).unwrap();
+
+        let select = SqliteDialect
+            .compile_select(
+                &entity,
+                &SelectQuery::new("Order").filter(Expr::eq("id", 1_u64)),
+            )
+            .unwrap();
+        let rows = executor.fetch_all(&select).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("name"),
+            Some(&Value::Text("application value".to_owned()))
+        );
+    }
+
+    #[test]
+    fn repeated_schema_ensure_reconciles_changed_constant_graph() {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        let entity = entity();
+        let mut context = UserContext::new()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(entity.clone()));
+        context.set_initial_graphs(vec![
+            GraphNode::new("Order")
+                .value("id", 1_u64)
+                .value("version", 1_i64)
+                .value("name", "red"),
+        ]);
+        context.use_sqlite_provider(executor.clone());
+        ensure_sqlite_schema_for(&context).unwrap();
+
+        context.set_initial_graphs(vec![
+            GraphNode::new("Order")
+                .value("id", 1_u64)
+                .value("version", 1_i64)
+                .value("name", "crimson"),
+        ]);
+        ensure_sqlite_schema_for(&context).unwrap();
+
+        let select = SqliteDialect
+            .compile_select(
+                &entity,
+                &SelectQuery::new("Order").filter(Expr::eq("id", 1_u64)),
+            )
+            .unwrap();
+        let rows = executor.fetch_all(&select).unwrap();
+        assert_eq!(
+            rows[0].get("name"),
+            Some(&Value::Text("crimson".to_owned()))
+        );
     }
 
     #[test]

@@ -270,6 +270,7 @@ pub struct UserContext {
     named_resources: BTreeMap<String, Box<dyn Any + Send + Sync>>,
     locals: BTreeMap<String, Value>,
     pub(crate) initial_graphs: Vec<GraphNode>,
+    pub(crate) root_graphs: Vec<GraphNode>,
     entity_root: EntityRoot,
     sql_log_options: SqlLogOptions,
     sql_log_entries: Mutex<Vec<SqlLogEntry>>,
@@ -328,6 +329,7 @@ impl Default for UserContext {
             named_resources: BTreeMap::new(),
             locals: BTreeMap::new(),
             initial_graphs: Vec::new(),
+            root_graphs: Vec::new(),
             entity_root: EntityRoot::default(),
             sql_log_options: SqlLogOptions::all(),
             sql_log_entries: Mutex::new(Vec::new()),
@@ -654,6 +656,14 @@ impl UserContext {
 
     pub fn set_initial_graphs(&mut self, graphs: Vec<GraphNode>) {
         self.initial_graphs = graphs;
+    }
+
+    pub fn root_graphs(&self) -> &[GraphNode] {
+        &self.root_graphs
+    }
+
+    pub fn set_root_graphs(&mut self, graphs: Vec<GraphNode>) {
+        self.root_graphs = graphs;
     }
 
     pub fn with_metadata(mut self, metadata: impl MetadataStore + 'static) -> Self {

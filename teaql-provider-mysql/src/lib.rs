@@ -370,6 +370,16 @@ async fn ensure_initial_graphs_mysql(
         let query = compile_initial_graph_insert(dialect, entity, graph)?;
         executor.execute(&query).await?;
     }
+    for graph in context.root_graphs() {
+        let entity = context.entity(&graph.entity).ok_or_else(|| {
+            MutationExecutorError::Bind(format!("missing entity: {}", graph.entity))
+        })?;
+        if initial_graph_exists_mysql(executor, dialect, entity, graph).await? {
+            continue;
+        }
+        let query = compile_initial_graph_insert(dialect, entity, graph)?;
+        executor.execute(&query).await?;
+    }
     Ok(())
 }
 
@@ -493,10 +503,9 @@ fn compile_initial_graph_update(
     };
     let mut command = UpdateCommand::new(&graph.entity, id.clone());
     for (field, value) in &graph.values {
-        if field == "id" {
-            continue;
+        if field != "id" {
+            command = command.value(field.clone(), value.clone());
         }
-        command = command.value(field.clone(), value.clone());
     }
     match dialect.compile_update(entity, &command) {
         Ok(query) => Ok(Some(query)),

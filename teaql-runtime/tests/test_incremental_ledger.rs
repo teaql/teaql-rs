@@ -160,3 +160,30 @@ fn test_incremental_ledger_observability() {
     }
     println!("==========================================================\n");
 }
+
+#[test]
+fn successful_commit_cleanup_removes_all_replayable_root_state() {
+    let root = EntityRoot::default();
+    let created = EntityKey::new("CompanyTenant", 1_u64);
+    let deleted = EntityKey::new("UserAccount", 2_u64);
+
+    root.set(created.clone(), "name", Value::Text("TeaQL".to_owned()));
+    root.mark_as_new(created.clone());
+    root.set_original_version(created.clone(), 3);
+    root.mark_as_delete(deleted);
+    root.set_comment("create tenant");
+
+    root.clear_committed();
+
+    assert!(root.current_change_set().changes().is_empty());
+    assert!(root.new_keys().is_empty());
+    assert!(root.deleted_keys().is_empty());
+    assert_eq!(root.get_original_version(&created), None);
+    assert_eq!(root.get_comment(), None);
+
+    // A later independent save on the same UserContext/root starts clean.
+    let next = EntityKey::new("UserAccount", 3_u64);
+    root.set(next.clone(), "name", Value::Text("Ada".to_owned()));
+    assert_eq!(root.current_change_set().changes().len(), 1);
+    assert!(root.current_change_set().changes().contains_key(&next));
+}

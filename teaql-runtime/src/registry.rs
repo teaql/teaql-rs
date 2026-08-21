@@ -227,6 +227,7 @@ pub struct RuntimeModule {
     event_sinks: InMemoryRawAuditEventSink,
     language: Option<Language>,
     initial_graphs: Vec<GraphNode>,
+    root_graphs: Vec<GraphNode>,
 }
 
 impl RuntimeModule {
@@ -294,6 +295,18 @@ impl RuntimeModule {
         self
     }
 
+    /// Register create-if-absent root data. Unlike constant initial graphs,
+    /// existing root rows are never reconciled from module defaults.
+    pub fn root_graph(mut self, graph: GraphNode) -> Self {
+        self.root_graphs.push(graph);
+        self
+    }
+
+    pub fn root_graphs(mut self, graphs: impl IntoIterator<Item = GraphNode>) -> Self {
+        self.root_graphs.extend(graphs);
+        self
+    }
+
     pub fn apply_to(self, context: &mut UserContext) {
         context.set_metadata(self.metadata);
         context.set_entity_registry(self.entity_registry);
@@ -301,6 +314,7 @@ impl RuntimeModule {
         context.set_checker_registry(self.checkers);
         context.set_event_sink(self.event_sinks);
         context.set_initial_graphs(self.initial_graphs);
+        context.set_root_graphs(self.root_graphs);
         if let Some(language) = self.language {
             context.set_language(language);
         }

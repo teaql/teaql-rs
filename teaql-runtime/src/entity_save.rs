@@ -110,6 +110,7 @@ where
                     }
                 }
             }
+            root.clear_committed();
             Ok(node)
         })
     }
