@@ -85,13 +85,13 @@ where
             let eds = context
                 .entity_data_service::<E>(&entity)
                 .map_err(|e| RuntimeError::Graph(e.to_string()))?;
-            let generated_ids =
-                eds.execute_ledger_plan_internal(root)
-                    .await
-                    .map_err(|e| match e {
-                        DataServiceError::Runtime(r) => r,
-                        other => RuntimeError::Graph(other.to_string()),
-                    })?;
+            let generated_ids = eds
+                .execute_ledger_plan_internal(root.clone())
+                .await
+                .map_err(|e| match e {
+                    DataServiceError::Runtime(r) => r,
+                    other => RuntimeError::Graph(other.to_string()),
+                })?;
 
             let descriptor = context.require_entity(&entity).unwrap();
             if let Some(id_prop) = descriptor.id_property() {
@@ -103,6 +103,11 @@ where
                 let root_key = crate::EntityKey::new(entity.clone(), current_id);
                 if let Some(new_id) = generated_ids.get(&root_key) {
                     node.values.insert(id_prop.name.clone(), new_id.clone());
+                }
+                if let Some(changes) = root.current_change_set().changes().get(&root_key) {
+                    for (field, value) in changes {
+                        node.values.insert(field.clone(), value.clone());
+                    }
                 }
             }
             Ok(node)

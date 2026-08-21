@@ -1270,6 +1270,42 @@ where
         let new_keys = root.new_keys();
         let change_set = root.current_change_set();
 
+        // Validate and fix every pending ledger record before any query or
+        // mutation is sent to the provider.  The ledger path used to bypass
+        // the ordinary insert/update preparation hooks, which allowed an
+        // invalid generated save to reach the database and surface as a
+        // NOT NULL error.  Retain the fixed records for the eventual batches
+        // so context-derived values are persisted rather than merely checked.
+        let mut checked_changes = std::collections::BTreeMap::new();
+        for (key, record) in change_set.changes() {
+            if deleted_keys.contains(key) {
+                continue;
+            }
+            let mut checked = record.clone();
+            checked
+                .entry("id".to_owned())
+                .or_insert_with(|| key.id.clone());
+            let status = if new_keys.contains(key) {
+                crate::CheckObjectStatus::Create
+            } else {
+                crate::CheckObjectStatus::Update
+            };
+            crate::mark_record_status(&mut checked, status);
+            let result = self
+                .data_service
+                .metadata
+                .context
+                .check_and_fix_record(&key.entity, &mut checked);
+            crate::clear_record_status(&mut checked);
+            result.map_err(DataServiceError::Runtime)?;
+            for (field, value) in &checked {
+                if record.get(field) != Some(value) {
+                    root.set(key.clone(), field, value.clone());
+                }
+            }
+            checked_changes.insert(key.clone(), checked);
+        }
+
         // 1. Execute Deletes
         for key in deleted_keys.iter() {
             let id = key.id.clone();
@@ -1289,7 +1325,7 @@ where
         let mut insert_batches: std::collections::BTreeMap<String, Vec<crate::EntityKey>> =
             std::collections::BTreeMap::new();
 
-        for (key, record) in change_set.changes() {
+        for (key, record) in &checked_changes {
             if deleted_keys.contains(key) {
                 continue;
             }
@@ -1355,7 +1391,7 @@ where
             let mut cmd = teaql_core::BatchInsertCommand::new(&descriptor.name);
             let mut traces = Vec::new();
             for key in keys {
-                let record = change_set.changes().get(key).unwrap();
+                let record = checked_changes.get(key).unwrap();
                 let mut db_record = Record::new();
                 let mut real_id = key.id.clone();
                 if crate::data_service::helpers::is_unassigned_id_value(&real_id) {
@@ -1370,10 +1406,21 @@ where
                 }
                 db_record.insert("id".to_owned(), real_id);
                 for (field, value) in record {
+                    if field == "id" {
+                        continue;
+                    }
                     db_record.insert(field.clone(), value.clone());
                 }
                 crate::data_service::helpers::ensure_initial_version(&mut db_record, descriptor);
                 crate::data_service::helpers::ensure_timestamps(&mut db_record, descriptor, true);
+                crate::mark_record_status(&mut db_record, crate::CheckObjectStatus::Create);
+                let check_result = self
+                    .data_service
+                    .metadata
+                    .context
+                    .check_and_fix_record(&entity, &mut db_record);
+                crate::clear_record_status(&mut db_record);
+                check_result.map_err(DataServiceError::Runtime)?;
                 cmd.batch_values.push(db_record);
                 let my_trace = resolve_trace_chain(root.get_trace_chain(key), &trace_chain);
                 traces.push(my_trace);
@@ -1406,10 +1453,13 @@ where
             let mut cmd = teaql_core::BatchUpdateCommand::new(&descriptor.name, update_fields);
             let mut traces = Vec::new();
             for key in keys {
-                let record = change_set.changes().get(key).unwrap();
+                let record = checked_changes.get(key).unwrap();
                 let mut db_record = Record::new();
                 db_record.insert("id".to_owned(), key.id.clone());
                 for (field, value) in record {
+                    if field == "id" {
+                        continue;
+                    }
                     db_record.insert(field.clone(), value.clone());
                 }
                 crate::data_service::helpers::increment_version(
@@ -1418,7 +1468,14 @@ where
                     root.get_original_version(key),
                 );
                 crate::data_service::helpers::ensure_timestamps(&mut db_record, descriptor, false);
-                // DEBUG PRINT
+                crate::mark_record_status(&mut db_record, crate::CheckObjectStatus::Update);
+                let check_result = self
+                    .data_service
+                    .metadata
+                    .context
+                    .check_and_fix_record(&signature.0, &mut db_record);
+                crate::clear_record_status(&mut db_record);
+                check_result.map_err(DataServiceError::Runtime)?;
                 cmd.batch_values.push(db_record);
                 cmd.batch_ids.push(key.id.clone());
                 cmd.batch_expected_versions

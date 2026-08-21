@@ -33,8 +33,16 @@ pub struct ContextRootError {
 impl std::fmt::Display for ContextRootError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.actual_root {
-            None => write!(formatter, "active root {} is missing from UserContext", self.expected_entity_type),
-            Some(actual) => write!(formatter, "active root type is {}, expected {}", actual.entity_type, self.expected_entity_type),
+            None => write!(
+                formatter,
+                "active root {} is missing from UserContext",
+                self.expected_entity_type
+            ),
+            Some(actual) => write!(
+                formatter,
+                "active root type is {}, expected {}",
+                actual.entity_type, self.expected_entity_type
+            ),
         }
     }
 }
@@ -414,13 +422,19 @@ impl UserContext {
 
     pub fn with_active_root(mut self, entity_type: impl Into<String>, id: u64) -> Self {
         let entity_type = entity_type.into();
-        assert!(!entity_type.trim().is_empty(), "active root entity type is required");
+        assert!(
+            !entity_type.trim().is_empty(),
+            "active root entity type is required"
+        );
         assert!(id > 0, "active root id must be positive");
         self.active_root = Some(ContextEntityRef { entity_type, id });
         self
     }
 
-    pub fn require_active_root(&self, expected_entity_type: &str) -> Result<&ContextEntityRef, ContextRootError> {
+    pub fn require_active_root(
+        &self,
+        expected_entity_type: &str,
+    ) -> Result<&ContextEntityRef, ContextRootError> {
         match &self.active_root {
             Some(root) if root.entity_type == expected_entity_type => Ok(root),
             actual_root => Err(ContextRootError {

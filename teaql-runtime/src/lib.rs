@@ -21,10 +21,10 @@ mod telemetry;
 mod telemetry_opentelemetry;
 
 pub use context::{
-    ContinuousPageCursor, ContinuousPageCursorStore, DataStore, InMemoryContinuousPageCursorStore,
-    InMemoryDataStore, InfoLogEntry, LogPayload, RemoteLockProvider, SchemaProvider, SqlLogEntry,
-    ContextEntityRef, ContextRootError, SqlLogOperation, SqlLogOptions, UnifiedLogBuffer,
-    UnifiedLogEntry, UserContext,
+    ContextEntityRef, ContextRootError, ContinuousPageCursor, ContinuousPageCursorStore, DataStore,
+    InMemoryContinuousPageCursorStore, InMemoryDataStore, InfoLogEntry, LogPayload,
+    RemoteLockProvider, SchemaProvider, SqlLogEntry, SqlLogOperation, SqlLogOptions,
+    UnifiedLogBuffer, UnifiedLogEntry, UserContext,
 };
 pub use data_service::{
     AggregationCacheBackend, EntityDataService, GraphTransactionBoundary, InMemoryAggregationCache,

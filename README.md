@@ -55,7 +55,7 @@ The Rust rewrite keeps the scope deliberately narrow:
 - compatibility with every Java implementation detail is not a goal, but the
   high-level TeaQL programming model is being carried over where it is useful
 
-Current published release: `4.2.15`.
+Current published release: `4.2.16`.
 
 ## Cloud Integration
 
