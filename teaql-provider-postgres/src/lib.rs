@@ -248,7 +248,8 @@ impl teaql_sql::StreamingSqlTransport for PgMutationExecutor {
             let mut args = PgArgs { values: Vec::new() }; for value in &query.params { bind_pg(&mut args, value)?; }
             let client = pool.get().await.map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
             let params = args.as_refs();
-            let rows = client.query_raw(&query.sql, params).await?;
+            let statement = client.prepare_cached(&query.sql).await?;
+            let rows = client.query_raw(&statement, params).await?;
             futures_util::pin_mut!(rows);
             let mut chunk = Vec::with_capacity(chunk_size); let mut index = 0;
             while let Some(row) = rows.try_next().await? { chunk.push(decode_pg_row(&row)?); if chunk.len()==chunk_size { yield teaql_data_service::StreamChunk { rows: std::mem::take(&mut chunk), chunk_index:index, is_last:false }; index+=1; } }
@@ -361,7 +362,8 @@ impl PgMutationExecutor {
             .get()
             .await
             .map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
-        let result = client.execute(&query.sql, &args.as_refs()).await?;
+        let statement = client.prepare_cached(&query.sql).await?;
+        let result = client.execute(&statement, &args.as_refs()).await?;
         Ok(result)
     }
 
@@ -378,7 +380,8 @@ impl PgMutationExecutor {
             .get()
             .await
             .map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
-        let rows = client.query(&query.sql, &args.as_refs()).await?;
+        let statement = client.prepare_cached(&query.sql).await?;
+        let rows = client.query(&statement, &args.as_refs()).await?;
         rows.iter().map(decode_pg_row).collect()
     }
 
