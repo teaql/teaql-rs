@@ -380,6 +380,12 @@ async fn ensure_initial_graphs_mysql(
         let query = compile_initial_graph_insert(dialect, entity, graph)?;
         executor.execute(&query).await?;
     }
+    let generator = MysqlIdSpaceGenerator::new(executor.pool.clone());
+    for graph in context.initial_graphs().iter().chain(context.root_graphs()) {
+        if let Some(id) = graph.values.get("id").and_then(Value::try_u64) {
+            generator.ensure_floor(&graph.entity, id).await?;
+        }
+    }
     Ok(())
 }
 
@@ -558,6 +564,65 @@ mod streaming_tests {
     }
 
     #[tokio::test]
+    async fn boolean_roundtrips_real_mysql_when_configured() {
+        let Ok(url) = std::env::var("TEAQL_TEST_MYSQL_URL") else {
+            return;
+        };
+        let executor = MysqlMutationExecutor::new(mysql_async::Pool::new(url.as_str()));
+        executor
+            .execute_sql(&CompiledQuery {
+                sql: "DROP TABLE IF EXISTS teaql_boolean_runtime_fixture".to_owned(),
+                params: vec![],
+                comment: None,
+            })
+            .await
+            .unwrap();
+        executor
+            .execute_sql(&CompiledQuery {
+                sql: "CREATE TABLE teaql_boolean_runtime_fixture(id BIGINT, required_flag BOOLEAN NOT NULL, optional_flag BOOLEAN)".to_owned(),
+                params: vec![],
+                comment: None,
+            })
+            .await
+            .unwrap();
+        for (id, required_flag, optional_flag) in [
+            (1_i64, Value::Bool(false), Value::Bool(true)),
+            (2_i64, Value::Bool(true), Value::Bool(false)),
+            (3_i64, Value::Bool(true), Value::Null),
+        ] {
+            executor
+                .execute_sql(&CompiledQuery {
+                    sql: "INSERT INTO teaql_boolean_runtime_fixture VALUES (?, ?, ?)".to_owned(),
+                    params: vec![Value::I64(id), required_flag, optional_flag],
+                    comment: None,
+                })
+                .await
+                .unwrap();
+        }
+        let rows = executor
+            .fetch_all_sql(&CompiledQuery {
+                sql: "SELECT required_flag, optional_flag FROM teaql_boolean_runtime_fixture ORDER BY id".to_owned(),
+                params: vec![],
+                comment: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(rows[0].get("required_flag"), Some(&Value::Bool(false)));
+        assert_eq!(rows[0].get("optional_flag"), Some(&Value::Bool(true)));
+        assert_eq!(rows[1].get("required_flag"), Some(&Value::Bool(true)));
+        assert_eq!(rows[1].get("optional_flag"), Some(&Value::Bool(false)));
+        assert_eq!(rows[2].get("optional_flag"), Some(&Value::Null));
+        executor
+            .execute_sql(&CompiledQuery {
+                sql: "DROP TABLE teaql_boolean_runtime_fixture".to_owned(),
+                params: vec![],
+                comment: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn temporal_debug_sql_matches_real_mysql_when_configured() {
         let Ok(url) = std::env::var("TEAQL_TEST_MYSQL_URL") else {
             return;
@@ -685,15 +750,65 @@ impl MysqlIdSpaceGenerator {
 
     pub async fn next_id(&self, entity: &str) -> Result<u64, MutationExecutorError> {
         self.ensure_table().await?;
-        let sql = format!(
-            "INSERT INTO {} (type_name, current_level) VALUES (?, LAST_INSERT_ID(1)) \
-             ON DUPLICATE KEY UPDATE current_level = LAST_INSERT_ID(current_level + 1)",
-            mysql_quote_ident(&self.table_name)
-        );
+        let table = mysql_quote_ident(&self.table_name);
         let mut conn = self.pool.get_conn().await?;
-        conn.exec_drop(&sql, (entity,)).await?;
-        let id: Option<u64> = conn.query_first("SELECT LAST_INSERT_ID()").await?;
-        Ok(id.unwrap_or(0))
+        let select_sql = format!("SELECT current_level FROM {table} WHERE type_name = ?");
+        let insert_sql = format!("INSERT INTO {table}(type_name, current_level) VALUES (?, 1)");
+        let update_sql = format!("UPDATE {table} SET current_level = ? WHERE type_name = ? AND current_level = ?");
+        for _ in 1..=100 {
+            let current: Option<u64> = conn.exec_first(&select_sql, (entity,)).await?;
+            if let Some(current) = current {
+                let next = current.checked_add(1).ok_or_else(|| MutationExecutorError::Bind(
+                    format!("ID space overflow for {entity}")))?;
+                conn.exec_drop(&update_sql, (next, entity, current)).await?;
+                if conn.affected_rows() == 1 { return Ok(next); }
+            } else {
+                match conn.exec_drop(&insert_sql, (entity,)).await {
+                    Ok(()) if conn.affected_rows() == 1 => return Ok(1),
+                    Ok(()) => return Err(MutationExecutorError::Bind(format!(
+                        "ID space insert for {entity} changed {} rows", conn.affected_rows()))),
+                    Err(error) => {
+                        let winner: Option<u64> = conn.exec_first(&select_sql, (entity,)).await?;
+                        if winner.is_none() { return Err(error.into()); }
+                    }
+                }
+            }
+        }
+        Err(MutationExecutorError::Bind(format!(
+            "Unable to allocate ID for {entity} after 100 optimistic-lock attempts")))
+    }
+
+    pub async fn ensure_floor(&self, entity: &str, floor: u64) -> Result<(), MutationExecutorError> {
+        self.ensure_table().await?;
+        if floor > i64::MAX as u64 {
+            return Err(MutationExecutorError::Bind(format!(
+                "ID space floor {floor} for {entity} exceeds BIGINT")));
+        }
+        let table = mysql_quote_ident(&self.table_name);
+        let mut conn = self.pool.get_conn().await?;
+        let select = format!("SELECT current_level FROM {table} WHERE type_name = ?");
+        let insert = format!("INSERT INTO {table}(type_name, current_level) VALUES (?, ?)");
+        let update = format!("UPDATE {table} SET current_level = ? WHERE type_name = ? AND current_level = ?");
+        for _ in 1..=100 {
+            let current: Option<u64> = conn.exec_first(&select, (entity,)).await?;
+            match current {
+                Some(current) if current >= floor => return Ok(()),
+                Some(current) => {
+                    conn.exec_drop(&update, (floor, entity, current)).await?;
+                    if conn.affected_rows() == 1 { return Ok(()); }
+                }
+                None => match conn.exec_drop(&insert, (entity, floor)).await {
+                    Ok(()) if conn.affected_rows() == 1 => return Ok(()),
+                    Ok(()) => {}
+                    Err(error) => {
+                        let winner: Option<u64> = conn.exec_first(&select, (entity,)).await?;
+                        if winner.is_none() { return Err(error.into()); }
+                    }
+                },
+            }
+        }
+        Err(MutationExecutorError::Bind(format!(
+            "Unable to synchronize ID space floor for {entity} after 100 optimistic-lock attempts")))
     }
 }
 

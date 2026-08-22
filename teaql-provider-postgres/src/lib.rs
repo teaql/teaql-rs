@@ -456,6 +456,12 @@ async fn ensure_initial_graphs_postgres(
         let query = compile_initial_graph_insert(dialect, entity, graph)?;
         executor.execute(&query).await?;
     }
+    let generator = PgIdSpaceGenerator::from_executor(executor.clone());
+    for graph in context.initial_graphs().iter().chain(context.root_graphs()) {
+        if let Some(id) = graph.values.get("id").and_then(Value::try_u64) {
+            generator.ensure_floor(&graph.entity, id).await?;
+        }
+    }
     Ok(())
 }
 
@@ -567,6 +573,73 @@ mod streaming_tests {
             sizes.push(chunk.unwrap().rows.len());
         }
         assert_eq!(sizes, vec![2, 2, 1]);
+    }
+
+    #[tokio::test]
+    async fn boolean_roundtrips_real_postgres_when_configured() {
+        let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let mut config = deadpool_postgres::Config::new();
+        config.url = Some(url);
+        let pool = config
+            .create_pool(
+                Some(deadpool_postgres::Runtime::Tokio1),
+                tokio_postgres::NoTls,
+            )
+            .unwrap();
+        let executor = PgMutationExecutor::new(pool);
+        executor
+            .execute_sql(&CompiledQuery {
+                sql: "DROP TABLE IF EXISTS teaql_boolean_runtime_fixture".to_owned(),
+                params: vec![],
+                comment: None,
+            })
+            .await
+            .unwrap();
+        executor
+            .execute_sql(&CompiledQuery {
+                sql: "CREATE TABLE teaql_boolean_runtime_fixture(id BIGINT, required_flag BOOLEAN NOT NULL, optional_flag BOOLEAN)".to_owned(),
+                params: vec![],
+                comment: None,
+            })
+            .await
+            .unwrap();
+        for (id, required_flag, optional_flag) in [
+            (1_i64, Value::Bool(false), Value::Bool(true)),
+            (2_i64, Value::Bool(true), Value::Bool(false)),
+            (3_i64, Value::Bool(true), Value::Null),
+        ] {
+            executor
+                .execute_sql(&CompiledQuery {
+                    sql: "INSERT INTO teaql_boolean_runtime_fixture VALUES ($1, $2, $3)".to_owned(),
+                    params: vec![Value::I64(id), required_flag, optional_flag],
+                    comment: None,
+                })
+                .await
+                .unwrap();
+        }
+        let rows = executor
+            .fetch_all_sql(&CompiledQuery {
+                sql: "SELECT required_flag, optional_flag FROM teaql_boolean_runtime_fixture ORDER BY id".to_owned(),
+                params: vec![],
+                comment: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(rows[0].get("required_flag"), Some(&Value::Bool(false)));
+        assert_eq!(rows[0].get("optional_flag"), Some(&Value::Bool(true)));
+        assert_eq!(rows[1].get("required_flag"), Some(&Value::Bool(true)));
+        assert_eq!(rows[1].get("optional_flag"), Some(&Value::Bool(false)));
+        assert_eq!(rows[2].get("optional_flag"), Some(&Value::Null));
+        executor
+            .execute_sql(&CompiledQuery {
+                sql: "DROP TABLE teaql_boolean_runtime_fixture".to_owned(),
+                params: vec![],
+                comment: None,
+            })
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -700,45 +773,66 @@ impl PgIdSpaceGenerator {
 
     pub async fn next_id(&self, entity: &str) -> Result<u64, MutationExecutorError> {
         self.ensure_table().await?;
-        let update_sql = format!(
-            "UPDATE {} SET current_level = current_level + 1 WHERE type_name = $1 RETURNING current_level",
-            quote_ident(&self.table_name)
-        );
+        let table = quote_ident(&self.table_name);
         let client = self
             .pool
             .get()
             .await
             .map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
-        let row = client.query_opt(&update_sql, &[&entity]).await?;
-
-        let id = match row {
-            Some(r) => {
-                let level: i64 = r.try_get(0)?;
-                level
-            }
-            None => {
-                let insert_sql = format!(
-                    "INSERT INTO {} (type_name, current_level) VALUES ($1, 1) RETURNING current_level",
-                    quote_ident(&self.table_name)
-                );
-                let insert_res = client.query_one(&insert_sql, &[&entity]).await;
-                match insert_res {
-                    Ok(r) => {
-                        let level: i64 = r.try_get(0)?;
-                        level
-                    }
-                    Err(_) => {
-                        let row = client.query_one(&update_sql, &[&entity]).await?;
-                        let level: i64 = row.try_get(0)?;
-                        level
+        let select_sql = format!("SELECT current_level FROM {table} WHERE type_name = $1");
+        let insert_sql = format!("INSERT INTO {table}(type_name, current_level) VALUES ($1, 1)");
+        let update_sql = format!("UPDATE {table} SET current_level = $1 WHERE type_name = $2 AND current_level = $3");
+        for _ in 1..=100 {
+            let current = client.query_opt(&select_sql, &[&entity]).await?
+                .map(|row| row.try_get::<_, i64>(0)).transpose()?;
+            if let Some(current) = current {
+                let next = current.checked_add(1).ok_or_else(|| MutationExecutorError::Bind(
+                    format!("ID space overflow for {entity}")))?;
+                if client.execute(&update_sql, &[&next, &entity, &current]).await? == 1 {
+                    return u64::try_from(next).map_err(|_| MutationExecutorError::Bind(
+                        format!("generated id {next} cannot be represented as u64")));
+                }
+            } else {
+                match client.execute(&insert_sql, &[&entity]).await {
+                    Ok(1) => return Ok(1),
+                    Ok(changed) => return Err(MutationExecutorError::Bind(
+                        format!("ID space insert for {entity} changed {changed} rows"))),
+                    Err(error) => {
+                        if client.query_opt(&select_sql, &[&entity]).await?.is_none() {
+                            return Err(error.into());
+                        }
                     }
                 }
             }
-        };
+        }
+        Err(MutationExecutorError::Bind(format!(
+            "Unable to allocate ID for {entity} after 100 optimistic-lock attempts")))
+    }
 
-        u64::try_from(id).map_err(|_| {
-            MutationExecutorError::Bind(format!("generated id {id} cannot be represented as u64"))
-        })
+    pub async fn ensure_floor(&self, entity: &str, floor: u64) -> Result<(), MutationExecutorError> {
+        self.ensure_table().await?;
+        let floor = i64::try_from(floor).map_err(|_| MutationExecutorError::Bind(
+            format!("ID space floor {floor} for {entity} exceeds BIGINT")))?;
+        let table = quote_ident(&self.table_name);
+        let client = self.pool.get().await.map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
+        let select = format!("SELECT current_level FROM {table} WHERE type_name = $1");
+        let insert = format!("INSERT INTO {table}(type_name, current_level) VALUES ($1, $2)");
+        let update = format!("UPDATE {table} SET current_level = $1 WHERE type_name = $2 AND current_level = $3");
+        for _ in 1..=100 {
+            let current = client.query_opt(&select, &[&entity]).await?
+                .map(|row| row.try_get::<_, i64>(0)).transpose()?;
+            match current {
+                Some(current) if current >= floor => return Ok(()),
+                Some(current) => if client.execute(&update, &[&floor, &entity, &current]).await? == 1 { return Ok(()); },
+                None => match client.execute(&insert, &[&entity, &floor]).await {
+                    Ok(1) => return Ok(()),
+                    Ok(_) => {}
+                    Err(error) => if client.query_opt(&select, &[&entity]).await?.is_none() { return Err(error.into()); },
+                },
+            }
+        }
+        Err(MutationExecutorError::Bind(format!(
+            "Unable to synchronize ID space floor for {entity} after 100 optimistic-lock attempts")))
     }
 }
 

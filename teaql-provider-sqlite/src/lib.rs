@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use rusqlite::types::{Value as SqliteValue, ValueRef};
-use rusqlite::{Connection, Row, params_from_iter};
+use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use rust_decimal::Decimal;
 use teaql_core::{
     DataType, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, Record, SelectQuery,
@@ -499,6 +499,7 @@ pub fn ensure_sqlite_schema_for(context: &UserContext) -> Result<(), MutationExe
     }
 
     // Constant graphs are reconciled so model changes are propagated.
+    let id_generator = SqliteIdSpaceGenerator::from_executor(executor.clone());
     let mut seed_counts: BTreeMap<String, (usize, usize)> = BTreeMap::new(); // (inserted, updated)
     for graph in context.initial_graphs() {
         let entity = context.entity(&graph.entity).ok_or_else(|| {
@@ -510,11 +511,17 @@ pub fn ensure_sqlite_schema_for(context: &UserContext) -> Result<(), MutationExe
                 executor.execute(&query)?;
             }
             counts.1 += 1;
+            if let Some(id) = graph.values.get("id").and_then(Value::try_u64) {
+                id_generator.ensure_floor(&graph.entity, id)?;
+            }
             continue;
         }
         let query = compile_initial_graph_insert(dialect, entity, graph)?;
         executor.execute(&query)?;
         counts.0 += 1; // inserted
+        if let Some(id) = graph.values.get("id").and_then(Value::try_u64) {
+            id_generator.ensure_floor(&graph.entity, id)?;
+        }
     }
 
     // Roots are create-if-absent. Once present, application-owned values win.
@@ -523,11 +530,17 @@ pub fn ensure_sqlite_schema_for(context: &UserContext) -> Result<(), MutationExe
             MutationExecutorError::Bind(format!("missing entity: {}", graph.entity))
         })?;
         if initial_graph_exists_sqlite(executor, dialect, entity, graph)? {
+            if let Some(id) = graph.values.get("id").and_then(Value::try_u64) {
+                id_generator.ensure_floor(&graph.entity, id)?;
+            }
             continue;
         }
         let query = compile_initial_graph_insert(dialect, entity, graph)?;
         executor.execute(&query)?;
         seed_counts.entry(graph.entity.clone()).or_insert((0, 0)).0 += 1;
+        if let Some(id) = graph.values.get("id").and_then(Value::try_u64) {
+            id_generator.ensure_floor(&graph.entity, id)?;
+        }
     }
 
     // Fire DataSeeded events per entity type
@@ -610,20 +623,87 @@ impl SqliteIdSpaceGenerator {
 
     pub fn next_id(&self, entity: &str) -> Result<u64, MutationExecutorError> {
         self.ensure_table()?;
-        let sql = format!(
-            "INSERT INTO {} (type_name, current_level) VALUES (?, 1) \
-             ON CONFLICT (type_name) DO UPDATE \
-             SET current_level = current_level + 1 \
-             RETURNING current_level",
-            quote_ident(&self.table_name)
+        let table = quote_ident(&self.table_name);
+        let select_sql = format!("SELECT current_level FROM {table} WHERE type_name = ?");
+        let insert_sql = format!(
+            "INSERT INTO {table} (type_name, current_level) VALUES (?, 1)"
         );
-        let id: i64 = self
-            .executor
-            .lock()?
-            .query_row(&sql, [entity], |row| row.get(0))?;
-        u64::try_from(id).map_err(|_| {
-            MutationExecutorError::Bind(format!("generated id {id} cannot be represented as u64"))
-        })
+        let update_sql = format!(
+            "UPDATE {table} SET current_level = ? WHERE type_name = ? AND current_level = ?"
+        );
+        for attempt in 1..=100 {
+            let connection = self.executor.lock()?;
+            let current = connection
+                .query_row(&select_sql, [entity], |row| row.get::<_, i64>(0))
+                .optional()?;
+            if let Some(current) = current {
+                let next = current.checked_add(1).ok_or_else(|| {
+                    MutationExecutorError::Bind(format!(
+                        "ID space overflow for {entity} on optimistic-lock attempt {attempt}"
+                    ))
+                })?;
+                if connection.execute(&update_sql, params![next, entity, current])? == 1 {
+                    return u64::try_from(next).map_err(|_| {
+                        MutationExecutorError::Bind(format!(
+                            "generated id {next} cannot be represented as u64"
+                        ))
+                    });
+                }
+            } else {
+                match connection.execute(&insert_sql, params![entity]) {
+                    Ok(1) => return Ok(1),
+                    Ok(changed) => {
+                        return Err(MutationExecutorError::Bind(format!(
+                            "ID space insert for {entity} changed {changed} rows"
+                        )))
+                    }
+                    Err(error) if error.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+        Err(MutationExecutorError::Bind(format!(
+            "Unable to allocate ID for {entity} after 100 optimistic-lock attempts"
+        )))
+    }
+
+    pub fn ensure_floor(&self, entity: &str, floor: u64) -> Result<(), MutationExecutorError> {
+        self.ensure_table()?;
+        let floor = i64::try_from(floor).map_err(|_| {
+            MutationExecutorError::Bind(format!("ID space floor {floor} for {entity} exceeds i64"))
+        })?;
+        let table = quote_ident(&self.table_name);
+        for _ in 1..=100 {
+            let connection = self.executor.lock()?;
+            let current = connection
+                .query_row(
+                    &format!("SELECT current_level FROM {table} WHERE type_name = ?"),
+                    [entity],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?;
+            match current {
+                Some(current) if current >= floor => return Ok(()),
+                Some(current) => {
+                    if connection.execute(
+                        &format!("UPDATE {table} SET current_level = ? WHERE type_name = ? AND current_level = ?"),
+                        params![floor, entity, current],
+                    )? == 1 { return Ok(()); }
+                }
+                None => match connection.execute(
+                    &format!("INSERT INTO {table}(type_name, current_level) VALUES (?, ?)"),
+                    params![entity, floor],
+                ) {
+                    Ok(1) => return Ok(()),
+                    Ok(_) => {}
+                    Err(error) if error.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation) => {}
+                    Err(error) => return Err(error.into()),
+                },
+            }
+        }
+        Err(MutationExecutorError::Bind(format!(
+            "Unable to synchronize ID space floor for {entity} after 100 optimistic-lock attempts"
+        )))
     }
 }
 
@@ -1103,7 +1183,7 @@ mod tests {
             .with_metadata(InMemoryMetadataStore::new().with_entity(entity.clone()));
         context.set_initial_graphs(vec![
             GraphNode::new("Order")
-                .value("id", 1_u64)
+                .value("id", 1001_u64)
                 .value("version", 1_i64)
                 .value("name", "red"),
         ]);
@@ -1112,7 +1192,7 @@ mod tests {
 
         context.set_initial_graphs(vec![
             GraphNode::new("Order")
-                .value("id", 1_u64)
+                .value("id", 1001_u64)
                 .value("version", 1_i64)
                 .value("name", "crimson"),
         ]);
@@ -1121,7 +1201,7 @@ mod tests {
         let select = SqliteDialect
             .compile_select(
                 &entity,
-                &SelectQuery::new("Order").filter(Expr::eq("id", 1_u64)),
+                &SelectQuery::new("Order").filter(Expr::eq("id", 1001_u64)),
             )
             .unwrap();
         let rows = executor.fetch_all(&select).unwrap();
@@ -1129,6 +1209,8 @@ mod tests {
             rows[0].get("name"),
             Some(&Value::Text("crimson".to_owned()))
         );
+        let generator = SqliteIdSpaceGenerator::from_executor(executor);
+        assert_eq!(generator.next_id("Order").unwrap(), 1002);
     }
 
     #[test]
@@ -1356,6 +1438,39 @@ mod tests {
         let generator = SqliteIdSpaceGenerator::from_executor(executor);
         assert_eq!(generator.next_id("Order").unwrap(), 1);
         assert_eq!(generator.next_id("Order").unwrap(), 2);
+    }
+
+    #[test]
+    fn sqlite_id_space_generator_is_safe_across_connections() {
+        let path = std::env::temp_dir().join(format!(
+            "teaql-id-space-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut workers = Vec::new();
+        for _ in 0..4 {
+            let path = path.clone();
+            workers.push(std::thread::spawn(move || {
+                let connection = Connection::open(path).unwrap();
+                connection
+                    .busy_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+                let generator = SqliteIdSpaceGenerator::new(connection);
+                (0..25)
+                    .map(|_| generator.next_id("Order").unwrap())
+                    .collect::<Vec<_>>()
+            }));
+        }
+        let mut ids = workers
+            .into_iter()
+            .flat_map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        assert_eq!(ids, (1..=100).collect::<Vec<_>>());
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
