@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use deadpool_postgres::Pool;
 use rust_decimal::Decimal;
 use std::sync::Arc;
@@ -664,9 +664,9 @@ mod streaming_tests {
             })
             .await
             .unwrap();
-        executor.execute_sql(&CompiledQuery { sql: "CREATE TABLE teaql_temporal_runtime_fixture(id BIGINT, d DATE, t TIMESTAMPTZ(3))".to_owned(), params: vec![], comment: None }).await.unwrap();
+        executor.execute_sql(&CompiledQuery { sql: "CREATE TABLE teaql_temporal_runtime_fixture(id BIGINT, d DATE, t TIMESTAMPTZ(3), t_local TIMESTAMP(3))".to_owned(), params: vec![], comment: None }).await.unwrap();
         let prepared = CompiledQuery {
-            sql: "INSERT INTO teaql_temporal_runtime_fixture VALUES ($1, $2, $3)".to_owned(),
+            sql: "INSERT INTO teaql_temporal_runtime_fixture VALUES ($1, $2, $3, TIMESTAMP '1960-01-02 03:04:05.678')".to_owned(),
             params: vec![
                 Value::I64(1),
                 Value::Date("2024-02-29".parse().unwrap()),
@@ -687,7 +687,7 @@ mod streaming_tests {
             .unwrap();
         let rows = executor
             .fetch_all_sql(&CompiledQuery {
-                sql: "SELECT d, t FROM teaql_temporal_runtime_fixture ORDER BY id".to_owned(),
+                sql: "SELECT d, t, t_local FROM teaql_temporal_runtime_fixture ORDER BY id".to_owned(),
                 params: vec![],
                 comment: None,
             })
@@ -925,6 +925,30 @@ impl tokio_postgres::types::ToSql for PgNull {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PgTimestamp(DateTime<Utc>);
+
+impl tokio_postgres::types::ToSql for PgTimestamp {
+    fn to_sql(
+        &self,
+        ty: &tokio_postgres::types::Type,
+        out: &mut bytes::BytesMut,
+    ) -> Result<tokio_postgres::types::IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        if *ty == tokio_postgres::types::Type::TIMESTAMP {
+            self.0.naive_utc().to_sql(ty, out)
+        } else {
+            self.0.to_sql(ty, out)
+        }
+    }
+
+    fn accepts(ty: &tokio_postgres::types::Type) -> bool {
+        *ty == tokio_postgres::types::Type::TIMESTAMP
+            || *ty == tokio_postgres::types::Type::TIMESTAMPTZ
+    }
+
+    tokio_postgres::types::to_sql_checked!();
+}
+
 struct PgArgs {
     values: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>>,
 }
@@ -962,7 +986,7 @@ fn bind_pg(args: &mut PgArgs, value: &Value) -> Result<(), MutationExecutorError
             args.add(j_val);
         }
         Value::Date(v) => args.add(*v),
-        Value::Timestamp(v) => args.add(v.to_datetime()),
+        Value::Timestamp(v) => args.add(PgTimestamp(v.to_datetime())),
         Value::Object(_) => return Err(MutationExecutorError::UnsupportedValue("object")),
         Value::List(values) => bind_pg_list(args, values)?,
         Value::TypedNull(dt) => match dt {
@@ -973,7 +997,7 @@ fn bind_pg(args: &mut PgArgs, value: &Value) -> Result<(), MutationExecutorError
             DataType::Text | DataType::LargeText => args.add(Option::<String>::None),
             DataType::Json => args.add(Option::<serde_json::Value>::None),
             DataType::Date => args.add(Option::<NaiveDate>::None),
-            DataType::Timestamp => args.add(Option::<DateTime<Utc>>::None),
+            DataType::Timestamp => args.add(PgNull),
         },
     }
     Ok(())
@@ -1149,7 +1173,16 @@ fn decode_pg_row(row: &tokio_postgres::Row) -> Result<Record, MutationExecutorEr
                     None => Value::Null,
                 }
             }
-            "TIMESTAMP" | "TIMESTAMPTZ" => {
+            "TIMESTAMP" => {
+                let v: Option<NaiveDateTime> = row.try_get(index)?;
+                match v {
+                    Some(v) => Value::Timestamp(teaql_core::time::Timestamp(
+                        v.and_utc().timestamp_millis(),
+                    )),
+                    None => Value::Null,
+                }
+            }
+            "TIMESTAMPTZ" => {
                 let v: Option<DateTime<Utc>> = row.try_get(index)?;
                 match v {
                     Some(v) => Value::Timestamp(teaql_core::time::Timestamp(v.timestamp_millis())),
