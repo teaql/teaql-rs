@@ -124,7 +124,7 @@ impl EntityGraphBuilder {
     {
         self.relation_lists.insert(
             RelationListKey {
-                owner_entity: owner_entity.into(),
+                owner_entity: crate::canonical_id_space_entity(&owner_entity.into()),
                 owner_id,
                 relation: relation.into(),
             },
@@ -143,7 +143,7 @@ impl EntityGraphBuilder {
     {
         self.relation_lists.insert(
             RelationListKey {
-                owner_entity: owner_entity.into(),
+                owner_entity: crate::canonical_id_space_entity(&owner_entity.into()),
                 owner_id,
                 relation: relation.into(),
             },
@@ -409,7 +409,7 @@ impl EntityRoot {
             .get()?
             .relation_lists
             .get(&RelationListKey {
-                owner_entity: owner_entity.to_owned(),
+                owner_entity: crate::canonical_id_space_entity(owner_entity),
                 owner_id,
                 relation: relation.to_owned(),
             })?
@@ -429,7 +429,7 @@ impl EntityRoot {
             .get()?
             .relation_lists
             .get(&RelationListKey {
-                owner_entity: owner_entity.to_owned(),
+                owner_entity: crate::canonical_id_space_entity(owner_entity),
                 owner_id,
                 relation: relation.to_owned(),
             })?
@@ -439,7 +439,7 @@ impl EntityRoot {
     pub fn has_relation_view(&self, owner_entity: &str, owner_id: u64, relation: &str) -> bool {
         self.graph.get().is_some_and(|graph| {
             graph.relation_lists.contains_key(&RelationListKey {
-                owner_entity: owner_entity.to_owned(),
+                owner_entity: crate::canonical_id_space_entity(owner_entity),
                 owner_id,
                 relation: relation.to_owned(),
             })
