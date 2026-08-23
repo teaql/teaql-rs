@@ -354,14 +354,18 @@ impl WebResponse {
     where
         E: Entity + Clone,
     {
-        Self::from_records([entity.clone().into_record()])
+        Self::from_records([entity.clone().into_values().into()])
     }
 
     pub fn from_entities<E>(entities: impl IntoIterator<Item = E>) -> Self
     where
         E: Entity,
     {
-        Self::from_records(entities.into_iter().map(Entity::into_record))
+        Self::from_records(
+            entities
+                .into_iter()
+                .map(|entity| entity.into_values().into()),
+        )
     }
 
     pub fn from_smart_list<E>(mut smart_list: SmartList<E>) -> Self

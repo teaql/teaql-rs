@@ -327,11 +327,10 @@ pub trait TypedChecker<T>: Send + Sync {
 /// Adapter that turns a [`TypedChecker<T>`] into a [`Checker`].
 ///
 /// On [`Checker::check_and_fix`], it:
-/// 1. Extracts [`CheckObjectStatus`] from the `Record`.
-/// 2. Deserializes the `Record` into `T` via [`Entity::from_record`].
+/// 1. Extracts [`CheckObjectStatus`] from the entity values.
+/// 2. Materializes `T` from a compact row.
 /// 3. Delegates to [`TypedChecker::check_and_fix_typed`].
-/// 4. Serializes the (possibly mutated) `T` back into the `Record`
-///    via [`Entity::into_record`].
+/// 4. Serializes the (possibly mutated) `T` back into entity values.
 pub struct TypedEntityChecker<T, C> {
     checker: C,
     entity_name: String,
@@ -371,14 +370,14 @@ where
     ) {
         let status = CheckObjectStatus::from_values(values);
         // Take ownership of the record (replace with empty) so we can
-        // call T::from_record which consumes the Record.
+        // Materialize a typed entity from the checker value set.
         let owned_record = std::mem::take(values).into();
-        match T::from_record(owned_record) {
+        match T::from_compact_row(teaql_core::CompactRow::from_record(owned_record)) {
             Ok(mut entity) => {
                 self.checker
                     .check_and_fix_typed(context, &mut entity, status, location, results);
                 // Write mutated entity back into the original record slot.
-                *values = entity.into_record().into();
+                *values = entity.into_values().into();
             }
             Err(_e) => {
                 // If deserialization fails, re-build an empty record so

@@ -61,7 +61,7 @@ impl InMemoryEntityGraphDecoderRegistry {
         where
             T: Entity + IdentifiableEntity + Send + Sync + 'static,
         {
-            let mut entity = T::from_record(record)?;
+            let mut entity = T::from_compact_row(CompactRow::from_record(record))?;
             entity.on_loaded(root as &dyn std::any::Any);
             let id = entity.id_value().try_u64().ok_or_else(|| {
                 EntityError::new(T::ENTITY_NAME, "identity graph requires a u64 entity id")
@@ -84,7 +84,7 @@ impl InMemoryEntityGraphDecoderRegistry {
             let entities = records
                 .into_iter()
                 .map(|record| {
-                    let mut entity = T::from_record(record)?;
+                    let mut entity = T::from_compact_row(CompactRow::from_record(record))?;
                     entity.on_loaded(root as &dyn std::any::Any);
                     Ok(entity)
                 })
@@ -113,7 +113,7 @@ impl InMemoryEntityGraphDecoderRegistry {
                 .into_iter()
                 .next()
                 .map(|record| {
-                    let mut entity = T::from_record(record)?;
+                    let mut entity = T::from_compact_row(CompactRow::from_record(record))?;
                     entity.on_loaded(root as &dyn std::any::Any);
                     Ok(entity)
                 })

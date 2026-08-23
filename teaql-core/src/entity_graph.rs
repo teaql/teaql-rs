@@ -1,4 +1,4 @@
-use crate::{Entity, Record, TeaqlEntity};
+use crate::{Entity, MutationValues, TeaqlEntity};
 
 /// Operation hint for an entity graph node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,12 +11,12 @@ pub enum EntityGraphOperation {
 
 /// A single node in an annotated entity graph.
 ///
-/// Carries the entity's record data, an optional business-intent comment,
+/// Carries the entity's mutation values, an optional business-intent comment,
 /// and child nodes keyed by relation name.
 #[derive(Debug, Clone)]
 pub struct EntityGraphNode {
     pub entity_type: String,
-    pub record: Record,
+    pub values: MutationValues,
     pub comment: Option<String>,
     pub operation: EntityGraphOperation,
     pub children: Vec<(String, EntityGraphNode)>,
@@ -82,7 +82,7 @@ impl EntityGraph {
         EntityGraphBuilder {
             node: EntityGraphNode {
                 entity_type: T::entity_descriptor().name.clone(),
-                record: entity.into_record(),
+                values: entity.into_values(),
                 comment: None,
                 operation: EntityGraphOperation::Save,
                 children: Vec::new(),
@@ -100,16 +100,18 @@ mod tests {
     // A dummy entity for testing
     #[derive(Debug, Clone)]
     struct DummyEntity {
-        record: Record,
+        values: MutationValues,
     }
 
     impl Entity for DummyEntity {
-        fn into_record(self) -> Record {
-            self.record
+        fn into_values(self) -> MutationValues {
+            self.values
         }
 
-        fn from_record(record: Record) -> Result<Self, EntityError> {
-            Ok(Self { record })
+        fn from_compact_row(row: crate::CompactRow) -> Result<Self, EntityError> {
+            Ok(Self {
+                values: row.into_record().into(),
+            })
         }
     }
 
@@ -126,11 +128,11 @@ mod tests {
     fn test_entity_graph_builder_annotations_and_child_operations() {
         let mut rec1 = BTreeMap::new();
         rec1.insert("id".to_string(), Value::I64(1));
-        let entity1 = DummyEntity { record: rec1 };
+        let entity1 = DummyEntity { values: rec1.into() };
 
         let mut rec2 = BTreeMap::new();
         rec2.insert("id".to_string(), Value::I64(2));
-        let entity2 = DummyEntity { record: rec2 };
+        let entity2 = DummyEntity { values: rec2.into() };
 
         let graph = EntityGraph::new(entity1)
             .comment("Parent creation")

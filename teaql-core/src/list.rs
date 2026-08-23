@@ -34,7 +34,7 @@ impl<T> SmartList<T> {
             {
                 has_changes = true;
             }
-            items.push(Value::object(Entity::into_record(entity)));
+            items.push(Value::object(Entity::into_values(entity).into()));
         }
 
         (self.is_loaded || has_changes).then_some(Value::List(items))
@@ -255,12 +255,12 @@ impl<T> SmartList<T> {
         }
     }
 
-    pub fn into_records(self) -> SmartList<Record>
+    pub fn into_values(self) -> SmartList<crate::MutationValues>
     where
         T: Entity,
     {
         SmartList {
-            data: self.data.into_iter().map(Entity::into_record).collect(),
+            data: self.data.into_iter().map(Entity::into_values).collect(),
             total_count: self.total_count,
             aggregations: self.aggregations,
             summary: self.summary,

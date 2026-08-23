@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{Decimal, EntityDescriptor, Record, Value, record_to_json_value};
+use crate::{
+    CompactRow, Decimal, EntityDescriptor, EntitySnapshot, MutationValues, Record, Value,
+    record_to_json_value,
+};
 
 pub trait TeaqlEntity {
     const ENTITY_NAME: &'static str;
@@ -36,11 +39,8 @@ impl std::fmt::Display for EntityError {
 impl std::error::Error for EntityError {}
 
 pub trait Entity: TeaqlEntity + Sized {
-    fn from_record(record: Record) -> Result<Self, EntityError>;
-    fn from_compact_row(row: crate::CompactRow) -> Result<Self, EntityError> {
-        Self::from_record(row.into_record())
-    }
-    fn into_record(self) -> Record;
+    fn from_compact_row(row: CompactRow) -> Result<Self, EntityError>;
+    fn into_values(self) -> MutationValues;
 
     /// Returns the set of field names that have been modified since the entity was loaded.
     /// Returns `None` if dirty tracking is not available (backwards compatible default).
@@ -77,7 +77,7 @@ pub trait Entity: TeaqlEntity + Sized {
     }
 
     /// Get the original snapshot values when this entity was loaded from the repository, if available.
-    fn original_values(&self) -> Option<::std::collections::BTreeMap<String, Value>> {
+    fn original_values(&self) -> Option<EntitySnapshot> {
         None
     }
 
@@ -87,7 +87,8 @@ pub trait Entity: TeaqlEntity + Sized {
     fn on_loaded(&mut self, context: &dyn std::any::Any) {}
 
     fn into_json(self) -> serde_json::Value {
-        record_to_json_value(&self.into_record())
+        let values: Record = self.into_values().into();
+        record_to_json_value(&values)
     }
 }
 

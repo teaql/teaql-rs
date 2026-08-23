@@ -134,7 +134,7 @@ pub fn graph_node_from_entity<T: Entity>(
     let original_values = entity.original_values();
     let is_deleted = entity.is_marked_as_delete();
     let comment = entity.get_comment();
-    let mut node = graph_node_from_record(context, &descriptor.name, entity.into_record())?;
+    let mut node = graph_node_from_record(context, &descriptor.name, entity.into_values().into())?;
     node.dirty_fields = dirty_fields;
     node.original_values = original_values.map(Into::into);
     if is_deleted {
@@ -268,7 +268,8 @@ where
                     ))
                 })?;
             let saved = saver.save_graph_dyn(context, node).await?;
-            T::from_record(saved.values.into()).map_err(|e| RuntimeError::Graph(e.to_string()))
+            T::from_compact_row(teaql_core::CompactRow::from_record(saved.values.into()))
+                .map_err(|e| RuntimeError::Graph(e.to_string()))
         })
     }
 }
@@ -305,11 +306,12 @@ where
             || !root.new_keys().is_empty();
         if has_ledger_changes {
             let saved = saver.save_ledger_dyn(context, node, root).await?;
-            return T::from_record(saved.values.into())
+            return T::from_compact_row(teaql_core::CompactRow::from_record(saved.values.into()))
                 .map_err(|e| RuntimeError::Graph(e.to_string()));
         }
     }
 
     let saved = saver.save_graph_dyn(context, node).await?;
-    T::from_record(saved.values.into()).map_err(|e| RuntimeError::Graph(e.to_string()))
+    T::from_compact_row(teaql_core::CompactRow::from_record(saved.values.into()))
+        .map_err(|e| RuntimeError::Graph(e.to_string()))
 }

@@ -195,7 +195,7 @@ pub fn from_relation_value_tokens(
         return quote! {
             match record.get(#field_name) {
                 Some(::teaql_core::Value::Object(record)) => {
-                    Some(<#inner as ::teaql_core::Entity>::from_record(record.clone())?)
+                    Some(<#inner as ::teaql_core::Entity>::from_compact_row(::teaql_core::CompactRow::from_record(record.clone()))?)
                 }
                 Some(::teaql_core::Value::Null) | None => None,
                 other => None,
@@ -210,7 +210,7 @@ pub fn from_relation_value_tokens(
                     .iter()
                     .map(|value| match value {
                         ::teaql_core::Value::Object(record) => {
-                            <#inner as ::teaql_core::Entity>::from_record(record.clone())
+                            <#inner as ::teaql_core::Entity>::from_compact_row(::teaql_core::CompactRow::from_record(record.clone()))
                         }
                         other => Err(::teaql_core::EntityError::new(
                             #entity_name,
@@ -232,7 +232,7 @@ pub fn from_relation_value_tokens(
                         .iter()
                         .map(|value| match value {
                             ::teaql_core::Value::Object(record) => {
-                                <#inner as ::teaql_core::Entity>::from_record(record.clone())
+                                <#inner as ::teaql_core::Entity>::from_compact_row(::teaql_core::CompactRow::from_record(record.clone()))
                             }
                             other => Err(::teaql_core::EntityError::new(
                                 #entity_name,
@@ -257,7 +257,7 @@ pub fn into_relation_value_tokens(
     if option_inner_type(ty).is_some() {
         return quote! {
             match #value_expr {
-                Some(entity) => Some(::teaql_core::Value::object(entity.into_record())),
+                Some(entity) => Some(::teaql_core::Value::object(entity.into_values().into())),
                 None => None,
             }
         };
@@ -268,7 +268,7 @@ pub fn into_relation_value_tokens(
             Some(::teaql_core::Value::List(
                 (#value_expr)
                     .into_iter()
-                    .map(|entity| ::teaql_core::Value::object(entity.into_record()))
+                    .map(|entity| ::teaql_core::Value::object(entity.into_values().into()))
                     .collect(),
             ))
         };

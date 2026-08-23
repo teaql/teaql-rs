@@ -119,7 +119,7 @@ where
     {
         self.fetch_all(query)?
             .into_iter()
-            .map(T::from_record)
+            .map(|record| T::from_compact_row(teaql_core::CompactRow::from_record(record)))
             .collect::<Result<Vec<_>, _>>()
             .map(SmartList::from)
             .map_err(DataServiceError::Entity)
@@ -154,7 +154,7 @@ where
     {
         self.fetch_all_with_relation_aggregates(query, relation_aggregates)?
             .into_iter()
-            .map(T::from_record)
+            .map(|record| T::from_compact_row(teaql_core::CompactRow::from_record(record)))
             .collect::<Result<Vec<_>, _>>()
             .map(SmartList::from)
             .map_err(DataServiceError::Entity)

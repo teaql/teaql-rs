@@ -109,24 +109,24 @@ mod tests {
             Some(DataType::Decimal)
         );
 
-        let row = TypedNumberRow::from_record(Record::from([
+        let row = TypedNumberRow::from_compact_row(CompactRow::from_record(Record::from([
             ("id".to_owned(), Value::I64(7)),
             ("signed".to_owned(), Value::I64(2_147_483_647)),
             ("unsigned".to_owned(), Value::U64(4_294_967_295)),
             ("amount".to_owned(), Value::Decimal(Decimal::new(12345, 2))),
-        ]))
+        ])))
         .unwrap();
         assert_eq!(row.id, 7);
         assert_eq!(row.signed, i32::MAX);
         assert_eq!(row.unsigned, u32::MAX);
         assert_eq!(row.amount, Decimal::new(12345, 2));
 
-        let signed_overflow = TypedNumberRow::from_record(Record::from([
+        let signed_overflow = TypedNumberRow::from_compact_row(CompactRow::from_record(Record::from([
             ("id".to_owned(), Value::U64(1)),
             ("signed".to_owned(), Value::I64(i64::from(i32::MAX) + 1)),
             ("unsigned".to_owned(), Value::U64(1)),
             ("amount".to_owned(), Value::Decimal(Decimal::ONE)),
-        ]));
+        ])));
         assert!(
             signed_overflow
                 .unwrap_err()
@@ -134,12 +134,12 @@ mod tests {
                 .contains("out of i32 range")
         );
 
-        let unsigned_negative = TypedNumberRow::from_record(Record::from([
+        let unsigned_negative = TypedNumberRow::from_compact_row(CompactRow::from_record(Record::from([
             ("id".to_owned(), Value::U64(1)),
             ("signed".to_owned(), Value::I64(1)),
             ("unsigned".to_owned(), Value::I64(-1)),
             ("amount".to_owned(), Value::Decimal(Decimal::ONE)),
-        ]));
+        ])));
         assert!(
             unsigned_negative
                 .unwrap_err()
@@ -150,26 +150,26 @@ mod tests {
 
     #[test]
     fn derive_allows_partial_projected_records() {
-        let row = OrderRow::from_record(Record::from([(
+        let row = OrderRow::from_compact_row(CompactRow::from_record(Record::from([(
             "name".to_owned(),
             Value::Text("projected".to_owned()),
-        )]))
+        )])))
         .unwrap();
         assert_eq!(row.id, 0);
         assert_eq!(row.version, 0);
         assert_eq!(row.name, "projected");
 
-        let nulls = OrderRow::from_record(Record::from([
+        let nulls = OrderRow::from_compact_row(CompactRow::from_record(Record::from([
             ("id".to_owned(), Value::Null),
             ("version".to_owned(), Value::Null),
             ("name".to_owned(), Value::Null),
-        ]))
+        ])))
         .unwrap();
         assert_eq!(nulls.id, 0);
         assert_eq!(nulls.version, 0);
         assert_eq!(nulls.name, "");
 
-        match OrderRow::from_record(Record::from([("name".to_owned(), Value::U64(1))])) {
+        match OrderRow::from_compact_row(CompactRow::from_record(Record::from([("name".to_owned(), Value::U64(1))]))) {
             Ok(_) => panic!("wrong field type should fail"),
             Err(err) => assert!(err.message.contains("invalid field name")),
         }
@@ -495,7 +495,7 @@ mod tests {
         assert_eq!(rows.ids(), vec![Value::U64(1), Value::U64(3)]);
         assert_eq!(rows.versions(), vec![2, 4]);
 
-        let records = rows.into_records();
+        let records = rows.into_values();
         assert_eq!(records.len(), 2);
         assert_eq!(records.data[0].get("id"), Some(&Value::U64(1)));
         assert_eq!(records.data[1].get("version"), Some(&Value::I64(4)));
@@ -583,12 +583,12 @@ mod tests {
     }
 
     impl Entity for SafeExpressionEntity {
-        fn from_record(_record: Record) -> Result<Self, EntityError> {
+        fn from_compact_row(_row: CompactRow) -> Result<Self, EntityError> {
             unimplemented!("test helper does not need record mapping")
         }
 
-        fn into_record(self) -> Record {
-            Record::new()
+        fn into_values(self) -> MutationValues {
+            MutationValues::new()
         }
     }
 
@@ -843,7 +843,7 @@ mod tests {
 
     #[test]
     fn dynamic_properties_roundtrip_into_json() {
-        let aggregate = OrderAggregateRow::from_record(Record::from([
+        let aggregate = OrderAggregateRow::from_compact_row(CompactRow::from_record(Record::from([
             (String::from("id"), Value::U64(7)),
             (String::from("lineCount"), Value::I64(3)),
             (String::from("amount"), Value::F64(18.5)),
@@ -851,7 +851,7 @@ mod tests {
                 String::from("detail"),
                 Value::Object(Record::from([(String::from("status"), Value::from("ok"))])),
             ),
-        ]))
+        ])))
         .unwrap();
 
         assert_eq!(aggregate.dynamic.get("lineCount"), Some(&Value::I64(3)));

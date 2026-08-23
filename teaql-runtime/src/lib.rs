@@ -464,7 +464,8 @@ mod tests {
     }
 
     impl Entity for OrderEntity {
-        fn from_record(record: Record) -> Result<Self, EntityError> {
+        fn from_compact_row(row: teaql_core::CompactRow) -> Result<Self, EntityError> {
+            let record = row.into_record();
             let id = match record.get("id") {
                 Some(Value::U64(v)) => *v,
                 Some(Value::I64(v)) if *v >= 0 => *v as u64,
@@ -496,12 +497,12 @@ mod tests {
             Ok(Self { id, version, name })
         }
 
-        fn into_record(self) -> Record {
+        fn into_values(self) -> teaql_core::MutationValues {
             Record::from([
                 (String::from("id"), Value::U64(self.id)),
                 (String::from("version"), Value::I64(self.version)),
                 (String::from("name"), Value::Text(self.name)),
-            ])
+            ]).into()
         }
     }
 

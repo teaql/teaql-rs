@@ -67,7 +67,7 @@ where
             }
             GraphNode {
                 entity: node.entity_type,
-                values: node.record.into(),
+                values: node.values.into(),
                 relations,
                 operation: match node.operation {
                     teaql_core::EntityGraphOperation::Save => crate::GraphOperation::Upsert,
@@ -286,7 +286,8 @@ where
         let original_values = entity.original_values();
         let is_deleted = entity.is_marked_as_delete();
         let comment = entity.get_comment();
-        let mut node = self.graph_node_from_record(&descriptor.name, entity.into_record())?;
+        let mut node =
+            self.graph_node_from_record(&descriptor.name, entity.into_values().into())?;
         node.dirty_fields = dirty_fields;
         node.original_values = original_values.map(Into::into);
         if is_deleted {

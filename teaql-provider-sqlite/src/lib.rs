@@ -1388,27 +1388,27 @@ mod tests {
             (Value::U64(0), false),
             (Value::U64(1), true),
         ] {
-            let decoded = <FeatureFlagRow as teaql_core::Entity>::from_record(feature_flag_record(
-                value,
-                Value::Null,
-            ))
+            let decoded = <FeatureFlagRow as teaql_core::Entity>::from_compact_row(
+                teaql_core::CompactRow::from_record(feature_flag_record(value, Value::Null)),
+            )
             .unwrap();
             assert_eq!(decoded.enabled, expected);
             assert_eq!(decoded.optional_enabled, None);
         }
 
         for invalid in [Value::I64(-1), Value::I64(2), Value::U64(2)] {
-            let error = <FeatureFlagRow as teaql_core::Entity>::from_record(feature_flag_record(
-                invalid,
-                Value::Null,
-            ))
+            let error = <FeatureFlagRow as teaql_core::Entity>::from_compact_row(
+                teaql_core::CompactRow::from_record(feature_flag_record(invalid, Value::Null)),
+            )
             .unwrap_err();
             assert!(error.message.contains("invalid field enabled"));
         }
-        let error = <FeatureFlagRow as teaql_core::Entity>::from_record(feature_flag_record(
-            Value::Bool(true),
-            Value::U64(2),
-        ))
+        let error = <FeatureFlagRow as teaql_core::Entity>::from_compact_row(
+            teaql_core::CompactRow::from_record(feature_flag_record(
+                Value::Bool(true),
+                Value::U64(2),
+            )),
+        )
         .unwrap_err();
         assert!(error.message.contains("invalid field optional_enabled"));
     }
