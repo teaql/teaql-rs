@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
-use teaql_core::{Expr, Record, SelectQuery};
+use teaql_core::{EntityDescriptor, Expr, Record, SelectQuery, Value};
 use teaql_data_service::{
     DataServiceCapabilities, DataServiceExecutor, DataServiceOperation, ExecutionMetadata,
     MutationExecutor, MutationRequest, MutationResult, QueryExecutor, QueryRequest, QueryResult,
@@ -78,6 +78,7 @@ pub struct SqlDataServiceExecutor<D, T, S> {
     pub transport: T,
     pub schema_provider: S,
     descriptor_cache: Arc<RwLock<HashMap<String, Arc<teaql_core::EntityDescriptor>>>>,
+    select_plan_cache: Arc<RwLock<Vec<(SelectQuery, String)>>>,
 }
 
 impl<D, T, S> SqlDataServiceExecutor<D, T, S> {
@@ -87,6 +88,199 @@ impl<D, T, S> SqlDataServiceExecutor<D, T, S> {
             transport,
             schema_provider,
             descriptor_cache: Arc::new(RwLock::new(HashMap::new())),
+            select_plan_cache: Arc::new(RwLock::new(Vec::new())),
+        }
+    }
+}
+
+impl<D, T, S> SqlDataServiceExecutor<D, T, S>
+where
+    D: SqlDialect,
+    S: teaql_data_service::SchemaProvider,
+{
+    fn compile_select_cached(
+        &self,
+        entity: &EntityDescriptor,
+        query: &SelectQuery,
+    ) -> Result<CompiledQuery, SqlCompileError> {
+        compile_select_with_cache(&self.dialect, &self.select_plan_cache, entity, query)
+    }
+}
+
+fn compile_select_with_cache<D: SqlDialect>(
+    dialect: &D,
+    plan_cache: &RwLock<Vec<(SelectQuery, String)>>,
+    entity: &EntityDescriptor,
+    query: &SelectQuery,
+) -> Result<CompiledQuery, SqlCompileError> {
+    let key = select_plan_key(query);
+    if let Ok(cache) = plan_cache.read()
+        && let Some((_, sql)) = cache.iter().find(|(candidate, _)| candidate == &key)
+    {
+        return Ok(CompiledQuery {
+            sql: sql.clone(),
+            params: collect_select_params(entity, query),
+            comment: query.comment.clone(),
+        });
+    }
+
+    let compiled = dialect.compile_select(entity, query)?;
+    if let Ok(mut cache) = plan_cache.write() {
+        if cache.len() >= 256 {
+            cache.remove(0);
+        }
+        if !cache.iter().any(|(candidate, _)| candidate == &key) {
+            cache.push((key, compiled.sql.clone()));
+        }
+    }
+    Ok(compiled)
+}
+
+fn select_plan_key(query: &SelectQuery) -> SelectQuery {
+    let mut key = query.clone();
+    key.comment = None;
+    key.trace_chain.clear();
+    if key.search_with_text.is_some() {
+        key.search_with_text = Some(String::new());
+    }
+    for projection in &mut key.expr_projection {
+        normalize_expr_values(&mut projection.expr);
+    }
+    if let Some(expr) = &mut key.filter {
+        normalize_expr_values(expr);
+    }
+    if let Some(expr) = &mut key.having {
+        normalize_expr_values(expr);
+    }
+    for order in &mut key.order_by {
+        if let Some(expr) = &mut order.expr {
+            normalize_expr_values(expr);
+        }
+    }
+    key
+}
+
+fn normalize_expr_values(expr: &mut Expr) {
+    match expr {
+        Expr::Value(Value::List(values)) => {
+            for value in values {
+                *value = Value::Null;
+            }
+        }
+        Expr::Value(value) => *value = Value::Null,
+        Expr::Function { args, .. } | Expr::And(args) | Expr::Or(args) => {
+            for arg in args {
+                normalize_expr_values(arg);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            normalize_expr_values(left);
+            normalize_expr_values(right);
+        }
+        Expr::SubQuery { left, query, .. } => {
+            normalize_expr_values(left);
+            **query = select_plan_key(query);
+        }
+        Expr::Between { expr, lower, upper } => {
+            normalize_expr_values(expr);
+            normalize_expr_values(lower);
+            normalize_expr_values(upper);
+        }
+        Expr::IsNull(expr) | Expr::IsNotNull(expr) | Expr::Not(expr) => {
+            normalize_expr_values(expr);
+        }
+        Expr::Column(_) => {}
+    }
+}
+
+fn collect_select_params(entity: &EntityDescriptor, query: &SelectQuery) -> Vec<Value> {
+    let mut params = Vec::new();
+    if query.raw_sql.is_some() {
+        return params;
+    }
+    for projection in &query.expr_projection {
+        collect_expr_params(&projection.expr, &mut params);
+    }
+    let partitioned = query.partition_by.is_some() && query.slice.is_some();
+    if partitioned {
+        for order in &query.order_by {
+            if let Some(expr) = &order.expr {
+                collect_expr_params(expr, &mut params);
+            }
+        }
+    }
+    if let Some(filter) = &query.filter {
+        collect_expr_params(filter, &mut params);
+    }
+    if let Some(search_text) = &query.search_with_text {
+        let value = Value::from(format!("%{search_text}%"));
+        params.extend(
+            entity
+                .properties
+                .iter()
+                .filter(|property| {
+                    matches!(
+                        property.data_type,
+                        teaql_core::DataType::Text | teaql_core::DataType::LargeText
+                    )
+                })
+                .map(|_| value.clone()),
+        );
+    }
+    if partitioned {
+        return params;
+    }
+    if let Some(having) = &query.having {
+        collect_expr_params(having, &mut params);
+    }
+    for order in &query.order_by {
+        if let Some(expr) = &order.expr {
+            collect_expr_params(expr, &mut params);
+        }
+    }
+    params
+}
+
+fn collect_expr_params(expr: &Expr, params: &mut Vec<Value>) {
+    match expr {
+        Expr::Column(_) => {}
+        Expr::Value(value) => params.push(value.clone()),
+        Expr::Function { args, .. } | Expr::And(args) | Expr::Or(args) => {
+            for arg in args {
+                collect_expr_params(arg, params);
+            }
+        }
+        Expr::Binary { left, op, right } => {
+            collect_expr_params(left, params);
+            if matches!(
+                op,
+                teaql_core::BinaryOp::In
+                    | teaql_core::BinaryOp::NotIn
+                    | teaql_core::BinaryOp::InLarge
+                    | teaql_core::BinaryOp::NotInLarge
+            ) && let Expr::Value(Value::List(values)) = right.as_ref()
+            {
+                params.extend(values.iter().cloned());
+            } else {
+                collect_expr_params(right, params);
+            }
+        }
+        Expr::SubQuery {
+            left,
+            entity,
+            query,
+            ..
+        } => {
+            collect_expr_params(left, params);
+            params.extend(collect_select_params(entity, query));
+        }
+        Expr::Between { expr, lower, upper } => {
+            collect_expr_params(expr, params);
+            collect_expr_params(lower, params);
+            collect_expr_params(upper, params);
+        }
+        Expr::IsNull(expr) | Expr::IsNotNull(expr) | Expr::Not(expr) => {
+            collect_expr_params(expr, params);
         }
     }
 }
@@ -181,13 +375,14 @@ mod tests {
     impl teaql_data_service::SchemaProvider for CountingSchemaProvider {
         fn get_entity(&self, name: &str) -> Option<Arc<EntityDescriptor>> {
             self.lookups.fetch_add(1, Ordering::Relaxed);
-            (name == "Order").then(|| {
-                Arc::new(
-                    EntityDescriptor::new("Order")
-                        .property(PropertyDescriptor::new("id", DataType::U64).id().not_null()),
-                )
-            })
+            (name == "Order").then(|| Arc::new(test_entity()))
         }
+    }
+
+    fn test_entity() -> EntityDescriptor {
+        EntityDescriptor::new("Order")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(PropertyDescriptor::new("name", DataType::Text))
     }
 
     fn query_request(capture_debug_query: bool) -> QueryRequest {
@@ -216,6 +411,137 @@ mod tests {
         assert_eq!(lookups.load(Ordering::Relaxed), 1);
         assert!(result.metadata.debug_query.is_none());
     }
+
+    #[tokio::test]
+    async fn cached_select_plan_rebinds_values_and_separates_in_list_lengths() {
+        let lookups = Arc::new(AtomicUsize::new(0));
+        let executor = SqlDataServiceExecutor::new(
+            TestDialect,
+            EmptyTransport,
+            CountingSchemaProvider { lookups },
+        );
+        let request = |filter| QueryRequest {
+            query: SelectQuery::new("Order").filter(filter),
+            trace_chain: Vec::new(),
+            comment: None,
+            capture_debug_query: false,
+        };
+
+        let first = executor
+            .query(request(Expr::eq("id", 7_u64)))
+            .await
+            .unwrap();
+        let second = executor
+            .query(request(Expr::eq("id", 9_u64)))
+            .await
+            .unwrap();
+        assert_eq!(
+            first.metadata.parameterized_query,
+            second.metadata.parameterized_query
+        );
+        assert_eq!(first.metadata.params, vec![Value::U64(7)]);
+        assert_eq!(second.metadata.params, vec![Value::U64(9)]);
+
+        let short = executor
+            .query(request(Expr::in_list("id", [Value::U64(1), Value::U64(2)])))
+            .await
+            .unwrap();
+        let long = executor
+            .query(request(Expr::in_list(
+                "id",
+                [Value::U64(1), Value::U64(2), Value::U64(3)],
+            )))
+            .await
+            .unwrap();
+        assert_ne!(
+            short.metadata.parameterized_query,
+            long.metadata.parameterized_query
+        );
+        assert_eq!(short.metadata.params.len(), 2);
+        assert_eq!(long.metadata.params.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn cached_select_plan_preserves_parameter_order_for_supported_query_shapes() {
+        let executor = SqlDataServiceExecutor::new(
+            TestDialect,
+            EmptyTransport,
+            CountingSchemaProvider {
+                lookups: Arc::new(AtomicUsize::new(0)),
+            },
+        );
+
+        async fn assert_rebound(
+            executor: &SqlDataServiceExecutor<TestDialect, EmptyTransport, CountingSchemaProvider>,
+            warm: SelectQuery,
+            current: SelectQuery,
+        ) {
+            let request = |query| QueryRequest {
+                query,
+                trace_chain: Vec::new(),
+                comment: None,
+                capture_debug_query: false,
+            };
+            executor.query(request(warm)).await.unwrap();
+            let actual = executor.query(request(current.clone())).await.unwrap();
+            let expected = TestDialect
+                .compile_select(&test_entity(), &current)
+                .unwrap();
+            assert_eq!(actual.metadata.parameterized_query, Some(expected.sql));
+            assert_eq!(actual.metadata.params, expected.params);
+        }
+
+        assert_rebound(
+            &executor,
+            SelectQuery::new("Order").search_with_text("first"),
+            SelectQuery::new("Order").search_with_text("second"),
+        )
+        .await;
+        assert_rebound(
+            &executor,
+            SelectQuery::new("Order")
+                .project_expr("marker", Expr::value(1_i64))
+                .filter(Expr::eq("id", 2_u64))
+                .having(Expr::gt("id", 3_u64))
+                .order_by(teaql_core::OrderBy::asc_expr(Expr::value(4_i64))),
+            SelectQuery::new("Order")
+                .project_expr("marker", Expr::value(11_i64))
+                .filter(Expr::eq("id", 12_u64))
+                .having(Expr::gt("id", 13_u64))
+                .order_by(teaql_core::OrderBy::asc_expr(Expr::value(14_i64))),
+        )
+        .await;
+        assert_rebound(
+            &executor,
+            SelectQuery::new("Order")
+                .filter(Expr::eq("id", 1_u64))
+                .order_by(teaql_core::OrderBy::asc_expr(Expr::value(2_i64)))
+                .page(0, 10)
+                .partition_by("name"),
+            SelectQuery::new("Order")
+                .filter(Expr::eq("id", 3_u64))
+                .order_by(teaql_core::OrderBy::asc_expr(Expr::value(4_i64)))
+                .page(0, 10)
+                .partition_by("name"),
+        )
+        .await;
+        assert_rebound(
+            &executor,
+            SelectQuery::new("Order").filter(Expr::in_subquery(
+                "id",
+                test_entity(),
+                SelectQuery::new("Order").filter(Expr::gt("id", 20_u64)),
+                "id",
+            )),
+            SelectQuery::new("Order").filter(Expr::in_subquery(
+                "id",
+                test_entity(),
+                SelectQuery::new("Order").filter(Expr::gt("id", 30_u64)),
+                "id",
+            )),
+        )
+        .await;
+    }
 }
 
 impl<
@@ -238,8 +564,7 @@ impl<
                 })?;
 
             let compiled = self
-                .dialect
-                .compile_select(&entity_desc, &request.query)
+                .compile_select_cached(&entity_desc, &request.query)
                 .map_err(SqlExecutorError::Compile)?;
             let start = SystemTime::now();
             let rows = self
@@ -402,6 +727,7 @@ pub struct SqlDataServiceTransaction<'a, D, Tx: SqlTransport + SqlTransaction, S
     pub transport: Tx,
     pub schema_provider: &'a S,
     descriptor_cache: Arc<RwLock<HashMap<String, Arc<teaql_core::EntityDescriptor>>>>,
+    select_plan_cache: Arc<RwLock<Vec<(SelectQuery, String)>>>,
 }
 
 impl<'a, D, Tx: SqlTransport + SqlTransaction, S> SqlDataServiceTransaction<'a, D, Tx, S>
@@ -424,6 +750,17 @@ where
             );
         }
         Some(descriptor)
+    }
+
+    fn compile_select_cached(
+        &self,
+        entity: &EntityDescriptor,
+        query: &SelectQuery,
+    ) -> Result<CompiledQuery, SqlCompileError>
+    where
+        D: SqlDialect,
+    {
+        compile_select_with_cache(self.dialect, &self.select_plan_cache, entity, query)
     }
 }
 
@@ -470,8 +807,7 @@ impl<
                 })?;
 
             let compiled = self
-                .dialect
-                .compile_select(&entity_desc, &request.query)
+                .compile_select_cached(&entity_desc, &request.query)
                 .map_err(SqlExecutorError::Compile)?;
             let start = SystemTime::now();
             let rows = self
@@ -613,8 +949,7 @@ impl<
                 if let Some(id) = persisted_id {
                     let query = SelectQuery::new(entity_name.clone()).filter(Expr::eq("id", id));
                     let compiled_readback = self
-                        .dialect
-                        .compile_select(&entity_desc, &query)
+                        .compile_select_cached(&entity_desc, &query)
                         .map_err(SqlExecutorError::Compile)?;
                     let mut rows = self
                         .transport
@@ -710,6 +1045,7 @@ impl<
                 transport: tx,
                 schema_provider: &self.schema_provider,
                 descriptor_cache: self.descriptor_cache.clone(),
+                select_plan_cache: self.select_plan_cache.clone(),
             })
         }
     }
@@ -737,7 +1073,7 @@ impl<
                 }));
             }
         };
-        match self.dialect.compile_select(&entity, &request.query) {
+        match self.compile_select_cached(&entity, &request.query) {
             Ok(compiled) => Box::pin(
                 self.transport
                     .stream_sql(compiled, chunk_size)
