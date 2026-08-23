@@ -709,6 +709,27 @@ impl UserContext {
         self.entity_graph_decoders.contains(entity)
     }
 
+    pub(crate) fn decode_entity_list_into_graph(
+        &self,
+        entity: &str,
+        records: Vec<Record>,
+        root: &EntityRoot,
+        graph: &mut EntityGraphBuilder,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+    ) -> Result<(), teaql_core::EntityError> {
+        self.entity_graph_decoders.decode_list(
+            entity,
+            records,
+            root,
+            graph,
+            owner_entity,
+            owner_id,
+            relation,
+        )
+    }
+
     pub fn with_entity_data_service_behavior_registry(
         mut self,
         registry: impl EntityDataServiceBehaviorRegistry + 'static,

@@ -1,4 +1,4 @@
-use teaql_core::Value;
+use teaql_core::{SmartList, Value};
 use teaql_runtime::{EntityGraphBuilder, EntityKey, EntityRoot};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -58,5 +58,41 @@ fn the_same_u64_id_is_namespaced_by_entity_type() {
     assert_eq!(
         root.resolve_entity::<String>(7).unwrap().as_str(),
         "not a vendor"
+    );
+}
+
+#[test]
+fn frozen_graph_exposes_a_stable_typed_to_many_view() {
+    let root = EntityRoot::default();
+    let mut builder = EntityGraphBuilder::default();
+    builder.install_relation_list(
+        "Vendor",
+        7,
+        "trips",
+        SmartList::new(vec![
+            Vendor {
+                id: 11,
+                name: "first".to_owned(),
+            },
+            Vendor {
+                id: 12,
+                name: "second".to_owned(),
+            },
+        ]),
+    );
+    root.freeze_graph(builder).expect("freeze graph");
+
+    let first = root
+        .resolve_relation_list::<Vendor>("Vendor", 7, "trips")
+        .expect("typed relation list");
+    let second = root
+        .resolve_relation_list::<Vendor>("Vendor", 7, "trips")
+        .expect("same typed relation list");
+    assert_eq!(first.data.len(), 2);
+    assert_eq!(first.data[1].name, "second");
+    assert!(std::ptr::eq(first, second));
+    assert!(
+        root.resolve_relation_list::<String>("Vendor", 7, "trips")
+            .is_none()
     );
 }

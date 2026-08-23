@@ -53,17 +53,17 @@ where
             .unwrap_or_default();
 
         for relation in relations {
-            // A to-one edge already has its target id in the owner's scalar storage field,
-            // so it can be resolved from the identity map without changing the public getter.
-            // A to-many edge needs an adjacency index and a stable SmartList view; keep the
-            // existing embedded representation until that typed view is available.
-            if relation.many || !context.has_entity_graph_decoder(&relation.target_entity) {
+            if !context.has_entity_graph_decoder(&relation.target_entity) {
                 continue;
             }
             let Some(value) = record.remove(&relation.name) else {
                 continue;
             };
-            let child_records = match value {
+            if !relation.many && matches!(value, Value::Null | Value::TypedNull(_)) {
+                record.insert(relation.name, value);
+                continue;
+            }
+            let mut child_records = match value {
                 Value::Object(child) => vec![child],
                 Value::List(values) => values
                     .into_iter()
@@ -79,14 +79,36 @@ where
                 }
             };
 
-            for mut child in child_records {
+            for child in &mut child_records {
                 self.flatten_relation_graph(
                     &relation.target_entity,
-                    &mut child,
+                    child,
                     root,
                     graph,
                     installed,
                 )?;
+            }
+
+            if relation.many {
+                let owner_id = record.get("id").and_then(Value::try_u64).ok_or_else(|| {
+                    teaql_core::EntityError::new(
+                        entity_name,
+                        "loaded to-many relation owner is missing its u64 id",
+                    )
+                })?;
+                context.decode_entity_list_into_graph(
+                    &relation.target_entity,
+                    child_records,
+                    root,
+                    graph,
+                    entity_name,
+                    owner_id,
+                    &relation.name,
+                )?;
+                continue;
+            }
+
+            for child in child_records {
                 let id = child.get("id").and_then(Value::try_u64).ok_or_else(|| {
                     teaql_core::EntityError::new(
                         &relation.target_entity,

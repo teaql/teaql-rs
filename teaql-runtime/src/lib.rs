@@ -339,6 +339,58 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Debug, DeriveTeaqlEntity)]
+    #[teaql(entity = "FlatFleet", table = "flat_fleet")]
+    struct FlatFleetRow {
+        #[teaql(id)]
+        id: u64,
+        #[teaql(relation(
+            target = "FlatFleetTrip",
+            local_key = "id",
+            foreign_key = "fleet_id",
+            many
+        ))]
+        trip_list: teaql_core::SmartList<FlatFleetTripRow>,
+        #[teaql(skip)]
+        root: EntityRoot,
+    }
+
+    impl FlatFleetRow {
+        fn trip_list(&self) -> &teaql_core::SmartList<FlatFleetTripRow> {
+            if self.trip_list.is_loaded {
+                &self.trip_list
+            } else {
+                self.root
+                    .resolve_relation_list(Self::ENTITY_NAME, self.id, "trip_list")
+                    .unwrap_or(&self.trip_list)
+            }
+        }
+
+        fn trip_list_mut(&mut self) -> &mut teaql_core::SmartList<FlatFleetTripRow> {
+            if !self.trip_list.is_loaded {
+                if let Some(loaded) = self
+                    .root
+                    .resolve_relation_list(Self::ENTITY_NAME, self.id, "trip_list")
+                    .cloned()
+                {
+                    self.trip_list = loaded;
+                }
+            }
+            &mut self.trip_list
+        }
+    }
+
+    #[derive(Clone, Debug, DeriveTeaqlEntity)]
+    #[teaql(entity = "FlatFleetTrip", table = "flat_fleet_trip")]
+    struct FlatFleetTripRow {
+        #[teaql(id)]
+        id: u64,
+        fleet_id: u64,
+        name: String,
+        #[teaql(skip)]
+        root: EntityRoot,
+    }
+
     #[derive(Debug, PartialEq, DeriveTeaqlEntity)]
     #[teaql(entity = "Order", table = "orders")]
     struct OrderAggregateRow {
@@ -1824,6 +1876,66 @@ mod tests {
 
         assert!(rows.data[0].vendor.is_none());
         assert_eq!(rows.data[0].vendor().unwrap().name, "Acme");
+    }
+
+    #[tokio::test]
+    async fn generated_to_many_getter_uses_adjacency_and_mutation_copies_on_write() {
+        let mut context = RuntimeModule::new()
+            .entity::<FlatFleetRow>()
+            .entity::<FlatFleetTripRow>()
+            .into_context();
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(QueueExecutor {
+            affected: 1,
+            rows: Mutex::new(VecDeque::from([
+                vec![Record::from([(String::from("id"), Value::U64(7))])],
+                vec![
+                    Record::from([
+                        (String::from("id"), Value::U64(11)),
+                        (String::from("fleet_id"), Value::U64(7)),
+                        (String::from("name"), Value::Text(String::from("first"))),
+                    ]),
+                    Record::from([
+                        (String::from("id"), Value::U64(12)),
+                        (String::from("fleet_id"), Value::U64(7)),
+                        (String::from("name"), Value::Text(String::from("second"))),
+                    ]),
+                ],
+            ])),
+            queries: Mutex::new(Vec::new()),
+        });
+
+        let repo = context
+            .entity_data_service::<QueueExecutor>("FlatFleet")
+            .unwrap();
+        let mut rows = repo
+            .fetch_enhanced_entities_internal::<FlatFleetRow>(
+                &SelectQuery::new("FlatFleet").relation("trip_list"),
+            )
+            .await
+            .unwrap();
+        let fleet = &mut rows.data[0];
+
+        assert!(!fleet.trip_list.is_loaded);
+        assert_eq!(fleet.trip_list().data.len(), 2);
+        assert_eq!(fleet.trip_list().data[1].name, "second");
+        fleet.trip_list_mut().push(FlatFleetTripRow {
+            id: 13,
+            fleet_id: 7,
+            name: "third".to_owned(),
+            root: EntityRoot::default(),
+        });
+        assert!(fleet.trip_list.is_loaded);
+        assert_eq!(fleet.trip_list().data.len(), 3);
+        assert_eq!(
+            fleet
+                .root
+                .resolve_relation_list::<FlatFleetTripRow>("FlatFleet", 7, "trip_list")
+                .unwrap()
+                .data
+                .len(),
+            2
+        );
     }
 
     #[tokio::test]

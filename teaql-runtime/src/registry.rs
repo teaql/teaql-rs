@@ -14,10 +14,19 @@ use crate::{
 
 type EntityGraphDecoder =
     fn(Record, &EntityRoot, &mut EntityGraphBuilder) -> Result<(), EntityError>;
+type EntityGraphListDecoder = fn(
+    Vec<Record>,
+    &EntityRoot,
+    &mut EntityGraphBuilder,
+    &str,
+    u64,
+    &str,
+) -> Result<(), EntityError>;
 
 #[derive(Default, Clone)]
 pub struct InMemoryEntityGraphDecoderRegistry {
     decoders: BTreeMap<String, EntityGraphDecoder>,
+    list_decoders: BTreeMap<String, EntityGraphListDecoder>,
 }
 
 impl InMemoryEntityGraphDecoderRegistry {
@@ -46,7 +55,37 @@ impl InMemoryEntityGraphDecoderRegistry {
             Ok(())
         }
 
+        fn decode_list<T>(
+            records: Vec<Record>,
+            root: &EntityRoot,
+            graph: &mut EntityGraphBuilder,
+            owner_entity: &str,
+            owner_id: u64,
+            relation: &str,
+        ) -> Result<(), EntityError>
+        where
+            T: Entity + IdentifiableEntity + Send + Sync + 'static,
+        {
+            let entities = records
+                .into_iter()
+                .map(|record| {
+                    let mut entity = T::from_record(record)?;
+                    entity.on_loaded(root as &dyn std::any::Any);
+                    Ok(entity)
+                })
+                .collect::<Result<Vec<T>, EntityError>>()?;
+            graph.install_relation_list(
+                owner_entity,
+                owner_id,
+                relation,
+                teaql_core::SmartList::new(entities),
+            );
+            Ok(())
+        }
+
         self.decoders.insert(T::ENTITY_NAME.to_owned(), decode::<T>);
+        self.list_decoders
+            .insert(T::ENTITY_NAME.to_owned(), decode_list::<T>);
     }
 
     pub fn decode(
@@ -63,6 +102,25 @@ impl InMemoryEntityGraphDecoderRegistry {
             )
         })?;
         decoder(record, root, graph)
+    }
+
+    pub fn decode_list(
+        &self,
+        entity: &str,
+        records: Vec<Record>,
+        root: &EntityRoot,
+        graph: &mut EntityGraphBuilder,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+    ) -> Result<(), EntityError> {
+        let decoder = self.list_decoders.get(entity).ok_or_else(|| {
+            EntityError::new(
+                entity,
+                "entity has no identity graph list decoder in RuntimeModule",
+            )
+        })?;
+        decoder(records, root, graph, owner_entity, owner_id, relation)
     }
 }
 

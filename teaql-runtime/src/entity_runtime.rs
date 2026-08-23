@@ -2,7 +2,7 @@ use std::any::{Any, TypeId};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use teaql_core::{Record, Value};
+use teaql_core::{Record, SmartList, Value};
 
 #[derive(Debug, Clone)]
 pub struct EntityKey {
@@ -65,6 +65,14 @@ fn value_key(value: &Value) -> String {
 #[derive(Default)]
 pub struct EntityGraphBuilder {
     tables: HashMap<TypeId, HashMap<u64, Box<dyn Any + Send + Sync>>>,
+    relation_lists: HashMap<RelationListKey, Box<dyn Any + Send + Sync>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RelationListKey {
+    owner_entity: String,
+    owner_id: u64,
+    relation: String,
 }
 
 impl EntityGraphBuilder {
@@ -82,9 +90,33 @@ impl EntityGraphBuilder {
         self.tables.values().map(HashMap::len).sum()
     }
 
+    pub fn install_relation_list<T>(
+        &mut self,
+        owner_entity: impl Into<String>,
+        owner_id: u64,
+        relation: impl Into<String>,
+        list: SmartList<T>,
+    ) where
+        T: Any + Send + Sync,
+    {
+        self.relation_lists.insert(
+            RelationListKey {
+                owner_entity: owner_entity.into(),
+                owner_id,
+                relation: relation.into(),
+            },
+            Box::new(list),
+        );
+    }
+
+    pub fn relation_list_count(&self) -> usize {
+        self.relation_lists.len()
+    }
+
     fn freeze(self) -> FrozenEntityGraph {
         FrozenEntityGraph {
             tables: self.tables,
+            relation_lists: self.relation_lists,
         }
     }
 }
@@ -95,12 +127,14 @@ impl std::fmt::Debug for EntityGraphBuilder {
             .debug_struct("EntityGraphBuilder")
             .field("entity_types", &self.tables.len())
             .field("entities", &self.entity_count())
+            .field("relation_lists", &self.relation_list_count())
             .finish()
     }
 }
 
 struct FrozenEntityGraph {
     tables: HashMap<TypeId, HashMap<u64, Box<dyn Any + Send + Sync>>>,
+    relation_lists: HashMap<RelationListKey, Box<dyn Any + Send + Sync>>,
 }
 
 impl std::fmt::Debug for FrozenEntityGraph {
@@ -112,6 +146,7 @@ impl std::fmt::Debug for FrozenEntityGraph {
                 "entities",
                 &self.tables.values().map(HashMap::len).sum::<usize>(),
             )
+            .field("relation_lists", &self.relation_lists.len())
             .finish()
     }
 }
@@ -263,6 +298,7 @@ impl EntityRoot {
             .set(builder.freeze())
             .map_err(|graph| EntityGraphBuilder {
                 tables: graph.tables,
+                relation_lists: graph.relation_lists,
             })
     }
 
@@ -277,6 +313,26 @@ impl EntityRoot {
             .get(&TypeId::of::<T>())?
             .get(&id)?
             .downcast_ref::<T>()
+    }
+
+    pub fn resolve_relation_list<T>(
+        &self,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+    ) -> Option<&SmartList<T>>
+    where
+        T: Any + Send + Sync,
+    {
+        self.graph
+            .get()?
+            .relation_lists
+            .get(&RelationListKey {
+                owner_entity: owner_entity.to_owned(),
+                owner_id,
+                relation: relation.to_owned(),
+            })?
+            .downcast_ref::<SmartList<T>>()
     }
 
     pub fn push_change_set(&self) {
