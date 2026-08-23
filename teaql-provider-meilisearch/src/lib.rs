@@ -1,4 +1,4 @@
-use teaql_core::{EntityDescriptor, Record, Value};
+use teaql_core::{EntityDescriptor, GeneratedValues, Record, Value};
 use teaql_data_service::{
     DataServiceCapabilities, DataServiceExecutor, DataServiceOperation, ExecutionMetadata,
     MutationExecutor, MutationRequest, MutationResult, QueryExecutor, QueryRequest, QueryResult,
@@ -184,8 +184,8 @@ impl MutationExecutor for MeilisearchProvider {
 
                 Ok(MutationResult {
                     affected_rows: 1,
-                    generated_values: Record::new(),
-                    persisted_record: None,
+                    generated_values: GeneratedValues::new(),
+                    persisted_snapshot: None,
                     metadata: ExecutionMetadata {
                         debug_query: Some(format!("POST {} to Meilisearch", entity)),
                         backend: "meilisearch".to_owned(),
@@ -206,8 +206,8 @@ impl MutationExecutor for MeilisearchProvider {
                 // Ignore other mutations or return an error depending on strictness
                 Ok(MutationResult {
                     affected_rows: 0,
-                    generated_values: Record::new(),
-                    persisted_record: None,
+                    generated_values: GeneratedValues::new(),
+                    persisted_snapshot: None,
                     metadata: ExecutionMetadata {
                         debug_query: Some("Skipped non-insert mutation".to_owned()),
                         backend: "meilisearch".to_owned(),

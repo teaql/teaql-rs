@@ -52,8 +52,8 @@ impl MutationExecutor for StubExecutor {
         generated.insert("id".into(), Value::I64(42));
         Ok(MutationResult {
             affected_rows: 1,
-            generated_values: generated,
-            persisted_record: None,
+            generated_values: generated.into(),
+            persisted_snapshot: None,
             metadata: metadata(operation, None, Some(1), None),
         })
     }

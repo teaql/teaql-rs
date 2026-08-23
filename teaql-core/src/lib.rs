@@ -26,8 +26,8 @@ pub use expr::{BinaryOp, Expr, ExprFunction};
 pub use list::SmartList;
 pub use meta::{EntityDescriptor, PropertyDescriptor, RelationDescriptor};
 pub use mutation::{
-    BatchInsertCommand, BatchUpdateCommand, DeleteCommand, EntitySnapshot, InsertCommand,
-    MutationKind, MutationValues, RecoverCommand, UpdateCommand,
+    BatchInsertCommand, BatchUpdateCommand, DeleteCommand, EntitySnapshot, GeneratedValues,
+    InsertCommand, MutationKind, MutationValues, RecoverCommand, UpdateCommand,
 };
 pub use naming::default_table_name;
 pub use query::{

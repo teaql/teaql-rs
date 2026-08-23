@@ -338,7 +338,8 @@ where
 
         let mut data_arr = Vec::new();
         if !result.generated_values.is_empty() {
-            data_arr.push(teaql_core::record_to_json_value(&result.generated_values));
+            let generated: teaql_core::Record = result.generated_values.clone().into();
+            data_arr.push(teaql_core::record_to_json_value(&generated));
         }
         response_obj.insert("data".to_string(), JsonValue::Array(data_arr));
 
@@ -538,8 +539,8 @@ mod tests {
         async fn mutate(&self, _request: MutationRequest) -> Result<MutationResult, Self::Error> {
             Ok(MutationResult {
                 affected_rows: 1,
-                generated_values: Record::new(),
-                persisted_record: None,
+                generated_values: Record::new().into(),
+                persisted_snapshot: None,
                 metadata: metadata(DataServiceOperation::Insert, None, Some(1)),
             })
         }

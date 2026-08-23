@@ -89,8 +89,9 @@ mod tests {
     use crate::data_service::RuntimeDataService;
     use teaql_core::{
         Aggregate, AggregateFunction, BinaryOp, DataType, Decimal, DeleteCommand, Entity,
-        EntityDescriptor, EntityError, Expr, InsertCommand, OrderBy, PropertyDescriptor, Record,
-        RecoverCommand, RelationAggregate, SelectQuery, TeaqlEntity, UpdateCommand, Value,
+        EntityDescriptor, EntityError, Expr, GeneratedValues, InsertCommand, OrderBy,
+        PropertyDescriptor, Record, RecoverCommand, RelationAggregate, SelectQuery, TeaqlEntity,
+        UpdateCommand, Value,
     };
     use teaql_data_service::{
         DataServiceCapabilities, DataServiceExecutor, DataServiceOperation, ExecutionMetadata,
@@ -573,8 +574,8 @@ mod tests {
         async fn mutate(&self, _request: MutationRequest) -> Result<MutationResult, Self::Error> {
             Ok(MutationResult {
                 affected_rows: self.affected,
-                generated_values: Record::new(),
-                persisted_record: None,
+                generated_values: GeneratedValues::new(),
+                persisted_snapshot: None,
                 metadata: ExecutionMetadata {
                     debug_query: None,
                     backend: "stub".to_owned(),
@@ -667,8 +668,8 @@ mod tests {
         async fn mutate(&self, _request: MutationRequest) -> Result<MutationResult, Self::Error> {
             Ok(MutationResult {
                 affected_rows: self.affected,
-                generated_values: Record::new(),
-                persisted_record: None,
+                generated_values: GeneratedValues::new(),
+                persisted_snapshot: None,
                 metadata: ExecutionMetadata {
                     debug_query: None,
                     backend: "queue".to_owned(),

@@ -4,7 +4,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
-use teaql_core::{CompactRow, EntityDescriptor, Expr, Record, SelectQuery, Value};
+use teaql_core::{
+    CompactRow, EntityDescriptor, EntitySnapshot, Expr, GeneratedValues, SelectQuery, Value,
+};
 use teaql_data_service::{
     DataServiceCapabilities, DataServiceExecutor, DataServiceOperation,
     ExecutionMetadata, MutationExecutor, MutationRequest, MutationResult, QueryExecutor,
@@ -781,8 +783,8 @@ impl<
                     let end = SystemTime::now();
                     return Ok(MutationResult {
                         affected_rows: total_affected,
-                        generated_values: Record::default(),
-                        persisted_record: None,
+                        generated_values: GeneratedValues::default(),
+                        persisted_snapshot: None,
                         metadata: ExecutionMetadata {
                             backend: "sql".to_string(),
                             operation: DataServiceOperation::Batch,
@@ -860,8 +862,8 @@ impl<
 
             Ok(MutationResult {
                 affected_rows,
-                generated_values: Record::default(),
-                persisted_record: None,
+                generated_values: GeneratedValues::default(),
+                persisted_snapshot: None,
                 metadata,
             })
         }
@@ -1024,8 +1026,8 @@ impl<
                     let end = SystemTime::now();
                     return Ok(MutationResult {
                         affected_rows: total_affected,
-                        generated_values: Record::default(),
-                        persisted_record: None,
+                        generated_values: GeneratedValues::default(),
+                        persisted_snapshot: None,
                         metadata: ExecutionMetadata {
                             backend: "sql".to_string(),
                             operation: DataServiceOperation::Batch,
@@ -1093,7 +1095,7 @@ impl<
                 MutationRequest::Recover(cmd) => Some(cmd.id.clone()),
                 MutationRequest::Delete(_) | MutationRequest::Batch(_) => None,
             };
-            let persisted_record = if affected_rows == 1 {
+            let persisted_snapshot = if affected_rows == 1 {
                 if let Some(id) = persisted_id {
                     let query = SelectQuery::new(entity_name.clone()).filter(Expr::eq("id", id));
                     let compiled_readback = self
@@ -1109,7 +1111,8 @@ impl<
                             "persisted {entity_name} record could not be read back"
                         )));
                     }
-                    rows.pop().map(CompactRow::into_record)
+                    rows.pop()
+                        .map(|row| EntitySnapshot::from(row.into_record()))
                 } else {
                     None
                 }
@@ -1134,8 +1137,8 @@ impl<
 
             Ok(MutationResult {
                 affected_rows,
-                generated_values: Record::default(),
-                persisted_record,
+                generated_values: GeneratedValues::default(),
+                persisted_snapshot,
                 metadata,
             })
         }

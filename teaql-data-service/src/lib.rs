@@ -2,8 +2,8 @@
 
 use std::time::SystemTime;
 use teaql_core::{
-    CompactRow, DeleteCommand, InsertCommand, Record, RecoverCommand, SelectQuery, TraceNode,
-    UpdateCommand,
+    CompactRow, DeleteCommand, EntitySnapshot, GeneratedValues, InsertCommand, RecoverCommand,
+    SelectQuery, TraceNode, UpdateCommand,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -67,8 +67,8 @@ impl MutationRequest {
 #[derive(Debug, Clone)]
 pub struct MutationResult {
     pub affected_rows: u64,
-    pub generated_values: Record,
-    pub persisted_record: Option<Record>,
+    pub generated_values: GeneratedValues,
+    pub persisted_snapshot: Option<EntitySnapshot>,
     pub metadata: ExecutionMetadata,
 }
 
@@ -208,7 +208,7 @@ mod tests {
         // Test Insert
         let insert_cmd = InsertCommand {
             entity: "User".to_string(),
-            values: Record::new().into(),
+            values: teaql_core::MutationValues::new(),
             trace_chain: trace_chain.clone(),
         };
         let req_insert = MutationRequest::Insert(insert_cmd);
@@ -220,7 +220,7 @@ mod tests {
         let update_cmd = UpdateCommand {
             entity: "User".to_string(),
             id: teaql_core::Value::I64(1),
-            values: Record::new().into(),
+            values: teaql_core::MutationValues::new(),
             expected_version: None,
             old_values: None,
             trace_chain: trace_chain.clone(),
@@ -260,7 +260,7 @@ mod tests {
         // Test empty trace chain
         let insert_empty = InsertCommand {
             entity: "User".to_string(),
-            values: Record::new().into(),
+            values: teaql_core::MutationValues::new(),
             trace_chain: vec![],
         };
         let req_empty = MutationRequest::Insert(insert_empty);

@@ -61,6 +61,43 @@ impl<'a> IntoIterator for &'a MutationValues {
     }
 }
 
+/// Values assigned by a persistence provider, such as generated identifiers
+/// or database defaults. They are provider output, not mutation input.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GeneratedValues(BTreeMap<String, Value>);
+
+impl GeneratedValues {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Deref for GeneratedValues {
+    type Target = BTreeMap<String, Value>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for GeneratedValues {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl From<Record> for GeneratedValues {
+    fn from(values: Record) -> Self {
+        Self(values)
+    }
+}
+
+impl From<GeneratedValues> for Record {
+    fn from(values: GeneratedValues) -> Self {
+        values.0
+    }
+}
+
 /// Previously persisted field values used for optimistic checks and audit
 /// comparison. It cannot be passed where new mutation values are expected.
 #[derive(Debug, Clone, Default, PartialEq)]
