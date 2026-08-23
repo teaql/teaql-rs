@@ -319,7 +319,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             _ => quote! {},
         };
         quote! {
-            entity.root.set_original_record(record);
+            entity.root.set_original_snapshot(record.into());
             #original_version
         }
     } else {
@@ -356,7 +356,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 }
 
                 fn original_values(&self) -> Option<::teaql_core::Record> {
-                    self.root.original_record()
+                    self.root.original_snapshot().map(Into::into)
                 }
             }
         }

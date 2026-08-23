@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use teaql_core::{Record, SmartList, Value};
+use teaql_core::{EntitySnapshot, MutationValues, SmartList, Value};
 
 #[derive(Debug, Clone)]
 pub struct EntityKey {
@@ -195,7 +195,7 @@ impl std::fmt::Debug for FrozenEntityGraph {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct EntityChangeSet {
-    changes: BTreeMap<EntityKey, Record>,
+    changes: BTreeMap<EntityKey, MutationValues>,
 }
 
 #[derive(Debug, Default)]
@@ -244,7 +244,7 @@ impl EntityChangeSet {
         self.changes.get(key).and_then(|changes| changes.get(field))
     }
 
-    pub fn changes(&self) -> &BTreeMap<EntityKey, Record> {
+    pub fn changes(&self) -> &BTreeMap<EntityKey, MutationValues> {
         &self.changes
     }
 
@@ -332,8 +332,8 @@ pub struct RootContext {
     deleted_keys: std::collections::BTreeSet<EntityKey>,
     /// Entity keys that have been marked as newly inserted.
     new_keys: std::collections::BTreeSet<EntityKey>,
-    /// The original loaded snapshot record, used to avoid redundant fetching during save.
-    original_record: Option<OriginalRecord>,
+    /// The original loaded snapshot, used to avoid redundant fetching during save.
+    original_snapshot: Option<OriginalSnapshot>,
     /// Trace chains associated with each entity key.
     trace_chains: std::collections::BTreeMap<EntityKey, Vec<teaql_core::TraceNode>>,
     /// Original versions of entities to perform optimistic concurrency control.
@@ -349,8 +349,8 @@ pub struct EntityRoot {
 }
 
 #[derive(Debug)]
-enum OriginalRecord {
-    Materialized(Record),
+enum OriginalSnapshot {
+    Materialized(EntitySnapshot),
     Compact(teaql_core::CompactRow),
 }
 
@@ -476,7 +476,7 @@ impl EntityRoot {
         context.new_keys.clear();
         context.original_versions.clear();
         context.trace_chains.clear();
-        context.original_record = None;
+        context.original_snapshot = None;
         context.comment = None;
         context.is_new = false;
     }
@@ -540,12 +540,12 @@ impl EntityRoot {
             .contains(key)
     }
 
-    /// Store the original record when loaded from DB.
-    pub fn set_original_record(&self, record: Record) {
+    /// Store an original loaded entity snapshot.
+    pub fn set_original_snapshot(&self, snapshot: EntitySnapshot) {
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .original_record = Some(OriginalRecord::Materialized(record));
+            .original_snapshot = Some(OriginalSnapshot::Materialized(snapshot));
     }
 
     /// Store a shared-schema snapshot without eagerly allocating a map.
@@ -553,19 +553,19 @@ impl EntityRoot {
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .original_record = Some(OriginalRecord::Compact(row));
+            .original_snapshot = Some(OriginalSnapshot::Compact(row));
     }
 
-    /// Retrieve the original record.
-    pub fn original_record(&self) -> Option<Record> {
+    /// Retrieve the original loaded entity snapshot.
+    pub fn original_snapshot(&self) -> Option<EntitySnapshot> {
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .original_record
+            .original_snapshot
             .as_ref()
-            .map(|record| match record {
-                OriginalRecord::Materialized(record) => record.clone(),
-                OriginalRecord::Compact(row) => row.clone().into_record(),
+            .map(|snapshot| match snapshot {
+                OriginalSnapshot::Materialized(snapshot) => snapshot.clone(),
+                OriginalSnapshot::Compact(row) => EntitySnapshot::from(row.clone().into_record()),
             })
     }
 
