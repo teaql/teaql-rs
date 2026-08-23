@@ -136,7 +136,7 @@ pub fn graph_node_from_entity<T: Entity>(
     let comment = entity.get_comment();
     let mut node = graph_node_from_record(context, &descriptor.name, entity.into_record())?;
     node.dirty_fields = dirty_fields;
-    node.original_values = original_values;
+    node.original_values = original_values.map(Into::into);
     if is_deleted {
         node.operation = GraphOperation::Remove;
         node.relations.clear();
@@ -179,7 +179,7 @@ fn graph_node_from_record(
         }
         if field == "_original_values" {
             if let Value::Object(orig) = value {
-                node.original_values = Some(orig);
+                node.original_values = Some(orig.into());
             }
             continue;
         }
@@ -268,7 +268,7 @@ where
                     ))
                 })?;
             let saved = saver.save_graph_dyn(context, node).await?;
-            T::from_record(saved.values).map_err(|e| RuntimeError::Graph(e.to_string()))
+            T::from_record(saved.values.into()).map_err(|e| RuntimeError::Graph(e.to_string()))
         })
     }
 }
@@ -305,10 +305,11 @@ where
             || !root.new_keys().is_empty();
         if has_ledger_changes {
             let saved = saver.save_ledger_dyn(context, node, root).await?;
-            return T::from_record(saved.values).map_err(|e| RuntimeError::Graph(e.to_string()));
+            return T::from_record(saved.values.into())
+                .map_err(|e| RuntimeError::Graph(e.to_string()));
         }
     }
 
     let saved = saver.save_graph_dyn(context, node).await?;
-    T::from_record(saved.values).map_err(|e| RuntimeError::Graph(e.to_string()))
+    T::from_record(saved.values.into()).map_err(|e| RuntimeError::Graph(e.to_string()))
 }

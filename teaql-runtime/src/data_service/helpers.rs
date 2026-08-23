@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use teaql_core::{CompactRow, EntityDescriptor, Record, RelationAggregate, SelectQuery, Value};
+use teaql_core::{CompactRow, EntityDescriptor, RelationAggregate, SelectQuery, Value};
 
 use crate::{DataServiceError, GraphNode, RuntimeError};
 
@@ -133,42 +133,49 @@ pub(super) fn single_relation_aggregate_value(row: &CompactRow) -> Value {
     }
 }
 
-pub(super) fn ensure_initial_version(record: &mut Record, descriptor: &EntityDescriptor) {
+pub(super) fn ensure_initial_version(
+    values: &mut BTreeMap<String, Value>,
+    descriptor: &EntityDescriptor,
+) {
     if let Some(version_property) = descriptor.version_property() {
-        let needs_version = match record.get(&version_property.name) {
+        let needs_version = match values.get(&version_property.name) {
             None | Some(Value::Null) | Some(Value::I64(0)) | Some(Value::U64(0)) => true,
             _ => false,
         };
         if needs_version {
-            record.insert(version_property.name.clone(), Value::I64(1));
+            values.insert(version_property.name.clone(), Value::I64(1));
         }
     }
 }
 
-pub(super) fn ensure_timestamps(record: &mut Record, descriptor: &EntityDescriptor, is_new: bool) {
+pub(super) fn ensure_timestamps(
+    values: &mut BTreeMap<String, Value>,
+    descriptor: &EntityDescriptor,
+    is_new: bool,
+) {
     let now = Value::Timestamp(teaql_core::time::Timestamp::now());
     let has_property =
         |name: &str| -> bool { descriptor.properties.iter().any(|p| p.name == name) };
 
     if is_new && has_property("create_time") {
-        let needs_time = match record.get("create_time") {
+        let needs_time = match values.get("create_time") {
             None | Some(Value::Null) => true,
             Some(Value::I64(0)) | Some(Value::U64(0)) => true,
             _ => false,
         };
         if needs_time {
-            record.insert("create_time".to_owned(), now.clone());
+            values.insert("create_time".to_owned(), now.clone());
         }
     }
 
     if has_property("update_time") {
-        let needs_time = match record.get("update_time") {
+        let needs_time = match values.get("update_time") {
             None | Some(Value::Null) => true,
             Some(Value::I64(0)) | Some(Value::U64(0)) => true,
             _ => false,
         };
         if needs_time {
-            record.insert("update_time".to_owned(), now);
+            values.insert("update_time".to_owned(), now);
         }
     }
 }
@@ -208,14 +215,14 @@ pub(super) fn ensure_relation_target<ExecError>(
 }
 
 pub(crate) fn increment_version(
-    record: &mut Record,
+    values: &mut BTreeMap<String, Value>,
     descriptor: &EntityDescriptor,
     original_version: Option<i64>,
 ) {
     if let Some(prop) = descriptor.version_property() {
-        if !record.contains_key(&prop.name) {
+        if !values.contains_key(&prop.name) {
             let next_version = original_version.map(|v| v + 1).unwrap_or(2);
-            record.insert(prop.name.clone(), teaql_core::Value::I64(next_version));
+            values.insert(prop.name.clone(), teaql_core::Value::I64(next_version));
         }
     }
 }

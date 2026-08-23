@@ -355,7 +355,7 @@ impl TfpMutationQuery {
                 }
                 Ok(MutationRequest::Insert(InsertCommand {
                     entity: self.entity.clone(),
-                    values: record,
+                    values: record.into(),
                     trace_chain: trace,
                 }))
             }
@@ -371,7 +371,7 @@ impl TfpMutationQuery {
                 Ok(MutationRequest::Update(UpdateCommand {
                     entity: self.entity.clone(),
                     id: id_val,
-                    values: record,
+                    values: record.into(),
                     expected_version: self.expected_version,
                     old_values: None,
                     trace_chain: trace,

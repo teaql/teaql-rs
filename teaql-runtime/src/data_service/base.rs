@@ -203,7 +203,7 @@ where
                     filtered_values.insert(field.clone(), v.clone());
                 }
             }
-            update_cmd.values = filtered_values;
+            update_cmd.values = filtered_values.into();
             if let Some(Some(v)) = command.batch_expected_versions.get(i) {
                 update_cmd.expected_version = Some(*v);
             }

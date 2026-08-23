@@ -44,8 +44,8 @@ pub use event::{
 };
 pub use generated_support::*;
 pub use graph::{
-    GraphMutationBatch, GraphMutationKind, GraphMutationPlan, GraphMutationPlanItem, GraphNode,
-    GraphOperation, ScopedCommentNode, TraceScopeToken, sorted_update_fields,
+    EntityValues, GraphMutationBatch, GraphMutationKind, GraphMutationPlan, GraphMutationPlanItem,
+    GraphNode, GraphOperation, ScopedCommentNode, TraceScopeToken, sorted_update_fields,
 };
 pub use i18n::I18nCatalog;
 pub(crate) use id::local_id_generator;
@@ -78,7 +78,7 @@ mod tests {
     use super::{
         AggregationCacheBackend, CHECK_OBJECT_STATUS_FIELD, CheckObjectStatus, CheckResult,
         CheckResults, CheckRule, Checker, DataServiceError, EntityDataServiceBehavior, EntityRoot,
-        GraphMutationKind, GraphNode, I18nCatalog, InMemoryAggregationCache,
+        EntityValues, GraphMutationKind, GraphNode, I18nCatalog, InMemoryAggregationCache,
         InMemoryCheckerRegistry, InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityRegistry,
         InMemoryMetadataStore, InternalIdGenerator, Language, MemoryDataService, MetadataStore,
         ObjectLocation, RawAuditEvent, RawAuditEventKind, RawAuditEventSink, RemoteLockProvider,
@@ -808,24 +808,24 @@ mod tests {
         fn check_and_fix(
             &self,
             _ctx: &UserContext,
-            record: &mut Record,
+            values: &mut EntityValues,
             location: &ObjectLocation,
             results: &mut CheckResults,
         ) {
-            let status = CheckObjectStatus::from_record(record);
+            let status = CheckObjectStatus::from_values(values);
             if status.is_create() {
-                self.required(record, "name", location, results);
-                record.entry("version".to_owned()).or_insert(Value::I64(1));
+                self.required(values, "name", location, results);
+                values.entry("version".to_owned()).or_insert(Value::I64(1));
             }
             if status.is_update()
-                && record.get("name") == Some(&Value::Text("graph-update".to_owned()))
+                && values.get("name") == Some(&Value::Text("graph-update".to_owned()))
             {
-                record.insert(
+                values.insert(
                     "name".to_owned(),
                     Value::Text("graph-update-checked".to_owned()),
                 );
             }
-            self.min_string_length(record, "name", 3, location, results);
+            self.min_string_length(values, "name", 3, location, results);
         }
     }
 
@@ -1253,16 +1253,16 @@ mod tests {
                     .property(PropertyDescriptor::new("contact_phone", DataType::Text).not_null()),
             ),
         );
-        let mut record = Record::from([
+        let mut values = EntityValues::from(Record::from([
             ("id".to_owned(), Value::U64(1)),
             (
                 CHECK_OBJECT_STATUS_FIELD.to_owned(),
                 Value::from(CheckObjectStatus::Create),
             ),
-        ]);
+        ]));
 
         let error = context
-            .check_and_fix_record("School", &mut record)
+            .check_and_fix_values("School", &mut values)
             .unwrap_err();
 
         match error {
@@ -1284,19 +1284,19 @@ mod tests {
                     .property(PropertyDescriptor::new("contact_phone", DataType::Text).not_null()),
             ),
         );
-        let mut record = Record::from([
+        let mut values = EntityValues::from(Record::from([
             ("id".to_owned(), Value::U64(1)),
             (
                 CHECK_OBJECT_STATUS_FIELD.to_owned(),
                 Value::from(CheckObjectStatus::Update),
             ),
-        ]);
+        ]));
 
-        context.check_and_fix_record("School", &mut record).unwrap();
+        context.check_and_fix_values("School", &mut values).unwrap();
 
-        record.insert("contact_phone".to_owned(), Value::Null);
+        values.insert("contact_phone".to_owned(), Value::Null);
         assert!(matches!(
-            context.check_and_fix_record("School", &mut record),
+            context.check_and_fix_values("School", &mut values),
             Err(RuntimeError::Check(_))
         ));
     }
@@ -1356,15 +1356,15 @@ mod tests {
         let context = UserContext::new()
             .with_checker_registry(InMemoryCheckerRegistry::new().with_checker(OrderChecker));
 
-        let mut child = Record::from([
+        let mut child = EntityValues::from(Record::from([
             (String::from("id"), Value::U64(10)),
             (
                 String::from(CHECK_OBJECT_STATUS_FIELD),
                 Value::from(CheckObjectStatus::Create),
             ),
-        ]);
+        ]));
         let error = context
-            .check_and_fix_record_at(
+            .check_and_fix_values_at(
                 "Order",
                 &mut child,
                 &ObjectLocation::hash_root("lines").element(0),
@@ -1383,7 +1383,7 @@ mod tests {
 
         child.insert("name".to_owned(), Value::Text("valid child".to_owned()));
         context
-            .check_and_fix_record_at(
+            .check_and_fix_values_at(
                 "Order",
                 &mut child,
                 &ObjectLocation::hash_root("lines").element(0),
@@ -2970,5 +2970,5 @@ mod tests {
 pub use checker::{
     CHECK_OBJECT_STATUS_FIELD, CheckObjectStatus, CheckResult, CheckResults, CheckRule, Checker,
     CheckerRegistry, InMemoryCheckerRegistry, LocationSegment, ObjectLocation, TypedChecker,
-    TypedEntityChecker, clear_record_status, mark_record_status,
+    TypedEntityChecker, clear_entity_status, mark_entity_status,
 };

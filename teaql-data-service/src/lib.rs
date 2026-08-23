@@ -208,7 +208,7 @@ mod tests {
         // Test Insert
         let insert_cmd = InsertCommand {
             entity: "User".to_string(),
-            values: Record::new(),
+            values: Record::new().into(),
             trace_chain: trace_chain.clone(),
         };
         let req_insert = MutationRequest::Insert(insert_cmd);
@@ -220,7 +220,7 @@ mod tests {
         let update_cmd = UpdateCommand {
             entity: "User".to_string(),
             id: teaql_core::Value::I64(1),
-            values: Record::new(),
+            values: Record::new().into(),
             expected_version: None,
             old_values: None,
             trace_chain: trace_chain.clone(),
@@ -260,7 +260,7 @@ mod tests {
         // Test empty trace chain
         let insert_empty = InsertCommand {
             entity: "User".to_string(),
-            values: Record::new(),
+            values: Record::new().into(),
             trace_chain: vec![],
         };
         let req_empty = MutationRequest::Insert(insert_empty);

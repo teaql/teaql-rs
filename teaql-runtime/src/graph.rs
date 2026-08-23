@@ -1,7 +1,76 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
-use teaql_core::{Record, TraceNode, Value};
+use teaql_core::{EntitySnapshot, MutationValues, Record, TraceNode, Value};
+
+/// Mutable field state for one entity while checker/fix and graph planning run.
+/// It is deliberately distinct from query rows, mutation commands, and loaded
+/// snapshots.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct EntityValues(BTreeMap<String, Value>);
+
+impl EntityValues {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Deref for EntityValues {
+    type Target = BTreeMap<String, Value>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for EntityValues {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl From<Record> for EntityValues {
+    fn from(values: Record) -> Self {
+        Self(values)
+    }
+}
+
+impl From<EntityValues> for Record {
+    fn from(values: EntityValues) -> Self {
+        values.0
+    }
+}
+
+impl From<EntityValues> for MutationValues {
+    fn from(values: EntityValues) -> Self {
+        Record::from(values).into()
+    }
+}
+
+impl From<MutationValues> for EntityValues {
+    fn from(values: MutationValues) -> Self {
+        Record::from(values).into()
+    }
+}
+
+impl IntoIterator for EntityValues {
+    type Item = (String, Value);
+    type IntoIter = std::collections::btree_map::IntoIter<String, Value>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a EntityValues {
+    type Item = (&'a String, &'a Value);
+    type IntoIter = std::collections::btree_map::Iter<'a, String, Value>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphOperation {
@@ -65,13 +134,13 @@ impl TraceScopeToken {
 pub struct GraphMutationPlanItem {
     pub entity: String,
     pub kind: GraphMutationKind,
-    pub values: Record,
+    pub values: MutationValues,
     pub update_fields: Vec<String>,
     /// Monotonically increasing index assigned at push time (for debugging).
     pub item_index: u64,
     /// Lazy trace context — only materialized into a Vec<TraceNode> on demand.
     pub scope_token: Option<Arc<TraceScopeToken>>,
-    pub old_values: Option<Record>,
+    pub old_values: Option<EntitySnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -98,10 +167,10 @@ impl GraphMutationPlan {
         &mut self,
         entity: impl Into<String>,
         kind: GraphMutationKind,
-        values: Record,
+        values: MutationValues,
         update_fields: Vec<String>,
         scope_token: Option<Arc<TraceScopeToken>>,
-        old_values: Option<Record>,
+        old_values: Option<EntitySnapshot>,
     ) {
         let index = self.next_item_index;
         self.next_item_index += 1;
@@ -168,7 +237,7 @@ impl GraphMutationPlan {
 }
 
 pub fn sorted_update_fields(
-    values: &Record,
+    values: &EntityValues,
     excluded: impl IntoIterator<Item = String>,
 ) -> Vec<String> {
     let excluded = excluded.into_iter().collect::<BTreeSet<_>>();
@@ -182,7 +251,7 @@ pub fn sorted_update_fields(
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphNode {
     pub entity: String,
-    pub values: Record,
+    pub values: EntityValues,
     pub relations: BTreeMap<String, Vec<GraphNode>>,
     pub operation: GraphOperation,
     /// Annotation comment: carries business intent metadata through graph save.
@@ -195,14 +264,14 @@ pub struct GraphNode {
     pub dirty_fields: Option<BTreeSet<String>>,
     /// L1 Cache snapshot of the entity values exactly as they were loaded from the database.
     /// Used by the Event Engine to eliminate redundant old_value queries during auditing.
-    pub original_values: Option<Record>,
+    pub original_values: Option<EntitySnapshot>,
 }
 
 impl GraphNode {
     pub fn new(entity: impl Into<String>) -> Self {
         Self {
             entity: entity.into(),
-            values: Record::new(),
+            values: EntityValues::new(),
             relations: BTreeMap::new(),
             operation: GraphOperation::Upsert,
             comment: None,
@@ -369,7 +438,7 @@ mod tests {
         plan.push(
             "User",
             GraphMutationKind::Create,
-            Record::new(),
+            Record::new().into(),
             vec![],
             None,
             None,
@@ -377,7 +446,7 @@ mod tests {
         plan.push(
             "User",
             GraphMutationKind::Create,
-            Record::new(),
+            Record::new().into(),
             vec![],
             None,
             None,
@@ -387,7 +456,7 @@ mod tests {
         plan.push(
             "User",
             GraphMutationKind::Update,
-            Record::new(),
+            Record::new().into(),
             vec!["name".to_string()],
             None,
             None,
@@ -395,7 +464,7 @@ mod tests {
         plan.push(
             "User",
             GraphMutationKind::Update,
-            Record::new(),
+            Record::new().into(),
             vec!["name".to_string()],
             None,
             None,
@@ -405,7 +474,7 @@ mod tests {
         plan.push(
             "User",
             GraphMutationKind::Update,
-            Record::new(),
+            Record::new().into(),
             vec!["email".to_string()],
             None,
             None,
@@ -415,7 +484,7 @@ mod tests {
         plan.push(
             "Profile",
             GraphMutationKind::Create,
-            Record::new(),
+            Record::new().into(),
             vec![],
             None,
             None,

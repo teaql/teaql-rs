@@ -1214,28 +1214,28 @@ impl UserContext {
             .is_some()
     }
 
-    pub fn check_and_fix_record(
+    pub fn check_and_fix_values(
         &self,
         entity: &str,
-        record: &mut Record,
+        values: &mut crate::EntityValues,
     ) -> Result<(), RuntimeError> {
-        self.check_and_fix_record_at(entity, record, &ObjectLocation::root())
+        self.check_and_fix_values_at(entity, values, &ObjectLocation::root())
     }
 
-    pub fn check_and_fix_record_at(
+    pub fn check_and_fix_values_at(
         &self,
         entity: &str,
-        record: &mut Record,
+        values: &mut crate::EntityValues,
         location: &ObjectLocation,
     ) -> Result<(), RuntimeError> {
-        let status = CheckObjectStatus::from_record(record);
+        let status = CheckObjectStatus::from_values(values);
         let checker = self
             .checker_registry
             .as_ref()
             .and_then(|registry| registry.checker(entity));
         let mut results = CheckResults::new();
         if let Some(checker) = checker {
-            checker.check_and_fix(self, record, location, &mut results);
+            checker.check_and_fix(self, values, location, &mut results);
         }
 
         // Keep runtime validation aligned with the schema generated from the
@@ -1252,8 +1252,8 @@ impl UserContext {
                 .iter()
                 .filter(|property| !property.nullable)
             {
-                let missing = !record.contains_key(&property.name);
-                let null = matches!(record.get(&property.name), Some(Value::Null));
+                let missing = !values.contains_key(&property.name);
+                let null = matches!(values.get(&property.name), Some(Value::Null));
                 let property_location = location.clone().member(&property.name);
                 let already_reported = results.iter().any(|result| {
                     result.rule == crate::CheckRule::Required

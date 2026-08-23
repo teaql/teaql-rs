@@ -9,7 +9,7 @@ use teaql_core::{
 };
 
 use crate::{
-    clear_record_status, mark_record_status, CheckObjectStatus, ContinuousPageCursor,
+    clear_entity_status, mark_entity_status, CheckObjectStatus, ContinuousPageCursor,
     DataServiceError, EntityDataServiceBehavior, MetadataStore, PurposedSelectQuery, RawAuditEvent,
     RuntimeError,
 };
@@ -286,14 +286,16 @@ where
             }
         }
         ensure_initial_version(&mut command.values, entity);
-        mark_record_status(&mut command.values, CheckObjectStatus::Create);
+        let mut checked_values: crate::EntityValues = command.values.into();
+        mark_entity_status(&mut checked_values, CheckObjectStatus::Create);
         let check_result = self
             .data_service
             .metadata
             .context
-            .check_and_fix_record(&command.entity, &mut command.values);
-        clear_record_status(&mut command.values);
+            .check_and_fix_values(&command.entity, &mut checked_values);
+        clear_entity_status(&mut checked_values);
         check_result?;
+        command.values = checked_values.into();
 
         Ok(command)
     }
@@ -1366,7 +1368,7 @@ where
     ) -> Result<u64, DataServiceError<E::Error>> {
         command.trace_chain = trace_chain.clone();
         let affected = self.data_service.insert(&command).await?;
-        let mut event = RawAuditEvent::created(command.entity, command.values);
+        let mut event = RawAuditEvent::created(command.entity, command.values.into());
         event.trace_chain = trace_chain;
         self.emit_event(event).map_err(DataServiceError::Runtime)?;
         Ok(affected)
@@ -1383,7 +1385,7 @@ where
 
         let entity = command.entity.clone();
         for (i, values) in command.batch_values.into_iter().enumerate() {
-            let mut event = RawAuditEvent::created(entity.clone(), values);
+            let mut event = RawAuditEvent::created(entity.clone(), values.into());
             if i < command.trace_chains.len() {
                 event.trace_chain = command.trace_chains[i].clone();
             }
@@ -1414,8 +1416,9 @@ where
             None => true,
         };
         if needs_fetch {
-            old_values =
-                self.fetch_current_event_row(&command.entity, &command.id, trace_chain.clone())?;
+            old_values = self
+                .fetch_current_event_row(&command.entity, &command.id, trace_chain.clone())?
+                .map(Into::into);
         }
 
         let affected = self.data_service.update(&command).await?;
@@ -1431,9 +1434,9 @@ where
         }
         let mut event = RawAuditEvent::updated_with_old_values(
             command.entity,
-            values,
-            old_values,
-            new_values,
+            values.into(),
+            old_values.map(Into::into),
+            new_values.into(),
             updated_fields,
         );
         event.trace_chain = trace_chain;
@@ -1466,9 +1469,9 @@ where
 
             let mut event = RawAuditEvent::updated_with_old_values(
                 entity.clone(),
-                full_values,
-                old_values,
-                new_values,
+                full_values.into(),
+                old_values.map(Into::into),
+                new_values.into(),
                 command.update_fields.clone(),
             );
             if i < command.trace_chains.len() {

@@ -257,7 +257,7 @@ where
             .map_err(|_| DataServiceError::Executor(MemoryDataServiceError::Poisoned))?;
         data.entry(command.entity.clone())
             .or_default()
-            .push(command.values.clone());
+            .push(command.values.clone().into());
         Ok(1)
     }
 

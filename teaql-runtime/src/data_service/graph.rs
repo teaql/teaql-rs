@@ -67,7 +67,7 @@ where
             }
             GraphNode {
                 entity: node.entity_type,
-                values: node.record,
+                values: node.record.into(),
                 relations,
                 operation: match node.operation {
                     teaql_core::EntityGraphOperation::Save => crate::GraphOperation::Upsert,
@@ -210,7 +210,7 @@ where
                 GraphMutationKind::Create => {
                     let mut cmd = teaql_core::BatchInsertCommand::new(&batch.entity);
                     for item in batch.items {
-                        cmd.batch_values.push(item.values);
+                        cmd.batch_values.push(item.values.into());
                         cmd.trace_chains
                             .push(recover_trace_or_default(&item.scope_token));
                     }
@@ -233,10 +233,11 @@ where
                             teaql_core::Value::I64(n) => Some(*n),
                             _ => None,
                         });
-                        cmd.batch_values.push(item.values);
+                        cmd.batch_values.push(item.values.into());
                         cmd.batch_ids.push(id);
                         cmd.batch_expected_versions.push(version);
-                        cmd.batch_old_values.push(item.old_values);
+                        cmd.batch_old_values
+                            .push(item.old_values.map(Into::into));
                         cmd.trace_chains
                             .push(recover_trace_or_default(&item.scope_token));
                     }
@@ -287,7 +288,7 @@ where
         let comment = entity.get_comment();
         let mut node = self.graph_node_from_record(&descriptor.name, entity.into_record())?;
         node.dirty_fields = dirty_fields;
-        node.original_values = original_values;
+        node.original_values = original_values.map(Into::into);
         if is_deleted {
             node.operation = GraphOperation::Remove;
             node.relations.clear();
@@ -314,7 +315,7 @@ where
                     plan.push(
                         node.entity.clone(),
                         GraphMutationKind::Reference,
-                        node.values.clone(),
+                        node.values.clone().into(),
                         Vec::new(),
                         parent_token,
                         node.original_values.clone(),
@@ -325,7 +326,7 @@ where
                     plan.push(
                         node.entity.clone(),
                         GraphMutationKind::Delete,
-                        node.values.clone(),
+                        node.values.clone().into(),
                         Vec::new(),
                         parent_token,
                         node.original_values.clone(),
@@ -460,7 +461,7 @@ where
             plan.push(
                 node.entity.clone(),
                 GraphMutationKind::for_update(is_update),
-                node.values.clone(),
+                node.values.clone().into(),
                 update_fields,
                 current_token.clone(),
                 node.original_values.clone(),
@@ -596,14 +597,14 @@ where
             let command = self
                 .prepare_insert_command(&InsertCommand {
                     entity: node.entity.clone(),
-                    values: node.values.clone(),
+                    values: node.values.clone().into(),
                     trace_chain: Vec::new(),
                 })
                 .map_err(DataServiceError::Runtime)?;
             let lineage = active_scope.map(|s| s.to_trace_chain()).unwrap_or_default();
             self.execute_prepared_insert_with_comment(command.clone(), lineage)
                 .await?;
-            node.values = command.values;
+            node.values = command.values.into();
             if let Some(id_property) = descriptor.id_property() {
                 if let Some(id) = node.values.get(&id_property.name).cloned() {
                     node.values = self
@@ -614,6 +615,7 @@ where
                             active_scope.map(|s| s.to_trace_chain()).unwrap_or_default(),
                         )
                         .await?
+                        .map(Into::into)
                         .ok_or_else(|| {
                             DataServiceError::Runtime(RuntimeError::Graph(format!(
                                 "persisted {} record could not be read back",
@@ -819,6 +821,7 @@ where
                         active_scope.map(|s| s.to_trace_chain()).unwrap_or_default(),
                     )
                     .await?
+                    .map(Into::into)
                     .ok_or_else(|| {
                         DataServiceError::Runtime(RuntimeError::Graph(format!(
                             "persisted {} record could not be read back",
@@ -980,7 +983,7 @@ where
 
         Ok(GraphNode {
             entity: node.entity,
-            values: current,
+            values: current.into(),
             relations: BTreeMap::new(),
             operation: GraphOperation::Reference,
             comment: None,
@@ -1076,7 +1079,7 @@ where
             }
             if field == "_original_values" {
                 if let Value::Object(orig) = value {
-                    node.original_values = Some(orig);
+                    node.original_values = Some(orig.into());
                 }
                 continue;
             }
@@ -1125,17 +1128,17 @@ where
         id_property: &PropertyDescriptor,
         id: &Value,
     ) -> Result<UpdateCommand, DataServiceError<E::Error>> {
-        crate::mark_record_status(&mut node.values, crate::CheckObjectStatus::Update);
+        crate::mark_entity_status(&mut node.values, crate::CheckObjectStatus::Update);
         let check_result = self
             .data_service
             .metadata
             .context
-            .check_and_fix_record(&node.entity, &mut node.values);
-        crate::clear_record_status(&mut node.values);
+            .check_and_fix_values(&node.entity, &mut node.values);
+        crate::clear_entity_status(&mut node.values);
         check_result.map_err(DataServiceError::Runtime)?;
 
         let mut command = UpdateCommand::new(node.entity.clone(), id.clone());
-        command.old_values = node.original_values.clone();
+        command.old_values = node.original_values.clone().map(Into::into);
         if let Some(version_property) = descriptor.version_property() {
             if let Some(Value::I64(version)) = node.values.get(&version_property.name) {
                 command = command.expected_version(*version);
@@ -1282,7 +1285,7 @@ where
             if deleted_keys.contains(key) {
                 continue;
             }
-            let mut checked = record.clone();
+            let mut checked: crate::EntityValues = record.clone().into();
             checked
                 .entry("id".to_owned())
                 .or_insert_with(|| key.id.clone());
@@ -1291,13 +1294,13 @@ where
             } else {
                 crate::CheckObjectStatus::Update
             };
-            crate::mark_record_status(&mut checked, status);
+            crate::mark_entity_status(&mut checked, status);
             let result = self
                 .data_service
                 .metadata
                 .context
-                .check_and_fix_record(&key.entity, &mut checked);
-            crate::clear_record_status(&mut checked);
+                .check_and_fix_values(&key.entity, &mut checked);
+            crate::clear_entity_status(&mut checked);
             result.map_err(DataServiceError::Runtime)?;
             for (field, value) in &checked {
                 if record.get(field) != Some(value) {
@@ -1393,7 +1396,7 @@ where
             let mut traces = Vec::new();
             for key in keys {
                 let record = checked_changes.get(key).unwrap();
-                let mut db_record = Record::new();
+                let mut db_record = crate::EntityValues::new();
                 let mut real_id = key.id.clone();
                 if crate::data_service::helpers::is_unassigned_id_value(&real_id) {
                     let gen_id = self
@@ -1414,15 +1417,15 @@ where
                 }
                 crate::data_service::helpers::ensure_initial_version(&mut db_record, descriptor);
                 crate::data_service::helpers::ensure_timestamps(&mut db_record, descriptor, true);
-                crate::mark_record_status(&mut db_record, crate::CheckObjectStatus::Create);
+                crate::mark_entity_status(&mut db_record, crate::CheckObjectStatus::Create);
                 let check_result = self
                     .data_service
                     .metadata
                     .context
-                    .check_and_fix_record(&entity, &mut db_record);
-                crate::clear_record_status(&mut db_record);
+                    .check_and_fix_values(&entity, &mut db_record);
+                crate::clear_entity_status(&mut db_record);
                 check_result.map_err(DataServiceError::Runtime)?;
-                cmd.batch_values.push(db_record);
+                cmd.batch_values.push(db_record.into());
                 let my_trace = resolve_trace_chain(root.get_trace_chain(key), &trace_chain);
                 traces.push(my_trace);
             }
@@ -1455,7 +1458,7 @@ where
             let mut traces = Vec::new();
             for key in keys {
                 let record = checked_changes.get(key).unwrap();
-                let mut db_record = Record::new();
+                let mut db_record = crate::EntityValues::new();
                 db_record.insert("id".to_owned(), key.id.clone());
                 for (field, value) in record {
                     if field == "id" {
@@ -1469,15 +1472,15 @@ where
                     root.get_original_version(key),
                 );
                 crate::data_service::helpers::ensure_timestamps(&mut db_record, descriptor, false);
-                crate::mark_record_status(&mut db_record, crate::CheckObjectStatus::Update);
+                crate::mark_entity_status(&mut db_record, crate::CheckObjectStatus::Update);
                 let check_result = self
                     .data_service
                     .metadata
                     .context
-                    .check_and_fix_record(&signature.0, &mut db_record);
-                crate::clear_record_status(&mut db_record);
+                    .check_and_fix_values(&signature.0, &mut db_record);
+                crate::clear_entity_status(&mut db_record);
                 check_result.map_err(DataServiceError::Runtime)?;
-                cmd.batch_values.push(db_record);
+                cmd.batch_values.push(db_record.into());
                 cmd.batch_ids.push(key.id.clone());
                 cmd.batch_expected_versions
                     .push(root.get_original_version(key));

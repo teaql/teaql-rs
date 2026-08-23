@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use teaql_core::{Entity, Record, TeaqlEntity, Value};
+use teaql_core::{Entity, TeaqlEntity, Value};
 
-use crate::UserContext;
+use crate::{EntityValues, UserContext};
 
 pub const CHECK_OBJECT_STATUS_FIELD: &str = "__teaql_object_status";
 
@@ -23,11 +23,11 @@ impl CheckObjectStatus {
         }
     }
 
-    pub fn from_record(record: &Record) -> Self {
-        match record.get(CHECK_OBJECT_STATUS_FIELD) {
+    pub fn from_values(values: &EntityValues) -> Self {
+        match values.get(CHECK_OBJECT_STATUS_FIELD) {
             Some(Value::Text(value)) if value == Self::Create.as_str() => Self::Create,
             Some(Value::Text(value)) if value == Self::Update.as_str() => Self::Update,
-            _ => match record.get("id") {
+            _ => match values.get("id") {
                 None | Some(Value::Null) => Self::Create,
                 Some(_) => Self::Update,
             },
@@ -49,12 +49,12 @@ impl From<CheckObjectStatus> for Value {
     }
 }
 
-pub fn mark_record_status(record: &mut Record, status: CheckObjectStatus) {
-    record.insert(CHECK_OBJECT_STATUS_FIELD.to_owned(), status.into());
+pub fn mark_entity_status(values: &mut EntityValues, status: CheckObjectStatus) {
+    values.insert(CHECK_OBJECT_STATUS_FIELD.to_owned(), status.into());
 }
 
-pub fn clear_record_status(record: &mut Record) {
-    record.remove(CHECK_OBJECT_STATUS_FIELD);
+pub fn clear_entity_status(values: &mut EntityValues) {
+    values.remove(CHECK_OBJECT_STATUS_FIELD);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,32 +216,32 @@ pub trait Checker: Send + Sync {
     fn check_and_fix(
         &self,
         context: &UserContext,
-        record: &mut Record,
+        values: &mut EntityValues,
         location: &ObjectLocation,
         results: &mut CheckResults,
     );
 
     fn required(
         &self,
-        record: &Record,
+        values: &EntityValues,
         field: &str,
         location: &ObjectLocation,
         results: &mut CheckResults,
     ) {
-        if matches!(record.get(field), None | Some(Value::Null)) {
+        if matches!(values.get(field), None | Some(Value::Null)) {
             results.push(CheckResult::required(location.clone().member(field)));
         }
     }
 
     fn min_string_length(
         &self,
-        record: &Record,
+        values: &EntityValues,
         field: &str,
         min_len: usize,
         location: &ObjectLocation,
         results: &mut CheckResults,
     ) {
-        if let Some(Value::Text(value)) = record.get(field) {
+        if let Some(Value::Text(value)) = values.get(field) {
             if value.chars().count() < min_len {
                 results.push(CheckResult::min_str(
                     location.clone().member(field),
@@ -254,13 +254,13 @@ pub trait Checker: Send + Sync {
 
     fn max_string_length(
         &self,
-        record: &Record,
+        values: &EntityValues,
         field: &str,
         max_len: usize,
         location: &ObjectLocation,
         results: &mut CheckResults,
     ) {
-        if let Some(Value::Text(value)) = record.get(field) {
+        if let Some(Value::Text(value)) = values.get(field) {
             if value.chars().count() > max_len {
                 results.push(CheckResult::max_str(
                     location.clone().member(field),
@@ -365,25 +365,25 @@ where
     fn check_and_fix(
         &self,
         context: &UserContext,
-        record: &mut Record,
+        values: &mut EntityValues,
         location: &ObjectLocation,
         results: &mut CheckResults,
     ) {
-        let status = CheckObjectStatus::from_record(record);
+        let status = CheckObjectStatus::from_values(values);
         // Take ownership of the record (replace with empty) so we can
         // call T::from_record which consumes the Record.
-        let owned_record = std::mem::take(record);
+        let owned_record = std::mem::take(values).into();
         match T::from_record(owned_record) {
             Ok(mut entity) => {
                 self.checker
                     .check_and_fix_typed(context, &mut entity, status, location, results);
                 // Write mutated entity back into the original record slot.
-                *record = entity.into_record();
+                *values = entity.into_record().into();
             }
             Err(_e) => {
                 // If deserialization fails, re-build an empty record so
-                // the caller always sees a valid (though empty) Record.
-                *record = Record::default();
+                // the caller always sees a valid (though empty) entity value set.
+                *values = EntityValues::default();
                 // Push a generic error result.
                 results.push(CheckResult::new(CheckRule::Required, location.clone()));
             }
@@ -394,7 +394,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
 
     #[test]
     fn test_object_location_formatting_and_nesting_levels() {
@@ -429,39 +428,39 @@ mod tests {
 
     #[test]
     fn test_check_object_status_inference_and_explicit_markers() {
-        let mut record = BTreeMap::new();
+        let mut values = EntityValues::default();
 
         // No id -> Create
         assert_eq!(
-            CheckObjectStatus::from_record(&record),
+            CheckObjectStatus::from_values(&values),
             CheckObjectStatus::Create
         );
 
         // Has id -> Update
-        record.insert("id".to_string(), Value::I64(1));
+        values.insert("id".to_string(), Value::I64(1));
         assert_eq!(
-            CheckObjectStatus::from_record(&record),
+            CheckObjectStatus::from_values(&values),
             CheckObjectStatus::Update
         );
 
         // Explicit marker Create overrides id
-        mark_record_status(&mut record, CheckObjectStatus::Create);
+        mark_entity_status(&mut values, CheckObjectStatus::Create);
         assert_eq!(
-            CheckObjectStatus::from_record(&record),
+            CheckObjectStatus::from_values(&values),
             CheckObjectStatus::Create
         );
 
         // Explicit marker Update
-        mark_record_status(&mut record, CheckObjectStatus::Update);
+        mark_entity_status(&mut values, CheckObjectStatus::Update);
         assert_eq!(
-            CheckObjectStatus::from_record(&record),
+            CheckObjectStatus::from_values(&values),
             CheckObjectStatus::Update
         );
 
         // Clear marker
-        clear_record_status(&mut record);
+        clear_entity_status(&mut values);
         assert_eq!(
-            CheckObjectStatus::from_record(&record),
+            CheckObjectStatus::from_values(&values),
             CheckObjectStatus::Update
         ); // falls back to id -> Update
     }
