@@ -41,6 +41,7 @@ rusqlite = { version = "0.40", features = ["bundled", "column_decltype"] }
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full", "extra-traits"] }
+smallvec = { version = "1", features = ["serde"] }
 
 teaql-core = { path = "teaql-core", version = "4.2.18" }
 teaql-macros = { path = "teaql-macros", version = "4.2.18" }

@@ -8,7 +8,7 @@ pub enum LoadState {
     Partial(std::collections::HashSet<String>),
     /// Compact generated-entity representation. Known fields borrow their generated static
     /// names; only genuinely dynamic projection aliases need to own a string.
-    PartialCompact(Vec<std::borrow::Cow<'static, str>>),
+    PartialCompact(smallvec::SmallVec<[std::borrow::Cow<'static, str>; 8]>),
     FullyLoaded,
 }
 
