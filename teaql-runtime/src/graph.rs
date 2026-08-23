@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
-use teaql_core::{EntitySnapshot, MutationValues, Record, TraceNode, Value};
+use teaql_core::{EntitySnapshot, MutationValues, TraceNode, Value};
 
 /// Mutable field state for one entity while checker/fix and graph planning run.
 /// It is deliberately distinct from query rows, mutation commands, and loaded
@@ -30,13 +30,13 @@ impl DerefMut for EntityValues {
     }
 }
 
-impl From<Record> for EntityValues {
-    fn from(values: Record) -> Self {
+impl From<BTreeMap<String, Value>> for EntityValues {
+    fn from(values: BTreeMap<String, Value>) -> Self {
         Self(values)
     }
 }
 
-impl From<EntityValues> for Record {
+impl From<EntityValues> for BTreeMap<String, Value> {
     fn from(values: EntityValues) -> Self {
         values.0
     }
@@ -44,13 +44,14 @@ impl From<EntityValues> for Record {
 
 impl From<EntityValues> for MutationValues {
     fn from(values: EntityValues) -> Self {
-        Record::from(values).into()
+        BTreeMap::from(values).into()
     }
 }
 
 impl From<MutationValues> for EntityValues {
     fn from(values: MutationValues) -> Self {
-        Record::from(values).into()
+        let values: BTreeMap<String, Value> = values.into();
+        values.into()
     }
 }
 
@@ -438,7 +439,7 @@ mod tests {
         plan.push(
             "User",
             GraphMutationKind::Create,
-            Record::new().into(),
+            MutationValues::new(),
             vec![],
             None,
             None,
@@ -446,7 +447,7 @@ mod tests {
         plan.push(
             "User",
             GraphMutationKind::Create,
-            Record::new().into(),
+            MutationValues::new(),
             vec![],
             None,
             None,
@@ -456,7 +457,7 @@ mod tests {
         plan.push(
             "User",
             GraphMutationKind::Update,
-            Record::new().into(),
+            MutationValues::new(),
             vec!["name".to_string()],
             None,
             None,
@@ -464,7 +465,7 @@ mod tests {
         plan.push(
             "User",
             GraphMutationKind::Update,
-            Record::new().into(),
+            MutationValues::new(),
             vec!["name".to_string()],
             None,
             None,
@@ -474,7 +475,7 @@ mod tests {
         plan.push(
             "User",
             GraphMutationKind::Update,
-            Record::new().into(),
+            MutationValues::new(),
             vec!["email".to_string()],
             None,
             None,
@@ -484,7 +485,7 @@ mod tests {
         plan.push(
             "Profile",
             GraphMutationKind::Create,
-            Record::new().into(),
+            MutationValues::new(),
             vec![],
             None,
             None,

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
 
-use crate::{Record, Value};
+use crate::Value;
 
 /// Field values intentionally supplied to a database mutation.
 ///
@@ -31,13 +31,13 @@ impl DerefMut for MutationValues {
     }
 }
 
-impl From<Record> for MutationValues {
-    fn from(values: Record) -> Self {
+impl From<BTreeMap<String, Value>> for MutationValues {
+    fn from(values: BTreeMap<String, Value>) -> Self {
         Self(values)
     }
 }
 
-impl From<MutationValues> for Record {
+impl From<MutationValues> for BTreeMap<String, Value> {
     fn from(values: MutationValues) -> Self {
         values.0
     }
@@ -86,13 +86,13 @@ impl DerefMut for GeneratedValues {
     }
 }
 
-impl From<Record> for GeneratedValues {
-    fn from(values: Record) -> Self {
+impl From<BTreeMap<String, Value>> for GeneratedValues {
+    fn from(values: BTreeMap<String, Value>) -> Self {
         Self(values)
     }
 }
 
-impl From<GeneratedValues> for Record {
+impl From<GeneratedValues> for BTreeMap<String, Value> {
     fn from(values: GeneratedValues) -> Self {
         values.0
     }
@@ -123,13 +123,13 @@ impl DerefMut for EntitySnapshot {
     }
 }
 
-impl From<Record> for EntitySnapshot {
-    fn from(values: Record) -> Self {
+impl From<BTreeMap<String, Value>> for EntitySnapshot {
+    fn from(values: BTreeMap<String, Value>) -> Self {
         Self(values)
     }
 }
 
-impl From<EntitySnapshot> for Record {
+impl From<EntitySnapshot> for BTreeMap<String, Value> {
     fn from(values: EntitySnapshot) -> Self {
         values.0
     }
