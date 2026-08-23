@@ -894,17 +894,21 @@ impl UserContext {
     }
 
     pub(crate) fn record_metadata_log(&self, metadata: &teaql_data_service::ExecutionMetadata) {
+        let operation = match metadata.operation {
+            teaql_data_service::DataServiceOperation::Query => SqlLogOperation::Select,
+            teaql_data_service::DataServiceOperation::Insert => SqlLogOperation::Insert,
+            teaql_data_service::DataServiceOperation::Update => SqlLogOperation::Update,
+            teaql_data_service::DataServiceOperation::Delete => SqlLogOperation::Delete,
+            teaql_data_service::DataServiceOperation::Recover => SqlLogOperation::Update,
+            teaql_data_service::DataServiceOperation::Batch => SqlLogOperation::Update,
+            teaql_data_service::DataServiceOperation::Schema => SqlLogOperation::Update,
+        };
+        if !self.sql_log_options.enabled_for(operation) {
+            return;
+        }
         if let Some(debug_sql) = &metadata.debug_query {
             let sql_log_entry = SqlLogEntry {
-                operation: match metadata.operation {
-                    teaql_data_service::DataServiceOperation::Query => SqlLogOperation::Select,
-                    teaql_data_service::DataServiceOperation::Insert => SqlLogOperation::Insert,
-                    teaql_data_service::DataServiceOperation::Update => SqlLogOperation::Update,
-                    teaql_data_service::DataServiceOperation::Delete => SqlLogOperation::Delete,
-                    teaql_data_service::DataServiceOperation::Recover => SqlLogOperation::Update, // Approximate
-                    teaql_data_service::DataServiceOperation::Batch => SqlLogOperation::Update,
-                    teaql_data_service::DataServiceOperation::Schema => SqlLogOperation::Update,
-                },
+                operation,
                 sql: metadata.parameterized_query.clone().unwrap_or_default(),
                 params: metadata.params.clone(),
                 pretty_sql: pretty_sql(debug_sql),
@@ -1351,4 +1355,31 @@ fn pretty_sql(sql: &str) -> String {
         pretty = pretty.replace(keyword, &format!("\n{}", keyword.trim_start()));
     }
     pretty.replace(" AND ", "\n  AND ")
+}
+
+#[cfg(test)]
+mod sql_log_option_tests {
+    use super::*;
+
+    #[test]
+    fn disabled_sql_log_rejects_executor_metadata_before_recording() {
+        let mut context = UserContext::default();
+        context.disable_sql_log();
+        let now = SystemTime::now();
+        context.record_metadata_log(&teaql_data_service::ExecutionMetadata {
+            backend: "sql".to_owned(),
+            operation: teaql_data_service::DataServiceOperation::Query,
+            started_at: now,
+            ended_at: now,
+            affected_rows: None,
+            result_count: Some(1),
+            trace_chain: Vec::new(),
+            comment: Some("disabled log test".to_owned()),
+            backend_request_id: None,
+            parameterized_query: Some("SELECT id FROM sample WHERE id = $1".to_owned()),
+            params: vec![Value::I64(1)],
+            debug_query: Some("SELECT id FROM sample WHERE id = 1".to_owned()),
+        });
+        assert!(context.sql_logs().is_empty());
+    }
 }

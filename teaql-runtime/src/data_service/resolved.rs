@@ -464,6 +464,13 @@ where
             .clone()
             .prepare_for_list()
             .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
+        if query.continuous_page_fetch.is_none()
+            && query.object_group_bys.is_empty()
+            && query.child_enhancements.is_empty()
+            && query.relations.is_empty()
+        {
+            return self.fetch_prepared_query(&query).await;
+        }
         let (execution_query, continuous) = self.prepare_continuous_page(query).await;
         let mut rows = self.fetch_prepared_query(&execution_query).await?;
         self.enhance_object_group_bys_internal(
