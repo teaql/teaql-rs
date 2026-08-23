@@ -1,6 +1,6 @@
 use std::any::{Any, TypeId};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use teaql_core::{Record, Value};
 
@@ -63,14 +63,50 @@ fn value_key(value: &Value) -> String {
 }
 
 #[derive(Default)]
-struct EntityGraphStore {
-    tables: HashMap<TypeId, HashMap<u64, Arc<dyn Any + Send + Sync>>>,
+pub struct EntityGraphBuilder {
+    tables: HashMap<TypeId, HashMap<u64, Box<dyn Any + Send + Sync>>>,
 }
 
-impl std::fmt::Debug for EntityGraphStore {
+impl EntityGraphBuilder {
+    pub fn install<T>(&mut self, id: u64, entity: T)
+    where
+        T: Any + Send + Sync,
+    {
+        self.tables
+            .entry(TypeId::of::<T>())
+            .or_default()
+            .insert(id, Box::new(entity));
+    }
+
+    pub fn entity_count(&self) -> usize {
+        self.tables.values().map(HashMap::len).sum()
+    }
+
+    fn freeze(self) -> FrozenEntityGraph {
+        FrozenEntityGraph {
+            tables: self.tables,
+        }
+    }
+}
+
+impl std::fmt::Debug for EntityGraphBuilder {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("EntityGraphStore")
+            .debug_struct("EntityGraphBuilder")
+            .field("entity_types", &self.tables.len())
+            .field("entities", &self.entity_count())
+            .finish()
+    }
+}
+
+struct FrozenEntityGraph {
+    tables: HashMap<TypeId, HashMap<u64, Box<dyn Any + Send + Sync>>>,
+}
+
+impl std::fmt::Debug for FrozenEntityGraph {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FrozenEntityGraph")
             .field("entity_types", &self.tables.len())
             .field(
                 "entities",
@@ -197,14 +233,12 @@ pub struct RootContext {
     original_versions: std::collections::BTreeMap<EntityKey, i64>,
     /// Indicates if this entity root is entirely new.
     is_new: bool,
-    /// Query-local, type-separated flat identity graph. The graph is shared
-    /// across entity roots while mutation ledgers remain independent.
-    graph: Arc<RwLock<EntityGraphStore>>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct EntityRoot {
     inner: Arc<Mutex<RootContext>>,
+    graph: Arc<OnceLock<FrozenEntityGraph>>,
 }
 
 impl PartialEq for EntityRoot {
@@ -216,58 +250,33 @@ impl PartialEq for EntityRoot {
 impl EntityRoot {
     /// Make this root resolve entities from the same flat graph as `source`.
     /// Existing snapshots and mutation ledger state remain owned by this root.
-    pub fn share_graph_from(&self, source: &EntityRoot) {
-        let graph = source
-            .inner
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .graph
-            .clone();
-        self.inner
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .graph = graph;
+    pub fn with_shared_graph(&self, source: &EntityRoot) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            graph: source.graph.clone(),
+        }
     }
 
-    /// Install a strong entity once in the query-local identity graph.
-    pub fn install_entity<T>(&self, id: u64, entity: T)
+    /// Publish a completely assembled graph. It becomes immutable after this call.
+    pub fn freeze_graph(&self, builder: EntityGraphBuilder) -> Result<(), EntityGraphBuilder> {
+        self.graph
+            .set(builder.freeze())
+            .map_err(|graph| EntityGraphBuilder {
+                tables: graph.tables,
+            })
+    }
+
+    /// Resolve an entity by type and ID without locking or reference cloning.
+    pub fn resolve_entity<T>(&self, id: u64) -> Option<&T>
     where
         T: Any + Send + Sync,
     {
-        let graph = self
-            .inner
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .graph
-            .clone();
-        graph
-            .write()
-            .unwrap_or_else(|error| error.into_inner())
-            .tables
-            .entry(TypeId::of::<T>())
-            .or_default()
-            .insert(id, Arc::new(entity));
-    }
-
-    /// Resolve an entity by its compile-time type and database ID.
-    pub fn resolve_entity<T>(&self, id: u64) -> Option<Arc<T>>
-    where
-        T: Any + Send + Sync,
-    {
-        let graph = self
-            .inner
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .graph
-            .clone();
-        let entity = graph
-            .read()
-            .unwrap_or_else(|error| error.into_inner())
+        self.graph
+            .get()?
             .tables
             .get(&TypeId::of::<T>())?
             .get(&id)?
-            .clone();
-        Arc::downcast(entity).ok()
+            .downcast_ref::<T>()
     }
 
     pub fn push_change_set(&self) {

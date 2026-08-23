@@ -344,7 +344,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     let on_loaded_impl = if has_root_field {
         quote! {
             if let Some(root) = context.downcast_ref::<::teaql_runtime::EntityRoot>() {
-                self.root.share_graph_from(root);
+                self.root = self.root.with_shared_graph(root);
             }
         }
     } else {
