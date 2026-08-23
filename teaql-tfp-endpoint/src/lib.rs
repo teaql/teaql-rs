@@ -215,7 +215,7 @@ where
         let rows_json: Vec<JsonValue> = result
             .rows
             .iter()
-            .map(teaql_core::record_to_json_value)
+            .map(teaql_core::compact_row_to_json_value)
             .collect();
 
         response_obj.insert("data".to_string(), JsonValue::Array(rows_json));
@@ -528,7 +528,7 @@ mod tests {
     impl QueryExecutor for StubExecutor {
         async fn query(&self, _request: QueryRequest) -> Result<QueryResult, Self::Error> {
             Ok(QueryResult {
-                rows: vec![Record::new()],
+                rows: vec![teaql_core::CompactRow::from_record(Record::new())],
                 metadata: metadata(DataServiceOperation::Query, Some(1), None),
             })
         }

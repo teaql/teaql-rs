@@ -1,5 +1,5 @@
-use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
-use serde_json::{Value as JsonValue, json};
+use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
+use serde_json::{json, Value as JsonValue};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -34,7 +34,7 @@ impl QueryExecutor for StubExecutor {
         row.insert("id".into(), Value::I64(7));
         row.insert("status".into(), Value::Text("NEW".into()));
         Ok(QueryResult {
-            rows: vec![row],
+            rows: vec![teaql_core::CompactRow::from_record(row)],
             metadata: metadata(DataServiceOperation::Query, Some(1), None, request.comment),
         })
     }

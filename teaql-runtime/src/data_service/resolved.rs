@@ -706,7 +706,11 @@ where
             .metadata
             .context
             .record_metadata_log(&res.metadata);
-        Ok(res.rows)
+        Ok(res
+            .rows
+            .into_iter()
+            .map(teaql_core::CompactRow::into_record)
+            .collect())
     }
 
     async fn fetch_prepared_query_owned(
@@ -739,7 +743,11 @@ where
             .metadata
             .context
             .record_metadata_log(&res.metadata);
-        Ok(res.rows)
+        Ok(res
+            .rows
+            .into_iter()
+            .map(teaql_core::CompactRow::into_record)
+            .collect())
     }
 
     pub(crate) async fn fetch_prepared_compact_owned(
@@ -759,7 +767,7 @@ where
         let result = self
             .data_service
             .executor
-            .query_compact(request)
+            .query(request)
             .await
             .map_err(DataServiceError::Executor)?;
         self.data_service
@@ -818,7 +826,11 @@ where
                     .metadata
                     .context
                     .record_metadata_log(&res.metadata);
-                let rows = res.rows;
+                let rows = res
+                    .rows
+                    .into_iter()
+                    .map(teaql_core::CompactRow::into_record)
+                    .collect::<Vec<_>>();
                 cache.put(key, rows.clone());
                 Ok((rows, "miss"))
             })

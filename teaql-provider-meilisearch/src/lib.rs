@@ -119,7 +119,7 @@ impl QueryExecutor for MeilisearchProvider {
                     for (k, v) in map {
                         record.insert(k.clone(), json_to_value(v.clone()));
                     }
-                    rows.push(record);
+                    rows.push(teaql_core::CompactRow::from_record(record));
                 }
             }
         }

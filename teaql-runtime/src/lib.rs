@@ -550,7 +550,7 @@ mod tests {
     impl QueryExecutor for StubExecutor {
         async fn query(&self, _request: QueryRequest) -> Result<QueryResult, Self::Error> {
             Ok(QueryResult {
-                rows: self.rows.clone(),
+                rows: self.rows.clone().into_iter().map(teaql_core::CompactRow::from_record).collect(),
                 metadata: ExecutionMetadata {
                     debug_query: None,
                     backend: "stub".to_owned(),
@@ -605,7 +605,7 @@ mod tests {
         async fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
             self.queries.lock().unwrap().push(request.query);
             Ok(QueryResult {
-                rows: self.rows.clone(),
+                rows: self.rows.clone().into_iter().map(teaql_core::CompactRow::from_record).collect(),
                 metadata: ExecutionMetadata {
                     debug_query: None,
                     backend: "capture".to_owned(),
@@ -643,7 +643,8 @@ mod tests {
             let sql_approx = format!("SELECT ... FROM {} ...", request.query.entity);
             self.queries.lock().unwrap().push(sql_approx);
             Ok(QueryResult {
-                rows: self.rows.lock().unwrap().pop_front().unwrap_or_default(),
+                rows: self.rows.lock().unwrap().pop_front().unwrap_or_default()
+                    .into_iter().map(teaql_core::CompactRow::from_record).collect(),
                 metadata: ExecutionMetadata {
                     debug_query: None,
                     backend: "queue".to_owned(),

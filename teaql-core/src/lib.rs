@@ -34,7 +34,7 @@ pub use query::{
     Aggregate, AggregateFunction, AggregationCacheOptions, CompactRow, ContinuousPageFetchOptions,
     NamedExpr, ObjectGroupBy, OrderBy, PARTITION_RANK_PROPERTY, RawSqlProjection, Record,
     RelationAggregate, RelationLoad, SelectQuery, Slice, SortDirection, StreamConfig,
-    record_to_json_value,
+    compact_row_to_json_value, record_to_json_value,
 };
 pub use safe_expression::{SafeExpression, TeaqlEmpty};
 pub use trace::TraceNode;

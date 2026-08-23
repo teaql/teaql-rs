@@ -48,7 +48,10 @@ impl InMemoryQueryEngine {
 
         let count = rows.len();
         QueryResult {
-            rows,
+            rows: rows
+                .into_iter()
+                .map(teaql_core::CompactRow::from_record)
+                .collect(),
             metadata: ExecutionMetadata {
                 debug_query: None,
                 backend: "memory".to_owned(),
@@ -131,7 +134,10 @@ impl InMemoryQueryEngine {
         let result_rows = vec![result_row];
         let count = result_rows.len();
         QueryResult {
-            rows: result_rows,
+            rows: result_rows
+                .into_iter()
+                .map(teaql_core::CompactRow::from_record)
+                .collect(),
             metadata: ExecutionMetadata {
                 debug_query: None,
                 backend: "memory".to_owned(),
@@ -191,7 +197,10 @@ impl InMemoryQueryEngine {
 
         let count = result_rows.len();
         QueryResult {
-            rows: result_rows,
+            rows: result_rows
+                .into_iter()
+                .map(teaql_core::CompactRow::from_record)
+                .collect(),
             metadata: ExecutionMetadata {
                 debug_query: None,
                 backend: "memory".to_owned(),

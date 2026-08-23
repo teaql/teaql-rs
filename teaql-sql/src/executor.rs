@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 use teaql_core::{CompactRow, EntityDescriptor, Expr, Record, SelectQuery, Value};
 use teaql_data_service::{
-    CompactQueryResult, DataServiceCapabilities, DataServiceExecutor, DataServiceOperation,
+    DataServiceCapabilities, DataServiceExecutor, DataServiceOperation,
     ExecutionMetadata, MutationExecutor, MutationRequest, MutationResult, QueryExecutor,
     QueryRequest, QueryResult,
 };
@@ -727,7 +727,7 @@ impl<
             let start = SystemTime::now();
             let rows = self
                 .transport
-                .fetch_all_sql(&compiled)
+                .fetch_all_compact_sql(&compiled)
                 .await
                 .map_err(SqlExecutorError::Transport)?;
             let end = SystemTime::now();
@@ -755,49 +755,6 @@ impl<
         }
     }
 
-    fn query_compact(
-        &self,
-        request: QueryRequest,
-    ) -> impl std::future::Future<Output = Result<CompactQueryResult, Self::Error>> + Send {
-        async move {
-            let entity_desc = self
-                .entity_descriptor(&request.query.entity)
-                .ok_or_else(|| {
-                    SqlExecutorError::Compile(SqlCompileError::UnknownEntity(
-                        request.query.entity.clone(),
-                    ))
-                })?;
-            let compiled = self
-                .compile_select_cached(&entity_desc, &request.query)
-                .map_err(SqlExecutorError::Compile)?;
-            let start = SystemTime::now();
-            let rows = self
-                .transport
-                .fetch_all_compact_sql(&compiled)
-                .await
-                .map_err(SqlExecutorError::Transport)?;
-            let end = SystemTime::now();
-            let debug_query = request
-                .capture_debug_query
-                .then(|| compiled.debug_sql(self.dialect.kind()));
-            let CompiledQuery { sql, params, .. } = compiled;
-            let metadata = ExecutionMetadata {
-                backend: "sql".to_string(),
-                operation: DataServiceOperation::Query,
-                started_at: start,
-                ended_at: end,
-                affected_rows: None,
-                result_count: Some(rows.len()),
-                trace_chain: request.trace_chain,
-                comment: request.comment,
-                backend_request_id: None,
-                parameterized_query: Some(sql),
-                params,
-                debug_query,
-            };
-            Ok(CompactQueryResult { rows, metadata })
-        }
-    }
 }
 
 impl<
@@ -1014,7 +971,7 @@ impl<
             let start = SystemTime::now();
             let rows = self
                 .transport
-                .fetch_all_sql(&compiled)
+                .fetch_all_compact_sql(&compiled)
                 .await
                 .map_err(SqlExecutorError::Transport)?;
             let end = SystemTime::now();
@@ -1040,47 +997,6 @@ impl<
         }
     }
 
-    fn query_compact(
-        &self,
-        request: QueryRequest,
-    ) -> impl std::future::Future<Output = Result<CompactQueryResult, Self::Error>> + Send {
-        async move {
-            let entity_desc = self
-                .entity_descriptor(&request.query.entity)
-                .ok_or_else(|| {
-                    SqlExecutorError::Compile(SqlCompileError::UnknownEntity(
-                        request.query.entity.clone(),
-                    ))
-                })?;
-            let compiled = self
-                .compile_select_cached(&entity_desc, &request.query)
-                .map_err(SqlExecutorError::Compile)?;
-            let start = SystemTime::now();
-            let rows = self
-                .transport
-                .fetch_all_compact_sql(&compiled)
-                .await
-                .map_err(SqlExecutorError::Transport)?;
-            let end = SystemTime::now();
-            let metadata = ExecutionMetadata {
-                backend: "sql".to_string(),
-                operation: DataServiceOperation::Query,
-                started_at: start,
-                ended_at: end,
-                affected_rows: None,
-                result_count: Some(rows.len()),
-                trace_chain: request.trace_chain,
-                comment: request.comment,
-                backend_request_id: None,
-                parameterized_query: Some(compiled.sql.clone()),
-                params: compiled.params.clone(),
-                debug_query: request
-                    .capture_debug_query
-                    .then(|| compiled.debug_sql(self.dialect.kind())),
-            };
-            Ok(CompactQueryResult { rows, metadata })
-        }
-    }
 }
 
 impl<

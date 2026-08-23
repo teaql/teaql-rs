@@ -32,7 +32,11 @@ where
             .query(request)
             .await
             .map_err(DataServiceError::Executor)?;
-        Ok(res.rows)
+        Ok(res
+            .rows
+            .into_iter()
+            .map(teaql_core::CompactRow::into_record)
+            .collect())
     }
 
     pub(crate) async fn fetch_smart_list(
@@ -51,7 +55,12 @@ where
             .await
             .map_err(DataServiceError::Executor)?;
         self.metadata.record_metadata_log(&res.metadata);
-        Ok(SmartList::from(res.rows))
+        Ok(SmartList::from(
+            res.rows
+                .into_iter()
+                .map(teaql_core::CompactRow::into_record)
+                .collect::<Vec<_>>(),
+        ))
     }
 
     pub(crate) async fn fetch_entities<T>(
@@ -69,7 +78,7 @@ where
         };
         let result = self
             .executor
-            .query_compact(request)
+            .query(request)
             .await
             .map_err(DataServiceError::Executor)?;
         self.metadata.record_metadata_log(&result.metadata);

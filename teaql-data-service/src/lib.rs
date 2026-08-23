@@ -29,12 +29,6 @@ pub struct QueryRequest {
 
 #[derive(Debug, Clone)]
 pub struct QueryResult {
-    pub rows: Vec<Record>,
-    pub metadata: ExecutionMetadata,
-}
-
-#[derive(Debug, Clone)]
-pub struct CompactQueryResult {
     pub rows: Vec<CompactRow>,
     pub metadata: ExecutionMetadata,
 }
@@ -119,30 +113,6 @@ pub trait QueryExecutor: DataServiceExecutor {
         &self,
         request: QueryRequest,
     ) -> impl std::future::Future<Output = Result<QueryResult, Self::Error>> + Send;
-
-    fn query_compact(
-        &self,
-        request: QueryRequest,
-    ) -> impl std::future::Future<Output = Result<CompactQueryResult, Self::Error>> + Send
-    where
-        Self: Sync,
-    {
-        async move {
-            let result = self.query(request).await?;
-            let rows = result
-                .rows
-                .into_iter()
-                .map(|record| {
-                    let (columns, values): (Vec<_>, Vec<_>) = record.into_iter().unzip();
-                    CompactRow::new(columns.into(), values)
-                })
-                .collect();
-            Ok(CompactQueryResult {
-                rows,
-                metadata: result.metadata,
-            })
-        }
-    }
 }
 
 /// Result of a single streaming chunk.

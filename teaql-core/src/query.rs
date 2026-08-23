@@ -24,19 +24,15 @@ mod hard_limit_tests {
                 .limit,
             Some(10_000)
         );
-        assert!(
-            SelectQuery::new("Order")
-                .limit(10_001)
-                .prepare_for_list()
-                .is_err()
-        );
-        assert!(
-            SelectQuery::new("Order")
-                .limit(10_001)
-                .hard_limit(20_000)
-                .prepare_for_list()
-                .is_ok()
-        );
+        assert!(SelectQuery::new("Order")
+            .limit(10_001)
+            .prepare_for_list()
+            .is_err());
+        assert!(SelectQuery::new("Order")
+            .limit(10_001)
+            .hard_limit(20_000)
+            .prepare_for_list()
+            .is_ok());
     }
 
     #[test]
@@ -786,6 +782,18 @@ impl CompactRow {
             .and_then(|index| self.values.get(index))
     }
 
+    pub fn contains_key(&self, name: &str) -> bool {
+        self.columns.iter().any(|column| column == name)
+    }
+
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (&String, &Value)> {
         self.columns.iter().zip(self.values.iter())
     }
@@ -797,6 +805,13 @@ impl CompactRow {
     pub fn into_record(self) -> Record {
         self.columns.iter().cloned().zip(self.values).collect()
     }
+
+    /// Transitional boundary adapter. Core query providers should construct
+    /// compact rows directly instead of routing through this function.
+    pub fn from_record(record: Record) -> Self {
+        let (columns, values): (Vec<_>, Vec<_>) = record.into_iter().unzip();
+        Self::new(columns.into(), values)
+    }
 }
 
 /// Internal projection used to implement per-parent pagination for relation
@@ -807,6 +822,14 @@ pub fn record_to_json_value(record: &Record) -> serde_json::Value {
     serde_json::Value::Object(
         record
             .iter()
+            .map(|(key, value)| (key.clone(), value.to_json_value()))
+            .collect(),
+    )
+}
+
+pub fn compact_row_to_json_value(row: &CompactRow) -> serde_json::Value {
+    serde_json::Value::Object(
+        row.iter()
             .map(|(key, value)| (key.clone(), value.to_json_value()))
             .collect(),
     )
