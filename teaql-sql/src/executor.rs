@@ -113,9 +113,10 @@ fn compile_select_with_cache<D: SqlDialect>(
     entity: &EntityDescriptor,
     query: &SelectQuery,
 ) -> Result<CompiledQuery, SqlCompileError> {
-    let key = select_plan_key(query);
     if let Ok(cache) = plan_cache.read()
-        && let Some((_, sql)) = cache.iter().find(|(candidate, _)| candidate == &key)
+        && let Some((_, sql)) = cache
+            .iter()
+            .find(|(candidate, _)| select_plan_matches(candidate, query))
     {
         return Ok(CompiledQuery {
             sql: sql.clone(),
@@ -124,16 +125,157 @@ fn compile_select_with_cache<D: SqlDialect>(
         });
     }
 
+    let key = select_plan_key(query);
     let compiled = dialect.compile_select(entity, query)?;
     if let Ok(mut cache) = plan_cache.write() {
         if cache.len() >= 256 {
             cache.remove(0);
         }
-        if !cache.iter().any(|(candidate, _)| candidate == &key) {
+        if !cache
+            .iter()
+            .any(|(candidate, _)| select_plan_matches(candidate, query))
+        {
             cache.push((key, compiled.sql.clone()));
         }
     }
     Ok(compiled)
+}
+
+fn select_plan_matches(key: &SelectQuery, query: &SelectQuery) -> bool {
+    key.hard_limit == query.hard_limit
+        && key.entity == query.entity
+        && key.projection == query.projection
+        && key.expr_projection.len() == query.expr_projection.len()
+        && key
+            .expr_projection
+            .iter()
+            .zip(&query.expr_projection)
+            .all(|(left, right)| {
+                left.alias == right.alias && expr_plan_matches(&left.expr, &right.expr)
+            })
+        && key.search_with_text.is_some() == query.search_with_text.is_some()
+        && optional_expr_plan_matches(key.filter.as_ref(), query.filter.as_ref())
+        && optional_expr_plan_matches(key.having.as_ref(), query.having.as_ref())
+        && key.order_by.len() == query.order_by.len()
+        && key
+            .order_by
+            .iter()
+            .zip(&query.order_by)
+            .all(|(left, right)| {
+                left.field == right.field
+                    && left.direction == right.direction
+                    && optional_expr_plan_matches(left.expr.as_ref(), right.expr.as_ref())
+            })
+        && key.slice == query.slice
+        && key.partition_by == query.partition_by
+        && key.aggregates == query.aggregates
+        && key.group_by == query.group_by
+        && key.relations == query.relations
+        && key.aggregation_cache == query.aggregation_cache
+        && key.raw_sql == query.raw_sql
+        && key.raw_sql_search_criteria == query.raw_sql_search_criteria
+        && key.dynamic_properties == query.dynamic_properties
+        && key.raw_projections == query.raw_projections
+        && key.object_group_bys == query.object_group_bys
+        && key.child_enhancements == query.child_enhancements
+        && key.stream_config == query.stream_config
+        && key.continuous_page_fetch == query.continuous_page_fetch
+}
+
+fn optional_expr_plan_matches(key: Option<&Expr>, query: Option<&Expr>) -> bool {
+    match (key, query) {
+        (Some(key), Some(query)) => expr_plan_matches(key, query),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn expr_plan_matches(key: &Expr, query: &Expr) -> bool {
+    match (key, query) {
+        (Expr::Column(left), Expr::Column(right)) => left == right,
+        (Expr::Value(Value::List(left)), Expr::Value(Value::List(right))) => {
+            left.len() == right.len()
+        }
+        (Expr::Value(Value::List(_)), Expr::Value(_))
+        | (Expr::Value(_), Expr::Value(Value::List(_))) => false,
+        (Expr::Value(_), Expr::Value(_)) => true,
+        (
+            Expr::Function {
+                function: left_function,
+                args: left_args,
+            },
+            Expr::Function {
+                function: right_function,
+                args: right_args,
+            },
+        ) => left_function == right_function && expr_slice_plan_matches(left_args, right_args),
+        (
+            Expr::Binary {
+                left: left_left,
+                op: left_op,
+                right: left_right,
+            },
+            Expr::Binary {
+                left: right_left,
+                op: right_op,
+                right: right_right,
+            },
+        ) => {
+            left_op == right_op
+                && expr_plan_matches(left_left, right_left)
+                && expr_plan_matches(left_right, right_right)
+        }
+        (
+            Expr::SubQuery {
+                left: left_expr,
+                op: left_op,
+                entity: left_entity,
+                query: left_query,
+            },
+            Expr::SubQuery {
+                left: right_expr,
+                op: right_op,
+                entity: right_entity,
+                query: right_query,
+            },
+        ) => {
+            left_op == right_op
+                && left_entity == right_entity
+                && expr_plan_matches(left_expr, right_expr)
+                && select_plan_matches(left_query, right_query)
+        }
+        (
+            Expr::Between {
+                expr: left_expr,
+                lower: left_lower,
+                upper: left_upper,
+            },
+            Expr::Between {
+                expr: right_expr,
+                lower: right_lower,
+                upper: right_upper,
+            },
+        ) => {
+            expr_plan_matches(left_expr, right_expr)
+                && expr_plan_matches(left_lower, right_lower)
+                && expr_plan_matches(left_upper, right_upper)
+        }
+        (Expr::IsNull(left), Expr::IsNull(right))
+        | (Expr::IsNotNull(left), Expr::IsNotNull(right))
+        | (Expr::Not(left), Expr::Not(right)) => expr_plan_matches(left, right),
+        (Expr::And(left), Expr::And(right)) | (Expr::Or(left), Expr::Or(right)) => {
+            expr_slice_plan_matches(left, right)
+        }
+        _ => false,
+    }
+}
+
+fn expr_slice_plan_matches(left: &[Expr], right: &[Expr]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| expr_plan_matches(left, right))
 }
 
 fn select_plan_key(query: &SelectQuery) -> SelectQuery {
