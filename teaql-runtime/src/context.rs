@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
-use teaql_core::{EntityDescriptor, Record, UpdateCommand, Value};
+use teaql_core::{EntityDescriptor, UpdateCommand, Value};
 use teaql_sql::{CompiledQuery, DatabaseKind};
 
 use crate::{
@@ -697,17 +697,6 @@ impl UserContext {
         self.entity_graph_decoders = registry;
     }
 
-    pub(crate) fn decode_entity_into_graph(
-        &self,
-        entity: &str,
-        record: Record,
-        root: &EntityRoot,
-        graph: &mut EntityGraphBuilder,
-    ) -> Result<(), teaql_core::EntityError> {
-        self.entity_graph_decoders
-            .decode(entity, record, root, graph)
-    }
-
     pub(crate) fn has_entity_graph_decoder(&self, entity: &str) -> bool {
         self.entity_graph_decoders.contains(entity)
     }
@@ -757,48 +746,6 @@ impl UserContext {
         self.entity_graph_decoders.decode_compact_option(
             entity,
             rows,
-            root,
-            graph,
-            owner_entity,
-            owner_id,
-            relation,
-        )
-    }
-
-    pub(crate) fn decode_entity_list_into_graph(
-        &self,
-        entity: &str,
-        records: Vec<Record>,
-        root: &EntityRoot,
-        graph: &mut EntityGraphBuilder,
-        owner_entity: &str,
-        owner_id: u64,
-        relation: &str,
-    ) -> Result<(), teaql_core::EntityError> {
-        self.entity_graph_decoders.decode_list(
-            entity,
-            records,
-            root,
-            graph,
-            owner_entity,
-            owner_id,
-            relation,
-        )
-    }
-
-    pub(crate) fn decode_entity_option_into_graph(
-        &self,
-        entity: &str,
-        records: Vec<Record>,
-        root: &EntityRoot,
-        graph: &mut EntityGraphBuilder,
-        owner_entity: &str,
-        owner_id: u64,
-        relation: &str,
-    ) -> Result<(), teaql_core::EntityError> {
-        self.entity_graph_decoders.decode_option(
-            entity,
-            records,
             root,
             graph,
             owner_entity,

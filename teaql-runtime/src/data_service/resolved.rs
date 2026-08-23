@@ -97,9 +97,12 @@ where
                     )
                 })?;
                 if relation.many {
-                    context.decode_entity_list_into_graph(
+                    context.decode_compact_entity_list_into_graph(
                         &relation.target_entity,
-                        child_records,
+                        child_records
+                            .into_iter()
+                            .map(teaql_core::CompactRow::from_record)
+                            .collect(),
                         root,
                         graph,
                         entity_name,
@@ -107,9 +110,12 @@ where
                         &relation.name,
                     )?;
                 } else {
-                    context.decode_entity_option_into_graph(
+                    context.decode_compact_entity_option_into_graph(
                         &relation.target_entity,
-                        child_records,
+                        child_records
+                            .into_iter()
+                            .map(teaql_core::CompactRow::from_record)
+                            .collect(),
                         root,
                         graph,
                         entity_name,
@@ -128,9 +134,9 @@ where
                     )
                 })?;
                 if installed.insert((relation.target_entity.clone(), id)) {
-                    context.decode_entity_into_graph(
+                    context.decode_compact_entity_into_graph(
                         &relation.target_entity,
-                        child,
+                        teaql_core::CompactRow::from_record(child),
                         root,
                         graph,
                     )?;
