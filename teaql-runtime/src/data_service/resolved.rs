@@ -95,8 +95,13 @@ where
     }
 
     fn prepare_select_query(&self, query: &SelectQuery) -> Result<SelectQuery, RuntimeError> {
-        let mut query = query.clone();
+        self.prepare_select_query_owned(query.clone())
+    }
 
+    fn prepare_select_query_owned(
+        &self,
+        mut query: SelectQuery,
+    ) -> Result<SelectQuery, RuntimeError> {
         let mut full_trace = self.trace_context.clone();
         full_trace.extend(query.trace_chain);
         query.trace_chain = full_trace;
@@ -198,6 +203,25 @@ where
             .prepare_select_query(query)
             .map_err(DataServiceError::Runtime)?;
         let query = query
+            .prepare_for_list()
+            .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
+        if query.continuous_page_fetch.is_none()
+            && query.object_group_bys.is_empty()
+            && query.child_enhancements.is_empty()
+            && query.relations.is_empty()
+        {
+            return self.fetch_prepared_query_owned(query).await;
+        }
+        self.fetch_prepared_all(&query).await
+    }
+
+    async fn fetch_all_owned_internal(
+        &self,
+        query: SelectQuery,
+    ) -> Result<Vec<Record>, DataServiceError<E::Error>> {
+        let query = self
+            .prepare_select_query_owned(query)
+            .map_err(DataServiceError::Runtime)?
             .prepare_for_list()
             .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
         if query.continuous_page_fetch.is_none()
@@ -740,7 +764,33 @@ where
         let query = self
             .prepare_select_query(query)
             .map_err(DataServiceError::Runtime)?;
+        self.fetch_enhanced_entities_with_relation_aggregates_prepared(query, relation_aggregates)
+            .await
+    }
 
+    async fn fetch_enhanced_entities_with_relation_aggregates_owned_internal<T>(
+        &self,
+        query: SelectQuery,
+        relation_aggregates: &[RelationAggregate],
+    ) -> Result<SmartList<T>, DataServiceError<E::Error>>
+    where
+        T: Entity,
+    {
+        let query = self
+            .prepare_select_query_owned(query)
+            .map_err(DataServiceError::Runtime)?;
+        self.fetch_enhanced_entities_with_relation_aggregates_prepared(query, relation_aggregates)
+            .await
+    }
+
+    async fn fetch_enhanced_entities_with_relation_aggregates_prepared<T>(
+        &self,
+        query: SelectQuery,
+        relation_aggregates: &[RelationAggregate],
+    ) -> Result<SmartList<T>, DataServiceError<E::Error>>
+    where
+        T: Entity,
+    {
         if relation_aggregates.is_empty()
             && query.continuous_page_fetch.is_none()
             && query.object_group_bys.is_empty()
@@ -827,6 +877,14 @@ where
     }
 
     #[doc(hidden)]
+    pub async fn fetch_all_owned(
+        &self,
+        query: PurposedSelectQuery,
+    ) -> Result<Vec<Record>, DataServiceError<E::Error>> {
+        self.fetch_all_owned_internal(query.into_query()).await
+    }
+
+    #[doc(hidden)]
     pub async fn fetch_stream(
         &self,
         query: &PurposedSelectQuery,
@@ -901,6 +959,22 @@ where
     {
         self.fetch_enhanced_entities_with_relation_aggregates_internal(
             query.as_query(),
+            relation_aggregates,
+        )
+        .await
+    }
+
+    #[doc(hidden)]
+    pub async fn fetch_enhanced_entities_with_relation_aggregates_owned<T>(
+        &self,
+        query: PurposedSelectQuery,
+        relation_aggregates: &[RelationAggregate],
+    ) -> Result<SmartList<T>, DataServiceError<E::Error>>
+    where
+        T: Entity,
+    {
+        self.fetch_enhanced_entities_with_relation_aggregates_owned_internal(
+            query.into_query(),
             relation_aggregates,
         )
         .await
