@@ -1,4 +1,5 @@
 use std::any::{Any, TypeId};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -6,17 +7,40 @@ use teaql_core::{Record, SmartList, Value};
 
 #[derive(Debug, Clone)]
 pub struct EntityKey {
-    pub entity: String,
+    pub entity: Cow<'static, str>,
     pub id: Value,
-    id_key: String,
+    id_key: EntityIdentityKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum EntityIdentityKey {
+    Null,
+    Bool(bool),
+    I64(i64),
+    U64(u64),
+    F64(u64),
+    Decimal(rust_decimal::Decimal),
+    Text(String),
+    Date(chrono::NaiveDate),
+    Timestamp(i64),
+    Other(String),
 }
 
 impl EntityKey {
     pub fn new(entity: impl Into<String>, id: impl Into<Value>) -> Self {
         let id = id.into();
         Self {
-            entity: entity.into(),
-            id_key: value_key(&id),
+            entity: Cow::Owned(entity.into()),
+            id_key: entity_identity_key(&id),
+            id,
+        }
+    }
+
+    pub fn new_static(entity: &'static str, id: impl Into<Value>) -> Self {
+        let id = id.into();
+        Self {
+            entity: Cow::Borrowed(entity),
+            id_key: entity_identity_key(&id),
             id,
         }
     }
@@ -44,21 +68,20 @@ impl Ord for EntityKey {
     }
 }
 
-fn value_key(value: &Value) -> String {
+fn entity_identity_key(value: &Value) -> EntityIdentityKey {
     match value {
-        Value::Null => "null".to_owned(),
-        Value::Bool(value) => format!("bool:{value}"),
-        Value::I64(value) => format!("i64:{value}"),
-        Value::U64(value) => format!("u64:{value}"),
-        Value::F64(value) => format!("f64:{value}"),
-        Value::Decimal(value) => format!("decimal:{value}"),
-        Value::Text(value) => format!("text:{value}"),
-        Value::Json(value) => format!("json:{value}"),
-        Value::Date(value) => format!("date:{value}"),
-        Value::Timestamp(value) => format!("timestamp:{}", value.0),
-        Value::Object(_) => "object".to_owned(),
-        Value::List(_) => "list".to_owned(),
-        Value::TypedNull(_) => "null".to_owned(),
+        Value::Null | Value::TypedNull(_) => EntityIdentityKey::Null,
+        Value::Bool(value) => EntityIdentityKey::Bool(*value),
+        Value::I64(value) => EntityIdentityKey::I64(*value),
+        Value::U64(value) => EntityIdentityKey::U64(*value),
+        Value::F64(value) => EntityIdentityKey::F64(value.to_bits()),
+        Value::Decimal(value) => EntityIdentityKey::Decimal(*value),
+        Value::Text(value) => EntityIdentityKey::Text(value.clone()),
+        Value::Json(value) => EntityIdentityKey::Other(format!("json:{value}")),
+        Value::Date(value) => EntityIdentityKey::Date(*value),
+        Value::Timestamp(value) => EntityIdentityKey::Timestamp(value.0),
+        Value::Object(_) => EntityIdentityKey::Other("object".to_owned()),
+        Value::List(_) => EntityIdentityKey::Other("list".to_owned()),
     }
 }
 
@@ -175,6 +198,36 @@ pub struct EntityChangeSet {
     changes: BTreeMap<EntityKey, Record>,
 }
 
+#[derive(Debug, Default)]
+struct OriginalVersions {
+    first: Option<(EntityKey, i64)>,
+    overflow: BTreeMap<EntityKey, i64>,
+}
+
+impl OriginalVersions {
+    fn clear(&mut self) {
+        self.first = None;
+        self.overflow.clear();
+    }
+
+    fn get(&self, key: &EntityKey) -> Option<i64> {
+        self.first
+            .as_ref()
+            .and_then(|(first_key, version)| (first_key == key).then_some(*version))
+            .or_else(|| self.overflow.get(key).copied())
+    }
+
+    fn insert(&mut self, key: EntityKey, version: i64) {
+        match &mut self.first {
+            None => self.first = Some((key, version)),
+            Some((first_key, first_version)) if first_key == &key => *first_version = version,
+            Some(_) => {
+                self.overflow.insert(key, version);
+            }
+        }
+    }
+}
+
 impl EntityChangeSet {
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty()
@@ -284,7 +337,7 @@ pub struct RootContext {
     /// Trace chains associated with each entity key.
     trace_chains: std::collections::BTreeMap<EntityKey, Vec<teaql_core::TraceNode>>,
     /// Original versions of entities to perform optimistic concurrency control.
-    original_versions: std::collections::BTreeMap<EntityKey, i64>,
+    original_versions: OriginalVersions,
     /// Indicates if this entity root is entirely new.
     is_new: bool,
 }
@@ -548,7 +601,6 @@ impl EntityRoot {
             .unwrap_or_else(|e| e.into_inner())
             .original_versions
             .get(key)
-            .cloned()
     }
 
     pub fn get_trace_chain(&self, key: &EntityKey) -> Vec<teaql_core::TraceNode> {

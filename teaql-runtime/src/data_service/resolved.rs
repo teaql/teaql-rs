@@ -935,9 +935,10 @@ where
                 .map_err(DataServiceError::Entity);
         }
 
-        let use_flat_hydration = self
-            .supports_flat_relation_hydration(&query)
+        let flat_plans = self
+            .flat_relation_plans(&query)
             .map_err(DataServiceError::Runtime)?;
+        let use_flat_hydration = flat_plans.is_some();
         let mut root_query = query.clone();
         if use_flat_hydration {
             root_query.relations.clear();
@@ -950,12 +951,12 @@ where
             &query.trace_chain,
         )
         .await?;
-        let root = if use_flat_hydration {
+        let root = if let Some((query_plans, behavior_plans)) = flat_plans {
             let root = crate::EntityRoot::default();
             let mut graph = crate::EntityGraphBuilder::default();
-            self.hydrate_query_flat_relations_internal(&mut rows, &query, &root, &mut graph)
+            self.hydrate_flat_plans_internal(&mut rows, &query_plans, &root, &mut graph)
                 .await?;
-            self.hydrate_flat_relations_internal(&mut rows, &root, &mut graph)
+            self.hydrate_flat_plans_internal(&mut rows, &behavior_plans, &root, &mut graph)
                 .await?;
             root.freeze_graph(graph).map_err(|_| {
                 DataServiceError::Entity(teaql_core::EntityError::new(
@@ -991,20 +992,21 @@ where
             .prepare_select_query(query)
             .map_err(DataServiceError::Runtime)?;
 
-        let use_flat_hydration = self
-            .supports_flat_relation_hydration(&query)
+        let flat_plans = self
+            .flat_relation_plans(&query)
             .map_err(DataServiceError::Runtime)?;
+        let use_flat_hydration = flat_plans.is_some();
         let mut root_query = query.clone();
         if use_flat_hydration {
             root_query.relations.clear();
         }
         let mut rows = self.fetch_prepared_all(&root_query).await?;
-        let root = if use_flat_hydration {
+        let root = if let Some((query_plans, behavior_plans)) = flat_plans {
             let root = crate::EntityRoot::default();
             let mut graph = crate::EntityGraphBuilder::default();
-            self.hydrate_query_flat_relations_internal(&mut rows, &query, &root, &mut graph)
+            self.hydrate_flat_plans_internal(&mut rows, &query_plans, &root, &mut graph)
                 .await?;
-            self.hydrate_flat_relations_internal(&mut rows, &root, &mut graph)
+            self.hydrate_flat_plans_internal(&mut rows, &behavior_plans, &root, &mut graph)
                 .await?;
             root.freeze_graph(graph).map_err(|_| {
                 DataServiceError::Entity(teaql_core::EntityError::new(

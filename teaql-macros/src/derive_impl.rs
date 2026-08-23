@@ -76,6 +76,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     let mut from_record_fields = Vec::new();
     let mut record_value_slots = Vec::new();
     let mut record_value_match_arms = Vec::new();
+    let mut known_load_fields = Vec::new();
     let mut into_record_fields = Vec::new();
     let mut id_impl = None;
     let mut version_impl = None;
@@ -143,6 +144,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                         #delete_missing
                 );
             });
+            known_load_fields.push(field_name.clone());
             let from_relation = from_relation_value_tokens(&field.ty, &field_name, &entity_name);
             let into_relation = into_relation_value_tokens(&field.ty, quote! { self.#field_ident });
             from_record_fields.push(quote! {
@@ -215,6 +217,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                     #version_tokens
             );
         });
+        known_load_fields.push(field_name.clone());
 
         let value_slot = format_ident!("__teaql_value_{}", field_ident);
         record_value_slots.push(quote! {
@@ -307,7 +310,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         let original_version = match (&id_field_ident, &version_field_ident) {
             (Some(id_ident), Some(version_ident)) => quote! {
                 entity.root.set_original_version(
-                    ::teaql_runtime::EntityKey::new(#entity_name, entity.#id_ident),
+                    ::teaql_runtime::EntityKey::new_static(#entity_name, entity.#id_ident),
                     entity.#version_ident,
                 );
             },
@@ -353,7 +356,15 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
 
     let set_load_state_impl = if has_load_state_field {
         quote! {
-            entity.__load_state = ::teaql_core::eval::LoadState::Partial(record.keys().cloned().collect());
+            entity.__load_state = ::teaql_core::eval::LoadState::PartialCompact(
+                record
+                    .keys()
+                    .map(|key| match key.as_str() {
+                        #(#known_load_fields => ::std::borrow::Cow::Borrowed(#known_load_fields),)*
+                        _ => ::std::borrow::Cow::Owned(key.clone()),
+                    })
+                    .collect(),
+            );
         }
     } else {
         Default::default()

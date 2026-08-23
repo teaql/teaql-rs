@@ -155,6 +155,9 @@ pub trait RuntimeTelemetryScope: Send {
 
 pub trait RuntimeTelemetry: Send + Sync {
     fn start(&self, operation: RuntimeOperation) -> Box<dyn RuntimeTelemetryScope>;
+    fn is_noop(&self) -> bool {
+        false
+    }
     fn extract_context(
         &self,
         _carrier: &BTreeMap<String, String>,
@@ -218,6 +221,10 @@ pub struct NoopRuntimeTelemetry;
 impl RuntimeTelemetry for NoopRuntimeTelemetry {
     fn start(&self, _operation: RuntimeOperation) -> Box<dyn RuntimeTelemetryScope> {
         Box::new(NoopRuntimeTelemetryScope)
+    }
+
+    fn is_noop(&self) -> bool {
+        true
     }
 }
 

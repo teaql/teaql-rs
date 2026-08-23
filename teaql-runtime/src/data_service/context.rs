@@ -85,17 +85,21 @@ where
         + Sync
         + 'static,
 {
-    async fn observe<T, F>(
+    async fn observe<T, F, N>(
         &self,
         family: &str,
-        name: String,
+        name: N,
         entity: &str,
         work: F,
     ) -> Result<T, DataServiceError<E::Error>>
     where
         F: Future<Output = Result<T, DataServiceError<E::Error>>>,
+        N: FnOnce() -> String,
     {
-        let operation = crate::RuntimeOperation::new(family, name)
+        if self.metadata.context.runtime_telemetry_is_noop() {
+            return work.await;
+        }
+        let operation = crate::RuntimeOperation::new(family, name())
             .attribute("teaql.entity.type", entity.to_owned());
         let scope = self.metadata.context.start_runtime_operation(operation);
         let provider_kind = std::any::type_name::<E>().to_owned();
@@ -142,7 +146,7 @@ where
         query.comment = final_comment;
         self.observe(
             "query",
-            format!("{}.list", query.entity),
+            || format!("{}.list", query.entity),
             &query.entity,
             self.data_service().fetch_all(&query),
         )
@@ -155,7 +159,7 @@ where
     ) -> Result<SmartList<Record>, DataServiceError<E::Error>> {
         self.observe(
             "query",
-            format!("{}.list", query.entity),
+            || format!("{}.list", query.entity),
             &query.entity,
             self.data_service().fetch_smart_list(query),
         )
@@ -171,7 +175,7 @@ where
     {
         self.observe(
             "query",
-            format!("{}.list", query.entity),
+            || format!("{}.list", query.entity),
             &query.entity,
             self.data_service().fetch_entities(query),
         )
@@ -187,7 +191,7 @@ where
     {
         self.observe(
             "query",
-            format!("{}.list", query.entity),
+            || format!("{}.list", query.entity),
             &query.entity,
             self.data_service().fetch_enhanced_entities(query),
         )
@@ -201,7 +205,7 @@ where
         let affected = self
             .observe(
                 "mutation",
-                format!("{}.insert", command.entity),
+                || format!("{}.insert", command.entity),
                 &command.entity,
                 self.data_service().insert(command),
             )
@@ -217,7 +221,7 @@ where
         let affected = self
             .observe(
                 "mutation",
-                format!("{}.update", command.entity),
+                || format!("{}.update", command.entity),
                 &command.entity,
                 self.data_service().update(command),
             )
@@ -233,7 +237,7 @@ where
         let affected = self
             .observe(
                 "mutation",
-                format!("{}.batch_insert", command.entity),
+                || format!("{}.batch_insert", command.entity),
                 &command.entity,
                 self.data_service().batch_insert(command),
             )
@@ -249,7 +253,7 @@ where
         let affected = self
             .observe(
                 "mutation",
-                format!("{}.batch_update", command.entity),
+                || format!("{}.batch_update", command.entity),
                 &command.entity,
                 self.data_service().batch_update(command),
             )
@@ -265,7 +269,7 @@ where
         let affected = self
             .observe(
                 "mutation",
-                format!("{}.delete", command.entity),
+                || format!("{}.delete", command.entity),
                 &command.entity,
                 self.data_service().delete(command),
             )
@@ -281,7 +285,7 @@ where
         let affected = self
             .observe(
                 "mutation",
-                format!("{}.recover", command.entity),
+                || format!("{}.recover", command.entity),
                 &command.entity,
                 self.data_service().recover(command),
             )
@@ -323,11 +327,7 @@ where
                         let _ = write!(chain, "{}({id}): {}", node.entity_type, node.comment);
                     }
                     None => {
-                        let _ = write!(
-                            chain,
-                            "{}(pending): {}",
-                            node.entity_type, node.comment
-                        );
+                        let _ = write!(chain, "{}(pending): {}", node.entity_type, node.comment);
                     }
                 }
             }

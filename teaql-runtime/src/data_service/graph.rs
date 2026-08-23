@@ -1309,7 +1309,7 @@ where
         // 1. Execute Deletes
         for key in deleted_keys.iter() {
             let id = key.id.clone();
-            let mut cmd = teaql_core::DeleteCommand::new(&key.entity, id);
+            let mut cmd = teaql_core::DeleteCommand::new(key.entity.as_ref(), id);
             if let Some(version) = root.get_original_version(key) {
                 cmd = cmd.expected_version(version);
             }
@@ -1361,7 +1361,7 @@ where
             match is_new {
                 true => {
                     insert_batches
-                        .entry(key.entity.clone())
+                        .entry(key.entity.to_string())
                         .or_default()
                         .push(key.clone());
                 }
@@ -1370,7 +1370,7 @@ where
                     fields.sort();
                     let signature = fields.join(",");
                     update_batches
-                        .entry((key.entity.clone(), signature))
+                        .entry((key.entity.to_string(), signature))
                         .or_default()
                         .push(key.clone());
                 }

@@ -84,41 +84,24 @@ where
         Ok(())
     }
 
-    pub(crate) async fn hydrate_flat_relations_internal(
+    pub(crate) async fn hydrate_flat_plans_internal(
         &self,
         parent_rows: &mut [Record],
+        plans: &[RelationLoadPlan],
         root: &crate::EntityRoot,
         graph: &mut crate::EntityGraphBuilder,
     ) -> Result<(), DataServiceError<E::Error>> {
-        let plans = self.relation_plans().map_err(DataServiceError::Runtime)?;
         for plan in plans {
-            self.hydrate_flat_plan(parent_rows, &plan, root, graph)
+            self.hydrate_flat_plan(parent_rows, plan, root, graph)
                 .await?;
         }
         Ok(())
     }
 
-    pub(crate) async fn hydrate_query_flat_relations_internal(
-        &self,
-        parent_rows: &mut [Record],
-        query: &SelectQuery,
-        root: &crate::EntityRoot,
-        graph: &mut crate::EntityGraphBuilder,
-    ) -> Result<(), DataServiceError<E::Error>> {
-        let plans = self
-            .build_relation_plans_from_loads(&query.entity, &query.relations)
-            .map_err(DataServiceError::Runtime)?;
-        for plan in plans {
-            self.hydrate_flat_plan(parent_rows, &plan, root, graph)
-                .await?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn supports_flat_relation_hydration(
+    pub(crate) fn flat_relation_plans(
         &self,
         query: &SelectQuery,
-    ) -> Result<bool, RuntimeError> {
+    ) -> Result<Option<(Vec<RelationLoadPlan>, Vec<RelationLoadPlan>)>, RuntimeError> {
         let context = self.data_service.metadata.context;
         let query_plans = self.build_relation_plans_from_loads(&query.entity, &query.relations)?;
         let behavior_plans = self.relation_plans()?;
@@ -131,7 +114,8 @@ where
         Ok(query_plans
             .iter()
             .chain(behavior_plans.iter())
-            .all(|plan| supported(context, plan)))
+            .all(|plan| supported(context, plan))
+            .then_some((query_plans, behavior_plans)))
     }
 
     pub(crate) fn enhance_relation_aggregates_internal<'b>(

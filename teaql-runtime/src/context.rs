@@ -462,6 +462,10 @@ impl UserContext {
         &self.runtime_telemetry
     }
 
+    pub(crate) fn runtime_telemetry_is_noop(&self) -> bool {
+        self.runtime_telemetry.is_noop()
+    }
+
     pub fn start_runtime_operation(
         &self,
         operation: crate::RuntimeOperation,
@@ -1276,7 +1280,7 @@ impl UserContext {
             let _entity = self
                 .require_entity(&key.entity)
                 .map_err(DataServiceError::Runtime)?;
-            let mut command = UpdateCommand::new(&key.entity, key.id.clone());
+            let mut command = UpdateCommand::new(key.entity.as_ref(), key.id.clone());
             for (field, value) in changes {
                 command = command.value(field.clone(), value.clone());
             }

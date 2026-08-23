@@ -6,6 +6,9 @@ pub enum LoadState {
     #[default]
     NotLoaded,
     Partial(std::collections::HashSet<String>),
+    /// Compact generated-entity representation. Known fields borrow their generated static
+    /// names; only genuinely dynamic projection aliases need to own a string.
+    PartialCompact(Vec<std::borrow::Cow<'static, str>>),
     FullyLoaded,
 }
 
@@ -15,6 +18,9 @@ impl LoadState {
             LoadState::NotLoaded => false,
             LoadState::FullyLoaded => true,
             LoadState::Partial(set) => set.contains(field_or_relation),
+            LoadState::PartialCompact(fields) => fields
+                .iter()
+                .any(|field| field.as_ref() == field_or_relation),
         }
     }
 }
