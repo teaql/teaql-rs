@@ -139,6 +139,8 @@ impl<
                 .await
                 .map_err(SqlExecutorError::Transport)?;
             let end = SystemTime::now();
+            let debug_query = compiled.debug_sql(self.dialect.kind());
+            let CompiledQuery { sql, params, .. } = compiled;
 
             let metadata = ExecutionMetadata {
                 backend: "sql".to_string(),
@@ -150,9 +152,9 @@ impl<
                 trace_chain: request.trace_chain,
                 comment: request.comment,
                 backend_request_id: None,
-                parameterized_query: Some(compiled.sql.clone()),
-                params: compiled.params.clone(),
-                debug_query: Some(compiled.debug_sql(self.dialect.kind())),
+                parameterized_query: Some(sql),
+                params,
+                debug_query: Some(debug_query),
             };
 
             Ok(QueryResult { rows, metadata })
