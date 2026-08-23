@@ -8,7 +8,8 @@ use teaql_core::request::{
     runtime_relation_aggregates,
 };
 use teaql_core::{
-    CompactRow, Expr, Record, RelationAggregate as RuntimeRelationAggregate, SelectQuery, SmartList, TraceNode,
+    CompactRow, Expr, RelationAggregate as RuntimeRelationAggregate, SelectQuery, SmartList,
+    TraceNode,
 };
 
 pub trait TeaqlQueryDataService {
@@ -170,7 +171,7 @@ pub trait TeaqlRuntime {
         query: &PurposedSelectQuery,
         relation_aggregates: &[RuntimeRelationAggregate],
         trace_context: Vec<TraceNode>,
-    ) -> impl std::future::Future<Output = Result<SmartList<Record>, RuntimeError>> + Send;
+    ) -> impl std::future::Future<Output = Result<SmartList<CompactRow>, RuntimeError>> + Send;
 }
 
 /// Internal trait for audited save access. Application code should not use this trait directly.
@@ -239,7 +240,7 @@ pub async fn execute_facets<C>(
     context: &C,
     outer_query: &SelectQuery,
     options: &QueryOptions,
-) -> Result<BTreeMap<String, SmartList<Record>>, RuntimeError>
+) -> Result<BTreeMap<String, SmartList<CompactRow>>, RuntimeError>
 where
     C: TeaqlRuntime + ?Sized,
 {

@@ -724,7 +724,7 @@ where
 
     fn enhance_child_record<'b>(
         &'b self,
-        child: &'b mut teaql_core::Record,
+        child: &'b mut std::collections::BTreeMap<String, Value>,
         plans: &'b [RelationLoadPlan],
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,

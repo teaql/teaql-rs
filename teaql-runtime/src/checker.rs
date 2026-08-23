@@ -308,7 +308,7 @@ impl CheckerRegistry for InMemoryCheckerRegistry {
 // ---------------------------------------------------------------------------
 
 /// Typed version of [`Checker`] that works with concrete entity types (`T`)
-/// instead of generic [`Record`]s.
+/// instead of generic value maps.
 ///
 /// Implement this trait for per-entity checker logic structs, then wrap
 /// them in [`TypedEntityChecker`] so they satisfy the [`Checker`] trait
