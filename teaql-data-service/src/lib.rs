@@ -21,6 +21,9 @@ pub struct QueryRequest {
     pub query: SelectQuery,
     pub trace_chain: Vec<TraceNode>,
     pub comment: Option<String>,
+    /// Build a copy-paste representation with bind values interpolated.
+    /// Runtimes should disable this when query logging is disabled.
+    pub capture_debug_query: bool,
 }
 
 #[derive(Debug, Clone)]

@@ -25,6 +25,7 @@ where
             query: query.clone(),
             trace_chain: query.trace_chain.clone(),
             comment: query.comment.clone(),
+            capture_debug_query: self.metadata.capture_query_debug(),
         };
         let res = self
             .executor
@@ -42,6 +43,7 @@ where
             query: query.clone(),
             trace_chain: query.trace_chain.clone(),
             comment: query.comment.clone(),
+            capture_debug_query: self.metadata.capture_query_debug(),
         };
         let res = self
             .executor

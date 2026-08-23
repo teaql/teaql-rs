@@ -58,4 +58,8 @@ impl MetadataStore for UserContextMetadata<'_> {
     fn record_metadata_log(&self, metadata: &teaql_data_service::ExecutionMetadata) {
         self.context.record_metadata_log(metadata);
     }
+
+    fn capture_query_debug(&self) -> bool {
+        self.context.sql_log_options().select
+    }
 }

@@ -200,6 +200,7 @@ where
             query: core_query,
             trace_chain: vec![trace],
             comment: Some(client_comment),
+            capture_debug_query: true,
         };
 
         let result = self

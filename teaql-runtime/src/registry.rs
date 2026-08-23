@@ -15,6 +15,9 @@ pub trait MetadataStore: Send + Sync {
     fn entity(&self, name: &str) -> Option<&EntityDescriptor>;
     fn all_entities(&self) -> Vec<&EntityDescriptor>;
     fn record_metadata_log(&self, _metadata: &teaql_data_service::ExecutionMetadata) {}
+    fn capture_query_debug(&self) -> bool {
+        true
+    }
 }
 
 pub trait EntityRegistry: Send + Sync {

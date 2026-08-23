@@ -9,7 +9,8 @@ use teaql_core::{
 
 use crate::{
     CheckObjectStatus, ContinuousPageCursor, DataServiceError, EntityDataServiceBehavior,
-    PurposedSelectQuery, RawAuditEvent, RuntimeError, clear_record_status, mark_record_status,
+    MetadataStore, PurposedSelectQuery, RawAuditEvent, RuntimeError, clear_record_status,
+    mark_record_status,
 };
 
 use super::{
@@ -447,6 +448,7 @@ where
             query: query.clone(),
             trace_chain: query.trace_chain.clone(),
             comment: query.comment.clone(),
+            capture_debug_query: self.data_service.metadata.capture_query_debug(),
         };
 
         let chunks = self.data_service.executor.query_stream(request, chunk_size);
@@ -526,6 +528,7 @@ where
             query: query.clone(),
             trace_chain: query.trace_chain.clone(),
             comment: query.comment.clone(),
+            capture_debug_query: self.data_service.metadata.capture_query_debug(),
         };
         let res = self
             .data_service
@@ -556,6 +559,7 @@ where
         let request = teaql_data_service::QueryRequest {
             trace_chain: query.trace_chain.clone(),
             comment: query.comment.clone(),
+            capture_debug_query: self.data_service.metadata.capture_query_debug(),
             query,
         };
         let res = self
@@ -595,6 +599,7 @@ where
                     query: query.clone(),
                     trace_chain: query.trace_chain.clone(),
                     comment: query.comment.clone(),
+                    capture_debug_query: self.data_service.metadata.capture_query_debug(),
                 };
                 let provider_kind = std::any::type_name::<E>().to_owned();
                 let provider_scope = self.data_service.metadata.context.start_runtime_operation(

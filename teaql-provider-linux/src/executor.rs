@@ -176,6 +176,7 @@ mod tests {
                 .projects(["name"]),
             trace_chain: vec![trace.clone()],
             comment: Some("Load the second matching fixture".to_owned()),
+            capture_debug_query: true,
         };
 
         let result = executor().query(request).await.unwrap();
@@ -205,6 +206,7 @@ mod tests {
                 .aggregate(Aggregate::count("matching")),
             trace_chain: Vec::new(),
             comment: None,
+            capture_debug_query: true,
         };
 
         let result = executor().query(request).await.unwrap();

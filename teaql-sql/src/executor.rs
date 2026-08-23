@@ -190,11 +190,12 @@ mod tests {
         }
     }
 
-    fn query_request() -> QueryRequest {
+    fn query_request(capture_debug_query: bool) -> QueryRequest {
         QueryRequest {
             query: SelectQuery::new("Order"),
             trace_chain: Vec::new(),
             comment: None,
+            capture_debug_query,
         }
     }
 
@@ -209,10 +210,11 @@ mod tests {
             },
         );
 
-        executor.query(query_request()).await.unwrap();
-        executor.clone().query(query_request()).await.unwrap();
+        let result = executor.query(query_request(false)).await.unwrap();
+        executor.clone().query(query_request(true)).await.unwrap();
 
         assert_eq!(lookups.load(Ordering::Relaxed), 1);
+        assert!(result.metadata.debug_query.is_none());
     }
 }
 
@@ -246,7 +248,9 @@ impl<
                 .await
                 .map_err(SqlExecutorError::Transport)?;
             let end = SystemTime::now();
-            let debug_query = compiled.debug_sql(self.dialect.kind());
+            let debug_query = request
+                .capture_debug_query
+                .then(|| compiled.debug_sql(self.dialect.kind()));
             let CompiledQuery { sql, params, .. } = compiled;
 
             let metadata = ExecutionMetadata {
@@ -261,7 +265,7 @@ impl<
                 backend_request_id: None,
                 parameterized_query: Some(sql),
                 params,
-                debug_query: Some(debug_query),
+                debug_query,
             };
 
             Ok(QueryResult { rows, metadata })
@@ -489,7 +493,9 @@ impl<
                 backend_request_id: None,
                 parameterized_query: Some(compiled.sql.clone()),
                 params: compiled.params.clone(),
-                debug_query: Some(compiled.debug_sql(self.dialect.kind())),
+                debug_query: request
+                    .capture_debug_query
+                    .then(|| compiled.debug_sql(self.dialect.kind())),
             };
 
             Ok(QueryResult { rows, metadata })
