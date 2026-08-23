@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use crate::{BaseEntity, BaseEntityData, Entity, Record, SmartList, Value, record_to_json_value};
+use crate::{
+    BaseEntity, BaseEntityData, Entity, Record, SmartList, Value, compact_row_to_json_value,
+    record_to_json_value,
+};
 
 pub const STYLE_KEY: &str = "style";
 pub const ACTION_LIST_KEY: &str = "actionList";
@@ -368,7 +371,11 @@ impl WebResponse {
         let total_count = smart_list.total_count_or_len();
         let mut facets = BTreeMap::new();
         for (key, facet_list) in smart_list.take_facets() {
-            let data: Vec<_> = facet_list.data.iter().map(record_to_json_value).collect();
+            let data: Vec<_> = facet_list
+                .data
+                .iter()
+                .map(compact_row_to_json_value)
+                .collect();
             facets.insert(key, serde_json::Value::Array(data));
         }
         Self::from_entities(smart_list)

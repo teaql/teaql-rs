@@ -1156,16 +1156,20 @@ where
     pub async fn fetch_all(
         &self,
         query: &PurposedSelectQuery,
-    ) -> Result<Vec<Record>, DataServiceError<E::Error>> {
-        self.fetch_all_internal(query.as_query()).await
+    ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
+        self.fetch_all_internal(query.as_query()).await.map(|rows| {
+            rows.into_iter().map(teaql_core::CompactRow::from_record).collect()
+        })
     }
 
     #[doc(hidden)]
     pub async fn fetch_all_owned(
         &self,
         query: PurposedSelectQuery,
-    ) -> Result<Vec<Record>, DataServiceError<E::Error>> {
-        self.fetch_all_owned_internal(query.into_query()).await
+    ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
+        self.fetch_all_owned_internal(query.into_query()).await.map(|rows| {
+            rows.into_iter().map(teaql_core::CompactRow::from_record).collect()
+        })
     }
 
     #[doc(hidden)]
@@ -1192,8 +1196,10 @@ where
     pub async fn fetch_smart_list(
         &self,
         query: &PurposedSelectQuery,
-    ) -> Result<SmartList<Record>, DataServiceError<E::Error>> {
-        self.fetch_smart_list_internal(query.as_query()).await
+    ) -> Result<SmartList<teaql_core::CompactRow>, DataServiceError<E::Error>> {
+        self.fetch_smart_list_internal(query.as_query()).await.map(|rows| {
+            SmartList::from(rows.into_iter().map(teaql_core::CompactRow::from_record).collect::<Vec<_>>())
+        })
     }
 
     #[doc(hidden)]
@@ -1201,12 +1207,14 @@ where
         &self,
         query: &PurposedSelectQuery,
         relation_aggregates: &[RelationAggregate],
-    ) -> Result<SmartList<Record>, DataServiceError<E::Error>> {
+    ) -> Result<SmartList<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         self.fetch_smart_list_with_relation_aggregates_internal(
             query.as_query(),
             relation_aggregates,
         )
-        .await
+        .await.map(|rows| SmartList::from(
+            rows.into_iter().map(teaql_core::CompactRow::from_record).collect::<Vec<_>>()
+        ))
     }
 
     #[doc(hidden)]

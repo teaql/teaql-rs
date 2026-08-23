@@ -763,7 +763,7 @@ pub type Record = BTreeMap<String, Value>;
 ///
 /// Providers use this representation for typed decoding so a 100-row result does
 /// not allocate 100 copies of every projected column name (or 100 B-trees).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CompactRow {
     columns: Arc<[String]>,
     values: Vec<Value>,

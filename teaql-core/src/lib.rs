@@ -741,7 +741,7 @@ mod tests {
         facet_record.insert("status".to_owned(), Value::Text("PENDING".to_owned()));
         facet_record.insert("count".to_owned(), Value::I64(5));
 
-        let facet_list = SmartList::from(vec![facet_record]);
+        let facet_list = SmartList::from(vec![CompactRow::from_record(facet_record)]);
 
         let mut list = SmartList::from(vec![entity])
             .with_total_count(99)

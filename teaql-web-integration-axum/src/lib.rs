@@ -100,7 +100,7 @@ impl<T> WebResponse<T> {
             let data: Vec<_> = facet_list
                 .data
                 .iter()
-                .map(teaql_core::record_to_json_value)
+                .map(teaql_core::compact_row_to_json_value)
                 .collect();
             facets.insert(key, serde_json::Value::Array(data));
         }

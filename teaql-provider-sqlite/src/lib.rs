@@ -9,8 +9,8 @@ use rusqlite::types::{Value as SqliteValue, ValueRef};
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use rust_decimal::Decimal;
 use teaql_core::{
-    DataType, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, Record, SelectQuery,
-    UpdateCommand, Value,
+    CompactRow, DataType, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, Record,
+    SelectQuery, UpdateCommand, Value,
 };
 use teaql_runtime::{
     GraphNode, InternalIdGenerator, RawAuditEvent, RuntimeError, SchemaProvider, UserContext,
@@ -217,6 +217,30 @@ impl SqliteMutationExecutor {
         Ok(records)
     }
 
+    pub fn fetch_all_compact(
+        &self,
+        query: &CompiledQuery,
+    ) -> Result<Vec<CompactRow>, MutationExecutorError> {
+        let params = bind_values(&query.params)?;
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(&query.sql_with_comment())?;
+        let columns = statement_columns(&statement);
+        let column_names: Arc<[String]> = columns
+            .iter()
+            .map(|column| column.name.clone())
+            .collect::<Vec<_>>()
+            .into();
+        let mut rows = statement.query(params_from_iter(params.iter()))?;
+        let mut result = Vec::new();
+        while let Some(row) = rows.next()? {
+            result.push(CompactRow::new(
+                column_names.clone(),
+                decode_sqlite_values(row, &columns)?,
+            ));
+        }
+        Ok(result)
+    }
+
     /// Fetch rows in streaming mode (chunked).
     /// Returns a Vec of StreamChunk, each containing up to `chunk_size` rows.
     pub fn fetch_stream(
@@ -308,6 +332,13 @@ impl SqlTransport for SqliteMutationExecutor {
 
     async fn fetch_all_sql(&self, query: &CompiledQuery) -> Result<Vec<Record>, Self::Error> {
         SqliteMutationExecutor::fetch_all(self, query)
+    }
+
+    async fn fetch_all_compact_sql(
+        &self,
+        query: &CompiledQuery,
+    ) -> Result<Vec<CompactRow>, Self::Error> {
+        SqliteMutationExecutor::fetch_all_compact(self, query)
     }
 
     async fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
@@ -787,7 +818,19 @@ fn decode_sqlite_row(
     row: &Row<'_>,
     columns: &[ColumnInfo],
 ) -> Result<Record, MutationExecutorError> {
-    let mut record = BTreeMap::new();
+    let values = decode_sqlite_values(row, columns)?;
+    Ok(columns
+        .iter()
+        .map(|column| column.name.clone())
+        .zip(values)
+        .collect())
+}
+
+fn decode_sqlite_values(
+    row: &Row<'_>,
+    columns: &[ColumnInfo],
+) -> Result<Vec<Value>, MutationExecutorError> {
+    let mut values = Vec::with_capacity(columns.len());
     for (index, column) in columns.iter().enumerate() {
         let value_ref = row.get_ref(index)?;
         let value = match value_ref {
@@ -801,9 +844,9 @@ fn decode_sqlite_row(
                 ));
             }
         };
-        record.insert(column.name.clone(), value);
+        values.push(value);
     }
-    Ok(record)
+    Ok(values)
 }
 
 fn decode_sqlite_integer(value: i64, column: &ColumnInfo) -> Value {

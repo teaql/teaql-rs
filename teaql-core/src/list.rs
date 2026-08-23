@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::hash::Hash;
 use std::ops::{Index, IndexMut};
 
-use crate::{Entity, IdentifiableEntity, Record, Value, VersionedEntity};
+use crate::{CompactRow, Entity, IdentifiableEntity, Record, Value, VersionedEntity};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SmartList<T> {
@@ -10,7 +10,7 @@ pub struct SmartList<T> {
     pub total_count: Option<u64>,
     pub aggregations: Record,
     pub summary: Record,
-    pub facets: BTreeMap<String, SmartList<Record>>,
+    pub facets: BTreeMap<String, SmartList<CompactRow>>,
     pub is_loaded: bool,
 }
 
@@ -66,36 +66,36 @@ impl<T> SmartList<T> {
         self
     }
 
-    pub fn with_facet(mut self, key: impl Into<String>, facet: SmartList<Record>) -> Self {
+    pub fn with_facet(mut self, key: impl Into<String>, facet: SmartList<CompactRow>) -> Self {
         self.facets.insert(key.into(), facet);
         self
     }
 
-    pub fn add_facet(&mut self, key: impl Into<String>, facet: SmartList<Record>) {
+    pub fn add_facet(&mut self, key: impl Into<String>, facet: SmartList<CompactRow>) {
         self.facets.insert(key.into(), facet);
     }
 
-    pub fn facets(&self) -> &BTreeMap<String, SmartList<Record>> {
+    pub fn facets(&self) -> &BTreeMap<String, SmartList<CompactRow>> {
         &self.facets
     }
 
-    pub fn facets_mut(&mut self) -> &mut BTreeMap<String, SmartList<Record>> {
+    pub fn facets_mut(&mut self) -> &mut BTreeMap<String, SmartList<CompactRow>> {
         &mut self.facets
     }
 
-    pub fn facet(&self, key: &str) -> Option<&SmartList<Record>> {
+    pub fn facet(&self, key: &str) -> Option<&SmartList<CompactRow>> {
         self.facets.get(key)
     }
 
-    pub fn facet_mut(&mut self, key: &str) -> Option<&mut SmartList<Record>> {
+    pub fn facet_mut(&mut self, key: &str) -> Option<&mut SmartList<CompactRow>> {
         self.facets.get_mut(key)
     }
 
-    pub fn remove_facet(&mut self, key: &str) -> Option<SmartList<Record>> {
+    pub fn remove_facet(&mut self, key: &str) -> Option<SmartList<CompactRow>> {
         self.facets.remove(key)
     }
 
-    pub fn take_facets(&mut self) -> BTreeMap<String, SmartList<Record>> {
+    pub fn take_facets(&mut self) -> BTreeMap<String, SmartList<CompactRow>> {
         std::mem::take(&mut self.facets)
     }
 

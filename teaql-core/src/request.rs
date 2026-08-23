@@ -15,8 +15,9 @@ use std::collections::BTreeMap;
 use serde_json::Value as JsonValue;
 
 use crate::{
-    BinaryOp, Expr, ObjectGroupBy as CoreObjectGroupBy, RawSqlProjection as CoreRawSqlProjection,
-    Record, RelationAggregate as RuntimeRelationAggregate, SelectQuery, SmartList, Value,
+    BinaryOp, CompactRow, Expr, ObjectGroupBy as CoreObjectGroupBy,
+    RawSqlProjection as CoreRawSqlProjection, RelationAggregate as RuntimeRelationAggregate,
+    SelectQuery, SmartList, Value,
 };
 
 // ---------------------------------------------------------------------------
@@ -440,7 +441,7 @@ pub fn merge_outer_filter_into_facet_aggregates(
     }
 }
 
-pub fn attach_facets<T>(rows: &mut SmartList<T>, facets: BTreeMap<String, SmartList<Record>>) {
+pub fn attach_facets<T>(rows: &mut SmartList<T>, facets: BTreeMap<String, SmartList<CompactRow>>) {
     for (name, facet) in facets {
         rows.add_facet(name, facet);
     }
