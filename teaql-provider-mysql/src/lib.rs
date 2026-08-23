@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -7,8 +6,8 @@ use rust_decimal::Decimal;
 use std::str::FromStr;
 use std::sync::Arc;
 use teaql_core::{
-    DataType, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, Record, SelectQuery,
-    UpdateCommand, Value,
+    CompactRow, DataType, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, Record,
+    SelectQuery, UpdateCommand, Value,
 };
 use teaql_runtime::{GraphNode, InternalIdGenerator, RuntimeError, SchemaProvider, UserContext};
 use teaql_sql::{
@@ -248,6 +247,25 @@ impl MysqlMutationExecutor {
         Ok(records)
     }
 
+    pub async fn fetch_all_compact(
+        &self,
+        query: &CompiledQuery,
+    ) -> Result<Vec<CompactRow>, MutationExecutorError> {
+        let params = query
+            .params
+            .iter()
+            .map(bind_mysql)
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut conn = self.pool.get_conn().await?;
+        let rows: Vec<mysql_async::Row> = conn
+            .exec(
+                query.sql_with_comment(),
+                mysql_async::Params::Positional(params),
+            )
+            .await?;
+        decode_mysql_compact_rows(rows)
+    }
+
     async fn table_exists(&self, table_name: &str) -> Result<bool, MutationExecutorError> {
         let mut conn = self.pool.get_conn().await?;
         let exists: Option<i64> = conn
@@ -289,6 +307,13 @@ impl teaql_sql::SqlTransport for MysqlMutationExecutor {
 
     async fn fetch_all_sql(&self, query: &CompiledQuery) -> Result<Vec<Record>, Self::Error> {
         self.fetch_all(query).await
+    }
+
+    async fn fetch_all_compact_sql(
+        &self,
+        query: &CompiledQuery,
+    ) -> Result<Vec<CompactRow>, Self::Error> {
+        self.fetch_all_compact(query).await
     }
 
     async fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
@@ -334,6 +359,13 @@ impl teaql_sql::SqlTransport for MysqlTransactionExecutor {
 
     async fn fetch_all_sql(&self, query: &CompiledQuery) -> Result<Vec<Record>, Self::Error> {
         self.fetch_all(query).await
+    }
+
+    async fn fetch_all_compact_sql(
+        &self,
+        query: &CompiledQuery,
+    ) -> Result<Vec<CompactRow>, Self::Error> {
+        self.fetch_all_compact(query).await
     }
 
     async fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
@@ -462,6 +494,28 @@ impl MysqlTransactionExecutor {
             records.push(decode_mysql_row(row)?);
         }
         Ok(records)
+    }
+
+    pub async fn fetch_all_compact(
+        &self,
+        query: &CompiledQuery,
+    ) -> Result<Vec<CompactRow>, MutationExecutorError> {
+        let params = query
+            .params
+            .iter()
+            .map(bind_mysql)
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut lock = self.conn.lock().await;
+        let conn = lock
+            .as_mut()
+            .ok_or_else(|| MutationExecutorError::Bind("mysql transaction is closed".to_owned()))?;
+        let rows: Vec<mysql_async::Row> = conn
+            .exec(
+                query.sql_with_comment(),
+                mysql_async::Params::Positional(params),
+            )
+            .await?;
+        decode_mysql_compact_rows(rows)
     }
 
     pub async fn commit(&self) -> Result<(), MutationExecutorError> {
@@ -754,61 +808,85 @@ impl MysqlIdSpaceGenerator {
         let mut conn = self.pool.get_conn().await?;
         let select_sql = format!("SELECT current_level FROM {table} WHERE type_name = ?");
         let insert_sql = format!("INSERT INTO {table}(type_name, current_level) VALUES (?, 1)");
-        let update_sql = format!("UPDATE {table} SET current_level = ? WHERE type_name = ? AND current_level = ?");
+        let update_sql = format!(
+            "UPDATE {table} SET current_level = ? WHERE type_name = ? AND current_level = ?"
+        );
         for _ in 1..=100 {
             let current: Option<u64> = conn.exec_first(&select_sql, (entity,)).await?;
             if let Some(current) = current {
-                let next = current.checked_add(1).ok_or_else(|| MutationExecutorError::Bind(
-                    format!("ID space overflow for {entity}")))?;
+                let next = current.checked_add(1).ok_or_else(|| {
+                    MutationExecutorError::Bind(format!("ID space overflow for {entity}"))
+                })?;
                 conn.exec_drop(&update_sql, (next, entity, current)).await?;
-                if conn.affected_rows() == 1 { return Ok(next); }
+                if conn.affected_rows() == 1 {
+                    return Ok(next);
+                }
             } else {
                 match conn.exec_drop(&insert_sql, (entity,)).await {
                     Ok(()) if conn.affected_rows() == 1 => return Ok(1),
-                    Ok(()) => return Err(MutationExecutorError::Bind(format!(
-                        "ID space insert for {entity} changed {} rows", conn.affected_rows()))),
+                    Ok(()) => {
+                        return Err(MutationExecutorError::Bind(format!(
+                            "ID space insert for {entity} changed {} rows",
+                            conn.affected_rows()
+                        )));
+                    }
                     Err(error) => {
                         let winner: Option<u64> = conn.exec_first(&select_sql, (entity,)).await?;
-                        if winner.is_none() { return Err(error.into()); }
+                        if winner.is_none() {
+                            return Err(error.into());
+                        }
                     }
                 }
             }
         }
         Err(MutationExecutorError::Bind(format!(
-            "Unable to allocate ID for {entity} after 100 optimistic-lock attempts")))
+            "Unable to allocate ID for {entity} after 100 optimistic-lock attempts"
+        )))
     }
 
-    pub async fn ensure_floor(&self, entity: &str, floor: u64) -> Result<(), MutationExecutorError> {
+    pub async fn ensure_floor(
+        &self,
+        entity: &str,
+        floor: u64,
+    ) -> Result<(), MutationExecutorError> {
         self.ensure_table().await?;
         if floor > i64::MAX as u64 {
             return Err(MutationExecutorError::Bind(format!(
-                "ID space floor {floor} for {entity} exceeds BIGINT")));
+                "ID space floor {floor} for {entity} exceeds BIGINT"
+            )));
         }
         let table = mysql_quote_ident(&self.table_name);
         let mut conn = self.pool.get_conn().await?;
         let select = format!("SELECT current_level FROM {table} WHERE type_name = ?");
         let insert = format!("INSERT INTO {table}(type_name, current_level) VALUES (?, ?)");
-        let update = format!("UPDATE {table} SET current_level = ? WHERE type_name = ? AND current_level = ?");
+        let update = format!(
+            "UPDATE {table} SET current_level = ? WHERE type_name = ? AND current_level = ?"
+        );
         for _ in 1..=100 {
             let current: Option<u64> = conn.exec_first(&select, (entity,)).await?;
             match current {
                 Some(current) if current >= floor => return Ok(()),
                 Some(current) => {
                     conn.exec_drop(&update, (floor, entity, current)).await?;
-                    if conn.affected_rows() == 1 { return Ok(()); }
+                    if conn.affected_rows() == 1 {
+                        return Ok(());
+                    }
                 }
                 None => match conn.exec_drop(&insert, (entity, floor)).await {
                     Ok(()) if conn.affected_rows() == 1 => return Ok(()),
                     Ok(()) => {}
                     Err(error) => {
                         let winner: Option<u64> = conn.exec_first(&select, (entity,)).await?;
-                        if winner.is_none() { return Err(error.into()); }
+                        if winner.is_none() {
+                            return Err(error.into());
+                        }
                     }
                 },
             }
         }
         Err(MutationExecutorError::Bind(format!(
-            "Unable to synchronize ID space floor for {entity} after 100 optimistic-lock attempts")))
+            "Unable to synchronize ID space floor for {entity} after 100 optimistic-lock attempts"
+        )))
     }
 }
 
@@ -881,17 +959,42 @@ fn bind_mysql(value: &Value) -> Result<mysql_async::Value, MutationExecutorError
 }
 
 fn decode_mysql_row(row: mysql_async::Row) -> Result<Record, MutationExecutorError> {
-    let mut record = BTreeMap::new();
+    let names = row
+        .columns_ref()
+        .iter()
+        .map(|column| column.name_str().into_owned())
+        .collect::<Vec<_>>();
+    Ok(names.into_iter().zip(decode_mysql_values(row)?).collect())
+}
+
+fn decode_mysql_compact_rows(
+    rows: Vec<mysql_async::Row>,
+) -> Result<Vec<CompactRow>, MutationExecutorError> {
+    let Some(first) = rows.first() else {
+        return Ok(Vec::new());
+    };
+    let columns: Arc<[String]> = first
+        .columns_ref()
+        .iter()
+        .map(|column| column.name_str().into_owned())
+        .collect::<Vec<_>>()
+        .into();
+    rows.into_iter()
+        .map(|row| Ok(CompactRow::new(columns.clone(), decode_mysql_values(row)?)))
+        .collect()
+}
+
+fn decode_mysql_values(row: mysql_async::Row) -> Result<Vec<Value>, MutationExecutorError> {
+    let mut values = Vec::with_capacity(row.len());
     for index in 0..row.len() {
         let column = row.columns_ref()[index].clone();
-        let name = column.name_str().into_owned();
         let val_opt = row
             .get_opt::<mysql_async::Value, _>(index)
             .ok_or_else(|| MutationExecutorError::Bind(format!("missing col {index}")))?
             .map_err(|e| MutationExecutorError::Bind(e.to_string()))?;
 
         if val_opt == mysql_async::Value::NULL {
-            record.insert(name, Value::Null);
+            values.push(Value::Null);
             continue;
         }
 
@@ -1002,9 +1105,9 @@ fn decode_mysql_row(row: mysql_async::Row) -> Result<Record, MutationExecutorErr
                 )));
             }
         };
-        record.insert(name, value);
+        values.push(value);
     }
-    Ok(record)
+    Ok(values)
 }
 
 #[cfg(test)]
