@@ -540,6 +540,37 @@ where
         Ok(res.rows)
     }
 
+    async fn fetch_prepared_query_owned(
+        &self,
+        mut query: SelectQuery,
+    ) -> Result<Vec<Record>, DataServiceError<E::Error>> {
+        if query
+            .aggregation_cache
+            .is_some_and(|options| options.enabled)
+        {
+            return self.fetch_prepared_query(&query).await;
+        }
+        query.comment = self
+            .data_service
+            .resolve_final_comment(&query.trace_chain, query.comment.take());
+        let request = teaql_data_service::QueryRequest {
+            trace_chain: query.trace_chain.clone(),
+            comment: query.comment.clone(),
+            query,
+        };
+        let res = self
+            .data_service
+            .executor
+            .query(request)
+            .await
+            .map_err(DataServiceError::Executor)?;
+        self.data_service
+            .metadata
+            .context
+            .record_metadata_log(&res.metadata);
+        Ok(res.rows)
+    }
+
     async fn fetch_prepared_query_with_cache(
         &self,
         query: &SelectQuery,
@@ -696,6 +727,30 @@ where
         let query = self
             .prepare_select_query(query)
             .map_err(DataServiceError::Runtime)?;
+
+        if relation_aggregates.is_empty()
+            && query.continuous_page_fetch.is_none()
+            && query.object_group_bys.is_empty()
+            && query.child_enhancements.is_empty()
+            && query.relations.is_empty()
+        {
+            let query = query
+                .prepare_for_list()
+                .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
+            return self
+                .fetch_prepared_query_owned(query)
+                .await?
+                .into_iter()
+                .map(|record| {
+                    let mut entity = T::from_record(record)?;
+                    let root = crate::EntityRoot::default();
+                    entity.on_loaded(&root as &dyn std::any::Any);
+                    Ok(entity)
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(SmartList::from)
+                .map_err(DataServiceError::Entity);
+        }
 
         let mut rows = self.fetch_prepared_all(&query).await?;
         self.enhance_relation_aggregates_internal(
