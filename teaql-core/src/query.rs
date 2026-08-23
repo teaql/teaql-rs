@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use crate::{Expr, Value};
 
@@ -761,6 +762,42 @@ impl SelectQuery {
 }
 
 pub type Record = BTreeMap<String, Value>;
+
+/// A database result row whose column names are shared by the whole result set.
+///
+/// Providers use this representation for typed decoding so a 100-row result does
+/// not allocate 100 copies of every projected column name (or 100 B-trees).
+#[derive(Debug, Clone)]
+pub struct CompactRow {
+    columns: Arc<[String]>,
+    values: Vec<Value>,
+}
+
+impl CompactRow {
+    pub fn new(columns: Arc<[String]>, values: Vec<Value>) -> Self {
+        debug_assert_eq!(columns.len(), values.len());
+        Self { columns, values }
+    }
+
+    pub fn get(&self, name: &str) -> Option<&Value> {
+        self.columns
+            .iter()
+            .position(|column| column == name)
+            .and_then(|index| self.values.get(index))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &Value)> {
+        self.columns.iter().zip(self.values.iter())
+    }
+
+    pub fn keys(&self) -> impl Iterator<Item = &String> {
+        self.columns.iter()
+    }
+
+    pub fn into_record(self) -> Record {
+        self.columns.iter().cloned().zip(self.values).collect()
+    }
+}
 
 /// Internal projection used to implement per-parent pagination for relation
 /// loads. Runtime relation attachment removes it before exposing child rows.

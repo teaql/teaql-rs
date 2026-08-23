@@ -37,6 +37,9 @@ impl std::error::Error for EntityError {}
 
 pub trait Entity: TeaqlEntity + Sized {
     fn from_record(record: Record) -> Result<Self, EntityError>;
+    fn from_compact_row(row: crate::CompactRow) -> Result<Self, EntityError> {
+        Self::from_record(row.into_record())
+    }
     fn into_record(self) -> Record;
 
     /// Returns the set of field names that have been modified since the entity was loaded.

@@ -333,7 +333,7 @@ pub struct RootContext {
     /// Entity keys that have been marked as newly inserted.
     new_keys: std::collections::BTreeSet<EntityKey>,
     /// The original loaded snapshot record, used to avoid redundant fetching during save.
-    original_record: Option<Record>,
+    original_record: Option<OriginalRecord>,
     /// Trace chains associated with each entity key.
     trace_chains: std::collections::BTreeMap<EntityKey, Vec<teaql_core::TraceNode>>,
     /// Original versions of entities to perform optimistic concurrency control.
@@ -346,6 +346,12 @@ pub struct RootContext {
 pub struct EntityRoot {
     inner: Arc<Mutex<RootContext>>,
     graph: Arc<OnceLock<FrozenEntityGraph>>,
+}
+
+#[derive(Debug)]
+enum OriginalRecord {
+    Materialized(Record),
+    Compact(teaql_core::CompactRow),
 }
 
 impl PartialEq for EntityRoot {
@@ -539,7 +545,15 @@ impl EntityRoot {
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .original_record = Some(record);
+            .original_record = Some(OriginalRecord::Materialized(record));
+    }
+
+    /// Store a shared-schema snapshot without eagerly allocating a map.
+    pub fn set_original_compact_row(&self, row: teaql_core::CompactRow) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .original_record = Some(OriginalRecord::Compact(row));
     }
 
     /// Retrieve the original record.
@@ -548,7 +562,11 @@ impl EntityRoot {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .original_record
-            .clone()
+            .as_ref()
+            .map(|record| match record {
+                OriginalRecord::Materialized(record) => record.clone(),
+                OriginalRecord::Compact(row) => row.clone().into_record(),
+            })
     }
 
     /// Mark an entity as deleted. The next `save()` call will treat this entity

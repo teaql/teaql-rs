@@ -4,10 +4,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
-use teaql_core::{EntityDescriptor, Expr, Record, SelectQuery, Value};
+use teaql_core::{CompactRow, EntityDescriptor, Expr, Record, SelectQuery, Value};
 use teaql_data_service::{
-    DataServiceCapabilities, DataServiceExecutor, DataServiceOperation, ExecutionMetadata,
-    MutationExecutor, MutationRequest, MutationResult, QueryExecutor, QueryRequest, QueryResult,
+    CompactQueryResult, DataServiceCapabilities, DataServiceExecutor, DataServiceOperation,
+    ExecutionMetadata, MutationExecutor, MutationRequest, MutationResult, QueryExecutor,
+    QueryRequest, QueryResult,
 };
 
 use crate::{CompiledQuery, SqlCompileError, SqlDialect};
@@ -19,6 +20,21 @@ pub trait SqlTransport: Send + Sync {
         &self,
         query: &CompiledQuery,
     ) -> impl std::future::Future<Output = Result<Vec<Record>, Self::Error>> + Send;
+    fn fetch_all_compact_sql(
+        &self,
+        query: &CompiledQuery,
+    ) -> impl std::future::Future<Output = Result<Vec<CompactRow>, Self::Error>> + Send {
+        async move {
+            self.fetch_all_sql(query).await.map(|rows| {
+                rows.into_iter()
+                    .map(|record| {
+                        let (columns, values): (Vec<_>, Vec<_>) = record.into_iter().unzip();
+                        CompactRow::new(columns.into(), values)
+                    })
+                    .collect()
+            })
+        }
+    }
     fn execute_sql(
         &self,
         query: &CompiledQuery,
@@ -738,6 +754,50 @@ impl<
             Ok(QueryResult { rows, metadata })
         }
     }
+
+    fn query_compact(
+        &self,
+        request: QueryRequest,
+    ) -> impl std::future::Future<Output = Result<CompactQueryResult, Self::Error>> + Send {
+        async move {
+            let entity_desc = self
+                .entity_descriptor(&request.query.entity)
+                .ok_or_else(|| {
+                    SqlExecutorError::Compile(SqlCompileError::UnknownEntity(
+                        request.query.entity.clone(),
+                    ))
+                })?;
+            let compiled = self
+                .compile_select_cached(&entity_desc, &request.query)
+                .map_err(SqlExecutorError::Compile)?;
+            let start = SystemTime::now();
+            let rows = self
+                .transport
+                .fetch_all_compact_sql(&compiled)
+                .await
+                .map_err(SqlExecutorError::Transport)?;
+            let end = SystemTime::now();
+            let debug_query = request
+                .capture_debug_query
+                .then(|| compiled.debug_sql(self.dialect.kind()));
+            let CompiledQuery { sql, params, .. } = compiled;
+            let metadata = ExecutionMetadata {
+                backend: "sql".to_string(),
+                operation: DataServiceOperation::Query,
+                started_at: start,
+                ended_at: end,
+                affected_rows: None,
+                result_count: Some(rows.len()),
+                trace_chain: request.trace_chain,
+                comment: request.comment,
+                backend_request_id: None,
+                parameterized_query: Some(sql),
+                params,
+                debug_query,
+            };
+            Ok(CompactQueryResult { rows, metadata })
+        }
+    }
 }
 
 impl<
@@ -977,6 +1037,48 @@ impl<
             };
 
             Ok(QueryResult { rows, metadata })
+        }
+    }
+
+    fn query_compact(
+        &self,
+        request: QueryRequest,
+    ) -> impl std::future::Future<Output = Result<CompactQueryResult, Self::Error>> + Send {
+        async move {
+            let entity_desc = self
+                .entity_descriptor(&request.query.entity)
+                .ok_or_else(|| {
+                    SqlExecutorError::Compile(SqlCompileError::UnknownEntity(
+                        request.query.entity.clone(),
+                    ))
+                })?;
+            let compiled = self
+                .compile_select_cached(&entity_desc, &request.query)
+                .map_err(SqlExecutorError::Compile)?;
+            let start = SystemTime::now();
+            let rows = self
+                .transport
+                .fetch_all_compact_sql(&compiled)
+                .await
+                .map_err(SqlExecutorError::Transport)?;
+            let end = SystemTime::now();
+            let metadata = ExecutionMetadata {
+                backend: "sql".to_string(),
+                operation: DataServiceOperation::Query,
+                started_at: start,
+                ended_at: end,
+                affected_rows: None,
+                result_count: Some(rows.len()),
+                trace_chain: request.trace_chain,
+                comment: request.comment,
+                backend_request_id: None,
+                parameterized_query: Some(compiled.sql.clone()),
+                params: compiled.params.clone(),
+                debug_query: request
+                    .capture_debug_query
+                    .then(|| compiled.debug_sql(self.dialect.kind())),
+            };
+            Ok(CompactQueryResult { rows, metadata })
         }
     }
 }

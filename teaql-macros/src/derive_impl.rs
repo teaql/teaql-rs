@@ -81,6 +81,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     let mut id_impl = None;
     let mut version_impl = None;
     let mut has_root_field = false;
+    let mut has_boxed_relations = false;
     let mut id_field_ident: Option<syn::Ident> = None;
     let mut version_field_ident: Option<syn::Ident> = None;
     let explicit_field_names: Vec<String> = named_fields
@@ -195,6 +196,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         };
 
         if parsed.boxed_relations {
+            has_boxed_relations = true;
             let boxed_type = &field.ty;
             relation_tokens.push(quote! {
                 <#boxed_type as ::teaql_core::TeaqlBoxedRelations>::extend_descriptor(&mut descriptor);
@@ -324,6 +326,24 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         Default::default()
     };
 
+    let set_original_compact_impl = if has_root_field {
+        let original_version = match (&id_field_ident, &version_field_ident) {
+            (Some(id_ident), Some(version_ident)) => quote! {
+                entity.root.set_original_version(
+                    ::teaql_runtime::EntityKey::new_static(#entity_name, entity.#id_ident),
+                    entity.#version_ident,
+                );
+            },
+            _ => quote! {},
+        };
+        quote! {
+            entity.root.set_original_compact_row(record);
+            #original_version
+        }
+    } else {
+        Default::default()
+    };
+
     let root_methods_impl = if has_root_field {
         {
             quote! {
@@ -370,6 +390,28 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         Default::default()
     };
 
+    let from_compact_impl = if has_boxed_relations {
+        quote! {}
+    } else {
+        quote! {
+            fn from_compact_row(record: ::teaql_core::CompactRow) -> Result<Self, ::teaql_core::EntityError> {
+                #(#record_value_slots)*
+                for (key, value) in record.iter() {
+                    match key.as_str() {
+                        #(#record_value_match_arms)*
+                        _ => {}
+                    }
+                }
+                let mut entity = Self {
+                    #(#from_record_fields),*
+                };
+                #set_load_state_impl
+                #set_original_compact_impl
+                Ok(entity)
+            }
+        }
+    };
+
     quote! {
         impl ::teaql_core::TeaqlEntity for #struct_name {
             const ENTITY_NAME: &'static str = #entity_name;
@@ -404,6 +446,8 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 #set_original_record_impl
                 Ok(entity)
             }
+
+            #from_compact_impl
 
             fn into_record(self) -> ::teaql_core::Record {
                 use ::teaql_core::Entity;

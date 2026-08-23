@@ -11,7 +11,7 @@ use super::RuntimeDataService;
 impl<'a, M, E> RuntimeDataService<'a, M, E>
 where
     M: MetadataStore,
-    E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor,
+    E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Sync,
 {
     pub(crate) fn new(metadata: &'a M, executor: &'a E) -> Self {
         Self { metadata, executor }
@@ -61,11 +61,24 @@ where
     where
         T: Entity,
     {
-        self.fetch_all(query)
-            .await?
+        let request = QueryRequest {
+            query: query.clone(),
+            trace_chain: query.trace_chain.clone(),
+            comment: query.comment.clone(),
+            capture_debug_query: self.metadata.capture_query_debug(),
+        };
+        let result = self
+            .executor
+            .query_compact(request)
+            .await
+            .map_err(DataServiceError::Executor)?;
+        self.metadata.record_metadata_log(&result.metadata);
+        let entities = result
+            .rows
             .into_iter()
-            .map(T::from_record)
-            .collect::<Result<Vec<_>, _>>()
+            .map(T::from_compact_row)
+            .collect::<Result<Vec<_>, _>>();
+        entities
             .map(SmartList::from)
             .map_err(DataServiceError::Entity)
     }

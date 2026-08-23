@@ -231,6 +231,37 @@ impl SqlTransport for PgMutationExecutor {
         self.fetch_all(query).await
     }
 
+    async fn fetch_all_compact_sql(
+        &self,
+        query: &CompiledQuery,
+    ) -> Result<Vec<teaql_core::CompactRow>, Self::Error> {
+        let mut args = PgArgs { values: Vec::new() };
+        for value in &query.params {
+            bind_pg(&mut args, value)?;
+        }
+        let client = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
+        let statement = client.prepare_cached(&query.sql).await?;
+        let rows = client.query(&statement, &args.as_refs()).await?;
+        let columns: std::sync::Arc<[String]> = statement
+            .columns()
+            .iter()
+            .map(|column| column.name().to_owned())
+            .collect::<Vec<_>>()
+            .into();
+        rows.iter()
+            .map(|row| {
+                Ok(teaql_core::CompactRow::new(
+                    columns.clone(),
+                    decode_pg_values(row)?,
+                ))
+            })
+            .collect()
+    }
+
     async fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
         self.execute(query).await
     }
@@ -1154,9 +1185,18 @@ fn bind_pg_list(args: &mut PgArgs, values: &[Value]) -> Result<(), MutationExecu
 }
 
 fn decode_pg_row(row: &tokio_postgres::Row) -> Result<Record, MutationExecutorError> {
-    let mut record = BTreeMap::new();
+    let values = decode_pg_values(row)?;
+    Ok(row
+        .columns()
+        .iter()
+        .map(|column| column.name().to_owned())
+        .zip(values)
+        .collect())
+}
+
+fn decode_pg_values(row: &tokio_postgres::Row) -> Result<Vec<Value>, MutationExecutorError> {
+    let mut values = Vec::with_capacity(row.len());
     for (index, column) in row.columns().iter().enumerate() {
-        let name = column.name().to_owned();
         let type_name = column.type_().name();
 
         let value = match type_name {
@@ -1252,9 +1292,9 @@ fn decode_pg_row(row: &tokio_postgres::Row) -> Result<Record, MutationExecutorEr
                 ));
             }
         };
-        record.insert(name, value);
+        values.push(value);
     }
-    Ok(record)
+    Ok(values)
 }
 
 #[cfg(test)]
