@@ -2,14 +2,69 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use teaql_core::{
-    DeleteCommand, EntityDescriptor, EntityDescriptorStore, InsertCommand, RecoverCommand,
-    SelectQuery, TeaqlEntity, UpdateCommand,
+    DeleteCommand, Entity, EntityDescriptor, EntityDescriptorStore, EntityError,
+    IdentifiableEntity, InsertCommand, Record, RecoverCommand, SelectQuery, TeaqlEntity,
+    UpdateCommand,
 };
 
 use crate::{
-    Checker, GraphNode, InMemoryCheckerRegistry, InMemoryRawAuditEventSink, Language,
-    RawAuditEventSink, RuntimeError, UserContext,
+    Checker, EntityGraphBuilder, EntityRoot, GraphNode, InMemoryCheckerRegistry,
+    InMemoryRawAuditEventSink, Language, RawAuditEventSink, RuntimeError, UserContext,
 };
+
+type EntityGraphDecoder =
+    fn(Record, &EntityRoot, &mut EntityGraphBuilder) -> Result<(), EntityError>;
+
+#[derive(Default, Clone)]
+pub struct InMemoryEntityGraphDecoderRegistry {
+    decoders: BTreeMap<String, EntityGraphDecoder>,
+}
+
+impl InMemoryEntityGraphDecoderRegistry {
+    pub fn contains(&self, entity: &str) -> bool {
+        self.decoders.contains_key(entity)
+    }
+
+    pub fn register<T>(&mut self)
+    where
+        T: Entity + IdentifiableEntity + Send + Sync + 'static,
+    {
+        fn decode<T>(
+            record: Record,
+            root: &EntityRoot,
+            graph: &mut EntityGraphBuilder,
+        ) -> Result<(), EntityError>
+        where
+            T: Entity + IdentifiableEntity + Send + Sync + 'static,
+        {
+            let mut entity = T::from_record(record)?;
+            entity.on_loaded(root as &dyn std::any::Any);
+            let id = entity.id_value().try_u64().ok_or_else(|| {
+                EntityError::new(T::ENTITY_NAME, "identity graph requires a u64 entity id")
+            })?;
+            graph.install(id, entity);
+            Ok(())
+        }
+
+        self.decoders.insert(T::ENTITY_NAME.to_owned(), decode::<T>);
+    }
+
+    pub fn decode(
+        &self,
+        entity: &str,
+        record: Record,
+        root: &EntityRoot,
+        graph: &mut EntityGraphBuilder,
+    ) -> Result<(), EntityError> {
+        let decoder = self.decoders.get(entity).ok_or_else(|| {
+            EntityError::new(
+                entity,
+                "entity has no identity graph decoder in RuntimeModule",
+            )
+        })?;
+        decoder(record, root, graph)
+    }
+}
 
 pub trait MetadataStore: Send + Sync {
     fn entity(&self, name: &str) -> Option<&EntityDescriptor>;
@@ -231,6 +286,7 @@ pub struct RuntimeModule {
     language: Option<Language>,
     initial_graphs: Vec<GraphNode>,
     root_graphs: Vec<GraphNode>,
+    graph_decoders: InMemoryEntityGraphDecoderRegistry,
 }
 
 impl RuntimeModule {
@@ -238,16 +294,20 @@ impl RuntimeModule {
         Self::default()
     }
 
-    pub fn entity<T: TeaqlEntity>(mut self) -> Self {
+    pub fn entity<T>(mut self) -> Self
+    where
+        T: Entity + IdentifiableEntity + Send + Sync + 'static,
+    {
         let descriptor = T::entity_descriptor();
         self.entity_registry.register(descriptor.name.clone());
         self.metadata.register(descriptor);
+        self.graph_decoders.register::<T>();
         self
     }
 
     pub fn entity_with_behavior<T, B>(mut self, behavior: B) -> Self
     where
-        T: TeaqlEntity,
+        T: Entity + IdentifiableEntity + Send + Sync + 'static,
         B: EntityDataServiceBehavior + 'static,
     {
         let descriptor = T::entity_descriptor();
@@ -255,6 +315,7 @@ impl RuntimeModule {
         self.entity_registry.register(entity_name.clone());
         self.metadata.register(descriptor);
         self.behaviors.register(entity_name, behavior);
+        self.graph_decoders.register::<T>();
         self
     }
 
@@ -318,6 +379,7 @@ impl RuntimeModule {
         context.set_event_sink(self.event_sinks);
         context.set_initial_graphs(self.initial_graphs);
         context.set_root_graphs(self.root_graphs);
+        context.set_entity_graph_decoder_registry(self.graph_decoders);
         if let Some(language) = self.language {
             context.set_language(language);
         }

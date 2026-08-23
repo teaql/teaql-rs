@@ -12,9 +12,10 @@ use teaql_sql::{CompiledQuery, DatabaseKind};
 
 use crate::{
     CheckObjectStatus, CheckResult, CheckResults, CheckerRegistry, ContextError,
-    EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry, EntityRegistry, GraphNode,
-    InternalIdGenerator, Language, MetadataStore, ObjectLocation, RawAuditEvent, RawAuditEventSink,
-    RequestPolicy, RuntimeError, local_id_generator,
+    EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry, EntityGraphBuilder,
+    EntityRegistry, GraphNode, InMemoryEntityGraphDecoderRegistry, InternalIdGenerator, Language,
+    MetadataStore, ObjectLocation, RawAuditEvent, RawAuditEventSink, RequestPolicy, RuntimeError,
+    local_id_generator,
 };
 use crate::{DataServiceError, EntityRoot};
 
@@ -256,6 +257,7 @@ pub struct UserContext {
     active_root: Option<ContextEntityRef>,
     pub(crate) metadata: Option<Box<dyn MetadataStore>>,
     pub(crate) entity_registry: Option<Box<dyn EntityRegistry>>,
+    pub(crate) entity_graph_decoders: InMemoryEntityGraphDecoderRegistry,
     pub(crate) entity_data_service_behavior_registry:
         Option<Box<dyn EntityDataServiceBehaviorRegistry>>,
     pub(crate) request_policy: Option<Box<dyn RequestPolicy>>,
@@ -316,6 +318,7 @@ impl Default for UserContext {
             active_root: None,
             metadata: None,
             entity_registry: None,
+            entity_graph_decoders: InMemoryEntityGraphDecoderRegistry::default(),
             entity_data_service_behavior_registry: None,
             request_policy: None,
             checker_registry: None,
@@ -682,6 +685,28 @@ impl UserContext {
 
     pub fn set_entity_registry(&mut self, registry: impl EntityRegistry + 'static) {
         self.entity_registry = Some(Box::new(registry));
+    }
+
+    pub fn set_entity_graph_decoder_registry(
+        &mut self,
+        registry: InMemoryEntityGraphDecoderRegistry,
+    ) {
+        self.entity_graph_decoders = registry;
+    }
+
+    pub(crate) fn decode_entity_into_graph(
+        &self,
+        entity: &str,
+        record: Record,
+        root: &EntityRoot,
+        graph: &mut EntityGraphBuilder,
+    ) -> Result<(), teaql_core::EntityError> {
+        self.entity_graph_decoders
+            .decode(entity, record, root, graph)
+    }
+
+    pub(crate) fn has_entity_graph_decoder(&self, entity: &str) -> bool {
+        self.entity_graph_decoders.contains(entity)
     }
 
     pub fn with_entity_data_service_behavior_registry(

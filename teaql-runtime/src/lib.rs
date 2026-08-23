@@ -1,4 +1,5 @@
 #![allow(warnings)]
+extern crate self as teaql_runtime;
 mod checker;
 mod context;
 mod data_service;
@@ -57,8 +58,8 @@ pub use language::{
 pub(crate) use memory::MemoryDataService;
 pub use registry::{
     EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry, EntityRegistry,
-    InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityRegistry, InMemoryMetadataStore,
-    MetadataStore, RequestPolicy, RuntimeModule,
+    InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityGraphDecoderRegistry,
+    InMemoryEntityRegistry, InMemoryMetadataStore, MetadataStore, RequestPolicy, RuntimeModule,
 };
 pub use telemetry::{
     FailOpenRuntimeTelemetryPropagationContext, FailOpenRuntimeTelemetryScope,
@@ -76,7 +77,7 @@ mod tests {
 
     use super::{
         AggregationCacheBackend, CHECK_OBJECT_STATUS_FIELD, CheckObjectStatus, CheckResult,
-        CheckResults, CheckRule, Checker, DataServiceError, EntityDataServiceBehavior,
+        CheckResults, CheckRule, Checker, DataServiceError, EntityDataServiceBehavior, EntityRoot,
         GraphMutationKind, GraphNode, I18nCatalog, InMemoryAggregationCache,
         InMemoryCheckerRegistry, InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityRegistry,
         InMemoryMetadataStore, InternalIdGenerator, Language, MemoryDataService, MetadataStore,
@@ -306,6 +307,36 @@ mod tests {
         product_id: u64,
         #[teaql(relation(target = "Product", local_key = "product_id", foreign_key = "id"))]
         product: Option<ProductWithLinesEntityRow>,
+    }
+
+    #[derive(Debug, DeriveTeaqlEntity)]
+    #[teaql(entity = "FlatVendor", table = "flat_vendor")]
+    struct FlatVendorRow {
+        #[teaql(id)]
+        id: u64,
+        name: String,
+        #[teaql(skip)]
+        root: EntityRoot,
+    }
+
+    #[derive(Debug, DeriveTeaqlEntity)]
+    #[teaql(entity = "FlatTrip", table = "flat_trip")]
+    struct FlatTripRow {
+        #[teaql(id)]
+        id: u64,
+        vendor_id: u64,
+        #[teaql(relation(target = "FlatVendor", local_key = "vendor_id", foreign_key = "id"))]
+        vendor: Option<FlatVendorRow>,
+        #[teaql(skip)]
+        root: EntityRoot,
+    }
+
+    impl FlatTripRow {
+        fn vendor(&self) -> Option<&FlatVendorRow> {
+            self.vendor
+                .as_ref()
+                .or_else(|| self.root.resolve_entity::<FlatVendorRow>(self.vendor_id))
+        }
     }
 
     #[derive(Debug, PartialEq, DeriveTeaqlEntity)]
@@ -1757,6 +1788,42 @@ mod tests {
         let product = rows.data[0].product.as_ref().unwrap();
         assert_eq!(product.lines.data.len(), 1);
         assert_eq!(product.lines.data[0].id, 11);
+    }
+
+    #[tokio::test]
+    async fn generated_to_one_getter_resolves_from_runtime_module_identity_graph() {
+        let mut context = RuntimeModule::new()
+            .entity::<FlatTripRow>()
+            .entity::<FlatVendorRow>()
+            .into_context();
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(QueueExecutor {
+            affected: 1,
+            rows: Mutex::new(VecDeque::from([
+                vec![Record::from([
+                    (String::from("id"), Value::U64(11)),
+                    (String::from("vendor_id"), Value::U64(101)),
+                ])],
+                vec![Record::from([
+                    (String::from("id"), Value::U64(101)),
+                    (String::from("name"), Value::Text(String::from("Acme"))),
+                ])],
+            ])),
+            queries: Mutex::new(Vec::new()),
+        });
+
+        let repo = context
+            .entity_data_service::<QueueExecutor>("FlatTrip")
+            .unwrap();
+        let rows = repo
+            .fetch_enhanced_entities_internal::<FlatTripRow>(
+                &SelectQuery::new("FlatTrip").relation("vendor"),
+            )
+            .await
+            .unwrap();
+
+        assert!(rows.data[0].vendor.is_none());
+        assert_eq!(rows.data[0].vendor().unwrap().name, "Acme");
     }
 
     #[tokio::test]

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -37,6 +38,91 @@ where
         + Sync
         + 'static,
 {
+    fn flatten_relation_graph(
+        &self,
+        entity_name: &str,
+        record: &mut Record,
+        root: &crate::EntityRoot,
+        graph: &mut crate::EntityGraphBuilder,
+        installed: &mut BTreeSet<(String, u64)>,
+    ) -> Result<(), teaql_core::EntityError> {
+        let context = self.data_service.metadata.context;
+        let relations = context
+            .entity(entity_name)
+            .map(|descriptor| descriptor.relations.clone())
+            .unwrap_or_default();
+
+        for relation in relations {
+            // A to-one edge already has its target id in the owner's scalar storage field,
+            // so it can be resolved from the identity map without changing the public getter.
+            // A to-many edge needs an adjacency index and a stable SmartList view; keep the
+            // existing embedded representation until that typed view is available.
+            if relation.many || !context.has_entity_graph_decoder(&relation.target_entity) {
+                continue;
+            }
+            let Some(value) = record.remove(&relation.name) else {
+                continue;
+            };
+            let child_records = match value {
+                Value::Object(child) => vec![child],
+                Value::List(values) => values
+                    .into_iter()
+                    .filter_map(|value| match value {
+                        Value::Object(child) => Some(child),
+                        _ => None,
+                    })
+                    .collect(),
+                Value::Null | Value::TypedNull(_) => Vec::new(),
+                other => {
+                    record.insert(relation.name, other);
+                    continue;
+                }
+            };
+
+            for mut child in child_records {
+                self.flatten_relation_graph(
+                    &relation.target_entity,
+                    &mut child,
+                    root,
+                    graph,
+                    installed,
+                )?;
+                let id = child.get("id").and_then(Value::try_u64).ok_or_else(|| {
+                    teaql_core::EntityError::new(
+                        &relation.target_entity,
+                        "loaded relation is missing its u64 id",
+                    )
+                })?;
+                if installed.insert((relation.target_entity.clone(), id)) {
+                    context.decode_entity_into_graph(
+                        &relation.target_entity,
+                        child,
+                        root,
+                        graph,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn attach_flat_relation_graph(
+        &self,
+        entity_name: &str,
+        rows: &mut [Record],
+    ) -> Result<crate::EntityRoot, teaql_core::EntityError> {
+        let root = crate::EntityRoot::default();
+        let mut graph = crate::EntityGraphBuilder::default();
+        let mut installed = BTreeSet::new();
+        for row in rows {
+            self.flatten_relation_graph(entity_name, row, &root, &mut graph, &mut installed)?;
+        }
+        root.freeze_graph(graph).map_err(|_| {
+            teaql_core::EntityError::new(entity_name, "identity graph was already frozen")
+        })?;
+        Ok(root)
+    }
+
     pub(super) fn query_behavior(
         &self,
         entity: &str,
@@ -824,7 +910,9 @@ where
         )
         .await?;
         self.enhance_relations_internal(&mut rows).await?;
-        let root = crate::EntityRoot::default();
+        let root = self
+            .attach_flat_relation_graph(&query.entity, &mut rows)
+            .map_err(DataServiceError::Entity)?;
         rows.into_iter()
             .map(|record| {
                 let mut entity = T::from_record(record)?;
@@ -850,17 +938,12 @@ where
         let mut rows = self.fetch_prepared_all(&query).await?;
         self.enhance_relations_internal(&mut rows).await?;
         let root = self
-            .data_service
-            .metadata
-            .context
-            .get_resource::<crate::EntityRoot>()
-            .cloned();
+            .attach_flat_relation_graph(&query.entity, &mut rows)
+            .map_err(DataServiceError::Entity)?;
         rows.into_iter()
             .map(|record| {
                 let mut entity = T::from_record(record)?;
-                if let Some(ref root) = root {
-                    entity.on_loaded(root as &dyn std::any::Any);
-                }
+                entity.on_loaded(&root as &dyn std::any::Any);
                 Ok(entity)
             })
             .collect::<Result<Vec<_>, _>>()
