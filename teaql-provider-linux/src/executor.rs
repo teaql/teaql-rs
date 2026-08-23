@@ -77,7 +77,10 @@ impl QueryExecutor for LinuxDataServiceExecutor {
         // Collect raw records from the matching collector.
         let rows = self.collect_records(entity)?;
 
-        let mut result = InMemoryQueryEngine::execute(&request.query, rows);
+        let mut result = InMemoryQueryEngine::execute(
+            &request.query,
+            rows.into_iter().map(teaql_core::CompactRow::from_map).collect(),
+        );
         result.metadata.backend = "linux-proc".to_owned();
         result.metadata.started_at = started_at;
         result.metadata.ended_at = SystemTime::now();

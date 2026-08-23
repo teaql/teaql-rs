@@ -2,20 +2,20 @@ use std::cmp::Ordering;
 use std::time::SystemTime;
 
 use teaql_core::{
-    Aggregate, AggregateFunction, BinaryOp, Expr, OrderBy, Record, SelectQuery, SortDirection,
-    Value,
+    Aggregate, AggregateFunction, BinaryOp, CompactRow, Expr, OrderBy, SelectQuery,
+    SortDirection, Value,
 };
 use teaql_data_service::{DataServiceOperation, ExecutionMetadata, QueryResult};
 
 /// A general-purpose in-memory query engine that executes [`SelectQuery`] against a
-/// `Vec<Record>`. This replaces the database engine for non-SQL data sources.
+/// compact rows. This replaces the database engine for non-SQL data sources.
 pub struct InMemoryQueryEngine;
 
 impl InMemoryQueryEngine {
     /// Execute a [`SelectQuery`] against the given rows and return a [`QueryResult`].
     ///
     /// Processing order: filter → aggregation (if any) → sort → paginate → project.
-    pub fn execute(query: &SelectQuery, mut rows: Vec<Record>) -> QueryResult {
+    pub fn execute(query: &SelectQuery, mut rows: Vec<CompactRow>) -> QueryResult {
         let started_at = SystemTime::now();
 
         // 1. Filter
@@ -48,10 +48,7 @@ impl InMemoryQueryEngine {
 
         let count = rows.len();
         QueryResult {
-            rows: rows
-                .into_iter()
-                .map(teaql_core::CompactRow::from_map)
-                .collect(),
+            rows,
             metadata: ExecutionMetadata {
                 debug_query: None,
                 backend: "memory".to_owned(),
@@ -70,12 +67,12 @@ impl InMemoryQueryEngine {
     }
 
     /// Retain only the rows for which the expression evaluates to `true`.
-    fn filter(rows: &mut Vec<Record>, expr: &Expr) {
+    fn filter(rows: &mut Vec<CompactRow>, expr: &Expr) {
         rows.retain(|row| ExprEvaluator::eval(expr, row));
     }
 
     /// Sort rows in-place according to the given [`OrderBy`] list (multi-column).
-    fn sort(rows: &mut Vec<Record>, order_by: &[OrderBy]) {
+    fn sort(rows: &mut Vec<CompactRow>, order_by: &[OrderBy]) {
         rows.sort_by(|a, b| {
             for ob in order_by {
                 let va = a.get(&ob.field).unwrap_or(&Value::Null);
@@ -94,7 +91,7 @@ impl InMemoryQueryEngine {
     }
 
     /// Apply offset/limit pagination.
-    fn paginate(rows: Vec<Record>, slice: &teaql_core::Slice) -> Vec<Record> {
+    fn paginate(rows: Vec<CompactRow>, slice: &teaql_core::Slice) -> Vec<CompactRow> {
         let offset = slice.offset as usize;
         let iter = rows.into_iter().skip(offset);
         match slice.limit {
@@ -104,19 +101,22 @@ impl InMemoryQueryEngine {
     }
 
     /// Keep only the specified fields in each record.
-    fn project(rows: Vec<Record>, projection: &[String]) -> Vec<Record> {
+    fn project(rows: Vec<CompactRow>, projection: &[String]) -> Vec<CompactRow> {
         rows.into_iter()
             .map(|row| {
-                row.into_iter()
-                    .filter(|(key, _)| projection.contains(key))
-                    .collect()
+                CompactRow::from_map(
+                    row.into_map()
+                        .into_iter()
+                        .filter(|(key, _)| projection.contains(key))
+                        .collect(),
+                )
             })
             .collect()
     }
 
     /// Compute aggregations over the (already-filtered) rows and return the result
     /// as a single-row [`QueryResult`].
-    fn aggregate(query: &SelectQuery, rows: Vec<Record>) -> QueryResult {
+    fn aggregate(query: &SelectQuery, rows: Vec<CompactRow>) -> QueryResult {
         let started_at = SystemTime::now();
 
         // If there are group-by fields, partition the rows into groups.
@@ -125,19 +125,16 @@ impl InMemoryQueryEngine {
         }
 
         // No group-by: single aggregation over all rows.
-        let mut result_row = Record::new();
+        let mut result_row = std::collections::BTreeMap::new();
         for agg in &query.aggregates {
             let value = compute_aggregate(agg, &rows);
             result_row.insert(agg.alias.clone(), value);
         }
 
-        let result_rows = vec![result_row];
+        let result_rows = vec![CompactRow::from_map(result_row)];
         let count = result_rows.len();
         QueryResult {
-            rows: result_rows
-                .into_iter()
-                .map(teaql_core::CompactRow::from_map)
-                .collect(),
+            rows: result_rows,
             metadata: ExecutionMetadata {
                 debug_query: None,
                 backend: "memory".to_owned(),
@@ -158,11 +155,11 @@ impl InMemoryQueryEngine {
     /// Aggregate with GROUP BY support.
     fn aggregate_grouped(
         query: &SelectQuery,
-        rows: Vec<Record>,
+        rows: Vec<CompactRow>,
         started_at: SystemTime,
     ) -> QueryResult {
         // Build groups keyed by the group-by field values.
-        let mut groups: Vec<(Vec<Value>, Vec<Record>)> = Vec::new();
+        let mut groups: Vec<(Vec<Value>, Vec<CompactRow>)> = Vec::new();
 
         for row in rows {
             let key: Vec<Value> = query
@@ -179,7 +176,7 @@ impl InMemoryQueryEngine {
 
         let mut result_rows = Vec::with_capacity(groups.len());
         for (key_values, group_rows) in &groups {
-            let mut result_row = Record::new();
+            let mut result_row = std::collections::BTreeMap::new();
 
             // Include group-by fields in the output.
             for (i, gb) in query.group_by.iter().enumerate() {
@@ -192,15 +189,12 @@ impl InMemoryQueryEngine {
                 result_row.insert(agg.alias.clone(), value);
             }
 
-            result_rows.push(result_row);
+            result_rows.push(CompactRow::from_map(result_row));
         }
 
         let count = result_rows.len();
         QueryResult {
-            rows: result_rows
-                .into_iter()
-                .map(teaql_core::CompactRow::from_map)
-                .collect(),
+            rows: result_rows,
             metadata: ExecutionMetadata {
                 debug_query: None,
                 backend: "memory".to_owned(),
@@ -219,12 +213,12 @@ impl InMemoryQueryEngine {
     }
 }
 
-/// Evaluates [`Expr`] trees against a single [`Record`].
+/// Evaluates [`Expr`] trees against a single compact row.
 pub struct ExprEvaluator;
 
 impl ExprEvaluator {
     /// Evaluate an expression as a boolean predicate against a row.
-    pub fn eval(expr: &Expr, row: &Record) -> bool {
+    pub fn eval(expr: &Expr, row: &CompactRow) -> bool {
         match expr {
             Expr::Binary { left, op, right } => {
                 let lv = Self::resolve(left, row);
@@ -259,7 +253,7 @@ impl ExprEvaluator {
     }
 
     /// Resolve an expression to a concrete [`Value`] given a row.
-    pub fn resolve(expr: &Expr, row: &Record) -> Value {
+    pub fn resolve(expr: &Expr, row: &CompactRow) -> Value {
         match expr {
             Expr::Column(name) => row.get(name).cloned().unwrap_or(Value::Null),
             Expr::Value(v) => v.clone(),
@@ -421,7 +415,7 @@ fn value_to_f64(v: &Value) -> Option<f64> {
 }
 
 /// Count rows, treating `"*"` as counting all rows and other fields as counting non-null values.
-fn count_rows(rows: &[Record], field: &str) -> Value {
+fn count_rows(rows: &[CompactRow], field: &str) -> Value {
     let count = match field {
         "*" => rows.len(),
         _ => rows
@@ -433,7 +427,7 @@ fn count_rows(rows: &[Record], field: &str) -> Value {
 }
 
 /// Compute a single aggregate over a slice of rows.
-fn compute_aggregate(agg: &Aggregate, rows: &[Record]) -> Value {
+fn compute_aggregate(agg: &Aggregate, rows: &[CompactRow]) -> Value {
     match agg.function {
         AggregateFunction::Count => count_rows(rows, &agg.field),
         AggregateFunction::Sum => {
@@ -510,13 +504,13 @@ fn compute_aggregate(agg: &Aggregate, rows: &[Record]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use teaql_core::{Aggregate, AggregateFunction, Record, SelectQuery, Value};
+    use teaql_core::{Aggregate, AggregateFunction, CompactRow, SelectQuery, Value};
 
-    fn make_row(pairs: Vec<(&str, Value)>) -> Record {
-        pairs.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()
+    fn make_row(pairs: Vec<(&str, Value)>) -> CompactRow {
+        CompactRow::from_map(pairs.into_iter().map(|(k, v)| (k.to_owned(), v)).collect())
     }
 
-    fn sample_rows() -> Vec<Record> {
+    fn sample_rows() -> Vec<CompactRow> {
         vec![
             make_row(vec![
                 ("id", Value::U64(1)),
