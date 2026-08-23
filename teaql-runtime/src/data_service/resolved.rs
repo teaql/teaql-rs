@@ -739,12 +739,12 @@ where
     where
         T: Entity,
     {
+        let root = crate::EntityRoot::default();
         self.fetch_all_with_relation_aggregates_internal(query, relation_aggregates)
             .await?
             .into_iter()
             .map(|record| {
                 let mut entity = T::from_record(record)?;
-                let root = crate::EntityRoot::default();
                 entity.on_loaded(&root as &dyn std::any::Any);
                 Ok(entity)
             })
@@ -800,13 +800,13 @@ where
             let query = query
                 .prepare_for_list()
                 .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
+            let root = crate::EntityRoot::default();
             return self
                 .fetch_prepared_query_owned(query)
                 .await?
                 .into_iter()
                 .map(|record| {
                     let mut entity = T::from_record(record)?;
-                    let root = crate::EntityRoot::default();
                     entity.on_loaded(&root as &dyn std::any::Any);
                     Ok(entity)
                 })
@@ -824,10 +824,10 @@ where
         )
         .await?;
         self.enhance_relations_internal(&mut rows).await?;
+        let root = crate::EntityRoot::default();
         rows.into_iter()
             .map(|record| {
                 let mut entity = T::from_record(record)?;
-                let root = crate::EntityRoot::default();
                 entity.on_loaded(&root as &dyn std::any::Any);
                 Ok(entity)
             })

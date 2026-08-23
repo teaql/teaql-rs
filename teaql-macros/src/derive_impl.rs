@@ -341,6 +341,16 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         Default::default()
     };
 
+    let on_loaded_impl = if has_root_field {
+        quote! {
+            if let Some(root) = context.downcast_ref::<::teaql_runtime::EntityRoot>() {
+                self.root.share_graph_from(root);
+            }
+        }
+    } else {
+        Default::default()
+    };
+
     let set_load_state_impl = if has_load_state_field {
         quote! {
             entity.__load_state = ::teaql_core::eval::LoadState::Partial(record.keys().cloned().collect());
@@ -401,7 +411,8 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 record
             }
 
-            fn on_loaded(&mut self, _context: &dyn std::any::Any) {
+            fn on_loaded(&mut self, context: &dyn std::any::Any) {
+                #on_loaded_impl
             }
 
             #dirty_fields_impl

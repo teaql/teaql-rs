@@ -1,5 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex};
+use std::any::{Any, TypeId};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::{Arc, Mutex, RwLock};
 
 use teaql_core::{Record, Value};
 
@@ -58,6 +59,24 @@ fn value_key(value: &Value) -> String {
         Value::Object(_) => "object".to_owned(),
         Value::List(_) => "list".to_owned(),
         Value::TypedNull(_) => "null".to_owned(),
+    }
+}
+
+#[derive(Default)]
+struct EntityGraphStore {
+    tables: HashMap<TypeId, HashMap<u64, Arc<dyn Any + Send + Sync>>>,
+}
+
+impl std::fmt::Debug for EntityGraphStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EntityGraphStore")
+            .field("entity_types", &self.tables.len())
+            .field(
+                "entities",
+                &self.tables.values().map(HashMap::len).sum::<usize>(),
+            )
+            .finish()
     }
 }
 
@@ -178,6 +197,9 @@ pub struct RootContext {
     original_versions: std::collections::BTreeMap<EntityKey, i64>,
     /// Indicates if this entity root is entirely new.
     is_new: bool,
+    /// Query-local, type-separated flat identity graph. The graph is shared
+    /// across entity roots while mutation ledgers remain independent.
+    graph: Arc<RwLock<EntityGraphStore>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -192,6 +214,62 @@ impl PartialEq for EntityRoot {
 }
 
 impl EntityRoot {
+    /// Make this root resolve entities from the same flat graph as `source`.
+    /// Existing snapshots and mutation ledger state remain owned by this root.
+    pub fn share_graph_from(&self, source: &EntityRoot) {
+        let graph = source
+            .inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .graph
+            .clone();
+        self.inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .graph = graph;
+    }
+
+    /// Install a strong entity once in the query-local identity graph.
+    pub fn install_entity<T>(&self, id: u64, entity: T)
+    where
+        T: Any + Send + Sync,
+    {
+        let graph = self
+            .inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .graph
+            .clone();
+        graph
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
+            .tables
+            .entry(TypeId::of::<T>())
+            .or_default()
+            .insert(id, Arc::new(entity));
+    }
+
+    /// Resolve an entity by its compile-time type and database ID.
+    pub fn resolve_entity<T>(&self, id: u64) -> Option<Arc<T>>
+    where
+        T: Any + Send + Sync,
+    {
+        let graph = self
+            .inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .graph
+            .clone();
+        let entity = graph
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .tables
+            .get(&TypeId::of::<T>())?
+            .get(&id)?
+            .clone();
+        Arc::downcast(entity).ok()
+    }
+
     pub fn push_change_set(&self) {
         self.inner
             .lock()
