@@ -1656,9 +1656,9 @@ mod tests {
             .entity_data_service::<StubExecutor>("Order")
             .unwrap();
         let parent_rows = vec![
-            Record::from([(String::from("id"), Value::U64(11))]),
-            Record::from([(String::from("id"), Value::U64(12))]),
-            Record::from([(String::from("id"), Value::U64(11))]),
+            teaql_core::CompactRow::from_record(Record::from([(String::from("id"), Value::U64(11))])),
+            teaql_core::CompactRow::from_record(Record::from([(String::from("id"), Value::U64(12))])),
+            teaql_core::CompactRow::from_record(Record::from([(String::from("id"), Value::U64(11))])),
         ];
 
         let query = repo.relation_query("lines", &parent_rows).unwrap();
@@ -1719,8 +1719,8 @@ mod tests {
             .entity_data_service::<StubExecutor>("Order")
             .unwrap();
         let mut parents = vec![
-            Record::from([(String::from("id"), Value::U64(11))]),
-            Record::from([(String::from("id"), Value::U64(12))]),
+            teaql_core::CompactRow::from_record(Record::from([(String::from("id"), Value::U64(11))])),
+            teaql_core::CompactRow::from_record(Record::from([(String::from("id"), Value::U64(12))])),
         ];
 
         repo.enhance_relations_internal(&mut parents).await.unwrap();
@@ -1775,8 +1775,8 @@ mod tests {
             .entity_data_service::<CapturingQueryExecutor>("Order")
             .unwrap();
         let mut parents = vec![
-            Record::from([(String::from("id"), Value::U64(11))]),
-            Record::from([(String::from("id"), Value::U64(12))]),
+            teaql_core::CompactRow::from_record(Record::from([(String::from("id"), Value::U64(11))])),
+            teaql_core::CompactRow::from_record(Record::from([(String::from("id"), Value::U64(12))])),
         ];
         let query = SelectQuery::new("Order").relation_query(
             "lines",
@@ -2393,9 +2393,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(first, second);
         let executor = context.get_resource::<QueueExecutor>().unwrap();
         assert_eq!(executor.queries.lock().unwrap().len(), 2);
+        assert_eq!(first, second);
     }
 
     #[tokio::test]

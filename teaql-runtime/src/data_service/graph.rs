@@ -1231,6 +1231,7 @@ where
         self.scoped_data_service_internal(entity.to_owned())
             .fetch_all_internal(&query)
             .await
+            .map(|rows| rows.into_iter().map(teaql_core::CompactRow::into_record).collect())
     }
     pub(crate) async fn fetch_graph_current_row_internal(
         &self,
@@ -1246,7 +1247,7 @@ where
             .scoped_data_service_internal(entity.to_owned())
             .fetch_all_internal(&query)
             .await?;
-        Ok(rows.pop())
+        Ok(rows.pop().map(teaql_core::CompactRow::into_record))
     }
 
     pub(crate) async fn execute_ledger_plan_internal(

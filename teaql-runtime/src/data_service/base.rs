@@ -1,6 +1,6 @@
 use teaql_core::{
-    BatchInsertCommand, BatchUpdateCommand, DeleteCommand, Entity, InsertCommand, Record,
-    RecoverCommand, SelectQuery, SmartList, UpdateCommand,
+    BatchInsertCommand, BatchUpdateCommand, CompactRow, DeleteCommand, Entity, InsertCommand,
+    Record, RecoverCommand, SelectQuery, SmartList, UpdateCommand,
 };
 use teaql_data_service::{MutationRequest, QueryRequest};
 
@@ -20,7 +20,7 @@ where
     pub(crate) async fn fetch_all(
         &self,
         query: &SelectQuery,
-    ) -> Result<Vec<Record>, DataServiceError<E::Error>> {
+    ) -> Result<Vec<CompactRow>, DataServiceError<E::Error>> {
         let request = QueryRequest {
             query: query.clone(),
             trace_chain: query.trace_chain.clone(),
@@ -32,17 +32,13 @@ where
             .query(request)
             .await
             .map_err(DataServiceError::Executor)?;
-        Ok(res
-            .rows
-            .into_iter()
-            .map(teaql_core::CompactRow::into_record)
-            .collect())
+        Ok(res.rows)
     }
 
     pub(crate) async fn fetch_smart_list(
         &self,
         query: &SelectQuery,
-    ) -> Result<SmartList<Record>, DataServiceError<E::Error>> {
+    ) -> Result<SmartList<CompactRow>, DataServiceError<E::Error>> {
         let request = QueryRequest {
             query: query.clone(),
             trace_chain: query.trace_chain.clone(),
@@ -55,12 +51,7 @@ where
             .await
             .map_err(DataServiceError::Executor)?;
         self.metadata.record_metadata_log(&res.metadata);
-        Ok(SmartList::from(
-            res.rows
-                .into_iter()
-                .map(teaql_core::CompactRow::into_record)
-                .collect::<Vec<_>>(),
-        ))
+        Ok(SmartList::from(res.rows))
     }
 
     pub(crate) async fn fetch_entities<T>(

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use teaql_core::{EntityDescriptor, Record, RelationAggregate, SelectQuery, Value};
+use teaql_core::{CompactRow, EntityDescriptor, Record, RelationAggregate, SelectQuery, Value};
 
 use crate::{DataServiceError, GraphNode, RuntimeError};
 
@@ -75,7 +75,7 @@ pub(super) fn ensure_projection(query: &mut SelectQuery, field: &str) {
 }
 
 pub(super) fn attach_empty_relation_aggregate(
-    parent_rows: &mut [Record],
+    parent_rows: &mut [CompactRow],
     alias: &str,
     single_result: bool,
 ) {
@@ -86,12 +86,12 @@ pub(super) fn attach_empty_relation_aggregate(
 }
 
 pub(super) fn attach_relation_aggregate_rows(
-    parent_rows: &mut [Record],
+    parent_rows: &mut [CompactRow],
     plan: &RelationLoadPlan,
     aggregate: &RelationAggregate,
-    aggregate_rows: Vec<Record>,
+    aggregate_rows: Vec<CompactRow>,
 ) {
-    let mut buckets: BTreeMap<String, Vec<Record>> = BTreeMap::new();
+    let mut buckets: BTreeMap<String, Vec<CompactRow>> = BTreeMap::new();
     for mut row in aggregate_rows {
         if let Some(key) = row.remove(&plan.foreign_key) {
             buckets
@@ -111,20 +111,25 @@ pub(super) fn attach_relation_aggregate_rows(
     }
 }
 
-pub(super) fn relation_aggregate_value(rows: &[Record], single_result: bool) -> Value {
+pub(super) fn relation_aggregate_value(rows: &[CompactRow], single_result: bool) -> Value {
     match single_result {
         true => rows
             .first()
             .map(single_relation_aggregate_value)
             .unwrap_or(Value::U64(0)),
-        false => Value::List(rows.iter().cloned().map(Value::object).collect()),
+        false => Value::List(
+            rows.iter()
+                .cloned()
+                .map(|row| Value::object(row.into_record()))
+                .collect(),
+        ),
     }
 }
 
-pub(super) fn single_relation_aggregate_value(row: &Record) -> Value {
+pub(super) fn single_relation_aggregate_value(row: &CompactRow) -> Value {
     match row.len() {
         1 => row.values().next().cloned().unwrap_or(Value::Null),
-        _ => Value::object(row.clone()),
+        _ => Value::object(row.clone().into_record()),
     }
 }
 

@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::{collections::BTreeMap, future::Future};
 
 use teaql_core::{
-    DeleteCommand, Entity, InsertCommand, Record, RecoverCommand, SelectQuery, SmartList,
-    UpdateCommand,
+    CompactRow, DeleteCommand, Entity, InsertCommand, Record, RecoverCommand, SelectQuery,
+    SmartList, UpdateCommand,
 };
 
 use crate::{
@@ -141,7 +141,7 @@ where
     pub(crate) async fn fetch_all(
         &self,
         mut query: SelectQuery,
-    ) -> Result<Vec<Record>, DataServiceError<E::Error>> {
+    ) -> Result<Vec<CompactRow>, DataServiceError<E::Error>> {
         let final_comment = self.resolve_final_comment(&query.trace_chain, query.comment.clone());
         query.comment = final_comment;
         self.observe(
@@ -156,7 +156,7 @@ where
     pub(crate) async fn fetch_smart_list(
         &self,
         query: &SelectQuery,
-    ) -> Result<SmartList<Record>, DataServiceError<E::Error>> {
+    ) -> Result<SmartList<CompactRow>, DataServiceError<E::Error>> {
         self.observe(
             "query",
             || format!("{}.list", query.entity),

@@ -782,6 +782,40 @@ impl CompactRow {
             .and_then(|index| self.values.get(index))
     }
 
+    pub fn get_mut(&mut self, name: &str) -> Option<&mut Value> {
+        self.columns
+            .iter()
+            .position(|column| column == name)
+            .and_then(|index| self.values.get_mut(index))
+    }
+
+    /// Adds or replaces a projected value. Column layouts remain shared until
+    /// an enhancement actually changes the shape of this row.
+    pub fn insert(&mut self, name: String, value: Value) -> Option<Value> {
+        if let Some(index) = self.columns.iter().position(|column| column == &name) {
+            return Some(std::mem::replace(&mut self.values[index], value));
+        }
+        let mut columns = self.columns.to_vec();
+        columns.push(name);
+        self.columns = columns.into();
+        self.values.push(value);
+        None
+    }
+
+    pub fn remove(&mut self, name: &str) -> Option<Value> {
+        let index = self.columns.iter().position(|column| column == name)?;
+        let mut columns = self.columns.to_vec();
+        columns.remove(index);
+        self.columns = columns.into();
+        Some(self.values.remove(index))
+    }
+
+    pub fn extend(&mut self, other: CompactRow) {
+        for (name, value) in other.columns.iter().cloned().zip(other.values) {
+            self.insert(name, value);
+        }
+    }
+
     pub fn contains_key(&self, name: &str) -> bool {
         self.columns.iter().any(|column| column == name)
     }
@@ -800,6 +834,10 @@ impl CompactRow {
 
     pub fn keys(&self) -> impl Iterator<Item = &String> {
         self.columns.iter()
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &Value> {
+        self.values.iter()
     }
 
     pub fn into_record(self) -> Record {

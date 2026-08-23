@@ -143,13 +143,21 @@ where
     fn attach_flat_relation_graph(
         &self,
         entity_name: &str,
-        rows: &mut [Record],
+        rows: &mut [teaql_core::CompactRow],
     ) -> Result<crate::EntityRoot, teaql_core::EntityError> {
         let root = crate::EntityRoot::default();
         let mut graph = crate::EntityGraphBuilder::default();
         let mut installed = BTreeSet::new();
         for row in rows {
-            self.flatten_relation_graph(entity_name, row, &root, &mut graph, &mut installed)?;
+            let mut record = row.clone().into_record();
+            self.flatten_relation_graph(
+                entity_name,
+                &mut record,
+                &root,
+                &mut graph,
+                &mut installed,
+            )?;
+            *row = teaql_core::CompactRow::from_record(record);
         }
         root.freeze_graph(graph).map_err(|_| {
             teaql_core::EntityError::new(entity_name, "identity graph was already frozen")
@@ -318,7 +326,7 @@ where
     pub(crate) async fn fetch_all_internal(
         &self,
         query: &SelectQuery,
-    ) -> Result<Vec<Record>, DataServiceError<E::Error>> {
+    ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         let query = self
             .prepare_select_query(query)
             .map_err(DataServiceError::Runtime)?;
@@ -338,7 +346,7 @@ where
     async fn fetch_all_owned_internal(
         &self,
         query: SelectQuery,
-    ) -> Result<Vec<Record>, DataServiceError<E::Error>> {
+    ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         let query = self
             .prepare_select_query_owned(query)
             .map_err(DataServiceError::Runtime)?
@@ -363,10 +371,7 @@ where
             .map_err(DataServiceError::Runtime)?
             .prepare_for_list()
             .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
-        debug_assert!(query.object_group_bys.is_empty());
-        debug_assert!(query.child_enhancements.is_empty());
-        debug_assert!(query.relations.is_empty());
-        self.fetch_prepared_compact_owned(query).await
+        self.fetch_prepared_all(&query).await
     }
 
     async fn prepare_continuous_page(
@@ -492,7 +497,7 @@ where
     async fn register_continuous_page(
         &self,
         execution: &Option<ContinuousPageExecution>,
-        rows: &[Record],
+        rows: &[teaql_core::CompactRow],
     ) {
         let Some(execution) = execution else { return };
         if rows.len() as u64 != execution.page_size {
@@ -627,7 +632,7 @@ where
     async fn fetch_prepared_all(
         &self,
         query: &SelectQuery,
-    ) -> Result<Vec<Record>, DataServiceError<E::Error>> {
+    ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         let query = query
             .clone()
             .prepare_for_list()
@@ -662,7 +667,7 @@ where
     async fn fetch_prepared_query(
         &self,
         query: &SelectQuery,
-    ) -> Result<Vec<Record>, DataServiceError<E::Error>> {
+    ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         let final_comment = self
             .data_service
             .resolve_final_comment(&query.trace_chain, query.comment.clone());
@@ -706,17 +711,13 @@ where
             .metadata
             .context
             .record_metadata_log(&res.metadata);
-        Ok(res
-            .rows
-            .into_iter()
-            .map(teaql_core::CompactRow::into_record)
-            .collect())
+        Ok(res.rows)
     }
 
     async fn fetch_prepared_query_owned(
         &self,
         mut query: SelectQuery,
-    ) -> Result<Vec<Record>, DataServiceError<E::Error>> {
+    ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         if query
             .aggregation_cache
             .is_some_and(|options| options.enabled)
@@ -743,11 +744,7 @@ where
             .metadata
             .context
             .record_metadata_log(&res.metadata);
-        Ok(res
-            .rows
-            .into_iter()
-            .map(teaql_core::CompactRow::into_record)
-            .collect())
+        Ok(res.rows)
     }
 
     pub(crate) async fn fetch_prepared_compact_owned(
@@ -782,7 +779,7 @@ where
         query: &SelectQuery,
         options: AggregationCacheOptions,
         cache: &dyn AggregationCacheBackend,
-    ) -> Result<Vec<Record>, DataServiceError<E::Error>> {
+    ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         let key = aggregation_cache_key(
             cache.namespace(),
             &aggregation_cache_namespace(&query.entity),
@@ -826,11 +823,7 @@ where
                     .metadata
                     .context
                     .record_metadata_log(&res.metadata);
-                let rows = res
-                    .rows
-                    .into_iter()
-                    .map(teaql_core::CompactRow::into_record)
-                    .collect::<Vec<_>>();
+                let rows = res.rows;
                 cache.put(key, rows.clone());
                 Ok((rows, "miss"))
             })
@@ -854,7 +847,7 @@ where
         &self,
         query: &SelectQuery,
         relation_aggregates: &[RelationAggregate],
-    ) -> Result<Vec<Record>, DataServiceError<E::Error>> {
+    ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         let query = self
             .prepare_select_query(query)
             .map_err(DataServiceError::Runtime)?;
@@ -873,7 +866,7 @@ where
     pub(crate) async fn fetch_smart_list_internal(
         &self,
         query: &SelectQuery,
-    ) -> Result<SmartList<Record>, DataServiceError<E::Error>> {
+    ) -> Result<SmartList<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         let query = self
             .prepare_select_query(query)
             .map_err(DataServiceError::Runtime)?;
@@ -885,7 +878,7 @@ where
         &self,
         query: &SelectQuery,
         relation_aggregates: &[RelationAggregate],
-    ) -> Result<SmartList<Record>, DataServiceError<E::Error>> {
+    ) -> Result<SmartList<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         self.fetch_all_with_relation_aggregates_internal(query, relation_aggregates)
             .await
             .map(SmartList::from)
@@ -918,7 +911,7 @@ where
             .await?
             .into_iter()
             .map(|record| {
-                let mut entity = T::from_record(record)?;
+                let mut entity = T::from_compact_row(record)?;
                 entity.on_loaded(&root as &dyn std::any::Any);
                 Ok(entity)
             })
@@ -980,7 +973,7 @@ where
                 .await?
                 .into_iter()
                 .map(|record| {
-                    let mut entity = T::from_record(record)?;
+                let mut entity = T::from_compact_row(record)?;
                     entity.on_loaded(&root as &dyn std::any::Any);
                     Ok(entity)
                 })
@@ -1060,7 +1053,7 @@ where
         };
         rows.into_iter()
             .map(|record| {
-                let mut entity = T::from_record(record)?;
+                let mut entity = T::from_compact_row(record)?;
                 entity.on_loaded(&root as &dyn std::any::Any);
                 Ok(entity)
             })
@@ -1143,7 +1136,7 @@ where
         };
         rows.into_iter()
             .map(|record| {
-                let mut entity = T::from_record(record)?;
+                let mut entity = T::from_compact_row(record)?;
                 entity.on_loaded(&root as &dyn std::any::Any);
                 Ok(entity)
             })
@@ -1157,9 +1150,7 @@ where
         &self,
         query: &PurposedSelectQuery,
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
-        self.fetch_all_internal(query.as_query()).await.map(|rows| {
-            rows.into_iter().map(teaql_core::CompactRow::from_record).collect()
-        })
+        self.fetch_all_internal(query.as_query()).await
     }
 
     #[doc(hidden)]
@@ -1167,9 +1158,7 @@ where
         &self,
         query: PurposedSelectQuery,
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
-        self.fetch_all_owned_internal(query.into_query()).await.map(|rows| {
-            rows.into_iter().map(teaql_core::CompactRow::from_record).collect()
-        })
+        self.fetch_all_owned_internal(query.into_query()).await
     }
 
     #[doc(hidden)]
@@ -1197,9 +1186,7 @@ where
         &self,
         query: &PurposedSelectQuery,
     ) -> Result<SmartList<teaql_core::CompactRow>, DataServiceError<E::Error>> {
-        self.fetch_smart_list_internal(query.as_query()).await.map(|rows| {
-            SmartList::from(rows.into_iter().map(teaql_core::CompactRow::from_record).collect::<Vec<_>>())
-        })
+        self.fetch_smart_list_internal(query.as_query()).await
     }
 
     #[doc(hidden)]
@@ -1212,9 +1199,7 @@ where
             query.as_query(),
             relation_aggregates,
         )
-        .await.map(|rows| SmartList::from(
-            rows.into_iter().map(teaql_core::CompactRow::from_record).collect::<Vec<_>>()
-        ))
+        .await
     }
 
     #[doc(hidden)]

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::slice;
 
 use teaql_core::{
-    Aggregate, CompactRow, Expr, ObjectGroupBy, Record, RelationAggregate, RelationLoad,
+    Aggregate, CompactRow, Expr, ObjectGroupBy, RelationAggregate, RelationLoad,
     SelectQuery, Value,
 };
 
@@ -47,7 +47,7 @@ where
     pub fn relation_query(
         &self,
         relation_name: &str,
-        parent_rows: &[Record],
+        parent_rows: &[CompactRow],
     ) -> Result<SelectQuery, RuntimeError> {
         let plan = self
             .relation_plans()?
@@ -62,7 +62,7 @@ where
 
     pub(crate) async fn enhance_relations_internal(
         &self,
-        parent_rows: &mut [Record],
+        parent_rows: &mut [CompactRow],
     ) -> Result<(), DataServiceError<E::Error>> {
         let plans = self.relation_plans().map_err(DataServiceError::Runtime)?;
         for plan in plans {
@@ -73,7 +73,7 @@ where
 
     pub(crate) async fn enhance_query_relations_internal(
         &self,
-        parent_rows: &mut [Record],
+        parent_rows: &mut [CompactRow],
         query: &SelectQuery,
     ) -> Result<(), DataServiceError<E::Error>> {
         let plans = self
@@ -87,7 +87,7 @@ where
 
     pub(crate) async fn hydrate_flat_plans_internal(
         &self,
-        parent_rows: &mut [Record],
+        parent_rows: &mut [CompactRow],
         plans: &[RelationLoadPlan],
         root: &crate::EntityRoot,
         graph: &mut crate::EntityGraphBuilder,
@@ -135,7 +135,7 @@ where
 
     pub(crate) fn enhance_relation_aggregates_internal<'b>(
         &'b self,
-        parent_rows: &'b mut [Record],
+        parent_rows: &'b mut [CompactRow],
         relation_aggregates: &'b [RelationAggregate],
         parent_cache_options: Option<teaql_core::AggregationCacheOptions>,
         parent_trace_chain: &'b [teaql_core::TraceNode],
@@ -158,7 +158,7 @@ where
 
     pub(crate) fn enhance_object_group_bys_internal<'b>(
         &'b self,
-        rows: &'b mut [Record],
+        rows: &'b mut [CompactRow],
         object_group_bys: &'b [ObjectGroupBy],
         parent_trace_chain: &'b [teaql_core::TraceNode],
     ) -> std::pin::Pin<
@@ -179,7 +179,7 @@ where
                 let object_rows = self
                     .scoped_data_service_internal(query.entity.clone())
                     .with_trace_context(parent_trace_chain.to_vec())
-                    .fetch_all_internal(&query)
+                    .fetch_compact_all_internal(query)
                     .await?
                     .into_iter()
                     .filter_map(|row| {
@@ -193,7 +193,7 @@ where
                         let value = object_rows
                             .get(&key)
                             .cloned()
-                            .map(Value::object)
+                            .map(|row| Value::object(row.into_record()))
                             .unwrap_or(Value::Null);
                         row.insert(group_by.property_name.clone(), value);
                     }
@@ -205,7 +205,7 @@ where
 
     pub(crate) fn enhance_child_queries_internal<'b>(
         &'b self,
-        rows: &'b mut [Record],
+        rows: &'b mut [CompactRow],
         child_queries: &'b [SelectQuery],
         parent_trace_chain: &'b [teaql_core::TraceNode],
     ) -> std::pin::Pin<
@@ -226,7 +226,7 @@ where
                 let child_rows = self
                     .scoped_data_service_internal(query.entity.clone())
                     .with_trace_context(parent_trace_chain.to_vec())
-                    .fetch_all_internal(&query)
+                    .fetch_compact_all_internal(query)
                     .await?
                     .into_iter()
                     .filter_map(|row| {
@@ -249,7 +249,7 @@ where
 
     async fn enhance_relation_aggregate(
         &self,
-        parent_rows: &mut [Record],
+        parent_rows: &mut [CompactRow],
         aggregate: &RelationAggregate,
         parent_cache_options: Option<teaql_core::AggregationCacheOptions>,
         parent_trace_chain: &[teaql_core::TraceNode],
@@ -318,7 +318,7 @@ where
 
         let mut aggregate_rows = child_repo
             .with_trace_context(chain)
-            .fetch_all_internal(&query)
+                    .fetch_compact_all_internal(query)
             .await?;
         let foreign_key_column = self
             .data_service
@@ -434,7 +434,7 @@ where
     }
     fn enhance_plan<'b>(
         &'b self,
-        parent_rows: &'b mut [Record],
+        parent_rows: &'b mut [CompactRow],
         plan: &'b RelationLoadPlan,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
@@ -452,7 +452,7 @@ where
                 .run(async {
                     let child_repo = self.scoped_data_service_internal(plan.target_entity.clone());
                     let query = self.query_for_plan(plan, parent_rows);
-                    let mut child_rows = child_repo.fetch_all_internal(&query).await?;
+            let mut child_rows = child_repo.fetch_compact_all_internal(query).await?;
                     for child in &mut child_rows {
                         child.remove(teaql_core::PARTITION_RANK_PROPERTY);
                     }
@@ -495,7 +495,7 @@ where
 
     fn hydrate_flat_plan<'b>(
         &'b self,
-        parent_rows: &'b mut [Record],
+        parent_rows: &'b mut [CompactRow],
         plan: &'b RelationLoadPlan,
         root: &'b crate::EntityRoot,
         graph: &'b mut crate::EntityGraphBuilder,
@@ -505,13 +505,13 @@ where
         Box::pin(async move {
             let child_repo = self.scoped_data_service_internal(plan.target_entity.clone());
             let query = self.query_for_plan(plan, parent_rows);
-            let mut child_rows = child_repo.fetch_all_internal(&query).await?;
+            let mut child_rows = child_repo.fetch_compact_all_internal(query).await?;
             for child in &mut child_rows {
                 child.remove(teaql_core::PARTITION_RANK_PROPERTY);
             }
 
             // Hydrate descendants while the rows are still owned by this level. Nothing is
-            // embedded into a parent Record: every relation is published directly into the
+            // embedded into a parent row: every relation is published directly into the
             // shared, immutable identity graph.
             for child_plan in &plan.children {
                 child_repo
@@ -533,7 +533,7 @@ where
                 })
                 .map(|relation| (relation.name.clone(), relation.many));
 
-            let mut buckets: BTreeMap<FlatIdentityKey, Vec<Record>> = BTreeMap::new();
+            let mut buckets: BTreeMap<FlatIdentityKey, Vec<CompactRow>> = BTreeMap::new();
             for child in child_rows {
                 if let Some(key) = child.get(&plan.foreign_key) {
                     buckets
@@ -560,7 +560,7 @@ where
                         };
                         if *inverse_many {
                             context
-                                .decode_entity_list_into_graph(
+                                .decode_compact_entity_list_into_graph(
                                     &plan.parent_entity,
                                     vec![parent_record.clone()],
                                     root,
@@ -572,7 +572,7 @@ where
                                 .map_err(DataServiceError::Entity)?;
                         } else {
                             context
-                                .decode_entity_option_into_graph(
+                                .decode_compact_entity_option_into_graph(
                                     &plan.parent_entity,
                                     vec![parent_record.clone()],
                                     root,
@@ -595,7 +595,7 @@ where
                     })?;
                     if plan.many {
                         context
-                            .decode_entity_list_into_graph(
+                            .decode_compact_entity_list_into_graph(
                                 &plan.target_entity,
                                 related,
                                 root,
@@ -607,7 +607,7 @@ where
                             .map_err(DataServiceError::Entity)?;
                     } else {
                         context
-                            .decode_entity_option_into_graph(
+                            .decode_compact_entity_option_into_graph(
                                 &plan.target_entity,
                                 related,
                                 root,
@@ -625,7 +625,7 @@ where
                 } else {
                     for child in related {
                         context
-                            .decode_entity_into_graph(&plan.target_entity, child, root, graph)
+                            .decode_compact_entity_into_graph(&plan.target_entity, child, root, graph)
                             .map_err(DataServiceError::Entity)?;
                     }
                 }
@@ -724,20 +724,22 @@ where
 
     fn enhance_child_record<'b>(
         &'b self,
-        child: &'b mut Record,
+        child: &'b mut teaql_core::Record,
         plans: &'b [RelationLoadPlan],
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
     > {
         Box::pin(async move {
             for plan in plans {
-                self.enhance_plan(slice::from_mut(child), plan).await?;
+                let mut row = CompactRow::from_record(std::mem::take(child));
+                self.enhance_plan(slice::from_mut(&mut row), plan).await?;
+                *child = row.into_record();
             }
             Ok(())
         })
     }
 
-    fn query_for_plan(&self, plan: &RelationLoadPlan, parent_rows: &[Record]) -> SelectQuery {
+    fn query_for_plan(&self, plan: &RelationLoadPlan, parent_rows: &[CompactRow]) -> SelectQuery {
         // Relation identities are a set. Keeping one value per normalized identity avoids
         // compiling and binding the same foreign key once for every parent row (a common shape
         // for pages containing many rows that share a small reference table).
@@ -807,9 +809,9 @@ where
 
     fn attach_relation_rows(
         &self,
-        parent_rows: &mut [Record],
+        parent_rows: &mut [CompactRow],
         plan: &RelationLoadPlan,
-        child_rows: Vec<Record>,
+        child_rows: Vec<CompactRow>,
     ) {
         let inverse_relation = self
             .data_service
@@ -825,7 +827,7 @@ where
             })
             .map(|relation| (relation.name.clone(), relation.many));
 
-        let mut buckets: BTreeMap<String, Vec<Record>> = BTreeMap::new();
+        let mut buckets: BTreeMap<String, Vec<CompactRow>> = BTreeMap::new();
         for child in child_rows.clone() {
             if let Some(key) = child.get(&plan.foreign_key) {
                 buckets
@@ -850,17 +852,25 @@ where
                         .map(|mut child| {
                             match *inverse_many {
                                 true => {
-                                    let entry = child
-                                        .entry(inverse_relation.clone())
-                                        .or_insert_with(|| Value::List(Vec::new()));
+                                    if !child.contains_key(inverse_relation) {
+                                        child.insert(
+                                            inverse_relation.clone(),
+                                            Value::List(Vec::new()),
+                                        );
+                                    }
+                                    let entry = child.get_mut(inverse_relation).expect(
+                                        "inverse relation was inserted immediately above",
+                                    );
                                     if let Value::List(list) = entry {
-                                        list.push(Value::object(parent_object.clone()));
+                                        list.push(Value::object(
+                                            parent_object.clone().into_record(),
+                                        ));
                                     }
                                 }
                                 false => {
                                     child.insert(
                                         inverse_relation.clone(),
-                                        Value::object(parent_object.clone()),
+                                        Value::object(parent_object.clone().into_record()),
                                     );
                                 }
                             }
@@ -874,14 +884,19 @@ where
                 true => {
                     parent.insert(
                         plan.relation_name.clone(),
-                        Value::List(related.into_iter().map(Value::object).collect()),
+                        Value::List(
+                            related
+                                .into_iter()
+                                .map(|row| Value::object(row.into_record()))
+                                .collect(),
+                        ),
                     );
                 }
                 false => {
                     let value = related
                         .into_iter()
                         .next()
-                        .map(Value::object)
+                        .map(|row| Value::object(row.into_record()))
                         .unwrap_or(Value::Null);
                     parent.insert(plan.relation_name.clone(), value);
                 }

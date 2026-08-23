@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use teaql_core::Record;
+use teaql_core::CompactRow;
 
 #[derive(Debug, Default)]
 pub struct InMemoryAggregationCache {
@@ -12,15 +12,15 @@ pub struct InMemoryAggregationCache {
 
 pub trait AggregationCacheBackend: Send + Sync {
     fn namespace(&self) -> &str;
-    fn get(&self, key: &str, max_age_millis: u64) -> Option<Vec<Record>>;
-    fn put(&self, key: String, rows: Vec<Record>);
+    fn get(&self, key: &str, max_age_millis: u64) -> Option<Vec<CompactRow>>;
+    fn put(&self, key: String, rows: Vec<CompactRow>);
     fn invalidate_namespace(&self, namespace: &str);
 }
 
 #[derive(Debug, Clone)]
 struct AggregationCacheEntry {
     stored_at: Instant,
-    rows: Vec<Record>,
+    rows: Vec<CompactRow>,
 }
 
 impl InMemoryAggregationCache {
@@ -41,14 +41,14 @@ impl AggregationCacheBackend for InMemoryAggregationCache {
         &self.namespace
     }
 
-    fn get(&self, key: &str, max_age_millis: u64) -> Option<Vec<Record>> {
+    fn get(&self, key: &str, max_age_millis: u64) -> Option<Vec<CompactRow>> {
         let entries = self.entries.lock().ok()?;
         let entry = entries.get(key)?;
         (max_age_millis == 0 || entry.stored_at.elapsed() <= Duration::from_millis(max_age_millis))
             .then(|| entry.rows.clone())
     }
 
-    fn put(&self, key: String, rows: Vec<Record>) {
+    fn put(&self, key: String, rows: Vec<CompactRow>) {
         if let Ok(mut entries) = self.entries.lock() {
             entries.insert(
                 key,
@@ -69,11 +69,11 @@ impl AggregationCacheBackend for InMemoryAggregationCache {
 }
 
 impl InMemoryAggregationCache {
-    pub fn get(&self, key: &str, max_age_millis: u64) -> Option<Vec<Record>> {
+    pub fn get(&self, key: &str, max_age_millis: u64) -> Option<Vec<CompactRow>> {
         AggregationCacheBackend::get(self, key, max_age_millis)
     }
 
-    pub fn put(&self, key: String, rows: Vec<Record>) {
+    pub fn put(&self, key: String, rows: Vec<CompactRow>) {
         AggregationCacheBackend::put(self, key, rows);
     }
 
