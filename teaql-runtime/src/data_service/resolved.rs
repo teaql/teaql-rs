@@ -9,14 +9,14 @@ use teaql_core::{
 };
 
 use crate::{
-    CheckObjectStatus, ContinuousPageCursor, DataServiceError, EntityDataServiceBehavior,
-    MetadataStore, PurposedSelectQuery, RawAuditEvent, RuntimeError, clear_record_status,
-    mark_record_status,
+    clear_record_status, mark_record_status, CheckObjectStatus, ContinuousPageCursor,
+    DataServiceError, EntityDataServiceBehavior, MetadataStore, PurposedSelectQuery, RawAuditEvent,
+    RuntimeError,
 };
 
 use super::{
-    AggregationCacheBackend, ContextDataService, EntityDataService, InMemoryAggregationCache,
-    UserContextMetadata, helpers::*,
+    helpers::*, AggregationCacheBackend, ContextDataService, EntityDataService,
+    InMemoryAggregationCache, UserContextMetadata,
 };
 
 #[derive(Debug, Clone)]
@@ -352,6 +352,21 @@ where
             return self.fetch_prepared_query_owned(query).await;
         }
         self.fetch_prepared_all(&query).await
+    }
+
+    pub(crate) async fn fetch_compact_all_internal(
+        &self,
+        query: SelectQuery,
+    ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
+        let query = self
+            .prepare_select_query_owned(query)
+            .map_err(DataServiceError::Runtime)?
+            .prepare_for_list()
+            .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
+        debug_assert!(query.object_group_bys.is_empty());
+        debug_assert!(query.child_enhancements.is_empty());
+        debug_assert!(query.relations.is_empty());
+        self.fetch_prepared_compact_owned(query).await
     }
 
     async fn prepare_continuous_page(
@@ -727,6 +742,33 @@ where
         Ok(res.rows)
     }
 
+    pub(crate) async fn fetch_prepared_compact_owned(
+        &self,
+        mut query: SelectQuery,
+    ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
+        query.comment = self
+            .data_service
+            .resolve_final_comment(&query.trace_chain, query.comment.take());
+        let trace_chain = std::mem::take(&mut query.trace_chain);
+        let request = teaql_data_service::QueryRequest {
+            trace_chain,
+            comment: query.comment.clone(),
+            capture_debug_query: self.data_service.metadata.capture_query_debug(),
+            query,
+        };
+        let result = self
+            .data_service
+            .executor
+            .query_compact(request)
+            .await
+            .map_err(DataServiceError::Executor)?;
+        self.data_service
+            .metadata
+            .context
+            .record_metadata_log(&result.metadata);
+        Ok(result.rows)
+    }
+
     async fn fetch_prepared_query_with_cache(
         &self,
         query: &SelectQuery,
@@ -943,6 +985,40 @@ where
         if use_flat_hydration {
             root_query.relations.clear();
         }
+        if relation_aggregates.is_empty()
+            && root_query.continuous_page_fetch.is_none()
+            && root_query.object_group_bys.is_empty()
+            && root_query.child_enhancements.is_empty()
+        {
+            if let Some((query_plans, behavior_plans)) = flat_plans.as_ref() {
+                let root_query = root_query
+                    .prepare_for_list()
+                    .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
+                let rows = self.fetch_prepared_compact_owned(root_query).await?;
+                let root = crate::EntityRoot::default();
+                let mut graph = crate::EntityGraphBuilder::default();
+                self.hydrate_compact_flat_plans_internal(&rows, query_plans, &root, &mut graph)
+                    .await?;
+                self.hydrate_compact_flat_plans_internal(&rows, behavior_plans, &root, &mut graph)
+                    .await?;
+                root.freeze_graph(graph).map_err(|_| {
+                    DataServiceError::Entity(teaql_core::EntityError::new(
+                        &query.entity,
+                        "identity graph was already frozen",
+                    ))
+                })?;
+                return rows
+                    .into_iter()
+                    .map(|row| {
+                        let mut entity = T::from_compact_row(row)?;
+                        entity.on_loaded(&root as &dyn std::any::Any);
+                        Ok(entity)
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(SmartList::from)
+                    .map_err(DataServiceError::Entity);
+            }
+        }
         let mut rows = self.fetch_prepared_all(&root_query).await?;
         self.enhance_relation_aggregates_internal(
             &mut rows,
@@ -999,6 +1075,39 @@ where
         let mut root_query = query.clone();
         if use_flat_hydration {
             root_query.relations.clear();
+        }
+        if root_query.continuous_page_fetch.is_none()
+            && root_query.object_group_bys.is_empty()
+            && root_query.child_enhancements.is_empty()
+        {
+            if let Some((query_plans, behavior_plans)) = flat_plans.as_ref() {
+                let root_query = root_query
+                    .prepare_for_list()
+                    .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
+                let rows = self.fetch_prepared_compact_owned(root_query).await?;
+                let root = crate::EntityRoot::default();
+                let mut graph = crate::EntityGraphBuilder::default();
+                self.hydrate_compact_flat_plans_internal(&rows, query_plans, &root, &mut graph)
+                    .await?;
+                self.hydrate_compact_flat_plans_internal(&rows, behavior_plans, &root, &mut graph)
+                    .await?;
+                root.freeze_graph(graph).map_err(|_| {
+                    DataServiceError::Entity(teaql_core::EntityError::new(
+                        &query.entity,
+                        "identity graph was already frozen",
+                    ))
+                })?;
+                return rows
+                    .into_iter()
+                    .map(|row| {
+                        let mut entity = T::from_compact_row(row)?;
+                        entity.on_loaded(&root as &dyn std::any::Any);
+                        Ok(entity)
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(SmartList::from)
+                    .map_err(DataServiceError::Entity);
+            }
         }
         let mut rows = self.fetch_prepared_all(&root_query).await?;
         let root = if let Some((query_plans, behavior_plans)) = flat_plans {

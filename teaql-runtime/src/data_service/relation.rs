@@ -2,12 +2,13 @@ use std::collections::BTreeMap;
 use std::slice;
 
 use teaql_core::{
-    Aggregate, Expr, ObjectGroupBy, Record, RelationAggregate, RelationLoad, SelectQuery, Value,
+    Aggregate, CompactRow, Expr, ObjectGroupBy, Record, RelationAggregate, RelationLoad,
+    SelectQuery, Value,
 };
 
 use crate::{DataServiceError, RuntimeError};
 
-use super::{EntityDataService, RelationLoadPlan, helpers::*};
+use super::{helpers::*, EntityDataService, RelationLoadPlan};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum FlatIdentityKey {
@@ -93,6 +94,20 @@ where
     ) -> Result<(), DataServiceError<E::Error>> {
         for plan in plans {
             self.hydrate_flat_plan(parent_rows, plan, root, graph)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn hydrate_compact_flat_plans_internal(
+        &self,
+        parent_rows: &[CompactRow],
+        plans: &[RelationLoadPlan],
+        root: &crate::EntityRoot,
+        graph: &mut crate::EntityGraphBuilder,
+    ) -> Result<(), DataServiceError<E::Error>> {
+        for plan in plans {
+            self.hydrate_compact_flat_plan(parent_rows, plan, root, graph)
                 .await?;
         }
         Ok(())
@@ -619,6 +634,94 @@ where
         })
     }
 
+    fn hydrate_compact_flat_plan<'b>(
+        &'b self,
+        parent_rows: &'b [CompactRow],
+        plan: &'b RelationLoadPlan,
+        root: &'b crate::EntityRoot,
+        graph: &'b mut crate::EntityGraphBuilder,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
+    > {
+        Box::pin(async move {
+            let child_repo = self.scoped_data_service_internal(plan.target_entity.clone());
+            let query = self.query_for_compact_plan(plan, parent_rows);
+            let child_rows = child_repo.fetch_compact_all_internal(query).await?;
+
+            for child_plan in &plan.children {
+                child_repo
+                    .hydrate_compact_flat_plan(&child_rows, child_plan, root, graph)
+                    .await?;
+            }
+
+            let mut buckets: BTreeMap<FlatIdentityKey, Vec<CompactRow>> = BTreeMap::new();
+            for child in child_rows {
+                if let Some(key) = child.get(&plan.foreign_key) {
+                    buckets
+                        .entry(FlatIdentityKey::from_value(key))
+                        .or_default()
+                        .push(child);
+                }
+            }
+
+            let context = self.data_service.metadata.context;
+            for parent in parent_rows {
+                let Some(local_value) = parent.get(&plan.local_key) else {
+                    continue;
+                };
+                let related = buckets
+                    .remove(&FlatIdentityKey::from_value(local_value))
+                    .unwrap_or_default();
+
+                if plan.many || plan.local_key == "id" {
+                    let owner_id = parent.get("id").and_then(Value::try_u64).ok_or_else(|| {
+                        DataServiceError::Entity(teaql_core::EntityError::new(
+                            &plan.parent_entity,
+                            "loaded reverse relation owner is missing its u64 id",
+                        ))
+                    })?;
+                    if plan.many {
+                        context
+                            .decode_compact_entity_list_into_graph(
+                                &plan.target_entity,
+                                related,
+                                root,
+                                graph,
+                                &plan.parent_entity,
+                                owner_id,
+                                &plan.relation_name,
+                            )
+                            .map_err(DataServiceError::Entity)?;
+                    } else {
+                        context
+                            .decode_compact_entity_option_into_graph(
+                                &plan.target_entity,
+                                related,
+                                root,
+                                graph,
+                                &plan.parent_entity,
+                                owner_id,
+                                &plan.relation_name,
+                            )
+                            .map_err(DataServiceError::Entity)?;
+                    }
+                } else {
+                    for child in related {
+                        context
+                            .decode_compact_entity_into_graph(
+                                &plan.target_entity,
+                                child,
+                                root,
+                                graph,
+                            )
+                            .map_err(DataServiceError::Entity)?;
+                    }
+                }
+            }
+            Ok(())
+        })
+    }
+
     fn enhance_child_record<'b>(
         &'b self,
         child: &'b mut Record,
@@ -650,6 +753,40 @@ where
             .into_values()
             .collect::<Vec<_>>();
 
+        let mut query = plan
+            .query
+            .clone()
+            .unwrap_or_else(|| SelectQuery::new(plan.target_entity.clone()));
+        query.entity = plan.target_entity.clone();
+        ensure_projection(&mut query, &plan.foreign_key);
+        for child in &plan.children {
+            ensure_projection(&mut query, &child.local_key);
+        }
+        if !ids.is_empty() {
+            query = query.and_filter(Expr::in_list(plan.foreign_key.clone(), ids));
+        }
+        if query.slice.is_some() {
+            query.partition_by = Some(plan.foreign_key.clone());
+        }
+        query
+    }
+
+    fn query_for_compact_plan(
+        &self,
+        plan: &RelationLoadPlan,
+        parent_rows: &[CompactRow],
+    ) -> SelectQuery {
+        let ids = parent_rows
+            .iter()
+            .filter_map(|row| row.get(&plan.local_key).cloned())
+            .fold(BTreeMap::new(), |mut unique, value| {
+                unique
+                    .entry(FlatIdentityKey::from_value(&value))
+                    .or_insert(value);
+                unique
+            })
+            .into_values()
+            .collect::<Vec<_>>();
         let mut query = plan
             .query
             .clone()

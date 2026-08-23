@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use teaql_core::{
-    DeleteCommand, Entity, EntityDescriptor, EntityDescriptorStore, EntityError,
+    CompactRow, DeleteCommand, Entity, EntityDescriptor, EntityDescriptorStore, EntityError,
     IdentifiableEntity, InsertCommand, Record, RecoverCommand, SelectQuery, TeaqlEntity,
     UpdateCommand,
 };
@@ -23,12 +23,25 @@ type EntityGraphListDecoder = fn(
     &str,
 ) -> Result<(), EntityError>;
 type EntityGraphOptionDecoder = EntityGraphListDecoder;
+type CompactEntityGraphDecoder =
+    fn(CompactRow, &EntityRoot, &mut EntityGraphBuilder) -> Result<(), EntityError>;
+type CompactEntityGraphListDecoder = fn(
+    Vec<CompactRow>,
+    &EntityRoot,
+    &mut EntityGraphBuilder,
+    &str,
+    u64,
+    &str,
+) -> Result<(), EntityError>;
 
 #[derive(Default, Clone)]
 pub struct InMemoryEntityGraphDecoderRegistry {
     decoders: BTreeMap<String, EntityGraphDecoder>,
     list_decoders: BTreeMap<String, EntityGraphListDecoder>,
     option_decoders: BTreeMap<String, EntityGraphOptionDecoder>,
+    compact_decoders: BTreeMap<String, CompactEntityGraphDecoder>,
+    compact_list_decoders: BTreeMap<String, CompactEntityGraphListDecoder>,
+    compact_option_decoders: BTreeMap<String, CompactEntityGraphListDecoder>,
 }
 
 impl InMemoryEntityGraphDecoderRegistry {
@@ -109,11 +122,86 @@ impl InMemoryEntityGraphDecoderRegistry {
             Ok(())
         }
 
+        fn decode_compact<T>(
+            row: CompactRow,
+            root: &EntityRoot,
+            graph: &mut EntityGraphBuilder,
+        ) -> Result<(), EntityError>
+        where
+            T: Entity + IdentifiableEntity + Send + Sync + 'static,
+        {
+            let mut entity = T::from_compact_row(row)?;
+            entity.on_loaded(root as &dyn std::any::Any);
+            let id = entity.id_value().try_u64().ok_or_else(|| {
+                EntityError::new(T::ENTITY_NAME, "identity graph requires a u64 entity id")
+            })?;
+            graph.install(id, entity);
+            Ok(())
+        }
+
+        fn decode_compact_list<T>(
+            rows: Vec<CompactRow>,
+            root: &EntityRoot,
+            graph: &mut EntityGraphBuilder,
+            owner_entity: &str,
+            owner_id: u64,
+            relation: &str,
+        ) -> Result<(), EntityError>
+        where
+            T: Entity + IdentifiableEntity + Send + Sync + 'static,
+        {
+            let entities = rows
+                .into_iter()
+                .map(|row| {
+                    let mut entity = T::from_compact_row(row)?;
+                    entity.on_loaded(root as &dyn std::any::Any);
+                    Ok(entity)
+                })
+                .collect::<Result<Vec<T>, EntityError>>()?;
+            graph.install_relation_list(
+                owner_entity,
+                owner_id,
+                relation,
+                teaql_core::SmartList::new(entities),
+            );
+            Ok(())
+        }
+
+        fn decode_compact_option<T>(
+            rows: Vec<CompactRow>,
+            root: &EntityRoot,
+            graph: &mut EntityGraphBuilder,
+            owner_entity: &str,
+            owner_id: u64,
+            relation: &str,
+        ) -> Result<(), EntityError>
+        where
+            T: Entity + IdentifiableEntity + Send + Sync + 'static,
+        {
+            let value = rows
+                .into_iter()
+                .next()
+                .map(|row| {
+                    let mut entity = T::from_compact_row(row)?;
+                    entity.on_loaded(root as &dyn std::any::Any);
+                    Ok(entity)
+                })
+                .transpose()?;
+            graph.install_relation_option(owner_entity, owner_id, relation, value);
+            Ok(())
+        }
+
         self.decoders.insert(T::ENTITY_NAME.to_owned(), decode::<T>);
         self.list_decoders
             .insert(T::ENTITY_NAME.to_owned(), decode_list::<T>);
         self.option_decoders
             .insert(T::ENTITY_NAME.to_owned(), decode_option::<T>);
+        self.compact_decoders
+            .insert(T::ENTITY_NAME.to_owned(), decode_compact::<T>);
+        self.compact_list_decoders
+            .insert(T::ENTITY_NAME.to_owned(), decode_compact_list::<T>);
+        self.compact_option_decoders
+            .insert(T::ENTITY_NAME.to_owned(), decode_compact_option::<T>);
     }
 
     pub fn decode(
@@ -168,6 +256,57 @@ impl InMemoryEntityGraphDecoderRegistry {
             )
         })?;
         decoder(records, root, graph, owner_entity, owner_id, relation)
+    }
+
+    pub fn decode_compact(
+        &self,
+        entity: &str,
+        row: CompactRow,
+        root: &EntityRoot,
+        graph: &mut EntityGraphBuilder,
+    ) -> Result<(), EntityError> {
+        self.compact_decoders.get(entity).ok_or_else(|| {
+            EntityError::new(
+                entity,
+                "entity has no compact identity graph decoder in RuntimeModule",
+            )
+        })?(row, root, graph)
+    }
+
+    pub fn decode_compact_list(
+        &self,
+        entity: &str,
+        rows: Vec<CompactRow>,
+        root: &EntityRoot,
+        graph: &mut EntityGraphBuilder,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+    ) -> Result<(), EntityError> {
+        self.compact_list_decoders.get(entity).ok_or_else(|| {
+            EntityError::new(
+                entity,
+                "entity has no compact identity graph list decoder in RuntimeModule",
+            )
+        })?(rows, root, graph, owner_entity, owner_id, relation)
+    }
+
+    pub fn decode_compact_option(
+        &self,
+        entity: &str,
+        rows: Vec<CompactRow>,
+        root: &EntityRoot,
+        graph: &mut EntityGraphBuilder,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+    ) -> Result<(), EntityError> {
+        self.compact_option_decoders.get(entity).ok_or_else(|| {
+            EntityError::new(
+                entity,
+                "entity has no compact identity graph option decoder in RuntimeModule",
+            )
+        })?(rows, root, graph, owner_entity, owner_id, relation)
     }
 }
 

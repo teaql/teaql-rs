@@ -11,11 +11,10 @@ use teaql_core::{EntityDescriptor, Record, UpdateCommand, Value};
 use teaql_sql::{CompiledQuery, DatabaseKind};
 
 use crate::{
-    CheckObjectStatus, CheckResult, CheckResults, CheckerRegistry, ContextError,
-    EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry, EntityGraphBuilder,
+    local_id_generator, CheckObjectStatus, CheckResult, CheckResults, CheckerRegistry,
+    ContextError, EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry, EntityGraphBuilder,
     EntityRegistry, GraphNode, InMemoryEntityGraphDecoderRegistry, InternalIdGenerator, Language,
     MetadataStore, ObjectLocation, RawAuditEvent, RawAuditEventSink, RequestPolicy, RuntimeError,
-    local_id_generator,
 };
 use crate::{DataServiceError, EntityRoot};
 
@@ -711,6 +710,59 @@ impl UserContext {
 
     pub(crate) fn has_entity_graph_decoder(&self, entity: &str) -> bool {
         self.entity_graph_decoders.contains(entity)
+    }
+
+    pub(crate) fn decode_compact_entity_into_graph(
+        &self,
+        entity: &str,
+        row: teaql_core::CompactRow,
+        root: &EntityRoot,
+        graph: &mut EntityGraphBuilder,
+    ) -> Result<(), teaql_core::EntityError> {
+        self.entity_graph_decoders
+            .decode_compact(entity, row, root, graph)
+    }
+
+    pub(crate) fn decode_compact_entity_list_into_graph(
+        &self,
+        entity: &str,
+        rows: Vec<teaql_core::CompactRow>,
+        root: &EntityRoot,
+        graph: &mut EntityGraphBuilder,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+    ) -> Result<(), teaql_core::EntityError> {
+        self.entity_graph_decoders.decode_compact_list(
+            entity,
+            rows,
+            root,
+            graph,
+            owner_entity,
+            owner_id,
+            relation,
+        )
+    }
+
+    pub(crate) fn decode_compact_entity_option_into_graph(
+        &self,
+        entity: &str,
+        rows: Vec<teaql_core::CompactRow>,
+        root: &EntityRoot,
+        graph: &mut EntityGraphBuilder,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+    ) -> Result<(), teaql_core::EntityError> {
+        self.entity_graph_decoders.decode_compact_option(
+            entity,
+            rows,
+            root,
+            graph,
+            owner_entity,
+            owner_id,
+            relation,
+        )
     }
 
     pub(crate) fn decode_entity_list_into_graph(
