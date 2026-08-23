@@ -1,9 +1,9 @@
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{Data, DeriveInput, Fields};
 
 use crate::attr::{parse_container_attrs, parse_field_attrs};
 use crate::mapping::{
-    from_record_value_tokens, from_relation_value_tokens, identifiable_value_tokens,
+    from_record_value_tokens_with_lookup, from_relation_value_tokens, identifiable_value_tokens,
     into_record_value_tokens, into_relation_value_tokens,
 };
 use crate::types::{is_option, rust_type_to_data_type};
@@ -74,6 +74,8 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     let mut property_tokens = Vec::new();
     let mut relation_tokens = Vec::new();
     let mut from_record_fields = Vec::new();
+    let mut record_value_slots = Vec::new();
+    let mut record_value_match_arms = Vec::new();
     let mut into_record_fields = Vec::new();
     let mut id_impl = None;
     let mut version_impl = None;
@@ -214,7 +216,19 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             );
         });
 
-        let from_value = from_record_value_tokens(&field.ty, &field_name, &entity_name);
+        let value_slot = format_ident!("__teaql_value_{}", field_ident);
+        record_value_slots.push(quote! {
+            let mut #value_slot: Option<&::teaql_core::Value> = None;
+        });
+        record_value_match_arms.push(quote! {
+            #field_name => #value_slot = Some(value),
+        });
+        let from_value = from_record_value_tokens_with_lookup(
+            &field.ty,
+            quote! { #value_slot },
+            &field_name,
+            &entity_name,
+        );
         let into_value = into_record_value_tokens(&field.ty, quote! { self.#field_ident });
         from_record_fields.push(quote! {
             #field_ident: #from_value
@@ -355,6 +369,13 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
 
         impl ::teaql_core::Entity for #struct_name {
             fn from_record(record: ::teaql_core::Record) -> Result<Self, ::teaql_core::EntityError> {
+                #(#record_value_slots)*
+                for (key, value) in &record {
+                    match key.as_str() {
+                        #(#record_value_match_arms)*
+                        _ => {}
+                    }
+                }
                 let mut entity = Self {
                     #(#from_record_fields),*
                 };

@@ -5,8 +5,9 @@ use crate::types::{
     base_type_name, is_option, option_inner_type, smart_list_inner_type, vec_inner_type,
 };
 
-pub fn from_record_value_tokens(
+pub fn from_record_value_tokens_with_lookup(
     ty: &Type,
+    lookup: proc_macro2::TokenStream,
     field_name: &str,
     entity_name: &str,
 ) -> proc_macro2::TokenStream {
@@ -14,7 +15,7 @@ pub fn from_record_value_tokens(
         let inner = option_inner_type(ty).expect("Option must have inner type");
         let inner_decode = decode_value_tokens(inner, quote! { value }, field_name, entity_name);
         return quote! {
-            match record.get(#field_name) {
+            match #lookup {
                 Some(::teaql_core::Value::Null) | None => None,
                 Some(value) => Some(#inner_decode),
             }
@@ -22,7 +23,7 @@ pub fn from_record_value_tokens(
     }
 
     let value_expr = quote! {
-        match record.get(#field_name) {
+        match #lookup {
             Some(::teaql_core::Value::Null) | None => {
                 return Ok(::core::default::Default::default());
             }
