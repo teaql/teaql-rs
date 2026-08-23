@@ -280,10 +280,11 @@ impl teaql_sql::StreamingSqlTransport for PgMutationExecutor {
             let client = pool.get().await.map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
             let params = args.as_refs();
             let statement = client.prepare_cached(&query.sql).await?;
+            let columns: std::sync::Arc<[String]> = statement.columns().iter().map(|column| column.name().to_owned()).collect::<Vec<_>>().into();
             let rows = client.query_raw(&statement, params).await?;
             futures_util::pin_mut!(rows);
             let mut chunk = Vec::with_capacity(chunk_size); let mut index = 0;
-            while let Some(row) = rows.try_next().await? { chunk.push(decode_pg_row(&row)?); if chunk.len()==chunk_size { yield teaql_data_service::StreamChunk { rows: std::mem::take(&mut chunk), chunk_index:index, is_last:false }; index+=1; } }
+            while let Some(row) = rows.try_next().await? { chunk.push(teaql_core::CompactRow::new(columns.clone(), decode_pg_values(&row)?)); if chunk.len()==chunk_size { yield teaql_data_service::StreamChunk { rows: std::mem::take(&mut chunk), chunk_index:index, is_last:false }; index+=1; } }
             if !chunk.is_empty() { yield teaql_data_service::StreamChunk { rows:chunk, chunk_index:index, is_last:true }; }
         })
     }

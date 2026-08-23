@@ -118,7 +118,7 @@ pub trait QueryExecutor: DataServiceExecutor {
 /// Result of a single streaming chunk.
 #[derive(Debug, Clone)]
 pub struct StreamChunk {
-    pub rows: Vec<Record>,
+    pub rows: Vec<CompactRow>,
     pub chunk_index: usize,
     pub is_last: bool,
 }

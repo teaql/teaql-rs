@@ -335,8 +335,14 @@ impl teaql_sql::StreamingSqlTransport for MysqlMutationExecutor {
             let mut stream = conn
                 .exec_stream::<mysql_async::Row, _, _>(query.sql_with_comment(), params)
                 .await?;
+            let mut columns: Option<Arc<[String]>> = None;
             let mut chunk=Vec::with_capacity(chunk_size); let mut index=0;
-            while let Some(row) = stream.next().await { chunk.push(decode_mysql_row(row?)?); if chunk.len()==chunk_size { yield teaql_data_service::StreamChunk { rows:std::mem::take(&mut chunk), chunk_index:index, is_last:false }; index+=1; } }
+            while let Some(row) = stream.next().await {
+                let row = row?;
+                let shared_columns = columns.get_or_insert_with(|| row.columns_ref().iter().map(|column| column.name_str().into_owned()).collect::<Vec<_>>().into()).clone();
+                chunk.push(CompactRow::new(shared_columns, decode_mysql_values(row)?));
+                if chunk.len()==chunk_size { yield teaql_data_service::StreamChunk { rows:std::mem::take(&mut chunk), chunk_index:index, is_last:false }; index+=1; }
+            }
             if !chunk.is_empty() { yield teaql_data_service::StreamChunk { rows:chunk, chunk_index:index, is_last:true }; }
         })
     }

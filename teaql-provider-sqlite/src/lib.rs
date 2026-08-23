@@ -252,6 +252,11 @@ impl SqliteMutationExecutor {
         let connection = self.lock()?;
         let mut statement = connection.prepare(&query.sql_with_comment())?;
         let columns = statement_columns(&statement);
+        let column_names: Arc<[String]> = columns
+            .iter()
+            .map(|column| column.name.clone())
+            .collect::<Vec<_>>()
+            .into();
         let mut rows = statement.query(params_from_iter(params.iter()))?;
 
         let mut chunks = Vec::new();
@@ -259,7 +264,10 @@ impl SqliteMutationExecutor {
         let mut chunk_index = 0;
 
         while let Some(row) = rows.next()? {
-            current_chunk.push(decode_sqlite_row(row, &columns)?);
+            current_chunk.push(CompactRow::new(
+                column_names.clone(),
+                decode_sqlite_values(row, &columns)?,
+            ));
             if current_chunk.len() >= chunk_size {
                 chunks.push(teaql_data_service::StreamChunk {
                     rows: current_chunk,
@@ -362,10 +370,11 @@ impl teaql_sql::StreamingSqlTransport for SqliteMutationExecutor {
             let guard = connection.lock().map_err(|err| MutationExecutorError::Lock(err.to_string()))?;
             let mut statement = guard.prepare(&query.sql_with_comment())?;
             let columns = statement_columns(&statement);
+            let column_names: Arc<[String]> = columns.iter().map(|column| column.name.clone()).collect::<Vec<_>>().into();
             let mut rows = statement.query(params_from_iter(params.iter()))?;
             let mut chunk = Vec::with_capacity(chunk_size); let mut index = 0;
             while let Some(row) = rows.next()? {
-                chunk.push(decode_sqlite_row(row, &columns)?);
+                chunk.push(CompactRow::new(column_names.clone(), decode_sqlite_values(row, &columns)?));
                 if chunk.len() == chunk_size { yield teaql_data_service::StreamChunk { rows: std::mem::take(&mut chunk), chunk_index: index, is_last: false }; index += 1; }
             }
             if !chunk.is_empty() { yield teaql_data_service::StreamChunk { rows: chunk, chunk_index: index, is_last: true }; }
