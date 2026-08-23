@@ -565,7 +565,7 @@ impl EntityRoot {
             .as_ref()
             .map(|snapshot| match snapshot {
                 OriginalSnapshot::Materialized(snapshot) => snapshot.clone(),
-                OriginalSnapshot::Compact(row) => EntitySnapshot::from(row.clone().into_record()),
+                OriginalSnapshot::Compact(row) => EntitySnapshot::from(row.clone().into_map()),
             })
     }
 

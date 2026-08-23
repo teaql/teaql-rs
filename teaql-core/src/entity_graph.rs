@@ -110,7 +110,7 @@ mod tests {
 
         fn from_compact_row(row: crate::CompactRow) -> Result<Self, EntityError> {
             Ok(Self {
-                values: row.into_record().into(),
+                values: row.into_map().into(),
             })
         }
     }

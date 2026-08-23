@@ -195,7 +195,7 @@ pub fn from_relation_value_tokens(
         return quote! {
             match record.get(#field_name) {
                 Some(::teaql_core::Value::Object(record)) => {
-                    Some(<#inner as ::teaql_core::Entity>::from_compact_row(::teaql_core::CompactRow::from_record(record.clone()))?)
+                    Some(<#inner as ::teaql_core::Entity>::from_compact_row(::teaql_core::CompactRow::from_map(record.clone()))?)
                 }
                 Some(::teaql_core::Value::Null) | None => None,
                 other => None,
@@ -210,7 +210,7 @@ pub fn from_relation_value_tokens(
                     .iter()
                     .map(|value| match value {
                         ::teaql_core::Value::Object(record) => {
-                            <#inner as ::teaql_core::Entity>::from_compact_row(::teaql_core::CompactRow::from_record(record.clone()))
+                            <#inner as ::teaql_core::Entity>::from_compact_row(::teaql_core::CompactRow::from_map(record.clone()))
                         }
                         other => Err(::teaql_core::EntityError::new(
                             #entity_name,
@@ -232,7 +232,7 @@ pub fn from_relation_value_tokens(
                         .iter()
                         .map(|value| match value {
                             ::teaql_core::Value::Object(record) => {
-                                <#inner as ::teaql_core::Entity>::from_compact_row(::teaql_core::CompactRow::from_record(record.clone()))
+                                <#inner as ::teaql_core::Entity>::from_compact_row(::teaql_core::CompactRow::from_map(record.clone()))
                             }
                             other => Err(::teaql_core::EntityError::new(
                                 #entity_name,

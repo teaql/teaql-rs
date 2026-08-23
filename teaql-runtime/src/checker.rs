@@ -372,7 +372,7 @@ where
         // Take ownership of the record (replace with empty) so we can
         // Materialize a typed entity from the checker value set.
         let owned_record = std::mem::take(values).into();
-        match T::from_compact_row(teaql_core::CompactRow::from_record(owned_record)) {
+        match T::from_compact_row(teaql_core::CompactRow::from_map(owned_record)) {
             Ok(mut entity) => {
                 self.checker
                     .check_and_fix_typed(context, &mut entity, status, location, results);

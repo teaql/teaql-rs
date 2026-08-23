@@ -1222,28 +1222,13 @@ where
         })
     }
 
-    async fn fetch_graph_children(
-        &self,
-        entity: &str,
-        foreign_key: &str,
-        parent_value: &Value,
-        trace_chain: Vec<teaql_core::TraceNode>,
-    ) -> Result<Vec<Record>, DataServiceError<E::Error>> {
-        let mut query =
-            SelectQuery::new(entity).filter(Expr::eq(foreign_key, parent_value.clone()));
-        query.trace_chain = trace_chain;
-        self.scoped_data_service_internal(entity.to_owned())
-            .fetch_all_internal(&query)
-            .await
-            .map(|rows| rows.into_iter().map(teaql_core::CompactRow::into_record).collect())
-    }
     pub(crate) async fn fetch_graph_current_row_internal(
         &self,
         entity: &str,
         id_property: &str,
         id: &teaql_core::Value,
         trace_chain: Vec<teaql_core::TraceNode>,
-    ) -> Result<Option<Record>, DataServiceError<E::Error>> {
+    ) -> Result<Option<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         let mut query = teaql_core::SelectQuery::new(entity)
             .filter(teaql_core::Expr::eq(id_property, id.clone()));
         query.trace_chain = trace_chain;
@@ -1251,7 +1236,7 @@ where
             .scoped_data_service_internal(entity.to_owned())
             .fetch_all_internal(&query)
             .await?;
-        Ok(rows.pop().map(teaql_core::CompactRow::into_record))
+        Ok(rows.pop())
     }
 
     pub(crate) async fn execute_ledger_plan_internal(

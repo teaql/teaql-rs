@@ -465,7 +465,7 @@ mod tests {
 
     impl Entity for OrderEntity {
         fn from_compact_row(row: teaql_core::CompactRow) -> Result<Self, EntityError> {
-            let record = row.into_record();
+            let record = row.into_map();
             let id = match record.get("id") {
                 Some(Value::U64(v)) => *v,
                 Some(Value::I64(v)) if *v >= 0 => *v as u64,
@@ -552,7 +552,7 @@ mod tests {
     impl QueryExecutor for StubExecutor {
         async fn query(&self, _request: QueryRequest) -> Result<QueryResult, Self::Error> {
             Ok(QueryResult {
-                rows: self.rows.clone().into_iter().map(teaql_core::CompactRow::from_record).collect(),
+                rows: self.rows.clone().into_iter().map(teaql_core::CompactRow::from_map).collect(),
                 metadata: ExecutionMetadata {
                     debug_query: None,
                     backend: "stub".to_owned(),
@@ -607,7 +607,7 @@ mod tests {
         async fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
             self.queries.lock().unwrap().push(request.query);
             Ok(QueryResult {
-                rows: self.rows.clone().into_iter().map(teaql_core::CompactRow::from_record).collect(),
+                rows: self.rows.clone().into_iter().map(teaql_core::CompactRow::from_map).collect(),
                 metadata: ExecutionMetadata {
                     debug_query: None,
                     backend: "capture".to_owned(),
@@ -646,7 +646,7 @@ mod tests {
             self.queries.lock().unwrap().push(sql_approx);
             Ok(QueryResult {
                 rows: self.rows.lock().unwrap().pop_front().unwrap_or_default()
-                    .into_iter().map(teaql_core::CompactRow::from_record).collect(),
+                    .into_iter().map(teaql_core::CompactRow::from_map).collect(),
                 metadata: ExecutionMetadata {
                     debug_query: None,
                     backend: "queue".to_owned(),
@@ -1658,9 +1658,9 @@ mod tests {
             .entity_data_service::<StubExecutor>("Order")
             .unwrap();
         let parent_rows = vec![
-            teaql_core::CompactRow::from_record(Record::from([(String::from("id"), Value::U64(11))])),
-            teaql_core::CompactRow::from_record(Record::from([(String::from("id"), Value::U64(12))])),
-            teaql_core::CompactRow::from_record(Record::from([(String::from("id"), Value::U64(11))])),
+            teaql_core::CompactRow::from_map(Record::from([(String::from("id"), Value::U64(11))])),
+            teaql_core::CompactRow::from_map(Record::from([(String::from("id"), Value::U64(12))])),
+            teaql_core::CompactRow::from_map(Record::from([(String::from("id"), Value::U64(11))])),
         ];
 
         let query = repo.relation_query("lines", &parent_rows).unwrap();
@@ -1721,8 +1721,8 @@ mod tests {
             .entity_data_service::<StubExecutor>("Order")
             .unwrap();
         let mut parents = vec![
-            teaql_core::CompactRow::from_record(Record::from([(String::from("id"), Value::U64(11))])),
-            teaql_core::CompactRow::from_record(Record::from([(String::from("id"), Value::U64(12))])),
+            teaql_core::CompactRow::from_map(Record::from([(String::from("id"), Value::U64(11))])),
+            teaql_core::CompactRow::from_map(Record::from([(String::from("id"), Value::U64(12))])),
         ];
 
         repo.enhance_relations_internal(&mut parents).await.unwrap();
@@ -1777,8 +1777,8 @@ mod tests {
             .entity_data_service::<CapturingQueryExecutor>("Order")
             .unwrap();
         let mut parents = vec![
-            teaql_core::CompactRow::from_record(Record::from([(String::from("id"), Value::U64(11))])),
-            teaql_core::CompactRow::from_record(Record::from([(String::from("id"), Value::U64(12))])),
+            teaql_core::CompactRow::from_map(Record::from([(String::from("id"), Value::U64(11))])),
+            teaql_core::CompactRow::from_map(Record::from([(String::from("id"), Value::U64(12))])),
         ];
         let query = SelectQuery::new("Order").relation_query(
             "lines",

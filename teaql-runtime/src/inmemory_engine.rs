@@ -50,7 +50,7 @@ impl InMemoryQueryEngine {
         QueryResult {
             rows: rows
                 .into_iter()
-                .map(teaql_core::CompactRow::from_record)
+                .map(teaql_core::CompactRow::from_map)
                 .collect(),
             metadata: ExecutionMetadata {
                 debug_query: None,
@@ -136,7 +136,7 @@ impl InMemoryQueryEngine {
         QueryResult {
             rows: result_rows
                 .into_iter()
-                .map(teaql_core::CompactRow::from_record)
+                .map(teaql_core::CompactRow::from_map)
                 .collect(),
             metadata: ExecutionMetadata {
                 debug_query: None,
@@ -199,7 +199,7 @@ impl InMemoryQueryEngine {
         QueryResult {
             rows: result_rows
                 .into_iter()
-                .map(teaql_core::CompactRow::from_record)
+                .map(teaql_core::CompactRow::from_map)
                 .collect(),
             metadata: ExecutionMetadata {
                 debug_query: None,

@@ -120,7 +120,7 @@ pub(super) fn relation_aggregate_value(rows: &[CompactRow], single_result: bool)
         false => Value::List(
             rows.iter()
                 .cloned()
-                .map(|row| Value::object(row.into_record()))
+                .map(|row| Value::object(row.into_map()))
                 .collect(),
         ),
     }
@@ -129,7 +129,7 @@ pub(super) fn relation_aggregate_value(rows: &[CompactRow], single_result: bool)
 pub(super) fn single_relation_aggregate_value(row: &CompactRow) -> Value {
     match row.len() {
         1 => row.values().next().cloned().unwrap_or(Value::Null),
-        _ => Value::object(row.clone().into_record()),
+        _ => Value::object(row.clone().into_map()),
     }
 }
 

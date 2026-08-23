@@ -34,7 +34,7 @@ impl QueryExecutor for StubExecutor {
         row.insert("id".into(), Value::I64(7));
         row.insert("status".into(), Value::Text("NEW".into()));
         Ok(QueryResult {
-            rows: vec![teaql_core::CompactRow::from_record(row)],
+            rows: vec![teaql_core::CompactRow::from_map(row)],
             metadata: metadata(DataServiceOperation::Query, Some(1), None, request.comment),
         })
     }

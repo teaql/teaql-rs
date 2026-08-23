@@ -55,6 +55,12 @@ impl From<MutationValues> for EntityValues {
     }
 }
 
+impl From<teaql_core::CompactRow> for EntityValues {
+    fn from(row: teaql_core::CompactRow) -> Self {
+        row.into_map().into()
+    }
+}
+
 impl IntoIterator for EntityValues {
     type Item = (String, Value);
     type IntoIter = std::collections::btree_map::IntoIter<String, Value>;

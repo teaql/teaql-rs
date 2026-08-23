@@ -529,7 +529,7 @@ mod tests {
     impl QueryExecutor for StubExecutor {
         async fn query(&self, _request: QueryRequest) -> Result<QueryResult, Self::Error> {
             Ok(QueryResult {
-                rows: vec![teaql_core::CompactRow::from_record(Record::new())],
+                rows: vec![teaql_core::CompactRow::from_map(Record::new())],
                 metadata: metadata(DataServiceOperation::Query, Some(1), None),
             })
         }

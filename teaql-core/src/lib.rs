@@ -109,7 +109,7 @@ mod tests {
             Some(DataType::Decimal)
         );
 
-        let row = TypedNumberRow::from_compact_row(CompactRow::from_record(Record::from([
+        let row = TypedNumberRow::from_compact_row(CompactRow::from_map(Record::from([
             ("id".to_owned(), Value::I64(7)),
             ("signed".to_owned(), Value::I64(2_147_483_647)),
             ("unsigned".to_owned(), Value::U64(4_294_967_295)),
@@ -121,7 +121,7 @@ mod tests {
         assert_eq!(row.unsigned, u32::MAX);
         assert_eq!(row.amount, Decimal::new(12345, 2));
 
-        let signed_overflow = TypedNumberRow::from_compact_row(CompactRow::from_record(Record::from([
+        let signed_overflow = TypedNumberRow::from_compact_row(CompactRow::from_map(Record::from([
             ("id".to_owned(), Value::U64(1)),
             ("signed".to_owned(), Value::I64(i64::from(i32::MAX) + 1)),
             ("unsigned".to_owned(), Value::U64(1)),
@@ -134,7 +134,7 @@ mod tests {
                 .contains("out of i32 range")
         );
 
-        let unsigned_negative = TypedNumberRow::from_compact_row(CompactRow::from_record(Record::from([
+        let unsigned_negative = TypedNumberRow::from_compact_row(CompactRow::from_map(Record::from([
             ("id".to_owned(), Value::U64(1)),
             ("signed".to_owned(), Value::I64(1)),
             ("unsigned".to_owned(), Value::I64(-1)),
@@ -150,7 +150,7 @@ mod tests {
 
     #[test]
     fn derive_allows_partial_projected_records() {
-        let row = OrderRow::from_compact_row(CompactRow::from_record(Record::from([(
+        let row = OrderRow::from_compact_row(CompactRow::from_map(Record::from([(
             "name".to_owned(),
             Value::Text("projected".to_owned()),
         )])))
@@ -159,7 +159,7 @@ mod tests {
         assert_eq!(row.version, 0);
         assert_eq!(row.name, "projected");
 
-        let nulls = OrderRow::from_compact_row(CompactRow::from_record(Record::from([
+        let nulls = OrderRow::from_compact_row(CompactRow::from_map(Record::from([
             ("id".to_owned(), Value::Null),
             ("version".to_owned(), Value::Null),
             ("name".to_owned(), Value::Null),
@@ -169,7 +169,7 @@ mod tests {
         assert_eq!(nulls.version, 0);
         assert_eq!(nulls.name, "");
 
-        match OrderRow::from_compact_row(CompactRow::from_record(Record::from([("name".to_owned(), Value::U64(1))]))) {
+        match OrderRow::from_compact_row(CompactRow::from_map(Record::from([("name".to_owned(), Value::U64(1))]))) {
             Ok(_) => panic!("wrong field type should fail"),
             Err(err) => assert!(err.message.contains("invalid field name")),
         }
@@ -741,7 +741,7 @@ mod tests {
         facet_record.insert("status".to_owned(), Value::Text("PENDING".to_owned()));
         facet_record.insert("count".to_owned(), Value::I64(5));
 
-        let facet_list = SmartList::from(vec![CompactRow::from_record(facet_record)]);
+        let facet_list = SmartList::from(vec![CompactRow::from_map(facet_record)]);
 
         let mut list = SmartList::from(vec![entity])
             .with_total_count(99)
@@ -843,7 +843,7 @@ mod tests {
 
     #[test]
     fn dynamic_properties_roundtrip_into_json() {
-        let aggregate = OrderAggregateRow::from_compact_row(CompactRow::from_record(Record::from([
+        let aggregate = OrderAggregateRow::from_compact_row(CompactRow::from_map(Record::from([
             (String::from("id"), Value::U64(7)),
             (String::from("lineCount"), Value::I64(3)),
             (String::from("amount"), Value::F64(18.5)),

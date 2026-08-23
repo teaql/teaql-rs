@@ -840,14 +840,14 @@ impl CompactRow {
         self.values.iter()
     }
 
-    pub fn into_record(self) -> Record {
+    pub fn into_map(self) -> BTreeMap<String, Value> {
         self.columns.iter().cloned().zip(self.values).collect()
     }
 
     /// Transitional boundary adapter. Core query providers should construct
     /// compact rows directly instead of routing through this function.
-    pub fn from_record(record: Record) -> Self {
-        let (columns, values): (Vec<_>, Vec<_>) = record.into_iter().unzip();
+    pub fn from_map(values_by_name: BTreeMap<String, Value>) -> Self {
+        let (columns, values): (Vec<_>, Vec<_>) = values_by_name.into_iter().unzip();
         Self::new(columns.into(), values)
     }
 }

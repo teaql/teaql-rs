@@ -268,7 +268,7 @@ where
                     ))
                 })?;
             let saved = saver.save_graph_dyn(context, node).await?;
-            T::from_compact_row(teaql_core::CompactRow::from_record(saved.values.into()))
+            T::from_compact_row(teaql_core::CompactRow::from_map(saved.values.into()))
                 .map_err(|e| RuntimeError::Graph(e.to_string()))
         })
     }
@@ -306,12 +306,12 @@ where
             || !root.new_keys().is_empty();
         if has_ledger_changes {
             let saved = saver.save_ledger_dyn(context, node, root).await?;
-            return T::from_compact_row(teaql_core::CompactRow::from_record(saved.values.into()))
+            return T::from_compact_row(teaql_core::CompactRow::from_map(saved.values.into()))
                 .map_err(|e| RuntimeError::Graph(e.to_string()));
         }
     }
 
     let saved = saver.save_graph_dyn(context, node).await?;
-    T::from_compact_row(teaql_core::CompactRow::from_record(saved.values.into()))
+    T::from_compact_row(teaql_core::CompactRow::from_map(saved.values.into()))
         .map_err(|e| RuntimeError::Graph(e.to_string()))
 }

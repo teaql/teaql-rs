@@ -101,7 +101,7 @@ where
                         &relation.target_entity,
                         child_records
                             .into_iter()
-                            .map(teaql_core::CompactRow::from_record)
+                            .map(teaql_core::CompactRow::from_map)
                             .collect(),
                         root,
                         graph,
@@ -114,7 +114,7 @@ where
                         &relation.target_entity,
                         child_records
                             .into_iter()
-                            .map(teaql_core::CompactRow::from_record)
+                            .map(teaql_core::CompactRow::from_map)
                             .collect(),
                         root,
                         graph,
@@ -136,7 +136,7 @@ where
                 if installed.insert((relation.target_entity.clone(), id)) {
                     context.decode_compact_entity_into_graph(
                         &relation.target_entity,
-                        teaql_core::CompactRow::from_record(child),
+                        teaql_core::CompactRow::from_map(child),
                         root,
                         graph,
                     )?;
@@ -155,7 +155,7 @@ where
         let mut graph = crate::EntityGraphBuilder::default();
         let mut installed = BTreeSet::new();
         for row in rows {
-            let mut record = row.clone().into_record();
+            let mut record = row.clone().into_map();
             self.flatten_relation_graph(
                 entity_name,
                 &mut record,
@@ -163,7 +163,7 @@ where
                 &mut graph,
                 &mut installed,
             )?;
-            *row = teaql_core::CompactRow::from_record(record);
+            *row = teaql_core::CompactRow::from_map(record);
         }
         root.freeze_graph(graph).map_err(|_| {
             teaql_core::EntityError::new(entity_name, "identity graph was already frozen")

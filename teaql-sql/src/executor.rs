@@ -1112,7 +1112,7 @@ impl<
                         )));
                     }
                     rows.pop()
-                        .map(|row| EntitySnapshot::from(row.into_record()))
+                        .map(|row| EntitySnapshot::from(row.into_map()))
                 } else {
                     None
                 }

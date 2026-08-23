@@ -193,7 +193,7 @@ where
                         let value = object_rows
                             .get(&key)
                             .cloned()
-                            .map(|row| Value::object(row.into_record()))
+                            .map(|row| Value::object(row.into_map()))
                             .unwrap_or(Value::Null);
                         row.insert(group_by.property_name.clone(), value);
                     }
@@ -731,9 +731,9 @@ where
     > {
         Box::pin(async move {
             for plan in plans {
-                let mut row = CompactRow::from_record(std::mem::take(child));
+                let mut row = CompactRow::from_map(std::mem::take(child));
                 self.enhance_plan(slice::from_mut(&mut row), plan).await?;
-                *child = row.into_record();
+                *child = row.into_map();
             }
             Ok(())
         })
@@ -863,14 +863,14 @@ where
                                     );
                                     if let Value::List(list) = entry {
                                         list.push(Value::object(
-                                            parent_object.clone().into_record(),
+                                            parent_object.clone().into_map(),
                                         ));
                                     }
                                 }
                                 false => {
                                     child.insert(
                                         inverse_relation.clone(),
-                                        Value::object(parent_object.clone().into_record()),
+                                        Value::object(parent_object.clone().into_map()),
                                     );
                                 }
                             }
@@ -887,7 +887,7 @@ where
                         Value::List(
                             related
                                 .into_iter()
-                                .map(|row| Value::object(row.into_record()))
+                                .map(|row| Value::object(row.into_map()))
                                 .collect(),
                         ),
                     );
@@ -896,7 +896,7 @@ where
                     let value = related
                         .into_iter()
                         .next()
-                        .map(|row| Value::object(row.into_record()))
+                        .map(|row| Value::object(row.into_map()))
                         .unwrap_or(Value::Null);
                     parent.insert(plan.relation_name.clone(), value);
                 }
