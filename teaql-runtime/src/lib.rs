@@ -49,7 +49,10 @@ pub use graph::{
 };
 pub use i18n::I18nCatalog;
 pub(crate) use id::local_id_generator;
-pub use id::{AtomicCounterIdGenerator, InternalIdGenerator, SnowflakeIdGenerator};
+pub use id::{
+    AtomicCounterIdGenerator, InternalIdGenerator, SnowflakeIdGenerator,
+    canonical_id_space_entity,
+};
 pub use inmemory_engine::{ExprEvaluator, InMemoryQueryEngine};
 pub use language::{
     BuiltinTranslator, Language, Locale, MessageTranslator, translate_check_result,

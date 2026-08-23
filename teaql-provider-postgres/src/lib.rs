@@ -10,7 +10,10 @@ use teaql_core::{
     BinaryOp, DataType, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, SelectQuery,
     UpdateCommand, Value,
 };
-use teaql_runtime::{GraphNode, InternalIdGenerator, RuntimeError, SchemaProvider, UserContext};
+use teaql_runtime::{
+    GraphNode, InternalIdGenerator, RuntimeError, SchemaProvider, UserContext,
+    canonical_id_space_entity,
+};
 use teaql_sql::{
     CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, SqlTransport,
     quote_identifier_if_needed,
@@ -785,6 +788,8 @@ impl PgIdSpaceGenerator {
     }
 
     pub async fn next_id(&self, entity: &str) -> Result<u64, MutationExecutorError> {
+        let entity = canonical_id_space_entity(entity);
+        let entity = entity.as_str();
         self.ensure_table().await?;
         let table = quote_ident(&self.table_name);
         let client = self
@@ -844,6 +849,8 @@ impl PgIdSpaceGenerator {
         entity: &str,
         floor: u64,
     ) -> Result<(), MutationExecutorError> {
+        let entity = canonical_id_space_entity(entity);
+        let entity = entity.as_str();
         self.ensure_table().await?;
         let floor = i64::try_from(floor).map_err(|_| {
             MutationExecutorError::Bind(format!(

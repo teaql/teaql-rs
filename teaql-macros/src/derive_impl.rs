@@ -515,7 +515,7 @@ pub fn expand_teaql_reverse_relations(input: DeriveInput) -> proc_macro2::TokenS
                 #(#relation_tokens)*
             }
 
-            fn extract_from_values(record: &::std::collections::BTreeMap<String, ::teaql_core::Value>) -> Result<Self, ::teaql_core::EntityError> {
+            fn extract_from_values(record: &::teaql_core::CompactRow) -> Result<Self, ::teaql_core::EntityError> {
                 Ok(Self {
                     #(#from_record_fields,)*
                 })

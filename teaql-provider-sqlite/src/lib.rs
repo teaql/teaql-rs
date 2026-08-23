@@ -14,6 +14,7 @@ use teaql_core::{
 };
 use teaql_runtime::{
     GraphNode, InternalIdGenerator, RawAuditEvent, RuntimeError, SchemaProvider, UserContext,
+    canonical_id_space_entity,
 };
 use teaql_sql::{
     CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, SqlTransport,
@@ -645,6 +646,8 @@ impl SqliteIdSpaceGenerator {
     }
 
     pub fn next_id(&self, entity: &str) -> Result<u64, MutationExecutorError> {
+        let entity = canonical_id_space_entity(entity);
+        let entity = entity.as_str();
         self.ensure_table()?;
         let table = quote_ident(&self.table_name);
         let select_sql = format!("SELECT current_level FROM {table} WHERE type_name = ?");
@@ -691,6 +694,8 @@ impl SqliteIdSpaceGenerator {
     }
 
     pub fn ensure_floor(&self, entity: &str, floor: u64) -> Result<(), MutationExecutorError> {
+        let entity = canonical_id_space_entity(entity);
+        let entity = entity.as_str();
         self.ensure_table()?;
         let floor = i64::try_from(floor).map_err(|_| {
             MutationExecutorError::Bind(format!("ID space floor {floor} for {entity} exceeds i64"))

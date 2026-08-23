@@ -315,7 +315,7 @@ pub trait VersionedEntity: Entity {
 
 pub trait TeaqlBoxedRelations: Sized {
     fn extend_descriptor(descriptor: &mut EntityDescriptor);
-    fn extract_from_values(values: &BTreeMap<String, Value>) -> Result<Self, EntityError>;
+    fn extract_from_values(values: &CompactRow) -> Result<Self, EntityError>;
     fn inject_into_values(self, values: &mut BTreeMap<String, Value>);
 }
 
@@ -323,7 +323,7 @@ impl<T: TeaqlBoxedRelations> TeaqlBoxedRelations for Box<T> {
     fn extend_descriptor(descriptor: &mut EntityDescriptor) {
         T::extend_descriptor(descriptor);
     }
-    fn extract_from_values(values: &BTreeMap<String, Value>) -> Result<Self, EntityError> {
+    fn extract_from_values(values: &CompactRow) -> Result<Self, EntityError> {
         Ok(Box::new(T::extract_from_values(values)?))
     }
     fn inject_into_values(self, values: &mut BTreeMap<String, Value>) {

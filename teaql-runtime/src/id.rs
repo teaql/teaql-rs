@@ -8,6 +8,23 @@ pub trait InternalIdGenerator: Send + Sync {
     fn generate_id(&self, entity: &str) -> Result<u64, RuntimeError>;
 }
 
+/// Normalize generated Rust type names and model entity names to the same
+/// stable key used by generated `ENTITY_NAME` constants.
+pub fn canonical_id_space_entity(entity: &str) -> String {
+    let mut result = String::with_capacity(entity.len() + 4);
+    for (index, character) in entity.chars().enumerate() {
+        if character.is_ascii_uppercase() {
+            if index > 0 {
+                result.push('_');
+            }
+            result.push(character.to_ascii_lowercase());
+        } else {
+            result.push(character);
+        }
+    }
+    result
+}
+
 // ---------------------------------------------------------------------------
 // AtomicCounterIdGenerator — process-level counter, suitable for in-memory use
 // ---------------------------------------------------------------------------

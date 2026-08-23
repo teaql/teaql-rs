@@ -9,7 +9,10 @@ use teaql_core::{
     CompactRow, DataType, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, SelectQuery,
     UpdateCommand, Value,
 };
-use teaql_runtime::{GraphNode, InternalIdGenerator, RuntimeError, SchemaProvider, UserContext};
+use teaql_runtime::{
+    GraphNode, InternalIdGenerator, RuntimeError, SchemaProvider, UserContext,
+    canonical_id_space_entity,
+};
 use teaql_sql::{
     CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, quote_identifier_if_needed,
 };
@@ -754,6 +757,8 @@ impl MysqlIdSpaceGenerator {
     }
 
     pub async fn next_id(&self, entity: &str) -> Result<u64, MutationExecutorError> {
+        let entity = canonical_id_space_entity(entity);
+        let entity = entity.as_str();
         self.ensure_table().await?;
         let table = mysql_quote_ident(&self.table_name);
         let mut conn = self.pool.get_conn().await?;
@@ -800,6 +805,8 @@ impl MysqlIdSpaceGenerator {
         entity: &str,
         floor: u64,
     ) -> Result<(), MutationExecutorError> {
+        let entity = canonical_id_space_entity(entity);
+        let entity = entity.as_str();
         self.ensure_table().await?;
         if floor > i64::MAX as u64 {
             return Err(MutationExecutorError::Bind(format!(

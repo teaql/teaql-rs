@@ -348,6 +348,9 @@ pub struct EntityRoot {
     graph: Arc<OnceLock<FrozenEntityGraph>>,
 }
 
+impl std::panic::UnwindSafe for EntityRoot {}
+impl std::panic::RefUnwindSafe for EntityRoot {}
+
 #[derive(Debug)]
 enum OriginalSnapshot {
     Materialized(EntitySnapshot),
