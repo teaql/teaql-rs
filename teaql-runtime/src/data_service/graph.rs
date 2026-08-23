@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use teaql_core::{
-    DeleteCommand, Entity, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, Record,
-    SelectQuery, UpdateCommand, Value,
+    DeleteCommand, Entity, EntityDescriptor, Expr, InsertCommand, MutationValues,
+    PropertyDescriptor, SelectQuery, UpdateCommand, Value,
 };
 
 use crate::entity_status::EntityStatus;
@@ -287,7 +287,7 @@ where
         let is_deleted = entity.is_marked_as_delete();
         let comment = entity.get_comment();
         let mut node =
-            self.graph_node_from_record(&descriptor.name, entity.into_values().into())?;
+            self.graph_node_from_values(&descriptor.name, entity.into_values())?;
         node.dirty_fields = dirty_fields;
         node.original_values = original_values.map(Into::into);
         if is_deleted {
@@ -1051,15 +1051,15 @@ where
         Ok(())
     }
 
-    fn graph_node_from_record(
+    fn graph_node_from_values(
         &self,
         entity: &str,
-        record: Record,
+        values: MutationValues,
     ) -> Result<GraphNode, RuntimeError> {
         let descriptor = self.data_service.metadata.context.require_entity(entity)?;
         let mut node = GraphNode::new(entity);
 
-        for (field, value) in record {
+        for (field, value) in values {
             if field == "_comment" {
                 if let Value::Text(comment) = value {
                     node.set_comment(comment);
@@ -1094,7 +1094,7 @@ where
                     node.relations.entry(field).or_default();
                 }
                 Value::Object(record) => {
-                    let child = self.graph_node_from_record(&relation.target_entity, record)?;
+                    let child = self.graph_node_from_values(&relation.target_entity, record.into())?;
                     node.relations.entry(field).or_default().push(child);
                 }
                 Value::List(values) => {
@@ -1107,7 +1107,7 @@ where
                             )));
                         };
                         children
-                            .push(self.graph_node_from_record(&relation.target_entity, record)?);
+                            .push(self.graph_node_from_values(&relation.target_entity, record.into())?);
                     }
                 }
                 other => {

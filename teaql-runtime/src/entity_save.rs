@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use teaql_core::{Entity, Record, Value};
+use teaql_core::{Entity, MutationValues, Value};
 
 use crate::{DataServiceError, GraphNode, GraphOperation, RuntimeError, UserContext};
 
@@ -134,7 +134,7 @@ pub fn graph_node_from_entity<T: Entity>(
     let original_values = entity.original_values();
     let is_deleted = entity.is_marked_as_delete();
     let comment = entity.get_comment();
-    let mut node = graph_node_from_record(context, &descriptor.name, entity.into_values().into())?;
+    let mut node = graph_node_from_values(context, &descriptor.name, entity.into_values())?;
     node.dirty_fields = dirty_fields;
     node.original_values = original_values.map(Into::into);
     if is_deleted {
@@ -147,18 +147,18 @@ pub fn graph_node_from_entity<T: Entity>(
     Ok(node)
 }
 
-/// Recursively convert a [`Record`] into a [`GraphNode`] tree.
+/// Recursively convert entity mutation values into a [`GraphNode`] tree.
 ///
 /// Relations are resolved via the entity descriptors stored in `context`.
-fn graph_node_from_record(
+fn graph_node_from_values(
     context: &UserContext,
     entity: &str,
-    record: Record,
+    values: MutationValues,
 ) -> Result<GraphNode, RuntimeError> {
     let descriptor = context.require_entity(entity)?;
     let mut node = GraphNode::new(entity);
 
-    for (field, value) in record {
+    for (field, value) in values {
         if field == "_comment" {
             if let Value::Text(comment) = value {
                 node.set_comment(comment);
@@ -193,7 +193,7 @@ fn graph_node_from_record(
                 node.relations.entry(field).or_default();
             }
             Value::Object(record) => {
-                let child = graph_node_from_record(context, &relation.target_entity, record)?;
+                let child = graph_node_from_values(context, &relation.target_entity, record.into())?;
                 node.relations.entry(field).or_default().push(child);
             }
             Value::List(values) => {
@@ -205,10 +205,10 @@ fn graph_node_from_record(
                             entity, field, value
                         )));
                     };
-                    children.push(graph_node_from_record(
+                    children.push(graph_node_from_values(
                         context,
                         &relation.target_entity,
-                        record,
+                        record.into(),
                     )?);
                 }
             }

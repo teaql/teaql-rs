@@ -1,6 +1,6 @@
 use teaql_core::{
     BatchInsertCommand, BatchUpdateCommand, CompactRow, DeleteCommand, Entity, InsertCommand,
-    Record, RecoverCommand, SelectQuery, SmartList, UpdateCommand,
+    MutationValues, RecoverCommand, SelectQuery, SmartList, UpdateCommand,
 };
 use teaql_data_service::{MutationRequest, QueryRequest};
 
@@ -197,13 +197,13 @@ where
             let mut update_cmd =
                 UpdateCommand::new(command.entity.clone(), command.batch_ids[i].clone());
 
-            let mut filtered_values = Record::new();
+            let mut filtered_values = MutationValues::new();
             for field in &command.update_fields {
                 if let Some(v) = val.get(field) {
                     filtered_values.insert(field.clone(), v.clone());
                 }
             }
-            update_cmd.values = filtered_values.into();
+            update_cmd.values = filtered_values;
             if let Some(Some(v)) = command.batch_expected_versions.get(i) {
                 update_cmd.expected_version = Some(*v);
             }

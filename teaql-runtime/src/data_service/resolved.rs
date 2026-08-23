@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -41,7 +41,7 @@ where
     fn flatten_relation_graph(
         &self,
         entity_name: &str,
-        record: &mut Record,
+        record: &mut BTreeMap<String, Value>,
         root: &crate::EntityRoot,
         graph: &mut crate::EntityGraphBuilder,
         installed: &mut BTreeSet<(String, u64)>,
