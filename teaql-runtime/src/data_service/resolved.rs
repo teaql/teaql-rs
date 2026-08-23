@@ -556,8 +556,9 @@ where
         query.comment = self
             .data_service
             .resolve_final_comment(&query.trace_chain, query.comment.take());
+        let trace_chain = std::mem::take(&mut query.trace_chain);
         let request = teaql_data_service::QueryRequest {
-            trace_chain: query.trace_chain.clone(),
+            trace_chain,
             comment: query.comment.clone(),
             capture_debug_query: self.data_service.metadata.capture_query_debug(),
             query,

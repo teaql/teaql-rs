@@ -1,3 +1,4 @@
+use std::fmt::Write;
 use std::sync::Arc;
 use std::{collections::BTreeMap, future::Future};
 
@@ -312,20 +313,25 @@ where
         comment: Option<String>,
     ) -> Option<String> {
         let chain_str = (!trace_chain.is_empty()).then(|| {
-            trace_chain
-                .iter()
-                .map(|n| {
-                    format!(
-                        "{}({}): {}",
-                        n.entity_type,
-                        n.entity_id
-                            .map(|id| id.to_string())
-                            .unwrap_or_else(|| "pending".to_owned()),
-                        n.comment
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(" -> ")
+            let mut chain = String::with_capacity(trace_chain.len().saturating_mul(64));
+            for (index, node) in trace_chain.iter().enumerate() {
+                if index > 0 {
+                    chain.push_str(" -> ");
+                }
+                match node.entity_id {
+                    Some(id) => {
+                        let _ = write!(chain, "{}({id}): {}", node.entity_type, node.comment);
+                    }
+                    None => {
+                        let _ = write!(
+                            chain,
+                            "{}(pending): {}",
+                            node.entity_type, node.comment
+                        );
+                    }
+                }
+            }
+            chain
         });
 
         let business_comment = chain_str.or(comment);
