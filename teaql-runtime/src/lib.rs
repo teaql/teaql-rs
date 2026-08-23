@@ -1657,9 +1657,17 @@ mod tests {
         let parent_rows = vec![
             Record::from([(String::from("id"), Value::U64(11))]),
             Record::from([(String::from("id"), Value::U64(12))]),
+            Record::from([(String::from("id"), Value::U64(11))]),
         ];
 
         let query = repo.relation_query("lines", &parent_rows).unwrap();
+        let Some(Expr::Binary { right, .. }) = query.filter else {
+            panic!("relation query should contain an IN filter")
+        };
+        let Expr::Value(Value::List(ids)) = *right else {
+            panic!("relation IN filter should contain identity values")
+        };
+        assert_eq!(ids, vec![Value::U64(11), Value::U64(12)]);
         // let compiled = repo.compile(&query).unwrap();
         // assert!(compiled.sql.contains("FROM orderline"));
         // assert!(compiled.sql.contains("order_id IN ($1, $2)"));

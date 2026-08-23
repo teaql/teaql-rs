@@ -9,6 +9,22 @@ use crate::{DataServiceError, RuntimeError};
 
 use super::{EntityDataService, RelationLoadPlan, helpers::*};
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum FlatIdentityKey {
+    U64(u64),
+    Other(String),
+}
+
+impl FlatIdentityKey {
+    fn from_value(value: &Value) -> Self {
+        match value {
+            Value::U64(value) => Self::U64(*value),
+            Value::I64(value) if *value >= 0 => Self::U64(*value as u64),
+            _ => Self::Other(graph_identity_key(value)),
+        }
+    }
+}
+
 impl<'a, E> EntityDataService<'a, E>
 where
     E: teaql_data_service::QueryExecutor
@@ -66,6 +82,56 @@ where
             self.enhance_plan(parent_rows, &plan).await?;
         }
         Ok(())
+    }
+
+    pub(crate) async fn hydrate_flat_relations_internal(
+        &self,
+        parent_rows: &mut [Record],
+        root: &crate::EntityRoot,
+        graph: &mut crate::EntityGraphBuilder,
+    ) -> Result<(), DataServiceError<E::Error>> {
+        let plans = self.relation_plans().map_err(DataServiceError::Runtime)?;
+        for plan in plans {
+            self.hydrate_flat_plan(parent_rows, &plan, root, graph)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn hydrate_query_flat_relations_internal(
+        &self,
+        parent_rows: &mut [Record],
+        query: &SelectQuery,
+        root: &crate::EntityRoot,
+        graph: &mut crate::EntityGraphBuilder,
+    ) -> Result<(), DataServiceError<E::Error>> {
+        let plans = self
+            .build_relation_plans_from_loads(&query.entity, &query.relations)
+            .map_err(DataServiceError::Runtime)?;
+        for plan in plans {
+            self.hydrate_flat_plan(parent_rows, &plan, root, graph)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn supports_flat_relation_hydration(
+        &self,
+        query: &SelectQuery,
+    ) -> Result<bool, RuntimeError> {
+        let context = self.data_service.metadata.context;
+        let query_plans = self.build_relation_plans_from_loads(&query.entity, &query.relations)?;
+        let behavior_plans = self.relation_plans()?;
+
+        fn supported(context: &crate::UserContext, plan: &RelationLoadPlan) -> bool {
+            context.has_entity_graph_decoder(&plan.target_entity)
+                && plan.children.iter().all(|child| supported(context, child))
+        }
+
+        Ok(query_plans
+            .iter()
+            .chain(behavior_plans.iter())
+            .all(|plan| supported(context, plan)))
     }
 
     pub(crate) fn enhance_relation_aggregates_internal<'b>(
@@ -428,6 +494,147 @@ where
         })
     }
 
+    fn hydrate_flat_plan<'b>(
+        &'b self,
+        parent_rows: &'b mut [Record],
+        plan: &'b RelationLoadPlan,
+        root: &'b crate::EntityRoot,
+        graph: &'b mut crate::EntityGraphBuilder,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
+    > {
+        Box::pin(async move {
+            let child_repo = self.scoped_data_service_internal(plan.target_entity.clone());
+            let query = self.query_for_plan(plan, parent_rows);
+            let mut child_rows = child_repo.fetch_all_internal(&query).await?;
+            for child in &mut child_rows {
+                child.remove(teaql_core::PARTITION_RANK_PROPERTY);
+            }
+
+            // Hydrate descendants while the rows are still owned by this level. Nothing is
+            // embedded into a parent Record: every relation is published directly into the
+            // shared, immutable identity graph.
+            for child_plan in &plan.children {
+                child_repo
+                    .hydrate_flat_plan(&mut child_rows, child_plan, root, graph)
+                    .await?;
+            }
+
+            let inverse_relation = self
+                .data_service
+                .metadata
+                .context
+                .entity(&plan.target_entity)
+                .and_then(|descriptor| {
+                    descriptor.relations.iter().find(|relation| {
+                        relation.target_entity == plan.parent_entity
+                            && relation.local_key == plan.foreign_key
+                            && relation.foreign_key == plan.local_key
+                    })
+                })
+                .map(|relation| (relation.name.clone(), relation.many));
+
+            let mut buckets: BTreeMap<FlatIdentityKey, Vec<Record>> = BTreeMap::new();
+            for child in child_rows {
+                if let Some(key) = child.get(&plan.foreign_key) {
+                    buckets
+                        .entry(FlatIdentityKey::from_value(key))
+                        .or_default()
+                        .push(child);
+                }
+            }
+
+            let context = self.data_service.metadata.context;
+            for parent in parent_rows {
+                let Some(local_value) = parent.get(&plan.local_key) else {
+                    continue;
+                };
+                let related = buckets
+                    .remove(&FlatIdentityKey::from_value(local_value))
+                    .unwrap_or_default();
+
+                if let Some((inverse_name, inverse_many)) = &inverse_relation {
+                    let parent_record = parent.clone();
+                    for child in &related {
+                        let Some(child_id) = child.get("id").and_then(Value::try_u64) else {
+                            continue;
+                        };
+                        if *inverse_many {
+                            context
+                                .decode_entity_list_into_graph(
+                                    &plan.parent_entity,
+                                    vec![parent_record.clone()],
+                                    root,
+                                    graph,
+                                    &plan.target_entity,
+                                    child_id,
+                                    inverse_name,
+                                )
+                                .map_err(DataServiceError::Entity)?;
+                        } else {
+                            context
+                                .decode_entity_option_into_graph(
+                                    &plan.parent_entity,
+                                    vec![parent_record.clone()],
+                                    root,
+                                    graph,
+                                    &plan.target_entity,
+                                    child_id,
+                                    inverse_name,
+                                )
+                                .map_err(DataServiceError::Entity)?;
+                        }
+                    }
+                }
+
+                if plan.many || plan.local_key == "id" {
+                    let owner_id = parent.get("id").and_then(Value::try_u64).ok_or_else(|| {
+                        DataServiceError::Entity(teaql_core::EntityError::new(
+                            &plan.parent_entity,
+                            "loaded reverse relation owner is missing its u64 id",
+                        ))
+                    })?;
+                    if plan.many {
+                        context
+                            .decode_entity_list_into_graph(
+                                &plan.target_entity,
+                                related,
+                                root,
+                                graph,
+                                &plan.parent_entity,
+                                owner_id,
+                                &plan.relation_name,
+                            )
+                            .map_err(DataServiceError::Entity)?;
+                    } else {
+                        context
+                            .decode_entity_option_into_graph(
+                                &plan.target_entity,
+                                related,
+                                root,
+                                graph,
+                                &plan.parent_entity,
+                                owner_id,
+                                &plan.relation_name,
+                            )
+                            .map_err(DataServiceError::Entity)?;
+                    }
+                } else if related.is_empty() {
+                    // Forward optional relations use the scalar loaded marker to distinguish a
+                    // loaded null from a relation that was never requested.
+                    parent.insert(plan.relation_name.clone(), Value::Null);
+                } else {
+                    for child in related {
+                        context
+                            .decode_entity_into_graph(&plan.target_entity, child, root, graph)
+                            .map_err(DataServiceError::Entity)?;
+                    }
+                }
+            }
+            Ok(())
+        })
+    }
+
     fn enhance_child_record<'b>(
         &'b self,
         child: &'b mut Record,
@@ -444,9 +651,19 @@ where
     }
 
     fn query_for_plan(&self, plan: &RelationLoadPlan, parent_rows: &[Record]) -> SelectQuery {
+        // Relation identities are a set. Keeping one value per normalized identity avoids
+        // compiling and binding the same foreign key once for every parent row (a common shape
+        // for pages containing many rows that share a small reference table).
         let ids = parent_rows
             .iter()
             .filter_map(|row| row.get(&plan.local_key).cloned())
+            .fold(BTreeMap::new(), |mut unique, value| {
+                unique
+                    .entry(FlatIdentityKey::from_value(&value))
+                    .or_insert(value);
+                unique
+            })
+            .into_values()
             .collect::<Vec<_>>();
 
         let mut query = plan
