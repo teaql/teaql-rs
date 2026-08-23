@@ -280,7 +280,7 @@ where
                 self.entity, descriptor.name
             )));
         }
-        // Extract dirty field names BEFORE into_record() consumes the entity.
+        // Extract dirty field names before into_values() consumes the entity.
         // This is the Rust equivalent of Java's entity.getUpdatedProperties().
         let dirty_fields = entity.dirty_fields();
         let original_values = entity.original_values();

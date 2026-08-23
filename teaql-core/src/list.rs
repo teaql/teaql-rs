@@ -2,14 +2,14 @@ use std::collections::BTreeMap;
 use std::hash::Hash;
 use std::ops::{Index, IndexMut};
 
-use crate::{CompactRow, Entity, IdentifiableEntity, Record, Value, VersionedEntity};
+use crate::{CompactRow, Entity, IdentifiableEntity, Value, VersionedEntity};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SmartList<T> {
     pub data: Vec<T>,
     pub total_count: Option<u64>,
-    pub aggregations: Record,
-    pub summary: Record,
+    pub aggregations: BTreeMap<String, Value>,
+    pub summary: BTreeMap<String, Value>,
     pub facets: BTreeMap<String, SmartList<CompactRow>>,
     pub is_loaded: bool,
 }
@@ -44,8 +44,8 @@ impl<T> SmartList<T> {
         Self {
             data,
             total_count: None,
-            aggregations: Record::new(),
-            summary: Record::new(),
+            aggregations: BTreeMap::new(),
+            summary: BTreeMap::new(),
             facets: BTreeMap::new(),
             is_loaded: true,
         }

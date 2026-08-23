@@ -133,8 +133,8 @@ impl From<DateTime<Utc>> for Value {
 }
 
 impl Value {
-    pub fn object(record: crate::Record) -> Self {
-        Self::Object(record)
+    pub fn object(values: std::collections::BTreeMap<String, Value>) -> Self {
+        Self::Object(values)
     }
 
     pub fn try_i64(&self) -> Option<i64> {

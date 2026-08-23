@@ -200,10 +200,10 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 <#boxed_type as ::teaql_core::TeaqlBoxedRelations>::extend_descriptor(&mut descriptor);
             });
             from_record_fields.push(quote! {
-                #field_ident: <#boxed_type as ::teaql_core::TeaqlBoxedRelations>::extract_from_record(&record)?
+                #field_ident: <#boxed_type as ::teaql_core::TeaqlBoxedRelations>::extract_from_values(&record)?
             });
             into_record_fields.push(quote! {
-                ::teaql_core::TeaqlBoxedRelations::inject_into_record(self.#field_ident, &mut record);
+                ::teaql_core::TeaqlBoxedRelations::inject_into_values(self.#field_ident, &mut record);
             });
             continue;
         }
@@ -515,13 +515,13 @@ pub fn expand_teaql_reverse_relations(input: DeriveInput) -> proc_macro2::TokenS
                 #(#relation_tokens)*
             }
 
-            fn extract_from_record(record: &::teaql_core::Record) -> Result<Self, ::teaql_core::EntityError> {
+            fn extract_from_values(record: &::std::collections::BTreeMap<String, ::teaql_core::Value>) -> Result<Self, ::teaql_core::EntityError> {
                 Ok(Self {
                     #(#from_record_fields,)*
                 })
             }
 
-            fn inject_into_record(self, record: &mut ::teaql_core::Record) {
+            fn inject_into_values(self, record: &mut ::std::collections::BTreeMap<String, ::teaql_core::Value>) {
                 #(#into_record_fields)*
             }
         }

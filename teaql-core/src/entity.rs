@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    CompactRow, Decimal, EntityDescriptor, EntitySnapshot, MutationValues, Record, Value,
+    CompactRow, Decimal, EntityDescriptor, EntitySnapshot, MutationValues, Value,
     record_to_json_value,
 };
 
@@ -87,7 +87,7 @@ pub trait Entity: TeaqlEntity + Sized {
     fn on_loaded(&mut self, context: &dyn std::any::Any) {}
 
     fn into_json(self) -> serde_json::Value {
-        let values: Record = self.into_values().into();
+        let values: BTreeMap<String, Value> = self.into_values().into();
         record_to_json_value(&values)
     }
 }
@@ -204,18 +204,18 @@ impl BaseEntityData {
         self.dynamic.remove(key)
     }
 
-    pub fn to_record(&self) -> Record {
-        let mut record = Record::new();
-        record.insert("id".to_owned(), Value::U64(self.id));
-        record.insert("version".to_owned(), Value::I64(self.version));
+    pub fn to_values_map(&self) -> BTreeMap<String, Value> {
+        let mut values = BTreeMap::new();
+        values.insert("id".to_owned(), Value::U64(self.id));
+        values.insert("version".to_owned(), Value::I64(self.version));
         for (key, value) in &self.dynamic {
-            record.insert(key.clone(), value.clone());
+            values.insert(key.clone(), value.clone());
         }
-        record
+        values
     }
 
-    pub fn from_record(record: &Record) -> Result<Self, EntityError> {
-        let id = match record.get("id") {
+    pub fn from_values_map(values: &BTreeMap<String, Value>) -> Result<Self, EntityError> {
+        let id = match values.get("id") {
             Some(Value::U64(v)) => *v,
             Some(Value::I64(v)) if *v >= 0 => *v as u64,
             Some(Value::Null) | None => 0,
@@ -227,7 +227,7 @@ impl BaseEntityData {
             }
         };
 
-        let version = match record.get("version") {
+        let version = match values.get("version") {
             Some(Value::I64(v)) => *v,
             Some(Value::Null) | None => 0,
             other => {
@@ -238,7 +238,7 @@ impl BaseEntityData {
             }
         };
 
-        let dynamic = record
+        let dynamic = values
             .iter()
             .filter(|(key, _)| key.as_str() != "id" && key.as_str() != "version")
             .map(|(key, value)| (key.clone(), value.clone()))
@@ -315,19 +315,19 @@ pub trait VersionedEntity: Entity {
 
 pub trait TeaqlBoxedRelations: Sized {
     fn extend_descriptor(descriptor: &mut EntityDescriptor);
-    fn extract_from_record(record: &Record) -> Result<Self, EntityError>;
-    fn inject_into_record(self, record: &mut Record);
+    fn extract_from_values(values: &BTreeMap<String, Value>) -> Result<Self, EntityError>;
+    fn inject_into_values(self, values: &mut BTreeMap<String, Value>);
 }
 
 impl<T: TeaqlBoxedRelations> TeaqlBoxedRelations for Box<T> {
     fn extend_descriptor(descriptor: &mut EntityDescriptor) {
         T::extend_descriptor(descriptor);
     }
-    fn extract_from_record(record: &Record) -> Result<Self, EntityError> {
-        Ok(Box::new(T::extract_from_record(record)?))
+    fn extract_from_values(values: &BTreeMap<String, Value>) -> Result<Self, EntityError> {
+        Ok(Box::new(T::extract_from_values(values)?))
     }
-    fn inject_into_record(self, record: &mut Record) {
-        (*self).inject_into_record(record);
+    fn inject_into_values(self, values: &mut BTreeMap<String, Value>) {
+        (*self).inject_into_values(values);
     }
 }
 

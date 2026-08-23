@@ -883,7 +883,7 @@ mod tests {
         base.put_dynamic("amount", 18.5);
         assert_eq!(base.dynamic_f64("amount"), Some(18.5));
 
-        let record = base.to_record();
+        let record = base.to_values_map();
         assert_eq!(record.get("id"), Some(&Value::U64(11)));
         assert_eq!(record.get("version"), Some(&Value::I64(3)));
         assert_eq!(record.get("lineCount"), Some(&Value::I64(5)));
@@ -892,7 +892,7 @@ mod tests {
             Some(&Value::Json(serde_json::json!({"status": "ok"})))
         );
 
-        let restored = BaseEntityData::from_record(&record).unwrap();
+        let restored = BaseEntityData::from_values_map(&record).unwrap();
         assert_eq!(restored.id, 11);
         assert_eq!(restored.version, 3);
         assert_eq!(restored.dynamic("amount"), Some(&Value::F64(18.5)));
