@@ -13,3 +13,6 @@ teaql-core = { workspace = true }
 teaql-data-service = { workspace = true }
 futures-core = "0.3"
 futures-util = "0.3"
+
+[dev-dependencies]
+tokio = { workspace = true }

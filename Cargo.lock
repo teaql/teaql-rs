@@ -3557,6 +3557,7 @@ dependencies = [
  "futures-util",
  "teaql-core",
  "teaql-data-service",
+ "tokio",
 ]
 
 [[package]]

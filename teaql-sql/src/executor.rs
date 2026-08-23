@@ -1,6 +1,8 @@
 #![allow(clippy::manual_async_fn)]
 #![allow(async_fn_in_trait)]
 
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 use teaql_core::{Expr, Record, SelectQuery};
 use teaql_data_service::{
@@ -75,6 +77,7 @@ pub struct SqlDataServiceExecutor<D, T, S> {
     pub dialect: D,
     pub transport: T,
     pub schema_provider: S,
+    descriptor_cache: Arc<RwLock<HashMap<String, Arc<teaql_core::EntityDescriptor>>>>,
 }
 
 impl<D, T, S> SqlDataServiceExecutor<D, T, S> {
@@ -83,7 +86,31 @@ impl<D, T, S> SqlDataServiceExecutor<D, T, S> {
             dialect,
             transport,
             schema_provider,
+            descriptor_cache: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+}
+
+impl<D, T, S> SqlDataServiceExecutor<D, T, S>
+where
+    S: teaql_data_service::SchemaProvider,
+{
+    fn entity_descriptor(&self, name: &str) -> Option<Arc<teaql_core::EntityDescriptor>> {
+        if let Ok(cache) = self.descriptor_cache.read() {
+            if let Some(descriptor) = cache.get(name) {
+                return Some(descriptor.clone());
+            }
+        }
+        let descriptor = self.schema_provider.get_entity(name)?;
+        if let Ok(mut cache) = self.descriptor_cache.write() {
+            return Some(
+                cache
+                    .entry(name.to_owned())
+                    .or_insert_with(|| descriptor.clone())
+                    .clone(),
+            );
+        }
+        Some(descriptor)
     }
 }
 
@@ -108,6 +135,87 @@ impl<
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use teaql_core::{DataType, EntityDescriptor, PropertyDescriptor};
+
+    #[derive(Clone, Copy)]
+    struct TestDialect;
+
+    impl SqlDialect for TestDialect {
+        fn kind(&self) -> crate::DatabaseKind {
+            crate::DatabaseKind::PostgreSql
+        }
+
+        fn quote_ident(&self, ident: &str) -> String {
+            format!("\"{ident}\"")
+        }
+
+        fn placeholder(&self, index: usize) -> String {
+            format!("${index}")
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct EmptyTransport;
+
+    impl SqlTransport for EmptyTransport {
+        type Error = std::io::Error;
+
+        async fn fetch_all_sql(&self, _query: &CompiledQuery) -> Result<Vec<Record>, Self::Error> {
+            Ok(Vec::new())
+        }
+
+        async fn execute_sql(&self, _query: &CompiledQuery) -> Result<u64, Self::Error> {
+            Ok(0)
+        }
+    }
+
+    #[derive(Clone)]
+    struct CountingSchemaProvider {
+        lookups: Arc<AtomicUsize>,
+    }
+
+    impl teaql_data_service::SchemaProvider for CountingSchemaProvider {
+        fn get_entity(&self, name: &str) -> Option<Arc<EntityDescriptor>> {
+            self.lookups.fetch_add(1, Ordering::Relaxed);
+            (name == "Order").then(|| {
+                Arc::new(
+                    EntityDescriptor::new("Order")
+                        .property(PropertyDescriptor::new("id", DataType::U64).id().not_null()),
+                )
+            })
+        }
+    }
+
+    fn query_request() -> QueryRequest {
+        QueryRequest {
+            query: SelectQuery::new("Order"),
+            trace_chain: Vec::new(),
+            comment: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn caches_entity_descriptors_across_executor_clones() {
+        let lookups = Arc::new(AtomicUsize::new(0));
+        let executor = SqlDataServiceExecutor::new(
+            TestDialect,
+            EmptyTransport,
+            CountingSchemaProvider {
+                lookups: lookups.clone(),
+            },
+        );
+
+        executor.query(query_request()).await.unwrap();
+        executor.clone().query(query_request()).await.unwrap();
+
+        assert_eq!(lookups.load(Ordering::Relaxed), 1);
+    }
+}
+
 impl<
     D: SqlDialect + Send + Sync,
     T: SqlTransport + Send + Sync,
@@ -120,8 +228,7 @@ impl<
     ) -> impl std::future::Future<Output = Result<QueryResult, Self::Error>> + Send {
         async move {
             let entity_desc = self
-                .schema_provider
-                .get_entity(&request.query.entity)
+                .entity_descriptor(&request.query.entity)
                 .ok_or_else(|| {
                     SqlExecutorError::Compile(SqlCompileError::UnknownEntity(
                         request.query.entity.clone(),
@@ -220,12 +327,9 @@ impl<
                 }
             };
 
-            let entity_desc = self
-                .schema_provider
-                .get_entity(entity_name)
-                .ok_or_else(|| {
-                    SqlExecutorError::Compile(SqlCompileError::UnknownEntity(entity_name.clone()))
-                })?;
+            let entity_desc = self.entity_descriptor(entity_name).ok_or_else(|| {
+                SqlExecutorError::Compile(SqlCompileError::UnknownEntity(entity_name.clone()))
+            })?;
 
             let compiled = match &request {
                 MutationRequest::Insert(cmd) => self
@@ -293,6 +397,30 @@ pub struct SqlDataServiceTransaction<'a, D, Tx: SqlTransport + SqlTransaction, S
     pub dialect: &'a D,
     pub transport: Tx,
     pub schema_provider: &'a S,
+    descriptor_cache: Arc<RwLock<HashMap<String, Arc<teaql_core::EntityDescriptor>>>>,
+}
+
+impl<'a, D, Tx: SqlTransport + SqlTransaction, S> SqlDataServiceTransaction<'a, D, Tx, S>
+where
+    S: teaql_data_service::SchemaProvider,
+{
+    fn entity_descriptor(&self, name: &str) -> Option<Arc<teaql_core::EntityDescriptor>> {
+        if let Ok(cache) = self.descriptor_cache.read() {
+            if let Some(descriptor) = cache.get(name) {
+                return Some(descriptor.clone());
+            }
+        }
+        let descriptor = self.schema_provider.get_entity(name)?;
+        if let Ok(mut cache) = self.descriptor_cache.write() {
+            return Some(
+                cache
+                    .entry(name.to_owned())
+                    .or_insert_with(|| descriptor.clone())
+                    .clone(),
+            );
+        }
+        Some(descriptor)
+    }
 }
 
 impl<
@@ -330,8 +458,7 @@ impl<
     ) -> impl std::future::Future<Output = Result<QueryResult, Self::Error>> + Send {
         async move {
             let entity_desc = self
-                .schema_provider
-                .get_entity(&request.query.entity)
+                .entity_descriptor(&request.query.entity)
                 .ok_or_else(|| {
                     SqlExecutorError::Compile(SqlCompileError::UnknownEntity(
                         request.query.entity.clone(),
@@ -429,12 +556,9 @@ impl<
                 }
             };
 
-            let entity_desc = self
-                .schema_provider
-                .get_entity(entity_name)
-                .ok_or_else(|| {
-                    SqlExecutorError::Compile(SqlCompileError::UnknownEntity(entity_name.clone()))
-                })?;
+            let entity_desc = self.entity_descriptor(entity_name).ok_or_else(|| {
+                SqlExecutorError::Compile(SqlCompileError::UnknownEntity(entity_name.clone()))
+            })?;
 
             let compiled = match &request {
                 MutationRequest::Insert(cmd) => self
@@ -579,6 +703,7 @@ impl<
                 dialect: &self.dialect,
                 transport: tx,
                 schema_provider: &self.schema_provider,
+                descriptor_cache: self.descriptor_cache.clone(),
             })
         }
     }
@@ -596,7 +721,7 @@ impl<
         chunk_size: usize,
     ) -> teaql_data_service::QueryStream<'_, Self::Error> {
         use futures_util::StreamExt;
-        let entity = match self.schema_provider.get_entity(&request.query.entity) {
+        let entity = match self.entity_descriptor(&request.query.entity) {
             Some(entity) => entity,
             None => {
                 return Box::pin(futures_util::stream::once(async {
