@@ -852,6 +852,12 @@ impl CompactRow {
     }
 }
 
+impl From<BTreeMap<String, Value>> for CompactRow {
+    fn from(values: BTreeMap<String, Value>) -> Self {
+        Self::from_map(values)
+    }
+}
+
 /// Internal projection used to implement per-parent pagination for relation
 /// loads. Runtime relation attachment removes it before exposing child rows.
 pub const PARTITION_RANK_PROPERTY: &str = "__teaql_partition_rank";

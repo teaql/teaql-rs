@@ -6,7 +6,7 @@ use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 use teaql_core::{
     Aggregate, AggregateFunction, BinaryOp, DeleteCommand, Entity, Expr, ExprFunction,
-    InsertCommand, Record, RecoverCommand, RelationAggregate, SelectQuery, SmartList,
+    CompactRow, InsertCommand, RecoverCommand, RelationAggregate, SelectQuery, SmartList,
     SortDirection, UpdateCommand, Value,
 };
 
@@ -38,7 +38,7 @@ impl std::error::Error for MemoryDataServiceError {}
 #[derive(Debug, Clone)]
 pub struct MemoryDataService<M = InMemoryMetadataStore> {
     metadata: M,
-    data: Arc<Mutex<BTreeMap<String, Vec<Record>>>>,
+    data: Arc<Mutex<BTreeMap<String, Vec<CompactRow>>>>,
 }
 
 impl<M> MemoryDataService<M>
@@ -52,21 +52,27 @@ where
         }
     }
 
-    pub fn with_rows(mut self, entity: impl Into<String>, rows: Vec<Record>) -> Self {
+    pub fn with_rows<R>(mut self, entity: impl Into<String>, rows: Vec<R>) -> Self
+    where
+        R: Into<CompactRow>,
+    {
         self.seed(entity, rows);
         self
     }
 
-    pub fn seed(&mut self, entity: impl Into<String>, rows: Vec<Record>) {
+    pub fn seed<R>(&mut self, entity: impl Into<String>, rows: Vec<R>)
+    where
+        R: Into<CompactRow>,
+    {
         if let Ok(mut data) = self.data.lock() {
-            data.insert(entity.into(), rows);
+            data.insert(entity.into(), rows.into_iter().map(Into::into).collect());
         }
     }
 
     pub fn fetch_all(
         &self,
         query: &SelectQuery,
-    ) -> Result<Vec<Record>, DataServiceError<MemoryDataServiceError>> {
+    ) -> Result<Vec<CompactRow>, DataServiceError<MemoryDataServiceError>> {
         self.require_entity(&query.entity)?;
         let data = self
             .data
@@ -106,7 +112,7 @@ where
     pub fn fetch_smart_list(
         &self,
         query: &SelectQuery,
-    ) -> Result<SmartList<Record>, DataServiceError<MemoryDataServiceError>> {
+    ) -> Result<SmartList<CompactRow>, DataServiceError<MemoryDataServiceError>> {
         self.fetch_all(query).map(SmartList::from)
     }
 
@@ -119,7 +125,7 @@ where
     {
         self.fetch_all(query)?
             .into_iter()
-            .map(|values| T::from_compact_row(teaql_core::CompactRow::from_map(values)))
+            .map(T::from_compact_row)
             .collect::<Result<Vec<_>, _>>()
             .map(SmartList::from)
             .map_err(DataServiceError::Entity)
@@ -129,7 +135,7 @@ where
         &self,
         query: &SelectQuery,
         relation_aggregates: &[RelationAggregate],
-    ) -> Result<Vec<Record>, DataServiceError<MemoryDataServiceError>> {
+    ) -> Result<Vec<CompactRow>, DataServiceError<MemoryDataServiceError>> {
         let mut rows = self.fetch_all(query)?;
         self.enhance_relation_aggregates(&query.entity, &mut rows, relation_aggregates)?;
         Ok(rows)
@@ -139,7 +145,7 @@ where
         &self,
         query: &SelectQuery,
         relation_aggregates: &[RelationAggregate],
-    ) -> Result<SmartList<Record>, DataServiceError<MemoryDataServiceError>> {
+    ) -> Result<SmartList<CompactRow>, DataServiceError<MemoryDataServiceError>> {
         self.fetch_all_with_relation_aggregates(query, relation_aggregates)
             .map(SmartList::from)
     }
@@ -154,7 +160,7 @@ where
     {
         self.fetch_all_with_relation_aggregates(query, relation_aggregates)?
             .into_iter()
-            .map(|values| T::from_compact_row(teaql_core::CompactRow::from_map(values)))
+            .map(T::from_compact_row)
             .collect::<Result<Vec<_>, _>>()
             .map(SmartList::from)
             .map_err(DataServiceError::Entity)
@@ -163,7 +169,7 @@ where
     pub fn enhance_relation_aggregates(
         &self,
         parent_entity: &str,
-        parent_rows: &mut [Record],
+        parent_rows: &mut [CompactRow],
         relation_aggregates: &[RelationAggregate],
     ) -> Result<(), DataServiceError<MemoryDataServiceError>> {
         for aggregate in relation_aggregates {
@@ -175,7 +181,7 @@ where
     fn enhance_relation_aggregate(
         &self,
         parent_entity: &str,
-        parent_rows: &mut [Record],
+        parent_rows: &mut [CompactRow],
         aggregate: &RelationAggregate,
     ) -> Result<(), DataServiceError<MemoryDataServiceError>> {
         let descriptor = self.metadata.entity(parent_entity).ok_or_else(|| {
@@ -226,7 +232,7 @@ where
 
         let aggregate_rows = self.fetch_all(&query)?;
 
-        let mut buckets: BTreeMap<String, Vec<Record>> = BTreeMap::new();
+        let mut buckets: BTreeMap<String, Vec<CompactRow>> = BTreeMap::new();
         for mut row in aggregate_rows {
             if let Some(key) = row.remove(&relation.foreign_key) {
                 let bucket_key = local_graph_identity_key(&key);
@@ -257,7 +263,7 @@ where
             .map_err(|_| DataServiceError::Executor(MemoryDataServiceError::Poisoned))?;
         data.entry(command.entity.clone())
             .or_default()
-            .push(command.values.clone().into());
+            .push(CompactRow::from_map(command.values.clone().into()));
         Ok(1)
     }
 
@@ -449,24 +455,29 @@ fn aggregate_alias(single_result: bool, alias: &str) -> String {
     }
 }
 
-fn local_relation_aggregate_value(rows: &[Record], single_result: bool) -> Value {
+fn local_relation_aggregate_value(rows: &[CompactRow], single_result: bool) -> Value {
     match single_result {
         true => rows
             .first()
             .map(local_single_relation_aggregate_value)
             .unwrap_or(Value::U64(0)),
-        false => Value::List(rows.iter().cloned().map(Value::object).collect()),
+        false => Value::List(
+            rows.iter()
+                .cloned()
+                .map(|row| Value::object(row.into_map()))
+                .collect(),
+        ),
     }
 }
 
-fn local_single_relation_aggregate_value(row: &Record) -> Value {
+fn local_single_relation_aggregate_value(row: &CompactRow) -> Value {
     match row.len() {
         1 => row.values().next().cloned().unwrap_or(Value::Null),
-        _ => Value::object(row.clone()),
+        _ => Value::object(row.clone().into_map()),
     }
 }
 
-fn eval_filter(expr: &Expr, row: &Record) -> Result<bool, MemoryDataServiceError> {
+fn eval_filter(expr: &Expr, row: &CompactRow) -> Result<bool, MemoryDataServiceError> {
     match expr {
         Expr::Column(_) | Expr::Value(_) | Expr::Function { .. } => {
             value_truthy(&eval_value(expr, row)?)
@@ -508,7 +519,7 @@ fn eval_filter(expr: &Expr, row: &Record) -> Result<bool, MemoryDataServiceError
     }
 }
 
-fn eval_value(expr: &Expr, row: &Record) -> Result<Value, MemoryDataServiceError> {
+fn eval_value(expr: &Expr, row: &CompactRow) -> Result<Value, MemoryDataServiceError> {
     match expr {
         Expr::Column(column) => Ok(row.get(column).cloned().unwrap_or(Value::Null)),
         Expr::Value(value) => Ok(value.clone()),
@@ -522,7 +533,7 @@ fn eval_value(expr: &Expr, row: &Record) -> Result<Value, MemoryDataServiceError
 fn eval_function(
     function: ExprFunction,
     args: &[Expr],
-    row: &Record,
+    row: &CompactRow,
 ) -> Result<Value, MemoryDataServiceError> {
     match function {
         ExprFunction::Soundex => {
@@ -677,10 +688,10 @@ fn soundex_code(ch: char) -> char {
     }
 }
 
-fn apply_ordering(rows: &mut [Record], query: &SelectQuery) {
+fn apply_ordering(rows: &mut [CompactRow], query: &SelectQuery) {
     for order in query.order_by.iter().rev() {
         rows.sort_by(|left, right| {
-            let resolve = |row: &Record| -> Option<Value> {
+            let resolve = |row: &CompactRow| -> Option<Value> {
                 match &order.expr {
                     Some(expr) => eval_value(expr, row).ok(),
                     None => row.get(&order.field).cloned(),
@@ -702,7 +713,7 @@ fn apply_ordering(rows: &mut [Record], query: &SelectQuery) {
     }
 }
 
-fn apply_slice(rows: Vec<Record>, query: &SelectQuery) -> Vec<Record> {
+fn apply_slice(rows: Vec<CompactRow>, query: &SelectQuery) -> Vec<CompactRow> {
     let Some(slice) = query.slice else {
         return rows;
     };
@@ -714,8 +725,8 @@ fn apply_slice(rows: Vec<Record>, query: &SelectQuery) -> Vec<Record> {
     rows.into_iter().skip(offset).take(limit).collect()
 }
 
-fn project_row(row: Record, query: &SelectQuery) -> Result<Record, MemoryDataServiceError> {
-    let mut output: Record = query
+fn project_row(row: CompactRow, query: &SelectQuery) -> Result<CompactRow, MemoryDataServiceError> {
+    let mut output: BTreeMap<String, Value> = query
         .projection
         .iter()
         .filter_map(|field| row.get(field).cloned().map(|value| (field.clone(), value)))
@@ -726,14 +737,14 @@ fn project_row(row: Record, query: &SelectQuery) -> Result<Record, MemoryDataSer
             eval_value(&projection.expr, &row)?,
         );
     }
-    Ok(output)
+    Ok(CompactRow::from_map(output))
 }
 
 fn aggregate_rows(
     query: &SelectQuery,
-    rows: &[Record],
-) -> Result<Vec<Record>, MemoryDataServiceError> {
-    let mut groups: BTreeMap<Vec<String>, Vec<&Record>> = BTreeMap::new();
+    rows: &[CompactRow],
+) -> Result<Vec<CompactRow>, MemoryDataServiceError> {
+    let mut groups: BTreeMap<Vec<String>, Vec<&CompactRow>> = BTreeMap::new();
     match query.group_by.is_empty() {
         true => {
             groups.insert(Vec::new(), rows.iter().collect());
@@ -753,7 +764,7 @@ fn aggregate_rows(
     let rows = groups
         .into_values()
         .map(|rows| {
-            let mut output = Record::new();
+            let mut output = BTreeMap::new();
             if let Some(first) = rows.first() {
                 for field in &query.group_by {
                     if let Some(value) = first.get(field) {
@@ -782,10 +793,12 @@ fn aggregate_rows(
                 };
                 output.insert(aggregate.alias.clone(), value);
             }
+            let mut output = CompactRow::from_map(output);
             for projection in &query.expr_projection {
+                let value = eval_value(&projection.expr, &output)?;
                 output.insert(
                     projection.alias.clone(),
-                    eval_value(&projection.expr, &output)?,
+                    value,
                 );
             }
             Ok(output)
@@ -804,7 +817,7 @@ fn aggregate_rows(
 }
 
 /// Count rows, treating `"*"` as counting all rows and other fields as counting non-null values.
-fn count_rows(rows: &[&Record], field: &str) -> Value {
+fn count_rows(rows: &[&CompactRow], field: &str) -> Value {
     let count = match field {
         "*" => rows.len(),
         _ => rows
@@ -815,7 +828,7 @@ fn count_rows(rows: &[&Record], field: &str) -> Value {
     Value::U64(count as u64)
 }
 
-fn numeric_sum(rows: &[&Record], field: &str) -> Result<Value, MemoryDataServiceError> {
+fn numeric_sum(rows: &[&CompactRow], field: &str) -> Result<Value, MemoryDataServiceError> {
     let mut decimal_sum = Decimal::ZERO;
     let mut integer_sum: i128 = 0;
     let mut saw_decimal = false;
@@ -852,7 +865,7 @@ fn numeric_sum(rows: &[&Record], field: &str) -> Result<Value, MemoryDataService
     }
 }
 
-fn numeric_avg(rows: &[&Record], field: &str) -> Result<Value, MemoryDataServiceError> {
+fn numeric_avg(rows: &[&CompactRow], field: &str) -> Result<Value, MemoryDataServiceError> {
     let mut sum = Decimal::ZERO;
     let mut count: u64 = 0;
     for value in rows.iter().filter_map(|row| row.get(field)) {
@@ -890,7 +903,7 @@ fn decimal_from_f64(value: f64) -> Decimal {
     Decimal::from_f64_retain(value).unwrap_or(Decimal::ZERO)
 }
 
-fn numeric_values(rows: &[&Record], field: &str) -> Result<Vec<f64>, MemoryDataServiceError> {
+fn numeric_values(rows: &[&CompactRow], field: &str) -> Result<Vec<f64>, MemoryDataServiceError> {
     rows.iter()
         .filter_map(|row| row.get(field))
         .filter(|value| !matches!(value, Value::Null))
@@ -911,7 +924,7 @@ fn numeric_values(rows: &[&Record], field: &str) -> Result<Vec<f64>, MemoryDataS
 }
 
 fn numeric_variance(
-    rows: &[&Record],
+    rows: &[&CompactRow],
     field: &str,
     sample: bool,
 ) -> Result<Value, MemoryDataServiceError> {
@@ -936,7 +949,7 @@ fn numeric_variance(
 }
 
 fn numeric_stddev(
-    rows: &[&Record],
+    rows: &[&CompactRow],
     field: &str,
     sample: bool,
 ) -> Result<Value, MemoryDataServiceError> {
@@ -957,7 +970,7 @@ enum BitOp {
 }
 
 fn bit_aggregate(
-    rows: &[&Record],
+    rows: &[&CompactRow],
     field: &str,
     op: BitOp,
 ) -> Result<Value, MemoryDataServiceError> {
@@ -987,7 +1000,7 @@ fn bit_aggregate(
     Ok(selected.map(Value::I64).unwrap_or(Value::Null))
 }
 
-fn min_max(rows: &[&Record], field: &str, max: bool) -> Result<Value, MemoryDataServiceError> {
+fn min_max(rows: &[&CompactRow], field: &str, max: bool) -> Result<Value, MemoryDataServiceError> {
     let mut selected: Option<Value> = None;
     for value in rows.iter().filter_map(|row| row.get(field)) {
         if matches!(value, Value::Null) {
