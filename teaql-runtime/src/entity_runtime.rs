@@ -109,6 +109,25 @@ impl EntityGraphBuilder {
         );
     }
 
+    pub fn install_relation_option<T>(
+        &mut self,
+        owner_entity: impl Into<String>,
+        owner_id: u64,
+        relation: impl Into<String>,
+        value: Option<T>,
+    ) where
+        T: Any + Send + Sync,
+    {
+        self.relation_lists.insert(
+            RelationListKey {
+                owner_entity: owner_entity.into(),
+                owner_id,
+                relation: relation.into(),
+            },
+            Box::new(value),
+        );
+    }
+
     pub fn relation_list_count(&self) -> usize {
         self.relation_lists.len()
     }
@@ -333,6 +352,36 @@ impl EntityRoot {
                 relation: relation.to_owned(),
             })?
             .downcast_ref::<SmartList<T>>()
+    }
+
+    pub fn resolve_relation_option<T>(
+        &self,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+    ) -> Option<&Option<T>>
+    where
+        T: Any + Send + Sync,
+    {
+        self.graph
+            .get()?
+            .relation_lists
+            .get(&RelationListKey {
+                owner_entity: owner_entity.to_owned(),
+                owner_id,
+                relation: relation.to_owned(),
+            })?
+            .downcast_ref::<Option<T>>()
+    }
+
+    pub fn has_relation_view(&self, owner_entity: &str, owner_id: u64, relation: &str) -> bool {
+        self.graph.get().is_some_and(|graph| {
+            graph.relation_lists.contains_key(&RelationListKey {
+                owner_entity: owner_entity.to_owned(),
+                owner_id,
+                relation: relation.to_owned(),
+            })
+        })
     }
 
     pub fn push_change_set(&self) {

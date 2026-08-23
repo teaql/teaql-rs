@@ -89,22 +89,34 @@ where
                 )?;
             }
 
-            if relation.many {
+            if relation.many || relation.local_key == "id" {
                 let owner_id = record.get("id").and_then(Value::try_u64).ok_or_else(|| {
                     teaql_core::EntityError::new(
                         entity_name,
-                        "loaded to-many relation owner is missing its u64 id",
+                        "loaded reverse relation owner is missing its u64 id",
                     )
                 })?;
-                context.decode_entity_list_into_graph(
-                    &relation.target_entity,
-                    child_records,
-                    root,
-                    graph,
-                    entity_name,
-                    owner_id,
-                    &relation.name,
-                )?;
+                if relation.many {
+                    context.decode_entity_list_into_graph(
+                        &relation.target_entity,
+                        child_records,
+                        root,
+                        graph,
+                        entity_name,
+                        owner_id,
+                        &relation.name,
+                    )?;
+                } else {
+                    context.decode_entity_option_into_graph(
+                        &relation.target_entity,
+                        child_records,
+                        root,
+                        graph,
+                        entity_name,
+                        owner_id,
+                        &relation.name,
+                    )?;
+                }
                 continue;
             }
 

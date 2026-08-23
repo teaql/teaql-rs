@@ -96,3 +96,18 @@ fn frozen_graph_exposes_a_stable_typed_to_many_view() {
             .is_none()
     );
 }
+
+#[test]
+fn frozen_graph_distinguishes_loaded_null_from_missing_to_one_view() {
+    let root = EntityRoot::default();
+    let mut builder = EntityGraphBuilder::default();
+    builder.install_relation_option::<Vendor>("Garage", 7, "primary_vehicle", None);
+    root.freeze_graph(builder).expect("freeze graph");
+
+    assert_eq!(
+        root.resolve_relation_option::<Vendor>("Garage", 7, "primary_vehicle"),
+        Some(&None)
+    );
+    assert!(root.has_relation_view("Garage", 7, "primary_vehicle"));
+    assert!(!root.has_relation_view("Garage", 7, "backup_vehicle"));
+}

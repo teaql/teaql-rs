@@ -22,11 +22,13 @@ type EntityGraphListDecoder = fn(
     u64,
     &str,
 ) -> Result<(), EntityError>;
+type EntityGraphOptionDecoder = EntityGraphListDecoder;
 
 #[derive(Default, Clone)]
 pub struct InMemoryEntityGraphDecoderRegistry {
     decoders: BTreeMap<String, EntityGraphDecoder>,
     list_decoders: BTreeMap<String, EntityGraphListDecoder>,
+    option_decoders: BTreeMap<String, EntityGraphOptionDecoder>,
 }
 
 impl InMemoryEntityGraphDecoderRegistry {
@@ -83,9 +85,35 @@ impl InMemoryEntityGraphDecoderRegistry {
             Ok(())
         }
 
+        fn decode_option<T>(
+            records: Vec<Record>,
+            root: &EntityRoot,
+            graph: &mut EntityGraphBuilder,
+            owner_entity: &str,
+            owner_id: u64,
+            relation: &str,
+        ) -> Result<(), EntityError>
+        where
+            T: Entity + IdentifiableEntity + Send + Sync + 'static,
+        {
+            let value = records
+                .into_iter()
+                .next()
+                .map(|record| {
+                    let mut entity = T::from_record(record)?;
+                    entity.on_loaded(root as &dyn std::any::Any);
+                    Ok(entity)
+                })
+                .transpose()?;
+            graph.install_relation_option(owner_entity, owner_id, relation, value);
+            Ok(())
+        }
+
         self.decoders.insert(T::ENTITY_NAME.to_owned(), decode::<T>);
         self.list_decoders
             .insert(T::ENTITY_NAME.to_owned(), decode_list::<T>);
+        self.option_decoders
+            .insert(T::ENTITY_NAME.to_owned(), decode_option::<T>);
     }
 
     pub fn decode(
@@ -118,6 +146,25 @@ impl InMemoryEntityGraphDecoderRegistry {
             EntityError::new(
                 entity,
                 "entity has no identity graph list decoder in RuntimeModule",
+            )
+        })?;
+        decoder(records, root, graph, owner_entity, owner_id, relation)
+    }
+
+    pub fn decode_option(
+        &self,
+        entity: &str,
+        records: Vec<Record>,
+        root: &EntityRoot,
+        graph: &mut EntityGraphBuilder,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+    ) -> Result<(), EntityError> {
+        let decoder = self.option_decoders.get(entity).ok_or_else(|| {
+            EntityError::new(
+                entity,
+                "entity has no identity graph option decoder in RuntimeModule",
             )
         })?;
         decoder(records, root, graph, owner_entity, owner_id, relation)
