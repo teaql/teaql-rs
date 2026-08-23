@@ -200,6 +200,13 @@ where
         let query = query
             .prepare_for_list()
             .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
+        if query.continuous_page_fetch.is_none()
+            && query.object_group_bys.is_empty()
+            && query.child_enhancements.is_empty()
+            && query.relations.is_empty()
+        {
+            return self.fetch_prepared_query_owned(query).await;
+        }
         self.fetch_prepared_all(&query).await
     }
 
