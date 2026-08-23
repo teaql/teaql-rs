@@ -16,25 +16,10 @@ use crate::{CompiledQuery, SqlCompileError, SqlDialect};
 pub trait SqlTransport: Send + Sync {
     type Error: std::error::Error + Send + Sync + 'static;
 
-    fn fetch_all_sql(
-        &self,
-        query: &CompiledQuery,
-    ) -> impl std::future::Future<Output = Result<Vec<Record>, Self::Error>> + Send;
     fn fetch_all_compact_sql(
         &self,
         query: &CompiledQuery,
-    ) -> impl std::future::Future<Output = Result<Vec<CompactRow>, Self::Error>> + Send {
-        async move {
-            self.fetch_all_sql(query).await.map(|rows| {
-                rows.into_iter()
-                    .map(|record| {
-                        let (columns, values): (Vec<_>, Vec<_>) = record.into_iter().unzip();
-                        CompactRow::new(columns.into(), values)
-                    })
-                    .collect()
-            })
-        }
-    }
+    ) -> impl std::future::Future<Output = Result<Vec<CompactRow>, Self::Error>> + Send;
     fn execute_sql(
         &self,
         query: &CompiledQuery,
@@ -516,7 +501,10 @@ mod tests {
     impl SqlTransport for EmptyTransport {
         type Error = std::io::Error;
 
-        async fn fetch_all_sql(&self, _query: &CompiledQuery) -> Result<Vec<Record>, Self::Error> {
+        async fn fetch_all_compact_sql(
+            &self,
+            _query: &CompiledQuery,
+        ) -> Result<Vec<CompactRow>, Self::Error> {
             Ok(Vec::new())
         }
 
@@ -1113,7 +1101,7 @@ impl<
                         .map_err(SqlExecutorError::Compile)?;
                     let mut rows = self
                         .transport
-                        .fetch_all_sql(&compiled_readback)
+                        .fetch_all_compact_sql(&compiled_readback)
                         .await
                         .map_err(SqlExecutorError::Transport)?;
                     if rows.len() != 1 {
@@ -1121,7 +1109,7 @@ impl<
                             "persisted {entity_name} record could not be read back"
                         )));
                     }
-                    rows.pop()
+                    rows.pop().map(CompactRow::into_record)
                 } else {
                     None
                 }

@@ -9,8 +9,8 @@ use rusqlite::types::{Value as SqliteValue, ValueRef};
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use rust_decimal::Decimal;
 use teaql_core::{
-    CompactRow, DataType, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, Record,
-    SelectQuery, UpdateCommand, Value,
+    CompactRow, DataType, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, SelectQuery,
+    UpdateCommand, Value,
 };
 use teaql_runtime::{
     GraphNode, InternalIdGenerator, RawAuditEvent, RuntimeError, SchemaProvider, UserContext,
@@ -204,19 +204,6 @@ impl SqliteMutationExecutor {
         Ok(rows as u64)
     }
 
-    pub fn fetch_all(&self, query: &CompiledQuery) -> Result<Vec<Record>, MutationExecutorError> {
-        let params = bind_values(&query.params)?;
-        let connection = self.lock()?;
-        let mut statement = connection.prepare(&query.sql_with_comment())?;
-        let columns = statement_columns(&statement);
-        let mut rows = statement.query(params_from_iter(params.iter()))?;
-        let mut records = Vec::new();
-        while let Some(row) = rows.next()? {
-            records.push(decode_sqlite_row(row, &columns)?);
-        }
-        Ok(records)
-    }
-
     pub fn fetch_all_compact(
         &self,
         query: &CompiledQuery,
@@ -338,10 +325,6 @@ impl teaql_data_service::DataServiceExecutor for SqliteMutationExecutor {
 impl SqlTransport for SqliteMutationExecutor {
     type Error = MutationExecutorError;
 
-    async fn fetch_all_sql(&self, query: &CompiledQuery) -> Result<Vec<Record>, Self::Error> {
-        SqliteMutationExecutor::fetch_all(self, query)
-    }
-
     async fn fetch_all_compact_sql(
         &self,
         query: &CompiledQuery,
@@ -442,7 +425,7 @@ fn initial_graph_exists_sqlite(
             .filter(Expr::eq("id", id.clone()))
             .limit(1),
     )?;
-    Ok(!executor.fetch_all(&query)?.is_empty())
+    Ok(!executor.fetch_all_compact(&query)?.is_empty())
 }
 
 fn compile_initial_graph_insert(
@@ -823,18 +806,6 @@ fn statement_columns(statement: &rusqlite::Statement<'_>) -> Vec<ColumnInfo> {
         .collect()
 }
 
-fn decode_sqlite_row(
-    row: &Row<'_>,
-    columns: &[ColumnInfo],
-) -> Result<Record, MutationExecutorError> {
-    let values = decode_sqlite_values(row, columns)?;
-    Ok(columns
-        .iter()
-        .map(|column| column.name.clone())
-        .zip(values)
-        .collect())
-}
-
 fn decode_sqlite_values(
     row: &Row<'_>,
     columns: &[ColumnInfo],
@@ -934,7 +905,7 @@ fn column_decl_type(column: &ColumnInfo) -> Option<String> {
 mod tests {
     use super::*;
     use futures_util::StreamExt;
-    use teaql_core::{DeleteCommand, RecoverCommand};
+    use teaql_core::{DeleteCommand, Record, RecoverCommand};
     use teaql_macros::TeaqlEntity;
     use teaql_runtime::InMemoryMetadataStore;
 
@@ -1179,7 +1150,7 @@ mod tests {
                     .order_asc("id"),
             )
             .unwrap();
-        let rows = executor.fetch_all(&select).unwrap();
+        let rows = executor.fetch_all_compact(&select).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].get("id"), Some(&Value::I64(1)));
         assert_eq!(rows[0].get("version"), Some(&Value::I64(1)));
@@ -1218,7 +1189,7 @@ mod tests {
                 &SelectQuery::new("Order").filter(Expr::eq("id", 1_u64)),
             )
             .unwrap();
-        let rows = executor.fetch_all(&select).unwrap();
+        let rows = executor.fetch_all_compact(&select).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(
             rows[0].get("name"),
@@ -1256,7 +1227,7 @@ mod tests {
                 &SelectQuery::new("Order").filter(Expr::eq("id", 1001_u64)),
             )
             .unwrap();
-        let rows = executor.fetch_all(&select).unwrap();
+        let rows = executor.fetch_all_compact(&select).unwrap();
         assert_eq!(
             rows[0].get("name"),
             Some(&Value::Text("crimson".to_owned()))
@@ -1295,7 +1266,7 @@ mod tests {
             .limit(3)
             .partition_by("order_id");
         let compiled = SqliteDialect.compile_select(&entity, &query).unwrap();
-        let rows = executor.fetch_all(&compiled).unwrap();
+        let rows = executor.fetch_all_compact(&compiled).unwrap();
 
         assert_eq!(rows.len(), 6);
         for order_id in [11_i64, 12_i64] {
@@ -1343,14 +1314,14 @@ mod tests {
         let select = SqliteDialect
             .compile_select(&entity, &SelectQuery::new("FeatureFlag").order_asc("id"))
             .unwrap();
-        let rows = executor.fetch_all(&select).unwrap();
+        let rows = executor.fetch_all_compact(&select).unwrap();
         assert_eq!(rows[0].get("enabled"), Some(&Value::Bool(false)));
         assert_eq!(rows[0].get("optional_enabled"), Some(&Value::Bool(true)));
         assert_eq!(rows[1].get("enabled"), Some(&Value::Bool(true)));
         assert_eq!(rows[1].get("optional_enabled"), Some(&Value::Bool(false)));
 
-        let first = <FeatureFlagRow as teaql_core::Entity>::from_record(rows[0].clone()).unwrap();
-        let second = <FeatureFlagRow as teaql_core::Entity>::from_record(rows[1].clone()).unwrap();
+        let first = <FeatureFlagRow as teaql_core::Entity>::from_compact_row(rows[0].clone()).unwrap();
+        let second = <FeatureFlagRow as teaql_core::Entity>::from_compact_row(rows[1].clone()).unwrap();
         assert!(!first.enabled);
         assert_eq!(first.optional_enabled, Some(true));
         assert!(second.enabled);
@@ -1398,17 +1369,17 @@ mod tests {
         let select = SqliteDialect
             .compile_select(&entity, &SelectQuery::new("FeatureFlag").order_asc("id"))
             .unwrap();
-        let rows = executor.fetch_all(&select).unwrap();
+        let rows = executor.fetch_all_compact(&select).unwrap();
         assert_eq!(rows[0].get("version"), Some(&Value::I64(1)));
         assert_eq!(rows[0].get("enabled"), Some(&Value::I64(1)));
         assert_eq!(rows[0].get("optional_enabled"), Some(&Value::I64(0)));
 
-        let decoded = <FeatureFlagRow as teaql_core::Entity>::from_record(rows[0].clone()).unwrap();
+        let decoded = <FeatureFlagRow as teaql_core::Entity>::from_compact_row(rows[0].clone()).unwrap();
         assert!(decoded.enabled);
         assert_eq!(decoded.optional_enabled, Some(false));
         assert_eq!(rows[1].get("enabled"), Some(&Value::I64(2)));
         let error =
-            <FeatureFlagRow as teaql_core::Entity>::from_record(rows[1].clone()).unwrap_err();
+            <FeatureFlagRow as teaql_core::Entity>::from_compact_row(rows[1].clone()).unwrap_err();
         assert!(error.message.contains("invalid field enabled"));
 
         for (value, expected) in [
@@ -1466,7 +1437,7 @@ mod tests {
             .unwrap();
 
         let rows = executor
-            .fetch_all(&CompiledQuery {
+            .fetch_all_compact(&CompiledQuery {
                 sql: "SELECT text_payload, json_payload FROM payloads".to_owned(),
                 params: Vec::new(),
                 comment: None,

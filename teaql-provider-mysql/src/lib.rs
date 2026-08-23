@@ -6,8 +6,8 @@ use rust_decimal::Decimal;
 use std::str::FromStr;
 use std::sync::Arc;
 use teaql_core::{
-    CompactRow, DataType, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, Record,
-    SelectQuery, UpdateCommand, Value,
+    CompactRow, DataType, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, SelectQuery,
+    UpdateCommand, Value,
 };
 use teaql_runtime::{GraphNode, InternalIdGenerator, RuntimeError, SchemaProvider, UserContext};
 use teaql_sql::{
@@ -225,28 +225,6 @@ impl MysqlMutationExecutor {
         Ok(conn.affected_rows())
     }
 
-    pub async fn fetch_all(
-        &self,
-        query: &CompiledQuery,
-    ) -> Result<Vec<Record>, MutationExecutorError> {
-        let mut params = Vec::new();
-        for value in &query.params {
-            params.push(bind_mysql(value)?);
-        }
-        let mut conn = self.pool.get_conn().await?;
-        let rows: Vec<mysql_async::Row> = conn
-            .exec(
-                query.sql_with_comment(),
-                mysql_async::Params::Positional(params),
-            )
-            .await?;
-        let mut records = Vec::new();
-        for row in rows {
-            records.push(decode_mysql_row(row)?);
-        }
-        Ok(records)
-    }
-
     pub async fn fetch_all_compact(
         &self,
         query: &CompiledQuery,
@@ -305,10 +283,6 @@ impl MysqlMutationExecutor {
 impl teaql_sql::SqlTransport for MysqlMutationExecutor {
     type Error = MutationExecutorError;
 
-    async fn fetch_all_sql(&self, query: &CompiledQuery) -> Result<Vec<Record>, Self::Error> {
-        self.fetch_all(query).await
-    }
-
     async fn fetch_all_compact_sql(
         &self,
         query: &CompiledQuery,
@@ -362,10 +336,6 @@ impl teaql_sql::SqlTransaction for MysqlTransactionExecutor {
 
 impl teaql_sql::SqlTransport for MysqlTransactionExecutor {
     type Error = MutationExecutorError;
-
-    async fn fetch_all_sql(&self, query: &CompiledQuery) -> Result<Vec<Record>, Self::Error> {
-        self.fetch_all(query).await
-    }
 
     async fn fetch_all_compact_sql(
         &self,
@@ -443,7 +413,7 @@ async fn initial_graph_exists_mysql(
             .filter(Expr::eq("id", id.clone()))
             .limit(1),
     )?;
-    Ok(!executor.fetch_all(&query).await?.is_empty())
+    Ok(!executor.fetch_all_compact(&query).await?.is_empty())
 }
 
 #[derive(Clone)]
@@ -475,31 +445,6 @@ impl MysqlTransactionExecutor {
         )
         .await?;
         Ok(conn.affected_rows())
-    }
-
-    pub async fn fetch_all(
-        &self,
-        query: &CompiledQuery,
-    ) -> Result<Vec<Record>, MutationExecutorError> {
-        let mut params = Vec::new();
-        for value in &query.params {
-            params.push(bind_mysql(value)?);
-        }
-        let mut lock = self.conn.lock().await;
-        let conn = lock
-            .as_mut()
-            .ok_or_else(|| MutationExecutorError::Bind("mysql transaction is closed".to_owned()))?;
-        let rows: Vec<mysql_async::Row> = conn
-            .exec(
-                query.sql_with_comment(),
-                mysql_async::Params::Positional(params),
-            )
-            .await?;
-        let mut records = Vec::new();
-        for row in rows {
-            records.push(decode_mysql_row(row)?);
-        }
-        Ok(records)
     }
 
     pub async fn fetch_all_compact(
@@ -660,7 +605,7 @@ mod streaming_tests {
                 .unwrap();
         }
         let rows = executor
-            .fetch_all_sql(&CompiledQuery {
+            .fetch_all_compact_sql(&CompiledQuery {
                 sql: "SELECT required_flag, optional_flag FROM teaql_boolean_runtime_fixture ORDER BY id".to_owned(),
                 params: vec![],
                 comment: None,
@@ -727,7 +672,7 @@ mod streaming_tests {
             .await
             .unwrap();
         let rows = executor
-            .fetch_all_sql(&CompiledQuery {
+            .fetch_all_compact_sql(&CompiledQuery {
                 sql: "SELECT d, t FROM teaql_temporal_runtime_fixture ORDER BY id".to_owned(),
                 params: vec![],
                 comment: None,
@@ -962,15 +907,6 @@ fn bind_mysql(value: &Value) -> Result<mysql_async::Value, MutationExecutorError
         Value::List(_) => Err(MutationExecutorError::UnsupportedValue("list")),
         Value::TypedNull(_) => Ok(mysql_async::Value::NULL),
     }
-}
-
-fn decode_mysql_row(row: mysql_async::Row) -> Result<Record, MutationExecutorError> {
-    let names = row
-        .columns_ref()
-        .iter()
-        .map(|column| column.name_str().into_owned())
-        .collect::<Vec<_>>();
-    Ok(names.into_iter().zip(decode_mysql_values(row)?).collect())
 }
 
 fn decode_mysql_compact_rows(

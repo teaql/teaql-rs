@@ -1,5 +1,4 @@
 #![allow(warnings)]
-use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -8,8 +7,8 @@ use deadpool_postgres::Pool;
 use rust_decimal::Decimal;
 use std::sync::Arc;
 use teaql_core::{
-    BinaryOp, DataType, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, Record,
-    SelectQuery, UpdateCommand, Value,
+    BinaryOp, DataType, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, SelectQuery,
+    UpdateCommand, Value,
 };
 use teaql_runtime::{GraphNode, InternalIdGenerator, RuntimeError, SchemaProvider, UserContext};
 use teaql_sql::{
@@ -227,10 +226,6 @@ pub struct PgMutationExecutor {
 impl SqlTransport for PgMutationExecutor {
     type Error = MutationExecutorError;
 
-    async fn fetch_all_sql(&self, query: &CompiledQuery) -> Result<Vec<Record>, Self::Error> {
-        self.fetch_all(query).await
-    }
-
     async fn fetch_all_compact_sql(
         &self,
         query: &CompiledQuery,
@@ -399,24 +394,6 @@ impl PgMutationExecutor {
         Ok(result)
     }
 
-    pub async fn fetch_all(
-        &self,
-        query: &CompiledQuery,
-    ) -> Result<Vec<Record>, MutationExecutorError> {
-        let mut args = PgArgs { values: Vec::new() };
-        for value in &query.params {
-            bind_pg(&mut args, value)?;
-        }
-        let client = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
-        let statement = client.prepare_cached(&query.sql).await?;
-        let rows = client.query(&statement, &args.as_refs()).await?;
-        rows.iter().map(decode_pg_row).collect()
-    }
-
     async fn table_exists(&self, table_name: &str) -> Result<bool, MutationExecutorError> {
         let client = self
             .pool
@@ -516,7 +493,7 @@ async fn initial_graph_exists_postgres(
             .filter(Expr::eq("id", id.clone()))
             .limit(1),
     )?;
-    Ok(!executor.fetch_all(&query).await?.is_empty())
+    Ok(!executor.fetch_all_compact_sql(&query).await?.is_empty())
 }
 
 fn compile_initial_graph_insert(
@@ -655,7 +632,7 @@ mod streaming_tests {
                 .unwrap();
         }
         let rows = executor
-            .fetch_all_sql(&CompiledQuery {
+            .fetch_all_compact_sql(&CompiledQuery {
                 sql: "SELECT required_flag, optional_flag FROM teaql_boolean_runtime_fixture ORDER BY id".to_owned(),
                 params: vec![],
                 comment: None,
@@ -721,7 +698,7 @@ mod streaming_tests {
             .await
             .unwrap();
         let rows = executor
-            .fetch_all_sql(&CompiledQuery {
+            .fetch_all_compact_sql(&CompiledQuery {
                 sql: "SELECT d, t, t_local FROM teaql_temporal_runtime_fixture ORDER BY id"
                     .to_owned(),
                 params: vec![],
@@ -1183,16 +1160,6 @@ fn bind_pg_list(args: &mut PgArgs, values: &[Value]) -> Result<(), MutationExecu
         Value::TypedNull(_) => return Err(MutationExecutorError::UnsupportedValue("null list")),
     }
     Ok(())
-}
-
-fn decode_pg_row(row: &tokio_postgres::Row) -> Result<Record, MutationExecutorError> {
-    let values = decode_pg_values(row)?;
-    Ok(row
-        .columns()
-        .iter()
-        .map(|column| column.name().to_owned())
-        .zip(values)
-        .collect())
 }
 
 fn decode_pg_values(row: &tokio_postgres::Row) -> Result<Vec<Value>, MutationExecutorError> {
