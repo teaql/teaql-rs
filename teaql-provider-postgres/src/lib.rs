@@ -690,7 +690,8 @@ mod streaming_tests {
             .unwrap();
         let rows = executor
             .fetch_all_sql(&CompiledQuery {
-                sql: "SELECT d, t, t_local FROM teaql_temporal_runtime_fixture ORDER BY id".to_owned(),
+                sql: "SELECT d, t, t_local FROM teaql_temporal_runtime_fixture ORDER BY id"
+                    .to_owned(),
                 params: vec![],
                 comment: None,
             })
@@ -784,22 +785,38 @@ impl PgIdSpaceGenerator {
             .map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
         let select_sql = format!("SELECT current_level FROM {table} WHERE type_name = $1");
         let insert_sql = format!("INSERT INTO {table}(type_name, current_level) VALUES ($1, 1)");
-        let update_sql = format!("UPDATE {table} SET current_level = $1 WHERE type_name = $2 AND current_level = $3");
+        let update_sql = format!(
+            "UPDATE {table} SET current_level = $1 WHERE type_name = $2 AND current_level = $3"
+        );
         for _ in 1..=100 {
-            let current = client.query_opt(&select_sql, &[&entity]).await?
-                .map(|row| row.try_get::<_, i64>(0)).transpose()?;
+            let current = client
+                .query_opt(&select_sql, &[&entity])
+                .await?
+                .map(|row| row.try_get::<_, i64>(0))
+                .transpose()?;
             if let Some(current) = current {
-                let next = current.checked_add(1).ok_or_else(|| MutationExecutorError::Bind(
-                    format!("ID space overflow for {entity}")))?;
-                if client.execute(&update_sql, &[&next, &entity, &current]).await? == 1 {
-                    return u64::try_from(next).map_err(|_| MutationExecutorError::Bind(
-                        format!("generated id {next} cannot be represented as u64")));
+                let next = current.checked_add(1).ok_or_else(|| {
+                    MutationExecutorError::Bind(format!("ID space overflow for {entity}"))
+                })?;
+                if client
+                    .execute(&update_sql, &[&next, &entity, &current])
+                    .await?
+                    == 1
+                {
+                    return u64::try_from(next).map_err(|_| {
+                        MutationExecutorError::Bind(format!(
+                            "generated id {next} cannot be represented as u64"
+                        ))
+                    });
                 }
             } else {
                 match client.execute(&insert_sql, &[&entity]).await {
                     Ok(1) => return Ok(1),
-                    Ok(changed) => return Err(MutationExecutorError::Bind(
-                        format!("ID space insert for {entity} changed {changed} rows"))),
+                    Ok(changed) => {
+                        return Err(MutationExecutorError::Bind(format!(
+                            "ID space insert for {entity} changed {changed} rows"
+                        )));
+                    }
                     Err(error) => {
                         if client.query_opt(&select_sql, &[&entity]).await?.is_none() {
                             return Err(error.into());
@@ -809,33 +826,63 @@ impl PgIdSpaceGenerator {
             }
         }
         Err(MutationExecutorError::Bind(format!(
-            "Unable to allocate ID for {entity} after 100 optimistic-lock attempts")))
+            "Unable to allocate ID for {entity} after 100 optimistic-lock attempts"
+        )))
     }
 
-    pub async fn ensure_floor(&self, entity: &str, floor: u64) -> Result<(), MutationExecutorError> {
+    pub async fn ensure_floor(
+        &self,
+        entity: &str,
+        floor: u64,
+    ) -> Result<(), MutationExecutorError> {
         self.ensure_table().await?;
-        let floor = i64::try_from(floor).map_err(|_| MutationExecutorError::Bind(
-            format!("ID space floor {floor} for {entity} exceeds BIGINT")))?;
+        let floor = i64::try_from(floor).map_err(|_| {
+            MutationExecutorError::Bind(format!(
+                "ID space floor {floor} for {entity} exceeds BIGINT"
+            ))
+        })?;
         let table = quote_ident(&self.table_name);
-        let client = self.pool.get().await.map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
+        let client = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
         let select = format!("SELECT current_level FROM {table} WHERE type_name = $1");
         let insert = format!("INSERT INTO {table}(type_name, current_level) VALUES ($1, $2)");
-        let update = format!("UPDATE {table} SET current_level = $1 WHERE type_name = $2 AND current_level = $3");
+        let update = format!(
+            "UPDATE {table} SET current_level = $1 WHERE type_name = $2 AND current_level = $3"
+        );
         for _ in 1..=100 {
-            let current = client.query_opt(&select, &[&entity]).await?
-                .map(|row| row.try_get::<_, i64>(0)).transpose()?;
+            let current = client
+                .query_opt(&select, &[&entity])
+                .await?
+                .map(|row| row.try_get::<_, i64>(0))
+                .transpose()?;
             match current {
                 Some(current) if current >= floor => return Ok(()),
-                Some(current) => if client.execute(&update, &[&floor, &entity, &current]).await? == 1 { return Ok(()); },
+                Some(current) => {
+                    if client
+                        .execute(&update, &[&floor, &entity, &current])
+                        .await?
+                        == 1
+                    {
+                        return Ok(());
+                    }
+                }
                 None => match client.execute(&insert, &[&entity, &floor]).await {
                     Ok(1) => return Ok(()),
                     Ok(_) => {}
-                    Err(error) => if client.query_opt(&select, &[&entity]).await?.is_none() { return Err(error.into()); },
+                    Err(error) => {
+                        if client.query_opt(&select, &[&entity]).await?.is_none() {
+                            return Err(error.into());
+                        }
+                    }
                 },
             }
         }
         Err(MutationExecutorError::Bind(format!(
-            "Unable to synchronize ID space floor for {entity} after 100 optimistic-lock attempts")))
+            "Unable to synchronize ID space floor for {entity} after 100 optimistic-lock attempts"
+        )))
     }
 }
 
@@ -1110,73 +1157,73 @@ fn decode_pg_row(row: &tokio_postgres::Row) -> Result<Record, MutationExecutorEr
     let mut record = BTreeMap::new();
     for (index, column) in row.columns().iter().enumerate() {
         let name = column.name().to_owned();
-        let type_name = column.type_().name().to_ascii_uppercase();
+        let type_name = column.type_().name();
 
-        let value = match type_name.as_str() {
-            "BOOL" | "BOOLEAN" => {
+        let value = match type_name {
+            "bool" | "boolean" => {
                 let v: Option<bool> = row.try_get(index)?;
                 match v {
                     Some(v) => Value::Bool(v),
                     None => Value::Null,
                 }
             }
-            "INT2" => {
+            "int2" => {
                 let v: Option<i16> = row.try_get(index)?;
                 match v {
                     Some(v) => Value::I64(v as i64),
                     None => Value::Null,
                 }
             }
-            "INT4" => {
+            "int4" => {
                 let v: Option<i32> = row.try_get(index)?;
                 match v {
                     Some(v) => Value::I64(v as i64),
                     None => Value::Null,
                 }
             }
-            "INT8" => {
+            "int8" => {
                 let v: Option<i64> = row.try_get(index)?;
                 match v {
                     Some(v) => Value::I64(v),
                     None => Value::Null,
                 }
             }
-            "FLOAT4" => {
+            "float4" => {
                 let v: Option<f32> = row.try_get(index)?;
                 match v {
                     Some(v) => Value::F64(v as f64),
                     None => Value::Null,
                 }
             }
-            "FLOAT8" => {
+            "float8" => {
                 let v: Option<f64> = row.try_get(index)?;
                 match v {
                     Some(v) => Value::F64(v),
                     None => Value::Null,
                 }
             }
-            "NUMERIC" => {
+            "numeric" => {
                 let v: Option<Decimal> = row.try_get(index)?;
                 match v {
                     Some(v) => Value::Decimal(v),
                     None => Value::Null,
                 }
             }
-            "JSON" | "JSONB" => {
+            "json" | "jsonb" => {
                 let v: Option<serde_json::Value> = row.try_get(index)?;
                 match v {
                     Some(j) => Value::Json(j.into()),
                     None => Value::Null,
                 }
             }
-            "DATE" => {
+            "date" => {
                 let v: Option<NaiveDate> = row.try_get(index)?;
                 match v {
                     Some(v) => Value::Date(v),
                     None => Value::Null,
                 }
             }
-            "TIMESTAMP" => {
+            "timestamp" => {
                 let v: Option<NaiveDateTime> = row.try_get(index)?;
                 match v {
                     Some(v) => Value::Timestamp(teaql_core::time::Timestamp(
@@ -1185,14 +1232,14 @@ fn decode_pg_row(row: &tokio_postgres::Row) -> Result<Record, MutationExecutorEr
                     None => Value::Null,
                 }
             }
-            "TIMESTAMPTZ" => {
+            "timestamptz" => {
                 let v: Option<DateTime<Utc>> = row.try_get(index)?;
                 match v {
                     Some(v) => Value::Timestamp(teaql_core::time::Timestamp(v.timestamp_millis())),
                     None => Value::Null,
                 }
             }
-            "TEXT" | "VARCHAR" | "BPCHAR" | "NAME" | "UUID" => {
+            "text" | "varchar" | "bpchar" | "name" | "uuid" => {
                 let v: Option<String> = row.try_get(index)?;
                 match v {
                     Some(v) => Value::Text(v),
