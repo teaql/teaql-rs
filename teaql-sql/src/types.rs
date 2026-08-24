@@ -18,8 +18,16 @@ impl CompiledQuery {
     pub fn sql_with_comment(&self) -> String {
         match &self.comment {
             Some(comment) if !comment.is_empty() => {
-                let escaped = comment.replace("*/", "* /");
-                format!("/* {escaped} */ {}", self.sql)
+                let mut sql = String::with_capacity(comment.len() + self.sql.len() + 7);
+                sql.push_str("/* ");
+                if comment.contains("*/") {
+                    sql.push_str(&comment.replace("*/", "* /"));
+                } else {
+                    sql.push_str(comment);
+                }
+                sql.push_str(" */ ");
+                sql.push_str(&self.sql);
+                sql
             }
             _ => self.sql.clone(),
         }
