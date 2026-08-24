@@ -379,6 +379,18 @@ where
             .map_err(DataServiceError::Runtime)?
             .prepare_for_list()
             .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
+        // Relation probes build a fresh, runtime-owned query for every foreign key.
+        // Keep that ownership all the way into the provider when no runtime
+        // enhancement needs to retain the query. Going through
+        // `fetch_prepared_all(&query)` cloned the complete SelectQuery (including
+        // projections and expression trees) twice for every probe.
+        if query.continuous_page_fetch.is_none()
+            && query.object_group_bys.is_empty()
+            && query.child_enhancements.is_empty()
+            && query.relations.is_empty()
+        {
+            return self.fetch_prepared_query_owned(query).await;
+        }
         self.fetch_prepared_all(&query).await
     }
 
