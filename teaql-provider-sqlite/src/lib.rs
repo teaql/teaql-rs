@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime};
+use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, TimeZone};
 use rusqlite::types::{Value as SqliteValue, ValueRef};
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use rust_decimal::Decimal;
@@ -139,9 +139,8 @@ pub struct SqliteMutationExecutor {
 impl SqliteMutationExecutor {
     pub fn new(connection: Arc<Mutex<Connection>>) -> Self {
         if let Ok(connection) = connection.lock() {
-            connection.set_prepared_statement_cache_capacity(
-                DEFAULT_PREPARED_STATEMENT_CACHE_CAPACITY,
-            );
+            connection
+                .set_prepared_statement_cache_capacity(DEFAULT_PREPARED_STATEMENT_CACHE_CAPACITY);
         }
         Self {
             connection,
@@ -670,9 +669,7 @@ impl SqliteIdSpaceGenerator {
         self.ensure_table()?;
         let table = quote_ident(&self.table_name);
         let select_sql = format!("SELECT current_level FROM {table} WHERE type_name = ?");
-        let insert_sql = format!(
-            "INSERT INTO {table} (type_name, current_level) VALUES (?, 1)"
-        );
+        let insert_sql = format!("INSERT INTO {table} (type_name, current_level) VALUES (?, 1)");
         let update_sql = format!(
             "UPDATE {table} SET current_level = ? WHERE type_name = ? AND current_level = ?"
         );
@@ -700,9 +697,11 @@ impl SqliteIdSpaceGenerator {
                     Ok(changed) => {
                         return Err(MutationExecutorError::Bind(format!(
                             "ID space insert for {entity} changed {changed} rows"
-                        )))
+                        )));
                     }
-                    Err(error) if error.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation) => {}
+                    Err(error)
+                        if error.sqlite_error_code()
+                            == Some(rusqlite::ErrorCode::ConstraintViolation) => {}
                     Err(error) => return Err(error.into()),
                 }
             }
@@ -875,7 +874,9 @@ fn statement_columns(statement: &rusqlite::Statement<'_>) -> Vec<ColumnInfo> {
 }
 
 fn sqlite_decode_kind(decl_type: Option<&str>) -> SqliteDecodeKind {
-    let Some(decl_type) = decl_type else { return SqliteDecodeKind::Infer };
+    let Some(decl_type) = decl_type else {
+        return SqliteDecodeKind::Infer;
+    };
     let base = decl_type.split('(').next().unwrap_or(decl_type).trim();
     if base.eq_ignore_ascii_case("BOOLEAN") || base.eq_ignore_ascii_case("BOOL") {
         SqliteDecodeKind::Bool
@@ -887,7 +888,10 @@ fn sqlite_decode_kind(decl_type: Option<&str>) -> SqliteDecodeKind {
         SqliteDecodeKind::Date
     } else if base.eq_ignore_ascii_case("TIMESTAMP") || base.eq_ignore_ascii_case("DATETIME") {
         SqliteDecodeKind::Timestamp
-    } else if ["TEXT", "VARCHAR", "CHAR", "CLOB"].iter().any(|v| base.eq_ignore_ascii_case(v)) {
+    } else if ["TEXT", "VARCHAR", "CHAR", "CLOB"]
+        .iter()
+        .any(|v| base.eq_ignore_ascii_case(v))
+    {
         SqliteDecodeKind::Text
     } else {
         SqliteDecodeKind::Infer
@@ -938,9 +942,7 @@ fn decode_sqlite_text(value: &[u8], column: &ColumnInfo) -> Result<Value, Mutati
             .map(Value::Date)
             .map_err(|err| MutationExecutorError::Bind(format!("invalid sqlite date: {err}"))),
         SqliteDecodeKind::Timestamp => parse_sqlite_timestamp(value),
-        SqliteDecodeKind::Text | SqliteDecodeKind::Bool => {
-            Ok(Value::Text(value.to_owned()))
-        }
+        SqliteDecodeKind::Text | SqliteDecodeKind::Bool => Ok(Value::Text(value.to_owned())),
         SqliteDecodeKind::Infer => infer_sqlite_text(value),
     }
 }
@@ -963,6 +965,9 @@ fn infer_sqlite_text(value: &str) -> Result<Value, MutationExecutorError> {
 }
 
 fn parse_sqlite_timestamp(value: &str) -> Result<Value, MutationExecutorError> {
+    if let Some(timestamp) = parse_fixed_sqlite_timestamp(value) {
+        return Ok(Value::Timestamp(teaql_core::time::Timestamp(timestamp)));
+    }
     if let Ok(timestamp) = DateTime::parse_from_rfc3339(value) {
         return Ok(Value::Timestamp(teaql_core::time::Timestamp(
             timestamp.timestamp_millis(),
@@ -988,6 +993,94 @@ fn parse_sqlite_timestamp(value: &str) -> Result<Value, MutationExecutorError> {
             ))
         })
         .map_err(|err| MutationExecutorError::Bind(format!("invalid sqlite timestamp: {err}")))
+}
+
+fn parse_fixed_sqlite_timestamp(value: &str) -> Option<i64> {
+    let bytes = value.as_bytes();
+    if bytes.len() < 19
+        || bytes.get(4) != Some(&b'-')
+        || bytes.get(7) != Some(&b'-')
+        || !matches!(bytes.get(10), Some(b' ') | Some(b'T'))
+        || bytes.get(13) != Some(&b':')
+        || bytes.get(16) != Some(&b':')
+    {
+        return None;
+    }
+    let digits = |start: usize, len: usize| -> Option<u32> {
+        bytes
+            .get(start..start + len)?
+            .iter()
+            .try_fold(0_u32, |value, byte| {
+                byte.is_ascii_digit()
+                    .then_some(value * 10 + u32::from(*byte - b'0'))
+            })
+    };
+    let date = NaiveDate::from_ymd_opt(
+        i32::try_from(digits(0, 4)?).ok()?,
+        digits(5, 2)?,
+        digits(8, 2)?,
+    )?;
+    let hour = digits(11, 2)?;
+    let minute = digits(14, 2)?;
+    let second = digits(17, 2)?;
+    let mut cursor = 19;
+    let mut nanos = 0_u32;
+    if bytes.get(cursor) == Some(&b'.') {
+        cursor += 1;
+        let fraction_start = cursor;
+        while bytes.get(cursor).is_some_and(u8::is_ascii_digit) {
+            if cursor - fraction_start < 9 {
+                nanos = nanos * 10 + u32::from(bytes[cursor] - b'0');
+            }
+            cursor += 1;
+        }
+        let kept = (cursor - fraction_start).min(9);
+        if kept == 0 {
+            return None;
+        }
+        nanos *= 10_u32.pow(u32::try_from(9 - kept).ok()?);
+    }
+    let datetime = date.and_hms_nano_opt(hour, minute, second, nanos)?;
+    let offset_seconds = match bytes.get(cursor..) {
+        Some([]) | Some([b'Z']) | Some([b'z']) => 0,
+        Some([sign @ (b'+' | b'-'), hour_1, hour_2]) => {
+            signed_offset(*sign, [*hour_1, *hour_2], [b'0', b'0'])?
+        }
+        Some([sign @ (b'+' | b'-'), hour_1, hour_2, minute_1, minute_2]) => {
+            signed_offset(*sign, [*hour_1, *hour_2], [*minute_1, *minute_2])?
+        }
+        Some(
+            [
+                sign @ (b'+' | b'-'),
+                hour_1,
+                hour_2,
+                b':',
+                minute_1,
+                minute_2,
+            ],
+        ) => signed_offset(*sign, [*hour_1, *hour_2], [*minute_1, *minute_2])?,
+        _ => return None,
+    };
+    FixedOffset::east_opt(offset_seconds)?
+        .from_local_datetime(&datetime)
+        .single()
+        .map(|timestamp| timestamp.timestamp_millis())
+}
+
+fn signed_offset(sign: u8, hours: [u8; 2], minutes: [u8; 2]) -> Option<i32> {
+    let pair = |digits: [u8; 2]| {
+        digits
+            .iter()
+            .all(u8::is_ascii_digit)
+            .then_some(i32::from(digits[0] - b'0') * 10 + i32::from(digits[1] - b'0'))
+    };
+    let hours = pair(hours)?;
+    let minutes = pair(minutes)?;
+    if hours > 23 || minutes > 59 {
+        return None;
+    }
+    let seconds = hours * 3600 + minutes * 60;
+    Some(if sign == b'-' { -seconds } else { seconds })
 }
 
 #[cfg(test)]
@@ -1434,8 +1527,10 @@ mod tests {
         assert_eq!(rows[1].get("enabled"), Some(&Value::Bool(true)));
         assert_eq!(rows[1].get("optional_enabled"), Some(&Value::Bool(false)));
 
-        let first = <FeatureFlagRow as teaql_core::Entity>::from_compact_row(rows[0].clone()).unwrap();
-        let second = <FeatureFlagRow as teaql_core::Entity>::from_compact_row(rows[1].clone()).unwrap();
+        let first =
+            <FeatureFlagRow as teaql_core::Entity>::from_compact_row(rows[0].clone()).unwrap();
+        let second =
+            <FeatureFlagRow as teaql_core::Entity>::from_compact_row(rows[1].clone()).unwrap();
         assert!(!first.enabled);
         assert_eq!(first.optional_enabled, Some(true));
         assert!(second.enabled);
@@ -1488,7 +1583,8 @@ mod tests {
         assert_eq!(rows[0].get("enabled"), Some(&Value::I64(1)));
         assert_eq!(rows[0].get("optional_enabled"), Some(&Value::I64(0)));
 
-        let decoded = <FeatureFlagRow as teaql_core::Entity>::from_compact_row(rows[0].clone()).unwrap();
+        let decoded =
+            <FeatureFlagRow as teaql_core::Entity>::from_compact_row(rows[0].clone()).unwrap();
         assert!(decoded.enabled);
         assert_eq!(decoded.optional_enabled, Some(false));
         assert_eq!(rows[1].get("enabled"), Some(&Value::I64(2)));
@@ -1518,10 +1614,7 @@ mod tests {
             assert!(error.message.contains("invalid field enabled"));
         }
         let error = <FeatureFlagRow as teaql_core::Entity>::from_compact_row(
-            teaql_core::CompactRow::from_map(feature_flag_record(
-                Value::Bool(true),
-                Value::U64(2),
-            )),
+            teaql_core::CompactRow::from_map(feature_flag_record(Value::Bool(true), Value::U64(2))),
         )
         .unwrap_err();
         assert!(error.message.contains("invalid field optional_enabled"));
@@ -1771,6 +1864,21 @@ mod tests {
         let ts5 = parse_sqlite_timestamp("2026-08-23 10:43:16.152546").unwrap();
         assert!(matches!(ts5, Value::Timestamp(_)));
 
+        assert_eq!(
+            parse_fixed_sqlite_timestamp("2024-01-01 00:00:00+00"),
+            Some(1_704_067_200_000)
+        );
+        assert_eq!(
+            parse_fixed_sqlite_timestamp("2024-01-01T08:00:00.123+08:00"),
+            Some(1_704_067_200_123)
+        );
+        assert_eq!(
+            parse_fixed_sqlite_timestamp("2023-12-31 19:00:00-0500"),
+            Some(1_704_067_200_000)
+        );
+        assert_eq!(parse_fixed_sqlite_timestamp("2024-13-01 00:00:00Z"), None);
+        assert_eq!(parse_fixed_sqlite_timestamp("2024-01-01 00:00:00+24"), None);
+
         assert!(parse_sqlite_timestamp("invalid").is_err());
     }
 
@@ -1792,9 +1900,18 @@ mod tests {
     #[test]
     fn declared_column_types_compile_to_decode_kinds() {
         assert_eq!(sqlite_decode_kind(Some("BOOLEAN")), SqliteDecodeKind::Bool);
-        assert_eq!(sqlite_decode_kind(Some("decimal(20, 4)")), SqliteDecodeKind::Decimal);
-        assert_eq!(sqlite_decode_kind(Some(" VARCHAR(255) ")), SqliteDecodeKind::Text);
-        assert_eq!(sqlite_decode_kind(Some("datetime")), SqliteDecodeKind::Timestamp);
+        assert_eq!(
+            sqlite_decode_kind(Some("decimal(20, 4)")),
+            SqliteDecodeKind::Decimal
+        );
+        assert_eq!(
+            sqlite_decode_kind(Some(" VARCHAR(255) ")),
+            SqliteDecodeKind::Text
+        );
+        assert_eq!(
+            sqlite_decode_kind(Some("datetime")),
+            SqliteDecodeKind::Timestamp
+        );
         assert_eq!(sqlite_decode_kind(Some("custom")), SqliteDecodeKind::Infer);
         assert_eq!(sqlite_decode_kind(None), SqliteDecodeKind::Infer);
     }
