@@ -2,7 +2,8 @@ use quote::quote;
 use syn::Type;
 
 use crate::types::{
-    base_type_name, is_option, option_inner_type, smart_list_inner_type, vec_inner_type,
+    base_type_name, box_inner_type, is_option, option_inner_type, smart_list_inner_type,
+    vec_inner_type,
 };
 
 pub fn from_record_value_tokens_with_lookup(
@@ -192,6 +193,19 @@ pub fn from_relation_value_tokens(
     entity_name: &str,
 ) -> proc_macro2::TokenStream {
     if let Some(inner) = option_inner_type(ty) {
+        if let Some(boxed) = box_inner_type(inner) {
+            return quote! {
+                match record.get(#field_name) {
+                    Some(::teaql_core::Value::Object(record)) => {
+                        Some(Box::new(<#boxed as ::teaql_core::Entity>::from_compact_row(
+                            ::teaql_core::CompactRow::from_map(record.clone()),
+                        )?))
+                    }
+                    Some(::teaql_core::Value::Null) | None => None,
+                    _ => None,
+                }
+            };
+        }
         return quote! {
             match record.get(#field_name) {
                 Some(::teaql_core::Value::Object(record)) => {
@@ -255,6 +269,14 @@ pub fn into_relation_value_tokens(
     value_expr: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     if option_inner_type(ty).is_some() {
+        if option_inner_type(ty).and_then(box_inner_type).is_some() {
+            return quote! {
+                match #value_expr {
+                    Some(entity) => Some(::teaql_core::Value::object((*entity).into_values().into())),
+                    None => None,
+                }
+            };
+        }
         return quote! {
             match #value_expr {
                 Some(entity) => Some(::teaql_core::Value::object(entity.into_values().into())),

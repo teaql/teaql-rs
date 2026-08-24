@@ -73,6 +73,10 @@ pub fn smart_list_inner_type(ty: &Type) -> Option<&Type> {
     generic_inner_type(ty, "SmartList")
 }
 
+pub fn box_inner_type(ty: &Type) -> Option<&Type> {
+    generic_inner_type(ty, "Box")
+}
+
 fn generic_inner_type<'a>(ty: &'a Type, name: &str) -> Option<&'a Type> {
     match ty {
         Type::Path(path) => {

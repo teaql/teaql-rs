@@ -202,6 +202,16 @@ mod tests {
         product: Option<ProductRow>,
     }
 
+    #[allow(dead_code)]
+    #[derive(TeaqlEntity)]
+    #[teaql(entity = "BoxedOrderLine", table = "boxed_orderline")]
+    struct BoxedOrderLineRow {
+        #[teaql(id)]
+        id: u64,
+        #[teaql(relation(target = "Product", local_key = "product_id", foreign_key = "id"))]
+        product: Option<Box<ProductRow>>,
+    }
+
     #[test]
     fn derive_relation_descriptor_and_register() {
         let descriptor = OrderLineRow::entity_descriptor();
@@ -216,6 +226,26 @@ mod tests {
         OrderLineRow::register_into(&mut store);
         assert_eq!(store.descriptors.len(), 1);
         assert_eq!(store.descriptors[0].name, "OrderLine");
+    }
+
+    #[test]
+    fn derive_decodes_boxed_forward_relation_without_changing_relation_semantics() {
+        let product = Record::from([
+            ("id".to_owned(), Value::U64(7)),
+            ("name".to_owned(), Value::Text("boxed".to_owned())),
+        ]);
+        let row = BoxedOrderLineRow::from_compact_row(CompactRow::from_map(Record::from([
+            ("id".to_owned(), Value::U64(1)),
+            ("product".to_owned(), Value::object(product)),
+        ])))
+        .unwrap();
+        assert_eq!(row.product.as_deref().map(|product| product.id), Some(7));
+
+        let values = row.into_values();
+        let Value::Object(product) = values.get("product").unwrap() else {
+            panic!("boxed relation must retain object serialization");
+        };
+        assert_eq!(product.get("id").and_then(Value::try_u64), Some(7));
     }
 
     #[test]
