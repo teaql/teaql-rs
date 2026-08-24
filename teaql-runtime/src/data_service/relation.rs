@@ -36,6 +36,22 @@ fn unique_relation_values(rows: &[CompactRow], field: &str) -> Vec<Value> {
     values.into_iter().map(|(_, value)| value).collect()
 }
 
+const SMALL_PARENT_RELATION_PROBE_LIMIT: usize = 16;
+
+fn should_use_small_parent_relation_probes(
+    capabilities: &teaql_data_service::DataServiceCapabilities,
+    plan: &RelationLoadPlan,
+    parent_count: usize,
+) -> bool {
+    capabilities.small_parent_relation_probes
+        && plan.many
+        && parent_count <= SMALL_PARENT_RELATION_PROBE_LIMIT
+        && plan
+            .query
+            .as_ref()
+            .is_some_and(|query| query.slice.is_some())
+}
+
 impl<'a, E> EntityDataService<'a, E>
 where
     E: teaql_data_service::QueryExecutor
@@ -461,8 +477,9 @@ where
             let result = scope
                 .run(async {
                     let child_repo = self.scoped_data_service_internal(plan.target_entity.clone());
-                    let query = self.query_for_plan(plan, parent_rows);
-                    let mut child_rows = child_repo.fetch_compact_all_internal(query).await?;
+                    let mut child_rows = self
+                        .fetch_relation_rows(&child_repo, plan, parent_rows, false)
+                        .await?;
                     for child in &mut child_rows {
                         child.remove(teaql_core::PARTITION_RANK_PROPERTY);
                     }
@@ -514,8 +531,9 @@ where
     > {
         Box::pin(async move {
             let child_repo = self.scoped_data_service_internal(plan.target_entity.clone());
-            let query = self.query_for_plan(plan, parent_rows);
-            let mut child_rows = child_repo.fetch_compact_all_internal(query).await?;
+            let mut child_rows = self
+                .fetch_relation_rows(&child_repo, plan, parent_rows, false)
+                .await?;
             for child in &mut child_rows {
                 child.remove(teaql_core::PARTITION_RANK_PROPERTY);
             }
@@ -660,8 +678,9 @@ where
     > {
         Box::pin(async move {
             let child_repo = self.scoped_data_service_internal(plan.target_entity.clone());
-            let query = self.query_for_compact_plan(plan, parent_rows);
-            let child_rows = child_repo.fetch_compact_all_internal(query).await?;
+            let child_rows = self
+                .fetch_relation_rows(&child_repo, plan, parent_rows, true)
+                .await?;
 
             for child_plan in &plan.children {
                 child_repo
@@ -795,6 +814,55 @@ where
         query
     }
 
+    async fn fetch_relation_rows(
+        &self,
+        child_repo: &EntityDataService<'a, E>,
+        plan: &RelationLoadPlan,
+        parent_rows: &[CompactRow],
+        compact: bool,
+    ) -> Result<Vec<CompactRow>, DataServiceError<E::Error>> {
+        let ids = unique_relation_values(parent_rows, &plan.local_key);
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let capabilities =
+            teaql_data_service::DataServiceExecutor::capabilities(self.data_service.executor);
+        let probe = should_use_small_parent_relation_probes(&capabilities, plan, ids.len());
+
+        if !probe {
+            let query = if compact {
+                self.query_for_compact_plan(plan, parent_rows)
+            } else {
+                self.query_for_plan(plan, parent_rows)
+            };
+            return child_repo.fetch_compact_all_internal(query).await;
+        }
+
+        let mut rows = Vec::new();
+        for id in ids {
+            let mut query = self.base_relation_query(plan);
+            query = query.and_filter(Expr::eq(plan.foreign_key.clone(), id));
+            // The slice now belongs to one parent, so no window partition is needed.
+            query.partition_by = None;
+            rows.extend(child_repo.fetch_compact_all_internal(query).await?);
+        }
+        Ok(rows)
+    }
+
+    fn base_relation_query(&self, plan: &RelationLoadPlan) -> SelectQuery {
+        let mut query = plan
+            .query
+            .clone()
+            .unwrap_or_else(|| SelectQuery::new(plan.target_entity.clone()));
+        query.entity = plan.target_entity.clone();
+        ensure_projection(&mut query, &plan.foreign_key);
+        for child in &plan.children {
+            ensure_projection(&mut query, &child.local_key);
+        }
+        query
+    }
+
     fn query_for_compact_plan(
         &self,
         plan: &RelationLoadPlan,
@@ -912,5 +980,47 @@ where
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod planner_tests {
+    use super::*;
+
+    fn limited_many_plan() -> RelationLoadPlan {
+        RelationLoadPlan {
+            parent_entity: "Vendor".to_owned(),
+            relation_name: "trips".to_owned(),
+            path: "trips".to_owned(),
+            target_entity: "Trip".to_owned(),
+            local_key: "id".to_owned(),
+            foreign_key: "vendor_id".to_owned(),
+            many: true,
+            query: Some(SelectQuery::new("Trip").order_desc("id").limit(10)),
+            children: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn small_parent_probe_requires_provider_opt_in_and_bounded_parent_set() {
+        let plan = limited_many_plan();
+        let mut capabilities = teaql_data_service::DataServiceCapabilities::default();
+        assert!(!should_use_small_parent_relation_probes(
+            &capabilities,
+            &plan,
+            6
+        ));
+
+        capabilities.small_parent_relation_probes = true;
+        assert!(should_use_small_parent_relation_probes(
+            &capabilities,
+            &plan,
+            6
+        ));
+        assert!(!should_use_small_parent_relation_probes(
+            &capabilities,
+            &plan,
+            SMALL_PARENT_RELATION_PROBE_LIMIT + 1
+        ));
     }
 }

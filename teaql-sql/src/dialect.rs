@@ -51,6 +51,10 @@ pub trait SqlDialect {
     fn quote_ident(&self, ident: &str) -> String;
     fn placeholder(&self, index: usize) -> String;
 
+    fn prefers_small_parent_relation_probes(&self) -> bool {
+        false
+    }
+
     fn schema_setup_sqls(&self) -> &'static [&'static str] {
         &[]
     }

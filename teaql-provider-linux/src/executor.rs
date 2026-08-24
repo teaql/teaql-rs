@@ -65,6 +65,7 @@ impl DataServiceExecutor for LinuxDataServiceExecutor {
             id_generation: false,
             batch_mutation: false,
             returning: false,
+            small_parent_relation_probes: false,
         }
     }
 }

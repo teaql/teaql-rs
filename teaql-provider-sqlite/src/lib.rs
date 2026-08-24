@@ -39,6 +39,10 @@ impl SqlDialect for SqliteDialect {
         "?".to_owned()
     }
 
+    fn prefers_small_parent_relation_probes(&self) -> bool {
+        true
+    }
+
     fn schema_type_sql(
         &self,
         data_type: DataType,
@@ -1085,6 +1089,7 @@ mod tests {
 
     #[test]
     fn sqlite_dialect_compiles_mutations_and_schema() {
+        assert!(SqliteDialect.prefers_small_parent_relation_probes());
         let insert = SqliteDialect
             .compile_insert(
                 &entity(),

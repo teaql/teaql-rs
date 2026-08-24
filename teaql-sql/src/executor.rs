@@ -470,6 +470,7 @@ impl<
             id_generation: false,
             batch_mutation: true,
             returning: false,
+            small_parent_relation_probes: self.dialect.prefers_small_parent_relation_probes(),
         }
     }
 }
@@ -931,6 +932,7 @@ impl<
             id_generation: false,
             batch_mutation: true,
             returning: false,
+            small_parent_relation_probes: self.dialect.prefers_small_parent_relation_probes(),
         }
     }
 }

@@ -15,6 +15,9 @@ pub struct DataServiceCapabilities {
     pub id_generation: bool,
     pub batch_mutation: bool,
     pub returning: bool,
+    /// A small number of per-parent indexed relation queries is preferable to
+    /// a partitioned batch query for this provider (for example embedded SQLite).
+    pub small_parent_relation_probes: bool,
 }
 
 #[derive(Debug, Clone)]
