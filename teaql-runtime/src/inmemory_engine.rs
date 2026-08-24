@@ -2,8 +2,8 @@ use std::cmp::Ordering;
 use std::time::SystemTime;
 
 use teaql_core::{
-    Aggregate, AggregateFunction, BinaryOp, CompactRow, Expr, OrderBy, SelectQuery,
-    SortDirection, Value,
+    Aggregate, AggregateFunction, BinaryOp, CompactRow, Expr, OrderBy, SelectQuery, SortDirection,
+    Value,
 };
 use teaql_data_service::{DataServiceOperation, ExecutionMetadata, QueryResult};
 

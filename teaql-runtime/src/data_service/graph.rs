@@ -236,8 +236,7 @@ where
                         cmd.batch_values.push(item.values.into());
                         cmd.batch_ids.push(id);
                         cmd.batch_expected_versions.push(version);
-                        cmd.batch_old_values
-                            .push(item.old_values.map(Into::into));
+                        cmd.batch_old_values.push(item.old_values.map(Into::into));
                         cmd.trace_chains
                             .push(recover_trace_or_default(&item.scope_token));
                     }
@@ -286,8 +285,7 @@ where
         let original_values = entity.original_values();
         let is_deleted = entity.is_marked_as_delete();
         let comment = entity.get_comment();
-        let mut node =
-            self.graph_node_from_values(&descriptor.name, entity.into_values())?;
+        let mut node = self.graph_node_from_values(&descriptor.name, entity.into_values())?;
         node.dirty_fields = dirty_fields;
         node.original_values = original_values.map(Into::into);
         if is_deleted {
@@ -1094,7 +1092,8 @@ where
                     node.relations.entry(field).or_default();
                 }
                 Value::Object(record) => {
-                    let child = self.graph_node_from_values(&relation.target_entity, record.into())?;
+                    let child =
+                        self.graph_node_from_values(&relation.target_entity, record.into())?;
                     node.relations.entry(field).or_default().push(child);
                 }
                 Value::List(values) => {
@@ -1106,8 +1105,9 @@ where
                                 entity, field, value
                             )));
                         };
-                        children
-                            .push(self.graph_node_from_values(&relation.target_entity, record.into())?);
+                        children.push(
+                            self.graph_node_from_values(&relation.target_entity, record.into())?,
+                        );
                     }
                 }
                 other => {

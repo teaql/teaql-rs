@@ -138,7 +138,7 @@ fn compile_select_with_cache<D: SqlDialect>(
     {
         return Ok(CompiledQuery {
             sql: sql.clone(),
-            params: collect_select_params(entity, query),
+            params: collect_select_params(entity, query, dialect.large_in_uses_array_param()),
             comment: query.comment.clone(),
         });
     }
@@ -353,24 +353,28 @@ fn normalize_expr_values(expr: &mut Expr) {
     }
 }
 
-fn collect_select_params(entity: &EntityDescriptor, query: &SelectQuery) -> Vec<Value> {
+fn collect_select_params(
+    entity: &EntityDescriptor,
+    query: &SelectQuery,
+    large_in_uses_array_param: bool,
+) -> Vec<Value> {
     let mut params = Vec::new();
     if query.raw_sql.is_some() {
         return params;
     }
     for projection in &query.expr_projection {
-        collect_expr_params(&projection.expr, &mut params);
+        collect_expr_params(&projection.expr, &mut params, large_in_uses_array_param);
     }
     let partitioned = query.partition_by.is_some() && query.slice.is_some();
     if partitioned {
         for order in &query.order_by {
             if let Some(expr) = &order.expr {
-                collect_expr_params(expr, &mut params);
+                collect_expr_params(expr, &mut params, large_in_uses_array_param);
             }
         }
     }
     if let Some(filter) = &query.filter {
-        collect_expr_params(filter, &mut params);
+        collect_expr_params(filter, &mut params, large_in_uses_array_param);
     }
     if let Some(search_text) = &query.search_with_text {
         let value = Value::from(format!("%{search_text}%"));
@@ -391,38 +395,48 @@ fn collect_select_params(entity: &EntityDescriptor, query: &SelectQuery) -> Vec<
         return params;
     }
     if let Some(having) = &query.having {
-        collect_expr_params(having, &mut params);
+        collect_expr_params(having, &mut params, large_in_uses_array_param);
     }
     for order in &query.order_by {
         if let Some(expr) = &order.expr {
-            collect_expr_params(expr, &mut params);
+            collect_expr_params(expr, &mut params, large_in_uses_array_param);
         }
     }
     params
 }
 
-fn collect_expr_params(expr: &Expr, params: &mut Vec<Value>) {
+fn collect_expr_params(expr: &Expr, params: &mut Vec<Value>, large_in_uses_array_param: bool) {
     match expr {
         Expr::Column(_) => {}
         Expr::Value(value) => params.push(value.clone()),
         Expr::Function { args, .. } | Expr::And(args) | Expr::Or(args) => {
             for arg in args {
-                collect_expr_params(arg, params);
+                collect_expr_params(arg, params, large_in_uses_array_param);
             }
         }
         Expr::Binary { left, op, right } => {
-            collect_expr_params(left, params);
-            if matches!(
-                op,
-                teaql_core::BinaryOp::In
-                    | teaql_core::BinaryOp::NotIn
-                    | teaql_core::BinaryOp::InLarge
-                    | teaql_core::BinaryOp::NotInLarge
-            ) && let Expr::Value(Value::List(values)) = right.as_ref()
+            collect_expr_params(left, params, large_in_uses_array_param);
+            if let Expr::Value(Value::List(values)) = right.as_ref()
+                && matches!(
+                    op,
+                    teaql_core::BinaryOp::In
+                        | teaql_core::BinaryOp::NotIn
+                        | teaql_core::BinaryOp::InLarge
+                        | teaql_core::BinaryOp::NotInLarge
+                )
             {
-                params.extend(values.iter().cloned());
+                if large_in_uses_array_param
+                    && matches!(
+                        op,
+                        teaql_core::BinaryOp::InLarge | teaql_core::BinaryOp::NotInLarge
+                    )
+                {
+                    params.push(Value::List(values.clone()));
+                } else {
+                    params.extend(values.iter().cloned());
+                }
             } else {
-                collect_expr_params(right, params);
+                collect_expr_params(right, params, large_in_uses_array_param);
             }
         }
         Expr::SubQuery {
@@ -431,16 +445,20 @@ fn collect_expr_params(expr: &Expr, params: &mut Vec<Value>) {
             query,
             ..
         } => {
-            collect_expr_params(left, params);
-            params.extend(collect_select_params(entity, query));
+            collect_expr_params(left, params, large_in_uses_array_param);
+            params.extend(collect_select_params(
+                entity,
+                query,
+                large_in_uses_array_param,
+            ));
         }
         Expr::Between { expr, lower, upper } => {
-            collect_expr_params(expr, params);
-            collect_expr_params(lower, params);
-            collect_expr_params(upper, params);
+            collect_expr_params(expr, params, large_in_uses_array_param);
+            collect_expr_params(lower, params, large_in_uses_array_param);
+            collect_expr_params(upper, params, large_in_uses_array_param);
         }
         Expr::IsNull(expr) | Expr::IsNotNull(expr) | Expr::Not(expr) => {
-            collect_expr_params(expr, params);
+            collect_expr_params(expr, params, large_in_uses_array_param);
         }
     }
 }
@@ -555,6 +573,54 @@ mod tests {
 
         fn placeholder(&self, index: usize) -> String {
             format!("${index}")
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct ArrayTestDialect;
+
+    impl SqlDialect for ArrayTestDialect {
+        fn kind(&self) -> crate::DatabaseKind {
+            crate::DatabaseKind::PostgreSql
+        }
+
+        fn quote_ident(&self, ident: &str) -> String {
+            format!("\"{ident}\"")
+        }
+
+        fn placeholder(&self, index: usize) -> String {
+            format!("${index}")
+        }
+
+        fn large_in_uses_array_param(&self) -> bool {
+            true
+        }
+
+        fn compile_in(
+            &self,
+            entity: &EntityDescriptor,
+            left: &Expr,
+            op: teaql_core::BinaryOp,
+            right: &Expr,
+            params: &mut Vec<Value>,
+        ) -> Result<String, SqlCompileError> {
+            if matches!(
+                op,
+                teaql_core::BinaryOp::InLarge | teaql_core::BinaryOp::NotInLarge
+            ) && let Expr::Value(Value::List(values)) = right
+            {
+                let lhs = self.compile_expr(entity, left, params)?;
+                params.push(Value::List(values.clone()));
+                let operator = if op == teaql_core::BinaryOp::InLarge {
+                    "= ANY"
+                } else {
+                    "<> ALL"
+                };
+                return Ok(format!("({lhs} {operator}(${}))", params.len()));
+            }
+            Err(SqlCompileError::InvalidFunctionArguments(
+                "array test dialect only supports large IN".to_owned(),
+            ))
         }
     }
 
@@ -808,6 +874,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cached_select_plan_rebinds_large_in_as_one_array_parameter() {
+        let executor = SqlDataServiceExecutor::new(
+            ArrayTestDialect,
+            EmptyTransport,
+            CountingSchemaProvider {
+                lookups: Arc::new(AtomicUsize::new(0)),
+            },
+        );
+        let request = |values: Vec<Value>| QueryRequest {
+            query: SelectQuery::new("Order").filter(Expr::in_list("id", values)),
+            trace_chain: Vec::new(),
+            comment: None,
+            capture_debug_query: false,
+            capture_execution_metadata: true,
+        };
+        let first_values = (1_u64..=21).map(Value::from).collect::<Vec<_>>();
+        let second_values = (101_u64..=121).map(Value::from).collect::<Vec<_>>();
+
+        let first = executor.query(request(first_values.clone())).await.unwrap();
+        let second = executor
+            .query(request(second_values.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            first.metadata.parameterized_query,
+            second.metadata.parameterized_query
+        );
+        assert_eq!(first.metadata.params, vec![Value::List(first_values)]);
+        assert_eq!(second.metadata.params, vec![Value::List(second_values)]);
+    }
+
+    #[tokio::test]
     async fn cached_select_plan_preserves_parameter_order_for_supported_query_shapes() {
         let executor = SqlDataServiceExecutor::new(
             TestDialect,
@@ -922,7 +1021,11 @@ impl<
                 let first = self
                     .compile_select_cached(&entity_desc, &first_query)
                     .map_err(SqlExecutorError::Compile)?;
-                let second_params = collect_select_params(&entity_desc, &second_query);
+                let second_params = collect_select_params(
+                    &entity_desc,
+                    &second_query,
+                    self.dialect.large_in_uses_array_param(),
+                );
                 if let Some(param_index) = first
                     .params
                     .iter()

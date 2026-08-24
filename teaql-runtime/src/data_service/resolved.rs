@@ -10,8 +10,8 @@ use teaql_core::{
 
 use crate::{
     CheckObjectStatus, ContinuousPageCursor, DataServiceError, EntityDataServiceBehavior,
-    MetadataStore, PurposedSelectQuery, RawAuditEvent, RuntimeError, clear_entity_status,
-    mark_entity_status,
+    MetadataStore, PurposedSelectQuery, RawAuditEvent, RetainedIdSet, RuntimeError,
+    clear_entity_status, mark_entity_status,
 };
 
 use super::{
@@ -28,6 +28,13 @@ struct ContinuousPageExecution {
     ttl_seconds: u64,
     optimized: bool,
     seek_cursor_id: Option<String>,
+}
+
+fn with_total_count<T>(mut list: SmartList<T>, total_count: Option<u64>) -> SmartList<T> {
+    if let Some(total_count) = total_count {
+        list.total_count = Some(total_count);
+    }
+    list
 }
 
 fn decode_compact_rows<T: Entity>(
@@ -601,6 +608,230 @@ where
         format!("teaql:continuous-page:v1:{:016x}", hasher.finish())
     }
 
+    fn id_set_query_key(&self, query: &SelectQuery, namespace: &str) -> String {
+        let mut normalized = query.clone();
+        normalized.slice = None;
+        normalized.projection.clear();
+        normalized.expr_projection.clear();
+        normalized.relations.clear();
+        normalized.child_enhancements.clear();
+        normalized.object_group_bys.clear();
+        normalized.comment = None;
+        normalized.trace_chain.clear();
+        normalized.id_set_pagination = None;
+        normalized.continuous_page_fetch = None;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        namespace.hash(&mut hasher);
+        format!("{normalized:?}").hash(&mut hasher);
+        self.data_service
+            .metadata
+            .context
+            .user_identifier()
+            .hash(&mut hasher);
+        if let Some(root) = self.data_service.metadata.context.active_root_ref() {
+            root.entity_type.hash(&mut hasher);
+            root.id.hash(&mut hasher);
+        }
+        format!("teaql:id-set:v1:{:016x}", hasher.finish())
+    }
+
+    async fn prepare_id_set_page(
+        &self,
+        mut query: SelectQuery,
+    ) -> Result<(SelectQuery, Option<u64>), DataServiceError<E::Error>> {
+        let Some(options) = query.id_set_pagination.clone() else {
+            self.data_service
+                .metadata
+                .context
+                .observe_id_set("ID_SET_DISABLED", None);
+            return Ok((query, None));
+        };
+        let Some(slice) = query.slice else {
+            self.data_service
+                .metadata
+                .context
+                .observe_id_set("ID_SET_FALLBACK_UNSUPPORTED_SHAPE", None);
+            return Ok((query, None));
+        };
+        let Some(page_size) = slice.limit else {
+            self.data_service
+                .metadata
+                .context
+                .observe_id_set("ID_SET_FALLBACK_UNSUPPORTED_SHAPE", None);
+            return Ok((query, None));
+        };
+        if query.continuous_page_fetch.is_some()
+            || query.partition_by.is_some()
+            || !query.aggregates.is_empty()
+            || !query.group_by.is_empty()
+            || query.having.is_some()
+            || query.raw_sql.is_some()
+            || query.order_by.iter().any(|order| order.expr.is_some())
+        {
+            self.data_service
+                .metadata
+                .context
+                .observe_id_set("ID_SET_FALLBACK_UNSUPPORTED_SHAPE", None);
+            return Ok((query, None));
+        }
+
+        // A unique final key makes the retained order deterministic even when
+        // the caller's preceding sort fields contain ties.
+        if !query
+            .order_by
+            .iter()
+            .any(|order| order.field == "id" && order.expr.is_none())
+        {
+            query = query.order_asc("id");
+        }
+
+        let query_key = self.id_set_query_key(&query, &options.namespace);
+        let retained = match self
+            .data_service
+            .metadata
+            .context
+            .id_set_store()
+            .get(&query_key)
+            .await
+        {
+            Ok(Some(retained)) => {
+                self.data_service
+                    .metadata
+                    .context
+                    .observe_id_set("ID_SET_HIT", Some(retained.ids.len() as u64));
+                retained
+            }
+            Ok(None) => {
+                let build_lock = self
+                    .data_service
+                    .metadata
+                    .context
+                    .id_set_build_lock(&query_key);
+                let _build_guard = build_lock.lock().await;
+                match self
+                    .data_service
+                    .metadata
+                    .context
+                    .id_set_store()
+                    .get(&query_key)
+                    .await
+                {
+                    Ok(Some(retained)) => {
+                        self.data_service
+                            .metadata
+                            .context
+                            .observe_id_set("ID_SET_HIT", Some(retained.ids.len() as u64));
+                        return self.id_set_page_query(query, slice, retained);
+                    }
+                    Ok(None) => {}
+                    Err(_) => {
+                        self.data_service
+                            .metadata
+                            .context
+                            .observe_id_set("ID_SET_FALLBACK_STORE_UNAVAILABLE", None);
+                        return Ok((query, None));
+                    }
+                }
+                let mut id_query = query.clone();
+                id_query.projection.clear();
+                id_query.projection.push("id".to_owned());
+                id_query.expr_projection.clear();
+                id_query.relations.clear();
+                id_query.child_enhancements.clear();
+                id_query.dynamic_properties.clear();
+                id_query.raw_projections.clear();
+                id_query.object_group_bys.clear();
+                id_query.id_set_pagination = None;
+                id_query.continuous_page_fetch = None;
+                id_query.hard_limit = options.max_ids.saturating_add(1);
+                id_query.slice = Some(teaql_core::Slice {
+                    offset: 0,
+                    limit: Some(options.max_ids.saturating_add(1)),
+                });
+                let rows = self.fetch_prepared_query_owned(id_query).await?;
+                let mut ids = Vec::with_capacity(rows.len());
+                for row in rows {
+                    let Some(id) = row.get("id").and_then(Value::try_u64) else {
+                        self.data_service
+                            .metadata
+                            .context
+                            .observe_id_set("ID_SET_FALLBACK_UNSUPPORTED_SHAPE", None);
+                        return Ok((query, None));
+                    };
+                    ids.push(id);
+                }
+                if ids.len() as u64 > options.max_ids {
+                    self.data_service.metadata.context.observe_id_set(
+                        "ID_SET_FALLBACK_LIMIT_EXCEEDED",
+                        Some(options.max_ids.saturating_add(1)),
+                    );
+                    return Ok((query, None));
+                }
+                let retained = RetainedIdSet {
+                    query_key: query_key.clone(),
+                    ids: std::sync::Arc::new(ids),
+                    expires_at: SystemTime::now() + Duration::from_secs(options.ttl_seconds),
+                };
+                if self
+                    .data_service
+                    .metadata
+                    .context
+                    .id_set_store()
+                    .put(retained.clone())
+                    .await
+                    .is_err()
+                {
+                    self.data_service
+                        .metadata
+                        .context
+                        .observe_id_set("ID_SET_FALLBACK_STORE_UNAVAILABLE", None);
+                    return Ok((query, None));
+                }
+                self.data_service
+                    .metadata
+                    .context
+                    .observe_id_set("ID_SET_BUILD", Some(retained.ids.len() as u64));
+                retained
+            }
+            Err(_) => {
+                self.data_service
+                    .metadata
+                    .context
+                    .observe_id_set("ID_SET_FALLBACK_STORE_UNAVAILABLE", None);
+                return Ok((query, None));
+            }
+        };
+
+        self.id_set_page_query(query, slice, retained)
+    }
+
+    fn id_set_page_query(
+        &self,
+        mut query: SelectQuery,
+        slice: teaql_core::Slice,
+        retained: RetainedIdSet,
+    ) -> Result<(SelectQuery, Option<u64>), DataServiceError<E::Error>> {
+        let page_size = slice.limit.expect("validated ID set page size");
+        let start = usize::try_from(slice.offset).unwrap_or(usize::MAX);
+        let page_size = usize::try_from(page_size).unwrap_or(usize::MAX);
+        let end = start.saturating_add(page_size).min(retained.ids.len());
+        let page_ids = retained
+            .ids
+            .get(start..end)
+            .unwrap_or_default()
+            .iter()
+            .copied()
+            .map(Value::U64)
+            .collect::<Vec<_>>();
+        query.slice = Some(teaql_core::Slice {
+            offset: 0,
+            limit: Some(page_size as u64),
+        });
+        query.id_set_pagination = None;
+        query = query.and_filter(Expr::in_list("id", page_ids));
+        Ok((query, Some(retained.ids.len() as u64)))
+    }
+
     /// Fetch root records from the provider cursor without materializing them.
     /// Relation and aggregate enhancement needs a separate batched protocol and
     /// is rejected here instead of silently returning incomplete entities.
@@ -972,8 +1203,8 @@ where
                 .await?,
             &root,
         )
-            .map(SmartList::from)
-            .map_err(DataServiceError::Entity)
+        .map(SmartList::from)
+        .map_err(DataServiceError::Entity)
     }
 
     pub(crate) async fn fetch_enhanced_entities_with_relation_aggregates_internal<T>(
@@ -1008,12 +1239,13 @@ where
 
     async fn fetch_enhanced_entities_with_relation_aggregates_prepared<T>(
         &self,
-        mut query: SelectQuery,
+        query: SelectQuery,
         relation_aggregates: &[RelationAggregate],
     ) -> Result<SmartList<T>, DataServiceError<E::Error>>
     where
         T: Entity,
     {
+        let (mut query, id_set_total_count) = self.prepare_id_set_page(query).await?;
         if relation_aggregates.is_empty()
             && query.continuous_page_fetch.is_none()
             && query.object_group_bys.is_empty()
@@ -1024,11 +1256,9 @@ where
                 .prepare_for_list()
                 .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
             let root = crate::EntityRoot::default();
-            return decode_compact_rows::<T>(
-                self.fetch_prepared_query_owned(query).await?,
-                &root,
-            )
+            return decode_compact_rows::<T>(self.fetch_prepared_query_owned(query).await?, &root)
                 .map(SmartList::from)
+                .map(|list| with_total_count(list, id_set_total_count))
                 .map_err(DataServiceError::Entity);
         }
 
@@ -1064,6 +1294,7 @@ where
                 })?;
                 return decode_compact_rows::<T>(rows, &root)
                     .map(SmartList::from)
+                    .map(|list| with_total_count(list, id_set_total_count))
                     .map_err(DataServiceError::Entity);
             }
         }
@@ -1096,6 +1327,7 @@ where
         };
         decode_compact_rows::<T>(rows, &root)
             .map(SmartList::from)
+            .map(|list| with_total_count(list, id_set_total_count))
             .map_err(DataServiceError::Entity)
     }
 
@@ -1106,67 +1338,8 @@ where
     where
         T: Entity,
     {
-        let query = self
-            .prepare_select_query(query)
-            .map_err(DataServiceError::Runtime)?;
-
-        let flat_plans = self
-            .flat_relation_plans(&query)
-            .map_err(DataServiceError::Runtime)?;
-        let use_flat_hydration = flat_plans.is_some();
-        let mut root_query = query.clone();
-        if use_flat_hydration {
-            root_query.relations.clear();
-        }
-        if root_query.continuous_page_fetch.is_none()
-            && root_query.object_group_bys.is_empty()
-            && root_query.child_enhancements.is_empty()
-        {
-            if let Some((query_plans, behavior_plans)) = flat_plans.as_ref() {
-                let root_query = root_query
-                    .prepare_for_list()
-                    .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
-                let rows = self.fetch_prepared_compact_owned(root_query).await?;
-                let root = crate::EntityRoot::default();
-                let mut graph = crate::EntityGraphBuilder::default();
-                self.hydrate_compact_flat_plans_internal(&rows, query_plans, &root, &mut graph)
-                    .await?;
-                self.hydrate_compact_flat_plans_internal(&rows, behavior_plans, &root, &mut graph)
-                    .await?;
-                root.freeze_graph(graph).map_err(|_| {
-                    DataServiceError::Entity(teaql_core::EntityError::new(
-                        &query.entity,
-                        "identity graph was already frozen",
-                    ))
-                })?;
-                return decode_compact_rows::<T>(rows, &root)
-                    .map(SmartList::from)
-                    .map_err(DataServiceError::Entity);
-            }
-        }
-        let mut rows = self.fetch_prepared_all(&root_query).await?;
-        let root = if let Some((query_plans, behavior_plans)) = flat_plans {
-            let root = crate::EntityRoot::default();
-            let mut graph = crate::EntityGraphBuilder::default();
-            self.hydrate_flat_plans_internal(&mut rows, &query_plans, &root, &mut graph)
-                .await?;
-            self.hydrate_flat_plans_internal(&mut rows, &behavior_plans, &root, &mut graph)
-                .await?;
-            root.freeze_graph(graph).map_err(|_| {
-                DataServiceError::Entity(teaql_core::EntityError::new(
-                    &query.entity,
-                    "identity graph was already frozen",
-                ))
-            })?;
-            root
-        } else {
-            self.enhance_relations_internal(&mut rows).await?;
-            self.attach_flat_relation_graph(&query.entity, &mut rows)
-                .map_err(DataServiceError::Entity)?
-        };
-        decode_compact_rows::<T>(rows, &root)
-            .map(SmartList::from)
-            .map_err(DataServiceError::Entity)
+        self.fetch_enhanced_entities_with_relation_aggregates_internal(query, &[])
+            .await
     }
 
     #[doc(hidden)]

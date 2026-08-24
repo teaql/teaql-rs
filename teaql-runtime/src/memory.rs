@@ -5,9 +5,9 @@ use std::sync::{Arc, Mutex};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 use teaql_core::{
-    Aggregate, AggregateFunction, BinaryOp, DeleteCommand, Entity, Expr, ExprFunction,
-    CompactRow, InsertCommand, RecoverCommand, RelationAggregate, SelectQuery, SmartList,
-    SortDirection, UpdateCommand, Value,
+    Aggregate, AggregateFunction, BinaryOp, CompactRow, DeleteCommand, Entity, Expr, ExprFunction,
+    InsertCommand, RecoverCommand, RelationAggregate, SelectQuery, SmartList, SortDirection,
+    UpdateCommand, Value,
 };
 
 use crate::{DataServiceError, InMemoryMetadataStore, MetadataStore, RuntimeError};
@@ -796,10 +796,7 @@ fn aggregate_rows(
             let mut output = CompactRow::from_map(output);
             for projection in &query.expr_projection {
                 let value = eval_value(&projection.expr, &output)?;
-                output.insert(
-                    projection.alias.clone(),
-                    value,
-                );
+                output.insert(projection.alias.clone(), value);
             }
             Ok(output)
         })

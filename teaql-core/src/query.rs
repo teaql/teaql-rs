@@ -24,15 +24,19 @@ mod hard_limit_tests {
                 .limit,
             Some(10_000)
         );
-        assert!(SelectQuery::new("Order")
-            .limit(10_001)
-            .prepare_for_list()
-            .is_err());
-        assert!(SelectQuery::new("Order")
-            .limit(10_001)
-            .hard_limit(20_000)
-            .prepare_for_list()
-            .is_ok());
+        assert!(
+            SelectQuery::new("Order")
+                .limit(10_001)
+                .prepare_for_list()
+                .is_err()
+        );
+        assert!(
+            SelectQuery::new("Order")
+                .limit(10_001)
+                .hard_limit(20_000)
+                .prepare_for_list()
+                .is_ok()
+        );
     }
 
     #[test]
@@ -49,6 +53,26 @@ mod hard_limit_tests {
     #[should_panic(expected = "continuous page namespace must not be empty")]
     fn continuous_page_fetch_rejects_empty_namespace() {
         let _ = SelectQuery::new("Order").optimize_for_continuous_page_fetch_with(" ", 30);
+    }
+
+    #[test]
+    fn id_set_pagination_is_explicit_and_validated() {
+        assert!(SelectQuery::new("Order").id_set_pagination.is_none());
+        let query = SelectQuery::new("Order").optimize_pagination_with_id_set_config(
+            "recent-orders",
+            30,
+            5_000,
+        );
+        let options = query.id_set_pagination.expect("ID set options");
+        assert_eq!(options.namespace, "recent-orders");
+        assert_eq!(options.ttl_seconds, 30);
+        assert_eq!(options.max_ids, 5_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "ID set pagination max_ids must be positive")]
+    fn id_set_pagination_rejects_zero_limit() {
+        let _ = SelectQuery::new("Order").optimize_pagination_with_id_set_config("orders", 30, 0);
     }
 }
 
@@ -329,6 +353,36 @@ pub struct ContinuousPageFetchOptions {
     pub ttl_seconds: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdSetPaginationOptions {
+    pub namespace: String,
+    pub ttl_seconds: u64,
+    pub max_ids: u64,
+}
+
+impl IdSetPaginationOptions {
+    pub const DEFAULT_TTL_SECONDS: u64 = 600;
+    pub const DEFAULT_MAX_IDS: u64 = 3_000_000;
+
+    pub fn new(namespace: impl Into<String>, ttl_seconds: u64, max_ids: u64) -> Self {
+        let namespace = namespace.into();
+        assert!(
+            !namespace.trim().is_empty(),
+            "ID set pagination namespace must not be empty"
+        );
+        assert!(
+            ttl_seconds > 0,
+            "ID set pagination ttl_seconds must be positive"
+        );
+        assert!(max_ids > 0, "ID set pagination max_ids must be positive");
+        Self {
+            namespace,
+            ttl_seconds,
+            max_ids,
+        }
+    }
+}
+
 impl ContinuousPageFetchOptions {
     pub const DEFAULT_TTL_SECONDS: u64 = 600;
 
@@ -384,6 +438,8 @@ pub struct SelectQuery {
     pub stream_config: Option<StreamConfig>,
     /// Explicit, process-local hint for transparent seek pagination of outer list queries.
     pub continuous_page_fetch: Option<ContinuousPageFetchOptions>,
+    /// Explicit hint to retain the complete ordered ID sequence for pagination.
+    pub id_set_pagination: Option<IdSetPaginationOptions>,
 }
 
 impl SelectQuery {
@@ -413,6 +469,7 @@ impl SelectQuery {
             child_enhancements: Vec::new(),
             stream_config: None,
             continuous_page_fetch: None,
+            id_set_pagination: None,
         }
     }
 
@@ -730,6 +787,25 @@ impl SelectQuery {
         ttl_seconds: u64,
     ) -> Self {
         self.continuous_page_fetch = Some(ContinuousPageFetchOptions::new(namespace, ttl_seconds));
+        self
+    }
+
+    pub fn optimize_pagination_with_id_set(mut self) -> Self {
+        self.id_set_pagination = Some(IdSetPaginationOptions::new(
+            "default",
+            IdSetPaginationOptions::DEFAULT_TTL_SECONDS,
+            IdSetPaginationOptions::DEFAULT_MAX_IDS,
+        ));
+        self
+    }
+
+    pub fn optimize_pagination_with_id_set_config(
+        mut self,
+        namespace: impl Into<String>,
+        ttl_seconds: u64,
+        max_ids: u64,
+    ) -> Self {
+        self.id_set_pagination = Some(IdSetPaginationOptions::new(namespace, ttl_seconds, max_ids));
         self
     }
 

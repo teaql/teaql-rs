@@ -128,11 +128,15 @@ mod tests {
     fn test_entity_graph_builder_annotations_and_child_operations() {
         let mut rec1 = BTreeMap::new();
         rec1.insert("id".to_string(), Value::I64(1));
-        let entity1 = DummyEntity { values: rec1.into() };
+        let entity1 = DummyEntity {
+            values: rec1.into(),
+        };
 
         let mut rec2 = BTreeMap::new();
         rec2.insert("id".to_string(), Value::I64(2));
-        let entity2 = DummyEntity { values: rec2.into() };
+        let entity2 = DummyEntity {
+            values: rec2.into(),
+        };
 
         let graph = EntityGraph::new(entity1)
             .comment("Parent creation")

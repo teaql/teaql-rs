@@ -66,6 +66,10 @@ pub enum Expr {
 }
 
 impl Expr {
+    /// Match the long-standing Java runtime policy: collections larger than
+    /// twenty values use the dialect-specific large-set representation.
+    pub const LARGE_IN_THRESHOLD: usize = 20;
+
     pub fn column(name: impl Into<String>) -> Self {
         Self::Column(name.into())
     }
@@ -230,18 +234,28 @@ impl Expr {
     }
 
     pub fn in_list(column: impl Into<String>, values: impl IntoIterator<Item = Value>) -> Self {
+        let values = values.into_iter().collect::<Vec<_>>();
         Self::binary(
             Self::column(column),
-            BinaryOp::In,
-            Self::Value(Value::List(values.into_iter().collect())),
+            if values.len() > Self::LARGE_IN_THRESHOLD {
+                BinaryOp::InLarge
+            } else {
+                BinaryOp::In
+            },
+            Self::Value(Value::List(values)),
         )
     }
 
     pub fn not_in_list(column: impl Into<String>, values: impl IntoIterator<Item = Value>) -> Self {
+        let values = values.into_iter().collect::<Vec<_>>();
         Self::binary(
             Self::column(column),
-            BinaryOp::NotIn,
-            Self::Value(Value::List(values.into_iter().collect())),
+            if values.len() > Self::LARGE_IN_THRESHOLD {
+                BinaryOp::NotInLarge
+            } else {
+                BinaryOp::NotIn
+            },
+            Self::Value(Value::List(values)),
         )
     }
 

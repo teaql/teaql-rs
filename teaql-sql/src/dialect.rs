@@ -51,6 +51,12 @@ pub trait SqlDialect {
     fn quote_ident(&self, ident: &str) -> String;
     fn placeholder(&self, index: usize) -> String;
 
+    /// Whether `IN_LARGE` / `NOT_IN_LARGE` bind the complete value list as a
+    /// single dialect-native array parameter instead of scalar placeholders.
+    fn large_in_uses_array_param(&self) -> bool {
+        false
+    }
+
     fn prefers_small_parent_relation_probes(&self) -> bool {
         false
     }

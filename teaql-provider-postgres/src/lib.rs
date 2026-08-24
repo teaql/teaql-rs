@@ -5,6 +5,7 @@ use std::pin::Pin;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use deadpool_postgres::Pool;
 use rust_decimal::Decimal;
+use std::collections::HashSet;
 use std::sync::Arc;
 use teaql_core::{
     BinaryOp, DataType, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, SelectQuery,
@@ -25,9 +26,98 @@ pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";
 #[derive(Debug, Default, Clone, Copy)]
 pub struct PostgresDialect;
 
+impl PostgresDialect {
+    /// Indexes supporting the common "recent children for each parent" access
+    /// pattern.  This deliberately uses a full index: PostgreSQL cannot use a
+    /// partial `WHERE version > 0` index for a generic prepared plan whose
+    /// version predicate is parameterized.
+    fn relation_indexes_sqls(&self, entity: &EntityDescriptor) -> Vec<String> {
+        let Some(id_property) = entity.id_property() else {
+            return Vec::new();
+        };
+        let mut indexed_columns = HashSet::new();
+        let mut sqls = Vec::new();
+
+        for relation in &entity.relations {
+            // A to-one relation whose local key is not the entity ID represents
+            // a foreign-key property on this table.  `(foreign_key, id DESC)`
+            // serves both equality lookup and top-N/recent-child queries.
+            if relation.many || relation.local_key == id_property.name {
+                continue;
+            }
+            let Some(foreign_key_property) = entity.property_by_name(&relation.local_key) else {
+                continue;
+            };
+            if !indexed_columns.insert(foreign_key_property.column_name.as_str()) {
+                continue;
+            }
+
+            let index_name = postgres_index_name(
+                &entity.table_name,
+                &foreign_key_property.column_name,
+                &id_property.column_name,
+            );
+            sqls.push(format!(
+                "CREATE INDEX IF NOT EXISTS {} ON {} ({}, {} DESC)",
+                self.quote_ident(&index_name),
+                self.quote_ident(&entity.table_name),
+                self.quote_ident(&foreign_key_property.column_name),
+                self.quote_ident(&id_property.column_name),
+            ));
+        }
+        sqls
+    }
+}
+
+fn postgres_index_name(table: &str, foreign_key: &str, id: &str) -> String {
+    let full = format!("IDX_{table}_{foreign_key}_{id}_DESC").to_uppercase();
+    if full.len() <= 63 {
+        return full;
+    }
+
+    // PostgreSQL silently truncates identifiers to 63 bytes. Add a stable hash
+    // ourselves so two long generated names cannot collapse to the same index.
+    let hash = full.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    });
+    let suffix = format!("_{hash:016X}");
+    let prefix_bytes = 63 - suffix.len();
+    let mut end = prefix_bytes.min(full.len());
+    while !full.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{}", &full[..end], suffix)
+}
+
+fn postgres_foreign_key_name(
+    source_table: &str,
+    source_column: &str,
+    referenced_table: &str,
+    referenced_column: &str,
+) -> String {
+    let full = format!("FK_{source_table}_{source_column}_{referenced_table}_{referenced_column}")
+        .to_uppercase();
+    if full.len() <= 63 {
+        return full;
+    }
+    let hash = full.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    });
+    let suffix = format!("_{hash:016X}");
+    let mut end = (63 - suffix.len()).min(full.len());
+    while !full.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{}", &full[..end], suffix)
+}
+
 impl SqlDialect for PostgresDialect {
     fn kind(&self) -> DatabaseKind {
         DatabaseKind::PostgreSql
+    }
+
+    fn large_in_uses_array_param(&self) -> bool {
+        true
     }
 
     fn quote_ident(&self, ident: &str) -> String {
@@ -331,13 +421,23 @@ impl PgMutationExecutor {
         dialect: &PostgresDialect,
         entities: &[&EntityDescriptor],
     ) -> Result<(), MutationExecutorError> {
-        let client = self
+        let mut client = self
             .pool
             .get()
             .await
             .map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
-        for sql in dialect.schema_setup_sqls() {
-            client.execute(*sql, &[]).await?;
+        {
+            let transaction = client.transaction().await?;
+            transaction
+                .query_one(
+                    "SELECT pg_advisory_xact_lock(hashtextextended('teaql-schema-setup', 0))",
+                    &[],
+                )
+                .await?;
+            for sql in dialect.schema_setup_sqls() {
+                transaction.execute(*sql, &[]).await?;
+            }
+            transaction.commit().await?;
         }
         self.ensure_id_space_table(DEFAULT_ID_SPACE_TABLE).await?;
 
@@ -345,23 +445,142 @@ impl PgMutationExecutor {
             if !self.table_exists(&entity.table_name).await? {
                 let sql = dialect.compile_create_table(entity)?;
                 client.execute(&sql, &[]).await?;
-                continue;
-            }
-
-            let existing_columns = self.table_columns(&entity.table_name).await?;
-            for property in &entity.properties {
-                let bare_column = strip_identifier_quotes(&property.column_name).to_lowercase();
-                if existing_columns.contains(&bare_column) {
-                    continue;
+            } else {
+                let existing_columns = self.table_columns(&entity.table_name).await?;
+                for property in &entity.properties {
+                    let bare_column = strip_identifier_quotes(&property.column_name).to_lowercase();
+                    if existing_columns.contains(&bare_column) {
+                        continue;
+                    }
+                    let sql = dialect.compile_add_column(entity, property)?;
+                    client.execute(&sql, &[]).await?;
                 }
-                let sql = dialect.compile_add_column(entity, property)?;
-                client.execute(&sql, &[]).await?;
             }
 
             for sql in dialect.schema_indexes_sqls(entity)? {
                 client.execute(&sql, &[]).await?;
             }
+            for sql in dialect.relation_indexes_sqls(entity) {
+                client.execute(&sql, &[]).await?;
+            }
         }
+
+        // Install constraints only after every table and column exists, so
+        // descriptor registration order does not affect schema creation.
+        for entity in entities {
+            for relation in &entity.relations {
+                let Some(target) = entities
+                    .iter()
+                    .copied()
+                    .find(|candidate| candidate.name == relation.target_entity)
+                else {
+                    // A module may intentionally reference an entity supplied by
+                    // another module or service. That remains a logical relation.
+                    continue;
+                };
+                if entity.data_service != target.data_service {
+                    // Cross-data-source relations cannot be represented by a
+                    // database-local foreign-key constraint.
+                    continue;
+                }
+                let (source, source_key, referenced, referenced_key) = if relation.many {
+                    (target, &relation.foreign_key, *entity, &relation.local_key)
+                } else {
+                    (*entity, &relation.local_key, target, &relation.foreign_key)
+                };
+                let source_property = source.property_by_name(source_key).ok_or_else(|| {
+                    MutationExecutorError::Bind(format!(
+                        "cannot ensure relation {}.{}: source key {}.{} does not exist",
+                        entity.name, relation.name, source.name, source_key
+                    ))
+                })?;
+                let referenced_property =
+                    referenced.property_by_name(referenced_key).ok_or_else(|| {
+                        MutationExecutorError::Bind(format!(
+                            "cannot ensure relation {}.{}: referenced key {}.{} does not exist",
+                            entity.name, relation.name, referenced.name, referenced_key
+                        ))
+                    })?;
+                self.ensure_foreign_key(
+                    &source.table_name,
+                    &source_property.column_name,
+                    &referenced.table_name,
+                    &referenced_property.column_name,
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn ensure_foreign_key(
+        &self,
+        source_table: &str,
+        source_column: &str,
+        referenced_table: &str,
+        referenced_column: &str,
+    ) -> Result<(), MutationExecutorError> {
+        let semantic_key = format!(
+            "teaql-fk:{source_table}:{source_column}:{referenced_table}:{referenced_column}:a:a"
+        );
+        let mut client = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
+        let transaction = client.transaction().await?;
+        transaction
+            .query_one(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                &[&semantic_key],
+            )
+            .await?;
+        let exists: bool = transaction
+            .query_one(
+                "SELECT EXISTS (
+                    SELECT 1
+                      FROM pg_constraint c
+                      JOIN pg_class st ON st.oid = c.conrelid
+                      JOIN pg_namespace sn ON sn.oid = st.relnamespace
+                      JOIN pg_class rt ON rt.oid = c.confrelid
+                      JOIN pg_namespace rn ON rn.oid = rt.relnamespace
+                      JOIN pg_attribute sc ON sc.attrelid = c.conrelid AND sc.attnum = c.conkey[1]
+                      JOIN pg_attribute rc ON rc.attrelid = c.confrelid AND rc.attnum = c.confkey[1]
+                     WHERE c.contype = 'f'
+                       AND sn.nspname = current_schema()
+                       AND rn.nspname = current_schema()
+                       AND st.relname = $1 AND sc.attname = $2
+                       AND rt.relname = $3 AND rc.attname = $4
+                       AND cardinality(c.conkey) = 1 AND cardinality(c.confkey) = 1
+                       AND c.confupdtype = 'a' AND c.confdeltype = 'a'
+                )",
+                &[
+                    &strip_identifier_quotes(source_table),
+                    &strip_identifier_quotes(source_column),
+                    &strip_identifier_quotes(referenced_table),
+                    &strip_identifier_quotes(referenced_column),
+                ],
+            )
+            .await?
+            .try_get(0)?;
+        if !exists {
+            let constraint_name = postgres_foreign_key_name(
+                source_table,
+                source_column,
+                referenced_table,
+                referenced_column,
+            );
+            let sql = format!(
+                "ALTER TABLE {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({})",
+                quote_ident(source_table),
+                quote_ident(&constraint_name),
+                quote_ident(source_column),
+                quote_ident(referenced_table),
+                quote_ident(referenced_column),
+            );
+            transaction.execute(&sql, &[]).await?;
+        }
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -560,21 +779,26 @@ pub async fn ensure_postgres_schema_for(
 mod streaming_tests {
     use super::*;
     use futures_util::StreamExt;
+    use teaql_core::RelationDescriptor;
     use teaql_sql::{SqlTransport, StreamingSqlTransport};
+
+    fn configured_pool(url: String) -> Pool {
+        let mut config = deadpool_postgres::Config::new();
+        config.url = Some(url);
+        config
+            .create_pool(
+                Some(deadpool_postgres::Runtime::Tokio1),
+                tokio_postgres::NoTls,
+            )
+            .unwrap()
+    }
 
     #[tokio::test]
     async fn streams_from_real_postgres_when_configured() {
         let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
             return;
         };
-        let mut config = deadpool_postgres::Config::new();
-        config.url = Some(url);
-        let pool = config
-            .create_pool(
-                Some(deadpool_postgres::Runtime::Tokio1),
-                tokio_postgres::NoTls,
-            )
-            .unwrap();
+        let pool = configured_pool(url);
         let executor = PgMutationExecutor::new(pool);
         let query = CompiledQuery {
             sql: "SELECT id FROM (VALUES (1), (2), (3), (4), (5)) AS fixture(id) ORDER BY id"
@@ -653,6 +877,193 @@ mod streaming_tests {
                 params: vec![],
                 comment: None,
             })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn teaql_long_binds_to_legacy_postgres_int4_scalars_and_arrays() {
+        let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let pool = configured_pool(url);
+        let executor = PgMutationExecutor::new(pool);
+        for sql in [
+            "DROP TABLE IF EXISTS teaql_int4_binding_fixture",
+            "CREATE TABLE teaql_int4_binding_fixture(id INTEGER PRIMARY KEY)",
+        ] {
+            executor
+                .execute_sql(&CompiledQuery {
+                    sql: sql.to_owned(),
+                    params: vec![],
+                    comment: None,
+                })
+                .await
+                .unwrap();
+        }
+        for id in [1_i64, i64::from(i32::MAX)] {
+            executor
+                .execute_sql(&CompiledQuery {
+                    sql: "INSERT INTO teaql_int4_binding_fixture(id) VALUES ($1)".to_owned(),
+                    params: vec![Value::I64(id)],
+                    comment: None,
+                })
+                .await
+                .unwrap();
+        }
+        let rows = executor
+            .fetch_all_compact_sql(&CompiledQuery {
+                sql: "SELECT id FROM teaql_int4_binding_fixture WHERE id = ANY($1) ORDER BY id"
+                    .to_owned(),
+                params: vec![Value::List(vec![
+                    Value::U64(1),
+                    Value::U64(i32::MAX as u64),
+                ])],
+                comment: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].get("id"), Some(&Value::I64(1)));
+
+        let overflow = executor
+            .fetch_all_compact_sql(&CompiledQuery {
+                sql: "SELECT id FROM teaql_int4_binding_fixture WHERE id = $1".to_owned(),
+                params: vec![Value::I64(i64::from(i32::MAX) + 1)],
+                comment: None,
+            })
+            .await;
+        assert!(overflow.is_err());
+        executor
+            .execute_sql(&CompiledQuery {
+                sql: "DROP TABLE teaql_int4_binding_fixture".to_owned(),
+                params: vec![],
+                comment: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_schema_creates_relation_index_on_first_run_and_is_idempotent() {
+        let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let pool = configured_pool(url);
+        let client = pool.get().await.unwrap();
+        client
+            .batch_execute("DROP TABLE IF EXISTS teaql_relation_index_fixture")
+            .await
+            .unwrap();
+
+        let entity = EntityDescriptor::new("RelationIndexFixture")
+            .table_name("teaql_relation_index_fixture")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(PropertyDescriptor::new("version", DataType::I64).version())
+            .property(PropertyDescriptor::new("vendor_id", DataType::U64).not_null())
+            .relation(
+                RelationDescriptor::new("vendor", "Vendor")
+                    .local_key("vendor_id")
+                    .foreign_key("id"),
+            );
+        let executor = PgMutationExecutor::new(pool.clone());
+
+        executor
+            .ensure_schema(&PostgresDialect, &[&entity])
+            .await
+            .unwrap();
+        executor
+            .ensure_schema(&PostgresDialect, &[&entity])
+            .await
+            .unwrap();
+
+        let rows = client
+            .query(
+                "SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND tablename = 'teaql_relation_index_fixture' AND indexdef LIKE '%(vendor_id, id DESC)%'",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+
+        client
+            .batch_execute("DROP TABLE teaql_relation_index_fixture")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_schema_creates_foreign_key_once_by_semantics() {
+        let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let pool = configured_pool(url);
+        let client = pool.get().await.unwrap();
+        client
+            .batch_execute(
+                "DROP TABLE IF EXISTS teaql_fk_child_fixture;
+                 DROP TABLE IF EXISTS teaql_fk_parent_fixture;",
+            )
+            .await
+            .unwrap();
+
+        let parent = EntityDescriptor::new("FkParentFixture")
+            .table_name("teaql_fk_parent_fixture")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .relation(
+                RelationDescriptor::new("children", "FkChildFixture")
+                    .local_key("id")
+                    .foreign_key("parent_id")
+                    .many(),
+            );
+        let child = EntityDescriptor::new("FkChildFixture")
+            .table_name("teaql_fk_child_fixture")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(PropertyDescriptor::new("parent_id", DataType::U64).not_null())
+            .relation(
+                RelationDescriptor::new("parent", "FkParentFixture")
+                    .local_key("parent_id")
+                    .foreign_key("id"),
+            );
+        let executor = PgMutationExecutor::new(pool.clone());
+
+        executor
+            .ensure_schema(&PostgresDialect, &[&child, &parent])
+            .await
+            .unwrap();
+        executor
+            .ensure_schema(&PostgresDialect, &[&parent, &child])
+            .await
+            .unwrap();
+
+        let count: i64 = client
+            .query_one(
+                "SELECT COUNT(*)
+                   FROM pg_constraint c
+                   JOIN pg_class t ON t.oid = c.conrelid
+                  WHERE c.contype = 'f'
+                    AND t.relname = 'teaql_fk_child_fixture'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .try_get(0)
+            .unwrap();
+        assert_eq!(count, 1);
+
+        let violation = client
+            .execute(
+                "INSERT INTO teaql_fk_child_fixture(id, parent_id) VALUES (1, 999)",
+                &[],
+            )
+            .await;
+        assert!(violation.is_err());
+
+        client
+            .batch_execute(
+                "DROP TABLE teaql_fk_child_fixture;
+                 DROP TABLE teaql_fk_parent_fixture;",
+            )
             .await
             .unwrap();
     }
@@ -1015,6 +1426,76 @@ impl tokio_postgres::types::ToSql for PgTimestamp {
     tokio_postgres::types::to_sql_checked!();
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PgInteger(i64);
+
+impl tokio_postgres::types::ToSql for PgInteger {
+    fn to_sql(
+        &self,
+        ty: &tokio_postgres::types::Type,
+        out: &mut bytes::BytesMut,
+    ) -> Result<tokio_postgres::types::IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        match *ty {
+            tokio_postgres::types::Type::INT2 => i16::try_from(self.0)?.to_sql(ty, out),
+            tokio_postgres::types::Type::INT4 => i32::try_from(self.0)?.to_sql(ty, out),
+            tokio_postgres::types::Type::INT8 => self.0.to_sql(ty, out),
+            _ => Err(format!("integer cannot be encoded as PostgreSQL type {ty}").into()),
+        }
+    }
+
+    fn accepts(ty: &tokio_postgres::types::Type) -> bool {
+        matches!(
+            *ty,
+            tokio_postgres::types::Type::INT2
+                | tokio_postgres::types::Type::INT4
+                | tokio_postgres::types::Type::INT8
+        )
+    }
+
+    tokio_postgres::types::to_sql_checked!();
+}
+
+#[derive(Debug, Clone)]
+struct PgIntegerList(Vec<i64>);
+
+impl tokio_postgres::types::ToSql for PgIntegerList {
+    fn to_sql(
+        &self,
+        ty: &tokio_postgres::types::Type,
+        out: &mut bytes::BytesMut,
+    ) -> Result<tokio_postgres::types::IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        match *ty {
+            tokio_postgres::types::Type::INT2_ARRAY => self
+                .0
+                .iter()
+                .copied()
+                .map(i16::try_from)
+                .collect::<Result<Vec<_>, _>>()?
+                .to_sql(ty, out),
+            tokio_postgres::types::Type::INT4_ARRAY => self
+                .0
+                .iter()
+                .copied()
+                .map(i32::try_from)
+                .collect::<Result<Vec<_>, _>>()?
+                .to_sql(ty, out),
+            tokio_postgres::types::Type::INT8_ARRAY => self.0.to_sql(ty, out),
+            _ => Err(format!("integer list cannot be encoded as PostgreSQL type {ty}").into()),
+        }
+    }
+
+    fn accepts(ty: &tokio_postgres::types::Type) -> bool {
+        matches!(
+            *ty,
+            tokio_postgres::types::Type::INT2_ARRAY
+                | tokio_postgres::types::Type::INT4_ARRAY
+                | tokio_postgres::types::Type::INT8_ARRAY
+        )
+    }
+
+    tokio_postgres::types::to_sql_checked!();
+}
+
 struct PgArgs {
     values: Vec<Box<dyn tokio_postgres::types::ToSql + Sync + Send>>,
 }
@@ -1033,12 +1514,12 @@ fn bind_pg(args: &mut PgArgs, value: &Value) -> Result<(), MutationExecutorError
             args.add(PgNull);
         }
         Value::Bool(v) => args.add(*v),
-        Value::I64(v) => args.add(*v),
+        Value::I64(v) => args.add(PgInteger(*v)),
         Value::U64(v) => {
             let v = i64::try_from(*v).map_err(|_| {
                 MutationExecutorError::Bind(format!("u64 value {v} exceeds i64 range"))
             })?;
-            args.add(v);
+            args.add(PgInteger(v));
         }
         Value::F64(v) => args.add(*v),
         Value::Decimal(v) => args.add(*v),
@@ -1092,7 +1573,7 @@ fn bind_pg_list(args: &mut PgArgs, values: &[Value]) -> Result<(), MutationExecu
                     _ => Err(MutationExecutorError::UnsupportedValue("mixed i64 list")),
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            args.add(values);
+            args.add(PgIntegerList(values));
         }
         Value::U64(_) => {
             let values = values
@@ -1104,7 +1585,7 @@ fn bind_pg_list(args: &mut PgArgs, values: &[Value]) -> Result<(), MutationExecu
                     _ => Err(MutationExecutorError::UnsupportedValue("mixed u64 list")),
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            args.add(values);
+            args.add(PgIntegerList(values));
         }
         Value::F64(_) => {
             let values = values
@@ -1275,7 +1756,7 @@ fn decode_pg_values(row: &tokio_postgres::Row) -> Result<Vec<Value>, MutationExe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use teaql_core::{DeleteCommand, RecoverCommand};
+    use teaql_core::{DeleteCommand, RecoverCommand, RelationDescriptor};
 
     fn entity() -> EntityDescriptor {
         EntityDescriptor::new("Order")
@@ -1353,14 +1834,12 @@ mod tests {
                 .any(|sql| sql.contains("CREATE OR REPLACE FUNCTION soundex"))
         );
 
+        let values = (1_u64..=21).map(Value::from).collect::<Vec<_>>();
         let query = PostgresDialect
             .compile_select(
                 &entity(),
                 &SelectQuery::new("Order")
-                    .filter(Expr::in_large(
-                        "id",
-                        vec![Value::from(1_u64), Value::from(2_u64)],
-                    ))
+                    .filter(Expr::in_list("id", values.clone()))
                     .order_asc("id"),
             )
             .unwrap();
@@ -1368,9 +1847,67 @@ mod tests {
             query.sql,
             "SELECT id, version, name FROM orders WHERE (id = ANY($1)) ORDER BY id ASC"
         );
+        assert_eq!(query.params, vec![Value::List(values)]);
+    }
+
+    #[test]
+    fn postgres_schema_adds_full_foreign_key_id_desc_index() {
+        let trip = EntityDescriptor::new("Trip")
+            .table_name("trip_data")
+            .property(
+                PropertyDescriptor::new("id", DataType::U64)
+                    .column_name("id")
+                    .id()
+                    .not_null(),
+            )
+            .property(
+                PropertyDescriptor::new("vendor_id", DataType::U64)
+                    .column_name("vendor")
+                    .not_null(),
+            )
+            .relation(
+                RelationDescriptor::new("vendor", "Vendor")
+                    .local_key("vendor_id")
+                    .foreign_key("id"),
+            )
+            // A second relation through the same key must not duplicate DDL.
+            .relation(
+                RelationDescriptor::new("billing_vendor", "Vendor")
+                    .local_key("vendor_id")
+                    .foreign_key("id"),
+            )
+            // Reverse relations belong to the target table and are ignored here.
+            .relation(
+                RelationDescriptor::new("items", "TripItem")
+                    .local_key("id")
+                    .foreign_key("trip_id")
+                    .many(),
+            );
+
         assert_eq!(
-            query.params,
-            vec![Value::List(vec![Value::U64(1), Value::U64(2)])]
+            PostgresDialect.relation_indexes_sqls(&trip),
+            vec![
+                "CREATE INDEX IF NOT EXISTS IDX_TRIP_DATA_VENDOR_ID_DESC ON trip_data (vendor, id DESC)"
+            ]
         );
+    }
+
+    #[test]
+    fn postgres_relation_index_name_is_stable_and_within_identifier_limit() {
+        let name = postgres_index_name(
+            "an_extremely_long_generated_transaction_history_table_name",
+            "an_equally_long_business_owner_reference_identifier",
+            "id",
+        );
+        assert!(name.len() <= 63);
+        assert_eq!(
+            name,
+            postgres_index_name(
+                "an_extremely_long_generated_transaction_history_table_name",
+                "an_equally_long_business_owner_reference_identifier",
+                "id",
+            )
+        );
+        assert!(name.ends_with("_889B21BBED38CC82"));
     }
 }

@@ -23,9 +23,9 @@ mod telemetry_opentelemetry;
 
 pub use context::{
     ContextEntityRef, ContextRootError, ContinuousPageCursor, ContinuousPageCursorStore, DataStore,
-    InMemoryContinuousPageCursorStore, InMemoryDataStore, InfoLogEntry, LogPayload,
-    RemoteLockProvider, SchemaProvider, SqlLogEntry, SqlLogOperation, SqlLogOptions,
-    UnifiedLogBuffer, UnifiedLogEntry, UserContext,
+    IdSetStore, InMemoryContinuousPageCursorStore, InMemoryDataStore, InMemoryIdSetStore,
+    InfoLogEntry, LogPayload, RemoteLockProvider, RetainedIdSet, SchemaProvider, SqlLogEntry,
+    SqlLogOperation, SqlLogOptions, UnifiedLogBuffer, UnifiedLogEntry, UserContext,
 };
 pub use data_service::{
     AggregationCacheBackend, EntityDataService, GraphTransactionBoundary, InMemoryAggregationCache,
@@ -50,8 +50,7 @@ pub use graph::{
 pub use i18n::I18nCatalog;
 pub(crate) use id::local_id_generator;
 pub use id::{
-    AtomicCounterIdGenerator, InternalIdGenerator, SnowflakeIdGenerator,
-    canonical_id_space_entity,
+    AtomicCounterIdGenerator, InternalIdGenerator, SnowflakeIdGenerator, canonical_id_space_entity,
 };
 pub use inmemory_engine::{ExprEvaluator, InMemoryQueryEngine};
 pub use language::{
@@ -222,6 +221,34 @@ mod tests {
         affected: u64,
         rows: Mutex<VecDeque<Vec<Record>>>,
         queries: Mutex<Vec<String>>,
+    }
+
+    #[derive(Debug, Default)]
+    struct IdSetQueueExecutor {
+        rows: Mutex<VecDeque<Vec<Record>>>,
+        queries: Mutex<Vec<SelectQuery>>,
+    }
+
+    #[derive(Debug, Clone, Default)]
+    struct ConcurrentIdSetExecutor {
+        id_queries: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    struct UnavailableIdSetStore;
+
+    #[async_trait::async_trait]
+    impl crate::IdSetStore for UnavailableIdSetStore {
+        async fn get(&self, _query_key: &str) -> Result<Option<crate::RetainedIdSet>, String> {
+            Err("unavailable".to_owned())
+        }
+
+        async fn put(&self, _id_set: crate::RetainedIdSet) -> Result<(), String> {
+            Err("unavailable".to_owned())
+        }
+
+        async fn invalidate(&self, _query_key: &str) -> Result<(), String> {
+            Err("unavailable".to_owned())
+        }
     }
 
     #[derive(Debug, Default)]
@@ -505,7 +532,8 @@ mod tests {
                 (String::from("id"), Value::U64(self.id)),
                 (String::from("version"), Value::I64(self.version)),
                 (String::from("name"), Value::Text(self.name)),
-            ]).into()
+            ])
+            .into()
         }
     }
 
@@ -555,7 +583,12 @@ mod tests {
     impl QueryExecutor for StubExecutor {
         async fn query(&self, _request: QueryRequest) -> Result<QueryResult, Self::Error> {
             Ok(QueryResult {
-                rows: self.rows.clone().into_iter().map(teaql_core::CompactRow::from_map).collect(),
+                rows: self
+                    .rows
+                    .clone()
+                    .into_iter()
+                    .map(teaql_core::CompactRow::from_map)
+                    .collect(),
                 metadata: ExecutionMetadata {
                     debug_query: None,
                     backend: "stub".to_owned(),
@@ -610,7 +643,12 @@ mod tests {
         async fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
             self.queries.lock().unwrap().push(request.query);
             Ok(QueryResult {
-                rows: self.rows.clone().into_iter().map(teaql_core::CompactRow::from_map).collect(),
+                rows: self
+                    .rows
+                    .clone()
+                    .into_iter()
+                    .map(teaql_core::CompactRow::from_map)
+                    .collect(),
                 metadata: ExecutionMetadata {
                     debug_query: None,
                     backend: "capture".to_owned(),
@@ -648,8 +686,15 @@ mod tests {
             let sql_approx = format!("SELECT ... FROM {} ...", request.query.entity);
             self.queries.lock().unwrap().push(sql_approx);
             Ok(QueryResult {
-                rows: self.rows.lock().unwrap().pop_front().unwrap_or_default()
-                    .into_iter().map(teaql_core::CompactRow::from_map).collect(),
+                rows: self
+                    .rows
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(teaql_core::CompactRow::from_map)
+                    .collect(),
                 metadata: ExecutionMetadata {
                     debug_query: None,
                     backend: "queue".to_owned(),
@@ -689,6 +734,102 @@ mod tests {
                     params: Vec::new(),
                 },
             })
+        }
+    }
+
+    impl DataServiceExecutor for IdSetQueueExecutor {
+        type Error = StubError;
+
+        fn capabilities(&self) -> DataServiceCapabilities {
+            DataServiceCapabilities::default()
+        }
+    }
+
+    impl QueryExecutor for IdSetQueueExecutor {
+        async fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
+            self.queries.lock().unwrap().push(request.query);
+            let rows = self.rows.lock().unwrap().pop_front().unwrap_or_default();
+            Ok(QueryResult {
+                rows: rows
+                    .into_iter()
+                    .map(teaql_core::CompactRow::from_map)
+                    .collect(),
+                metadata: ExecutionMetadata {
+                    debug_query: None,
+                    backend: "id-set-queue".to_owned(),
+                    operation: DataServiceOperation::Query,
+                    started_at: std::time::SystemTime::now(),
+                    ended_at: std::time::SystemTime::now(),
+                    affected_rows: None,
+                    result_count: None,
+                    trace_chain: Vec::new(),
+                    comment: None,
+                    backend_request_id: None,
+                    parameterized_query: None,
+                    params: Vec::new(),
+                },
+            })
+        }
+    }
+
+    impl MutationExecutor for IdSetQueueExecutor {
+        async fn mutate(&self, _request: MutationRequest) -> Result<MutationResult, Self::Error> {
+            unreachable!("ID set query test does not mutate")
+        }
+    }
+
+    impl DataServiceExecutor for ConcurrentIdSetExecutor {
+        type Error = StubError;
+
+        fn capabilities(&self) -> DataServiceCapabilities {
+            DataServiceCapabilities::default()
+        }
+    }
+
+    impl QueryExecutor for ConcurrentIdSetExecutor {
+        async fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
+            let id_only = request.query.projection == ["id"];
+            let rows = if id_only {
+                self.id_queries
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                vec![
+                    Record::from([(String::from("id"), Value::U64(1))]),
+                    Record::from([(String::from("id"), Value::U64(2))]),
+                ]
+            } else {
+                vec![Record::from([
+                    (String::from("id"), Value::U64(1)),
+                    (String::from("version"), Value::I64(1)),
+                    (String::from("name"), Value::Text("order-1".to_owned())),
+                ])]
+            };
+            Ok(QueryResult {
+                rows: rows
+                    .into_iter()
+                    .map(teaql_core::CompactRow::from_map)
+                    .collect(),
+                metadata: ExecutionMetadata {
+                    debug_query: None,
+                    backend: "concurrent-id-set".to_owned(),
+                    operation: DataServiceOperation::Query,
+                    started_at: std::time::SystemTime::now(),
+                    ended_at: std::time::SystemTime::now(),
+                    affected_rows: None,
+                    result_count: None,
+                    trace_chain: Vec::new(),
+                    comment: None,
+                    backend_request_id: None,
+                    parameterized_query: None,
+                    params: Vec::new(),
+                },
+            })
+        }
+    }
+
+    impl MutationExecutor for ConcurrentIdSetExecutor {
+        async fn mutate(&self, _request: MutationRequest) -> Result<MutationResult, Self::Error> {
+            unreachable!("ID set concurrency test does not mutate")
         }
     }
 
@@ -2332,6 +2473,402 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn id_set_pagination_reuses_ordered_ids_and_returns_exact_count() {
+        let id_rows = (1_u64..=100)
+            .map(|id| Record::from([(String::from("id"), Value::U64(id))]))
+            .collect::<Vec<_>>();
+        let entity_rows = |range: std::ops::RangeInclusive<u64>| {
+            range
+                .map(|id| {
+                    Record::from([
+                        (String::from("id"), Value::U64(id)),
+                        (String::from("version"), Value::I64(1)),
+                        (String::from("name"), Value::Text(format!("order-{id}"))),
+                    ])
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut context = UserContext::new()
+            .with_user_identifier("id-set-test:tenant-1:user-1")
+            .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(IdSetQueueExecutor {
+            rows: Mutex::new(VecDeque::from([
+                id_rows,
+                entity_rows(21..=30),
+                entity_rows(51..=60),
+            ])),
+            queries: Mutex::new(Vec::new()),
+        });
+        let repo = context
+            .entity_data_service::<IdSetQueueExecutor>("Order")
+            .unwrap();
+
+        let first = repo
+            .fetch_enhanced_entities_with_relation_aggregates_internal::<Order>(
+                &SelectQuery::new("Order")
+                    .projects(["id", "version", "name"])
+                    .order_asc("name")
+                    .page(20, 10)
+                    .optimize_pagination_with_id_set_config("orders", 60, 1_000),
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.total_count, Some(100));
+        assert_eq!(first.first().map(|entity| entity.id), Some(21));
+        assert_eq!(context.id_set_plan().as_deref(), Some("ID_SET_BUILD"));
+
+        let second = repo
+            .fetch_enhanced_entities_with_relation_aggregates_internal::<Order>(
+                &SelectQuery::new("Order")
+                    .projects(["id", "version", "name"])
+                    .order_asc("name")
+                    .page(50, 10)
+                    .optimize_pagination_with_id_set_config("orders", 60, 1_000),
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.total_count, Some(100));
+        assert_eq!(second.first().map(|entity| entity.id), Some(51));
+        assert_eq!(context.id_set_plan().as_deref(), Some("ID_SET_HIT"));
+
+        let queries = &context
+            .get_resource::<IdSetQueueExecutor>()
+            .unwrap()
+            .queries
+            .lock()
+            .unwrap();
+        assert_eq!(
+            queries.len(),
+            3,
+            "the second page must not rebuild the ID set"
+        );
+        assert_eq!(queries[0].projection, vec!["id"]);
+        assert_eq!(
+            queries[0].slice.as_ref().and_then(|slice| slice.limit),
+            Some(1_001)
+        );
+        assert_eq!(
+            queries[0].order_by.last().map(|order| order.field.as_str()),
+            Some("id")
+        );
+        assert_eq!(queries[1].slice.as_ref().map(|slice| slice.offset), Some(0));
+        assert!(format!("{:?}", queries[1].filter).contains("U64(21)"));
+        assert!(format!("{:?}", queries[2].filter).contains("U64(51)"));
+    }
+
+    #[tokio::test]
+    async fn id_set_pagination_limit_overflow_falls_back_without_false_count() {
+        let mut context = UserContext::new()
+            .with_user_identifier("id-set-overflow-test")
+            .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(IdSetQueueExecutor {
+            rows: Mutex::new(VecDeque::from([
+                (1_u64..=4)
+                    .map(|id| Record::from([(String::from("id"), Value::U64(id))]))
+                    .collect(),
+                vec![Record::from([
+                    (String::from("id"), Value::U64(1)),
+                    (String::from("version"), Value::I64(1)),
+                    (String::from("name"), Value::Text("order-1".to_owned())),
+                ])],
+            ])),
+            queries: Mutex::new(Vec::new()),
+        });
+        let repo = context
+            .entity_data_service::<IdSetQueueExecutor>("Order")
+            .unwrap();
+        let rows = repo
+            .fetch_enhanced_entities_with_relation_aggregates_internal::<Order>(
+                &SelectQuery::new("Order")
+                    .projects(["id", "version", "name"])
+                    .order_asc("id")
+                    .page(0, 1)
+                    .optimize_pagination_with_id_set_config("overflow", 60, 3),
+                &[],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(rows.total_count, None);
+        assert_eq!(
+            context.id_set_plan().as_deref(),
+            Some("ID_SET_FALLBACK_LIMIT_EXCEEDED")
+        );
+        assert_eq!(context.id_set_count(), Some(4));
+    }
+
+    #[tokio::test]
+    async fn id_set_pagination_coalesces_concurrent_cache_misses() {
+        let executor = ConcurrentIdSetExecutor::default();
+        let id_queries = executor.id_queries.clone();
+        let store: Arc<dyn crate::IdSetStore> = Arc::new(crate::InMemoryIdSetStore::default());
+        let make_context = |executor: ConcurrentIdSetExecutor| {
+            let mut context = UserContext::new()
+                .with_user_identifier("id-set-single-flight-user")
+                .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
+                .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
+            context.set_id_set_store(store.clone());
+            context.insert_resource(PostgresDialect);
+            context.insert_resource(executor);
+            context
+        };
+        let first_context = make_context(executor.clone());
+        let second_context = make_context(executor);
+        let query = SelectQuery::new("Order")
+            .projects(["id", "version", "name"])
+            .order_asc("id")
+            .page(0, 1)
+            .optimize_pagination_with_id_set_config("single-flight", 60, 100);
+
+        let first = async {
+            first_context
+                .entity_data_service::<ConcurrentIdSetExecutor>("Order")
+                .unwrap()
+                .fetch_enhanced_entities_internal::<Order>(&query)
+                .await
+                .unwrap()
+        };
+        let second = async {
+            second_context
+                .entity_data_service::<ConcurrentIdSetExecutor>("Order")
+                .unwrap()
+                .fetch_enhanced_entities_internal::<Order>(&query)
+                .await
+                .unwrap()
+        };
+        let (first, second) = tokio::join!(first, second);
+
+        assert_eq!(first.total_count, Some(2));
+        assert_eq!(second.total_count, Some(2));
+        assert_eq!(
+            id_queries.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "concurrent misses must share one ID-only build"
+        );
+    }
+
+    #[tokio::test]
+    async fn id_set_pagination_rebuilds_after_ttl_expiry() {
+        let executor = ConcurrentIdSetExecutor::default();
+        let id_queries = executor.id_queries.clone();
+        let mut context = UserContext::new()
+            .with_user_identifier("id-set-ttl-user")
+            .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
+        context.set_id_set_store(Arc::new(crate::InMemoryIdSetStore::default()));
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(executor);
+        let query = SelectQuery::new("Order")
+            .projects(["id", "version", "name"])
+            .order_asc("id")
+            .page(0, 1)
+            .optimize_pagination_with_id_set_config("ttl", 1, 100);
+        let repo = context
+            .entity_data_service::<ConcurrentIdSetExecutor>("Order")
+            .unwrap();
+
+        repo.fetch_enhanced_entities_internal::<Order>(&query)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1_050)).await;
+        repo.fetch_enhanced_entities_internal::<Order>(&query)
+            .await
+            .unwrap();
+
+        assert_eq!(id_queries.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(context.id_set_plan().as_deref(), Some("ID_SET_BUILD"));
+    }
+
+    #[tokio::test]
+    async fn id_set_pagination_isolates_principals_in_a_shared_store() {
+        let executor = ConcurrentIdSetExecutor::default();
+        let id_queries = executor.id_queries.clone();
+        let store: Arc<dyn crate::IdSetStore> = Arc::new(crate::InMemoryIdSetStore::default());
+        let make_context = |user: &str| {
+            let mut context = UserContext::new()
+                .with_user_identifier(user)
+                .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
+                .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
+            context.set_id_set_store(store.clone());
+            context.insert_resource(PostgresDialect);
+            context.insert_resource(executor.clone());
+            context
+        };
+        let first_context = make_context("tenant-1:user-1");
+        let second_context = make_context("tenant-1:user-2");
+        let query = SelectQuery::new("Order")
+            .projects(["id", "version", "name"])
+            .order_asc("id")
+            .page(0, 1)
+            .optimize_pagination_with_id_set_config("principal-isolation", 60, 100);
+
+        first_context
+            .entity_data_service::<ConcurrentIdSetExecutor>("Order")
+            .unwrap()
+            .fetch_enhanced_entities_internal::<Order>(&query)
+            .await
+            .unwrap();
+        second_context
+            .entity_data_service::<ConcurrentIdSetExecutor>("Order")
+            .unwrap()
+            .fetch_enhanced_entities_internal::<Order>(&query)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            id_queries.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "different principals must not share retained IDs"
+        );
+    }
+
+    #[tokio::test]
+    async fn id_set_pagination_retains_empty_exact_result() {
+        let mut context = UserContext::new()
+            .with_user_identifier("id-set-empty-user")
+            .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(IdSetQueueExecutor {
+            rows: Mutex::new(VecDeque::from([Vec::new(), Vec::new()])),
+            queries: Mutex::new(Vec::new()),
+        });
+        let query = SelectQuery::new("Order")
+            .projects(["id", "version", "name"])
+            .order_asc("id")
+            .page(0, 10)
+            .optimize_pagination_with_id_set_config("empty", 60, 100);
+
+        let rows = context
+            .entity_data_service::<IdSetQueueExecutor>("Order")
+            .unwrap()
+            .fetch_enhanced_entities_internal::<Order>(&query)
+            .await
+            .unwrap();
+
+        assert!(rows.is_empty());
+        assert_eq!(rows.total_count, Some(0));
+        assert_eq!(context.id_set_plan().as_deref(), Some("ID_SET_BUILD"));
+    }
+
+    #[tokio::test]
+    async fn id_set_pagination_store_failure_falls_back_without_changing_rows() {
+        let mut context = UserContext::new()
+            .with_user_identifier("id-set-store-failure-user")
+            .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
+        context.set_id_set_store(Arc::new(UnavailableIdSetStore));
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(IdSetQueueExecutor {
+            rows: Mutex::new(VecDeque::from([vec![Record::from([
+                (String::from("id"), Value::U64(7)),
+                (String::from("version"), Value::I64(1)),
+                (String::from("name"), Value::Text("order-7".to_owned())),
+            ])]])),
+            queries: Mutex::new(Vec::new()),
+        });
+        let query = SelectQuery::new("Order")
+            .projects(["id", "version", "name"])
+            .order_asc("id")
+            .page(0, 10)
+            .optimize_pagination_with_id_set_config("unavailable", 60, 100);
+
+        let rows = context
+            .entity_data_service::<IdSetQueueExecutor>("Order")
+            .unwrap()
+            .fetch_enhanced_entities_internal::<Order>(&query)
+            .await
+            .unwrap();
+
+        assert_eq!(rows.first().map(|row| row.id), Some(7));
+        assert_eq!(rows.total_count, None);
+        assert_eq!(
+            context.id_set_plan().as_deref(),
+            Some("ID_SET_FALLBACK_STORE_UNAVAILABLE")
+        );
+    }
+
+    #[tokio::test]
+    async fn id_set_pagination_does_not_shift_page_when_an_entity_disappears() {
+        let mut context = UserContext::new()
+            .with_user_identifier("id-set-delete-user")
+            .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(IdSetQueueExecutor {
+            rows: Mutex::new(VecDeque::from([
+                vec![
+                    Record::from([(String::from("id"), Value::U64(1))]),
+                    Record::from([(String::from("id"), Value::U64(2))]),
+                ],
+                vec![Record::from([
+                    (String::from("id"), Value::U64(2)),
+                    (String::from("version"), Value::I64(1)),
+                    (String::from("name"), Value::Text("order-2".to_owned())),
+                ])],
+            ])),
+            queries: Mutex::new(Vec::new()),
+        });
+        let query = SelectQuery::new("Order")
+            .projects(["id", "version", "name"])
+            .order_asc("id")
+            .page(0, 2)
+            .optimize_pagination_with_id_set_config("delete", 60, 100);
+
+        let rows = context
+            .entity_data_service::<IdSetQueueExecutor>("Order")
+            .unwrap()
+            .fetch_enhanced_entities_internal::<Order>(&query)
+            .await
+            .unwrap();
+
+        assert_eq!(rows.total_count, Some(2));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows.first().map(|row| row.id), Some(2));
+    }
+
+    #[tokio::test]
+    async fn id_set_pagination_unsupported_shape_falls_back_visibly() {
+        let mut context = UserContext::new()
+            .with_user_identifier("id-set-unsupported-user")
+            .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(IdSetQueueExecutor {
+            rows: Mutex::new(VecDeque::from([vec![Record::from([
+                (String::from("id"), Value::U64(9)),
+                (String::from("version"), Value::I64(1)),
+                (String::from("name"), Value::Text("order-9".to_owned())),
+            ])]])),
+            queries: Mutex::new(Vec::new()),
+        });
+        let query = SelectQuery::new("Order")
+            .projects(["id", "version", "name"])
+            .order_expr_asc(Expr::column("name"))
+            .page(0, 10)
+            .optimize_pagination_with_id_set_config("unsupported", 60, 100);
+
+        let rows = context
+            .entity_data_service::<IdSetQueueExecutor>("Order")
+            .unwrap()
+            .fetch_enhanced_entities_internal::<Order>(&query)
+            .await
+            .unwrap();
+
+        assert_eq!(rows.first().map(|row| row.id), Some(9));
+        assert_eq!(
+            context.id_set_plan().as_deref(),
+            Some("ID_SET_FALLBACK_UNSUPPORTED_SHAPE")
+        );
+    }
+
+    #[tokio::test]
     async fn aggregation_cache_is_namespaced_and_invalidated_after_write() {
         let executor = QueueExecutor {
             affected: 1,
@@ -2602,6 +3139,7 @@ mod tests {
             child_enhancements: Vec::new(),
             stream_config: None,
             continuous_page_fetch: None,
+            id_set_pagination: None,
         };
 
         let rows = data_service.fetch_all(&query).unwrap();

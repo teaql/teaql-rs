@@ -397,6 +397,8 @@ fn reject_privileged_input(payload: &JsonValue) -> Result<(), String> {
         "hard_limit",
         "hardLimitValue",
         "hard_limit_value",
+        "idSetPagination",
+        "id_set_pagination",
     ];
 
     fn reject_at(value: &JsonValue, path: &str, forbidden: &[&str]) -> Result<(), String> {
@@ -677,6 +679,19 @@ mod tests {
             }))
             .unwrap_err();
             assert!(nested_error.contains(field));
+        }
+    }
+
+    #[test]
+    fn client_cannot_enable_id_set_pagination_at_any_depth() {
+        for field in ["idSetPagination", "id_set_pagination"] {
+            assert!(reject_privileged_input(&json!({(field): {"maxIds": 5_000_000}})).is_err());
+            assert!(
+                reject_privileged_input(&json!({
+                    "relations": [{"query": {(field): {"namespace": "attacker"}}}]
+                }))
+                .is_err()
+            );
         }
     }
 

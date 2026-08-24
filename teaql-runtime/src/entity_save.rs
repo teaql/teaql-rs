@@ -193,7 +193,8 @@ fn graph_node_from_values(
                 node.relations.entry(field).or_default();
             }
             Value::Object(record) => {
-                let child = graph_node_from_values(context, &relation.target_entity, record.into())?;
+                let child =
+                    graph_node_from_values(context, &relation.target_entity, record.into())?;
                 node.relations.entry(field).or_default().push(child);
             }
             Value::List(values) => {

@@ -32,9 +32,9 @@ pub use mutation::{
 pub use naming::default_table_name;
 pub use query::{
     Aggregate, AggregateFunction, AggregationCacheOptions, CompactRow, ContinuousPageFetchOptions,
-    NamedExpr, ObjectGroupBy, OrderBy, PARTITION_RANK_PROPERTY, RawSqlProjection, Record,
-    RelationAggregate, RelationLoad, SelectQuery, Slice, SortDirection, StreamConfig,
-    compact_row_to_json_value, record_to_json_value,
+    IdSetPaginationOptions, NamedExpr, ObjectGroupBy, OrderBy, PARTITION_RANK_PROPERTY,
+    RawSqlProjection, Record, RelationAggregate, RelationLoad, SelectQuery, Slice, SortDirection,
+    StreamConfig, compact_row_to_json_value, record_to_json_value,
 };
 pub use safe_expression::{SafeExpression, TeaqlEmpty};
 pub use trace::TraceNode;
@@ -121,12 +121,13 @@ mod tests {
         assert_eq!(row.unsigned, u32::MAX);
         assert_eq!(row.amount, Decimal::new(12345, 2));
 
-        let signed_overflow = TypedNumberRow::from_compact_row(CompactRow::from_map(Record::from([
-            ("id".to_owned(), Value::U64(1)),
-            ("signed".to_owned(), Value::I64(i64::from(i32::MAX) + 1)),
-            ("unsigned".to_owned(), Value::U64(1)),
-            ("amount".to_owned(), Value::Decimal(Decimal::ONE)),
-        ])));
+        let signed_overflow =
+            TypedNumberRow::from_compact_row(CompactRow::from_map(Record::from([
+                ("id".to_owned(), Value::U64(1)),
+                ("signed".to_owned(), Value::I64(i64::from(i32::MAX) + 1)),
+                ("unsigned".to_owned(), Value::U64(1)),
+                ("amount".to_owned(), Value::Decimal(Decimal::ONE)),
+            ])));
         assert!(
             signed_overflow
                 .unwrap_err()
@@ -134,12 +135,13 @@ mod tests {
                 .contains("out of i32 range")
         );
 
-        let unsigned_negative = TypedNumberRow::from_compact_row(CompactRow::from_map(Record::from([
-            ("id".to_owned(), Value::U64(1)),
-            ("signed".to_owned(), Value::I64(1)),
-            ("unsigned".to_owned(), Value::I64(-1)),
-            ("amount".to_owned(), Value::Decimal(Decimal::ONE)),
-        ])));
+        let unsigned_negative =
+            TypedNumberRow::from_compact_row(CompactRow::from_map(Record::from([
+                ("id".to_owned(), Value::U64(1)),
+                ("signed".to_owned(), Value::I64(1)),
+                ("unsigned".to_owned(), Value::I64(-1)),
+                ("amount".to_owned(), Value::Decimal(Decimal::ONE)),
+            ])));
         assert!(
             unsigned_negative
                 .unwrap_err()
@@ -169,7 +171,10 @@ mod tests {
         assert_eq!(nulls.version, 0);
         assert_eq!(nulls.name, "");
 
-        match OrderRow::from_compact_row(CompactRow::from_map(Record::from([("name".to_owned(), Value::U64(1))]))) {
+        match OrderRow::from_compact_row(CompactRow::from_map(Record::from([(
+            "name".to_owned(),
+            Value::U64(1),
+        )]))) {
             Ok(_) => panic!("wrong field type should fail"),
             Err(err) => assert!(err.message.contains("invalid field name")),
         }
@@ -485,6 +490,32 @@ mod tests {
                 Expr::value(Value::List(vec![Value::from(1_u64)]))
             )
         );
+    }
+
+    #[test]
+    fn ordinary_in_builders_promote_more_than_twenty_values() {
+        let twenty = (1_u64..=20).map(Value::from).collect::<Vec<_>>();
+        let twenty_one = (1_u64..=21).map(Value::from).collect::<Vec<_>>();
+
+        let Expr::Binary { op, .. } = Expr::in_list("id", twenty.clone()) else {
+            panic!("expected IN expression");
+        };
+        assert_eq!(op, BinaryOp::In);
+
+        let Expr::Binary { op, .. } = Expr::in_list("id", twenty_one.clone()) else {
+            panic!("expected large IN expression");
+        };
+        assert_eq!(op, BinaryOp::InLarge);
+
+        let Expr::Binary { op, .. } = Expr::not_in_list("id", twenty) else {
+            panic!("expected NOT IN expression");
+        };
+        assert_eq!(op, BinaryOp::NotIn);
+
+        let Expr::Binary { op, .. } = Expr::not_in_list("id", twenty_one) else {
+            panic!("expected large NOT IN expression");
+        };
+        assert_eq!(op, BinaryOp::NotInLarge);
     }
 
     #[test]

@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::{collections::BTreeMap, future::Future};
 
 use teaql_core::{
-    CompactRow, DeleteCommand, Entity, InsertCommand, RecoverCommand, SelectQuery,
-    SmartList, UpdateCommand,
+    CompactRow, DeleteCommand, Entity, InsertCommand, RecoverCommand, SelectQuery, SmartList,
+    UpdateCommand,
 };
 
 use crate::{

@@ -157,11 +157,11 @@ where
                 && plan.children.iter().all(|child| supported(context, child))
         }
 
-        Ok(query_plans
+        let all_supported = query_plans
             .iter()
             .chain(behavior_plans.iter())
-            .all(|plan| supported(context, plan))
-            .then_some((query_plans, behavior_plans)))
+            .all(|plan| supported(context, plan));
+        Ok(all_supported.then_some((query_plans, behavior_plans)))
     }
 
     pub(crate) fn enhance_relation_aggregates_internal<'b>(
@@ -725,7 +725,6 @@ where
         root: &crate::EntityRoot,
         graph: &mut crate::EntityGraphBuilder,
     ) -> Result<(), DataServiceError<E::Error>> {
-
         // A forward to-one relation only needs its fetched targets installed in the shared
         // identity table. Building owner buckets and then removing them one parent at a time
         // creates a map and one Vec per distinct target without adding information.
@@ -797,12 +796,7 @@ where
             } else {
                 for child in related {
                     context
-                        .decode_compact_entity_into_graph(
-                            &plan.target_entity,
-                            child,
-                            root,
-                            graph,
-                        )
+                        .decode_compact_entity_into_graph(&plan.target_entity, child, root, graph)
                         .map_err(DataServiceError::Entity)?;
                 }
             }
@@ -923,6 +917,11 @@ where
             .clone()
             .unwrap_or_else(|| SelectQuery::new(plan.target_entity.clone()));
         query.entity = plan.target_entity.clone();
+        // The flat hydrator owns the relation tree and recursively loads each child plan into
+        // one shared identity graph. Leaving nested relations on this single-layer query makes
+        // fetch_compact_all_internal hydrate the same subtree first; the flat hydrator then
+        // hydrates it again, causing an exponential number of duplicate relation queries.
+        query.relations.clear();
         ensure_projection(&mut query, &plan.foreign_key);
         for child in &plan.children {
             ensure_projection(&mut query, &child.local_key);
