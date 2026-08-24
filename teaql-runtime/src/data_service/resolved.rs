@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use teaql_core::{
-    AggregationCacheOptions, DeleteCommand, Entity, Expr, InsertCommand, Record, RecoverCommand,
-    RelationAggregate, SelectQuery, SmartList, SortDirection, UpdateCommand, Value,
+    AggregationCacheOptions, CompactRow, DeleteCommand, Entity, Expr, InsertCommand, Record,
+    RecoverCommand, RelationAggregate, SelectQuery, SmartList, SortDirection, UpdateCommand, Value,
 };
 
 use crate::{
@@ -28,6 +28,20 @@ struct ContinuousPageExecution {
     ttl_seconds: u64,
     optimized: bool,
     seek_cursor_id: Option<String>,
+}
+
+fn decode_compact_rows<T: Entity>(
+    rows: Vec<CompactRow>,
+    root: &crate::EntityRoot,
+) -> Result<Vec<T>, teaql_core::EntityError> {
+    let mut entities = Vec::with_capacity(rows.len());
+    for row in rows {
+        entities.push(T::from_compact_row_with_context(
+            row,
+            root as &dyn std::any::Any,
+        )?);
+    }
+    Ok(entities)
 }
 
 impl<'a, E> EntityDataService<'a, E>
@@ -953,11 +967,11 @@ where
         T: Entity,
     {
         let root = crate::EntityRoot::default();
-        self.fetch_all_with_relation_aggregates_internal(query, relation_aggregates)
-            .await?
-            .into_iter()
-            .map(|record| T::from_compact_row_with_context(record, &root as &dyn std::any::Any))
-            .collect::<Result<Vec<_>, _>>()
+        decode_compact_rows::<T>(
+            self.fetch_all_with_relation_aggregates_internal(query, relation_aggregates)
+                .await?,
+            &root,
+        )
             .map(SmartList::from)
             .map_err(DataServiceError::Entity)
     }
@@ -1010,12 +1024,10 @@ where
                 .prepare_for_list()
                 .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
             let root = crate::EntityRoot::default();
-            return self
-                .fetch_prepared_query_owned(query)
-                .await?
-                .into_iter()
-                .map(|record| T::from_compact_row_with_context(record, &root as &dyn std::any::Any))
-                .collect::<Result<Vec<_>, _>>()
+            return decode_compact_rows::<T>(
+                self.fetch_prepared_query_owned(query).await?,
+                &root,
+            )
                 .map(SmartList::from)
                 .map_err(DataServiceError::Entity);
         }
@@ -1050,10 +1062,7 @@ where
                         "identity graph was already frozen",
                     ))
                 })?;
-                return rows
-                    .into_iter()
-                    .map(|row| T::from_compact_row_with_context(row, &root as &dyn std::any::Any))
-                    .collect::<Result<Vec<_>, _>>()
+                return decode_compact_rows::<T>(rows, &root)
                     .map(SmartList::from)
                     .map_err(DataServiceError::Entity);
             }
@@ -1085,9 +1094,7 @@ where
             self.attach_flat_relation_graph(&root_query.entity, &mut rows)
                 .map_err(DataServiceError::Entity)?
         };
-        rows.into_iter()
-            .map(|record| T::from_compact_row_with_context(record, &root as &dyn std::any::Any))
-            .collect::<Result<Vec<_>, _>>()
+        decode_compact_rows::<T>(rows, &root)
             .map(SmartList::from)
             .map_err(DataServiceError::Entity)
     }
@@ -1132,10 +1139,7 @@ where
                         "identity graph was already frozen",
                     ))
                 })?;
-                return rows
-                    .into_iter()
-                    .map(|row| T::from_compact_row_with_context(row, &root as &dyn std::any::Any))
-                    .collect::<Result<Vec<_>, _>>()
+                return decode_compact_rows::<T>(rows, &root)
                     .map(SmartList::from)
                     .map_err(DataServiceError::Entity);
             }
@@ -1160,9 +1164,7 @@ where
             self.attach_flat_relation_graph(&query.entity, &mut rows)
                 .map_err(DataServiceError::Entity)?
         };
-        rows.into_iter()
-            .map(|record| T::from_compact_row_with_context(record, &root as &dyn std::any::Any))
-            .collect::<Result<Vec<_>, _>>()
+        decode_compact_rows::<T>(rows, &root)
             .map(SmartList::from)
             .map_err(DataServiceError::Entity)
     }

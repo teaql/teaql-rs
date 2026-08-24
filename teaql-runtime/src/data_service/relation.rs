@@ -5,7 +5,7 @@ use teaql_core::{
     Aggregate, CompactRow, Expr, ObjectGroupBy, RelationAggregate, RelationLoad, SelectQuery, Value,
 };
 
-use crate::{DataServiceError, RuntimeError};
+use crate::{DataServiceError, MetadataStore, RuntimeError};
 
 use super::{EntityDataService, RelationLoadPlan, helpers::*};
 
@@ -133,8 +133,13 @@ where
         graph: &mut crate::EntityGraphBuilder,
     ) -> Result<(), DataServiceError<E::Error>> {
         for plan in plans {
-            self.hydrate_compact_flat_plan(parent_rows, plan, root, graph)
-                .await?;
+            if plan.children.is_empty() {
+                self.hydrate_compact_flat_leaf(parent_rows, plan, root, graph)
+                    .await?;
+            } else {
+                self.hydrate_compact_flat_plan(parent_rows, plan, root, graph)
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -683,94 +688,126 @@ where
                 .await?;
 
             for child_plan in &plan.children {
-                child_repo
-                    .hydrate_compact_flat_plan(&child_rows, child_plan, root, graph)
-                    .await?;
-            }
-
-            // A forward to-one relation only needs its fetched targets installed in the shared
-            // identity table. Building owner buckets and then removing them one parent at a time
-            // creates a map and one Vec per distinct target without adding information.
-            if !plan.many && plan.local_key != "id" {
-                return self
-                    .data_service
-                    .metadata
-                    .context
-                    .decode_compact_entity_batch_into_graph(
-                        &plan.target_entity,
-                        child_rows,
-                        root,
-                        graph,
-                    )
-                    .map_err(DataServiceError::Entity);
-            }
-
-            let mut buckets: BTreeMap<FlatIdentityKey, Vec<CompactRow>> = BTreeMap::new();
-            for child in child_rows {
-                if let Some(key) = child.get(&plan.foreign_key) {
-                    buckets
-                        .entry(FlatIdentityKey::from_value(key))
-                        .or_default()
-                        .push(child);
-                }
-            }
-
-            let context = self.data_service.metadata.context;
-            for parent in parent_rows {
-                let Some(local_value) = parent.get(&plan.local_key) else {
-                    continue;
-                };
-                let related = buckets
-                    .remove(&FlatIdentityKey::from_value(local_value))
-                    .unwrap_or_default();
-
-                if plan.many || plan.local_key == "id" {
-                    let owner_id = parent.get("id").and_then(Value::try_u64).ok_or_else(|| {
-                        DataServiceError::Entity(teaql_core::EntityError::new(
-                            &plan.parent_entity,
-                            "loaded reverse relation owner is missing its u64 id",
-                        ))
-                    })?;
-                    if plan.many {
-                        context
-                            .decode_compact_entity_list_into_graph(
-                                &plan.target_entity,
-                                related,
-                                root,
-                                graph,
-                                &plan.parent_entity,
-                                owner_id,
-                                &plan.relation_name,
-                            )
-                            .map_err(DataServiceError::Entity)?;
-                    } else {
-                        context
-                            .decode_compact_entity_option_into_graph(
-                                &plan.target_entity,
-                                related,
-                                root,
-                                graph,
-                                &plan.parent_entity,
-                                owner_id,
-                                &plan.relation_name,
-                            )
-                            .map_err(DataServiceError::Entity)?;
-                    }
+                if child_plan.children.is_empty() {
+                    child_repo
+                        .hydrate_compact_flat_leaf(&child_rows, child_plan, root, graph)
+                        .await?;
                 } else {
-                    for child in related {
-                        context
-                            .decode_compact_entity_into_graph(
-                                &plan.target_entity,
-                                child,
-                                root,
-                                graph,
-                            )
-                            .map_err(DataServiceError::Entity)?;
-                    }
+                    child_repo
+                        .hydrate_compact_flat_plan(&child_rows, child_plan, root, graph)
+                        .await?;
                 }
             }
-            Ok(())
+
+            self.install_compact_flat_relation(parent_rows, plan, child_rows, root, graph)
         })
+    }
+
+    async fn hydrate_compact_flat_leaf(
+        &self,
+        parent_rows: &[CompactRow],
+        plan: &RelationLoadPlan,
+        root: &crate::EntityRoot,
+        graph: &mut crate::EntityGraphBuilder,
+    ) -> Result<(), DataServiceError<E::Error>> {
+        let child_repo = self.scoped_data_service_internal(plan.target_entity.clone());
+        let child_rows = self
+            .fetch_relation_rows(&child_repo, plan, parent_rows, true)
+            .await?;
+        self.install_compact_flat_relation(parent_rows, plan, child_rows, root, graph)
+    }
+
+    fn install_compact_flat_relation(
+        &self,
+        parent_rows: &[CompactRow],
+        plan: &RelationLoadPlan,
+        child_rows: Vec<CompactRow>,
+        root: &crate::EntityRoot,
+        graph: &mut crate::EntityGraphBuilder,
+    ) -> Result<(), DataServiceError<E::Error>> {
+
+        // A forward to-one relation only needs its fetched targets installed in the shared
+        // identity table. Building owner buckets and then removing them one parent at a time
+        // creates a map and one Vec per distinct target without adding information.
+        if !plan.many && plan.local_key != "id" {
+            return self
+                .data_service
+                .metadata
+                .context
+                .decode_compact_entity_batch_into_graph(
+                    &plan.target_entity,
+                    child_rows,
+                    root,
+                    graph,
+                )
+                .map_err(DataServiceError::Entity);
+        }
+
+        let mut buckets: BTreeMap<FlatIdentityKey, Vec<CompactRow>> = BTreeMap::new();
+        for child in child_rows {
+            if let Some(key) = child.get(&plan.foreign_key) {
+                buckets
+                    .entry(FlatIdentityKey::from_value(key))
+                    .or_default()
+                    .push(child);
+            }
+        }
+
+        let context = self.data_service.metadata.context;
+        for parent in parent_rows {
+            let Some(local_value) = parent.get(&plan.local_key) else {
+                continue;
+            };
+            let related = buckets
+                .remove(&FlatIdentityKey::from_value(local_value))
+                .unwrap_or_default();
+
+            if plan.many || plan.local_key == "id" {
+                let owner_id = parent.get("id").and_then(Value::try_u64).ok_or_else(|| {
+                    DataServiceError::Entity(teaql_core::EntityError::new(
+                        &plan.parent_entity,
+                        "loaded reverse relation owner is missing its u64 id",
+                    ))
+                })?;
+                if plan.many {
+                    context
+                        .decode_compact_entity_list_into_graph(
+                            &plan.target_entity,
+                            related,
+                            root,
+                            graph,
+                            &plan.parent_entity,
+                            owner_id,
+                            &plan.relation_name,
+                        )
+                        .map_err(DataServiceError::Entity)?;
+                } else {
+                    context
+                        .decode_compact_entity_option_into_graph(
+                            &plan.target_entity,
+                            related,
+                            root,
+                            graph,
+                            &plan.parent_entity,
+                            owner_id,
+                            &plan.relation_name,
+                        )
+                        .map_err(DataServiceError::Entity)?;
+                }
+            } else {
+                for child in related {
+                    context
+                        .decode_compact_entity_into_graph(
+                            &plan.target_entity,
+                            child,
+                            root,
+                            graph,
+                        )
+                        .map_err(DataServiceError::Entity)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn enhance_child_record<'b>(
@@ -831,6 +868,18 @@ where
         let probe = should_use_small_parent_relation_probes(&capabilities, plan, ids.len());
 
         if !probe {
+            let query = if compact {
+                self.query_for_compact_plan(plan, parent_rows)
+            } else {
+                self.query_for_plan(plan, parent_rows)
+            };
+            return child_repo.fetch_compact_all_internal(query).await;
+        }
+
+        // With execution metadata disabled, retain one semantic partition query and let an
+        // embedded provider execute its indexed parent probes behind one executor boundary.
+        // When metadata is enabled we intentionally keep one observable result per SQL probe.
+        if !self.data_service.metadata.capture_execution_metadata() {
             let query = if compact {
                 self.query_for_compact_plan(plan, parent_rows)
             } else {

@@ -70,10 +70,18 @@ impl InMemoryEntityGraphDecoderRegistry {
             T: Entity + IdentifiableEntity + Send + Sync + 'static,
         {
             let graph_root = EntityRoot::fresh_with_weak_graph(root);
-            let entities = rows
-                .into_iter()
-                .map(|row| T::from_compact_row_with_context(row, &graph_root as &dyn std::any::Any))
-                .collect::<Result<Vec<T>, EntityError>>()?;
+            // `collect::<Result<Vec<_>, _>>()` cannot retain the exact size hint
+            // through the fallible adapter. For large generated entities that
+            // grows 4 -> 8 -> 16 even when the relation cardinality is already
+            // known. Reserve the exact row count and decode directly into the
+            // final SmartList allocation.
+            let mut entities = Vec::with_capacity(rows.len());
+            for row in rows {
+                entities.push(T::from_compact_row_with_context(
+                    row,
+                    &graph_root as &dyn std::any::Any,
+                )?);
+            }
             graph.install_relation_list(
                 owner_entity,
                 owner_id,

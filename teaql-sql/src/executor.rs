@@ -21,6 +21,22 @@ pub trait SqlTransport: Send + Sync {
         &self,
         query: &CompiledQuery,
     ) -> impl std::future::Future<Output = Result<Vec<CompactRow>, Self::Error>> + Send;
+    fn fetch_repeated_compact_sql(
+        &self,
+        template: &CompiledQuery,
+        param_index: usize,
+        values: &[Value],
+    ) -> impl std::future::Future<Output = Result<Vec<CompactRow>, Self::Error>> + Send {
+        async move {
+            let mut rows = Vec::new();
+            for value in values {
+                let mut query = template.clone();
+                query.params[param_index] = value.clone();
+                rows.extend(self.fetch_all_compact_sql(&query).await?);
+            }
+            Ok(rows)
+        }
+    }
     fn execute_sql(
         &self,
         query: &CompiledQuery,
@@ -429,6 +445,51 @@ fn collect_expr_params(expr: &Expr, params: &mut Vec<Value>) {
     }
 }
 
+fn partition_probe_values(query: &SelectQuery) -> Option<Vec<Value>> {
+    let field = query.partition_by.as_deref()?;
+    fn find(expr: &Expr, field: &str) -> Option<Vec<Value>> {
+        match expr {
+            Expr::Binary { left, op, right }
+                if matches!(op, teaql_core::BinaryOp::In | teaql_core::BinaryOp::InLarge)
+                    && matches!(left.as_ref(), Expr::Column(column) if column == field) =>
+            {
+                match right.as_ref() {
+                    Expr::Value(Value::List(values)) => Some(values.clone()),
+                    _ => None,
+                }
+            }
+            Expr::And(parts) => parts.iter().find_map(|part| find(part, field)),
+            _ => None,
+        }
+    }
+    find(query.filter.as_ref()?, field)
+}
+
+fn scalar_partition_probe_query(query: &SelectQuery, value: Value) -> Option<SelectQuery> {
+    let field = query.partition_by.as_deref()?;
+    fn replace(expr: &mut Expr, field: &str, value: &Value) -> bool {
+        match expr {
+            Expr::Binary { left, op, right }
+                if matches!(op, teaql_core::BinaryOp::In | teaql_core::BinaryOp::InLarge)
+                    && matches!(left.as_ref(), Expr::Column(column) if column == field) =>
+            {
+                *op = teaql_core::BinaryOp::Eq;
+                *right = Box::new(Expr::Value(value.clone()));
+                true
+            }
+            Expr::And(parts) => parts.iter_mut().any(|part| replace(part, field, value)),
+            _ => false,
+        }
+    }
+
+    let mut scalar = query.clone();
+    if !replace(scalar.filter.as_mut()?, field, &value) {
+        return None;
+    }
+    scalar.partition_by = None;
+    Some(scalar)
+}
+
 impl<D, T, S> SqlDataServiceExecutor<D, T, S>
 where
     S: teaql_data_service::SchemaProvider,
@@ -516,6 +577,61 @@ mod tests {
     }
 
     #[derive(Clone)]
+    struct RepeatedProbeTransport {
+        calls: Arc<AtomicUsize>,
+        single_calls: Arc<AtomicUsize>,
+    }
+
+    impl SqlTransport for RepeatedProbeTransport {
+        type Error = std::io::Error;
+
+        async fn fetch_all_compact_sql(
+            &self,
+            _query: &CompiledQuery,
+        ) -> Result<Vec<CompactRow>, Self::Error> {
+            self.single_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(Vec::new())
+        }
+
+        async fn fetch_repeated_compact_sql(
+            &self,
+            template: &CompiledQuery,
+            param_index: usize,
+            values: &[Value],
+        ) -> Result<Vec<CompactRow>, Self::Error> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            assert_eq!(values, [Value::U64(7), Value::U64(9)]);
+            assert_eq!(template.params[param_index], Value::U64(7));
+            Ok(Vec::new())
+        }
+
+        async fn execute_sql(&self, _query: &CompiledQuery) -> Result<u64, Self::Error> {
+            Ok(0)
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct ProbeDialect;
+
+    impl SqlDialect for ProbeDialect {
+        fn kind(&self) -> crate::DatabaseKind {
+            crate::DatabaseKind::Sqlite
+        }
+
+        fn quote_ident(&self, ident: &str) -> String {
+            format!("\"{ident}\"")
+        }
+
+        fn placeholder(&self, _index: usize) -> String {
+            "?".to_owned()
+        }
+
+        fn prefers_small_parent_relation_probes(&self) -> bool {
+            true
+        }
+    }
+
+    #[derive(Clone)]
     struct CountingSchemaProvider {
         lookups: Arc<AtomicUsize>,
     }
@@ -580,6 +696,65 @@ mod tests {
         assert!(result.metadata.parameterized_query.is_none());
         assert!(result.metadata.params.is_empty());
         assert!(result.metadata.trace_chain.is_empty());
+    }
+
+    #[tokio::test]
+    async fn executes_trace_off_partition_query_as_one_repeated_probe() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let single_calls = Arc::new(AtomicUsize::new(0));
+        let executor = SqlDataServiceExecutor::new(
+            ProbeDialect,
+            RepeatedProbeTransport {
+                calls: calls.clone(),
+                single_calls: single_calls.clone(),
+            },
+            CountingSchemaProvider {
+                lookups: Arc::new(AtomicUsize::new(0)),
+            },
+        );
+        let mut request = query_request(false);
+        request.capture_execution_metadata = false;
+        request.query = request
+            .query
+            .filter(Expr::in_list("id", [Value::U64(7), Value::U64(9)]))
+            .order_desc("id")
+            .limit(1)
+            .partition_by("id");
+
+        let result = executor.query(request).await.unwrap();
+
+        assert!(result.rows.is_empty());
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(single_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(result.metadata.started_at, SystemTime::UNIX_EPOCH);
+    }
+
+    #[tokio::test]
+    async fn keeps_partition_query_observable_when_metadata_is_enabled() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let single_calls = Arc::new(AtomicUsize::new(0));
+        let executor = SqlDataServiceExecutor::new(
+            ProbeDialect,
+            RepeatedProbeTransport {
+                calls: calls.clone(),
+                single_calls: single_calls.clone(),
+            },
+            CountingSchemaProvider {
+                lookups: Arc::new(AtomicUsize::new(0)),
+            },
+        );
+        let mut request = query_request(false);
+        request.query = request
+            .query
+            .filter(Expr::in_list("id", [Value::U64(7), Value::U64(9)]))
+            .order_desc("id")
+            .limit(1)
+            .partition_by("id");
+
+        executor.query(request).await.unwrap();
+
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        assert_eq!(single_calls.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
@@ -734,6 +909,37 @@ impl<
                         request.query.entity.clone(),
                     ))
                 })?;
+
+            if !request.capture_execution_metadata
+                && self.dialect.prefers_small_parent_relation_probes()
+                && let Some(values) = partition_probe_values(&request.query)
+                && values.len() >= 2
+                && let (Some(first_query), Some(second_query)) = (
+                    scalar_partition_probe_query(&request.query, values[0].clone()),
+                    scalar_partition_probe_query(&request.query, values[1].clone()),
+                )
+            {
+                let first = self
+                    .compile_select_cached(&entity_desc, &first_query)
+                    .map_err(SqlExecutorError::Compile)?;
+                let second_params = collect_select_params(&entity_desc, &second_query);
+                if let Some(param_index) = first
+                    .params
+                    .iter()
+                    .zip(&second_params)
+                    .position(|(left, right)| left != right)
+                {
+                    let rows = self
+                        .transport
+                        .fetch_repeated_compact_sql(&first, param_index, &values)
+                        .await
+                        .map_err(SqlExecutorError::Transport)?;
+                    return Ok(QueryResult {
+                        metadata: ExecutionMetadata::unrecorded_query(rows.len()),
+                        rows,
+                    });
+                }
+            }
 
             let compiled = self
                 .compile_select_cached(&entity_desc, &request.query)

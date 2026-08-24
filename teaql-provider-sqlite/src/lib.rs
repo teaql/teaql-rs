@@ -349,6 +349,32 @@ impl SqlTransport for SqliteMutationExecutor {
         SqliteMutationExecutor::fetch_all_compact(self, query)
     }
 
+    async fn fetch_repeated_compact_sql(
+        &self,
+        template: &CompiledQuery,
+        param_index: usize,
+        values: &[Value],
+    ) -> Result<Vec<CompactRow>, Self::Error> {
+        let connection = self.lock()?;
+        let sql = template.sql_with_comment();
+        let mut statement = connection.prepare_cached(&sql)?;
+        let layout = cached_column_layout(&self.column_layout_cache, &template.sql, &statement);
+        let mut result = Vec::new();
+        let mut query_params = template.params.clone();
+        for value in values {
+            query_params[param_index] = value.clone();
+            let params = bind_values(&query_params)?;
+            let mut rows = statement.query(params_from_iter(params.iter()))?;
+            while let Some(row) = rows.next()? {
+                result.push(CompactRow::new(
+                    layout.names.clone(),
+                    decode_sqlite_values(row, &layout.columns)?,
+                ));
+            }
+        }
+        Ok(result)
+    }
+
     async fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
         SqliteMutationExecutor::execute(self, query)
     }
