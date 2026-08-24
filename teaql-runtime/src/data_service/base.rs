@@ -26,6 +26,7 @@ where
             trace_chain: query.trace_chain.clone(),
             comment: query.comment.clone(),
             capture_debug_query: self.metadata.capture_query_debug(),
+            capture_execution_metadata: self.metadata.capture_execution_metadata(),
         };
         let res = self
             .executor
@@ -44,6 +45,7 @@ where
             trace_chain: query.trace_chain.clone(),
             comment: query.comment.clone(),
             capture_debug_query: self.metadata.capture_query_debug(),
+            capture_execution_metadata: self.metadata.capture_execution_metadata(),
         };
         let res = self
             .executor
@@ -66,6 +68,7 @@ where
             trace_chain: query.trace_chain.clone(),
             comment: query.comment.clone(),
             capture_debug_query: self.metadata.capture_query_debug(),
+            capture_execution_metadata: self.metadata.capture_execution_metadata(),
         };
         let result = self
             .executor

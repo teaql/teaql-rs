@@ -201,6 +201,7 @@ where
             trace_chain: vec![trace],
             comment: Some(client_comment),
             capture_debug_query: true,
+            capture_execution_metadata: true,
         };
 
         let result = self

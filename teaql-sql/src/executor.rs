@@ -8,9 +8,8 @@ use teaql_core::{
     CompactRow, EntityDescriptor, EntitySnapshot, Expr, GeneratedValues, SelectQuery, Value,
 };
 use teaql_data_service::{
-    DataServiceCapabilities, DataServiceExecutor, DataServiceOperation,
-    ExecutionMetadata, MutationExecutor, MutationRequest, MutationResult, QueryExecutor,
-    QueryRequest, QueryResult,
+    DataServiceCapabilities, DataServiceExecutor, DataServiceOperation, ExecutionMetadata,
+    MutationExecutor, MutationRequest, MutationResult, QueryExecutor, QueryRequest, QueryResult,
 };
 
 use crate::{CompiledQuery, SqlCompileError, SqlDialect};
@@ -540,6 +539,7 @@ mod tests {
             trace_chain: Vec::new(),
             comment: None,
             capture_debug_query,
+            capture_execution_metadata: true,
         }
     }
 
@@ -562,6 +562,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn skips_execution_metadata_when_caller_will_discard_it() {
+        let executor = SqlDataServiceExecutor::new(
+            TestDialect,
+            EmptyTransport,
+            CountingSchemaProvider {
+                lookups: Arc::new(AtomicUsize::new(0)),
+            },
+        );
+        let mut request = query_request(false);
+        request.capture_execution_metadata = false;
+
+        let result = executor.query(request).await.unwrap();
+
+        assert!(result.metadata.backend.is_empty());
+        assert_eq!(result.metadata.started_at, SystemTime::UNIX_EPOCH);
+        assert!(result.metadata.parameterized_query.is_none());
+        assert!(result.metadata.params.is_empty());
+        assert!(result.metadata.trace_chain.is_empty());
+    }
+
+    #[tokio::test]
     async fn cached_select_plan_rebinds_values_and_separates_in_list_lengths() {
         let lookups = Arc::new(AtomicUsize::new(0));
         let executor = SqlDataServiceExecutor::new(
@@ -574,6 +595,7 @@ mod tests {
             trace_chain: Vec::new(),
             comment: None,
             capture_debug_query: false,
+            capture_execution_metadata: true,
         };
 
         let first = executor
@@ -630,6 +652,7 @@ mod tests {
                 trace_chain: Vec::new(),
                 comment: None,
                 capture_debug_query: false,
+                capture_execution_metadata: true,
             };
             executor.query(request(warm)).await.unwrap();
             let actual = executor.query(request(current.clone())).await.unwrap();
@@ -715,37 +738,39 @@ impl<
             let compiled = self
                 .compile_select_cached(&entity_desc, &request.query)
                 .map_err(SqlExecutorError::Compile)?;
-            let start = SystemTime::now();
+            let start = request.capture_execution_metadata.then(SystemTime::now);
             let rows = self
                 .transport
                 .fetch_all_compact_sql(&compiled)
                 .await
                 .map_err(SqlExecutorError::Transport)?;
-            let end = SystemTime::now();
+            let end = request.capture_execution_metadata.then(SystemTime::now);
             let debug_query = request
                 .capture_debug_query
                 .then(|| compiled.debug_sql(self.dialect.kind()));
-            let CompiledQuery { sql, params, .. } = compiled;
-
-            let metadata = ExecutionMetadata {
-                backend: "sql".to_string(),
-                operation: DataServiceOperation::Query,
-                started_at: start,
-                ended_at: end,
-                affected_rows: None,
-                result_count: Some(rows.len()),
-                trace_chain: request.trace_chain,
-                comment: request.comment,
-                backend_request_id: None,
-                parameterized_query: Some(sql),
-                params,
-                debug_query,
+            let metadata = if request.capture_execution_metadata {
+                let CompiledQuery { sql, params, .. } = compiled;
+                ExecutionMetadata {
+                    backend: "sql".to_string(),
+                    operation: DataServiceOperation::Query,
+                    started_at: start.expect("captured query start"),
+                    ended_at: end.expect("captured query end"),
+                    affected_rows: None,
+                    result_count: Some(rows.len()),
+                    trace_chain: request.trace_chain,
+                    comment: request.comment,
+                    backend_request_id: None,
+                    parameterized_query: Some(sql),
+                    params,
+                    debug_query,
+                }
+            } else {
+                ExecutionMetadata::unrecorded_query(rows.len())
             };
 
             Ok(QueryResult { rows, metadata })
         }
     }
-
 }
 
 impl<
@@ -988,7 +1013,6 @@ impl<
             Ok(QueryResult { rows, metadata })
         }
     }
-
 }
 
 impl<
@@ -1113,8 +1137,7 @@ impl<
                             "persisted {entity_name} record could not be read back"
                         )));
                     }
-                    rows.pop()
-                        .map(|row| EntitySnapshot::from(row.into_map()))
+                    rows.pop().map(|row| EntitySnapshot::from(row.into_map()))
                 } else {
                     None
                 }

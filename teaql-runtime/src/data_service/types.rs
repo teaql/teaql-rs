@@ -62,4 +62,8 @@ impl MetadataStore for UserContextMetadata<'_> {
     fn capture_query_debug(&self) -> bool {
         self.context.sql_log_options().select
     }
+
+    fn capture_execution_metadata(&self) -> bool {
+        self.context.sql_log_options().select
+    }
 }

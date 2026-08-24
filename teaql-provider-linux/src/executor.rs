@@ -80,7 +80,9 @@ impl QueryExecutor for LinuxDataServiceExecutor {
 
         let mut result = InMemoryQueryEngine::execute(
             &request.query,
-            rows.into_iter().map(teaql_core::CompactRow::from_map).collect(),
+            rows.into_iter()
+                .map(teaql_core::CompactRow::from_map)
+                .collect(),
         );
         result.metadata.backend = "linux-proc".to_owned();
         result.metadata.started_at = started_at;
@@ -181,6 +183,7 @@ mod tests {
             trace_chain: vec![trace.clone()],
             comment: Some("Load the second matching fixture".to_owned()),
             capture_debug_query: true,
+            capture_execution_metadata: true,
         };
 
         let result = executor().query(request).await.unwrap();
@@ -211,6 +214,7 @@ mod tests {
             trace_chain: Vec::new(),
             comment: None,
             capture_debug_query: true,
+            capture_execution_metadata: true,
         };
 
         let result = executor().query(request).await.unwrap();

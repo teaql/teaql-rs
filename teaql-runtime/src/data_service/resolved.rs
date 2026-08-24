@@ -635,11 +635,15 @@ where
         let mut query = query.clone();
         query.comment = final_comment;
 
+        let capture_metadata = self.data_service.metadata.capture_execution_metadata();
         let request = teaql_data_service::QueryRequest {
             query: query.clone(),
-            trace_chain: query.trace_chain.clone(),
-            comment: query.comment.clone(),
+            trace_chain: capture_metadata
+                .then(|| query.trace_chain.clone())
+                .unwrap_or_default(),
+            comment: capture_metadata.then(|| query.comment.clone()).flatten(),
             capture_debug_query: self.data_service.metadata.capture_query_debug(),
+            capture_execution_metadata: capture_metadata,
         };
 
         let chunks = self.data_service.executor.query_stream(request, chunk_size);
@@ -715,11 +719,15 @@ where
                     .await;
             }
         }
+        let capture_metadata = self.data_service.metadata.capture_execution_metadata();
         let request = teaql_data_service::QueryRequest {
             query: query.clone(),
-            trace_chain: query.trace_chain.clone(),
-            comment: query.comment.clone(),
+            trace_chain: capture_metadata
+                .then(|| query.trace_chain.clone())
+                .unwrap_or_default(),
+            comment: capture_metadata.then(|| query.comment.clone()).flatten(),
             capture_debug_query: self.data_service.metadata.capture_query_debug(),
+            capture_execution_metadata: capture_metadata,
         };
         let res = self
             .data_service
@@ -747,11 +755,18 @@ where
         query.comment = self
             .data_service
             .resolve_final_comment(&query.trace_chain, query.comment.take());
-        let trace_chain = std::mem::take(&mut query.trace_chain);
+        let capture_metadata = self.data_service.metadata.capture_execution_metadata();
+        let trace_chain = if capture_metadata {
+            std::mem::take(&mut query.trace_chain)
+        } else {
+            query.trace_chain.clear();
+            Vec::new()
+        };
         let request = teaql_data_service::QueryRequest {
             trace_chain,
-            comment: query.comment.clone(),
+            comment: capture_metadata.then(|| query.comment.clone()).flatten(),
             capture_debug_query: self.data_service.metadata.capture_query_debug(),
+            capture_execution_metadata: capture_metadata,
             query,
         };
         let res = self
@@ -774,11 +789,18 @@ where
         query.comment = self
             .data_service
             .resolve_final_comment(&query.trace_chain, query.comment.take());
-        let trace_chain = std::mem::take(&mut query.trace_chain);
+        let capture_metadata = self.data_service.metadata.capture_execution_metadata();
+        let trace_chain = if capture_metadata {
+            std::mem::take(&mut query.trace_chain)
+        } else {
+            query.trace_chain.clear();
+            Vec::new()
+        };
         let request = teaql_data_service::QueryRequest {
             trace_chain,
-            comment: query.comment.clone(),
+            comment: capture_metadata.then(|| query.comment.clone()).flatten(),
             capture_debug_query: self.data_service.metadata.capture_query_debug(),
+            capture_execution_metadata: capture_metadata,
             query,
         };
         let result = self
@@ -819,6 +841,10 @@ where
                     trace_chain: query.trace_chain.clone(),
                     comment: query.comment.clone(),
                     capture_debug_query: self.data_service.metadata.capture_query_debug(),
+                    capture_execution_metadata: self
+                        .data_service
+                        .metadata
+                        .capture_execution_metadata(),
                 };
                 let provider_kind = std::any::type_name::<E>().to_owned();
                 let provider_scope = self.data_service.metadata.context.start_runtime_operation(

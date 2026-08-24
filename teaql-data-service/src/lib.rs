@@ -28,6 +28,9 @@ pub struct QueryRequest {
     /// Build a copy-paste representation with bind values interpolated.
     /// Runtimes should disable this when query logging is disabled.
     pub capture_debug_query: bool,
+    /// Retain timings, parameterized text, bind values, trace and comment in the result.
+    /// Disable only when the caller will discard execution metadata.
+    pub capture_execution_metadata: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +106,25 @@ pub struct ExecutionMetadata {
     /// Structured bind values corresponding to `parameterized_query`.
     pub params: Vec<teaql_core::Value>,
     pub debug_query: Option<String>,
+}
+
+impl ExecutionMetadata {
+    pub fn unrecorded_query(result_count: usize) -> Self {
+        Self {
+            backend: String::new(),
+            operation: DataServiceOperation::Query,
+            started_at: SystemTime::UNIX_EPOCH,
+            ended_at: SystemTime::UNIX_EPOCH,
+            affected_rows: None,
+            result_count: Some(result_count),
+            trace_chain: Vec::new(),
+            comment: None,
+            backend_request_id: None,
+            parameterized_query: None,
+            params: Vec::new(),
+            debug_query: None,
+        }
+    }
 }
 
 pub trait DataServiceExecutor {
