@@ -81,14 +81,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     let mut version_impl = None;
     let mut has_root_field = false;
     let mut id_field_ident: Option<syn::Ident> = None;
-    let explicit_field_names: Vec<String> = named_fields
-        .iter()
-        .filter_map(|field| {
-            let field_ident = field.ident.as_ref()?;
-            let parsed = parse_field_attrs(&field.attrs);
-            (!parsed.dynamic && !parsed.skip).then(|| field_ident.to_string())
-        })
-        .collect();
+    let mut unknown_record_field_arm = quote! { _ => {} };
 
     for field in named_fields {
         let field_ident = field.ident.expect("named field");
@@ -113,16 +106,16 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         }
 
         if parsed.dynamic {
-            let known_field_names = explicit_field_names.clone();
-            from_record_fields.push(quote! {
-                #field_ident: {
-                    let known_fields = [#(#known_field_names),*];
-                    record
-                        .iter()
-                        .filter(|(key, _)| !known_fields.contains(&key.as_str()))
-                        .map(|(key, value)| (key.clone(), value.clone()))
-                        .collect()
+            record_value_slots.push(quote! {
+                let mut __teaql_dynamic_values = ::std::collections::BTreeMap::new();
+            });
+            unknown_record_field_arm = quote! {
+                _ => {
+                    __teaql_dynamic_values.insert(key.clone(), value.clone());
                 }
+            };
+            from_record_fields.push(quote! {
+                #field_ident: __teaql_dynamic_values
             });
             into_record_fields.push(quote! {
                 for (key, value) in self.#field_ident {
@@ -360,7 +353,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             for (key, value) in record.iter() {
                 match key.as_str() {
                     #(#record_value_match_arms)*
-                    _ => {}
+                    #unknown_record_field_arm
                 }
             }
             let mut entity = Self {
