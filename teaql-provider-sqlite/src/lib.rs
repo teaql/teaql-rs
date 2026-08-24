@@ -855,6 +855,9 @@ fn decode_sqlite_text(value: &[u8], column: &ColumnInfo) -> Result<Value, Mutati
             .map(Value::Date)
             .map_err(|err| MutationExecutorError::Bind(format!("invalid sqlite date: {err}"))),
         Some("TIMESTAMP") | Some("DATETIME") => parse_sqlite_timestamp(value),
+        Some("TEXT") | Some("VARCHAR") | Some("CHAR") | Some("CLOB") => {
+            Ok(Value::Text(value.to_owned()))
+        }
         _ => infer_sqlite_text(value),
     }
 }
@@ -882,6 +885,11 @@ fn parse_sqlite_timestamp(value: &str) -> Result<Value, MutationExecutorError> {
             timestamp.timestamp_millis(),
         )));
     }
+    if let Ok(timestamp) = DateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f%#z") {
+        return Ok(Value::Timestamp(teaql_core::time::Timestamp(
+            timestamp.timestamp_millis(),
+        )));
+    }
     if let Ok(date) = NaiveDate::parse_from_str(value, "%Y-%m-%d") {
         return Ok(Value::Timestamp(teaql_core::time::Timestamp(
             date.and_hms_opt(0, 0, 0)
@@ -890,7 +898,7 @@ fn parse_sqlite_timestamp(value: &str) -> Result<Value, MutationExecutorError> {
                 .timestamp_millis(),
         )));
     }
-    NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
+    NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
         .map(|timestamp| {
             Value::Timestamp(teaql_core::time::Timestamp(
                 timestamp.and_utc().timestamp_millis(),
@@ -1656,6 +1664,27 @@ mod tests {
         let ts3 = parse_sqlite_timestamp("2023-01-01T12:30:45Z").unwrap();
         assert!(matches!(ts3, Value::Timestamp(_)));
 
+        let ts4 = parse_sqlite_timestamp("2026-08-23 10:43:16.152546+00").unwrap();
+        assert!(matches!(ts4, Value::Timestamp(_)));
+
+        let ts5 = parse_sqlite_timestamp("2026-08-23 10:43:16.152546").unwrap();
+        assert!(matches!(ts5, Value::Timestamp(_)));
+
         assert!(parse_sqlite_timestamp("invalid").is_err());
+    }
+
+    #[test]
+    fn declared_text_does_not_infer_timestamp_from_content() {
+        for decl_type in ["TEXT", "VARCHAR(255)", "CHAR(32)", "CLOB"] {
+            let column = ColumnInfo {
+                name: "external_timestamp".to_owned(),
+                decl_type: Some(decl_type.to_owned()),
+            };
+
+            assert_eq!(
+                decode_sqlite_text(b"2024-01-01 00:57:55", &column).unwrap(),
+                Value::Text("2024-01-01 00:57:55".to_owned())
+            );
+        }
     }
 }
