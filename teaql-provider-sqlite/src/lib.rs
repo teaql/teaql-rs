@@ -816,7 +816,18 @@ fn bind_sqlite_value(value: &Value) -> Result<SqliteValue, MutationExecutorError
 #[derive(Debug, Clone)]
 struct ColumnInfo {
     name: String,
-    decl_type: Option<String>,
+    decode_kind: SqliteDecodeKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SqliteDecodeKind {
+    Infer,
+    Bool,
+    Decimal,
+    Json,
+    Date,
+    Timestamp,
+    Text,
 }
 
 #[derive(Debug)]
@@ -858,9 +869,29 @@ fn statement_columns(statement: &rusqlite::Statement<'_>) -> Vec<ColumnInfo> {
         .into_iter()
         .map(|column| ColumnInfo {
             name: column.name().to_owned(),
-            decl_type: column.decl_type().map(|value| value.to_ascii_uppercase()),
+            decode_kind: sqlite_decode_kind(column.decl_type()),
         })
         .collect()
+}
+
+fn sqlite_decode_kind(decl_type: Option<&str>) -> SqliteDecodeKind {
+    let Some(decl_type) = decl_type else { return SqliteDecodeKind::Infer };
+    let base = decl_type.split('(').next().unwrap_or(decl_type).trim();
+    if base.eq_ignore_ascii_case("BOOLEAN") || base.eq_ignore_ascii_case("BOOL") {
+        SqliteDecodeKind::Bool
+    } else if base.eq_ignore_ascii_case("NUMERIC") || base.eq_ignore_ascii_case("DECIMAL") {
+        SqliteDecodeKind::Decimal
+    } else if base.eq_ignore_ascii_case("JSON") {
+        SqliteDecodeKind::Json
+    } else if base.eq_ignore_ascii_case("DATE") {
+        SqliteDecodeKind::Date
+    } else if base.eq_ignore_ascii_case("TIMESTAMP") || base.eq_ignore_ascii_case("DATETIME") {
+        SqliteDecodeKind::Timestamp
+    } else if ["TEXT", "VARCHAR", "CHAR", "CLOB"].iter().any(|v| base.eq_ignore_ascii_case(v)) {
+        SqliteDecodeKind::Text
+    } else {
+        SqliteDecodeKind::Infer
+    }
 }
 
 fn decode_sqlite_values(
@@ -887,8 +918,8 @@ fn decode_sqlite_values(
 }
 
 fn decode_sqlite_integer(value: i64, column: &ColumnInfo) -> Value {
-    match column_decl_type(column).as_deref() {
-        Some("BOOLEAN") | Some("BOOL") => Value::Bool(value != 0),
+    match column.decode_kind {
+        SqliteDecodeKind::Bool => Value::Bool(value != 0),
         _ => Value::I64(value),
     }
 }
@@ -896,21 +927,21 @@ fn decode_sqlite_integer(value: i64, column: &ColumnInfo) -> Value {
 fn decode_sqlite_text(value: &[u8], column: &ColumnInfo) -> Result<Value, MutationExecutorError> {
     let value = std::str::from_utf8(value)
         .map_err(|err| MutationExecutorError::Bind(format!("invalid sqlite text: {err}")))?;
-    match column_decl_type(column).as_deref() {
-        Some("NUMERIC") | Some("DECIMAL") => Decimal::from_str(value)
+    match column.decode_kind {
+        SqliteDecodeKind::Decimal => Decimal::from_str(value)
             .map(Value::Decimal)
             .map_err(|err| MutationExecutorError::Bind(format!("invalid sqlite decimal: {err}"))),
-        Some("JSON") => serde_json::from_str(value).map(Value::Json).map_err(|err| {
+        SqliteDecodeKind::Json => serde_json::from_str(value).map(Value::Json).map_err(|err| {
             MutationExecutorError::Bind(format!("invalid sqlite json value: {err}"))
         }),
-        Some("DATE") => NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        SqliteDecodeKind::Date => NaiveDate::parse_from_str(value, "%Y-%m-%d")
             .map(Value::Date)
             .map_err(|err| MutationExecutorError::Bind(format!("invalid sqlite date: {err}"))),
-        Some("TIMESTAMP") | Some("DATETIME") => parse_sqlite_timestamp(value),
-        Some("TEXT") | Some("VARCHAR") | Some("CHAR") | Some("CLOB") => {
+        SqliteDecodeKind::Timestamp => parse_sqlite_timestamp(value),
+        SqliteDecodeKind::Text | SqliteDecodeKind::Bool => {
             Ok(Value::Text(value.to_owned()))
         }
-        _ => infer_sqlite_text(value),
+        SqliteDecodeKind::Infer => infer_sqlite_text(value),
     }
 }
 
@@ -957,13 +988,6 @@ fn parse_sqlite_timestamp(value: &str) -> Result<Value, MutationExecutorError> {
             ))
         })
         .map_err(|err| MutationExecutorError::Bind(format!("invalid sqlite timestamp: {err}")))
-}
-
-fn column_decl_type(column: &ColumnInfo) -> Option<String> {
-    column
-        .decl_type
-        .as_ref()
-        .map(|value| value.split('(').next().unwrap_or(value).trim().to_owned())
 }
 
 #[cfg(test)]
@@ -1755,7 +1779,7 @@ mod tests {
         for decl_type in ["TEXT", "VARCHAR(255)", "CHAR(32)", "CLOB"] {
             let column = ColumnInfo {
                 name: "external_timestamp".to_owned(),
-                decl_type: Some(decl_type.to_owned()),
+                decode_kind: sqlite_decode_kind(Some(decl_type)),
             };
 
             assert_eq!(
@@ -1763,5 +1787,15 @@ mod tests {
                 Value::Text("2024-01-01 00:57:55".to_owned())
             );
         }
+    }
+
+    #[test]
+    fn declared_column_types_compile_to_decode_kinds() {
+        assert_eq!(sqlite_decode_kind(Some("BOOLEAN")), SqliteDecodeKind::Bool);
+        assert_eq!(sqlite_decode_kind(Some("decimal(20, 4)")), SqliteDecodeKind::Decimal);
+        assert_eq!(sqlite_decode_kind(Some(" VARCHAR(255) ")), SqliteDecodeKind::Text);
+        assert_eq!(sqlite_decode_kind(Some("datetime")), SqliteDecodeKind::Timestamp);
+        assert_eq!(sqlite_decode_kind(Some("custom")), SqliteDecodeKind::Infer);
+        assert_eq!(sqlite_decode_kind(None), SqliteDecodeKind::Infer);
     }
 }
