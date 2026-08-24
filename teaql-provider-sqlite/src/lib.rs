@@ -22,6 +22,7 @@ use teaql_sql::{
 };
 
 pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";
+pub const DEFAULT_PREPARED_STATEMENT_CACHE_CAPACITY: usize = 64;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SqliteDialect;
@@ -135,6 +136,11 @@ pub struct SqliteMutationExecutor {
 
 impl SqliteMutationExecutor {
     pub fn new(connection: Arc<Mutex<Connection>>) -> Self {
+        if let Ok(connection) = connection.lock() {
+            connection.set_prepared_statement_cache_capacity(
+                DEFAULT_PREPARED_STATEMENT_CACHE_CAPACITY,
+            );
+        }
         Self { connection }
     }
 
@@ -215,7 +221,7 @@ impl SqliteMutationExecutor {
     ) -> Result<Vec<CompactRow>, MutationExecutorError> {
         let params = bind_values(&query.params)?;
         let connection = self.lock()?;
-        let mut statement = connection.prepare(&query.sql_with_comment())?;
+        let mut statement = connection.prepare_cached(&query.sql_with_comment())?;
         let columns = statement_columns(&statement);
         let column_names: Arc<[String]> = columns
             .iter()
@@ -242,7 +248,7 @@ impl SqliteMutationExecutor {
     ) -> Result<Vec<teaql_data_service::StreamChunk>, MutationExecutorError> {
         let params = bind_values(&query.params)?;
         let connection = self.lock()?;
-        let mut statement = connection.prepare(&query.sql_with_comment())?;
+        let mut statement = connection.prepare_cached(&query.sql_with_comment())?;
         let columns = statement_columns(&statement);
         let column_names: Arc<[String]> = columns
             .iter()
@@ -356,7 +362,7 @@ impl teaql_sql::StreamingSqlTransport for SqliteMutationExecutor {
         Box::pin(async_stream::try_stream! {
             let params = bind_values(&query.params)?;
             let guard = connection.lock().map_err(|err| MutationExecutorError::Lock(err.to_string()))?;
-            let mut statement = guard.prepare(&query.sql_with_comment())?;
+            let mut statement = guard.prepare_cached(&query.sql_with_comment())?;
             let columns = statement_columns(&statement);
             let column_names: Arc<[String]> = columns.iter().map(|column| column.name.clone()).collect::<Vec<_>>().into();
             let mut rows = statement.query(params_from_iter(params.iter()))?;
