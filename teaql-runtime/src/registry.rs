@@ -13,6 +13,8 @@ use crate::{
 
 type CompactEntityGraphDecoder =
     fn(CompactRow, &EntityRoot, &mut EntityGraphBuilder) -> Result<(), EntityError>;
+type CompactEntityGraphBatchDecoder =
+    fn(Vec<CompactRow>, &EntityRoot, &mut EntityGraphBuilder) -> Result<(), EntityError>;
 type CompactEntityGraphListDecoder = fn(
     Vec<CompactRow>,
     &EntityRoot,
@@ -25,6 +27,7 @@ type CompactEntityGraphListDecoder = fn(
 #[derive(Default, Clone)]
 pub struct InMemoryEntityGraphDecoderRegistry {
     compact_decoders: BTreeMap<String, CompactEntityGraphDecoder>,
+    compact_batch_decoders: BTreeMap<String, CompactEntityGraphBatchDecoder>,
     compact_list_decoders: BTreeMap<String, CompactEntityGraphListDecoder>,
     compact_option_decoders: BTreeMap<String, CompactEntityGraphListDecoder>,
 }
@@ -46,8 +49,7 @@ impl InMemoryEntityGraphDecoderRegistry {
         where
             T: Entity + IdentifiableEntity + Send + Sync + 'static,
         {
-            let mut entity = T::from_compact_row(row)?;
-            entity.on_loaded(root as &dyn std::any::Any);
+            let entity = T::from_compact_row_with_context(row, root as &dyn std::any::Any)?;
             let id = entity.id_value().try_u64().ok_or_else(|| {
                 EntityError::new(T::ENTITY_NAME, "identity graph requires a u64 entity id")
             })?;
@@ -68,11 +70,7 @@ impl InMemoryEntityGraphDecoderRegistry {
         {
             let entities = rows
                 .into_iter()
-                .map(|row| {
-                    let mut entity = T::from_compact_row(row)?;
-                    entity.on_loaded(root as &dyn std::any::Any);
-                    Ok(entity)
-                })
+                .map(|row| T::from_compact_row_with_context(row, root as &dyn std::any::Any))
                 .collect::<Result<Vec<T>, EntityError>>()?;
             graph.install_relation_list(
                 owner_entity,
@@ -80,6 +78,24 @@ impl InMemoryEntityGraphDecoderRegistry {
                 relation,
                 teaql_core::SmartList::new(entities),
             );
+            Ok(())
+        }
+
+        fn decode_compact_batch<T>(
+            rows: Vec<CompactRow>,
+            root: &EntityRoot,
+            graph: &mut EntityGraphBuilder,
+        ) -> Result<(), EntityError>
+        where
+            T: Entity + IdentifiableEntity + Send + Sync + 'static,
+        {
+            for row in rows {
+                let entity = T::from_compact_row_with_context(row, root as &dyn std::any::Any)?;
+                let id = entity.id_value().try_u64().ok_or_else(|| {
+                    EntityError::new(T::ENTITY_NAME, "identity graph requires a u64 entity id")
+                })?;
+                graph.install(id, entity);
+            }
             Ok(())
         }
 
@@ -97,11 +113,7 @@ impl InMemoryEntityGraphDecoderRegistry {
             let value = rows
                 .into_iter()
                 .next()
-                .map(|row| {
-                    let mut entity = T::from_compact_row(row)?;
-                    entity.on_loaded(root as &dyn std::any::Any);
-                    Ok(entity)
-                })
+                .map(|row| T::from_compact_row_with_context(row, root as &dyn std::any::Any))
                 .transpose()?;
             graph.install_relation_option(owner_entity, owner_id, relation, value);
             Ok(())
@@ -109,6 +121,8 @@ impl InMemoryEntityGraphDecoderRegistry {
 
         self.compact_decoders
             .insert(T::ENTITY_NAME.to_owned(), decode_compact::<T>);
+        self.compact_batch_decoders
+            .insert(T::ENTITY_NAME.to_owned(), decode_compact_batch::<T>);
         self.compact_list_decoders
             .insert(T::ENTITY_NAME.to_owned(), decode_compact_list::<T>);
         self.compact_option_decoders
@@ -146,6 +160,21 @@ impl InMemoryEntityGraphDecoderRegistry {
                 "entity has no compact identity graph list decoder in RuntimeModule",
             )
         })?(rows, root, graph, owner_entity, owner_id, relation)
+    }
+
+    pub fn decode_compact_batch(
+        &self,
+        entity: &str,
+        rows: Vec<CompactRow>,
+        root: &EntityRoot,
+        graph: &mut EntityGraphBuilder,
+    ) -> Result<(), EntityError> {
+        self.compact_batch_decoders.get(entity).ok_or_else(|| {
+            EntityError::new(
+                entity,
+                "entity has no compact identity graph batch decoder in RuntimeModule",
+            )
+        })?(rows, root, graph)
     }
 
     pub fn decode_compact_option(

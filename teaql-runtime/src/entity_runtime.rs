@@ -87,9 +87,11 @@ fn entity_identity_key(value: &Value) -> EntityIdentityKey {
 
 #[derive(Default)]
 pub struct EntityGraphBuilder {
-    tables: HashMap<TypeId, HashMap<u64, Box<dyn Any + Send + Sync>>>,
+    tables: HashMap<TypeId, EntityTable>,
     relation_lists: HashMap<RelationListKey, Box<dyn Any + Send + Sync>>,
 }
+
+type EntityTable = HashMap<u64, Box<dyn Any + Send + Sync>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RelationListKey {
@@ -175,7 +177,7 @@ impl std::fmt::Debug for EntityGraphBuilder {
 }
 
 struct FrozenEntityGraph {
-    tables: HashMap<TypeId, HashMap<u64, Box<dyn Any + Send + Sync>>>,
+    tables: HashMap<TypeId, EntityTable>,
     relation_lists: HashMap<RelationListKey, Box<dyn Any + Send + Sync>>,
 }
 
@@ -342,10 +344,35 @@ pub struct RootContext {
     is_new: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug)]
 pub struct EntityRoot {
-    inner: Arc<Mutex<RootContext>>,
+    inner: OnceLock<Arc<Mutex<RootContext>>>,
     graph: Arc<OnceLock<FrozenEntityGraph>>,
+    loaded_snapshot: Option<teaql_core::CompactRow>,
+}
+
+impl Default for EntityRoot {
+    fn default() -> Self {
+        Self {
+            inner: OnceLock::new(),
+            graph: Arc::default(),
+            loaded_snapshot: None,
+        }
+    }
+}
+
+impl Clone for EntityRoot {
+    fn clone(&self) -> Self {
+        let inner = OnceLock::new();
+        if let Some(context) = self.inner.get() {
+            let _ = inner.set(context.clone());
+        }
+        Self {
+            inner,
+            graph: self.graph.clone(),
+            loaded_snapshot: self.loaded_snapshot.clone(),
+        }
+    }
 }
 
 impl std::panic::UnwindSafe for EntityRoot {}
@@ -359,17 +386,59 @@ enum OriginalSnapshot {
 
 impl PartialEq for EntityRoot {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.inner, &other.inner)
+        match (self.inner.get(), other.inner.get()) {
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            (None, None) => {
+                Arc::ptr_eq(&self.graph, &other.graph)
+                    && self.loaded_snapshot == other.loaded_snapshot
+            }
+            _ => false,
+        }
     }
 }
 
 impl EntityRoot {
+    #[cfg(test)]
+    fn has_mutation_context(&self) -> bool {
+        self.inner.get().is_some()
+    }
+
+    fn context(&self) -> &Arc<Mutex<RootContext>> {
+        self.inner
+            .get_or_init(|| Arc::new(Mutex::new(RootContext::default())))
+    }
+
+    fn read_context<R>(&self, default: R, read: impl FnOnce(&RootContext) -> R) -> R {
+        let Some(context) = self.inner.get() else {
+            return default;
+        };
+        let context = context.lock().unwrap_or_else(|error| error.into_inner());
+        read(&context)
+    }
+
+    fn write_context<R>(&self, write: impl FnOnce(&mut RootContext) -> R) -> R {
+        let mut context = self
+            .context()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        write(&mut context)
+    }
+
+    pub fn fresh_with_shared_graph(source: &EntityRoot) -> Self {
+        Self {
+            inner: OnceLock::new(),
+            graph: source.graph.clone(),
+            loaded_snapshot: None,
+        }
+    }
+
     /// Make this root resolve entities from the same flat graph as `source`.
     /// Existing snapshots and mutation ledger state remain owned by this root.
     pub fn with_shared_graph(&self, source: &EntityRoot) -> Self {
         Self {
             inner: self.inner.clone(),
             graph: source.graph.clone(),
+            loaded_snapshot: self.loaded_snapshot.clone(),
         }
     }
 
@@ -447,129 +516,100 @@ impl EntityRoot {
     }
 
     pub fn push_change_set(&self) {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .change_sets
-            .push();
+        self.write_context(|context| context.change_sets.push());
     }
 
     pub fn pop_change_set(&self) -> Option<EntityChangeSet> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .change_sets
-            .pop()
+        self.inner.get()?;
+        self.write_context(|context| context.change_sets.pop())
     }
 
     pub fn clear_current_change_set(&self) {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .change_sets
-            .clear_current();
+        if self.inner.get().is_some() {
+            self.write_context(|context| context.change_sets.clear_current());
+        }
     }
 
     /// Clear all state consumed by a successfully committed ledger save.
     /// Failed saves must not call this method so their pending intent remains retryable.
     pub fn clear_committed(&self) {
-        let mut context = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        context.change_sets = ChangeSetStack::default();
-        context.deleted_keys.clear();
-        context.new_keys.clear();
-        context.original_versions.clear();
-        context.trace_chains.clear();
-        context.original_snapshot = None;
-        context.comment = None;
-        context.is_new = false;
+        if self.inner.get().is_some() {
+            self.write_context(|context| {
+                context.change_sets = ChangeSetStack::default();
+                context.deleted_keys.clear();
+                context.new_keys.clear();
+                context.original_versions.clear();
+                context.trace_chains.clear();
+                context.original_snapshot = None;
+                context.comment = None;
+                context.is_new = false;
+            });
+        }
     }
 
     pub fn set(&self, key: EntityKey, field: impl Into<String>, value: impl Into<Value>) {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .change_sets
-            .set(key, field, value.into());
+        self.write_context(|context| context.change_sets.set(key, field, value.into()));
     }
 
     pub fn get(&self, key: &EntityKey, field: &str) -> Option<Value> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .change_sets
-            .get(key, field)
+        self.read_context(None, |context| context.change_sets.get(key, field))
     }
 
     pub fn current_change_set(&self) -> EntityChangeSet {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .change_sets
-            .current()
-            .cloned()
-            .unwrap_or_default()
+        self.read_context(EntityChangeSet::default(), |context| {
+            context.change_sets.current().cloned().unwrap_or_default()
+        })
     }
 
     /// Set an annotation comment on this entity root.
     /// The comment propagates through the graph save process for observability.
     pub fn set_comment(&self, comment: impl Into<String>) {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).comment = Some(comment.into());
+        self.write_context(|context| context.comment = Some(comment.into()));
     }
 
     /// Get the annotation comment, if any.
     pub fn get_comment(&self) -> Option<String> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .comment
-            .clone()
+        self.read_context(None, |context| context.comment.clone())
     }
 
     /// Mark this entity root as a newly created entity in memory.
     pub fn mark_as_new(&self, key: EntityKey) {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .new_keys
-            .insert(key);
+        self.write_context(|context| {
+            context.new_keys.insert(key);
+        });
     }
 
     /// Check if this entity root is marked as newly created.
     pub fn is_new(&self, key: &EntityKey) -> bool {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .new_keys
-            .contains(key)
+        self.read_context(false, |context| context.new_keys.contains(key))
     }
 
     /// Store an original loaded entity snapshot.
     pub fn set_original_snapshot(&self, snapshot: EntitySnapshot) {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .original_snapshot = Some(OriginalSnapshot::Materialized(snapshot));
+        self.write_context(|context| {
+            context.original_snapshot = Some(OriginalSnapshot::Materialized(snapshot));
+        });
     }
 
-    /// Store a shared-schema snapshot without eagerly allocating a map.
-    pub fn set_original_compact_row(&self, row: teaql_core::CompactRow) {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .original_snapshot = Some(OriginalSnapshot::Compact(row));
+    /// Store a shared-schema snapshot without allocating a mutation ledger.
+    pub fn set_original_compact_row(&mut self, row: teaql_core::CompactRow) {
+        self.loaded_snapshot = Some(row);
     }
 
     /// Retrieve the original loaded entity snapshot.
     pub fn original_snapshot(&self) -> Option<EntitySnapshot> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .original_snapshot
-            .as_ref()
-            .map(|snapshot| match snapshot {
-                OriginalSnapshot::Materialized(snapshot) => snapshot.clone(),
-                OriginalSnapshot::Compact(row) => EntitySnapshot::from(row.clone().into_map()),
-            })
+        if let Some(row) = &self.loaded_snapshot {
+            return Some(EntitySnapshot::from(row.clone().into_map()));
+        }
+        self.read_context(None, |context| {
+            context
+                .original_snapshot
+                .as_ref()
+                .map(|snapshot| match snapshot {
+                    OriginalSnapshot::Materialized(snapshot) => snapshot.clone(),
+                    OriginalSnapshot::Compact(row) => EntitySnapshot::from(row.clone().into_map()),
+                })
+        })
     }
 
     /// Mark an entity as deleted. The next `save()` call will treat this entity
@@ -577,72 +617,78 @@ impl EntityRoot {
     /// Any pending field changes for this entity are cleared — they are irrelevant
     /// when the entity is being deleted.
     pub fn mark_as_delete(&self, key: EntityKey) {
-        let mut context = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        context.change_sets.clear_entity(&key);
-        context.deleted_keys.insert(key);
+        self.write_context(|context| {
+            context.change_sets.clear_entity(&key);
+            context.deleted_keys.insert(key);
+        });
     }
 
     /// Check whether an entity has been marked for deletion.
     pub fn is_marked_as_delete(&self, key: &EntityKey) -> bool {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .deleted_keys
-            .contains(key)
+        self.read_context(false, |context| context.deleted_keys.contains(key))
     }
 
     /// Get the set of field names that have been modified for the given entity key.
     /// This is the Rust equivalent of Java's `entity.getUpdatedProperties()`.
     pub fn changed_field_names(&self, key: &EntityKey) -> BTreeSet<String> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .change_sets
-            .changed_field_names(key)
+        self.read_context(BTreeSet::new(), |context| {
+            context.change_sets.changed_field_names(key)
+        })
     }
     pub fn deleted_keys(&self) -> std::collections::BTreeSet<EntityKey> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .deleted_keys
-            .clone()
+        self.read_context(BTreeSet::new(), |context| context.deleted_keys.clone())
     }
 
     pub fn new_keys(&self) -> std::collections::BTreeSet<EntityKey> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .new_keys
-            .clone()
+        self.read_context(BTreeSet::new(), |context| context.new_keys.clone())
     }
 
     pub fn get_original_version(&self, key: &EntityKey) -> Option<i64> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .original_versions
-            .get(key)
+        self.read_context(None, |context| context.original_versions.get(key))
+            .or_else(|| {
+                self.loaded_snapshot
+                    .as_ref()?
+                    .get("id")?
+                    .try_u64()
+                    .filter(|id| Some(*id) == key.id.try_u64())?;
+                self.loaded_snapshot.as_ref()?.get("version")?.try_i64()
+            })
     }
 
     pub fn get_trace_chain(&self, key: &EntityKey) -> Vec<teaql_core::TraceNode> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .trace_chains
-            .get(key)
-            .cloned()
-            .unwrap_or_default()
+        self.read_context(Vec::new(), |context| {
+            context.trace_chains.get(key).cloned().unwrap_or_default()
+        })
     }
 
     pub fn set_original_version(&self, key: EntityKey, version: i64) {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .original_versions
-            .insert(key, version);
+        self.write_context(|context| context.original_versions.insert(key, version));
     }
 }
 
 pub trait LedgerEntity: teaql_core::Entity {
     fn entity_root(&self) -> Option<EntityRoot>;
+}
+
+#[cfg(test)]
+mod lazy_root_tests {
+    use super::*;
+
+    #[test]
+    fn loaded_snapshot_does_not_allocate_ledger_until_mutation() {
+        let mut root = EntityRoot::default();
+        root.set_original_compact_row(teaql_core::CompactRow::new(
+            Arc::from(["id".to_owned(), "version".to_owned()]),
+            vec![Value::U64(7), Value::I64(3)],
+        ));
+        let key = EntityKey::new_static("Example", 7_u64);
+
+        assert!(!root.has_mutation_context());
+        assert_eq!(root.get(&key, "name"), None);
+        assert_eq!(root.get_original_version(&key), Some(3));
+        assert!(!root.has_mutation_context());
+
+        root.set(key, "name", Value::Text("updated".to_owned()));
+        assert!(root.has_mutation_context());
+    }
 }

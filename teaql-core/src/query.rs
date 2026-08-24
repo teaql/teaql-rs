@@ -782,6 +782,10 @@ impl CompactRow {
             .and_then(|index| self.values.get(index))
     }
 
+    pub fn shared_columns(&self) -> Arc<[String]> {
+        self.columns.clone()
+    }
+
     pub fn get_mut(&mut self, name: &str) -> Option<&mut Value> {
         self.columns
             .iter()

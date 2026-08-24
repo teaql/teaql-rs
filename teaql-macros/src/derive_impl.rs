@@ -76,13 +76,11 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     let mut from_record_fields = Vec::new();
     let mut record_value_slots = Vec::new();
     let mut record_value_match_arms = Vec::new();
-    let mut known_load_fields = Vec::new();
     let mut into_record_fields = Vec::new();
     let mut id_impl = None;
     let mut version_impl = None;
     let mut has_root_field = false;
     let mut id_field_ident: Option<syn::Ident> = None;
-    let mut version_field_ident: Option<syn::Ident> = None;
     let explicit_field_names: Vec<String> = named_fields
         .iter()
         .filter_map(|field| {
@@ -100,6 +98,13 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         if parsed.skip {
             if field_name == "root" {
                 has_root_field = true;
+                from_record_fields.push(quote! {
+                    #field_ident: load_context
+                        .and_then(|context| context.downcast_ref::<::teaql_runtime::EntityRoot>())
+                        .map(::teaql_runtime::EntityRoot::fresh_with_shared_graph)
+                        .unwrap_or_default()
+                });
+                continue;
             }
             from_record_fields.push(quote! {
                 #field_ident: Default::default()
@@ -144,7 +149,6 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                         #delete_missing
                 );
             });
-            known_load_fields.push(field_name.clone());
             let from_relation = from_relation_value_tokens(&field.ty, &field_name, &entity_name);
             let into_relation = into_relation_value_tokens(&field.ty, quote! { self.#field_ident });
             from_record_fields.push(quote! {
@@ -186,7 +190,6 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         };
         let version_tokens = if version {
             {
-                version_field_ident = Some(field_ident.clone());
                 version_impl = Some(quote! { self.#field_ident });
                 quote! { .version() }
             }
@@ -217,7 +220,6 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                     #version_tokens
             );
         });
-        known_load_fields.push(field_name.clone());
 
         let value_slot = format_ident!("__teaql_value_{}", field_ident);
         record_value_slots.push(quote! {
@@ -307,18 +309,8 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     };
 
     let set_original_compact_impl = if has_root_field {
-        let original_version = match (&id_field_ident, &version_field_ident) {
-            (Some(id_ident), Some(version_ident)) => quote! {
-                entity.root.set_original_version(
-                    ::teaql_runtime::EntityKey::new_static(#entity_name, entity.#id_ident),
-                    entity.#version_ident,
-                );
-            },
-            _ => quote! {},
-        };
         quote! {
             entity.root.set_original_compact_row(record);
-            #original_version
         }
     } else {
         Default::default()
@@ -356,22 +348,14 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
 
     let set_load_state_impl = if has_load_state_field {
         quote! {
-            entity.__load_state = ::teaql_core::eval::LoadState::PartialCompact(
-                record
-                    .keys()
-                    .map(|key| match key.as_str() {
-                        #(#known_load_fields => ::std::borrow::Cow::Borrowed(#known_load_fields),)*
-                        _ => ::std::borrow::Cow::Owned(key.clone()),
-                    })
-                    .collect(),
-            );
+            entity.__load_state =
+                ::teaql_core::eval::LoadState::SharedColumns(record.shared_columns());
         }
     } else {
         Default::default()
     };
 
-    let from_compact_impl = quote! {
-        fn from_compact_row(record: ::teaql_core::CompactRow) -> Result<Self, ::teaql_core::EntityError> {
+    let from_compact_body = quote! {
             #(#record_value_slots)*
             for (key, value) in record.iter() {
                 match key.as_str() {
@@ -385,7 +369,27 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             #set_load_state_impl
             #set_original_compact_impl
             Ok(entity)
+    };
+
+    let from_compact_with_context_impl = has_root_field.then(|| {
+        quote! {
+            fn from_compact_row_with_context(
+                record: ::teaql_core::CompactRow,
+                load_context: &dyn std::any::Any,
+            ) -> Result<Self, ::teaql_core::EntityError> {
+                let load_context = Some(load_context);
+                #from_compact_body
+            }
         }
+    });
+
+    let from_compact_impl = quote! {
+        fn from_compact_row(record: ::teaql_core::CompactRow) -> Result<Self, ::teaql_core::EntityError> {
+            let load_context: Option<&dyn std::any::Any> = None;
+            #from_compact_body
+        }
+
+        #from_compact_with_context_impl
     };
 
     quote! {

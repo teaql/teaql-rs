@@ -11,10 +11,11 @@ use teaql_core::{EntityDescriptor, UpdateCommand, Value};
 use teaql_sql::{CompiledQuery, DatabaseKind};
 
 use crate::{
-    local_id_generator, CheckObjectStatus, CheckResult, CheckResults, CheckerRegistry,
-    ContextError, EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry, EntityGraphBuilder,
+    CheckObjectStatus, CheckResult, CheckResults, CheckerRegistry, ContextError,
+    EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry, EntityGraphBuilder,
     EntityRegistry, GraphNode, InMemoryEntityGraphDecoderRegistry, InternalIdGenerator, Language,
     MetadataStore, ObjectLocation, RawAuditEvent, RawAuditEventSink, RequestPolicy, RuntimeError,
+    local_id_generator,
 };
 use crate::{DataServiceError, EntityRoot};
 
@@ -731,6 +732,17 @@ impl UserContext {
             owner_id,
             relation,
         )
+    }
+
+    pub(crate) fn decode_compact_entity_batch_into_graph(
+        &self,
+        entity: &str,
+        rows: Vec<teaql_core::CompactRow>,
+        root: &EntityRoot,
+        graph: &mut EntityGraphBuilder,
+    ) -> Result<(), teaql_core::EntityError> {
+        self.entity_graph_decoders
+            .decode_compact_batch(entity, rows, root, graph)
     }
 
     pub(crate) fn decode_compact_entity_option_into_graph(

@@ -9,6 +9,8 @@ pub enum LoadState {
     /// Compact generated-entity representation. Known fields borrow their generated static
     /// names; only genuinely dynamic projection aliases need to own a string.
     PartialCompact(smallvec::SmallVec<[std::borrow::Cow<'static, str>; 8]>),
+    /// Column layout shared by every row in one database result set.
+    SharedColumns(std::sync::Arc<[String]>),
     FullyLoaded,
 }
 
@@ -21,6 +23,9 @@ impl LoadState {
             LoadState::PartialCompact(fields) => fields
                 .iter()
                 .any(|field| field.as_ref() == field_or_relation),
+            LoadState::SharedColumns(columns) => {
+                columns.iter().any(|column| column == field_or_relation)
+            }
         }
     }
 }

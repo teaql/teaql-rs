@@ -31,7 +31,7 @@ categories = ["database"]
 
 [workspace.dependencies]
 chrono = { version = "0.4", features = ["serde"] }
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 rust_decimal = { version = "1", features = ["serde"] }
 thiserror = "2"

@@ -40,6 +40,16 @@ impl std::error::Error for EntityError {}
 
 pub trait Entity: TeaqlEntity + Sized {
     fn from_compact_row(row: CompactRow) -> Result<Self, EntityError>;
+
+    fn from_compact_row_with_context(
+        row: CompactRow,
+        context: &dyn std::any::Any,
+    ) -> Result<Self, EntityError> {
+        let mut entity = Self::from_compact_row(row)?;
+        entity.on_loaded(context);
+        Ok(entity)
+    }
+
     fn into_values(self) -> MutationValues;
 
     /// Returns the set of field names that have been modified since the entity was loaded.

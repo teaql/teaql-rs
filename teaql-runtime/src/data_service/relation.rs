@@ -2,13 +2,12 @@ use std::collections::BTreeMap;
 use std::slice;
 
 use teaql_core::{
-    Aggregate, CompactRow, Expr, ObjectGroupBy, RelationAggregate, RelationLoad,
-    SelectQuery, Value,
+    Aggregate, CompactRow, Expr, ObjectGroupBy, RelationAggregate, RelationLoad, SelectQuery, Value,
 };
 
 use crate::{DataServiceError, RuntimeError};
 
-use super::{helpers::*, EntityDataService, RelationLoadPlan};
+use super::{EntityDataService, RelationLoadPlan, helpers::*};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum FlatIdentityKey {
@@ -24,6 +23,17 @@ impl FlatIdentityKey {
             _ => Self::Other(graph_identity_key(value)),
         }
     }
+}
+
+fn unique_relation_values(rows: &[CompactRow], field: &str) -> Vec<Value> {
+    let mut values = rows
+        .iter()
+        .filter_map(|row| row.get(field).cloned())
+        .map(|value| (FlatIdentityKey::from_value(&value), value))
+        .collect::<Vec<_>>();
+    values.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    values.dedup_by(|left, right| left.0 == right.0);
+    values.into_iter().map(|(_, value)| value).collect()
 }
 
 impl<'a, E> EntityDataService<'a, E>
@@ -318,7 +328,7 @@ where
 
         let mut aggregate_rows = child_repo
             .with_trace_context(chain)
-                    .fetch_compact_all_internal(query)
+            .fetch_compact_all_internal(query)
             .await?;
         let foreign_key_column = self
             .data_service
@@ -452,7 +462,7 @@ where
                 .run(async {
                     let child_repo = self.scoped_data_service_internal(plan.target_entity.clone());
                     let query = self.query_for_plan(plan, parent_rows);
-            let mut child_rows = child_repo.fetch_compact_all_internal(query).await?;
+                    let mut child_rows = child_repo.fetch_compact_all_internal(query).await?;
                     for child in &mut child_rows {
                         child.remove(teaql_core::PARTITION_RANK_PROPERTY);
                     }
@@ -625,7 +635,12 @@ where
                 } else {
                     for child in related {
                         context
-                            .decode_compact_entity_into_graph(&plan.target_entity, child, root, graph)
+                            .decode_compact_entity_into_graph(
+                                &plan.target_entity,
+                                child,
+                                root,
+                                graph,
+                            )
                             .map_err(DataServiceError::Entity)?;
                     }
                 }
@@ -652,6 +667,23 @@ where
                 child_repo
                     .hydrate_compact_flat_plan(&child_rows, child_plan, root, graph)
                     .await?;
+            }
+
+            // A forward to-one relation only needs its fetched targets installed in the shared
+            // identity table. Building owner buckets and then removing them one parent at a time
+            // creates a map and one Vec per distinct target without adding information.
+            if !plan.many && plan.local_key != "id" {
+                return self
+                    .data_service
+                    .metadata
+                    .context
+                    .decode_compact_entity_batch_into_graph(
+                        &plan.target_entity,
+                        child_rows,
+                        root,
+                        graph,
+                    )
+                    .map_err(DataServiceError::Entity);
             }
 
             let mut buckets: BTreeMap<FlatIdentityKey, Vec<CompactRow>> = BTreeMap::new();
@@ -743,17 +775,7 @@ where
         // Relation identities are a set. Keeping one value per normalized identity avoids
         // compiling and binding the same foreign key once for every parent row (a common shape
         // for pages containing many rows that share a small reference table).
-        let ids = parent_rows
-            .iter()
-            .filter_map(|row| row.get(&plan.local_key).cloned())
-            .fold(BTreeMap::new(), |mut unique, value| {
-                unique
-                    .entry(FlatIdentityKey::from_value(&value))
-                    .or_insert(value);
-                unique
-            })
-            .into_values()
-            .collect::<Vec<_>>();
+        let ids = unique_relation_values(parent_rows, &plan.local_key);
 
         let mut query = plan
             .query
@@ -778,17 +800,7 @@ where
         plan: &RelationLoadPlan,
         parent_rows: &[CompactRow],
     ) -> SelectQuery {
-        let ids = parent_rows
-            .iter()
-            .filter_map(|row| row.get(&plan.local_key).cloned())
-            .fold(BTreeMap::new(), |mut unique, value| {
-                unique
-                    .entry(FlatIdentityKey::from_value(&value))
-                    .or_insert(value);
-                unique
-            })
-            .into_values()
-            .collect::<Vec<_>>();
+        let ids = unique_relation_values(parent_rows, &plan.local_key);
         let mut query = plan
             .query
             .clone()
@@ -858,13 +870,11 @@ where
                                             Value::List(Vec::new()),
                                         );
                                     }
-                                    let entry = child.get_mut(inverse_relation).expect(
-                                        "inverse relation was inserted immediately above",
-                                    );
+                                    let entry = child
+                                        .get_mut(inverse_relation)
+                                        .expect("inverse relation was inserted immediately above");
                                     if let Value::List(list) = entry {
-                                        list.push(Value::object(
-                                            parent_object.clone().into_map(),
-                                        ));
+                                        list.push(Value::object(parent_object.clone().into_map()));
                                     }
                                 }
                                 false => {
