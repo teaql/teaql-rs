@@ -866,10 +866,10 @@ fn cached_column_layout(
     sql: &str,
     statement: &rusqlite::Statement<'_>,
 ) -> Arc<ColumnLayout> {
-    if let Ok(cache) = cache.lock() {
-        if let Some(layout) = cache.get(sql) {
-            return layout.clone();
-        }
+    if let Ok(cache) = cache.lock()
+        && let Some(layout) = cache.get(sql)
+    {
+        return layout.clone();
     }
 
     let columns: Arc<[ColumnInfo]> = statement_columns(statement).into();
@@ -1070,7 +1070,7 @@ fn parse_fixed_sqlite_timestamp(value: &str) -> Option<i64> {
     let offset_seconds = match bytes.get(cursor..) {
         Some([]) | Some([b'Z']) | Some([b'z']) => 0,
         Some([sign @ (b'+' | b'-'), hour_1, hour_2]) => {
-            signed_offset(*sign, [*hour_1, *hour_2], [b'0', b'0'])?
+            signed_offset(*sign, [*hour_1, *hour_2], *b"00")?
         }
         Some([sign @ (b'+' | b'-'), hour_1, hour_2, minute_1, minute_2]) => {
             signed_offset(*sign, [*hour_1, *hour_2], [*minute_1, *minute_2])?

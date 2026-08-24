@@ -323,9 +323,7 @@ fn select_plan_key(query: &SelectQuery) -> SelectQuery {
 fn normalize_expr_values(expr: &mut Expr) {
     match expr {
         Expr::Value(Value::List(values)) => {
-            for value in values {
-                *value = Value::Null;
-            }
+            values.fill(Value::Null);
         }
         Expr::Value(value) => *value = Value::Null,
         Expr::Function { args, .. } | Expr::And(args) | Expr::Or(args) => {
@@ -492,7 +490,7 @@ fn scalar_partition_probe_query(query: &SelectQuery, value: Value) -> Option<Sel
                     && matches!(left.as_ref(), Expr::Column(column) if column == field) =>
             {
                 *op = teaql_core::BinaryOp::Eq;
-                *right = Box::new(Expr::Value(value.clone()));
+                **right = Expr::Value(value.clone());
                 true
             }
             Expr::And(parts) => parts.iter_mut().any(|part| replace(part, field, value)),
@@ -513,10 +511,10 @@ where
     S: teaql_data_service::SchemaProvider,
 {
     fn entity_descriptor(&self, name: &str) -> Option<Arc<teaql_core::EntityDescriptor>> {
-        if let Ok(cache) = self.descriptor_cache.read() {
-            if let Some(descriptor) = cache.get(name) {
-                return Some(descriptor.clone());
-            }
+        if let Ok(cache) = self.descriptor_cache.read()
+            && let Some(descriptor) = cache.get(name)
+        {
+            return Some(descriptor.clone());
         }
         let descriptor = self.schema_provider.get_entity(name)?;
         if let Ok(mut cache) = self.descriptor_cache.write() {
@@ -1219,10 +1217,10 @@ where
     S: teaql_data_service::SchemaProvider,
 {
     fn entity_descriptor(&self, name: &str) -> Option<Arc<teaql_core::EntityDescriptor>> {
-        if let Ok(cache) = self.descriptor_cache.read() {
-            if let Some(descriptor) = cache.get(name) {
-                return Some(descriptor.clone());
-            }
+        if let Ok(cache) = self.descriptor_cache.read()
+            && let Some(descriptor) = cache.get(name)
+        {
+            return Some(descriptor.clone());
         }
         let descriptor = self.schema_provider.get_entity(name)?;
         if let Ok(mut cache) = self.descriptor_cache.write() {
