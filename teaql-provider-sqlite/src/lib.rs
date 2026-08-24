@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
@@ -23,6 +23,7 @@ use teaql_sql::{
 
 pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";
 pub const DEFAULT_PREPARED_STATEMENT_CACHE_CAPACITY: usize = 64;
+pub const DEFAULT_COLUMN_LAYOUT_CACHE_CAPACITY: usize = 64;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SqliteDialect;
@@ -132,6 +133,7 @@ impl From<SqlCompileError> for MutationExecutorError {
 #[derive(Clone)]
 pub struct SqliteMutationExecutor {
     connection: Arc<Mutex<Connection>>,
+    column_layout_cache: Arc<Mutex<HashMap<String, Arc<ColumnLayout>>>>,
 }
 
 impl SqliteMutationExecutor {
@@ -141,7 +143,10 @@ impl SqliteMutationExecutor {
                 DEFAULT_PREPARED_STATEMENT_CACHE_CAPACITY,
             );
         }
-        Self { connection }
+        Self {
+            connection,
+            column_layout_cache: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     pub fn from_connection(connection: Connection) -> Self {
@@ -180,7 +185,17 @@ impl SqliteMutationExecutor {
                 self.lock()?.execute(&sql, [])?;
             }
         }
+        self.clear_query_caches();
         Ok(())
+    }
+
+    fn clear_query_caches(&self) {
+        if let Ok(connection) = self.connection.lock() {
+            connection.flush_prepared_statement_cache();
+        }
+        if let Ok(mut cache) = self.column_layout_cache.lock() {
+            cache.clear();
+        }
     }
 
     pub fn ensure_id_space_table(&self, table_name: &str) -> Result<(), MutationExecutorError> {
@@ -221,19 +236,15 @@ impl SqliteMutationExecutor {
     ) -> Result<Vec<CompactRow>, MutationExecutorError> {
         let params = bind_values(&query.params)?;
         let connection = self.lock()?;
-        let mut statement = connection.prepare_cached(&query.sql_with_comment())?;
-        let columns = statement_columns(&statement);
-        let column_names: Arc<[String]> = columns
-            .iter()
-            .map(|column| column.name.clone())
-            .collect::<Vec<_>>()
-            .into();
+        let sql = query.sql_with_comment();
+        let mut statement = connection.prepare_cached(&sql)?;
+        let layout = cached_column_layout(&self.column_layout_cache, &query.sql, &statement);
         let mut rows = statement.query(params_from_iter(params.iter()))?;
         let mut result = Vec::new();
         while let Some(row) = rows.next()? {
             result.push(CompactRow::new(
-                column_names.clone(),
-                decode_sqlite_values(row, &columns)?,
+                layout.names.clone(),
+                decode_sqlite_values(row, &layout.columns)?,
             ));
         }
         Ok(result)
@@ -248,13 +259,9 @@ impl SqliteMutationExecutor {
     ) -> Result<Vec<teaql_data_service::StreamChunk>, MutationExecutorError> {
         let params = bind_values(&query.params)?;
         let connection = self.lock()?;
-        let mut statement = connection.prepare_cached(&query.sql_with_comment())?;
-        let columns = statement_columns(&statement);
-        let column_names: Arc<[String]> = columns
-            .iter()
-            .map(|column| column.name.clone())
-            .collect::<Vec<_>>()
-            .into();
+        let sql = query.sql_with_comment();
+        let mut statement = connection.prepare_cached(&sql)?;
+        let layout = cached_column_layout(&self.column_layout_cache, &query.sql, &statement);
         let mut rows = statement.query(params_from_iter(params.iter()))?;
 
         let mut chunks = Vec::new();
@@ -263,8 +270,8 @@ impl SqliteMutationExecutor {
 
         while let Some(row) = rows.next()? {
             current_chunk.push(CompactRow::new(
-                column_names.clone(),
-                decode_sqlite_values(row, &columns)?,
+                layout.names.clone(),
+                decode_sqlite_values(row, &layout.columns)?,
             ));
             if current_chunk.len() >= chunk_size {
                 chunks.push(teaql_data_service::StreamChunk {
@@ -359,16 +366,17 @@ impl teaql_sql::StreamingSqlTransport for SqliteMutationExecutor {
         chunk_size: usize,
     ) -> teaql_data_service::QueryStream<'_, Self::Error> {
         let connection = self.connection.clone();
+        let column_layout_cache = self.column_layout_cache.clone();
         Box::pin(async_stream::try_stream! {
             let params = bind_values(&query.params)?;
             let guard = connection.lock().map_err(|err| MutationExecutorError::Lock(err.to_string()))?;
-            let mut statement = guard.prepare_cached(&query.sql_with_comment())?;
-            let columns = statement_columns(&statement);
-            let column_names: Arc<[String]> = columns.iter().map(|column| column.name.clone()).collect::<Vec<_>>().into();
+            let sql = query.sql_with_comment();
+            let mut statement = guard.prepare_cached(&sql)?;
+            let layout = cached_column_layout(&column_layout_cache, &query.sql, &statement);
             let mut rows = statement.query(params_from_iter(params.iter()))?;
             let mut chunk = Vec::with_capacity(chunk_size); let mut index = 0;
             while let Some(row) = rows.next()? {
-                chunk.push(CompactRow::new(column_names.clone(), decode_sqlite_values(row, &columns)?));
+                chunk.push(CompactRow::new(layout.names.clone(), decode_sqlite_values(row, &layout.columns)?));
                 if chunk.len() == chunk_size { yield teaql_data_service::StreamChunk { rows: std::mem::take(&mut chunk), chunk_index: index, is_last: false }; index += 1; }
             }
             if !chunk.is_empty() { yield teaql_data_service::StreamChunk { rows: chunk, chunk_index: index, is_last: true }; }
@@ -590,6 +598,7 @@ pub fn ensure_sqlite_schema_for(context: &UserContext) -> Result<(), MutationExe
         ));
     }
 
+    executor.clear_query_caches();
     Ok(())
 }
 
@@ -808,6 +817,39 @@ fn bind_sqlite_value(value: &Value) -> Result<SqliteValue, MutationExecutorError
 struct ColumnInfo {
     name: String,
     decl_type: Option<String>,
+}
+
+#[derive(Debug)]
+struct ColumnLayout {
+    columns: Arc<[ColumnInfo]>,
+    names: Arc<[String]>,
+}
+
+fn cached_column_layout(
+    cache: &Mutex<HashMap<String, Arc<ColumnLayout>>>,
+    sql: &str,
+    statement: &rusqlite::Statement<'_>,
+) -> Arc<ColumnLayout> {
+    if let Ok(cache) = cache.lock() {
+        if let Some(layout) = cache.get(sql) {
+            return layout.clone();
+        }
+    }
+
+    let columns: Arc<[ColumnInfo]> = statement_columns(statement).into();
+    let names = columns
+        .iter()
+        .map(|column| column.name.clone())
+        .collect::<Vec<_>>()
+        .into();
+    let layout = Arc::new(ColumnLayout { columns, names });
+    if let Ok(mut cache) = cache.lock() {
+        if cache.len() >= DEFAULT_COLUMN_LAYOUT_CACHE_CAPACITY {
+            cache.clear();
+        }
+        cache.insert(sql.to_owned(), layout.clone());
+    }
+    layout
 }
 
 fn statement_columns(statement: &rusqlite::Statement<'_>) -> Vec<ColumnInfo> {
@@ -1142,6 +1184,30 @@ mod tests {
             create,
             "CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY NOT NULL, version INTEGER NOT NULL, name VARCHAR(255))"
         );
+    }
+
+    #[test]
+    fn column_layout_cache_uses_parameterized_sql_not_comments() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute("CREATE TABLE sample (id INTEGER, enabled BOOLEAN)", [])
+            .unwrap();
+        connection
+            .execute("INSERT INTO sample (id, enabled) VALUES (1, 1)", [])
+            .unwrap();
+        let executor = SqliteMutationExecutor::from_connection(connection);
+        let mut first = CompiledQuery {
+            sql: "SELECT id, enabled FROM sample WHERE id = ?".to_owned(),
+            params: vec![Value::I64(1)],
+            comment: Some("first purpose".to_owned()),
+        };
+        let rows = executor.fetch_all_compact(&first).unwrap();
+        assert_eq!(rows[0].get("enabled"), Some(&Value::Bool(true)));
+
+        first.comment = Some("different purpose".to_owned());
+        executor.fetch_all_compact(&first).unwrap();
+
+        assert_eq!(executor.column_layout_cache.lock().unwrap().len(), 1);
     }
 
     #[test]
