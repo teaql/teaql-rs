@@ -60,6 +60,7 @@ pub fn clear_entity_status(values: &mut EntityValues) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckRule {
     Required,
+    InvalidType,
     Min,
     Max,
     MinStringLength,
@@ -388,12 +389,19 @@ where
                     }
                 }
             }
-            Err(_e) => {
-                // If deserialization fails, re-build an empty record so
-                // the caller always sees a valid (though empty) entity value set.
-                *values = EntityValues::default();
-                // Push a generic error result.
-                results.push(CheckResult::new(CheckRule::Required, location.clone()));
+            Err(error) => {
+                // A malformed value is not an absent required value. Preserve
+                // the caller's mutation boundary and report the materialization
+                // error so the offending field and actual value remain visible.
+                *values = original_values;
+                results.push(
+                    CheckResult::new(CheckRule::InvalidType, location.clone()).with_message(
+                        format!(
+                            "failed to materialize {} for checker: {error}",
+                            self.entity_name
+                        ),
+                    ),
+                );
             }
         }
     }

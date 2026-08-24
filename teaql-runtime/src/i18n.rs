@@ -136,6 +136,7 @@ impl I18nCatalog {
     pub fn translate_check_result(&self, language: Language, result: &CheckResult) -> String {
         let key = match result.rule {
             CheckRule::Required => "checker.required",
+            CheckRule::InvalidType => "checker.invalidType",
             CheckRule::Min => "checker.min",
             CheckRule::Max => "checker.max",
             CheckRule::MinStringLength => "checker.minLength",

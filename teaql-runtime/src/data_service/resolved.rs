@@ -283,6 +283,25 @@ where
         Ok(query)
     }
 
+    fn ensure_entity_identity_projection(&self, query: &mut SelectQuery) {
+        // An empty projection means all mapped properties. Once callers use a
+        // reduced projection, entity hydration must still retain identity and
+        // the optimistic-lock token. Aggregate/DTO paths do not call this
+        // helper, so their SQL shape is left untouched.
+        if query.projection.is_empty() {
+            return;
+        }
+        let Some(descriptor) = self.data_service.metadata.context.entity(&query.entity) else {
+            return;
+        };
+        if let Some(id) = descriptor.id_property() {
+            ensure_projection(query, &id.name);
+        }
+        if let Some(version) = descriptor.version_property() {
+            ensure_projection(query, &version.name);
+        }
+    }
+
     pub fn prepare_insert_command(
         &self,
         command: &InsertCommand,
@@ -1182,9 +1201,10 @@ where
     where
         T: Entity,
     {
-        let query = self
+        let mut query = self
             .prepare_select_query(query)
             .map_err(DataServiceError::Runtime)?;
+        self.ensure_entity_identity_projection(&mut query);
 
         self.data_service.fetch_entities(&query).await
     }
@@ -1197,9 +1217,11 @@ where
     where
         T: Entity,
     {
+        let mut query = query.clone();
+        self.ensure_entity_identity_projection(&mut query);
         let root = crate::EntityRoot::default();
         decode_compact_rows::<T>(
-            self.fetch_all_with_relation_aggregates_internal(query, relation_aggregates)
+            self.fetch_all_with_relation_aggregates_internal(&query, relation_aggregates)
                 .await?,
             &root,
         )
@@ -1215,9 +1237,10 @@ where
     where
         T: Entity,
     {
-        let query = self
+        let mut query = self
             .prepare_select_query(query)
             .map_err(DataServiceError::Runtime)?;
+        self.ensure_entity_identity_projection(&mut query);
         self.fetch_enhanced_entities_with_relation_aggregates_prepared(query, relation_aggregates)
             .await
     }
@@ -1230,9 +1253,10 @@ where
     where
         T: Entity,
     {
-        let query = self
+        let mut query = self
             .prepare_select_query_owned(query)
             .map_err(DataServiceError::Runtime)?;
+        self.ensure_entity_identity_projection(&mut query);
         self.fetch_enhanced_entities_with_relation_aggregates_prepared(query, relation_aggregates)
             .await
     }

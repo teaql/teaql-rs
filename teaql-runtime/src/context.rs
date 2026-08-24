@@ -1348,7 +1348,10 @@ impl UserContext {
             for property in descriptor
                 .properties
                 .iter()
-                .filter(|property| !property.nullable)
+                // The optimistic-lock version is runtime-managed. Insert
+                // preparation assigns its initial value after check/fix, so a
+                // create caller must never be required to provide it.
+                .filter(|property| !property.nullable && !property.is_version)
             {
                 let missing = !values.contains_key(&property.name);
                 let null = matches!(values.get(&property.name), Some(Value::Null));
@@ -1371,10 +1374,12 @@ impl UserContext {
 
     pub fn translate_check_results(&self, results: &mut CheckResults) {
         for result in results {
-            result.message = Some(
-                self.i18n_catalog
-                    .translate_check_result(self.language, result),
-            );
+            if result.message.is_none() {
+                result.message = Some(
+                    self.i18n_catalog
+                        .translate_check_result(self.language, result),
+                );
+            }
         }
     }
 

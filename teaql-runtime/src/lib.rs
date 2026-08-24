@@ -444,6 +444,30 @@ mod tests {
         name: String,
     }
 
+    #[derive(Debug, Clone, PartialEq, DeriveTeaqlEntity)]
+    #[teaql(entity = "TimestampedEntity", table = "timestamped_entity")]
+    struct TimestampedEntity {
+        #[teaql(id)]
+        id: u64,
+        #[teaql(version)]
+        version: i64,
+        happened_at: teaql_core::time::Timestamp,
+    }
+
+    struct NoopTimestampedChecker;
+
+    impl TypedChecker<TimestampedEntity> for NoopTimestampedChecker {
+        fn check_and_fix_typed(
+            &self,
+            _context: &UserContext,
+            _entity: &mut TimestampedEntity,
+            _status: CheckObjectStatus,
+            _location: &ObjectLocation,
+            _results: &mut CheckResults,
+        ) {
+        }
+    }
+
     #[derive(Debug, PartialEq, DeriveTeaqlEntity)]
     #[teaql(entity = "Product", table = "product")]
     struct TypedGraphProduct {
@@ -1422,6 +1446,75 @@ mod tests {
     }
 
     #[test]
+    fn metadata_validation_does_not_require_runtime_managed_version_on_create() {
+        let context = UserContext::new().with_metadata(
+            InMemoryMetadataStore::new().with_entity(
+                EntityDescriptor::new("School")
+                    .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+                    .property(
+                        PropertyDescriptor::new("version", DataType::I64)
+                            .version()
+                            .not_null(),
+                    )
+                    .property(PropertyDescriptor::new("name", DataType::Text).not_null()),
+            ),
+        );
+        let mut values = EntityValues::from(Record::from([
+            ("id".to_owned(), Value::U64(1)),
+            ("name".to_owned(), Value::Text("TeaQL School".to_owned())),
+            (
+                CHECK_OBJECT_STATUS_FIELD.to_owned(),
+                Value::from(CheckObjectStatus::Create),
+            ),
+        ]));
+
+        context.check_and_fix_values("School", &mut values).unwrap();
+        assert!(!values.contains_key("version"));
+    }
+
+    #[test]
+    fn typed_checker_preserves_values_and_reports_timestamp_type_error() {
+        let context = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new().with_entity(TimestampedEntity::entity_descriptor()),
+            )
+            .with_checker_registry(InMemoryCheckerRegistry::new().with_checker(
+                TypedEntityChecker::<TimestampedEntity, _>::new(NoopTimestampedChecker),
+            ));
+        let mut values = EntityValues::from(Record::from([
+            ("id".to_owned(), Value::U64(7)),
+            ("version".to_owned(), Value::I64(1)),
+            (
+                "happened_at".to_owned(),
+                Value::Text("2026-08-25".to_owned()),
+            ),
+            (
+                CHECK_OBJECT_STATUS_FIELD.to_owned(),
+                Value::from(CheckObjectStatus::Update),
+            ),
+        ]));
+
+        let error = context
+            .check_and_fix_values("TimestampedEntity", &mut values)
+            .unwrap_err();
+
+        assert_eq!(
+            values.get("happened_at"),
+            Some(&Value::Text("2026-08-25".to_owned()))
+        );
+        match error {
+            RuntimeError::Check(results) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].rule, CheckRule::InvalidType);
+                let message = results[0].message.as_deref().unwrap_or_default();
+                assert!(message.contains("happened_at"), "{message}");
+                assert!(message.contains("2026-08-25"), "{message}");
+            }
+            other => panic!("unexpected checker error: {other:?}"),
+        }
+    }
+
+    #[test]
     fn metadata_not_null_constraints_allow_omitted_fields_on_partial_update() {
         let context = UserContext::new().with_metadata(
             InMemoryMetadataStore::new().with_entity(
@@ -1467,18 +1560,14 @@ mod tests {
             .entity_data_service::<StubExecutor>("Order")
             .unwrap();
         let prepared = repo
-            .prepare_insert_command(
-                &repo
-                    .insert_command()
-                    .value("name", "fix")
-                    .value("version", 1_i64),
-            )
+            .prepare_insert_command(&repo.insert_command().value("name", "fix"))
             .unwrap();
         assert_eq!(
             prepared.values.get("name"),
             Some(&Value::Text("fixed".to_owned()))
         );
         assert_eq!(prepared.values.get("id"), Some(&Value::U64(79)));
+        assert_eq!(prepared.values.get("version"), Some(&Value::I64(1)));
         assert!(!prepared.values.contains_key(CHECK_OBJECT_STATUS_FIELD));
 
         let error = repo
@@ -2160,6 +2249,46 @@ mod tests {
                 name: String::from("typed"),
             })
         );
+    }
+
+    #[tokio::test]
+    async fn typed_entity_fetch_restores_id_and_version_to_reduced_projection() {
+        let mut context = UserContext::new()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(entity()))
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(CapturingQueryExecutor {
+            rows: vec![Record::from([
+                (String::from("id"), Value::U64(7)),
+                (String::from("version"), Value::I64(2)),
+                (String::from("name"), Value::Text(String::from("typed"))),
+            ])],
+            ..Default::default()
+        });
+
+        let repo = context
+            .entity_data_service::<CapturingQueryExecutor>("Order")
+            .unwrap();
+        let rows = repo
+            .fetch_entities_internal::<OrderEntity>(&SelectQuery::new("Order").project("name"))
+            .await
+            .unwrap();
+        let enhanced_rows = repo
+            .fetch_enhanced_entities_internal::<OrderEntity>(
+                &SelectQuery::new("Order").project("name"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(enhanced_rows.len(), 1);
+        let executor = context
+            .get_resource::<CapturingQueryExecutor>()
+            .expect("capturing executor");
+        let queries = executor.queries.lock().unwrap();
+        assert_eq!(queries.len(), 2);
+        assert_eq!(queries[0].projection, vec!["name", "id", "version"]);
+        assert_eq!(queries[1].projection, vec!["name", "id", "version"]);
     }
 
     #[tokio::test]
