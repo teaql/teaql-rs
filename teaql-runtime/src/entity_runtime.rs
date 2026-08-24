@@ -1,7 +1,7 @@
 use std::any::{Any, TypeId};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use teaql_core::{EntitySnapshot, MutationValues, SmartList, Value};
 
@@ -347,15 +347,76 @@ pub struct RootContext {
 #[derive(Debug)]
 pub struct EntityRoot {
     inner: OnceLock<Arc<Mutex<RootContext>>>,
-    graph: Arc<OnceLock<FrozenEntityGraph>>,
+    graph: EntityGraphReference,
     loaded_snapshot: Option<teaql_core::CompactRow>,
+}
+
+#[derive(Debug)]
+enum EntityGraphReference {
+    Strong(Arc<OnceLock<FrozenEntityGraph>>),
+    Weak(Weak<OnceLock<FrozenEntityGraph>>),
+}
+
+impl EntityGraphReference {
+    fn preserve(&self) -> Self {
+        match self {
+            Self::Strong(graph) => Self::Strong(graph.clone()),
+            Self::Weak(graph) => Self::Weak(graph.clone()),
+        }
+    }
+
+    fn promote(&self) -> Self {
+        match self {
+            Self::Strong(graph) => Self::Strong(graph.clone()),
+            Self::Weak(graph) => graph
+                .upgrade()
+                .map(Self::Strong)
+                .unwrap_or_else(|| Self::Strong(Arc::default())),
+        }
+    }
+
+    fn weak(&self) -> Self {
+        match self {
+            Self::Strong(graph) => Self::Weak(Arc::downgrade(graph)),
+            Self::Weak(graph) => Self::Weak(graph.clone()),
+        }
+    }
+
+    fn pointer(&self) -> *const OnceLock<FrozenEntityGraph> {
+        match self {
+            Self::Strong(graph) => Arc::as_ptr(graph),
+            Self::Weak(graph) => graph.as_ptr(),
+        }
+    }
+
+    fn strong(&self) -> Option<&Arc<OnceLock<FrozenEntityGraph>>> {
+        match self {
+            Self::Strong(graph) => Some(graph),
+            Self::Weak(_) => None,
+        }
+    }
+
+    fn frozen(&self) -> Option<&FrozenEntityGraph> {
+        match self {
+            Self::Strong(graph) => graph.get(),
+            Self::Weak(graph) => {
+                let owner = graph.upgrade()?;
+                let frozen = owner.get()? as *const FrozenEntityGraph;
+                // SAFETY: weak graph references are only installed into entities owned by the
+                // same frozen graph. Such an entity can only be borrowed while an owning root
+                // keeps the graph alive. Cloning EntityRoot promotes the weak reference to a
+                // strong owner, so an entity moved out through safe code also anchors the graph.
+                Some(unsafe { &*frozen })
+            }
+        }
+    }
 }
 
 impl Default for EntityRoot {
     fn default() -> Self {
         Self {
             inner: OnceLock::new(),
-            graph: Arc::default(),
+            graph: EntityGraphReference::Strong(Arc::default()),
             loaded_snapshot: None,
         }
     }
@@ -369,7 +430,7 @@ impl Clone for EntityRoot {
         }
         Self {
             inner,
-            graph: self.graph.clone(),
+            graph: self.graph.promote(),
             loaded_snapshot: self.loaded_snapshot.clone(),
         }
     }
@@ -389,7 +450,7 @@ impl PartialEq for EntityRoot {
         match (self.inner.get(), other.inner.get()) {
             (Some(left), Some(right)) => Arc::ptr_eq(left, right),
             (None, None) => {
-                Arc::ptr_eq(&self.graph, &other.graph)
+                self.graph.pointer() == other.graph.pointer()
                     && self.loaded_snapshot == other.loaded_snapshot
             }
             _ => false,
@@ -427,7 +488,17 @@ impl EntityRoot {
     pub fn fresh_with_shared_graph(source: &EntityRoot) -> Self {
         Self {
             inner: OnceLock::new(),
-            graph: source.graph.clone(),
+            graph: source.graph.preserve(),
+            loaded_snapshot: None,
+        }
+    }
+
+    /// Create a root view for an entity stored inside the graph itself. The weak view prevents
+    /// the graph from strongly owning an entity that strongly owns the graph in return.
+    pub(crate) fn fresh_with_weak_graph(source: &EntityRoot) -> Self {
+        Self {
+            inner: OnceLock::new(),
+            graph: source.graph.weak(),
             loaded_snapshot: None,
         }
     }
@@ -437,14 +508,17 @@ impl EntityRoot {
     pub fn with_shared_graph(&self, source: &EntityRoot) -> Self {
         Self {
             inner: self.inner.clone(),
-            graph: source.graph.clone(),
+            graph: source.graph.preserve(),
             loaded_snapshot: self.loaded_snapshot.clone(),
         }
     }
 
     /// Publish a completely assembled graph. It becomes immutable after this call.
     pub fn freeze_graph(&self, builder: EntityGraphBuilder) -> Result<(), EntityGraphBuilder> {
-        self.graph
+        let Some(graph) = self.graph.strong() else {
+            return Err(builder);
+        };
+        graph
             .set(builder.freeze())
             .map_err(|graph| EntityGraphBuilder {
                 tables: graph.tables,
@@ -458,7 +532,7 @@ impl EntityRoot {
         T: Any + Send + Sync,
     {
         self.graph
-            .get()?
+            .frozen()?
             .tables
             .get(&TypeId::of::<T>())?
             .get(&id)?
@@ -475,7 +549,7 @@ impl EntityRoot {
         T: Any + Send + Sync,
     {
         self.graph
-            .get()?
+            .frozen()?
             .relation_lists
             .get(&RelationListKey {
                 owner_entity: crate::canonical_id_space_entity(owner_entity),
@@ -495,7 +569,7 @@ impl EntityRoot {
         T: Any + Send + Sync,
     {
         self.graph
-            .get()?
+            .frozen()?
             .relation_lists
             .get(&RelationListKey {
                 owner_entity: crate::canonical_id_space_entity(owner_entity),
@@ -506,7 +580,7 @@ impl EntityRoot {
     }
 
     pub fn has_relation_view(&self, owner_entity: &str, owner_id: u64, relation: &str) -> bool {
-        self.graph.get().is_some_and(|graph| {
+        self.graph.frozen().is_some_and(|graph| {
             graph.relation_lists.contains_key(&RelationListKey {
                 owner_entity: crate::canonical_id_space_entity(owner_entity),
                 owner_id,
@@ -674,6 +748,11 @@ pub trait LedgerEntity: teaql_core::Entity {
 mod lazy_root_tests {
     use super::*;
 
+    #[derive(Clone)]
+    struct GraphChild {
+        root: EntityRoot,
+    }
+
     #[test]
     fn loaded_snapshot_does_not_allocate_ledger_until_mutation() {
         let mut root = EntityRoot::default();
@@ -690,5 +769,56 @@ mod lazy_root_tests {
 
         root.set(key, "name", Value::Text("updated".to_owned()));
         assert!(root.has_mutation_context());
+    }
+
+    #[test]
+    fn graph_owned_entities_do_not_keep_the_graph_alive() {
+        let root = EntityRoot::default();
+        let graph_owner = match &root.graph {
+            EntityGraphReference::Strong(graph) => Arc::downgrade(graph),
+            EntityGraphReference::Weak(_) => unreachable!(),
+        };
+        let mut builder = EntityGraphBuilder::default();
+        builder.install_relation_list(
+            "Owner",
+            1,
+            "children",
+            SmartList::from(vec![GraphChild {
+                root: EntityRoot::fresh_with_weak_graph(&root),
+            }]),
+        );
+        root.freeze_graph(builder).unwrap();
+
+        drop(root);
+        assert!(graph_owner.upgrade().is_none());
+    }
+
+    #[test]
+    fn cloning_a_graph_owned_entity_promotes_its_graph_anchor() {
+        let root = EntityRoot::default();
+        let graph_owner = match &root.graph {
+            EntityGraphReference::Strong(graph) => Arc::downgrade(graph),
+            EntityGraphReference::Weak(_) => unreachable!(),
+        };
+        let mut builder = EntityGraphBuilder::default();
+        builder.install_relation_list(
+            "Owner",
+            1,
+            "children",
+            SmartList::from(vec![GraphChild {
+                root: EntityRoot::fresh_with_weak_graph(&root),
+            }]),
+        );
+        root.freeze_graph(builder).unwrap();
+        let detached = root
+            .resolve_relation_list::<GraphChild>("Owner", 1, "children")
+            .unwrap()[0]
+            .clone();
+
+        drop(root);
+        assert!(graph_owner.upgrade().is_some());
+        assert!(detached.root.graph.frozen().is_some());
+        drop(detached);
+        assert!(graph_owner.upgrade().is_none());
     }
 }

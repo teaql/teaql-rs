@@ -49,7 +49,9 @@ impl InMemoryEntityGraphDecoderRegistry {
         where
             T: Entity + IdentifiableEntity + Send + Sync + 'static,
         {
-            let entity = T::from_compact_row_with_context(row, root as &dyn std::any::Any)?;
+            let graph_root = EntityRoot::fresh_with_weak_graph(root);
+            let entity =
+                T::from_compact_row_with_context(row, &graph_root as &dyn std::any::Any)?;
             let id = entity.id_value().try_u64().ok_or_else(|| {
                 EntityError::new(T::ENTITY_NAME, "identity graph requires a u64 entity id")
             })?;
@@ -68,9 +70,12 @@ impl InMemoryEntityGraphDecoderRegistry {
         where
             T: Entity + IdentifiableEntity + Send + Sync + 'static,
         {
+            let graph_root = EntityRoot::fresh_with_weak_graph(root);
             let entities = rows
                 .into_iter()
-                .map(|row| T::from_compact_row_with_context(row, root as &dyn std::any::Any))
+                .map(|row| {
+                    T::from_compact_row_with_context(row, &graph_root as &dyn std::any::Any)
+                })
                 .collect::<Result<Vec<T>, EntityError>>()?;
             graph.install_relation_list(
                 owner_entity,
@@ -89,8 +94,12 @@ impl InMemoryEntityGraphDecoderRegistry {
         where
             T: Entity + IdentifiableEntity + Send + Sync + 'static,
         {
+            let graph_root = EntityRoot::fresh_with_weak_graph(root);
             for row in rows {
-                let entity = T::from_compact_row_with_context(row, root as &dyn std::any::Any)?;
+                let entity = T::from_compact_row_with_context(
+                    row,
+                    &graph_root as &dyn std::any::Any,
+                )?;
                 let id = entity.id_value().try_u64().ok_or_else(|| {
                     EntityError::new(T::ENTITY_NAME, "identity graph requires a u64 entity id")
                 })?;
@@ -110,10 +119,13 @@ impl InMemoryEntityGraphDecoderRegistry {
         where
             T: Entity + IdentifiableEntity + Send + Sync + 'static,
         {
+            let graph_root = EntityRoot::fresh_with_weak_graph(root);
             let value = rows
                 .into_iter()
                 .next()
-                .map(|row| T::from_compact_row_with_context(row, root as &dyn std::any::Any))
+                .map(|row| {
+                    T::from_compact_row_with_context(row, &graph_root as &dyn std::any::Any)
+                })
                 .transpose()?;
             graph.install_relation_option(owner_entity, owner_id, relation, value);
             Ok(())
