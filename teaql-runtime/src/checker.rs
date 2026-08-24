@@ -369,15 +369,24 @@ where
         results: &mut CheckResults,
     ) {
         let status = CheckObjectStatus::from_values(values);
-        // Take ownership of the record (replace with empty) so we can
-        // Materialize a typed entity from the checker value set.
-        let owned_record = std::mem::take(values).into();
+        // Materializing a partial update necessarily fills omitted Rust fields
+        // with their type defaults. Those defaults are only a checker view;
+        // they must never become mutation intent. Keep the original sparse
+        // record and merge back only fields the typed checker actually changed.
+        let original_values = std::mem::take(values);
+        let owned_record = original_values.clone().into();
         match T::from_compact_row(teaql_core::CompactRow::from_map(owned_record)) {
             Ok(mut entity) => {
+                let before_check = entity.clone().into_values();
                 self.checker
                     .check_and_fix_typed(context, &mut entity, status, location, results);
-                // Write mutated entity back into the original record slot.
-                *values = entity.into_values().into();
+                let after_check = entity.into_values();
+                *values = original_values;
+                for (field, after_value) in after_check {
+                    if before_check.get(&field) != Some(&after_value) {
+                        values.insert(field, after_value);
+                    }
+                }
             }
             Err(_e) => {
                 // If deserialization fails, re-build an empty record so

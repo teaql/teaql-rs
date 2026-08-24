@@ -1356,6 +1356,41 @@ mod tests {
         }
     }
 
+    #[test]
+    fn typed_checker_preserves_sparse_update_boundary() {
+        let context = UserContext::new()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(Order::entity_descriptor()))
+            .with_checker_registry(
+                InMemoryCheckerRegistry::new()
+                    .with_checker(TypedEntityChecker::<Order, _>::new(TypedOrderChecker)),
+            );
+        let mut values = EntityValues::from(Record::from([
+            ("id".to_owned(), Value::U64(7)),
+            ("name".to_owned(), Value::Text("valid".to_owned())),
+            (
+                CHECK_OBJECT_STATUS_FIELD.to_owned(),
+                Value::from(CheckObjectStatus::Update),
+            ),
+        ]));
+
+        context.check_and_fix_values("Order", &mut values).unwrap();
+
+        assert_eq!(values.get("id"), Some(&Value::U64(7)));
+        assert_eq!(values.get("name"), Some(&Value::Text("valid".to_owned())));
+        assert!(
+            !values.contains_key("version"),
+            "a defaulted typed-checker field became update intent"
+        );
+
+        values.insert("name".to_owned(), Value::Text("fix".to_owned()));
+        context.check_and_fix_values("Order", &mut values).unwrap();
+        assert_eq!(values.get("name"), Some(&Value::Text("fixed".to_owned())));
+        assert!(
+            !values.contains_key("version"),
+            "checker fix expanded the sparse update"
+        );
+    }
+
     #[tokio::test]
     async fn checker_registry_reports_nested_create_locations_and_fixes_records() {
         let context = UserContext::new()
