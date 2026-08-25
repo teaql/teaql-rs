@@ -419,6 +419,12 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 if let Some(original_values) = self.original_values() {
                     record.insert("_original_values".to_owned(), ::teaql_core::Value::Object(original_values.into()));
                 }
+                if self.is_new() {
+                    record.insert("_is_new".to_owned(), ::teaql_core::Value::Bool(true));
+                }
+                if self.is_marked_as_delete() {
+                    record.insert("_is_deleted".to_owned(), ::teaql_core::Value::Bool(true));
+                }
                 #(#into_record_fields)*
                 record.into()
             }

@@ -1082,6 +1082,18 @@ where
                 }
                 continue;
             }
+            if field == "_is_new" {
+                if matches!(value, Value::Bool(true)) {
+                    node.operation = GraphOperation::Create;
+                }
+                continue;
+            }
+            if field == "_is_deleted" {
+                if matches!(value, Value::Bool(true)) {
+                    node.operation = GraphOperation::Remove;
+                }
+                continue;
+            }
             let Some(relation) = descriptor.relation_by_name(&field) else {
                 node.values.insert(field, value);
                 continue;

@@ -703,18 +703,22 @@ where
         })
     }
 
-    async fn hydrate_compact_flat_leaf(
-        &self,
-        parent_rows: &[CompactRow],
-        plan: &RelationLoadPlan,
-        root: &crate::EntityRoot,
-        graph: &mut crate::EntityGraphBuilder,
-    ) -> Result<(), DataServiceError<E::Error>> {
-        let child_repo = self.scoped_data_service_internal(plan.target_entity.clone());
-        let child_rows = self
-            .fetch_relation_rows(&child_repo, plan, parent_rows, true)
-            .await?;
-        self.install_compact_flat_relation(parent_rows, plan, child_rows, root, graph)
+    fn hydrate_compact_flat_leaf<'b>(
+        &'b self,
+        parent_rows: &'b [CompactRow],
+        plan: &'b RelationLoadPlan,
+        root: &'b crate::EntityRoot,
+        graph: &'b mut crate::EntityGraphBuilder,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
+    > {
+        Box::pin(async move {
+            let child_repo = self.scoped_data_service_internal(plan.target_entity.clone());
+            let child_rows = self
+                .fetch_relation_rows(&child_repo, plan, parent_rows, true)
+                .await?;
+            self.install_compact_flat_relation(parent_rows, plan, child_rows, root, graph)
+        })
     }
 
     fn install_compact_flat_relation(

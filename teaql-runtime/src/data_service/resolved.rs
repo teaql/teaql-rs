@@ -1261,98 +1261,114 @@ where
             .await
     }
 
-    async fn fetch_enhanced_entities_with_relation_aggregates_prepared<T>(
-        &self,
+    fn fetch_enhanced_entities_with_relation_aggregates_prepared<'b, T>(
+        &'b self,
         query: SelectQuery,
-        relation_aggregates: &[RelationAggregate],
-    ) -> Result<SmartList<T>, DataServiceError<E::Error>>
+        relation_aggregates: &'b [RelationAggregate],
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<SmartList<T>, DataServiceError<E::Error>>>
+                + Send
+                + 'b,
+        >,
+    >
     where
-        T: Entity,
+        T: Entity + 'b,
     {
-        let (mut query, id_set_total_count) = self.prepare_id_set_page(query).await?;
-        if relation_aggregates.is_empty()
-            && query.continuous_page_fetch.is_none()
-            && query.object_group_bys.is_empty()
-            && query.child_enhancements.is_empty()
-            && query.relations.is_empty()
-        {
-            let query = query
-                .prepare_for_list()
-                .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
-            let root = crate::EntityRoot::default();
-            return decode_compact_rows::<T>(self.fetch_prepared_query_owned(query).await?, &root)
+        Box::pin(async move {
+            let (mut query, id_set_total_count) = self.prepare_id_set_page(query).await?;
+            if relation_aggregates.is_empty()
+                && query.continuous_page_fetch.is_none()
+                && query.object_group_bys.is_empty()
+                && query.child_enhancements.is_empty()
+                && query.relations.is_empty()
+            {
+                let query = query
+                    .prepare_for_list()
+                    .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
+                let root = crate::EntityRoot::default();
+                return decode_compact_rows::<T>(
+                    self.fetch_prepared_query_owned(query).await?,
+                    &root,
+                )
                 .map(SmartList::from)
                 .map(|list| with_total_count(list, id_set_total_count))
                 .map_err(DataServiceError::Entity);
-        }
+            }
 
-        let flat_plans = self
-            .flat_relation_plans(&query)
-            .map_err(DataServiceError::Runtime)?;
-        let use_flat_hydration = flat_plans.is_some();
-        if use_flat_hydration {
-            query.relations.clear();
-        }
-        let root_query = query;
-        if relation_aggregates.is_empty()
-            && root_query.continuous_page_fetch.is_none()
-            && root_query.object_group_bys.is_empty()
-            && root_query.child_enhancements.is_empty()
-        {
-            if let Some((query_plans, behavior_plans)) = flat_plans.as_ref() {
-                let root_query = root_query
-                    .prepare_for_list()
-                    .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
-                let rows = self.fetch_prepared_compact_owned(root_query).await?;
+            let flat_plans = self
+                .flat_relation_plans(&query)
+                .map_err(DataServiceError::Runtime)?;
+            let use_flat_hydration = flat_plans.is_some();
+            if use_flat_hydration {
+                query.relations.clear();
+            }
+            let root_query = query;
+            if relation_aggregates.is_empty()
+                && root_query.continuous_page_fetch.is_none()
+                && root_query.object_group_bys.is_empty()
+                && root_query.child_enhancements.is_empty()
+            {
+                if let Some((query_plans, behavior_plans)) = flat_plans.as_ref() {
+                    let root_query = root_query.prepare_for_list().map_err(|message| {
+                        DataServiceError::Runtime(RuntimeError::Graph(message))
+                    })?;
+                    let rows = self.fetch_prepared_compact_owned(root_query).await?;
+                    let root = crate::EntityRoot::default();
+                    let mut graph = crate::EntityGraphBuilder::default();
+                    self.hydrate_compact_flat_plans_internal(&rows, query_plans, &root, &mut graph)
+                        .await?;
+                    self.hydrate_compact_flat_plans_internal(
+                        &rows,
+                        behavior_plans,
+                        &root,
+                        &mut graph,
+                    )
+                    .await?;
+                    root.freeze_graph(graph).map_err(|_| {
+                        DataServiceError::Entity(teaql_core::EntityError::new(
+                            T::ENTITY_NAME,
+                            "identity graph was already frozen",
+                        ))
+                    })?;
+                    return decode_compact_rows::<T>(rows, &root)
+                        .map(SmartList::from)
+                        .map(|list| with_total_count(list, id_set_total_count))
+                        .map_err(DataServiceError::Entity);
+                }
+            }
+            let mut rows = self.fetch_prepared_all(&root_query).await?;
+            self.enhance_relation_aggregates_internal(
+                &mut rows,
+                relation_aggregates,
+                root_query.aggregation_cache,
+                &root_query.trace_chain,
+            )
+            .await?;
+            let root = if let Some((query_plans, behavior_plans)) = flat_plans {
                 let root = crate::EntityRoot::default();
                 let mut graph = crate::EntityGraphBuilder::default();
-                self.hydrate_compact_flat_plans_internal(&rows, query_plans, &root, &mut graph)
+                self.hydrate_flat_plans_internal(&mut rows, &query_plans, &root, &mut graph)
                     .await?;
-                self.hydrate_compact_flat_plans_internal(&rows, behavior_plans, &root, &mut graph)
+                self.hydrate_flat_plans_internal(&mut rows, &behavior_plans, &root, &mut graph)
                     .await?;
                 root.freeze_graph(graph).map_err(|_| {
                     DataServiceError::Entity(teaql_core::EntityError::new(
-                        T::ENTITY_NAME,
+                        &root_query.entity,
                         "identity graph was already frozen",
                     ))
                 })?;
-                return decode_compact_rows::<T>(rows, &root)
-                    .map(SmartList::from)
-                    .map(|list| with_total_count(list, id_set_total_count))
-                    .map_err(DataServiceError::Entity);
-            }
-        }
-        let mut rows = self.fetch_prepared_all(&root_query).await?;
-        self.enhance_relation_aggregates_internal(
-            &mut rows,
-            relation_aggregates,
-            root_query.aggregation_cache,
-            &root_query.trace_chain,
-        )
-        .await?;
-        let root = if let Some((query_plans, behavior_plans)) = flat_plans {
-            let root = crate::EntityRoot::default();
-            let mut graph = crate::EntityGraphBuilder::default();
-            self.hydrate_flat_plans_internal(&mut rows, &query_plans, &root, &mut graph)
-                .await?;
-            self.hydrate_flat_plans_internal(&mut rows, &behavior_plans, &root, &mut graph)
-                .await?;
-            root.freeze_graph(graph).map_err(|_| {
-                DataServiceError::Entity(teaql_core::EntityError::new(
-                    &root_query.entity,
-                    "identity graph was already frozen",
-                ))
-            })?;
-            root
-        } else {
-            self.enhance_relations_internal(&mut rows).await?;
-            self.attach_flat_relation_graph(&root_query.entity, &mut rows)
-                .map_err(DataServiceError::Entity)?
-        };
-        decode_compact_rows::<T>(rows, &root)
-            .map(SmartList::from)
-            .map(|list| with_total_count(list, id_set_total_count))
-            .map_err(DataServiceError::Entity)
+                root
+            } else {
+                self.enhance_relations_internal(&mut rows).await?;
+                self.attach_flat_relation_graph(&root_query.entity, &mut rows)
+                    .map_err(DataServiceError::Entity)?
+            };
+            decode_compact_rows::<T>(rows, &root)
+                .map(SmartList::from)
+                .map(|list| with_total_count(list, id_set_total_count))
+                .map_err(DataServiceError::Entity)
+        })
     }
 
     pub(crate) async fn fetch_enhanced_entities_internal<T>(

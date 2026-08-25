@@ -132,11 +132,15 @@ pub fn graph_node_from_entity<T: Entity>(
     let descriptor = T::entity_descriptor();
     let dirty_fields = entity.dirty_fields();
     let original_values = entity.original_values();
+    let is_new = entity.is_new();
     let is_deleted = entity.is_marked_as_delete();
     let comment = entity.get_comment();
     let mut node = graph_node_from_values(context, &descriptor.name, entity.into_values())?;
     node.dirty_fields = dirty_fields;
     node.original_values = original_values.map(Into::into);
+    if is_new {
+        node.operation = GraphOperation::Create;
+    }
     if is_deleted {
         node.operation = GraphOperation::Remove;
         node.relations.clear();
@@ -183,6 +187,18 @@ fn graph_node_from_values(
             }
             continue;
         }
+        if field == "_is_new" {
+            if matches!(value, Value::Bool(true)) {
+                node.operation = GraphOperation::Create;
+            }
+            continue;
+        }
+        if field == "_is_deleted" {
+            if matches!(value, Value::Bool(true)) {
+                node.operation = GraphOperation::Remove;
+            }
+            continue;
+        }
         let Some(relation) = descriptor.relation_by_name(&field) else {
             node.values.insert(field, value);
             continue;
@@ -223,6 +239,54 @@ fn graph_node_from_values(
     }
 
     Ok(node)
+}
+
+fn merge_relation_mutations_into_root(
+    root: &crate::EntityRoot,
+    node: &GraphNode,
+) -> Result<(), RuntimeError> {
+    for children in node.relations.values() {
+        for child in children {
+            let id = child.values.get("id").cloned().ok_or_else(|| {
+                RuntimeError::Graph(format!(
+                    "related mutation {} is missing its id",
+                    child.entity
+                ))
+            })?;
+            let key = crate::EntityKey::new(child.entity.clone(), id);
+
+            match child.operation {
+                GraphOperation::Create => {
+                    root.mark_as_new(key.clone());
+                    for (field, value) in &child.values {
+                        root.set(key.clone(), field, value.clone());
+                    }
+                }
+                GraphOperation::Upsert => {
+                    if let Some(fields) = &child.dirty_fields {
+                        for field in fields {
+                            if let Some(value) = child.values.get(field) {
+                                root.set(key.clone(), field, value.clone());
+                            }
+                        }
+                    }
+                }
+                GraphOperation::Remove => root.mark_as_delete(key.clone()),
+                GraphOperation::Reference => {}
+            }
+
+            if let Some(version) = child
+                .original_values
+                .as_ref()
+                .and_then(|values| values.get("version"))
+                .and_then(Value::try_i64)
+            {
+                root.set_original_version(key, version);
+            }
+            merge_relation_mutations_into_root(root, child)?;
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -302,6 +366,7 @@ where
         })?;
 
     if let Some(root) = root {
+        merge_relation_mutations_into_root(&root, &node)?;
         let has_ledger_changes = !root.current_change_set().changes().is_empty()
             || !root.deleted_keys().is_empty()
             || !root.new_keys().is_empty();
