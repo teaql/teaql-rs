@@ -1,5 +1,5 @@
 use quote::{format_ident, quote};
-use syn::{Data, DeriveInput, Fields};
+use syn::{Data, DeriveInput, Fields, ItemStruct, parse_quote};
 
 use crate::attr::{parse_container_attrs, parse_field_attrs};
 use crate::mapping::{
@@ -7,6 +7,82 @@ use crate::mapping::{
     into_record_value_tokens, into_relation_value_tokens,
 };
 use crate::types::{is_option, rust_type_to_data_type};
+
+pub fn expand_teaql_entity_attribute(mut input: ItemStruct) -> proc_macro2::TokenStream {
+    let struct_name = input.ident.clone();
+    let attrs = parse_container_attrs(&input.attrs, &struct_name.to_string());
+    let entity_name = attrs.entity_name;
+    let Fields::Named(fields) = &mut input.fields else {
+        return syn::Error::new(
+            struct_name.span(),
+            "teaql_entity only supports structs with named fields",
+        )
+        .to_compile_error();
+    };
+    if fields.named.iter().any(|field| {
+        field
+            .ident
+            .as_ref()
+            .is_some_and(|ident| ident == "__teaql_runtime_state")
+    }) {
+        return syn::Error::new(
+            struct_name.span(),
+            "__teaql_runtime_state is reserved for TeaQL runtime state",
+        )
+        .to_compile_error();
+    }
+    let id_field = fields.named.iter().find_map(|field| {
+        parse_field_attrs(&field.attrs)
+            .id
+            .then(|| field.ident.clone())
+            .flatten()
+    });
+    let Some(id_field) = id_field else {
+        return syn::Error::new(
+            struct_name.span(),
+            "teaql_entity requires one #[teaql(id)] field",
+        )
+        .to_compile_error();
+    };
+    fields.named.push(parse_quote! {
+        #[teaql(skip)]
+        #[doc(hidden)]
+        __teaql_runtime_state: ::teaql_runtime::EntityRuntimeState
+    });
+
+    quote! {
+        #input
+
+        impl #struct_name {
+            #[doc(hidden)]
+            pub(crate) fn __teaql_runtime_state(&self) -> &::teaql_runtime::EntityRuntimeState {
+                &self.__teaql_runtime_state
+            }
+
+            #[doc(hidden)]
+            pub(crate) fn __teaql_replace_runtime_state(
+                &mut self,
+                state: ::teaql_runtime::EntityRuntimeState,
+            ) {
+                self.__teaql_runtime_state = state;
+            }
+
+            pub fn entity_key(&self) -> ::teaql_runtime::EntityKey {
+                ::teaql_runtime::EntityKey::new(#entity_name, self.#id_field)
+            }
+
+            pub fn mark_as_delete(&mut self) -> &mut Self {
+                self.__teaql_runtime_state.mark_as_delete(self.entity_key());
+                self
+            }
+
+            pub fn set_comment(&mut self, comment: impl Into<String>) -> &mut Self {
+                self.__teaql_runtime_state.set_comment(comment);
+                self
+            }
+        }
+    }
+}
 
 pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     let struct_name = input.ident.clone();
@@ -79,7 +155,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     let mut into_record_fields = Vec::new();
     let mut id_impl = None;
     let mut version_impl = None;
-    let mut has_root_field = false;
+    let mut runtime_state_field_ident: Option<syn::Ident> = None;
     let mut id_field_ident: Option<syn::Ident> = None;
     let mut unknown_record_field_arm = quote! { _ => {} };
 
@@ -89,8 +165,8 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         let parsed = parse_field_attrs(&field.attrs);
 
         if parsed.skip {
-            if field_name == "root" {
-                has_root_field = true;
+            if field_name == "__teaql_runtime_state" || field_name == "root" {
+                runtime_state_field_ident = Some(field_ident.clone());
                 from_record_fields.push(quote! {
                     #field_ident: load_context
                         .and_then(|context| context.downcast_ref::<::teaql_runtime::EntityRuntimeState>())
@@ -256,12 +332,12 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         }
     });
 
-    let ledger_entity_impl_tokens = if has_root_field {
+    let ledger_entity_impl_tokens = if let Some(state_ident) = &runtime_state_field_ident {
         {
             quote! {
                 impl ::teaql_runtime::LedgerEntity for #struct_name {
                     fn entity_runtime_state(&self) -> Option<::teaql_runtime::EntityRuntimeState> {
-                        Some(self.root.clone())
+                        Some(self.#state_ident.clone())
                     }
                 }
             }
@@ -270,58 +346,59 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         Default::default()
     };
 
-    // Generate dirty_fields() if entity has a 'root' field (EntityRuntimeState) and an id field.
+    // Generate dirty_fields() when the attribute macro injected EntityRuntimeState.
     // This is the Rust equivalent of Java's entity.getUpdatedProperties().
-    let (dirty_fields_impl, is_marked_as_delete_impl) = match (has_root_field, &id_field_ident) {
-        (true, Some(id_ident)) => (
-            quote! {
-                fn dirty_fields(&self) -> Option<std::collections::BTreeSet<String>> {
-                    let key = teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
-                    let fields = self.root.changed_field_names(&key);
-                    (!fields.is_empty()).then_some(fields)
-                }
-            },
-            quote! {
-                fn is_marked_as_delete(&self) -> bool {
-                    let key = teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
-                    self.root.is_marked_as_delete(&key)
-                }
+    let (dirty_fields_impl, is_marked_as_delete_impl) =
+        match (&runtime_state_field_ident, &id_field_ident) {
+            (Some(state_ident), Some(id_ident)) => (
+                quote! {
+                    fn dirty_fields(&self) -> Option<std::collections::BTreeSet<String>> {
+                        let key = teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
+                        let fields = self.#state_ident.changed_field_names(&key);
+                        (!fields.is_empty()).then_some(fields)
+                    }
+                },
+                quote! {
+                    fn is_marked_as_delete(&self) -> bool {
+                        let key = teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
+                        self.#state_ident.is_marked_as_delete(&key)
+                    }
 
-                fn is_new(&self) -> bool {
-                    let key = teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
-                    self.root.is_new(&key)
-                }
+                    fn is_new(&self) -> bool {
+                        let key = teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
+                        self.#state_ident.is_new(&key)
+                    }
 
-                fn mark_as_new(&mut self) {
-                    let key = teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
-                    self.root.mark_as_new(key)
-                }
-            },
-        ),
-        _ => (quote! {}, quote! {}),
-    };
+                    fn mark_as_new(&mut self) {
+                        let key = teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
+                        self.#state_ident.mark_as_new(key)
+                    }
+                },
+            ),
+            _ => (quote! {}, quote! {}),
+        };
 
-    let set_original_compact_impl = if has_root_field {
+    let set_original_compact_impl = if let Some(state_ident) = &runtime_state_field_ident {
         quote! {
-            entity.root.set_original_compact_row(record);
+            entity.#state_ident.set_original_compact_row(record);
         }
     } else {
         Default::default()
     };
 
-    let root_methods_impl = if has_root_field {
+    let root_methods_impl = if let Some(state_ident) = &runtime_state_field_ident {
         {
             quote! {
                 fn get_comment(&self) -> Option<String> {
-                    self.root.get_comment()
+                    self.#state_ident.get_comment()
                 }
 
                 fn set_comment(&mut self, comment: String) {
-                    self.root.set_comment(comment);
+                    self.#state_ident.set_comment(comment);
                 }
 
                 fn original_values(&self) -> Option<::teaql_core::EntitySnapshot> {
-                    self.root.original_snapshot()
+                    self.#state_ident.original_snapshot()
                 }
             }
         }
@@ -329,10 +406,10 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         Default::default()
     };
 
-    let on_loaded_impl = if has_root_field {
+    let on_loaded_impl = if let Some(state_ident) = &runtime_state_field_ident {
         quote! {
             if let Some(root) = context.downcast_ref::<::teaql_runtime::EntityRuntimeState>() {
-                self.root = self.root.with_shared_graph(root);
+                self.#state_ident = self.#state_ident.with_shared_graph(root);
             }
         }
     } else {
@@ -364,7 +441,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             Ok(entity)
     };
 
-    let from_compact_with_context_impl = has_root_field.then(|| {
+    let from_compact_with_context_impl = runtime_state_field_ident.as_ref().map(|_| {
         quote! {
             fn from_compact_row_with_context(
                 record: ::teaql_core::CompactRow,

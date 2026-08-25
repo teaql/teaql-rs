@@ -4,7 +4,13 @@ mod mapping;
 mod types;
 
 use proc_macro::TokenStream;
-use syn::{DeriveInput, parse_macro_input};
+use syn::{DeriveInput, ItemStruct, parse_macro_input};
+
+#[proc_macro_attribute]
+pub fn teaql_entity(_attr: TokenStream, input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as ItemStruct);
+    derive_impl::expand_teaql_entity_attribute(input).into()
+}
 
 #[proc_macro_derive(TeaqlEntity, attributes(teaql))]
 pub fn derive_teaql_entity(input: TokenStream) -> TokenStream {
