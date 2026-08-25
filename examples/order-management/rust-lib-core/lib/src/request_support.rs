@@ -219,7 +219,7 @@ impl TeaqlUserContextExt for teaql_runtime::UserContext {
                 "cannot start transaction without executor: {err}"
             )))
         })?;
-        let root = self.entity_root();
+        let root = self.entity_runtime_state();
 
         let tx = teaql_data_service::TransactionExecutor::begin(&*executor).await.map_err(DataServiceError::Executor)?;
         root.push_change_set();

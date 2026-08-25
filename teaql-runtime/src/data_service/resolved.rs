@@ -39,7 +39,7 @@ fn with_total_count<T>(mut list: SmartList<T>, total_count: Option<u64>) -> Smar
 
 fn decode_compact_rows<T: Entity>(
     rows: Vec<CompactRow>,
-    root: &crate::EntityRoot,
+    root: &crate::EntityRuntimeState,
 ) -> Result<Vec<T>, teaql_core::EntityError> {
     let mut entities = Vec::with_capacity(rows.len());
     for row in rows {
@@ -63,7 +63,7 @@ where
         &self,
         entity_name: &str,
         record: &mut BTreeMap<String, Value>,
-        root: &crate::EntityRoot,
+        root: &crate::EntityRuntimeState,
         graph: &mut crate::EntityGraphBuilder,
         installed: &mut BTreeSet<(String, u64)>,
     ) -> Result<(), teaql_core::EntityError> {
@@ -171,8 +171,8 @@ where
         &self,
         entity_name: &str,
         rows: &mut [teaql_core::CompactRow],
-    ) -> Result<crate::EntityRoot, teaql_core::EntityError> {
-        let root = crate::EntityRoot::default();
+    ) -> Result<crate::EntityRuntimeState, teaql_core::EntityError> {
+        let root = crate::EntityRuntimeState::default();
         let mut graph = crate::EntityGraphBuilder::default();
         let mut installed = BTreeSet::new();
         for row in rows {
@@ -1219,7 +1219,7 @@ where
     {
         let mut query = query.clone();
         self.ensure_entity_identity_projection(&mut query);
-        let root = crate::EntityRoot::default();
+        let root = crate::EntityRuntimeState::default();
         decode_compact_rows::<T>(
             self.fetch_all_with_relation_aggregates_internal(&query, relation_aggregates)
                 .await?,
@@ -1286,7 +1286,7 @@ where
                 let query = query
                     .prepare_for_list()
                     .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
-                let root = crate::EntityRoot::default();
+                let root = crate::EntityRuntimeState::default();
                 return decode_compact_rows::<T>(
                     self.fetch_prepared_query_owned(query).await?,
                     &root,
@@ -1314,7 +1314,7 @@ where
                         DataServiceError::Runtime(RuntimeError::Graph(message))
                     })?;
                     let rows = self.fetch_prepared_compact_owned(root_query).await?;
-                    let root = crate::EntityRoot::default();
+                    let root = crate::EntityRuntimeState::default();
                     let mut graph = crate::EntityGraphBuilder::default();
                     self.hydrate_compact_flat_plans_internal(&rows, query_plans, &root, &mut graph)
                         .await?;
@@ -1346,7 +1346,7 @@ where
             )
             .await?;
             let root = if let Some((query_plans, behavior_plans)) = flat_plans {
-                let root = crate::EntityRoot::default();
+                let root = crate::EntityRuntimeState::default();
                 let mut graph = crate::EntityGraphBuilder::default();
                 self.hydrate_flat_plans_internal(&mut rows, &query_plans, &root, &mut graph)
                     .await?;

@@ -32,8 +32,8 @@ pub use data_service::{
     RelationLoadPlan,
 };
 pub use entity_runtime::{
-    ChangeSetStack, EntityChangeSet, EntityGraphBuilder, EntityKey, EntityRoot, LedgerEntity,
-    RootContext,
+    ChangeSetStack, EntityChangeSet, EntityGraphBuilder, EntityKey, EntityRuntimeState,
+    LedgerEntity,
 };
 pub use entity_save::{AuditedSaveExt, graph_node_from_entity, save_audited_ledger_entity};
 pub use entity_status::{EntityAction, EntityStatus};
@@ -79,14 +79,15 @@ mod tests {
 
     use super::{
         AggregationCacheBackend, CHECK_OBJECT_STATUS_FIELD, CheckObjectStatus, CheckResult,
-        CheckResults, CheckRule, Checker, DataServiceError, EntityDataServiceBehavior, EntityRoot,
-        EntityValues, GraphMutationKind, GraphNode, I18nCatalog, InMemoryAggregationCache,
-        InMemoryCheckerRegistry, InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityRegistry,
-        InMemoryMetadataStore, InternalIdGenerator, Language, MemoryDataService, MetadataStore,
-        ObjectLocation, RawAuditEvent, RawAuditEventKind, RawAuditEventSink, RemoteLockProvider,
-        RequestPolicy, RuntimeError, RuntimeModule, RuntimeOperation, RuntimeTelemetry,
-        RuntimeTelemetryScope, SafeAuditEvent, SafeAuditEventSink, SqlLogOperation, SqlLogOptions,
-        TypedChecker, TypedEntityChecker, UserContext, translate_check_result,
+        CheckResults, CheckRule, Checker, DataServiceError, EntityDataServiceBehavior,
+        EntityRuntimeState, EntityValues, GraphMutationKind, GraphNode, I18nCatalog,
+        InMemoryAggregationCache, InMemoryCheckerRegistry,
+        InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityRegistry, InMemoryMetadataStore,
+        InternalIdGenerator, Language, MemoryDataService, MetadataStore, ObjectLocation,
+        RawAuditEvent, RawAuditEventKind, RawAuditEventSink, RemoteLockProvider, RequestPolicy,
+        RuntimeError, RuntimeModule, RuntimeOperation, RuntimeTelemetry, RuntimeTelemetryScope,
+        SafeAuditEvent, SafeAuditEventSink, SqlLogOperation, SqlLogOptions, TypedChecker,
+        TypedEntityChecker, UserContext, translate_check_result,
     };
     use crate::data_service::RuntimeDataService;
     use teaql_core::{
@@ -347,7 +348,7 @@ mod tests {
         id: u64,
         name: String,
         #[teaql(skip)]
-        root: EntityRoot,
+        root: EntityRuntimeState,
     }
 
     #[derive(Debug, DeriveTeaqlEntity)]
@@ -359,7 +360,7 @@ mod tests {
         #[teaql(relation(target = "FlatVendor", local_key = "vendor_id", foreign_key = "id"))]
         vendor: Option<FlatVendorRow>,
         #[teaql(skip)]
-        root: EntityRoot,
+        root: EntityRuntimeState,
     }
 
     impl FlatTripRow {
@@ -383,7 +384,7 @@ mod tests {
         ))]
         trip_list: teaql_core::SmartList<FlatFleetTripRow>,
         #[teaql(skip)]
-        root: EntityRoot,
+        root: EntityRuntimeState,
     }
 
     impl FlatFleetRow {
@@ -419,7 +420,7 @@ mod tests {
         fleet_id: u64,
         name: String,
         #[teaql(skip)]
-        root: EntityRoot,
+        root: EntityRuntimeState,
     }
 
     #[derive(Debug, PartialEq, DeriveTeaqlEntity)]
@@ -2202,7 +2203,7 @@ mod tests {
             id: 13,
             fleet_id: 7,
             name: "third".to_owned(),
-            root: EntityRoot::default(),
+            root: EntityRuntimeState::default(),
         });
         assert!(fleet.trip_list.is_loaded);
         assert_eq!(fleet.trip_list().data.len(), 3);

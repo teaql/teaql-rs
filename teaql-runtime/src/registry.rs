@@ -7,17 +7,17 @@ use teaql_core::{
 };
 
 use crate::{
-    Checker, EntityGraphBuilder, EntityRoot, GraphNode, InMemoryCheckerRegistry,
+    Checker, EntityGraphBuilder, EntityRuntimeState, GraphNode, InMemoryCheckerRegistry,
     InMemoryRawAuditEventSink, Language, RawAuditEventSink, RuntimeError, UserContext,
 };
 
 type CompactEntityGraphDecoder =
-    fn(CompactRow, &EntityRoot, &mut EntityGraphBuilder) -> Result<(), EntityError>;
+    fn(CompactRow, &EntityRuntimeState, &mut EntityGraphBuilder) -> Result<(), EntityError>;
 type CompactEntityGraphBatchDecoder =
-    fn(Vec<CompactRow>, &EntityRoot, &mut EntityGraphBuilder) -> Result<(), EntityError>;
+    fn(Vec<CompactRow>, &EntityRuntimeState, &mut EntityGraphBuilder) -> Result<(), EntityError>;
 type CompactEntityGraphListDecoder = fn(
     Vec<CompactRow>,
-    &EntityRoot,
+    &EntityRuntimeState,
     &mut EntityGraphBuilder,
     &str,
     u64,
@@ -43,13 +43,13 @@ impl InMemoryEntityGraphDecoderRegistry {
     {
         fn decode_compact<T>(
             row: CompactRow,
-            root: &EntityRoot,
+            root: &EntityRuntimeState,
             graph: &mut EntityGraphBuilder,
         ) -> Result<(), EntityError>
         where
             T: Entity + IdentifiableEntity + Send + Sync + 'static,
         {
-            let graph_root = EntityRoot::fresh_with_weak_graph(root);
+            let graph_root = EntityRuntimeState::fresh_with_weak_graph(root);
             let entity = T::from_compact_row_with_context(row, &graph_root as &dyn std::any::Any)?;
             let id = entity.id_value().try_u64().ok_or_else(|| {
                 EntityError::new(T::ENTITY_NAME, "identity graph requires a u64 entity id")
@@ -60,7 +60,7 @@ impl InMemoryEntityGraphDecoderRegistry {
 
         fn decode_compact_list<T>(
             rows: Vec<CompactRow>,
-            root: &EntityRoot,
+            root: &EntityRuntimeState,
             graph: &mut EntityGraphBuilder,
             owner_entity: &str,
             owner_id: u64,
@@ -69,7 +69,7 @@ impl InMemoryEntityGraphDecoderRegistry {
         where
             T: Entity + IdentifiableEntity + Send + Sync + 'static,
         {
-            let graph_root = EntityRoot::fresh_with_weak_graph(root);
+            let graph_root = EntityRuntimeState::fresh_with_weak_graph(root);
             // `collect::<Result<Vec<_>, _>>()` cannot retain the exact size hint
             // through the fallible adapter. For large generated entities that
             // grows 4 -> 8 -> 16 even when the relation cardinality is already
@@ -93,13 +93,13 @@ impl InMemoryEntityGraphDecoderRegistry {
 
         fn decode_compact_batch<T>(
             rows: Vec<CompactRow>,
-            root: &EntityRoot,
+            root: &EntityRuntimeState,
             graph: &mut EntityGraphBuilder,
         ) -> Result<(), EntityError>
         where
             T: Entity + IdentifiableEntity + Send + Sync + 'static,
         {
-            let graph_root = EntityRoot::fresh_with_weak_graph(root);
+            let graph_root = EntityRuntimeState::fresh_with_weak_graph(root);
             for row in rows {
                 let entity =
                     T::from_compact_row_with_context(row, &graph_root as &dyn std::any::Any)?;
@@ -113,7 +113,7 @@ impl InMemoryEntityGraphDecoderRegistry {
 
         fn decode_compact_option<T>(
             rows: Vec<CompactRow>,
-            root: &EntityRoot,
+            root: &EntityRuntimeState,
             graph: &mut EntityGraphBuilder,
             owner_entity: &str,
             owner_id: u64,
@@ -122,7 +122,7 @@ impl InMemoryEntityGraphDecoderRegistry {
         where
             T: Entity + IdentifiableEntity + Send + Sync + 'static,
         {
-            let graph_root = EntityRoot::fresh_with_weak_graph(root);
+            let graph_root = EntityRuntimeState::fresh_with_weak_graph(root);
             let value = rows
                 .into_iter()
                 .next()
@@ -146,7 +146,7 @@ impl InMemoryEntityGraphDecoderRegistry {
         &self,
         entity: &str,
         row: CompactRow,
-        root: &EntityRoot,
+        root: &EntityRuntimeState,
         graph: &mut EntityGraphBuilder,
     ) -> Result<(), EntityError> {
         self.compact_decoders.get(entity).ok_or_else(|| {
@@ -161,7 +161,7 @@ impl InMemoryEntityGraphDecoderRegistry {
         &self,
         entity: &str,
         rows: Vec<CompactRow>,
-        root: &EntityRoot,
+        root: &EntityRuntimeState,
         graph: &mut EntityGraphBuilder,
         owner_entity: &str,
         owner_id: u64,
@@ -179,7 +179,7 @@ impl InMemoryEntityGraphDecoderRegistry {
         &self,
         entity: &str,
         rows: Vec<CompactRow>,
-        root: &EntityRoot,
+        root: &EntityRuntimeState,
         graph: &mut EntityGraphBuilder,
     ) -> Result<(), EntityError> {
         self.compact_batch_decoders.get(entity).ok_or_else(|| {
@@ -194,7 +194,7 @@ impl InMemoryEntityGraphDecoderRegistry {
         &self,
         entity: &str,
         rows: Vec<CompactRow>,
-        root: &EntityRoot,
+        root: &EntityRuntimeState,
         graph: &mut EntityGraphBuilder,
         owner_entity: &str,
         owner_id: u64,

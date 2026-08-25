@@ -28,7 +28,7 @@ pub(crate) trait DynGraphSaver: Send + Sync {
         &'a self,
         context: &'a UserContext,
         node: GraphNode,
-        root: crate::EntityRoot,
+        root: crate::EntityRuntimeState,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>>;
 }
 
@@ -78,7 +78,7 @@ where
         &'a self,
         context: &'a UserContext,
         mut node: GraphNode,
-        root: crate::EntityRoot,
+        root: crate::EntityRuntimeState,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
             let entity = node.entity.clone();
@@ -242,7 +242,7 @@ fn graph_node_from_values(
 }
 
 fn merge_relation_mutations_into_root(
-    root: &crate::EntityRoot,
+    root: &crate::EntityRuntimeState,
     node: &GraphNode,
 ) -> Result<(), RuntimeError> {
     for children in node.relations.values() {
@@ -340,7 +340,7 @@ where
 }
 
 /// Persist an audited generated entity, including pending ledger changes that
-/// may span multiple related entities sharing the same [`EntityRoot`](crate::EntityRoot).
+/// may span multiple related entities sharing the same [`EntityRuntimeState`](crate::EntityRuntimeState).
 ///
 /// Generated service crates use this as the implementation behind
 /// `entity.audit_as("why").save(&context)`. The audited wrapper is required by the
@@ -355,7 +355,7 @@ where
 {
     let entity_name = T::entity_descriptor().name;
     let entity = audited.into_entity();
-    let root = entity.entity_root();
+    let root = entity.entity_runtime_state();
     let node = graph_node_from_entity(context, entity)?;
     let saver = context
         .require_resource::<Arc<dyn DynGraphSaver>>()

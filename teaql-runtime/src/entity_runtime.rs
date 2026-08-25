@@ -325,7 +325,7 @@ impl ChangeSetStack {
 }
 
 #[derive(Debug, Default)]
-pub struct RootContext {
+struct EntityMutationLedger {
     change_sets: ChangeSetStack,
     /// Annotation comment for observability during graph save.
     comment: Option<String>,
@@ -345,8 +345,8 @@ pub struct RootContext {
 }
 
 #[derive(Debug)]
-pub struct EntityRoot {
-    inner: OnceLock<Arc<Mutex<RootContext>>>,
+pub struct EntityRuntimeState {
+    inner: OnceLock<Arc<Mutex<EntityMutationLedger>>>,
     graph: EntityGraphReference,
     loaded_snapshot: Option<teaql_core::CompactRow>,
 }
@@ -404,7 +404,7 @@ impl EntityGraphReference {
                 let frozen = owner.get()? as *const FrozenEntityGraph;
                 // SAFETY: weak graph references are only installed into entities owned by the
                 // same frozen graph. Such an entity can only be borrowed while an owning root
-                // keeps the graph alive. Cloning EntityRoot promotes the weak reference to a
+                // keeps the graph alive. Cloning EntityRuntimeState promotes the weak reference to a
                 // strong owner, so an entity moved out through safe code also anchors the graph.
                 Some(unsafe { &*frozen })
             }
@@ -412,7 +412,7 @@ impl EntityGraphReference {
     }
 }
 
-impl Default for EntityRoot {
+impl Default for EntityRuntimeState {
     fn default() -> Self {
         Self {
             inner: OnceLock::new(),
@@ -422,7 +422,7 @@ impl Default for EntityRoot {
     }
 }
 
-impl Clone for EntityRoot {
+impl Clone for EntityRuntimeState {
     fn clone(&self) -> Self {
         let inner = OnceLock::new();
         if let Some(context) = self.inner.get() {
@@ -436,8 +436,8 @@ impl Clone for EntityRoot {
     }
 }
 
-impl std::panic::UnwindSafe for EntityRoot {}
-impl std::panic::RefUnwindSafe for EntityRoot {}
+impl std::panic::UnwindSafe for EntityRuntimeState {}
+impl std::panic::RefUnwindSafe for EntityRuntimeState {}
 
 #[derive(Debug)]
 enum OriginalSnapshot {
@@ -445,7 +445,7 @@ enum OriginalSnapshot {
     Compact(teaql_core::CompactRow),
 }
 
-impl PartialEq for EntityRoot {
+impl PartialEq for EntityRuntimeState {
     fn eq(&self, other: &Self) -> bool {
         match (self.inner.get(), other.inner.get()) {
             (Some(left), Some(right)) => Arc::ptr_eq(left, right),
@@ -458,18 +458,18 @@ impl PartialEq for EntityRoot {
     }
 }
 
-impl EntityRoot {
+impl EntityRuntimeState {
     #[cfg(test)]
     fn has_mutation_context(&self) -> bool {
         self.inner.get().is_some()
     }
 
-    fn context(&self) -> &Arc<Mutex<RootContext>> {
+    fn context(&self) -> &Arc<Mutex<EntityMutationLedger>> {
         self.inner
-            .get_or_init(|| Arc::new(Mutex::new(RootContext::default())))
+            .get_or_init(|| Arc::new(Mutex::new(EntityMutationLedger::default())))
     }
 
-    fn read_context<R>(&self, default: R, read: impl FnOnce(&RootContext) -> R) -> R {
+    fn read_context<R>(&self, default: R, read: impl FnOnce(&EntityMutationLedger) -> R) -> R {
         let Some(context) = self.inner.get() else {
             return default;
         };
@@ -477,7 +477,7 @@ impl EntityRoot {
         read(&context)
     }
 
-    fn write_context<R>(&self, write: impl FnOnce(&mut RootContext) -> R) -> R {
+    fn write_context<R>(&self, write: impl FnOnce(&mut EntityMutationLedger) -> R) -> R {
         let mut context = self
             .context()
             .lock()
@@ -485,7 +485,7 @@ impl EntityRoot {
         write(&mut context)
     }
 
-    pub fn fresh_with_shared_graph(source: &EntityRoot) -> Self {
+    pub fn fresh_with_shared_graph(source: &EntityRuntimeState) -> Self {
         Self {
             inner: OnceLock::new(),
             graph: source.graph.preserve(),
@@ -495,7 +495,7 @@ impl EntityRoot {
 
     /// Create a root view for an entity stored inside the graph itself. The weak view prevents
     /// the graph from strongly owning an entity that strongly owns the graph in return.
-    pub(crate) fn fresh_with_weak_graph(source: &EntityRoot) -> Self {
+    pub(crate) fn fresh_with_weak_graph(source: &EntityRuntimeState) -> Self {
         Self {
             inner: OnceLock::new(),
             graph: source.graph.weak(),
@@ -505,7 +505,7 @@ impl EntityRoot {
 
     /// Make this root resolve entities from the same flat graph as `source`.
     /// Existing snapshots and mutation ledger state remain owned by this root.
-    pub fn with_shared_graph(&self, source: &EntityRoot) -> Self {
+    pub fn with_shared_graph(&self, source: &EntityRuntimeState) -> Self {
         Self {
             inner: self.inner.clone(),
             graph: source.graph.preserve(),
@@ -741,7 +741,7 @@ impl EntityRoot {
 }
 
 pub trait LedgerEntity: teaql_core::Entity {
-    fn entity_root(&self) -> Option<EntityRoot>;
+    fn entity_runtime_state(&self) -> Option<EntityRuntimeState>;
 }
 
 #[cfg(test)]
@@ -750,12 +750,12 @@ mod lazy_root_tests {
 
     #[derive(Clone)]
     struct GraphChild {
-        root: EntityRoot,
+        root: EntityRuntimeState,
     }
 
     #[test]
     fn loaded_snapshot_does_not_allocate_ledger_until_mutation() {
-        let mut root = EntityRoot::default();
+        let mut root = EntityRuntimeState::default();
         root.set_original_compact_row(teaql_core::CompactRow::new(
             Arc::from(["id".to_owned(), "version".to_owned()]),
             vec![Value::U64(7), Value::I64(3)],
@@ -773,7 +773,7 @@ mod lazy_root_tests {
 
     #[test]
     fn graph_owned_entities_do_not_keep_the_graph_alive() {
-        let root = EntityRoot::default();
+        let root = EntityRuntimeState::default();
         let graph_owner = match &root.graph {
             EntityGraphReference::Strong(graph) => Arc::downgrade(graph),
             EntityGraphReference::Weak(_) => unreachable!(),
@@ -784,7 +784,7 @@ mod lazy_root_tests {
             1,
             "children",
             SmartList::from(vec![GraphChild {
-                root: EntityRoot::fresh_with_weak_graph(&root),
+                root: EntityRuntimeState::fresh_with_weak_graph(&root),
             }]),
         );
         root.freeze_graph(builder).unwrap();
@@ -795,7 +795,7 @@ mod lazy_root_tests {
 
     #[test]
     fn cloning_a_graph_owned_entity_promotes_its_graph_anchor() {
-        let root = EntityRoot::default();
+        let root = EntityRuntimeState::default();
         let graph_owner = match &root.graph {
             EntityGraphReference::Strong(graph) => Arc::downgrade(graph),
             EntityGraphReference::Weak(_) => unreachable!(),
@@ -806,7 +806,7 @@ mod lazy_root_tests {
             1,
             "children",
             SmartList::from(vec![GraphChild {
-                root: EntityRoot::fresh_with_weak_graph(&root),
+                root: EntityRuntimeState::fresh_with_weak_graph(&root),
             }]),
         );
         root.freeze_graph(builder).unwrap();

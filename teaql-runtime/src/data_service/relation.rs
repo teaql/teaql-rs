@@ -115,7 +115,7 @@ where
         &self,
         parent_rows: &mut [CompactRow],
         plans: &[RelationLoadPlan],
-        root: &crate::EntityRoot,
+        root: &crate::EntityRuntimeState,
         graph: &mut crate::EntityGraphBuilder,
     ) -> Result<(), DataServiceError<E::Error>> {
         for plan in plans {
@@ -129,7 +129,7 @@ where
         &self,
         parent_rows: &[CompactRow],
         plans: &[RelationLoadPlan],
-        root: &crate::EntityRoot,
+        root: &crate::EntityRuntimeState,
         graph: &mut crate::EntityGraphBuilder,
     ) -> Result<(), DataServiceError<E::Error>> {
         for plan in plans {
@@ -529,7 +529,7 @@ where
         &'b self,
         parent_rows: &'b mut [CompactRow],
         plan: &'b RelationLoadPlan,
-        root: &'b crate::EntityRoot,
+        root: &'b crate::EntityRuntimeState,
         graph: &'b mut crate::EntityGraphBuilder,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
@@ -676,7 +676,7 @@ where
         &'b self,
         parent_rows: &'b [CompactRow],
         plan: &'b RelationLoadPlan,
-        root: &'b crate::EntityRoot,
+        root: &'b crate::EntityRuntimeState,
         graph: &'b mut crate::EntityGraphBuilder,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
@@ -707,7 +707,7 @@ where
         &'b self,
         parent_rows: &'b [CompactRow],
         plan: &'b RelationLoadPlan,
-        root: &'b crate::EntityRoot,
+        root: &'b crate::EntityRuntimeState,
         graph: &'b mut crate::EntityGraphBuilder,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
@@ -726,7 +726,7 @@ where
         parent_rows: &[CompactRow],
         plan: &RelationLoadPlan,
         child_rows: Vec<CompactRow>,
-        root: &crate::EntityRoot,
+        root: &crate::EntityRuntimeState,
         graph: &mut crate::EntityGraphBuilder,
     ) -> Result<(), DataServiceError<E::Error>> {
         // A forward to-one relation only needs its fetched targets installed in the shared

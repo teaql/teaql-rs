@@ -11,7 +11,7 @@ use teaql_sql::SqlDataServiceExecutor;
 #[teaql(entity = "School", table = "school")]
 pub struct School {
     #[teaql(skip)]
-    pub root: teaql_runtime::EntityRoot,
+    pub root: teaql_runtime::EntityRuntimeState,
     #[teaql(id)]
     pub id: u64,
     pub name: String,
@@ -23,7 +23,7 @@ pub struct School {
 #[teaql(entity = "Student", table = "student")]
 pub struct Student {
     #[teaql(skip)]
-    pub root: teaql_runtime::EntityRoot,
+    pub root: teaql_runtime::EntityRuntimeState,
     #[teaql(id)]
     pub id: u64,
     #[teaql(column = "school_id")]

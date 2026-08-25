@@ -1253,7 +1253,7 @@ where
 
     pub(crate) async fn execute_ledger_plan_internal(
         &self,
-        root: crate::EntityRoot,
+        root: crate::EntityRuntimeState,
     ) -> Result<std::collections::BTreeMap<crate::EntityKey, Value>, DataServiceError<E::Error>>
     {
         let mut generated_ids = std::collections::BTreeMap::new();

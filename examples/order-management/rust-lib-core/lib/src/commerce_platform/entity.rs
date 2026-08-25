@@ -32,7 +32,7 @@ pub struct CommercePlatform {
     #[teaql(dynamic)]
     dynamic: BTreeMap<String, teaql_core::Value>,
     #[teaql(skip)]
-    root: teaql_runtime::EntityRoot,
+    root: teaql_runtime::EntityRuntimeState,
     #[teaql(skip)]
     pub __load_state: teaql_core::eval::LoadState,
 }
@@ -44,7 +44,7 @@ impl CommercePlatform {
         teaql_core::Value::U64(id)
     }
 
-    pub(crate) fn runtime_new(root: teaql_runtime::EntityRoot) -> Self {
+    pub(crate) fn runtime_new(root: teaql_runtime::EntityRuntimeState) -> Self {
         Self {
             id: 0_u64,
             name: String::new(),
@@ -62,9 +62,9 @@ impl CommercePlatform {
         teaql_runtime::EntityKey::new("CommercePlatform", self.id)
     }
 
-    pub fn attach_root_recursive(&mut self, root: teaql_runtime::EntityRoot) {
+    pub fn attach_runtime_state_recursive(&mut self, root: teaql_runtime::EntityRuntimeState) {
         self.root = root.clone();
-        self._relations.attach_root_recursive(root.clone());
+        self._relations.attach_runtime_state_recursive(root.clone());
     }
 
     pub fn is_loaded(&self, field_or_relation: &str) -> bool {
@@ -319,24 +319,24 @@ impl CommercePlatformReverseRelations {
         }
     }
 
-    pub fn attach_root_recursive(&mut self, root: teaql_runtime::EntityRoot) {
+    pub fn attach_runtime_state_recursive(&mut self, root: teaql_runtime::EntityRuntimeState) {
         for entity in &mut self.customer_list {
-            entity.attach_root_recursive(root.clone());
+            entity.attach_runtime_state_recursive(root.clone());
         }
         for entity in &mut self.order_status_list {
-            entity.attach_root_recursive(root.clone());
+            entity.attach_runtime_state_recursive(root.clone());
         }
         for entity in &mut self.customer_order_list {
-            entity.attach_root_recursive(root.clone());
+            entity.attach_runtime_state_recursive(root.clone());
         }
         for entity in &mut self.product_list {
-            entity.attach_root_recursive(root.clone());
+            entity.attach_runtime_state_recursive(root.clone());
         }
         for entity in &mut self.order_line_list {
-            entity.attach_root_recursive(root.clone());
+            entity.attach_runtime_state_recursive(root.clone());
         }
         for entity in &mut self.order_search_preset_list {
-            entity.attach_root_recursive(root.clone());
+            entity.attach_runtime_state_recursive(root.clone());
         }
     }
 }

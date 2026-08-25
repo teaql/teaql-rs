@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use teaql_core::Value;
 use teaql_runtime::InternalIdGenerator;
-use teaql_runtime::{EntityKey, EntityRoot};
+use teaql_runtime::{EntityKey, EntityRuntimeState};
 
 #[derive(Debug)]
 struct SequentialIdGenerator {
@@ -27,7 +27,7 @@ impl InternalIdGenerator for SequentialIdGenerator {
 #[test]
 fn test_incremental_ledger_observability() {
     let id_generator = SequentialIdGenerator::new(1);
-    let root = EntityRoot::default();
+    let root = EntityRuntimeState::default();
 
     // --- 1. Create (Insert) ---
     // 假设这些对象是 new 出来的
@@ -163,7 +163,7 @@ fn test_incremental_ledger_observability() {
 
 #[test]
 fn successful_commit_cleanup_removes_all_replayable_root_state() {
-    let root = EntityRoot::default();
+    let root = EntityRuntimeState::default();
     let created = EntityKey::new("CompanyTenant", 1_u64);
     let deleted = EntityKey::new("UserAccount", 2_u64);
 

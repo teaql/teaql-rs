@@ -7,9 +7,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
-use teaql_core::{EntityDescriptor, UpdateCommand, Value};
+use teaql_core::{EntityDescriptor, Value};
 use teaql_sql::{CompiledQuery, DatabaseKind};
 
+use crate::EntityRuntimeState;
 use crate::{
     CheckObjectStatus, CheckResult, CheckResults, CheckerRegistry, ContextError,
     EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry, EntityGraphBuilder,
@@ -17,7 +18,6 @@ use crate::{
     MetadataStore, ObjectLocation, RawAuditEvent, RawAuditEventSink, RequestPolicy, RuntimeError,
     local_id_generator,
 };
-use crate::{DataServiceError, EntityRoot};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextEntityRef {
@@ -372,7 +372,7 @@ pub struct UserContext {
     locals: BTreeMap<String, Value>,
     pub(crate) initial_graphs: Vec<GraphNode>,
     pub(crate) root_graphs: Vec<GraphNode>,
-    entity_root: EntityRoot,
+    entity_runtime_state: EntityRuntimeState,
     sql_log_options: SqlLogOptions,
     sql_log_entries: Mutex<Vec<SqlLogEntry>>,
     user_identifier: Option<String>,
@@ -434,7 +434,7 @@ impl Default for UserContext {
             locals: BTreeMap::new(),
             initial_graphs: Vec::new(),
             root_graphs: Vec::new(),
-            entity_root: EntityRoot::default(),
+            entity_runtime_state: EntityRuntimeState::default(),
             sql_log_options: SqlLogOptions::all(),
             sql_log_entries: Mutex::new(Vec::new()),
             user_identifier: Some(user_id),
@@ -792,8 +792,10 @@ impl UserContext {
         self
     }
 
-    pub fn entity_root(&self) -> EntityRoot {
-        self.entity_root.clone()
+    pub fn entity_runtime_state(&self) -> EntityRuntimeState {
+        // UserContext owns only the immutable identity-graph anchor. Every query/new-entity
+        // operation receives fresh mutation state, even when the same context is reused.
+        EntityRuntimeState::fresh_with_shared_graph(&self.entity_runtime_state)
     }
 
     pub fn initial_graphs(&self) -> &[GraphNode] {
@@ -845,7 +847,7 @@ impl UserContext {
         &self,
         entity: &str,
         row: teaql_core::CompactRow,
-        root: &EntityRoot,
+        root: &EntityRuntimeState,
         graph: &mut EntityGraphBuilder,
     ) -> Result<(), teaql_core::EntityError> {
         self.entity_graph_decoders
@@ -856,7 +858,7 @@ impl UserContext {
         &self,
         entity: &str,
         rows: Vec<teaql_core::CompactRow>,
-        root: &EntityRoot,
+        root: &EntityRuntimeState,
         graph: &mut EntityGraphBuilder,
         owner_entity: &str,
         owner_id: u64,
@@ -877,7 +879,7 @@ impl UserContext {
         &self,
         entity: &str,
         rows: Vec<teaql_core::CompactRow>,
-        root: &EntityRoot,
+        root: &EntityRuntimeState,
         graph: &mut EntityGraphBuilder,
     ) -> Result<(), teaql_core::EntityError> {
         self.entity_graph_decoders
@@ -888,7 +890,7 @@ impl UserContext {
         &self,
         entity: &str,
         rows: Vec<teaql_core::CompactRow>,
-        root: &EntityRoot,
+        root: &EntityRuntimeState,
         graph: &mut EntityGraphBuilder,
         owner_entity: &str,
         owner_id: u64,
@@ -1417,39 +1419,6 @@ impl UserContext {
         Ok(())
     }
 
-    pub(crate) async fn commit_changes_internal<E>(&self) -> Result<(), DataServiceError<E::Error>>
-    where
-        E: teaql_data_service::MutationExecutor + Send + Sync + 'static,
-    {
-        let executor = self.require_resource::<E>().map_err(|err| {
-            DataServiceError::Runtime(RuntimeError::Graph(format!(
-                "cannot commit changes without executor: {err}"
-            )))
-        })?;
-        let change_set = self.entity_root.current_change_set();
-
-        for (key, changes) in change_set.changes() {
-            if changes.is_empty() {
-                continue;
-            }
-            let _entity = self
-                .require_entity(&key.entity)
-                .map_err(DataServiceError::Runtime)?;
-            let mut command = UpdateCommand::new(key.entity.as_ref(), key.id.clone());
-            for (field, value) in changes {
-                command = command.value(field.clone(), value.clone());
-            }
-            let request = teaql_data_service::MutationRequest::Update(command);
-            executor
-                .mutate(request)
-                .await
-                .map_err(DataServiceError::Executor)?;
-        }
-
-        self.entity_root.clear_current_change_set();
-        Ok(())
-    }
-
     pub async fn get_in_store(&self, key: &str) -> Option<Value> {
         let store = self.get_resource::<Box<dyn DataStore>>()?;
         store.get(key).await
@@ -1607,5 +1576,24 @@ mod sql_log_option_tests {
             debug_query: Some("SELECT id FROM sample WHERE id = 1".to_owned()),
         });
         assert!(context.sql_logs().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod entity_runtime_state_tests {
+    use super::*;
+    use crate::EntityKey;
+
+    #[test]
+    fn reused_user_context_returns_independent_mutation_ledgers() {
+        let context = UserContext::default();
+        let first = context.entity_runtime_state();
+        let key = EntityKey::new("School", 1_u64);
+        first.set(key.clone(), "name", "First");
+
+        let second = context.entity_runtime_state();
+
+        assert_eq!(first.changed_field_names(&key).len(), 1);
+        assert!(second.changed_field_names(&key).is_empty());
     }
 }

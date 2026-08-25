@@ -2904,7 +2904,7 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<CustomerOrderRequest<R>> {
     where
         C: crate::TeaqlRuntime + ?Sized,
     {
-        let mut entity = crate::CustomerOrder::runtime_new(context.user_context().entity_root());
+        let mut entity = crate::CustomerOrder::runtime_new(context.user_context().entity_runtime_state());
         if let Ok(id) = context.user_context().next_id(crate::CustomerOrder::ENTITY_NAME) {
             entity.update_id(id);
         }

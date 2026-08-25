@@ -1,5 +1,5 @@
 use teaql_core::{SmartList, Value};
-use teaql_runtime::{EntityGraphBuilder, EntityKey, EntityRoot};
+use teaql_runtime::{EntityGraphBuilder, EntityKey, EntityRuntimeState};
 
 #[derive(Debug, PartialEq, Eq)]
 struct Vendor {
@@ -9,9 +9,9 @@ struct Vendor {
 
 #[test]
 fn roots_share_flat_entities_without_sharing_mutation_ledgers() {
-    let graph_root = EntityRoot::default();
-    let first_trip_root = EntityRoot::default().with_shared_graph(&graph_root);
-    let second_trip_root = EntityRoot::default().with_shared_graph(&graph_root);
+    let graph_root = EntityRuntimeState::default();
+    let first_trip_root = EntityRuntimeState::default().with_shared_graph(&graph_root);
+    let second_trip_root = EntityRuntimeState::default().with_shared_graph(&graph_root);
 
     let mut builder = EntityGraphBuilder::default();
     builder.install(
@@ -42,7 +42,7 @@ fn roots_share_flat_entities_without_sharing_mutation_ledgers() {
 
 #[test]
 fn the_same_u64_id_is_namespaced_by_entity_type() {
-    let root = EntityRoot::default();
+    let root = EntityRuntimeState::default();
     let mut builder = EntityGraphBuilder::default();
     builder.install(
         7,
@@ -63,7 +63,7 @@ fn the_same_u64_id_is_namespaced_by_entity_type() {
 
 #[test]
 fn frozen_graph_exposes_a_stable_typed_to_many_view() {
-    let root = EntityRoot::default();
+    let root = EntityRuntimeState::default();
     let mut builder = EntityGraphBuilder::default();
     builder.install_relation_list(
         "Vendor",
@@ -99,7 +99,7 @@ fn frozen_graph_exposes_a_stable_typed_to_many_view() {
 
 #[test]
 fn frozen_graph_distinguishes_loaded_null_from_missing_to_one_view() {
-    let root = EntityRoot::default();
+    let root = EntityRuntimeState::default();
     let mut builder = EntityGraphBuilder::default();
     builder.install_relation_option::<Vendor>("Garage", 7, "primary_vehicle", None);
     root.freeze_graph(builder).expect("freeze graph");

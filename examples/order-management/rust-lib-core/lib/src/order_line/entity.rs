@@ -54,7 +54,7 @@ pub struct OrderLine {
     #[teaql(dynamic)]
     dynamic: BTreeMap<String, teaql_core::Value>,
     #[teaql(skip)]
-    root: teaql_runtime::EntityRoot,
+    root: teaql_runtime::EntityRuntimeState,
     #[teaql(skip)]
     pub __load_state: teaql_core::eval::LoadState,
 }
@@ -66,7 +66,7 @@ impl OrderLine {
         teaql_core::Value::U64(id)
     }
 
-    pub(crate) fn runtime_new(root: teaql_runtime::EntityRoot) -> Self {
+    pub(crate) fn runtime_new(root: teaql_runtime::EntityRuntimeState) -> Self {
         Self {
             id: 0_u64,
             product_name: String::new(),
@@ -90,16 +90,16 @@ impl OrderLine {
         teaql_runtime::EntityKey::new("OrderLine", self.id)
     }
 
-    pub fn attach_root_recursive(&mut self, root: teaql_runtime::EntityRoot) {
+    pub fn attach_runtime_state_recursive(&mut self, root: teaql_runtime::EntityRuntimeState) {
         self.root = root.clone();
         if let Some(entity) = &mut self.customer_order {
-            entity.attach_root_recursive(root.clone());
+            entity.attach_runtime_state_recursive(root.clone());
         }
         if let Some(entity) = &mut self.product {
-            entity.attach_root_recursive(root.clone());
+            entity.attach_runtime_state_recursive(root.clone());
         }
         if let Some(entity) = &mut self.commerce_platform {
-            entity.attach_root_recursive(root.clone());
+            entity.attach_runtime_state_recursive(root.clone());
         }
     }
 

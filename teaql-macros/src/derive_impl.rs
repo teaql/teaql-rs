@@ -93,8 +93,8 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 has_root_field = true;
                 from_record_fields.push(quote! {
                     #field_ident: load_context
-                        .and_then(|context| context.downcast_ref::<::teaql_runtime::EntityRoot>())
-                        .map(::teaql_runtime::EntityRoot::fresh_with_shared_graph)
+                        .and_then(|context| context.downcast_ref::<::teaql_runtime::EntityRuntimeState>())
+                        .map(::teaql_runtime::EntityRuntimeState::fresh_with_shared_graph)
                         .unwrap_or_default()
                 });
                 continue;
@@ -260,7 +260,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         {
             quote! {
                 impl ::teaql_runtime::LedgerEntity for #struct_name {
-                    fn entity_root(&self) -> Option<::teaql_runtime::EntityRoot> {
+                    fn entity_runtime_state(&self) -> Option<::teaql_runtime::EntityRuntimeState> {
                         Some(self.root.clone())
                     }
                 }
@@ -270,7 +270,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         Default::default()
     };
 
-    // Generate dirty_fields() if entity has a 'root' field (EntityRoot) and an id field.
+    // Generate dirty_fields() if entity has a 'root' field (EntityRuntimeState) and an id field.
     // This is the Rust equivalent of Java's entity.getUpdatedProperties().
     let (dirty_fields_impl, is_marked_as_delete_impl) = match (has_root_field, &id_field_ident) {
         (true, Some(id_ident)) => (
@@ -331,7 +331,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
 
     let on_loaded_impl = if has_root_field {
         quote! {
-            if let Some(root) = context.downcast_ref::<::teaql_runtime::EntityRoot>() {
+            if let Some(root) = context.downcast_ref::<::teaql_runtime::EntityRuntimeState>() {
                 self.root = self.root.with_shared_graph(root);
             }
         }

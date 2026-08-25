@@ -2590,7 +2590,7 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<CommercePlatformRequest<R>> {
     where
         C: crate::TeaqlRuntime + ?Sized,
     {
-        let mut entity = crate::CommercePlatform::runtime_new(context.user_context().entity_root());
+        let mut entity = crate::CommercePlatform::runtime_new(context.user_context().entity_runtime_state());
         if let Ok(id) = context.user_context().next_id(crate::CommercePlatform::ENTITY_NAME) {
             entity.update_id(id);
         }

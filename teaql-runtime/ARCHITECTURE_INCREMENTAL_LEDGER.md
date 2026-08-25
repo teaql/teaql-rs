@@ -2,7 +2,7 @@
 
 ## 1. 架构初衷与“图查分”的偏移反思
 TeaQL 的核心初衷是提供极其轻量、明确且高性能的数据持久化机制。
-在项目的最初设计中，我们在实体内部引入了 `EntityRoot`，用于隐式地在 Aggregate (聚合) 内部共享变更上下文 (`ChangeSetStack`)。这本质上是 **Unit of Work (工作单元)** 与 **Event Sourcing (事件溯源)** 的变体。
+在项目的最初设计中，我们在实体内部引入了 `EntityRuntimeState`，用于隐式地在 Aggregate (聚合) 内部共享变更上下文 (`ChangeSetStack`)。这本质上是 **Unit of Work (工作单元)** 与 **Event Sourcing (事件溯源)** 的变体。
 
 然而在后续的框架演进中，架构出现了一定程度的“偏移 (Drift)”。我们引入了类似 Hibernate 的快照比对机制，通过构建 `GraphMutationPlan` 来深度遍历整个对象图，对比 `original_values` 与 `current_values` 从而计算出变更。
 这种“图遍历查分”不仅带来了巨大的递归性能开销，还引发了诸如**循环引用去重 (`visited_nodes` 机制)**、**无意义的空更新 (Empty Updates)** 以及**乐观锁并发冲突**等一系列复杂的衍生 Bug。
@@ -14,9 +14,9 @@ TeaQL 的核心初衷是提供极其轻量、明确且高性能的数据持久�
 在这个架构下，`save_entity` 不再做任何探索与对比动作，而是退化为一个极速的“账单消费器”。
 
 ### 2.1 隐式的树级共享账本
-- 每个实体对象底层持有 `root: EntityRoot`。
-- 通过生成的 Setter 方法（如 `update_name`），变更被直接写入 `EntityRoot` 中的 `EntityChangeSet` (一个以 `EntityKey` 为键的 Map)。
-- 当父对象附加子对象（如 `attach_root_recursive`）时，子对象共享父对象的 `EntityRoot` 引用。因此，整个图的所有修改，**都被扁平化地汇总在这唯一的一个字典表里**。
+- 每个实体对象底层持有 `root: EntityRuntimeState`。
+- 通过生成的 Setter 方法（如 `update_name`），变更被直接写入 `EntityRuntimeState` 中的 `EntityChangeSet` (一个以 `EntityKey` 为键的 Map)。
+- 当父对象附加子对象（如 `attach_runtime_state_recursive`）时，子对象共享父对象的 `EntityRuntimeState` 引用。因此，整个图的所有修改，**都被扁平化地汇总在这唯一的一个字典表里**。
 
 ### 2.2 O(1) 的修改发现与下发
 保存时，Runtime 直接读取这个扁平的字典表，无需关心对象的树形嵌套结构。谁在表里，谁就生成 SQL 执行。没有修改的实体在账单中不存在，从而实现真正的零损耗。
@@ -46,9 +46,9 @@ TeaQL 的核心初衷是提供极其轻量、明确且高性能的数据持久�
 然而，同一个字段往往会被不规范的代码覆盖赋值多次（二次修改）。这往往是业务流程混乱或无目标性动作的先兆，是隐藏 Bug 的重灾区。
 
 ### 4.2 诊断记录机制与意图追踪 (Intent-Driven Tracking)
-`EntityRoot` 除了维护属性状态，还持有着当前的业务上下文：`comment`。
+`EntityRuntimeState` 除了维护属性状态，还持有着当前的业务上下文：`comment`。
 我们的 `EntityChangeSet` 在内部维护着一张细粒度的**修改流水表 (update_history)**。
-- 当调用 Setter 时，系统会将修改的**字段名、旧值、新值，以及此刻 `EntityRoot` 中的 `comment`（业务意图）** 一并打包推入历史流。
+- 当调用 Setter 时，系统会将修改的**字段名、旧值、新值，以及此刻 `EntityRuntimeState` 中的 `comment`（业务意图）** 一并打包推入历史流。
 - 如果发生二次覆盖，历史流会清晰记录：
   * 第一次修改: `status` -> 1, 意图: `"执行自动化状态流转"`
   * 第二次修改: `status` -> 2, 意图: `"管理员强制纠偏状态"`
@@ -65,7 +65,7 @@ TeaQL 的核心初衷是提供极其轻量、明确且高性能的数据持久�
 在企业级应用中，所有的删除（Delete）往往都是标记删除（更新 `version = -1` 或 `is_deleted = true`），且所有的增删改操作都必须受限于乐观锁保护。如果单纯抛弃图遍历而生成无版本的 Batch SQL，会导致灾难性的“脏更新”和“脏删除”。增量账本通过引入静态版本锚点完美解决了此问题。
 
 ### 5.1 版本号注册表 (Version Registry)
-在 `EntityRoot` / `RootContext` 内部，维护一张 `original_versions: BTreeMap<EntityKey, i64>` 的注册表。当任何实体被加载到内存或挂载时，系统立刻将其原始版本号登记在册。这是绝对的防线。
+在 `EntityRuntimeState` / `EntityMutationLedger` 内部，维护一张 `original_versions: BTreeMap<EntityKey, i64>` 的注册表。当任何实体被加载到内存或挂载时，系统立刻将其原始版本号登记在册。这是绝对的防线。
 
 ### 5.2 安全组装 Batch SQL
 无论是普通的更新还是标记删除，执行器在读取扁平的账本（`ChangeSet` 和 `deleted_keys`）时，都必须去 `original_versions` 里查阅该实体的基准版本。

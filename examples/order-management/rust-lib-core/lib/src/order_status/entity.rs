@@ -42,7 +42,7 @@ pub struct OrderStatus {
     #[teaql(dynamic)]
     dynamic: BTreeMap<String, teaql_core::Value>,
     #[teaql(skip)]
-    root: teaql_runtime::EntityRoot,
+    root: teaql_runtime::EntityRuntimeState,
     #[teaql(skip)]
     pub __load_state: teaql_core::eval::LoadState,
 }
@@ -54,7 +54,7 @@ impl OrderStatus {
         teaql_core::Value::U64(id)
     }
 
-    pub(crate) fn runtime_new(root: teaql_runtime::EntityRoot) -> Self {
+    pub(crate) fn runtime_new(root: teaql_runtime::EntityRuntimeState) -> Self {
         Self {
             id: 0_u64,
             name: String::new(),
@@ -75,13 +75,13 @@ impl OrderStatus {
         teaql_runtime::EntityKey::new("OrderStatus", self.id)
     }
 
-    pub fn attach_root_recursive(&mut self, root: teaql_runtime::EntityRoot) {
+    pub fn attach_runtime_state_recursive(&mut self, root: teaql_runtime::EntityRuntimeState) {
         self.root = root.clone();
         if let Some(entity) = &mut self.commerce_platform {
-            entity.attach_root_recursive(root.clone());
+            entity.attach_runtime_state_recursive(root.clone());
         }
         for entity in &mut self.customer_order_list {
-            entity.attach_root_recursive(root.clone());
+            entity.attach_runtime_state_recursive(root.clone());
         }
     }
 

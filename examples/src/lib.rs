@@ -18,7 +18,7 @@ use teaql_sql::SqlDataServiceExecutor;
 #[teaql(entity = "Product", table = "example_product")]
 pub struct Product {
     #[teaql(skip)]
-    pub root: teaql_runtime::EntityRoot,
+    pub root: teaql_runtime::EntityRuntimeState,
     #[teaql(id)]
     pub id: u64,
     pub name: String,
@@ -28,7 +28,7 @@ pub struct Product {
 #[teaql(entity = "OrderLine", table = "example_orderline")]
 pub struct OrderLine {
     #[teaql(skip)]
-    pub root: teaql_runtime::EntityRoot,
+    pub root: teaql_runtime::EntityRuntimeState,
     #[teaql(id)]
     pub id: u64,
     #[teaql(column = "order_id")]
@@ -44,7 +44,7 @@ pub struct OrderLine {
 #[teaql(entity = "Order", table = "example_orders")]
 pub struct Order {
     #[teaql(skip)]
-    pub root: teaql_runtime::EntityRoot,
+    pub root: teaql_runtime::EntityRuntimeState,
     #[teaql(id)]
     pub id: u64,
     #[teaql(version)]
