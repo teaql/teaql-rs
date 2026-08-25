@@ -7,6 +7,16 @@ pub struct ContainerAttrs {
     pub data_service: Option<String>,
     pub audit_mask_fields: Vec<String>,
     pub audit_value_max_len: Option<usize>,
+    pub reverse_relations: Vec<ParsedContainerRelation>,
+}
+
+#[derive(Default)]
+pub struct ParsedContainerRelation {
+    pub name: String,
+    pub target: String,
+    pub local_key: Option<String>,
+    pub foreign_key: Option<String>,
+    pub many: bool,
 }
 
 pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> ContainerAttrs {
@@ -16,6 +26,7 @@ pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> Co
         data_service: None,
         audit_mask_fields: Vec::new(),
         audit_value_max_len: None,
+        reverse_relations: Vec::new(),
     };
 
     for attr in attrs {
@@ -66,6 +77,25 @@ pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> Co
                 {
                     attrs_out.audit_value_max_len = lit_int.base10_parse().ok();
                 }
+            } else if meta.path.is_ident("reverse_relation") {
+                let mut relation = ParsedContainerRelation::default();
+                meta.parse_nested_meta(|nested| {
+                    if nested.path.is_ident("name") {
+                        relation.name = parse_string_expr(&nested.value()?.parse::<Expr>()?);
+                    } else if nested.path.is_ident("target") {
+                        relation.target = parse_string_expr(&nested.value()?.parse::<Expr>()?);
+                    } else if nested.path.is_ident("local_key") {
+                        relation.local_key =
+                            Some(parse_string_expr(&nested.value()?.parse::<Expr>()?));
+                    } else if nested.path.is_ident("foreign_key") {
+                        relation.foreign_key =
+                            Some(parse_string_expr(&nested.value()?.parse::<Expr>()?));
+                    } else if nested.path.is_ident("many") {
+                        relation.many = true;
+                    }
+                    Ok(())
+                })?;
+                attrs_out.reverse_relations.push(relation);
             }
             Ok(())
         });

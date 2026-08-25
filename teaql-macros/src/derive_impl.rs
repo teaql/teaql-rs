@@ -90,6 +90,21 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     let entity_name = attrs.entity_name;
     let table_name = attrs.table_name;
     let data_service = attrs.data_service;
+    let container_relation_tokens = attrs.reverse_relations.into_iter().map(|relation| {
+        let name = relation.name;
+        let target = relation.target;
+        let local_key = relation.local_key.unwrap_or_else(|| "id".to_owned());
+        let foreign_key = relation.foreign_key.unwrap_or_else(|| "id".to_owned());
+        let many = relation.many.then(|| quote! { .many() });
+        quote! {
+            descriptor = descriptor.relation(
+                ::teaql_core::RelationDescriptor::new(#name, #target)
+                    .local_key(#local_key)
+                    .foreign_key(#foreign_key)
+                    #many
+            );
+        }
+    });
 
     let data_service_token = data_service
         .map(|ds| {
@@ -476,6 +491,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
 
                 #(#property_tokens)*
                 #(#relation_tokens)*
+                #(#container_relation_tokens)*
                 descriptor
             }
         }

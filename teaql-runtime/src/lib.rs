@@ -328,6 +328,24 @@ mod tests {
     }
 
     #[derive(Debug, PartialEq, DeriveTeaqlEntity)]
+    #[teaql(
+        entity = "DetachedProduct",
+        table = "detached_product",
+        reverse_relation(
+            name = "line_list",
+            target = "DetachedLine",
+            local_key = "id",
+            foreign_key = "product_id",
+            many
+        )
+    )]
+    struct ProductWithDetachedLinesRow {
+        #[teaql(id)]
+        id: u64,
+        name: String,
+    }
+
+    #[derive(Debug, PartialEq, DeriveTeaqlEntity)]
     #[teaql(entity = "OrderLine", table = "orderline")]
     struct OrderLineWithProductEntityRow {
         #[teaql(id)]
@@ -1075,6 +1093,19 @@ mod tests {
             *next += 1;
             Ok(id)
         }
+    }
+
+    #[test]
+    fn detached_reverse_relation_remains_in_entity_metadata() {
+        let descriptor = ProductWithDetachedLinesRow::entity_descriptor();
+        assert_eq!(descriptor.properties.len(), 2);
+        assert_eq!(descriptor.relations.len(), 1);
+        let relation = &descriptor.relations[0];
+        assert_eq!(relation.name, "line_list");
+        assert_eq!(relation.target_entity, "DetachedLine");
+        assert_eq!(relation.local_key, "id");
+        assert_eq!(relation.foreign_key, "product_id");
+        assert!(relation.many);
     }
 
     #[tokio::test]
