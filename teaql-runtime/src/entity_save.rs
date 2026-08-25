@@ -85,6 +85,19 @@ where
             let eds = context
                 .entity_data_service::<E>(&entity)
                 .map_err(|e| RuntimeError::Graph(e.to_string()))?;
+            let descriptor = context.require_entity(&entity)?;
+            let id_prop = descriptor.id_property().ok_or_else(|| {
+                RuntimeError::Graph(format!("entity {entity} has no id property"))
+            })?;
+            let current_id = node
+                .values
+                .get(&id_prop.name)
+                .cloned()
+                .unwrap_or(Value::I64(0));
+            let root_key = crate::EntityKey::new(entity.clone(), current_id);
+            let was_new = root.new_keys().contains(&root_key);
+            let was_deleted = root.deleted_keys().contains(&root_key);
+            let original_version = root.get_original_version(&root_key);
             let generated_ids = eds
                 .execute_ledger_plan_internal(root.clone())
                 .await
@@ -93,26 +106,54 @@ where
                     other => RuntimeError::Graph(other.to_string()),
                 })?;
 
-            let descriptor = context.require_entity(&entity).unwrap();
-            if let Some(id_prop) = descriptor.id_property() {
-                let current_id = node
-                    .values
-                    .get(&id_prop.name)
-                    .cloned()
-                    .unwrap_or(Value::I64(0));
-                let root_key = crate::EntityKey::new(entity.clone(), current_id);
-                if let Some(new_id) = generated_ids.get(&root_key) {
-                    node.values.insert(id_prop.name.clone(), new_id.clone());
+            if let Some(new_id) = generated_ids.get(&root_key) {
+                node.values.insert(id_prop.name.clone(), new_id.clone());
+            }
+            if let Some(changes) = root.current_change_set().changes().get(&root_key) {
+                for (field, value) in changes {
+                    node.values.insert(field.clone(), value.clone());
                 }
-                if let Some(changes) = root.current_change_set().changes().get(&root_key) {
-                    for (field, value) in changes {
-                        node.values.insert(field.clone(), value.clone());
-                    }
+            }
+            if let Some(version_prop) = descriptor.version_property() {
+                let authoritative_version = saved_version(was_new, was_deleted, original_version);
+                if let Some(version) = authoritative_version {
+                    node.values
+                        .insert(version_prop.name.clone(), Value::I64(version));
                 }
             }
             root.clear_committed();
             Ok(node)
         })
+    }
+}
+
+fn saved_version(was_new: bool, was_deleted: bool, original_version: Option<i64>) -> Option<i64> {
+    if was_new {
+        Some(1)
+    } else if was_deleted {
+        original_version.map(|version| -(version.abs() + 1))
+    } else {
+        original_version.map(|version| version + 1)
+    }
+}
+
+#[cfg(test)]
+mod saved_version_tests {
+    use super::saved_version;
+
+    #[test]
+    fn create_returns_initial_version() {
+        assert_eq!(saved_version(true, false, None), Some(1));
+    }
+
+    #[test]
+    fn update_returns_incremented_version() {
+        assert_eq!(saved_version(false, false, Some(7)), Some(8));
+    }
+
+    #[test]
+    fn delete_returns_next_negative_version() {
+        assert_eq!(saved_version(false, true, Some(7)), Some(-8));
     }
 }
 

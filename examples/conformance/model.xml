@@ -1,0 +1,16 @@
+<root name="runtime-example-conformance-service" org="teaql" version="1.0.0" data_service="sqlite">
+    <platform
+        name="Runtime Example"
+        _name="Platform"
+        _module="Example"
+        _module_key="example"
+    />
+    <work_item
+        title="Work item|[1,80]"
+        description="Verify the runtime-owned conformance example?"
+        platform="platform()"
+        _name="Work Item"
+        _module="Example"
+        _module_key="example"
+    />
+</root>
