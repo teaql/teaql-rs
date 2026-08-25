@@ -33,7 +33,7 @@ pub use data_service::{
 };
 pub use entity_runtime::{
     ChangeSetStack, EntityChangeSet, EntityGraphBuilder, EntityKey, EntityRuntimeState,
-    LedgerEntity,
+    LedgerEntity, LoadedRelation, RelationHandle,
 };
 pub use entity_save::{AuditedSaveExt, graph_node_from_entity, save_audited_ledger_entity};
 pub use entity_status::{EntityAction, EntityStatus};

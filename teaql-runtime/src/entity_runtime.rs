@@ -5,6 +5,50 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use teaql_core::{EntitySnapshot, MutationValues, SmartList, Value};
 
+/// The explicit load state of a relation stored in the runtime identity graph.
+///
+/// Reading this state never performs I/O. `NotLoaded` means exactly that the
+/// current query did not install a value for the relation; callers must issue
+/// an explicit query if they need it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadedRelation {
+    Loaded,
+    Empty,
+    NotLoaded,
+}
+
+/// A borrowed view of a relation in the runtime identity graph.
+///
+/// `value()` is present for both `Loaded` and loaded-empty collection values.
+/// It is absent for a null to-one relation and for `NotLoaded`.
+#[derive(Debug, Clone, Copy)]
+pub struct RelationHandle<'a, T> {
+    state: LoadedRelation,
+    value: Option<&'a T>,
+}
+
+impl<'a, T> RelationHandle<'a, T> {
+    fn new(state: LoadedRelation, value: Option<&'a T>) -> Self {
+        Self { state, value }
+    }
+
+    pub fn state(&self) -> LoadedRelation {
+        self.state
+    }
+
+    pub fn value(&self) -> Option<&'a T> {
+        self.value
+    }
+
+    pub fn is_loaded(&self) -> bool {
+        self.state != LoadedRelation::NotLoaded
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.state == LoadedRelation::Empty
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct EntityKey {
     pub entity: Cow<'static, str>,
@@ -559,6 +603,40 @@ impl EntityRuntimeState {
             .downcast_ref::<SmartList<T>>()
     }
 
+    /// Resolve a to-many relation without performing an implicit database read.
+    pub fn relation_list<T>(
+        &self,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+    ) -> RelationHandle<'_, SmartList<T>>
+    where
+        T: Any + Send + Sync,
+    {
+        let Some(graph) = self.graph.frozen() else {
+            return RelationHandle::new(LoadedRelation::NotLoaded, None);
+        };
+        let key = RelationListKey {
+            owner_entity: crate::canonical_id_space_entity(owner_entity),
+            owner_id,
+            relation: relation.to_owned(),
+        };
+        let Some(stored) = graph.relation_lists.get(&key) else {
+            return RelationHandle::new(LoadedRelation::NotLoaded, None);
+        };
+        let list = stored.downcast_ref::<SmartList<T>>().unwrap_or_else(|| {
+            panic!(
+                "relation view type mismatch: owner={} id={} relation={}",
+                owner_entity, owner_id, relation
+            )
+        });
+        if list.is_empty() {
+            RelationHandle::new(LoadedRelation::Empty, Some(list))
+        } else {
+            RelationHandle::new(LoadedRelation::Loaded, Some(list))
+        }
+    }
+
     pub fn resolve_relation_option<T>(
         &self,
         owner_entity: &str,
@@ -577,6 +655,39 @@ impl EntityRuntimeState {
                 relation: relation.to_owned(),
             })?
             .downcast_ref::<Option<T>>()
+    }
+
+    /// Resolve a to-one relation without performing an implicit database read.
+    pub fn relation_option<T>(
+        &self,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+    ) -> RelationHandle<'_, T>
+    where
+        T: Any + Send + Sync,
+    {
+        let Some(graph) = self.graph.frozen() else {
+            return RelationHandle::new(LoadedRelation::NotLoaded, None);
+        };
+        let key = RelationListKey {
+            owner_entity: crate::canonical_id_space_entity(owner_entity),
+            owner_id,
+            relation: relation.to_owned(),
+        };
+        let Some(stored) = graph.relation_lists.get(&key) else {
+            return RelationHandle::new(LoadedRelation::NotLoaded, None);
+        };
+        let value = stored.downcast_ref::<Option<T>>().unwrap_or_else(|| {
+            panic!(
+                "relation view type mismatch: owner={} id={} relation={}",
+                owner_entity, owner_id, relation
+            )
+        });
+        match value {
+            Some(value) => RelationHandle::new(LoadedRelation::Loaded, Some(value)),
+            None => RelationHandle::new(LoadedRelation::Empty, None),
+        }
     }
 
     pub fn has_relation_view(&self, owner_entity: &str, owner_id: u64, relation: &str) -> bool {
@@ -820,5 +931,40 @@ mod lazy_root_tests {
         assert!(detached.root.graph.frozen().is_some());
         drop(detached);
         assert!(graph_owner.upgrade().is_none());
+    }
+
+    #[test]
+    fn relation_handles_distinguish_loaded_empty_and_not_loaded() {
+        let root = EntityRuntimeState::default();
+        let mut builder = EntityGraphBuilder::default();
+        builder.install_relation_list("Owner", 1, "loaded", SmartList::from(vec![7_u64]));
+        builder.install_relation_list::<u64>("Owner", 1, "empty", SmartList::empty());
+        builder.install_relation_option("Owner", 1, "present", Some(9_u64));
+        builder.install_relation_option::<u64>("Owner", 1, "null", None);
+        root.freeze_graph(builder).unwrap();
+
+        let loaded = root.relation_list::<u64>("Owner", 1, "loaded");
+        assert_eq!(loaded.state(), LoadedRelation::Loaded);
+        assert_eq!(loaded.value().map(|list| list.as_slice()), Some(&[7][..]));
+
+        let empty = root.relation_list::<u64>("Owner", 1, "empty");
+        assert_eq!(empty.state(), LoadedRelation::Empty);
+        assert!(empty.value().is_some_and(SmartList::is_empty));
+
+        let missing = root.relation_list::<u64>("Owner", 1, "missing");
+        assert_eq!(missing.state(), LoadedRelation::NotLoaded);
+        assert!(missing.value().is_none());
+
+        let present = root.relation_option::<u64>("Owner", 1, "present");
+        assert_eq!(present.state(), LoadedRelation::Loaded);
+        assert_eq!(present.value(), Some(&9));
+
+        let null = root.relation_option::<u64>("Owner", 1, "null");
+        assert_eq!(null.state(), LoadedRelation::Empty);
+        assert!(null.value().is_none());
+
+        let absent = root.relation_option::<u64>("Owner", 1, "absent");
+        assert_eq!(absent.state(), LoadedRelation::NotLoaded);
+        assert!(absent.value().is_none());
     }
 }
