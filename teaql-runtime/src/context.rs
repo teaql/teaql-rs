@@ -345,10 +345,21 @@ pub struct UnifiedLogBuffer {
     pub entries: std::sync::Arc<Mutex<Vec<UnifiedLogEntry>>>,
 }
 
+/// Context-owned proof required by the provider SPI. Its private field prevents
+/// application crates from invoking a schema provider directly.
+///
+/// ```compile_fail
+/// let _ = teaql_runtime::SchemaInvocation { _context_owned: () };
+/// ```
+pub struct SchemaInvocation {
+    _context_owned: (),
+}
+
 pub trait SchemaProvider: Send + Sync {
     fn ensure_schema<'a>(
         &'a self,
         context: &'a UserContext,
+        invocation: &'a SchemaInvocation,
     ) -> Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'a>>;
 }
 
@@ -991,7 +1002,8 @@ impl UserContext {
             .schema_provider
             .as_ref()
             .ok_or_else(|| RuntimeError::Schema("missing schema provider".to_owned()))?;
-        provider.ensure_schema(self).await
+        let invocation = SchemaInvocation { _context_owned: () };
+        provider.ensure_schema(self, &invocation).await
     }
 
     pub fn with_language(mut self, language: Language) -> Self {

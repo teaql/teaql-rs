@@ -535,13 +535,7 @@ fn bootstrap_values_equal(left: Option<&Value>, right: Option<&Value>) -> bool {
     matches!((left.try_decimal(), right.try_decimal()), (Some(a), Some(b)) if a == b)
 }
 
-pub trait SqliteSchemaExt {
-    fn ensure_sqlite_schema(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = Result<(), MutationExecutorError>> + Send + '_>>;
-}
-
-pub fn ensure_sqlite_schema_for(context: &UserContext) -> Result<(), MutationExecutorError> {
+pub(crate) fn ensure_sqlite_schema_for(context: &UserContext) -> Result<(), MutationExecutorError> {
     let dialect = context.get_resource::<SqliteDialect>().ok_or_else(|| {
         MutationExecutorError::Bind("missing typed resource: SqliteDialect".to_owned())
     })?;
@@ -657,14 +651,6 @@ pub fn ensure_sqlite_schema_for(context: &UserContext) -> Result<(), MutationExe
     Ok(())
 }
 
-impl SqliteSchemaExt for UserContext {
-    fn ensure_sqlite_schema(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = Result<(), MutationExecutorError>> + Send + '_>> {
-        Box::pin(async move { ensure_sqlite_schema_for(self) })
-    }
-}
-
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SqliteSchemaProvider;
 
@@ -672,6 +658,7 @@ impl SchemaProvider for SqliteSchemaProvider {
     fn ensure_schema<'a>(
         &'a self,
         context: &'a UserContext,
+        _invocation: &'a teaql_runtime::SchemaInvocation,
     ) -> Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
             ensure_sqlite_schema_for(context).map_err(|err| RuntimeError::Schema(err.to_string()))

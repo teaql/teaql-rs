@@ -528,13 +528,7 @@ fn compile_initial_graph_update(
     }
 }
 
-pub trait MysqlSchemaExt {
-    fn ensure_mysql_schema(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = Result<(), MutationExecutorError>> + '_>>;
-}
-
-pub async fn ensure_mysql_schema_for(context: &UserContext) -> Result<(), MutationExecutorError> {
+pub(crate) async fn ensure_mysql_schema_for(context: &UserContext) -> Result<(), MutationExecutorError> {
     let dialect = context.get_resource::<MysqlDialect>().ok_or_else(|| {
         MutationExecutorError::Bind("missing typed resource: MysqlDialect".to_owned())
     })?;
@@ -694,14 +688,6 @@ mod streaming_tests {
     }
 }
 
-impl MysqlSchemaExt for UserContext {
-    fn ensure_mysql_schema(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = Result<(), MutationExecutorError>> + '_>> {
-        Box::pin(ensure_mysql_schema_for(self))
-    }
-}
-
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MysqlSchemaProvider;
 
@@ -709,6 +695,7 @@ impl SchemaProvider for MysqlSchemaProvider {
     fn ensure_schema<'a>(
         &'a self,
         context: &'a UserContext,
+        _invocation: &'a teaql_runtime::SchemaInvocation,
     ) -> Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
             ensure_mysql_schema_for(context)

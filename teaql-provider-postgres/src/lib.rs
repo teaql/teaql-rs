@@ -751,13 +751,7 @@ fn compile_initial_graph_update(
     }
 }
 
-pub trait PostgresSchemaExt {
-    fn ensure_postgres_schema(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = Result<(), MutationExecutorError>> + '_>>;
-}
-
-pub async fn ensure_postgres_schema_for(
+pub(crate) async fn ensure_postgres_schema_for(
     context: &UserContext,
 ) -> Result<(), MutationExecutorError> {
     let dialect = context.get_resource::<PostgresDialect>().ok_or_else(|| {
@@ -1132,14 +1126,6 @@ mod streaming_tests {
     }
 }
 
-impl PostgresSchemaExt for UserContext {
-    fn ensure_postgres_schema(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = Result<(), MutationExecutorError>> + '_>> {
-        Box::pin(ensure_postgres_schema_for(self))
-    }
-}
-
 #[derive(Debug, Default, Clone, Copy)]
 pub struct PostgresSchemaProvider;
 
@@ -1147,6 +1133,7 @@ impl SchemaProvider for PostgresSchemaProvider {
     fn ensure_schema<'a>(
         &'a self,
         context: &'a UserContext,
+        _invocation: &'a teaql_runtime::SchemaInvocation,
     ) -> Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
             ensure_postgres_schema_for(context)
