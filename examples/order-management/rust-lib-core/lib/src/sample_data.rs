@@ -53,6 +53,27 @@ pub struct SampleDataSkipped {
     pub reason: String,
 }
 
+#[derive(Debug)]
+pub struct SampleDataError {
+    message: String,
+}
+
+impl SampleDataError {
+    fn from_display(error: impl std::fmt::Display) -> Self {
+        Self {
+            message: error.to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for SampleDataError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SampleDataError {}
+
 pub struct SampleDataState {
     pub plan: SampleDataPlan,
     pub references: BTreeMap<&'static str, Vec<u64>>,
@@ -126,7 +147,7 @@ impl SampleDataState {
 pub async fn generate_sample_data<C>(
     context: &C,
     plan: SampleDataPlan,
-) -> Result<SampleDataReport, String>
+) -> Result<SampleDataReport, SampleDataError>
 where
     C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
 {
@@ -139,33 +160,33 @@ where
 
     context.user_context().transaction_data(|| async {
         Box::pin(generate_customers(context, &mut state)).await.map_err(|e| {
-            teaql_runtime::DataServiceError::Runtime(teaql_runtime::RuntimeError::Graph(e))
+            teaql_runtime::DataServiceError::Runtime(teaql_runtime::RuntimeError::Graph(e.to_string()))
         })
-    }).await.map_err(|e| e.to_string())?;
+    }).await.map_err(SampleDataError::from_display)?;
 
     context.user_context().transaction_data(|| async {
         Box::pin(generate_order_search_presets(context, &mut state)).await.map_err(|e| {
-            teaql_runtime::DataServiceError::Runtime(teaql_runtime::RuntimeError::Graph(e))
+            teaql_runtime::DataServiceError::Runtime(teaql_runtime::RuntimeError::Graph(e.to_string()))
         })
-    }).await.map_err(|e| e.to_string())?;
+    }).await.map_err(SampleDataError::from_display)?;
 
     context.user_context().transaction_data(|| async {
         Box::pin(generate_products(context, &mut state)).await.map_err(|e| {
-            teaql_runtime::DataServiceError::Runtime(teaql_runtime::RuntimeError::Graph(e))
+            teaql_runtime::DataServiceError::Runtime(teaql_runtime::RuntimeError::Graph(e.to_string()))
         })
-    }).await.map_err(|e| e.to_string())?;
+    }).await.map_err(SampleDataError::from_display)?;
 
     context.user_context().transaction_data(|| async {
         Box::pin(generate_customer_orders(context, &mut state)).await.map_err(|e| {
-            teaql_runtime::DataServiceError::Runtime(teaql_runtime::RuntimeError::Graph(e))
+            teaql_runtime::DataServiceError::Runtime(teaql_runtime::RuntimeError::Graph(e.to_string()))
         })
-    }).await.map_err(|e| e.to_string())?;
+    }).await.map_err(SampleDataError::from_display)?;
 
     context.user_context().transaction_data(|| async {
         Box::pin(generate_order_lines(context, &mut state)).await.map_err(|e| {
-            teaql_runtime::DataServiceError::Runtime(teaql_runtime::RuntimeError::Graph(e))
+            teaql_runtime::DataServiceError::Runtime(teaql_runtime::RuntimeError::Graph(e.to_string()))
         })
-    }).await.map_err(|e| e.to_string())?;
+    }).await.map_err(SampleDataError::from_display)?;
 
 
     let report = state.into_report();
@@ -176,11 +197,11 @@ where
 async fn load_root_commerce_platforms<C>(
     context: &C,
     state: &mut SampleDataState,
-) -> Result<(), String>
+) -> Result<(), SampleDataError>
 where
     C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
 {
-    let list = Q::commerce_platforms().purpose("Init Sample Data").execute_for_list(context).await.unwrap_or_default();
+    let list = Q::commerce_platforms().comment("what: inspect existing entities before sample-data initialization").purpose("why: avoid duplicate sample records").execute_for_list(context).await.unwrap_or_default();
     for item in list {
         state.add_reference(crate::CommercePlatform::ENTITY_NAME, item.id().into_u64());
     }
@@ -190,11 +211,11 @@ where
 async fn load_constant_order_statuses<C>(
     context: &C,
     state: &mut SampleDataState,
-) -> Result<(), String>
+) -> Result<(), SampleDataError>
 where
     C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
 {
-    let list = Q::order_statuses().purpose("Init Sample Data").execute_for_list(context).await.unwrap_or_default();
+    let list = Q::order_statuses().comment("what: inspect existing entities before sample-data initialization").purpose("why: avoid duplicate sample records").execute_for_list(context).await.unwrap_or_default();
     for item in list {
         state.add_reference(crate::OrderStatus::ENTITY_NAME, item.id().into_u64());
     }
@@ -204,13 +225,13 @@ where
 async fn generate_customers<C>(
     context: &C,
     state: &mut SampleDataState,
-) -> Result<(), String>
+) -> Result<(), SampleDataError>
 where
     C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
 {
-        if state.ids("Commerce Platform").is_empty() {
-            state.record_skipped(crate::Customer::ENTITY_NAME, "Required dependency Commerce Platform is missing in reference pool".to_string());
-            log::info!("Skipped generating Customer: Required dependency Commerce Platform is missing in reference pool.");
+        if state.ids("commerce_platform").is_empty() {
+            state.record_skipped(crate::Customer::ENTITY_NAME, "Required dependency commerce_platform is missing in reference pool".to_string());
+            log::info!("Skipped generating customer: Required dependency commerce_platform is missing in reference pool.");
             return Ok(());
         }
 
@@ -224,13 +245,13 @@ where
         SampleDataScale::Medium => base_fanout * 50,
     };
 
-    log::info!("Generating sample data for Customer (expected: {})...", fanout);
+    log::info!("Generating sample data for customer (expected: {})...", fanout);
 
     for i in 0..fanout {
-        let mut entity = Q::customers().purpose("Init Sample Data").new_entity(context);
+        let mut entity = Q::customers().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context);
         let mut used_refs = std::collections::HashSet::new();
 
-                if let Some(ref_id) = state.pick_unused_id("Commerce Platform", i as usize, &used_refs) {
+                if let Some(ref_id) = state.pick_unused_id("commerce_platform", i as usize, &used_refs) {
                     entity.update_commerce_platform_id(ref_id);
                     used_refs.insert(ref_id);
                 } else {
@@ -238,34 +259,34 @@ where
                 }
                 entity.update_name(format!("{} {}", "Acme Retail", i + 1));
 
-                entity.update_email(format!("{} {}", "masked-in-quick-start", i + 1));
+                entity.update_email(format!("{} {}", "customer@example.com", i + 1));
 
                 {
                     let days = ((i as u64 + state.plan.seed) % (365 * 3)) as i64;
                     let past = chrono::Utc::now().naive_utc() - chrono::Duration::try_days(days).unwrap_or_default();
-                    entity.update_create_time(past.format("%Y-%m-%d").to_string());
+                    entity.update_create_time(teaql_core::time::Timestamp(past.and_utc().timestamp_millis()));
                 }
 
                 {
                     let days = ((i as u64 + state.plan.seed) % (365 * 3)) as i64;
                     let past = chrono::Utc::now().naive_utc() - chrono::Duration::try_days(days).unwrap_or_default();
-                    entity.update_update_time(past.format("%Y-%m-%d").to_string());
+                    entity.update_update_time(teaql_core::time::Timestamp(past.and_utc().timestamp_millis()));
                 }
 
 
 
-        let entity = entity.audit_as("Init Sample Data").save(context).await.map_err(|e| e.to_string())?;
+        let entity = entity.audit_as("Init Sample Data").save(context).await.map_err(SampleDataError::from_display)?;
 
         state.record_generated(crate::Customer::ENTITY_NAME);
 
         if i % 20 == 0 {
-            log::info!("Generating Customer: {}/{}", i, fanout);
+            log::info!("Generating customer: {}/{}", i, fanout);
         }
 
         state.add_reference(crate::Customer::ENTITY_NAME, entity.id().into_u64());
     }
 
-    log::info!("Successfully generated sample records for Customer.");
+    log::info!("Successfully generated sample records for customer.");
     Ok(())
 }
 
@@ -273,13 +294,13 @@ where
 async fn generate_order_search_presets<C>(
     context: &C,
     state: &mut SampleDataState,
-) -> Result<(), String>
+) -> Result<(), SampleDataError>
 where
     C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
 {
-        if state.ids("Commerce Platform").is_empty() {
-            state.record_skipped(crate::OrderSearchPreset::ENTITY_NAME, "Required dependency Commerce Platform is missing in reference pool".to_string());
-            log::info!("Skipped generating Order Search Preset: Required dependency Commerce Platform is missing in reference pool.");
+        if state.ids("commerce_platform").is_empty() {
+            state.record_skipped(crate::OrderSearchPreset::ENTITY_NAME, "Required dependency commerce_platform is missing in reference pool".to_string());
+            log::info!("Skipped generating order_search_preset: Required dependency commerce_platform is missing in reference pool.");
             return Ok(());
         }
 
@@ -293,51 +314,51 @@ where
         SampleDataScale::Medium => base_fanout * 50,
     };
 
-    log::info!("Generating sample data for Order Search Preset (expected: {})...", fanout);
+    log::info!("Generating sample data for order_search_preset (expected: {})...", fanout);
 
     for i in 0..fanout {
-        let mut entity = Q::order_search_presets().purpose("Init Sample Data").new_entity(context);
+        let mut entity = Q::order_search_presets().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context);
         let mut used_refs = std::collections::HashSet::new();
 
-                if let Some(ref_id) = state.pick_unused_id("Commerce Platform", i as usize, &used_refs) {
+                if let Some(ref_id) = state.pick_unused_id("commerce_platform", i as usize, &used_refs) {
                     entity.update_commerce_platform_id(ref_id);
                     used_refs.insert(ref_id);
                 } else {
                     // Optional relation was missing in reference pool
                 }
-                entity.update_name(format!("{} {}", "My pending orders", i + 1));
+                entity.update_name(format!("{} {}", "Pending web orders", i + 1));
 
                 entity.update_filter_json(format!("{} {}", "{}", i + 1));
 
-                entity.update_request_id(format!("{} {}", "req-preset-001", i + 1));
+                entity.update_request_id(format!("{} {}", "quick-start-pending-orders", i + 1));
 
-                entity.update_owner_user_id(format!("{} {}", "operator-001", i + 1));
+                entity.update_owner_user_id(format!("{} {}", "operator-1", i + 1));
 
                 {
                     let days = ((i as u64 + state.plan.seed) % (365 * 3)) as i64;
                     let past = chrono::Utc::now().naive_utc() - chrono::Duration::try_days(days).unwrap_or_default();
-                    entity.update_create_time(past.format("%Y-%m-%d").to_string());
+                    entity.update_create_time(teaql_core::time::Timestamp(past.and_utc().timestamp_millis()));
                 }
 
                 {
                     let days = ((i as u64 + state.plan.seed) % (365 * 3)) as i64;
                     let past = chrono::Utc::now().naive_utc() - chrono::Duration::try_days(days).unwrap_or_default();
-                    entity.update_update_time(past.format("%Y-%m-%d").to_string());
+                    entity.update_update_time(teaql_core::time::Timestamp(past.and_utc().timestamp_millis()));
                 }
 
 
 
-entity.audit_as("Init Sample Data").save(context).await.map_err(|e| e.to_string())?;
+entity.audit_as("Init Sample Data").save(context).await.map_err(SampleDataError::from_display)?;
 
         state.record_generated(crate::OrderSearchPreset::ENTITY_NAME);
 
         if i % 20 == 0 {
-            log::info!("Generating Order Search Preset: {}/{}", i, fanout);
+            log::info!("Generating order_search_preset: {}/{}", i, fanout);
         }
 
     }
 
-    log::info!("Successfully generated sample records for Order Search Preset.");
+    log::info!("Successfully generated sample records for order_search_preset.");
     Ok(())
 }
 
@@ -345,13 +366,13 @@ entity.audit_as("Init Sample Data").save(context).await.map_err(|e| e.to_string(
 async fn generate_products<C>(
     context: &C,
     state: &mut SampleDataState,
-) -> Result<(), String>
+) -> Result<(), SampleDataError>
 where
     C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
 {
-        if state.ids("Commerce Platform").is_empty() {
-            state.record_skipped(crate::Product::ENTITY_NAME, "Required dependency Commerce Platform is missing in reference pool".to_string());
-            log::info!("Skipped generating Product: Required dependency Commerce Platform is missing in reference pool.");
+        if state.ids("commerce_platform").is_empty() {
+            state.record_skipped(crate::Product::ENTITY_NAME, "Required dependency commerce_platform is missing in reference pool".to_string());
+            log::info!("Skipped generating product: Required dependency commerce_platform is missing in reference pool.");
             return Ok(());
         }
 
@@ -365,50 +386,50 @@ where
         SampleDataScale::Medium => base_fanout * 50,
     };
 
-    log::info!("Generating sample data for Product (expected: {})...", fanout);
+    log::info!("Generating sample data for product (expected: {})...", fanout);
 
     for i in 0..fanout {
-        let mut entity = Q::products().purpose("Init Sample Data").new_entity(context);
+        let mut entity = Q::products().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context);
         let mut used_refs = std::collections::HashSet::new();
 
-                if let Some(ref_id) = state.pick_unused_id("Commerce Platform", i as usize, &used_refs) {
+                if let Some(ref_id) = state.pick_unused_id("commerce_platform", i as usize, &used_refs) {
                     entity.update_commerce_platform_id(ref_id);
                     used_refs.insert(ref_id);
                 } else {
                     // Optional relation was missing in reference pool
                 }
-                entity.update_name(format!("{} {}", "Reusable Moving Box", i + 1));
+                entity.update_name(format!("{} {}", "Tea", i + 1));
 
-                entity.update_sku(format!("{} {}", "BOX-001", i + 1));
+                entity.update_sku(format!("{} {}", "TEA-001", i + 1));
 
-                entity.update_image_url(format!("{} {}", "//example.invalid/images/box.png", i + 1));
+                entity.update_image_url(format!("{} {}", "https://example.com/tea.png", i + 1));
 
                 {
                     let days = ((i as u64 + state.plan.seed) % (365 * 3)) as i64;
                     let past = chrono::Utc::now().naive_utc() - chrono::Duration::try_days(days).unwrap_or_default();
-                    entity.update_create_time(past.format("%Y-%m-%d").to_string());
+                    entity.update_create_time(teaql_core::time::Timestamp(past.and_utc().timestamp_millis()));
                 }
 
                 {
                     let days = ((i as u64 + state.plan.seed) % (365 * 3)) as i64;
                     let past = chrono::Utc::now().naive_utc() - chrono::Duration::try_days(days).unwrap_or_default();
-                    entity.update_update_time(past.format("%Y-%m-%d").to_string());
+                    entity.update_update_time(teaql_core::time::Timestamp(past.and_utc().timestamp_millis()));
                 }
 
 
 
-        let entity = entity.audit_as("Init Sample Data").save(context).await.map_err(|e| e.to_string())?;
+        let entity = entity.audit_as("Init Sample Data").save(context).await.map_err(SampleDataError::from_display)?;
 
         state.record_generated(crate::Product::ENTITY_NAME);
 
         if i % 20 == 0 {
-            log::info!("Generating Product: {}/{}", i, fanout);
+            log::info!("Generating product: {}/{}", i, fanout);
         }
 
         state.add_reference(crate::Product::ENTITY_NAME, entity.id().into_u64());
     }
 
-    log::info!("Successfully generated sample records for Product.");
+    log::info!("Successfully generated sample records for product.");
     Ok(())
 }
 
@@ -416,25 +437,25 @@ where
 async fn generate_customer_orders<C>(
     context: &C,
     state: &mut SampleDataState,
-) -> Result<(), String>
+) -> Result<(), SampleDataError>
 where
     C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
 {
-        if state.ids("Order Status").is_empty() {
-            state.record_skipped(crate::CustomerOrder::ENTITY_NAME, "Required dependency Order Status is missing in reference pool".to_string());
-            log::info!("Skipped generating Customer Order: Required dependency Order Status is missing in reference pool.");
+        if state.ids("order_status").is_empty() {
+            state.record_skipped(crate::CustomerOrder::ENTITY_NAME, "Required dependency order_status is missing in reference pool".to_string());
+            log::info!("Skipped generating customer_order: Required dependency order_status is missing in reference pool.");
             return Ok(());
         }
 
-        if state.ids("Customer").is_empty() {
-            state.record_skipped(crate::CustomerOrder::ENTITY_NAME, "Required dependency Customer is missing in reference pool".to_string());
-            log::info!("Skipped generating Customer Order: Required dependency Customer is missing in reference pool.");
+        if state.ids("customer").is_empty() {
+            state.record_skipped(crate::CustomerOrder::ENTITY_NAME, "Required dependency customer is missing in reference pool".to_string());
+            log::info!("Skipped generating customer_order: Required dependency customer is missing in reference pool.");
             return Ok(());
         }
 
-        if state.ids("Commerce Platform").is_empty() {
-            state.record_skipped(crate::CustomerOrder::ENTITY_NAME, "Required dependency Commerce Platform is missing in reference pool".to_string());
-            log::info!("Skipped generating Customer Order: Required dependency Commerce Platform is missing in reference pool.");
+        if state.ids("commerce_platform").is_empty() {
+            state.record_skipped(crate::CustomerOrder::ENTITY_NAME, "Required dependency commerce_platform is missing in reference pool".to_string());
+            log::info!("Skipped generating customer_order: Required dependency commerce_platform is missing in reference pool.");
             return Ok(());
         }
 
@@ -448,36 +469,36 @@ where
         SampleDataScale::Medium => base_fanout * 50,
     };
 
-    log::info!("Generating sample data for Customer Order (expected: {})...", fanout);
+    log::info!("Generating sample data for customer_order (expected: {})...", fanout);
 
     for i in 0..fanout {
-        let mut entity = Q::customer_orders().purpose("Init Sample Data").new_entity(context);
+        let mut entity = Q::customer_orders().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context);
         let mut used_refs = std::collections::HashSet::new();
 
-                if let Some(ref_id) = state.pick_unused_id("Order Status", i as usize, &used_refs) {
+                if let Some(ref_id) = state.pick_unused_id("order_status", i as usize, &used_refs) {
                     entity.update_status_id(ref_id);
                     used_refs.insert(ref_id);
                 } else {
                     // Optional relation was missing in reference pool
                 }
-                if let Some(ref_id) = state.pick_unused_id("Customer", i as usize, &used_refs) {
+                if let Some(ref_id) = state.pick_unused_id("customer", i as usize, &used_refs) {
                     entity.update_customer_id(ref_id);
                     used_refs.insert(ref_id);
                 } else {
                     // Optional relation was missing in reference pool
                 }
-                if let Some(ref_id) = state.pick_unused_id("Commerce Platform", i as usize, &used_refs) {
+                if let Some(ref_id) = state.pick_unused_id("commerce_platform", i as usize, &used_refs) {
                     entity.update_commerce_platform_id(ref_id);
                     used_refs.insert(ref_id);
                 } else {
                     // Optional relation was missing in reference pool
                 }
-                entity.update_order_number(format!("{} {}", "ORD-2026001", i + 1));
+                entity.update_order_number(format!("{} {}", "WEB-2026-001", i + 1));
 
                 {
                     let days = ((i as u64 + state.plan.seed) % (365 * 3)) as i64;
                     let past = chrono::Utc::now().naive_utc() - chrono::Duration::try_days(days).unwrap_or_default();
-                    entity.update_order_date(past.format("%Y-%m-%d").to_string());
+                    entity.update_order_date(past.date());
                 }
 
                 {
@@ -489,29 +510,29 @@ where
                 {
                     let days = ((i as u64 + state.plan.seed) % (365 * 3)) as i64;
                     let past = chrono::Utc::now().naive_utc() - chrono::Duration::try_days(days).unwrap_or_default();
-                    entity.update_create_time(past.format("%Y-%m-%d").to_string());
+                    entity.update_create_time(teaql_core::time::Timestamp(past.and_utc().timestamp_millis()));
                 }
 
                 {
                     let days = ((i as u64 + state.plan.seed) % (365 * 3)) as i64;
                     let past = chrono::Utc::now().naive_utc() - chrono::Duration::try_days(days).unwrap_or_default();
-                    entity.update_update_time(past.format("%Y-%m-%d").to_string());
+                    entity.update_update_time(teaql_core::time::Timestamp(past.and_utc().timestamp_millis()));
                 }
 
 
 
-        let entity = entity.audit_as("Init Sample Data").save(context).await.map_err(|e| e.to_string())?;
+        let entity = entity.audit_as("Init Sample Data").save(context).await.map_err(SampleDataError::from_display)?;
 
         state.record_generated(crate::CustomerOrder::ENTITY_NAME);
 
         if i % 20 == 0 {
-            log::info!("Generating Customer Order: {}/{}", i, fanout);
+            log::info!("Generating customer_order: {}/{}", i, fanout);
         }
 
         state.add_reference(crate::CustomerOrder::ENTITY_NAME, entity.id().into_u64());
     }
 
-    log::info!("Successfully generated sample records for Customer Order.");
+    log::info!("Successfully generated sample records for customer_order.");
     Ok(())
 }
 
@@ -519,25 +540,25 @@ where
 async fn generate_order_lines<C>(
     context: &C,
     state: &mut SampleDataState,
-) -> Result<(), String>
+) -> Result<(), SampleDataError>
 where
     C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
 {
-        if state.ids("Customer Order").is_empty() {
-            state.record_skipped(crate::OrderLine::ENTITY_NAME, "Required dependency Customer Order is missing in reference pool".to_string());
-            log::info!("Skipped generating Order Line: Required dependency Customer Order is missing in reference pool.");
+        if state.ids("customer_order").is_empty() {
+            state.record_skipped(crate::OrderLine::ENTITY_NAME, "Required dependency customer_order is missing in reference pool".to_string());
+            log::info!("Skipped generating order_line: Required dependency customer_order is missing in reference pool.");
             return Ok(());
         }
 
-        if state.ids("Product").is_empty() {
-            state.record_skipped(crate::OrderLine::ENTITY_NAME, "Required dependency Product is missing in reference pool".to_string());
-            log::info!("Skipped generating Order Line: Required dependency Product is missing in reference pool.");
+        if state.ids("product").is_empty() {
+            state.record_skipped(crate::OrderLine::ENTITY_NAME, "Required dependency product is missing in reference pool".to_string());
+            log::info!("Skipped generating order_line: Required dependency product is missing in reference pool.");
             return Ok(());
         }
 
-        if state.ids("Commerce Platform").is_empty() {
-            state.record_skipped(crate::OrderLine::ENTITY_NAME, "Required dependency Commerce Platform is missing in reference pool".to_string());
-            log::info!("Skipped generating Order Line: Required dependency Commerce Platform is missing in reference pool.");
+        if state.ids("commerce_platform").is_empty() {
+            state.record_skipped(crate::OrderLine::ENTITY_NAME, "Required dependency commerce_platform is missing in reference pool".to_string());
+            log::info!("Skipped generating order_line: Required dependency commerce_platform is missing in reference pool.");
             return Ok(());
         }
 
@@ -551,36 +572,36 @@ where
         SampleDataScale::Medium => base_fanout * 50,
     };
 
-    log::info!("Generating sample data for Order Line (expected: {})...", fanout);
+    log::info!("Generating sample data for order_line (expected: {})...", fanout);
 
     for i in 0..fanout {
-        let mut entity = Q::order_lines().purpose("Init Sample Data").new_entity(context);
+        let mut entity = Q::order_lines().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context);
         let mut used_refs = std::collections::HashSet::new();
 
-                if let Some(ref_id) = state.pick_unused_id("Customer Order", i as usize, &used_refs) {
+                if let Some(ref_id) = state.pick_unused_id("customer_order", i as usize, &used_refs) {
                     entity.update_customer_order_id(ref_id);
                     used_refs.insert(ref_id);
                 } else {
                     // Optional relation was missing in reference pool
                 }
-                if let Some(ref_id) = state.pick_unused_id("Product", i as usize, &used_refs) {
+                if let Some(ref_id) = state.pick_unused_id("product", i as usize, &used_refs) {
                     entity.update_product_id(ref_id);
                     used_refs.insert(ref_id);
                 } else {
                     // Optional relation was missing in reference pool
                 }
-                if let Some(ref_id) = state.pick_unused_id("Commerce Platform", i as usize, &used_refs) {
+                if let Some(ref_id) = state.pick_unused_id("commerce_platform", i as usize, &used_refs) {
                     entity.update_commerce_platform_id(ref_id);
                     used_refs.insert(ref_id);
                 } else {
                     // Optional relation was missing in reference pool
                 }
-                entity.update_product_name(format!("{} {}", "Reusable Moving Box", i + 1));
+                entity.update_product_name(format!("{} {}", "Tea", i + 1));
 
-                entity.update_sku(format!("{} {}", "BOX-001", i + 1));
+                entity.update_sku(format!("{} {}", "TEA-001", i + 1));
 
                 {
-                    let max_val: u64 = "2".parse().unwrap_or(1000);
+                    let max_val: u64 = "1".parse().unwrap_or(1000);
                     let rand_val = (i as u64 + state.plan.seed) % max_val.max(1) + 1;
                     entity.update_quantity(rand_val as i64);
                 }
@@ -588,21 +609,21 @@ where
                 {
                     let days = ((i as u64 + state.plan.seed) % (365 * 3)) as i64;
                     let past = chrono::Utc::now().naive_utc() - chrono::Duration::try_days(days).unwrap_or_default();
-                    entity.update_create_time(past.format("%Y-%m-%d").to_string());
+                    entity.update_create_time(teaql_core::time::Timestamp(past.and_utc().timestamp_millis()));
                 }
 
 
 
-entity.audit_as("Init Sample Data").save(context).await.map_err(|e| e.to_string())?;
+entity.audit_as("Init Sample Data").save(context).await.map_err(SampleDataError::from_display)?;
 
         state.record_generated(crate::OrderLine::ENTITY_NAME);
 
         if i % 20 == 0 {
-            log::info!("Generating Order Line: {}/{}", i, fanout);
+            log::info!("Generating order_line: {}/{}", i, fanout);
         }
 
     }
 
-    log::info!("Successfully generated sample records for Order Line.");
+    log::info!("Successfully generated sample records for order_line.");
     Ok(())
 }

@@ -4,7 +4,7 @@ use teaql_runtime::{CheckObjectStatus, CheckResults, ObjectLocation, TypedChecke
 pub trait CustomerOrderCheckerLogic: Send + Sync {
     fn check_and_fix_customer_order(
         &self,
-        _ctx: &UserContext,
+        _context: &UserContext,
         _entity: &mut crate::CustomerOrder,
         _status: CheckObjectStatus,
         _location: &ObjectLocation,

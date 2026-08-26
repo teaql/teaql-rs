@@ -88,6 +88,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
+name = "async-stream"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b5a71a6f37880a80d1d7f19efd781e4b5de42c88f0722cc13bcb6cc2cfe8476"
+dependencies = [
+ "async-stream-impl",
+ "futures-core",
+ "pin-project-lite",
+]
+
+[[package]]
+name = "async-stream-impl"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7c24de15d275a1ecfd47a380fb4d5ec9bfe0933f309ed5e705b775596a3574d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "async-trait"
 version = "0.1.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -331,6 +353,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92d699e522242e69e3003b94ecc1f960f3a5e015aa7c5d7486e65ad01dd94f5e"
 
 [[package]]
+name = "futures-macro"
+version = "0.3.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9fb9654ba8355388abeb8dcb4fc62f511300867002afc858860463bdd9fe0c44"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
+]
+
+[[package]]
 name = "futures-task"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -343,6 +376,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d50a92467f8ba5dd6e3ee5d4bd04d73ab2e4e1c44474a0674821dfce14b79bc"
 dependencies = [
  "futures-core",
+ "futures-macro",
  "futures-task",
  "pin-project-lite",
  "slab",
@@ -551,9 +585,11 @@ dependencies = [
 
 [[package]]
 name = "order-management-service-core"
-version = "1.0.0"
+version = "0.1.0"
 dependencies = [
+ "async-stream",
  "chrono",
+ "futures-util",
  "log",
  "rusqlite",
  "rust_decimal",
@@ -876,6 +912,9 @@ name = "smallvec"
 version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "sqlite-wasm-rs"
@@ -930,30 +969,26 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
 name = "teaql-core"
-version = "4.2.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b29e6d5e0f14d3ba04ad377703646149d0c131a8301864f179f7952b20dec7c1"
+version = "4.2.28"
 dependencies = [
  "chrono",
  "rust_decimal",
  "serde",
  "serde_json",
+ "smallvec",
 ]
 
 [[package]]
 name = "teaql-data-service"
-version = "4.2.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "973230cb2ae88e937f2927e5500d624f1333836dead7d71df4d860ed08bb1424"
+version = "4.2.28"
 dependencies = [
+ "futures-core",
  "teaql-core",
 ]
 
 [[package]]
 name = "teaql-macros"
-version = "4.2.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "301e5bc0102eba1f65ad317bb1bc4bbd22343b3d75d7682be6516c344f4c890d"
+version = "4.2.28"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -962,11 +997,12 @@ dependencies = [
 
 [[package]]
 name = "teaql-provider-sqlite"
-version = "4.2.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "926f9b8b92222028f4d8580999b51a3058a319d700b0bb99f19d9d93e2ca51f3"
+version = "4.2.28"
 dependencies = [
+ "async-stream",
  "chrono",
+ "futures-core",
+ "futures-util",
  "rusqlite",
  "rust_decimal",
  "serde_json",
@@ -978,12 +1014,12 @@ dependencies = [
 
 [[package]]
 name = "teaql-runtime"
-version = "4.2.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f609a0e17f68b41af42012ca6570f96ccabaedfef8f78b80b68db2c229559e1a"
+version = "4.2.28"
 dependencies = [
  "async-trait",
  "chrono",
+ "futures-core",
+ "futures-util",
  "rust_decimal",
  "serde_json",
  "teaql-core",
@@ -993,10 +1029,10 @@ dependencies = [
 
 [[package]]
 name = "teaql-sql"
-version = "4.2.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "daf5f00eb050b621a73e99732fbfbcb26a9c7b777212bc7e325d272ae820e71f"
+version = "4.2.28"
 dependencies = [
+ "futures-core",
+ "futures-util",
  "teaql-core",
  "teaql-data-service",
 ]

@@ -42,12 +42,12 @@ impl<'a> OrderStatusExpression<'a> {
         crate::ValueExpression::new(next, self.root_desc.clone())
     }
 
-    pub fn get_color(self) -> crate::ValueExpression<'a, String> {
+    pub fn get_color(self) -> crate::ValueExpression<'a, Option<String>> {
         let next = self.result.and_then("color", |entity| entity.eval_color());
         crate::ValueExpression::new(next, self.root_desc.clone())
     }
 
-    pub fn get_display_order(self) -> crate::ValueExpression<'a, rust_decimal::Decimal> {
+    pub fn get_display_order(self) -> crate::ValueExpression<'a, Option<rust_decimal::Decimal>> {
         let next = self.result.and_then("display_order", |entity| entity.eval_display_order());
         crate::ValueExpression::new(next, self.root_desc.clone())
     }

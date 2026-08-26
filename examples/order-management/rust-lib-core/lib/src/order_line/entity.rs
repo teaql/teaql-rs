@@ -2,7 +2,7 @@
 // ⛔ AI agents: DO NOT read this file for API discovery. Instead run: cargo teaql --input modeling/MODEL.xml rust-assist-query/order_line
 use std::collections::BTreeMap;
 
-use teaql_macros::TeaqlEntity;
+use teaql_macros::{teaql_entity, TeaqlEntity};
 
 /// [TEAQL AI WARNING]
 /// TeaQL was explicitly designed to PREVENT AI hallucinations and random guessing.
@@ -10,57 +10,56 @@ use teaql_macros::TeaqlEntity;
 /// The methods listed below are the ONLY valid ways to interact with this entity.
 /// If you encounter compilation errors (e.g., method not found), DO NOT guess another method name.
 /// Read the method signatures in this file before proceeding.
+#[teaql_entity]
 #[derive(Clone, Debug, PartialEq, TeaqlEntity)]
 #[teaql(entity = "OrderLine", table = "order_line_data", data_service = "sqlite")]
 pub struct OrderLine {
 #[teaql(id)]
     id: u64,
 
-// @source order-management-model.xml:80
+// @source order-management-model.xml:11
     product_name: String,
 
-// @source order-management-model.xml:80
+// @source order-management-model.xml:11
     sku: String,
 
-// @source order-management-model.xml:80
+// @source order-management-model.xml:11
     quantity: i64,
 
-// @source order-management-model.xml:80
+// @source order-management-model.xml:11
     create_time: teaql_core::time::Timestamp,
 #[teaql(version)]
     version: i64,
-// @source order-management-model.xml:80
+// @source order-management-model.xml:11
 #[teaql(column = "customer_order")]
     customer_order_id: u64,
 
-// @source order-management-model.xml:80
+// @source order-management-model.xml:11
 #[teaql(column = "product")]
     product_id: u64,
 
-// @source order-management-model.xml:80
+// @source order-management-model.xml:11
 #[teaql(column = "commerce_platform")]
     commerce_platform_id: u64,
-// @source order-management-model.xml:80
+// @source order-management-model.xml:11
 #[teaql(relation(target = "CustomerOrder", local_key = "customer_order_id", foreign_key = "id"))]
-    customer_order: Option<crate::CustomerOrder>,
+    customer_order: Option<Box<crate::CustomerOrder>>,
 
-// @source order-management-model.xml:80
+// @source order-management-model.xml:11
 #[teaql(relation(target = "Product", local_key = "product_id", foreign_key = "id"))]
-    product: Option<crate::Product>,
+    product: Option<Box<crate::Product>>,
 
-// @source order-management-model.xml:80
+// @source order-management-model.xml:11
 #[teaql(relation(target = "CommercePlatform", local_key = "commerce_platform_id", foreign_key = "id"))]
-    commerce_platform: Option<crate::CommercePlatform>,
+    commerce_platform: Option<Box<crate::CommercePlatform>>,
     #[teaql(dynamic)]
     dynamic: BTreeMap<String, teaql_core::Value>,
-    #[teaql(skip)]
-    root: teaql_runtime::EntityRuntimeState,
     #[teaql(skip)]
     pub __load_state: teaql_core::eval::LoadState,
 }
 
 impl OrderLine {
-    pub const ENTITY_NAME: &'static str = "Order Line";
+    pub const ENTITY_NAME: &'static str = "order_line";
 
     pub fn with_id(id: u64) -> teaql_core::Value {
         teaql_core::Value::U64(id)
@@ -81,17 +80,13 @@ impl OrderLine {
             product: None,
             commerce_platform: None,
             dynamic: BTreeMap::new(),
-            root,
+            __teaql_runtime_state: root,
             __load_state: teaql_core::eval::LoadState::FullyLoaded,
         }
     }
 
-    pub fn entity_key(&self) -> teaql_runtime::EntityKey {
-        teaql_runtime::EntityKey::new("OrderLine", self.id)
-    }
-
     pub fn attach_runtime_state_recursive(&mut self, root: teaql_runtime::EntityRuntimeState) {
-        self.root = root.clone();
+        self.__teaql_replace_runtime_state(root.clone());
         if let Some(entity) = &mut self.customer_order {
             entity.attach_runtime_state_recursive(root.clone());
         }
@@ -118,12 +113,12 @@ impl OrderLine {
     pub fn update_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.id = value.try_u64().unwrap_or(self.id.clone());
-        self.root.set(self.entity_key(), "id", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "id", value);
         self
     }
 
     pub fn changed_id(&self) -> Option<teaql_core::Value> {
-        self.root.get(&self.entity_key(), "id")
+        self.__teaql_runtime_state().get(&self.entity_key(), "id")
     }
 
     pub fn eval_id(&self) -> teaql_core::eval::EvalResult<u64> {
@@ -140,12 +135,12 @@ impl OrderLine {
     pub fn update_product_name(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.product_name = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.product_name.clone());
-        self.root.set(self.entity_key(), "product_name", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "product_name", value);
         self
     }
 
     pub fn changed_product_name(&self) -> Option<teaql_core::Value> {
-        self.root.get(&self.entity_key(), "product_name")
+        self.__teaql_runtime_state().get(&self.entity_key(), "product_name")
     }
 
     pub fn eval_product_name(&self) -> teaql_core::eval::EvalResult<String> {
@@ -162,12 +157,12 @@ impl OrderLine {
     pub fn update_sku(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.sku = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.sku.clone());
-        self.root.set(self.entity_key(), "sku", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "sku", value);
         self
     }
 
     pub fn changed_sku(&self) -> Option<teaql_core::Value> {
-        self.root.get(&self.entity_key(), "sku")
+        self.__teaql_runtime_state().get(&self.entity_key(), "sku")
     }
 
     pub fn eval_sku(&self) -> teaql_core::eval::EvalResult<String> {
@@ -184,12 +179,12 @@ impl OrderLine {
     pub fn update_quantity(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.quantity = value.try_i64().map(|value| value as i64).unwrap_or(self.quantity.clone());
-        self.root.set(self.entity_key(), "quantity", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "quantity", value);
         self
     }
 
     pub fn changed_quantity(&self) -> Option<teaql_core::Value> {
-        self.root.get(&self.entity_key(), "quantity")
+        self.__teaql_runtime_state().get(&self.entity_key(), "quantity")
     }
 
     pub fn eval_quantity(&self) -> teaql_core::eval::EvalResult<i64> {
@@ -203,15 +198,14 @@ impl OrderLine {
         self.changed_create_time().and_then(|value| value.try_timestamp()).unwrap_or(self.create_time)
     }
 
-    pub fn update_create_time(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
-        let value = value.into();
-        self.create_time = value.try_timestamp().unwrap_or(self.create_time.clone());
-        self.root.set(self.entity_key(), "create_time", value);
+    pub fn update_create_time(&mut self, value: teaql_core::time::Timestamp) -> &mut Self {
+        self.create_time = value;
+        let value = teaql_core::Value::from(value);
+        self.__teaql_runtime_state().set(self.entity_key(), "create_time", value);
         self
     }
-
     pub fn changed_create_time(&self) -> Option<teaql_core::Value> {
-        self.root.get(&self.entity_key(), "create_time")
+        self.__teaql_runtime_state().get(&self.entity_key(), "create_time")
     }
 
     pub fn eval_create_time(&self) -> teaql_core::eval::EvalResult<teaql_core::time::Timestamp> {
@@ -228,12 +222,12 @@ impl OrderLine {
     pub fn update_version(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.version = value.try_i64().unwrap_or(self.version.clone());
-        self.root.set(self.entity_key(), "version", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "version", value);
         self
     }
 
     pub fn changed_version(&self) -> Option<teaql_core::Value> {
-        self.root.get(&self.entity_key(), "version")
+        self.__teaql_runtime_state().get(&self.entity_key(), "version")
     }
 
     pub fn eval_version(&self) -> teaql_core::eval::EvalResult<i64> {
@@ -249,12 +243,12 @@ impl OrderLine {
     pub fn update_customer_order_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.customer_order_id = value.try_u64().unwrap_or(self.customer_order_id.clone());
-        self.root.set(self.entity_key(), "customer_order_id", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "customer_order_id", value);
         self
     }
 
     pub fn changed_customer_order_id(&self) -> Option<teaql_core::Value> {
-        self.root.get(&self.entity_key(), "customer_order_id")
+        self.__teaql_runtime_state().get(&self.entity_key(), "customer_order_id")
     }
 
     pub fn eval_customer_order_id(&self) -> teaql_core::eval::EvalResult<u64> {
@@ -271,12 +265,12 @@ impl OrderLine {
     pub fn update_product_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.product_id = value.try_u64().unwrap_or(self.product_id.clone());
-        self.root.set(self.entity_key(), "product_id", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "product_id", value);
         self
     }
 
     pub fn changed_product_id(&self) -> Option<teaql_core::Value> {
-        self.root.get(&self.entity_key(), "product_id")
+        self.__teaql_runtime_state().get(&self.entity_key(), "product_id")
     }
 
     pub fn eval_product_id(&self) -> teaql_core::eval::EvalResult<u64> {
@@ -293,12 +287,12 @@ impl OrderLine {
     pub fn update_commerce_platform_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.commerce_platform_id = value.try_u64().unwrap_or(self.commerce_platform_id.clone());
-        self.root.set(self.entity_key(), "commerce_platform_id", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "commerce_platform_id", value);
         self
     }
 
     pub fn changed_commerce_platform_id(&self) -> Option<teaql_core::Value> {
-        self.root.get(&self.entity_key(), "commerce_platform_id")
+        self.__teaql_runtime_state().get(&self.entity_key(), "commerce_platform_id")
     }
 
     pub fn eval_commerce_platform_id(&self) -> teaql_core::eval::EvalResult<u64> {
@@ -308,58 +302,42 @@ impl OrderLine {
                     teaql_core::eval::EvalResult::Value(self.commerce_platform_id())
                 }}
     pub fn customer_order(&self) -> Option<&crate::CustomerOrder> {
-        self.customer_order.as_ref()
+        self.customer_order.as_deref().or_else(|| {
+            self.__teaql_runtime_state().resolve_entity(self.customer_order_id())})
     }
 
     pub fn eval_customer_order(&self) -> teaql_core::eval::EvalResult<&crate::CustomerOrder> {
-        if !self.is_loaded("customer_order") {
-            teaql_core::eval::EvalResult::NotLoaded { failed_node: "customer_order".to_string(), attempted_path: "customer_order".to_string() }
-        } else {
-            match &self.customer_order {
-                Some(v) => teaql_core::eval::EvalResult::Value(v),
-                None => teaql_core::eval::EvalResult::Null,
-            }
+        match self.customer_order() {
+            Some(v) => teaql_core::eval::EvalResult::Value(v),
+            None if self.is_loaded("customer_order") => teaql_core::eval::EvalResult::Null,
+            None => teaql_core::eval::EvalResult::NotLoaded { failed_node: "customer_order".to_string(), attempted_path: "customer_order".to_string() },
         }
     }
 
     pub fn product(&self) -> Option<&crate::Product> {
-        self.product.as_ref()
+        self.product.as_deref().or_else(|| {
+            self.__teaql_runtime_state().resolve_entity(self.product_id())})
     }
 
     pub fn eval_product(&self) -> teaql_core::eval::EvalResult<&crate::Product> {
-        if !self.is_loaded("product") {
-            teaql_core::eval::EvalResult::NotLoaded { failed_node: "product".to_string(), attempted_path: "product".to_string() }
-        } else {
-            match &self.product {
-                Some(v) => teaql_core::eval::EvalResult::Value(v),
-                None => teaql_core::eval::EvalResult::Null,
-            }
+        match self.product() {
+            Some(v) => teaql_core::eval::EvalResult::Value(v),
+            None if self.is_loaded("product") => teaql_core::eval::EvalResult::Null,
+            None => teaql_core::eval::EvalResult::NotLoaded { failed_node: "product".to_string(), attempted_path: "product".to_string() },
         }
     }
 
     pub fn commerce_platform(&self) -> Option<&crate::CommercePlatform> {
-        self.commerce_platform.as_ref()
+        self.commerce_platform.as_deref().or_else(|| {
+            self.__teaql_runtime_state().resolve_entity(self.commerce_platform_id())})
     }
 
     pub fn eval_commerce_platform(&self) -> teaql_core::eval::EvalResult<&crate::CommercePlatform> {
-        if !self.is_loaded("commerce_platform") {
-            teaql_core::eval::EvalResult::NotLoaded { failed_node: "commerce_platform".to_string(), attempted_path: "commerce_platform".to_string() }
-        } else {
-            match &self.commerce_platform {
-                Some(v) => teaql_core::eval::EvalResult::Value(v),
-                None => teaql_core::eval::EvalResult::Null,
-            }
+        match self.commerce_platform() {
+            Some(v) => teaql_core::eval::EvalResult::Value(v),
+            None if self.is_loaded("commerce_platform") => teaql_core::eval::EvalResult::Null,
+            None => teaql_core::eval::EvalResult::NotLoaded { failed_node: "commerce_platform".to_string(), attempted_path: "commerce_platform".to_string() },
         }
     }
 
-    pub fn mark_as_delete(&mut self) -> &mut Self {
-        self.root.mark_as_delete(self.entity_key());
-        self
-    }
-
-    pub fn set_comment(&mut self, comment: impl Into<String>) -> &mut Self {
-        self.root.set_comment(comment);
-        self
-    }
 }
-

@@ -1,7 +1,7 @@
 
 [package]
 name = "order-management-service-core"
-version = "1.0.0"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.80"
 description = "Generated TeaQL service crate for order-management-service"
@@ -13,12 +13,14 @@ chrono = { version = "0.4", features = ["serde"] }
 rust_decimal = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-teaql-core = "4.2.10"
-teaql-macros = "4.2.10"
-teaql-runtime = "4.2.10"
-teaql-sql = "4.2.10"
-teaql-data-service = "4.2.10"
+async-stream = "0.3"
+futures-util = "0.3"
+teaql-core = { path = "../../../../teaql-core" }
+teaql-macros = { path = "../../../../teaql-macros" }
+teaql-runtime = { path = "../../../../teaql-runtime" }
+teaql-sql = { path = "../../../../teaql-sql" }
+teaql-data-service = { path = "../../../../teaql-data-service" }
 teaql-tool-core = "1.0.0"
-teaql-provider-sqlite = "4.2.10"
+teaql-provider-sqlite = { path = "../../../../teaql-provider-sqlite" }
 rusqlite = { version = "0.40", features = ["bundled", "chrono", "column_decltype"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

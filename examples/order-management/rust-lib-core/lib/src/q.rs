@@ -9,7 +9,9 @@ pub struct PurposedQuery<T> {
 
 impl<T> PurposedQuery<T> {
     pub fn new(inner: T, purpose: impl Into<String>) -> Self {
-        Self { inner, purpose: purpose.into() }
+        let purpose = purpose.into();
+        assert!(!purpose.trim().is_empty(), "query purpose must not be empty");
+        Self { inner, purpose }
     }
 }
 

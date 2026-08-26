@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use serde_json::Value as JsonValue;
-use teaql_core::{Aggregate, AggregateFunction, EntityDescriptor, Expr, Record, SelectQuery, SmartList};
+use teaql_core::{Aggregate, AggregateFunction, EntityDescriptor, Expr, SelectQuery, SmartList};
 use teaql_runtime::{DataServiceError, RuntimeError};
 
 use crate::request_support::*;
@@ -93,10 +93,6 @@ impl<R> OrderLineRequest<R> {
 
 
     pub fn purpose(self, purpose: impl Into<String>) -> crate::PurposedQuery<Self> {
-        assert!(
-            self.query_options.comment.as_deref().map(str::trim).is_some_and(|value| !value.is_empty()),
-            "purpose() requires a non-empty comment() set earlier on the request"
-        );
         crate::PurposedQuery::new(self, purpose)
     }
 
@@ -118,13 +114,22 @@ impl<R> OrderLineRequest<R> {
             &query_options,
             &self.child_enhancements,
         )).map_err(DataServiceError::Runtime)?;
-        let mut rows = repository.fetch_enhanced_entities_with_relation_aggregates::<R>(
-            &query,
-            &relation_aggregates,
-        ).await?;
-        let facets = execute_facets(context, query.as_query(), &query_options)
-            .await
-            .map_err(DataServiceError::Runtime)?;
+        let (mut rows, facets) = if query_options.facets.is_empty() {
+            let rows = repository.fetch_enhanced_entities_with_relation_aggregates_owned::<R>(
+                query,
+                &relation_aggregates,
+            ).await?;
+            (rows, std::collections::BTreeMap::new())
+        } else {
+            let rows = repository.fetch_enhanced_entities_with_relation_aggregates::<R>(
+                &query,
+                &relation_aggregates,
+            ).await?;
+            let facets = execute_facets(context, query.as_query(), &query_options)
+                .await
+                .map_err(DataServiceError::Runtime)?;
+            (rows, facets)
+        };
         attach_facets(&mut rows, facets);
         Ok(rows)
     }
@@ -132,22 +137,29 @@ impl<R> OrderLineRequest<R> {
     pub(crate) async fn _execute_for_stream<'a, C>(
         self,
         context: &'a C,
-    ) -> Result<Vec<teaql_data_service::StreamChunk>, TeaqlDataServiceError<C::OrderLineRepository<'a>>>
+    ) -> Result<TeaqlEntityStream<'a, R, TeaqlDataServiceError<C::OrderLineRepository<'a>>>, TeaqlDataServiceError<C::OrderLineRepository<'a>>>
     where
         C: TeaqlRepositoryProvider + ?Sized,
+        R: teaql_core::Entity + 'a,
     {
-        let repository = context
-            .order_line_repository()
-            .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
-        let query_options = self.query_options.clone();
-        let query = authorize_query(apply_runtime_metadata(
-            self.query,
-            &query_options,
-            &self.child_enhancements,
-        )).map_err(DataServiceError::Runtime)?;
-        let chunks = repository.fetch_stream(&query)
-            .await?;
-        Ok(chunks)
+        Ok(Box::pin(async_stream::try_stream! {
+            use futures_util::StreamExt;
+            let repository = context
+                .order_line_repository()
+                .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
+            let query_options = self.query_options.clone();
+            let query = authorize_query(apply_runtime_metadata(
+                self.query,
+                &query_options,
+                &self.child_enhancements,
+            )).map_err(DataServiceError::Runtime)?;
+            let mut chunks = repository.fetch_stream(&query).await?;
+            while let Some(chunk) = chunks.next().await {
+                for row in chunk?.rows {
+                    yield R::from_compact_row(row).map_err(DataServiceError::Entity)?;
+                }
+            }
+        }))
     }
 
     pub(crate) async fn _execute_for_first<'a, C>(
@@ -184,6 +196,17 @@ impl<R> OrderLineRequest<R> {
         C: TeaqlRepositoryProvider + ?Sized,
         R: teaql_core::Entity,
     {
+        if self.query.id_set_pagination.is_some() {
+            let mut rows = self
+                .clone()
+                .page_offset(offset, limit)
+                ._execute_for_list(context)
+                .await?;
+            if rows.total_count.is_none() {
+                rows.total_count = Some(self._execute_for_count(context).await?);
+            }
+            return Ok(rows);
+        }
         let total_count = self.clone()._execute_for_count(context).await?;
         let mut rows = self.page_offset(offset, limit)._execute_for_list(context).await?;
         rows.total_count = Some(total_count);
@@ -200,7 +223,12 @@ impl<R> OrderLineRequest<R> {
         let repository = context
             .order_line_repository()
             .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
-        let mut query = self.query;
+        let query_options = self.query_options.clone();
+        let mut query = apply_runtime_metadata(
+            self.query,
+            &query_options,
+            &self.child_enhancements,
+        );
         query.projection.clear();
         query.expr_projection.clear();
         query.order_by.clear();
@@ -230,43 +258,6 @@ impl<R> OrderLineRequest<R> {
         let query = authorize_query(query).map_err(DataServiceError::Runtime)?;
         let rows = repository.fetch_all(&query).await?;
         Ok(!rows.is_empty())
-    }
-
-    pub(crate) async fn _execute_for_records<'a, C>(
-        self,
-        context: &'a C,
-    ) -> Result<SmartList<Record>, TeaqlDataServiceError<C::OrderLineRepository<'a>>>
-    where
-        C: TeaqlRepositoryProvider + ?Sized,
-    {
-        let repository = context
-            .order_line_repository()
-            .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
-        let query_options = self.query_options.clone();
-        let outer_query = self.query.clone();
-        let relation_aggregates = runtime_relation_aggregates(&query_options);
-        let query = authorize_query(apply_runtime_metadata(
-            self.query,
-            &query_options,
-            &self.child_enhancements,
-        )).map_err(DataServiceError::Runtime)?;
-        let mut rows = repository.fetch_smart_list_with_relation_aggregates(&query, &relation_aggregates).await?;
-        let facets = execute_facets(context, &outer_query, &query_options)
-            .await
-            .map_err(DataServiceError::Runtime)?;
-        attach_facets(&mut rows, facets);
-        Ok(rows)
-    }
-
-    pub(crate) async fn _execute_for_record<'a, C>(
-        self,
-        context: &'a C,
-    ) -> Result<Option<Record>, TeaqlDataServiceError<C::OrderLineRepository<'a>>>
-    where
-        C: TeaqlRepositoryProvider + ?Sized,
-    {
-        let records = self.limit(1)._execute_for_records(context).await?;
-        Ok(records.into_iter().next())
     }
 
     pub fn search_with_text(mut self, text: impl Into<String>) -> Self {
@@ -541,6 +532,17 @@ impl<R> OrderLineRequest<R> {
         self
     }
 
+    pub fn stream(mut self, chunk_size: usize) -> Self {
+        assert!(chunk_size > 0, "stream chunk size must be positive");
+        self.query = self.query.stream(chunk_size);
+        self
+    }
+
+    pub fn stream_default(mut self) -> Self {
+        self.query = self.query.stream_default();
+        self
+    }
+
     pub fn skip(mut self, offset: u64) -> Self {
         self.query = self.query.offset(offset);
         self
@@ -556,6 +558,39 @@ impl<R> OrderLineRequest<R> {
 
     pub fn page_offset(mut self, offset: u64, limit: u64) -> Self {
         self.query = self.query.page(offset, limit);
+        self
+    }
+
+    pub fn optimize_for_continuous_page_fetch(mut self) -> Self {
+        self.query = self.query.optimize_for_continuous_page_fetch();
+        self
+    }
+
+    pub fn optimize_for_continuous_page_fetch_with(
+        mut self,
+        namespace: impl Into<String>,
+        ttl_seconds: u64,
+    ) -> Self {
+        self.query = self
+            .query
+            .optimize_for_continuous_page_fetch_with(namespace, ttl_seconds);
+        self
+    }
+
+    pub fn optimize_pagination_with_id_set(mut self) -> Self {
+        self.query = self.query.optimize_pagination_with_id_set();
+        self
+    }
+
+    pub fn optimize_pagination_with_id_set_config(
+        mut self,
+        namespace: impl Into<String>,
+        ttl_seconds: u64,
+        max_ids: u64,
+    ) -> Self {
+        self.query = self
+            .query
+            .optimize_pagination_with_id_set_config(namespace, ttl_seconds, max_ids);
         self
     }
 
@@ -2312,8 +2347,7 @@ impl<R> OrderLineRequest<R> {
 
     pub fn select_customer_order_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("customer_order", selection.clone().into_query());
-        self.relation_selections.push(RelationSelection::new("customer_order", selection));
+        self.query = self.query.relation_query("customer_order", selection.into_query());
         self
 }
 
@@ -2343,8 +2377,7 @@ impl<R> OrderLineRequest<R> {
 
     pub fn select_product_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("product", selection.clone().into_query());
-        self.relation_selections.push(RelationSelection::new("product", selection));
+        self.query = self.query.relation_query("product", selection.into_query());
         self
 }
 
@@ -2374,8 +2407,7 @@ impl<R> OrderLineRequest<R> {
 
     pub fn select_commerce_platform_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("commerce_platform", selection.clone().into_query());
-        self.relation_selections.push(RelationSelection::new("commerce_platform", selection));
+        self.query = self.query.relation_query("commerce_platform", selection.into_query());
         self
 }
 
@@ -2428,7 +2460,8 @@ impl<'a, C> crate::request_support::AuditedSave<'a, C> for teaql_core::Audited<c
 where C: crate::request_support::TeaqlRepositoryProvider + ?Sized + 'a
 {
     type Error = crate::TeaqlDataServiceError<C::OrderLineRepository<'a>>;
-    fn save(self, context: &'a C) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<teaql_runtime::GraphNode, Self::Error>> + '_>> {
+    type Entity = crate::OrderLine;
+    fn save(self, context: &'a C) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Entity, Self::Error>> + '_>> {
         Box::pin(async move {
             teaql_runtime::save_audited_ledger_entity(self, context.user_context())
                 .await
@@ -2438,24 +2471,43 @@ where C: crate::request_support::TeaqlRepositoryProvider + ?Sized + 'a
 }
 
 impl<R: teaql_core::Entity> crate::PurposedQuery<OrderLineRequest<R>> {
+    pub fn comment(mut self, comment: impl Into<String>) -> Self {
+        self.inner.query_options.comment = Some(comment.into());
+        self
+    }
+
     pub fn new_entity<C>(&self, context: &C) -> crate::OrderLine
     where
         C: crate::TeaqlRuntime + ?Sized,
     {
+        self.require_comment();
         let mut entity = crate::OrderLine::runtime_new(context.user_context().entity_runtime_state());
         if let Ok(id) = context.user_context().next_id(crate::OrderLine::ENTITY_NAME) {
             entity.update_id(id);
         }
+        teaql_core::Entity::mark_as_new(&mut entity);
         entity
     }
 
     fn into_inner_with_trace(mut self) -> OrderLineRequest<R> {
+        self.require_comment();
         self.inner.query.trace_chain.push(teaql_core::TraceNode::new(
             self.inner.query.entity.clone(),
             None,
             self.purpose,
         ));
         self.inner
+    }
+
+    fn require_comment(&self) {
+        assert!(
+            self.inner
+                .query_options
+                .comment
+                .as_deref()
+                .is_some_and(|comment| !comment.trim().is_empty()),
+            "query comment must not be empty"
+        );
     }
 
     pub async fn execute_for_page<'a, C>(
@@ -2487,12 +2539,12 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<OrderLineRequest<R>> {
         self.into_inner_with_trace()._execute_for_list(context).await
     }
 
-    /// Execute query in streaming mode (chunked).
-    /// Returns a Vec of StreamChunk, each containing up to chunk_size rows.
+    /// Execute query as a lazy entity stream without materializing the result set.
     /// Set chunk size via .stream(chunk_size) or .stream_default() on the query.
-    pub async fn execute_for_stream<'a, C>(self, context: &'a C) -> Result<Vec<teaql_data_service::StreamChunk>, crate::request_support::TeaqlDataServiceError<C::OrderLineRepository<'a>>>
+    pub async fn execute_for_stream<'a, C>(self, context: &'a C) -> Result<crate::request_support::TeaqlEntityStream<'a, R, crate::request_support::TeaqlDataServiceError<C::OrderLineRepository<'a>>>, crate::request_support::TeaqlDataServiceError<C::OrderLineRepository<'a>>>
     where
         C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
+        R: teaql_core::Entity + 'a,
     {
         self.into_inner_with_trace()._execute_for_stream(context).await
     }
@@ -2511,20 +2563,6 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<OrderLineRequest<R>> {
         self.into_inner_with_trace()._execute_for_one(context).await
     }
 
-
-    pub async fn execute_for_records<'a, C>(self, context: &'a C) -> Result<teaql_core::SmartList<teaql_core::Record>, crate::request_support::TeaqlDataServiceError<C::OrderLineRepository<'a>>>
-    where
-        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
-    {
-        self.into_inner_with_trace()._execute_for_records(context).await
-    }
-
-    pub async fn execute_for_record<'a, C>(self, context: &'a C) -> Result<Option<teaql_core::Record>, crate::request_support::TeaqlDataServiceError<C::OrderLineRepository<'a>>>
-    where
-        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
-    {
-        self.into_inner_with_trace()._execute_for_record(context).await
-    }
 
     pub async fn execute_for_count<'a, C>(self, context: &'a C) -> Result<u64, crate::request_support::TeaqlDataServiceError<C::OrderLineRepository<'a>>>
     where

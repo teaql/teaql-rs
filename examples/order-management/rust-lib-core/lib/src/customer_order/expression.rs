@@ -100,34 +100,12 @@ impl<'a> CustomerOrderExpression<'a> {
         crate::ValueExpression::new(next, self.root_desc.clone())
     }
 
-    pub fn status_is_processing(self) -> crate::ValueExpression<'a, bool> {
+    pub fn status_is_confirmed(self) -> crate::ValueExpression<'a, bool> {
         let next = self.result.and_then("status_id", |entity| {
             if !entity.is_loaded("status_id") {
                 teaql_core::eval::EvalResult::NotLoaded { failed_node: "status_id".to_string(), attempted_path: "status_id".to_string() }
             } else {
-                teaql_core::eval::EvalResult::Value(entity.status_is_processing())
-            }
-        });
-        crate::ValueExpression::new(next, self.root_desc.clone())
-    }
-
-    pub fn status_is_shipped(self) -> crate::ValueExpression<'a, bool> {
-        let next = self.result.and_then("status_id", |entity| {
-            if !entity.is_loaded("status_id") {
-                teaql_core::eval::EvalResult::NotLoaded { failed_node: "status_id".to_string(), attempted_path: "status_id".to_string() }
-            } else {
-                teaql_core::eval::EvalResult::Value(entity.status_is_shipped())
-            }
-        });
-        crate::ValueExpression::new(next, self.root_desc.clone())
-    }
-
-    pub fn status_is_completed(self) -> crate::ValueExpression<'a, bool> {
-        let next = self.result.and_then("status_id", |entity| {
-            if !entity.is_loaded("status_id") {
-                teaql_core::eval::EvalResult::NotLoaded { failed_node: "status_id".to_string(), attempted_path: "status_id".to_string() }
-            } else {
-                teaql_core::eval::EvalResult::Value(entity.status_is_completed())
+                teaql_core::eval::EvalResult::Value(entity.status_is_confirmed())
             }
         });
         crate::ValueExpression::new(next, self.root_desc.clone())

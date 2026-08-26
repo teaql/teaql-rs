@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use serde_json::Value as JsonValue;
-use teaql_core::{Aggregate, AggregateFunction, EntityDescriptor, Expr, Record, SelectQuery, SmartList};
+use teaql_core::{Aggregate, AggregateFunction, EntityDescriptor, Expr, SelectQuery, SmartList};
 use teaql_runtime::{DataServiceError, RuntimeError};
 
 use crate::request_support::*;
@@ -93,10 +93,6 @@ impl<R> OrderStatusRequest<R> {
 
 
     pub fn purpose(self, purpose: impl Into<String>) -> crate::PurposedQuery<Self> {
-        assert!(
-            self.query_options.comment.as_deref().map(str::trim).is_some_and(|value| !value.is_empty()),
-            "purpose() requires a non-empty comment() set earlier on the request"
-        );
         crate::PurposedQuery::new(self, purpose)
     }
 
@@ -118,13 +114,22 @@ impl<R> OrderStatusRequest<R> {
             &query_options,
             &self.child_enhancements,
         )).map_err(DataServiceError::Runtime)?;
-        let mut rows = repository.fetch_enhanced_entities_with_relation_aggregates::<R>(
-            &query,
-            &relation_aggregates,
-        ).await?;
-        let facets = execute_facets(context, query.as_query(), &query_options)
-            .await
-            .map_err(DataServiceError::Runtime)?;
+        let (mut rows, facets) = if query_options.facets.is_empty() {
+            let rows = repository.fetch_enhanced_entities_with_relation_aggregates_owned::<R>(
+                query,
+                &relation_aggregates,
+            ).await?;
+            (rows, std::collections::BTreeMap::new())
+        } else {
+            let rows = repository.fetch_enhanced_entities_with_relation_aggregates::<R>(
+                &query,
+                &relation_aggregates,
+            ).await?;
+            let facets = execute_facets(context, query.as_query(), &query_options)
+                .await
+                .map_err(DataServiceError::Runtime)?;
+            (rows, facets)
+        };
         attach_facets(&mut rows, facets);
         Ok(rows)
     }
@@ -132,22 +137,29 @@ impl<R> OrderStatusRequest<R> {
     pub(crate) async fn _execute_for_stream<'a, C>(
         self,
         context: &'a C,
-    ) -> Result<Vec<teaql_data_service::StreamChunk>, TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
+    ) -> Result<TeaqlEntityStream<'a, R, TeaqlDataServiceError<C::OrderStatusRepository<'a>>>, TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
     where
         C: TeaqlRepositoryProvider + ?Sized,
+        R: teaql_core::Entity + 'a,
     {
-        let repository = context
-            .order_status_repository()
-            .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
-        let query_options = self.query_options.clone();
-        let query = authorize_query(apply_runtime_metadata(
-            self.query,
-            &query_options,
-            &self.child_enhancements,
-        )).map_err(DataServiceError::Runtime)?;
-        let chunks = repository.fetch_stream(&query)
-            .await?;
-        Ok(chunks)
+        Ok(Box::pin(async_stream::try_stream! {
+            use futures_util::StreamExt;
+            let repository = context
+                .order_status_repository()
+                .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
+            let query_options = self.query_options.clone();
+            let query = authorize_query(apply_runtime_metadata(
+                self.query,
+                &query_options,
+                &self.child_enhancements,
+            )).map_err(DataServiceError::Runtime)?;
+            let mut chunks = repository.fetch_stream(&query).await?;
+            while let Some(chunk) = chunks.next().await {
+                for row in chunk?.rows {
+                    yield R::from_compact_row(row).map_err(DataServiceError::Entity)?;
+                }
+            }
+        }))
     }
 
     pub(crate) async fn _execute_for_first<'a, C>(
@@ -184,6 +196,17 @@ impl<R> OrderStatusRequest<R> {
         C: TeaqlRepositoryProvider + ?Sized,
         R: teaql_core::Entity,
     {
+        if self.query.id_set_pagination.is_some() {
+            let mut rows = self
+                .clone()
+                .page_offset(offset, limit)
+                ._execute_for_list(context)
+                .await?;
+            if rows.total_count.is_none() {
+                rows.total_count = Some(self._execute_for_count(context).await?);
+            }
+            return Ok(rows);
+        }
         let total_count = self.clone()._execute_for_count(context).await?;
         let mut rows = self.page_offset(offset, limit)._execute_for_list(context).await?;
         rows.total_count = Some(total_count);
@@ -200,7 +223,12 @@ impl<R> OrderStatusRequest<R> {
         let repository = context
             .order_status_repository()
             .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
-        let mut query = self.query;
+        let query_options = self.query_options.clone();
+        let mut query = apply_runtime_metadata(
+            self.query,
+            &query_options,
+            &self.child_enhancements,
+        );
         query.projection.clear();
         query.expr_projection.clear();
         query.order_by.clear();
@@ -230,43 +258,6 @@ impl<R> OrderStatusRequest<R> {
         let query = authorize_query(query).map_err(DataServiceError::Runtime)?;
         let rows = repository.fetch_all(&query).await?;
         Ok(!rows.is_empty())
-    }
-
-    pub(crate) async fn _execute_for_records<'a, C>(
-        self,
-        context: &'a C,
-    ) -> Result<SmartList<Record>, TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
-    where
-        C: TeaqlRepositoryProvider + ?Sized,
-    {
-        let repository = context
-            .order_status_repository()
-            .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
-        let query_options = self.query_options.clone();
-        let outer_query = self.query.clone();
-        let relation_aggregates = runtime_relation_aggregates(&query_options);
-        let query = authorize_query(apply_runtime_metadata(
-            self.query,
-            &query_options,
-            &self.child_enhancements,
-        )).map_err(DataServiceError::Runtime)?;
-        let mut rows = repository.fetch_smart_list_with_relation_aggregates(&query, &relation_aggregates).await?;
-        let facets = execute_facets(context, &outer_query, &query_options)
-            .await
-            .map_err(DataServiceError::Runtime)?;
-        attach_facets(&mut rows, facets);
-        Ok(rows)
-    }
-
-    pub(crate) async fn _execute_for_record<'a, C>(
-        self,
-        context: &'a C,
-    ) -> Result<Option<Record>, TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
-    where
-        C: TeaqlRepositoryProvider + ?Sized,
-    {
-        let records = self.limit(1)._execute_for_records(context).await?;
-        Ok(records.into_iter().next())
     }
 
     pub fn search_with_text(mut self, text: impl Into<String>) -> Self {
@@ -533,6 +524,17 @@ impl<R> OrderStatusRequest<R> {
         self
     }
 
+    pub fn stream(mut self, chunk_size: usize) -> Self {
+        assert!(chunk_size > 0, "stream chunk size must be positive");
+        self.query = self.query.stream(chunk_size);
+        self
+    }
+
+    pub fn stream_default(mut self) -> Self {
+        self.query = self.query.stream_default();
+        self
+    }
+
     pub fn skip(mut self, offset: u64) -> Self {
         self.query = self.query.offset(offset);
         self
@@ -548,6 +550,39 @@ impl<R> OrderStatusRequest<R> {
 
     pub fn page_offset(mut self, offset: u64, limit: u64) -> Self {
         self.query = self.query.page(offset, limit);
+        self
+    }
+
+    pub fn optimize_for_continuous_page_fetch(mut self) -> Self {
+        self.query = self.query.optimize_for_continuous_page_fetch();
+        self
+    }
+
+    pub fn optimize_for_continuous_page_fetch_with(
+        mut self,
+        namespace: impl Into<String>,
+        ttl_seconds: u64,
+    ) -> Self {
+        self.query = self
+            .query
+            .optimize_for_continuous_page_fetch_with(namespace, ttl_seconds);
+        self
+    }
+
+    pub fn optimize_pagination_with_id_set(mut self) -> Self {
+        self.query = self.query.optimize_pagination_with_id_set();
+        self
+    }
+
+    pub fn optimize_pagination_with_id_set_config(
+        mut self,
+        namespace: impl Into<String>,
+        ttl_seconds: u64,
+        max_ids: u64,
+    ) -> Self {
+        self.query = self
+            .query
+            .optimize_pagination_with_id_set_config(namespace, ttl_seconds, max_ids);
         self
     }
 
@@ -2007,10 +2042,6 @@ impl<R> OrderStatusRequest<R> {
         self.query = self.query.order_gbk_desc("version");
         self
     }
-    pub fn id_is_value_1001(self) -> Self {
-        self.with_id_is("1001")
-    }
-
     pub fn with_id_is_value_1001(self) -> Self {
         self.with_id_is("1001")
     }
@@ -2021,10 +2052,6 @@ impl<R> OrderStatusRequest<R> {
         self.with_id_is_not("1001")
     }
 
-
-    pub fn id_is_value_1002(self) -> Self {
-        self.with_id_is("1002")
-    }
 
     pub fn with_id_is_value_1002(self) -> Self {
         self.with_id_is("1002")
@@ -2037,40 +2064,6 @@ impl<R> OrderStatusRequest<R> {
     }
 
 
-    pub fn id_is_value_1003(self) -> Self {
-        self.with_id_is("1003")
-    }
-
-    pub fn with_id_is_value_1003(self) -> Self {
-        self.with_id_is("1003")
-    }
-
-
-
-    pub fn with_id_is_not_value_1003(self) -> Self {
-        self.with_id_is_not("1003")
-    }
-
-
-    pub fn id_is_value_1004(self) -> Self {
-        self.with_id_is("1004")
-    }
-
-    pub fn with_id_is_value_1004(self) -> Self {
-        self.with_id_is("1004")
-    }
-
-
-
-    pub fn with_id_is_not_value_1004(self) -> Self {
-        self.with_id_is_not("1004")
-    }
-
-
-
-    pub fn name_is_pending(self) -> Self {
-        self.with_name_is("Pending")
-    }
 
     pub fn with_name_is_pending(self) -> Self {
         self.with_name_is("Pending")
@@ -2083,55 +2076,17 @@ impl<R> OrderStatusRequest<R> {
     }
 
 
-    pub fn name_is_processing(self) -> Self {
-        self.with_name_is("Processing")
-    }
-
-    pub fn with_name_is_processing(self) -> Self {
-        self.with_name_is("Processing")
+    pub fn with_name_is_confirmed(self) -> Self {
+        self.with_name_is("Confirmed")
     }
 
 
 
-    pub fn with_name_is_not_processing(self) -> Self {
-        self.with_name_is_not("Processing")
+    pub fn with_name_is_not_confirmed(self) -> Self {
+        self.with_name_is_not("Confirmed")
     }
 
 
-    pub fn name_is_shipped(self) -> Self {
-        self.with_name_is("Shipped")
-    }
-
-    pub fn with_name_is_shipped(self) -> Self {
-        self.with_name_is("Shipped")
-    }
-
-
-
-    pub fn with_name_is_not_shipped(self) -> Self {
-        self.with_name_is_not("Shipped")
-    }
-
-
-    pub fn name_is_completed(self) -> Self {
-        self.with_name_is("Completed")
-    }
-
-    pub fn with_name_is_completed(self) -> Self {
-        self.with_name_is("Completed")
-    }
-
-
-
-    pub fn with_name_is_not_completed(self) -> Self {
-        self.with_name_is_not("Completed")
-    }
-
-
-
-    pub fn code_is_pendin_g(self) -> Self {
-        self.with_code_is("PENDING")
-    }
 
     pub fn with_code_is_pendin_g(self) -> Self {
         self.with_code_is("PENDING")
@@ -2144,170 +2099,38 @@ impl<R> OrderStatusRequest<R> {
     }
 
 
-    pub fn code_is_processin_g(self) -> Self {
-        self.with_code_is("PROCESSING")
-    }
-
-    pub fn with_code_is_processin_g(self) -> Self {
-        self.with_code_is("PROCESSING")
+    pub fn with_code_is_confirme_d(self) -> Self {
+        self.with_code_is("CONFIRMED")
     }
 
 
 
-    pub fn with_code_is_not_processin_g(self) -> Self {
-        self.with_code_is_not("PROCESSING")
-    }
-
-
-    pub fn code_is_shippe_d(self) -> Self {
-        self.with_code_is("SHIPPED")
-    }
-
-    pub fn with_code_is_shippe_d(self) -> Self {
-        self.with_code_is("SHIPPED")
+    pub fn with_code_is_not_confirme_d(self) -> Self {
+        self.with_code_is_not("CONFIRMED")
     }
 
 
 
-    pub fn with_code_is_not_shippe_d(self) -> Self {
-        self.with_code_is_not("SHIPPED")
-    }
-
-
-    pub fn code_is_complete_d(self) -> Self {
-        self.with_code_is("COMPLETED")
-    }
-
-    pub fn with_code_is_complete_d(self) -> Self {
-        self.with_code_is("COMPLETED")
+    pub fn with_color_is_string(self) -> Self {
+        self.with_color_is("string()")
     }
 
 
 
-    pub fn with_code_is_not_complete_d(self) -> Self {
-        self.with_code_is_not("COMPLETED")
+    pub fn with_color_is_not_string(self) -> Self {
+        self.with_color_is_not("string()")
     }
 
 
 
-    pub fn color_is_f97316(self) -> Self {
-        self.with_color_is("#F97316")
-    }
-
-    pub fn with_color_is_f97316(self) -> Self {
-        self.with_color_is("#F97316")
+    pub fn with_display_order_is_number(self) -> Self {
+        self.with_display_order_is("number()")
     }
 
 
 
-    pub fn with_color_is_not_f97316(self) -> Self {
-        self.with_color_is_not("#F97316")
-    }
-
-
-    pub fn color_is_value_2563e_b(self) -> Self {
-        self.with_color_is("#2563EB")
-    }
-
-    pub fn with_color_is_value_2563e_b(self) -> Self {
-        self.with_color_is("#2563EB")
-    }
-
-
-
-    pub fn with_color_is_not_value_2563e_b(self) -> Self {
-        self.with_color_is_not("#2563EB")
-    }
-
-
-    pub fn color_is_value_16a34_a(self) -> Self {
-        self.with_color_is("#16A34A")
-    }
-
-    pub fn with_color_is_value_16a34_a(self) -> Self {
-        self.with_color_is("#16A34A")
-    }
-
-
-
-    pub fn with_color_is_not_value_16a34_a(self) -> Self {
-        self.with_color_is_not("#16A34A")
-    }
-
-
-    pub fn color_is_value_334155(self) -> Self {
-        self.with_color_is("#334155")
-    }
-
-    pub fn with_color_is_value_334155(self) -> Self {
-        self.with_color_is("#334155")
-    }
-
-
-
-    pub fn with_color_is_not_value_334155(self) -> Self {
-        self.with_color_is_not("#334155")
-    }
-
-
-
-    pub fn display_order_is_value_10(self) -> Self {
-        self.with_display_order_is("10")
-    }
-
-    pub fn with_display_order_is_value_10(self) -> Self {
-        self.with_display_order_is("10")
-    }
-
-
-
-    pub fn with_display_order_is_not_value_10(self) -> Self {
-        self.with_display_order_is_not("10")
-    }
-
-
-    pub fn display_order_is_value_20(self) -> Self {
-        self.with_display_order_is("20")
-    }
-
-    pub fn with_display_order_is_value_20(self) -> Self {
-        self.with_display_order_is("20")
-    }
-
-
-
-    pub fn with_display_order_is_not_value_20(self) -> Self {
-        self.with_display_order_is_not("20")
-    }
-
-
-    pub fn display_order_is_value_30(self) -> Self {
-        self.with_display_order_is("30")
-    }
-
-    pub fn with_display_order_is_value_30(self) -> Self {
-        self.with_display_order_is("30")
-    }
-
-
-
-    pub fn with_display_order_is_not_value_30(self) -> Self {
-        self.with_display_order_is_not("30")
-    }
-
-
-    pub fn display_order_is_value_40(self) -> Self {
-        self.with_display_order_is("40")
-    }
-
-    pub fn with_display_order_is_value_40(self) -> Self {
-        self.with_display_order_is("40")
-    }
-
-
-
-    pub fn with_display_order_is_not_value_40(self) -> Self {
-        self.with_display_order_is_not("40")
+    pub fn with_display_order_is_not_number(self) -> Self {
+        self.with_display_order_is_not("number()")
     }
 
 
@@ -2426,8 +2249,7 @@ impl<R> OrderStatusRequest<R> {
 
     pub fn select_commerce_platform_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("commerce_platform", selection.clone().into_query());
-        self.relation_selections.push(RelationSelection::new("commerce_platform", selection));
+        self.query = self.query.relation_query("commerce_platform", selection.into_query());
         self
 }
 
@@ -2450,11 +2272,11 @@ impl<R> OrderStatusRequest<R> {
         self
     }
     pub fn have_customer_orders(self) -> Self {
-        self.with_customer_order_list_matching(SelectQuery::new("CustomerOrder"))
+        self.with_customer_order_list_matching(crate::Q::customer_orders_minimal())
     }
 
     pub fn have_no_customer_orders(self) -> Self {
-        self.without_customer_order_list_matching(SelectQuery::new("CustomerOrder"))
+        self.without_customer_order_list_matching(crate::Q::customer_orders_minimal())
     }
 
     pub fn with_customer_order_list_matching(mut self, request: impl Into<QuerySelection>) -> Self {
@@ -2488,8 +2310,7 @@ impl<R> OrderStatusRequest<R> {
 
     pub fn select_customer_order_list_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("customer_order_list", selection.clone().into_query());
-        self.relation_selections.push(RelationSelection::new("customer_order_list", selection));
+        self.query = self.query.relation_query("customer_order_list", selection.into_query());
         self
 }
     pub fn count_customer_orders(self) -> Self {
@@ -2660,7 +2481,8 @@ impl<'a, C> crate::request_support::AuditedSave<'a, C> for teaql_core::Audited<c
 where C: crate::request_support::TeaqlRepositoryProvider + ?Sized + 'a
 {
     type Error = crate::TeaqlDataServiceError<C::OrderStatusRepository<'a>>;
-    fn save(self, context: &'a C) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<teaql_runtime::GraphNode, Self::Error>> + '_>> {
+    type Entity = crate::OrderStatus;
+    fn save(self, context: &'a C) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Entity, Self::Error>> + '_>> {
         Box::pin(async move {
             teaql_runtime::save_audited_ledger_entity(self, context.user_context())
                 .await
@@ -2670,24 +2492,43 @@ where C: crate::request_support::TeaqlRepositoryProvider + ?Sized + 'a
 }
 
 impl<R: teaql_core::Entity> crate::PurposedQuery<OrderStatusRequest<R>> {
+    pub fn comment(mut self, comment: impl Into<String>) -> Self {
+        self.inner.query_options.comment = Some(comment.into());
+        self
+    }
+
     pub fn new_entity<C>(&self, context: &C) -> crate::OrderStatus
     where
         C: crate::TeaqlRuntime + ?Sized,
     {
+        self.require_comment();
         let mut entity = crate::OrderStatus::runtime_new(context.user_context().entity_runtime_state());
         if let Ok(id) = context.user_context().next_id(crate::OrderStatus::ENTITY_NAME) {
             entity.update_id(id);
         }
+        teaql_core::Entity::mark_as_new(&mut entity);
         entity
     }
 
     fn into_inner_with_trace(mut self) -> OrderStatusRequest<R> {
+        self.require_comment();
         self.inner.query.trace_chain.push(teaql_core::TraceNode::new(
             self.inner.query.entity.clone(),
             None,
             self.purpose,
         ));
         self.inner
+    }
+
+    fn require_comment(&self) {
+        assert!(
+            self.inner
+                .query_options
+                .comment
+                .as_deref()
+                .is_some_and(|comment| !comment.trim().is_empty()),
+            "query comment must not be empty"
+        );
     }
 
     pub async fn execute_for_page<'a, C>(
@@ -2719,12 +2560,12 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<OrderStatusRequest<R>> {
         self.into_inner_with_trace()._execute_for_list(context).await
     }
 
-    /// Execute query in streaming mode (chunked).
-    /// Returns a Vec of StreamChunk, each containing up to chunk_size rows.
+    /// Execute query as a lazy entity stream without materializing the result set.
     /// Set chunk size via .stream(chunk_size) or .stream_default() on the query.
-    pub async fn execute_for_stream<'a, C>(self, context: &'a C) -> Result<Vec<teaql_data_service::StreamChunk>, crate::request_support::TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
+    pub async fn execute_for_stream<'a, C>(self, context: &'a C) -> Result<crate::request_support::TeaqlEntityStream<'a, R, crate::request_support::TeaqlDataServiceError<C::OrderStatusRepository<'a>>>, crate::request_support::TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
     where
         C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
+        R: teaql_core::Entity + 'a,
     {
         self.into_inner_with_trace()._execute_for_stream(context).await
     }
@@ -2743,20 +2584,6 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<OrderStatusRequest<R>> {
         self.into_inner_with_trace()._execute_for_one(context).await
     }
 
-
-    pub async fn execute_for_records<'a, C>(self, context: &'a C) -> Result<teaql_core::SmartList<teaql_core::Record>, crate::request_support::TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
-    where
-        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
-    {
-        self.into_inner_with_trace()._execute_for_records(context).await
-    }
-
-    pub async fn execute_for_record<'a, C>(self, context: &'a C) -> Result<Option<teaql_core::Record>, crate::request_support::TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
-    where
-        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
-    {
-        self.into_inner_with_trace()._execute_for_record(context).await
-    }
 
     pub async fn execute_for_count<'a, C>(self, context: &'a C) -> Result<u64, crate::request_support::TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
     where

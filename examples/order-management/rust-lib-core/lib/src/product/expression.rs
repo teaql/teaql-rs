@@ -42,7 +42,7 @@ impl<'a> ProductExpression<'a> {
         crate::ValueExpression::new(next, self.root_desc.clone())
     }
 
-    pub fn get_image_url(self) -> crate::ValueExpression<'a, String> {
+    pub fn get_image_url(self) -> crate::ValueExpression<'a, Option<String>> {
         let next = self.result.and_then("image_url", |entity| entity.eval_image_url());
         crate::ValueExpression::new(next, self.root_desc.clone())
     }

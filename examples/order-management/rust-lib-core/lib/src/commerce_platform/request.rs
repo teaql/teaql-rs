@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use serde_json::Value as JsonValue;
-use teaql_core::{Aggregate, AggregateFunction, EntityDescriptor, Expr, Record, SelectQuery, SmartList};
+use teaql_core::{Aggregate, AggregateFunction, EntityDescriptor, Expr, SelectQuery, SmartList};
 use teaql_runtime::{DataServiceError, RuntimeError};
 
 use crate::request_support::*;
@@ -93,10 +93,6 @@ impl<R> CommercePlatformRequest<R> {
 
 
     pub fn purpose(self, purpose: impl Into<String>) -> crate::PurposedQuery<Self> {
-        assert!(
-            self.query_options.comment.as_deref().map(str::trim).is_some_and(|value| !value.is_empty()),
-            "purpose() requires a non-empty comment() set earlier on the request"
-        );
         crate::PurposedQuery::new(self, purpose)
     }
 
@@ -118,13 +114,22 @@ impl<R> CommercePlatformRequest<R> {
             &query_options,
             &self.child_enhancements,
         )).map_err(DataServiceError::Runtime)?;
-        let mut rows = repository.fetch_enhanced_entities_with_relation_aggregates::<R>(
-            &query,
-            &relation_aggregates,
-        ).await?;
-        let facets = execute_facets(context, query.as_query(), &query_options)
-            .await
-            .map_err(DataServiceError::Runtime)?;
+        let (mut rows, facets) = if query_options.facets.is_empty() {
+            let rows = repository.fetch_enhanced_entities_with_relation_aggregates_owned::<R>(
+                query,
+                &relation_aggregates,
+            ).await?;
+            (rows, std::collections::BTreeMap::new())
+        } else {
+            let rows = repository.fetch_enhanced_entities_with_relation_aggregates::<R>(
+                &query,
+                &relation_aggregates,
+            ).await?;
+            let facets = execute_facets(context, query.as_query(), &query_options)
+                .await
+                .map_err(DataServiceError::Runtime)?;
+            (rows, facets)
+        };
         attach_facets(&mut rows, facets);
         Ok(rows)
     }
@@ -132,22 +137,29 @@ impl<R> CommercePlatformRequest<R> {
     pub(crate) async fn _execute_for_stream<'a, C>(
         self,
         context: &'a C,
-    ) -> Result<Vec<teaql_data_service::StreamChunk>, TeaqlDataServiceError<C::CommercePlatformRepository<'a>>>
+    ) -> Result<TeaqlEntityStream<'a, R, TeaqlDataServiceError<C::CommercePlatformRepository<'a>>>, TeaqlDataServiceError<C::CommercePlatformRepository<'a>>>
     where
         C: TeaqlRepositoryProvider + ?Sized,
+        R: teaql_core::Entity + 'a,
     {
-        let repository = context
-            .commerce_platform_repository()
-            .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
-        let query_options = self.query_options.clone();
-        let query = authorize_query(apply_runtime_metadata(
-            self.query,
-            &query_options,
-            &self.child_enhancements,
-        )).map_err(DataServiceError::Runtime)?;
-        let chunks = repository.fetch_stream(&query)
-            .await?;
-        Ok(chunks)
+        Ok(Box::pin(async_stream::try_stream! {
+            use futures_util::StreamExt;
+            let repository = context
+                .commerce_platform_repository()
+                .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
+            let query_options = self.query_options.clone();
+            let query = authorize_query(apply_runtime_metadata(
+                self.query,
+                &query_options,
+                &self.child_enhancements,
+            )).map_err(DataServiceError::Runtime)?;
+            let mut chunks = repository.fetch_stream(&query).await?;
+            while let Some(chunk) = chunks.next().await {
+                for row in chunk?.rows {
+                    yield R::from_compact_row(row).map_err(DataServiceError::Entity)?;
+                }
+            }
+        }))
     }
 
     pub(crate) async fn _execute_for_first<'a, C>(
@@ -184,6 +196,17 @@ impl<R> CommercePlatformRequest<R> {
         C: TeaqlRepositoryProvider + ?Sized,
         R: teaql_core::Entity,
     {
+        if self.query.id_set_pagination.is_some() {
+            let mut rows = self
+                .clone()
+                .page_offset(offset, limit)
+                ._execute_for_list(context)
+                .await?;
+            if rows.total_count.is_none() {
+                rows.total_count = Some(self._execute_for_count(context).await?);
+            }
+            return Ok(rows);
+        }
         let total_count = self.clone()._execute_for_count(context).await?;
         let mut rows = self.page_offset(offset, limit)._execute_for_list(context).await?;
         rows.total_count = Some(total_count);
@@ -200,7 +223,12 @@ impl<R> CommercePlatformRequest<R> {
         let repository = context
             .commerce_platform_repository()
             .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
-        let mut query = self.query;
+        let query_options = self.query_options.clone();
+        let mut query = apply_runtime_metadata(
+            self.query,
+            &query_options,
+            &self.child_enhancements,
+        );
         query.projection.clear();
         query.expr_projection.clear();
         query.order_by.clear();
@@ -230,43 +258,6 @@ impl<R> CommercePlatformRequest<R> {
         let query = authorize_query(query).map_err(DataServiceError::Runtime)?;
         let rows = repository.fetch_all(&query).await?;
         Ok(!rows.is_empty())
-    }
-
-    pub(crate) async fn _execute_for_records<'a, C>(
-        self,
-        context: &'a C,
-    ) -> Result<SmartList<Record>, TeaqlDataServiceError<C::CommercePlatformRepository<'a>>>
-    where
-        C: TeaqlRepositoryProvider + ?Sized,
-    {
-        let repository = context
-            .commerce_platform_repository()
-            .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
-        let query_options = self.query_options.clone();
-        let outer_query = self.query.clone();
-        let relation_aggregates = runtime_relation_aggregates(&query_options);
-        let query = authorize_query(apply_runtime_metadata(
-            self.query,
-            &query_options,
-            &self.child_enhancements,
-        )).map_err(DataServiceError::Runtime)?;
-        let mut rows = repository.fetch_smart_list_with_relation_aggregates(&query, &relation_aggregates).await?;
-        let facets = execute_facets(context, &outer_query, &query_options)
-            .await
-            .map_err(DataServiceError::Runtime)?;
-        attach_facets(&mut rows, facets);
-        Ok(rows)
-    }
-
-    pub(crate) async fn _execute_for_record<'a, C>(
-        self,
-        context: &'a C,
-    ) -> Result<Option<Record>, TeaqlDataServiceError<C::CommercePlatformRepository<'a>>>
-    where
-        C: TeaqlRepositoryProvider + ?Sized,
-    {
-        let records = self.limit(1)._execute_for_records(context).await?;
-        Ok(records.into_iter().next())
     }
 
     pub fn search_with_text(mut self, text: impl Into<String>) -> Self {
@@ -555,6 +546,17 @@ impl<R> CommercePlatformRequest<R> {
         self
     }
 
+    pub fn stream(mut self, chunk_size: usize) -> Self {
+        assert!(chunk_size > 0, "stream chunk size must be positive");
+        self.query = self.query.stream(chunk_size);
+        self
+    }
+
+    pub fn stream_default(mut self) -> Self {
+        self.query = self.query.stream_default();
+        self
+    }
+
     pub fn skip(mut self, offset: u64) -> Self {
         self.query = self.query.offset(offset);
         self
@@ -570,6 +572,39 @@ impl<R> CommercePlatformRequest<R> {
 
     pub fn page_offset(mut self, offset: u64, limit: u64) -> Self {
         self.query = self.query.page(offset, limit);
+        self
+    }
+
+    pub fn optimize_for_continuous_page_fetch(mut self) -> Self {
+        self.query = self.query.optimize_for_continuous_page_fetch();
+        self
+    }
+
+    pub fn optimize_for_continuous_page_fetch_with(
+        mut self,
+        namespace: impl Into<String>,
+        ttl_seconds: u64,
+    ) -> Self {
+        self.query = self
+            .query
+            .optimize_for_continuous_page_fetch_with(namespace, ttl_seconds);
+        self
+    }
+
+    pub fn optimize_pagination_with_id_set(mut self) -> Self {
+        self.query = self.query.optimize_pagination_with_id_set();
+        self
+    }
+
+    pub fn optimize_pagination_with_id_set_config(
+        mut self,
+        namespace: impl Into<String>,
+        ttl_seconds: u64,
+        max_ids: u64,
+    ) -> Self {
+        self.query = self
+            .query
+            .optimize_pagination_with_id_set_config(namespace, ttl_seconds, max_ids);
         self
     }
 
@@ -1686,10 +1721,6 @@ impl<R> CommercePlatformRequest<R> {
         self.query = self.query.order_gbk_desc("version");
         self
     }
-    pub fn name_is_northwind_demo(self) -> Self {
-        self.with_name_is("Northwind Demo")
-    }
-
     pub fn with_name_is_northwind_demo(self) -> Self {
         self.with_name_is("Northwind Demo")
     }
@@ -1702,10 +1733,6 @@ impl<R> CommercePlatformRequest<R> {
 
 
 
-    pub fn create_time_is_create_time(self) -> Self {
-        self.with_create_time_is("createTime()")
-    }
-
     pub fn with_create_time_is_create_time(self) -> Self {
         self.with_create_time_is("createTime()")
     }
@@ -1717,10 +1744,6 @@ impl<R> CommercePlatformRequest<R> {
     }
 
 
-
-    pub fn update_time_is_update_time(self) -> Self {
-        self.with_update_time_is("updateTime()")
-    }
 
     pub fn with_update_time_is_update_time(self) -> Self {
         self.with_update_time_is("updateTime()")
@@ -1736,11 +1759,11 @@ impl<R> CommercePlatformRequest<R> {
 
 
     pub fn have_customers(self) -> Self {
-        self.with_customer_list_matching(SelectQuery::new("Customer"))
+        self.with_customer_list_matching(crate::Q::customers_minimal())
     }
 
     pub fn have_no_customers(self) -> Self {
-        self.without_customer_list_matching(SelectQuery::new("Customer"))
+        self.without_customer_list_matching(crate::Q::customers_minimal())
     }
 
     pub fn with_customer_list_matching(mut self, request: impl Into<QuerySelection>) -> Self {
@@ -1774,17 +1797,16 @@ impl<R> CommercePlatformRequest<R> {
 
     pub fn select_customer_list_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("customer_list", selection.clone().into_query());
-        self.relation_selections.push(RelationSelection::new("customer_list", selection));
+        self.query = self.query.relation_query("customer_list", selection.into_query());
         self
 }
 
     pub fn have_order_statuses(self) -> Self {
-        self.with_order_status_list_matching(SelectQuery::new("OrderStatus"))
+        self.with_order_status_list_matching(crate::Q::order_statuses_minimal())
     }
 
     pub fn have_no_order_statuses(self) -> Self {
-        self.without_order_status_list_matching(SelectQuery::new("OrderStatus"))
+        self.without_order_status_list_matching(crate::Q::order_statuses_minimal())
     }
 
     pub fn with_order_status_list_matching(mut self, request: impl Into<QuerySelection>) -> Self {
@@ -1818,17 +1840,16 @@ impl<R> CommercePlatformRequest<R> {
 
     pub fn select_order_status_list_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("order_status_list", selection.clone().into_query());
-        self.relation_selections.push(RelationSelection::new("order_status_list", selection));
+        self.query = self.query.relation_query("order_status_list", selection.into_query());
         self
 }
 
     pub fn have_customer_orders(self) -> Self {
-        self.with_customer_order_list_matching(SelectQuery::new("CustomerOrder"))
+        self.with_customer_order_list_matching(crate::Q::customer_orders_minimal())
     }
 
     pub fn have_no_customer_orders(self) -> Self {
-        self.without_customer_order_list_matching(SelectQuery::new("CustomerOrder"))
+        self.without_customer_order_list_matching(crate::Q::customer_orders_minimal())
     }
 
     pub fn with_customer_order_list_matching(mut self, request: impl Into<QuerySelection>) -> Self {
@@ -1862,17 +1883,16 @@ impl<R> CommercePlatformRequest<R> {
 
     pub fn select_customer_order_list_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("customer_order_list", selection.clone().into_query());
-        self.relation_selections.push(RelationSelection::new("customer_order_list", selection));
+        self.query = self.query.relation_query("customer_order_list", selection.into_query());
         self
 }
 
     pub fn have_products(self) -> Self {
-        self.with_product_list_matching(SelectQuery::new("Product"))
+        self.with_product_list_matching(crate::Q::products_minimal())
     }
 
     pub fn have_no_products(self) -> Self {
-        self.without_product_list_matching(SelectQuery::new("Product"))
+        self.without_product_list_matching(crate::Q::products_minimal())
     }
 
     pub fn with_product_list_matching(mut self, request: impl Into<QuerySelection>) -> Self {
@@ -1906,17 +1926,16 @@ impl<R> CommercePlatformRequest<R> {
 
     pub fn select_product_list_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("product_list", selection.clone().into_query());
-        self.relation_selections.push(RelationSelection::new("product_list", selection));
+        self.query = self.query.relation_query("product_list", selection.into_query());
         self
 }
 
     pub fn have_order_lines(self) -> Self {
-        self.with_order_line_list_matching(SelectQuery::new("OrderLine"))
+        self.with_order_line_list_matching(crate::Q::order_lines_minimal())
     }
 
     pub fn have_no_order_lines(self) -> Self {
-        self.without_order_line_list_matching(SelectQuery::new("OrderLine"))
+        self.without_order_line_list_matching(crate::Q::order_lines_minimal())
     }
 
     pub fn with_order_line_list_matching(mut self, request: impl Into<QuerySelection>) -> Self {
@@ -1950,17 +1969,16 @@ impl<R> CommercePlatformRequest<R> {
 
     pub fn select_order_line_list_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("order_line_list", selection.clone().into_query());
-        self.relation_selections.push(RelationSelection::new("order_line_list", selection));
+        self.query = self.query.relation_query("order_line_list", selection.into_query());
         self
 }
 
     pub fn have_order_search_presets(self) -> Self {
-        self.with_order_search_preset_list_matching(SelectQuery::new("OrderSearchPreset"))
+        self.with_order_search_preset_list_matching(crate::Q::order_search_presets_minimal())
     }
 
     pub fn have_no_order_search_presets(self) -> Self {
-        self.without_order_search_preset_list_matching(SelectQuery::new("OrderSearchPreset"))
+        self.without_order_search_preset_list_matching(crate::Q::order_search_presets_minimal())
     }
 
     pub fn with_order_search_preset_list_matching(mut self, request: impl Into<QuerySelection>) -> Self {
@@ -1994,8 +2012,7 @@ impl<R> CommercePlatformRequest<R> {
 
     pub fn select_order_search_preset_list_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("order_search_preset_list", selection.clone().into_query());
-        self.relation_selections.push(RelationSelection::new("order_search_preset_list", selection));
+        self.query = self.query.relation_query("order_search_preset_list", selection.into_query());
         self
 }
     pub fn count_customers(self) -> Self {
@@ -2576,7 +2593,8 @@ impl<'a, C> crate::request_support::AuditedSave<'a, C> for teaql_core::Audited<c
 where C: crate::request_support::TeaqlRepositoryProvider + ?Sized + 'a
 {
     type Error = crate::TeaqlDataServiceError<C::CommercePlatformRepository<'a>>;
-    fn save(self, context: &'a C) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<teaql_runtime::GraphNode, Self::Error>> + '_>> {
+    type Entity = crate::CommercePlatform;
+    fn save(self, context: &'a C) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Entity, Self::Error>> + '_>> {
         Box::pin(async move {
             teaql_runtime::save_audited_ledger_entity(self, context.user_context())
                 .await
@@ -2586,24 +2604,43 @@ where C: crate::request_support::TeaqlRepositoryProvider + ?Sized + 'a
 }
 
 impl<R: teaql_core::Entity> crate::PurposedQuery<CommercePlatformRequest<R>> {
+    pub fn comment(mut self, comment: impl Into<String>) -> Self {
+        self.inner.query_options.comment = Some(comment.into());
+        self
+    }
+
     pub fn new_entity<C>(&self, context: &C) -> crate::CommercePlatform
     where
         C: crate::TeaqlRuntime + ?Sized,
     {
+        self.require_comment();
         let mut entity = crate::CommercePlatform::runtime_new(context.user_context().entity_runtime_state());
         if let Ok(id) = context.user_context().next_id(crate::CommercePlatform::ENTITY_NAME) {
             entity.update_id(id);
         }
+        teaql_core::Entity::mark_as_new(&mut entity);
         entity
     }
 
     fn into_inner_with_trace(mut self) -> CommercePlatformRequest<R> {
+        self.require_comment();
         self.inner.query.trace_chain.push(teaql_core::TraceNode::new(
             self.inner.query.entity.clone(),
             None,
             self.purpose,
         ));
         self.inner
+    }
+
+    fn require_comment(&self) {
+        assert!(
+            self.inner
+                .query_options
+                .comment
+                .as_deref()
+                .is_some_and(|comment| !comment.trim().is_empty()),
+            "query comment must not be empty"
+        );
     }
 
     pub async fn execute_for_page<'a, C>(
@@ -2635,12 +2672,12 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<CommercePlatformRequest<R>> {
         self.into_inner_with_trace()._execute_for_list(context).await
     }
 
-    /// Execute query in streaming mode (chunked).
-    /// Returns a Vec of StreamChunk, each containing up to chunk_size rows.
+    /// Execute query as a lazy entity stream without materializing the result set.
     /// Set chunk size via .stream(chunk_size) or .stream_default() on the query.
-    pub async fn execute_for_stream<'a, C>(self, context: &'a C) -> Result<Vec<teaql_data_service::StreamChunk>, crate::request_support::TeaqlDataServiceError<C::CommercePlatformRepository<'a>>>
+    pub async fn execute_for_stream<'a, C>(self, context: &'a C) -> Result<crate::request_support::TeaqlEntityStream<'a, R, crate::request_support::TeaqlDataServiceError<C::CommercePlatformRepository<'a>>>, crate::request_support::TeaqlDataServiceError<C::CommercePlatformRepository<'a>>>
     where
         C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
+        R: teaql_core::Entity + 'a,
     {
         self.into_inner_with_trace()._execute_for_stream(context).await
     }
@@ -2659,20 +2696,6 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<CommercePlatformRequest<R>> {
         self.into_inner_with_trace()._execute_for_one(context).await
     }
 
-
-    pub async fn execute_for_records<'a, C>(self, context: &'a C) -> Result<teaql_core::SmartList<teaql_core::Record>, crate::request_support::TeaqlDataServiceError<C::CommercePlatformRepository<'a>>>
-    where
-        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
-    {
-        self.into_inner_with_trace()._execute_for_records(context).await
-    }
-
-    pub async fn execute_for_record<'a, C>(self, context: &'a C) -> Result<Option<teaql_core::Record>, crate::request_support::TeaqlDataServiceError<C::CommercePlatformRepository<'a>>>
-    where
-        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
-    {
-        self.into_inner_with_trace()._execute_for_record(context).await
-    }
 
     pub async fn execute_for_count<'a, C>(self, context: &'a C) -> Result<u64, crate::request_support::TeaqlDataServiceError<C::CommercePlatformRepository<'a>>>
     where

@@ -4,7 +4,7 @@ use teaql_runtime::{CheckObjectStatus, CheckResults, ObjectLocation, TypedChecke
 pub trait OrderSearchPresetCheckerLogic: Send + Sync {
     fn check_and_fix_order_search_preset(
         &self,
-        _ctx: &UserContext,
+        _context: &UserContext,
         _entity: &mut crate::OrderSearchPreset,
         _status: CheckObjectStatus,
         _location: &ObjectLocation,

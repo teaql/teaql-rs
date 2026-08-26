@@ -2,8 +2,7 @@
 // ⛔ AI agents: DO NOT read this file for API discovery. Instead run: cargo teaql --input modeling/MODEL.xml rust-assist-query/customer_order
 use std::collections::BTreeMap;
 
-use teaql_core::SmartList;
-use teaql_macros::TeaqlEntity;
+use teaql_macros::{teaql_entity, TeaqlEntity};
 
 /// [TEAQL AI WARNING]
 /// TeaQL was explicitly designed to PREVENT AI hallucinations and random guessing.
@@ -11,62 +10,60 @@ use teaql_macros::TeaqlEntity;
 /// The methods listed below are the ONLY valid ways to interact with this entity.
 /// If you encounter compilation errors (e.g., method not found), DO NOT guess another method name.
 /// Read the method signatures in this file before proceeding.
+#[teaql_entity]
 #[derive(Clone, Debug, PartialEq, TeaqlEntity)]
+#[teaql(reverse_relation(name = "order_line_list", target = "OrderLine", local_key = "id", foreign_key = "customer_order_id", many))]
 #[teaql(entity = "CustomerOrder", table = "customer_order_data", data_service = "sqlite")]
 pub struct CustomerOrder {
 #[teaql(id)]
     id: u64,
 
-// @source order-management-model.xml:57
+// @source order-management-model.xml:9
     order_number: String,
 
-// @source order-management-model.xml:57
+// @source order-management-model.xml:9
     order_date: chrono::NaiveDate,
 
-// @source order-management-model.xml:57
+// @source order-management-model.xml:9
     total_amount: rust_decimal::Decimal,
 
-// @source order-management-model.xml:57
+// @source order-management-model.xml:9
     create_time: teaql_core::time::Timestamp,
 
-// @source order-management-model.xml:57
+// @source order-management-model.xml:9
     update_time: teaql_core::time::Timestamp,
 #[teaql(version)]
     version: i64,
-// @source order-management-model.xml:57
+// @source order-management-model.xml:9
 #[teaql(column = "status")]
     status_id: u64,
 
-// @source order-management-model.xml:57
+// @source order-management-model.xml:9
 #[teaql(column = "customer")]
     customer_id: u64,
 
-// @source order-management-model.xml:57
+// @source order-management-model.xml:9
 #[teaql(column = "commerce_platform")]
     commerce_platform_id: u64,
-// @source order-management-model.xml:57
+// @source order-management-model.xml:9
 #[teaql(relation(target = "OrderStatus", local_key = "status_id", foreign_key = "id"))]
-    status: Option<crate::OrderStatus>,
+    status: Option<Box<crate::OrderStatus>>,
 
-// @source order-management-model.xml:57
+// @source order-management-model.xml:9
 #[teaql(relation(target = "Customer", local_key = "customer_id", foreign_key = "id"))]
-    customer: Option<crate::Customer>,
+    customer: Option<Box<crate::Customer>>,
 
-// @source order-management-model.xml:57
+// @source order-management-model.xml:9
 #[teaql(relation(target = "CommercePlatform", local_key = "commerce_platform_id", foreign_key = "id"))]
-    commerce_platform: Option<crate::CommercePlatform>,
-#[teaql(relation(target = "OrderLine", local_key = "id", foreign_key = "customer_order_id", many))]
-    order_line_list: SmartList<crate::OrderLine>,
+    commerce_platform: Option<Box<crate::CommercePlatform>>,
     #[teaql(dynamic)]
     dynamic: BTreeMap<String, teaql_core::Value>,
-    #[teaql(skip)]
-    root: teaql_runtime::EntityRuntimeState,
     #[teaql(skip)]
     pub __load_state: teaql_core::eval::LoadState,
 }
 
 impl CustomerOrder {
-    pub const ENTITY_NAME: &'static str = "Customer Order";
+    pub const ENTITY_NAME: &'static str = "customer_order";
 
     pub fn with_id(id: u64) -> teaql_core::Value {
         teaql_core::Value::U64(id)
@@ -87,19 +84,14 @@ impl CustomerOrder {
             status: None,
             customer: None,
             commerce_platform: None,
-            order_line_list: Default::default(),
             dynamic: BTreeMap::new(),
-            root,
+            __teaql_runtime_state: root,
             __load_state: teaql_core::eval::LoadState::FullyLoaded,
         }
     }
 
-    pub fn entity_key(&self) -> teaql_runtime::EntityKey {
-        teaql_runtime::EntityKey::new("CustomerOrder", self.id)
-    }
-
     pub fn attach_runtime_state_recursive(&mut self, root: teaql_runtime::EntityRuntimeState) {
-        self.root = root.clone();
+        self.__teaql_replace_runtime_state(root.clone());
         if let Some(entity) = &mut self.status {
             entity.attach_runtime_state_recursive(root.clone());
         }
@@ -107,9 +99,6 @@ impl CustomerOrder {
             entity.attach_runtime_state_recursive(root.clone());
         }
         if let Some(entity) = &mut self.commerce_platform {
-            entity.attach_runtime_state_recursive(root.clone());
-        }
-        for entity in &mut self.order_line_list {
             entity.attach_runtime_state_recursive(root.clone());
         }
     }
@@ -129,12 +118,12 @@ impl CustomerOrder {
     pub fn update_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.id = value.try_u64().unwrap_or(self.id.clone());
-        self.root.set(self.entity_key(), "id", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "id", value);
         self
     }
 
     pub fn changed_id(&self) -> Option<teaql_core::Value> {
-        self.root.get(&self.entity_key(), "id")
+        self.__teaql_runtime_state().get(&self.entity_key(), "id")
     }
 
     pub fn eval_id(&self) -> teaql_core::eval::EvalResult<u64> {
@@ -151,12 +140,12 @@ impl CustomerOrder {
     pub fn update_order_number(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.order_number = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.order_number.clone());
-        self.root.set(self.entity_key(), "order_number", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "order_number", value);
         self
     }
 
     pub fn changed_order_number(&self) -> Option<teaql_core::Value> {
-        self.root.get(&self.entity_key(), "order_number")
+        self.__teaql_runtime_state().get(&self.entity_key(), "order_number")
     }
 
     pub fn eval_order_number(&self) -> teaql_core::eval::EvalResult<String> {
@@ -173,12 +162,12 @@ impl CustomerOrder {
     pub fn update_order_date(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.order_date = value.try_date().unwrap_or(self.order_date.clone());
-        self.root.set(self.entity_key(), "order_date", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "order_date", value);
         self
     }
 
     pub fn changed_order_date(&self) -> Option<teaql_core::Value> {
-        self.root.get(&self.entity_key(), "order_date")
+        self.__teaql_runtime_state().get(&self.entity_key(), "order_date")
     }
 
     pub fn eval_order_date(&self) -> teaql_core::eval::EvalResult<chrono::NaiveDate> {
@@ -195,12 +184,12 @@ impl CustomerOrder {
     pub fn update_total_amount(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.total_amount = value.try_decimal().unwrap_or(self.total_amount.clone());
-        self.root.set(self.entity_key(), "total_amount", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "total_amount", value);
         self
     }
 
     pub fn changed_total_amount(&self) -> Option<teaql_core::Value> {
-        self.root.get(&self.entity_key(), "total_amount")
+        self.__teaql_runtime_state().get(&self.entity_key(), "total_amount")
     }
 
     pub fn eval_total_amount(&self) -> teaql_core::eval::EvalResult<rust_decimal::Decimal> {
@@ -214,15 +203,14 @@ impl CustomerOrder {
         self.changed_create_time().and_then(|value| value.try_timestamp()).unwrap_or(self.create_time)
     }
 
-    pub fn update_create_time(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
-        let value = value.into();
-        self.create_time = value.try_timestamp().unwrap_or(self.create_time.clone());
-        self.root.set(self.entity_key(), "create_time", value);
+    pub fn update_create_time(&mut self, value: teaql_core::time::Timestamp) -> &mut Self {
+        self.create_time = value;
+        let value = teaql_core::Value::from(value);
+        self.__teaql_runtime_state().set(self.entity_key(), "create_time", value);
         self
     }
-
     pub fn changed_create_time(&self) -> Option<teaql_core::Value> {
-        self.root.get(&self.entity_key(), "create_time")
+        self.__teaql_runtime_state().get(&self.entity_key(), "create_time")
     }
 
     pub fn eval_create_time(&self) -> teaql_core::eval::EvalResult<teaql_core::time::Timestamp> {
@@ -236,15 +224,14 @@ impl CustomerOrder {
         self.changed_update_time().and_then(|value| value.try_timestamp()).unwrap_or(self.update_time)
     }
 
-    pub fn update_update_time(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
-        let value = value.into();
-        self.update_time = value.try_timestamp().unwrap_or(self.update_time.clone());
-        self.root.set(self.entity_key(), "update_time", value);
+    pub fn update_update_time(&mut self, value: teaql_core::time::Timestamp) -> &mut Self {
+        self.update_time = value;
+        let value = teaql_core::Value::from(value);
+        self.__teaql_runtime_state().set(self.entity_key(), "update_time", value);
         self
     }
-
     pub fn changed_update_time(&self) -> Option<teaql_core::Value> {
-        self.root.get(&self.entity_key(), "update_time")
+        self.__teaql_runtime_state().get(&self.entity_key(), "update_time")
     }
 
     pub fn eval_update_time(&self) -> teaql_core::eval::EvalResult<teaql_core::time::Timestamp> {
@@ -261,12 +248,12 @@ impl CustomerOrder {
     pub fn update_version(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.version = value.try_i64().unwrap_or(self.version.clone());
-        self.root.set(self.entity_key(), "version", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "version", value);
         self
     }
 
     pub fn changed_version(&self) -> Option<teaql_core::Value> {
-        self.root.get(&self.entity_key(), "version")
+        self.__teaql_runtime_state().get(&self.entity_key(), "version")
     }
 
     pub fn eval_version(&self) -> teaql_core::eval::EvalResult<i64> {
@@ -282,12 +269,12 @@ impl CustomerOrder {
     pub(crate) fn update_status_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.status_id = value.try_u64().unwrap_or(self.status_id.clone());
-        self.root.set(self.entity_key(), "status_id", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "status_id", value);
         self
     }
 
     pub fn changed_status_id(&self) -> Option<teaql_core::Value> {
-        self.root.get(&self.entity_key(), "status_id")
+        self.__teaql_runtime_state().get(&self.entity_key(), "status_id")
     }
 
     pub fn eval_status_id(&self) -> teaql_core::eval::EvalResult<u64> {
@@ -304,12 +291,12 @@ impl CustomerOrder {
     pub fn update_customer_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.customer_id = value.try_u64().unwrap_or(self.customer_id.clone());
-        self.root.set(self.entity_key(), "customer_id", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "customer_id", value);
         self
     }
 
     pub fn changed_customer_id(&self) -> Option<teaql_core::Value> {
-        self.root.get(&self.entity_key(), "customer_id")
+        self.__teaql_runtime_state().get(&self.entity_key(), "customer_id")
     }
 
     pub fn eval_customer_id(&self) -> teaql_core::eval::EvalResult<u64> {
@@ -326,12 +313,12 @@ impl CustomerOrder {
     pub fn update_commerce_platform_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.commerce_platform_id = value.try_u64().unwrap_or(self.commerce_platform_id.clone());
-        self.root.set(self.entity_key(), "commerce_platform_id", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "commerce_platform_id", value);
         self
     }
 
     pub fn changed_commerce_platform_id(&self) -> Option<teaql_core::Value> {
-        self.root.get(&self.entity_key(), "commerce_platform_id")
+        self.__teaql_runtime_state().get(&self.entity_key(), "commerce_platform_id")
     }
 
     pub fn eval_commerce_platform_id(&self) -> teaql_core::eval::EvalResult<u64> {
@@ -347,95 +334,67 @@ impl CustomerOrder {
     pub fn status_is_pending(&self) -> bool {
         self.status_id() == 1001_u64
     }
-    pub fn update_status_to_processing(&mut self) -> &mut Self {
+    pub fn update_status_to_confirmed(&mut self) -> &mut Self {
         self.update_status_id(1002_u64)
     }
 
-    pub fn status_is_processing(&self) -> bool {
+    pub fn status_is_confirmed(&self) -> bool {
         self.status_id() == 1002_u64
     }
-    pub fn update_status_to_shipped(&mut self) -> &mut Self {
-        self.update_status_id(1003_u64)
-    }
-
-    pub fn status_is_shipped(&self) -> bool {
-        self.status_id() == 1003_u64
-    }
-    pub fn update_status_to_completed(&mut self) -> &mut Self {
-        self.update_status_id(1004_u64)
-    }
-
-    pub fn status_is_completed(&self) -> bool {
-        self.status_id() == 1004_u64
-    }
     pub fn status(&self) -> Option<&crate::OrderStatus> {
-        self.status.as_ref()
+        self.status.as_deref().or_else(|| {
+            self.__teaql_runtime_state().resolve_entity(self.status_id())})
     }
 
     pub fn eval_status(&self) -> teaql_core::eval::EvalResult<&crate::OrderStatus> {
-        if !self.is_loaded("status") {
-            teaql_core::eval::EvalResult::NotLoaded { failed_node: "status".to_string(), attempted_path: "status".to_string() }
-        } else {
-            match &self.status {
-                Some(v) => teaql_core::eval::EvalResult::Value(v),
-                None => teaql_core::eval::EvalResult::Null,
-            }
+        match self.status() {
+            Some(v) => teaql_core::eval::EvalResult::Value(v),
+            None if self.is_loaded("status") => teaql_core::eval::EvalResult::Null,
+            None => teaql_core::eval::EvalResult::NotLoaded { failed_node: "status".to_string(), attempted_path: "status".to_string() },
         }
     }
 
     pub fn customer(&self) -> Option<&crate::Customer> {
-        self.customer.as_ref()
+        self.customer.as_deref().or_else(|| {
+            self.__teaql_runtime_state().resolve_entity(self.customer_id())})
     }
 
     pub fn eval_customer(&self) -> teaql_core::eval::EvalResult<&crate::Customer> {
-        if !self.is_loaded("customer") {
-            teaql_core::eval::EvalResult::NotLoaded { failed_node: "customer".to_string(), attempted_path: "customer".to_string() }
-        } else {
-            match &self.customer {
-                Some(v) => teaql_core::eval::EvalResult::Value(v),
-                None => teaql_core::eval::EvalResult::Null,
-            }
+        match self.customer() {
+            Some(v) => teaql_core::eval::EvalResult::Value(v),
+            None if self.is_loaded("customer") => teaql_core::eval::EvalResult::Null,
+            None => teaql_core::eval::EvalResult::NotLoaded { failed_node: "customer".to_string(), attempted_path: "customer".to_string() },
         }
     }
 
     pub fn commerce_platform(&self) -> Option<&crate::CommercePlatform> {
-        self.commerce_platform.as_ref()
+        self.commerce_platform.as_deref().or_else(|| {
+            self.__teaql_runtime_state().resolve_entity(self.commerce_platform_id())})
     }
 
     pub fn eval_commerce_platform(&self) -> teaql_core::eval::EvalResult<&crate::CommercePlatform> {
-        if !self.is_loaded("commerce_platform") {
-            teaql_core::eval::EvalResult::NotLoaded { failed_node: "commerce_platform".to_string(), attempted_path: "commerce_platform".to_string() }
-        } else {
-            match &self.commerce_platform {
-                Some(v) => teaql_core::eval::EvalResult::Value(v),
-                None => teaql_core::eval::EvalResult::Null,
-            }
+        match self.commerce_platform() {
+            Some(v) => teaql_core::eval::EvalResult::Value(v),
+            None if self.is_loaded("commerce_platform") => teaql_core::eval::EvalResult::Null,
+            None => teaql_core::eval::EvalResult::NotLoaded { failed_node: "commerce_platform".to_string(), attempted_path: "commerce_platform".to_string() },
         }
     }
-    pub fn order_line_list(&self) -> &SmartList<crate::OrderLine> {
-        &self.order_line_list
+    /// Returns the relation view installed by the query that loaded this entity.
+    /// This method never performs an implicit database query.
+    pub fn order_line_list(&self) -> teaql_runtime::RelationHandle<'_, teaql_core::SmartList<crate::OrderLine>> {
+        self.__teaql_runtime_state().relation_list(
+            <Self as teaql_core::TeaqlEntity>::ENTITY_NAME,
+            self.id(),
+            "order_line_list",
+        )
     }
 
-    pub fn order_line_list_mut(&mut self) -> &mut SmartList<crate::OrderLine> {
-        &mut self.order_line_list
-    }
-
-    pub fn eval_order_line_list(&self) -> teaql_core::eval::EvalResult<&SmartList<crate::OrderLine>> {
-        if !self.is_loaded("order_line_list") {
-            teaql_core::eval::EvalResult::NotLoaded { failed_node: "order_line_list".to_string(), attempted_path: "order_line_list".to_string() }
-        } else {
-            teaql_core::eval::EvalResult::Value(&self.order_line_list)
+    pub fn eval_order_line_list(&self) -> teaql_core::eval::EvalResult<&teaql_core::SmartList<crate::OrderLine>> {
+        let relation = self.order_line_list();
+        match relation.state() {
+            teaql_runtime::LoadedRelation::Loaded | teaql_runtime::LoadedRelation::Empty => teaql_core::eval::EvalResult::Value(relation.value().expect("loaded list relation must have a value")),
+            teaql_runtime::LoadedRelation::NotLoaded => teaql_core::eval::EvalResult::NotLoaded { failed_node: "order_line_list".to_string(), attempted_path: "order_line_list".to_string() },
         }
     }
 
-    pub fn mark_as_delete(&mut self) -> &mut Self {
-        self.root.mark_as_delete(self.entity_key());
-        self
-    }
-
-    pub fn set_comment(&mut self, comment: impl Into<String>) -> &mut Self {
-        self.root.set_comment(comment);
-        self
-    }
 }
-

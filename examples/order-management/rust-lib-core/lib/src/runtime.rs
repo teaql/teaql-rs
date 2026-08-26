@@ -126,8 +126,8 @@ impl teaql_data_service::QueryExecutor for ServiceRuntimeExecutor {
 }
 
 impl teaql_data_service::StreamQueryExecutor for ServiceRuntimeExecutor {
-    async fn query_stream(&self, request: teaql_data_service::QueryRequest, chunk_size: usize) -> Result<Vec<teaql_data_service::StreamChunk>, Self::Error> {
-        teaql_data_service::StreamQueryExecutor::query_stream(&self.inner, request, chunk_size).await
+    fn query_stream(&self, request: teaql_data_service::QueryRequest, chunk_size: usize) -> teaql_data_service::QueryStream<'_, Self::Error> {
+        teaql_data_service::StreamQueryExecutor::query_stream(&self.inner, request, chunk_size)
     }
 }
 
@@ -163,26 +163,12 @@ pub async fn service_runtime_from_pool(pool: DataServicePool) -> Result<ServiceR
     context.register_executor(executor.clone());
     context.insert_resource(executor);
 
-    // 自动加载 Zero-Code 审计配置与 Schema 模式
+    // Load runtime configuration only. Schema installation is an explicit application action.
     let env_config = teaql_tool_core::audit_config_from_env(&[
         "commerce_platform_data", "customer_data", "order_status_data", "customer_order_data", "product_data", "order_line_data", "order_search_preset_data"
     ]);
-    let schema_mode = env_config.schema_mode;
     context.insert_resource(env_config.config.clone());
     context.insert_resource(env_config);
-
-    match schema_mode {
-        teaql_tool_core::SchemaMode::Execute => {
-            context.ensure_schema().await?;
-        }
-        teaql_tool_core::SchemaMode::DryRun => {
-            // DryRun: 目前等效于验证
-            context.ensure_schema().await?;
-        }
-        teaql_tool_core::SchemaMode::Verify => {
-            context.ensure_schema().await?;
-        }
-    }
 
     Ok(context)
 }
@@ -254,193 +240,132 @@ pub fn module() -> teaql_runtime::RuntimeModule {
             .value("id", 1001_u64)
             .value("name", "Pending")
             .value("code", "PENDING")
-            .value("color", "#F97316")
-            .value("display_order", "10")
+            .value("color", "string()")
+            .value("display_order", "number()")
             .value("version", 1_i64)
             .value("commerce_platform_id", 1_u64))
         .initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
             .value("id", 1002_u64)
-            .value("name", "Processing")
-            .value("code", "PROCESSING")
-            .value("color", "#2563EB")
-            .value("display_order", "20")
-            .value("version", 1_i64)
-            .value("commerce_platform_id", 1_u64))
-        .initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
-            .value("id", 1003_u64)
-            .value("name", "Shipped")
-            .value("code", "SHIPPED")
-            .value("color", "#16A34A")
-            .value("display_order", "30")
-            .value("version", 1_i64)
-            .value("commerce_platform_id", 1_u64))
-        .initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
-            .value("id", 1004_u64)
-            .value("name", "Completed")
-            .value("code", "COMPLETED")
-            .value("color", "#334155")
-            .value("display_order", "40")
+            .value("name", "Confirmed")
+            .value("code", "CONFIRMED")
+            .value("color", "1")
+            .value("display_order", "1")
             .value("version", 1_i64)
             .value("commerce_platform_id", 1_u64))
 }
 
 pub fn module_with_checkers() -> teaql_runtime::RuntimeModule {
-    teaql_runtime::RuntimeModule::new()
-        .entity::<CommercePlatform>()
-        .checker(teaql_runtime::TypedEntityChecker::<CommercePlatform, _>::new(CommercePlatformChecker::default()))
-        .entity::<Customer>()
-        .checker(teaql_runtime::TypedEntityChecker::<Customer, _>::new(CustomerChecker::default()))
-        .entity::<OrderStatus>()
-        .checker(teaql_runtime::TypedEntityChecker::<OrderStatus, _>::new(OrderStatusChecker::default()))
-        .entity::<CustomerOrder>()
-        .checker(teaql_runtime::TypedEntityChecker::<CustomerOrder, _>::new(CustomerOrderChecker::default()))
-        .entity::<Product>()
-        .checker(teaql_runtime::TypedEntityChecker::<Product, _>::new(ProductChecker::default()))
-        .entity::<OrderLine>()
-        .checker(teaql_runtime::TypedEntityChecker::<OrderLine, _>::new(OrderLineChecker::default()))
-        .entity::<OrderSearchPreset>()
-        .checker(teaql_runtime::TypedEntityChecker::<OrderSearchPreset, _>::new(OrderSearchPresetChecker::default()))
-        .initial_graph(teaql_runtime::GraphNode::new("CommercePlatform")
+    let mut module = teaql_runtime::RuntimeModule::new();
+    module = module.entity::<CommercePlatform>();
+    module = module.checker(teaql_runtime::TypedEntityChecker::<CommercePlatform, _>::new(CommercePlatformChecker::default()));
+    module = module.entity::<Customer>();
+    module = module.checker(teaql_runtime::TypedEntityChecker::<Customer, _>::new(CustomerChecker::default()));
+    module = module.entity::<OrderStatus>();
+    module = module.checker(teaql_runtime::TypedEntityChecker::<OrderStatus, _>::new(OrderStatusChecker::default()));
+    module = module.entity::<CustomerOrder>();
+    module = module.checker(teaql_runtime::TypedEntityChecker::<CustomerOrder, _>::new(CustomerOrderChecker::default()));
+    module = module.entity::<Product>();
+    module = module.checker(teaql_runtime::TypedEntityChecker::<Product, _>::new(ProductChecker::default()));
+    module = module.entity::<OrderLine>();
+    module = module.checker(teaql_runtime::TypedEntityChecker::<OrderLine, _>::new(OrderLineChecker::default()));
+    module = module.entity::<OrderSearchPreset>();
+    module = module.checker(teaql_runtime::TypedEntityChecker::<OrderSearchPreset, _>::new(OrderSearchPresetChecker::default()));
+    module = module.root_graph(teaql_runtime::GraphNode::new("CommercePlatform")
             .value("id", 1_u64)
             .value("name", "Northwind Demo")
             .value("create_time", teaql_core::time::Timestamp::now())
             .value("update_time", teaql_core::time::Timestamp::now())
-            .value("version", 1_i64))
-        .initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
+            .value("version", 1_i64));
+    module = module.initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
             .value("id", 1001_u64)
             .value("name", "Pending")
             .value("code", "PENDING")
-            .value("color", "#F97316")
-            .value("display_order", "10")
+            .value("color", "string()")
+            .value("display_order", "number()")
             .value("version", 1_i64)
-            .value("commerce_platform_id", 1_u64))
-        .initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
+            .value("commerce_platform_id", 1_u64));
+    module = module.initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
             .value("id", 1002_u64)
-            .value("name", "Processing")
-            .value("code", "PROCESSING")
-            .value("color", "#2563EB")
-            .value("display_order", "20")
+            .value("name", "Confirmed")
+            .value("code", "CONFIRMED")
+            .value("color", "1")
+            .value("display_order", "1")
             .value("version", 1_i64)
-            .value("commerce_platform_id", 1_u64))
-        .initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
-            .value("id", 1003_u64)
-            .value("name", "Shipped")
-            .value("code", "SHIPPED")
-            .value("color", "#16A34A")
-            .value("display_order", "30")
-            .value("version", 1_i64)
-            .value("commerce_platform_id", 1_u64))
-        .initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
-            .value("id", 1004_u64)
-            .value("name", "Completed")
-            .value("code", "COMPLETED")
-            .value("color", "#334155")
-            .value("display_order", "40")
-            .value("version", 1_i64)
-            .value("commerce_platform_id", 1_u64))
+            .value("commerce_platform_id", 1_u64));
+    module
 }
 
 pub fn module_with_behaviors() -> teaql_runtime::RuntimeModule {
-    teaql_runtime::RuntimeModule::new()
-        .entity_with_behavior::<CommercePlatform, _>(CommercePlatformBehavior::default())
-        .entity_with_behavior::<Customer, _>(CustomerBehavior::default())
-        .entity_with_behavior::<OrderStatus, _>(OrderStatusBehavior::default())
-        .entity_with_behavior::<CustomerOrder, _>(CustomerOrderBehavior::default())
-        .entity_with_behavior::<Product, _>(ProductBehavior::default())
-        .entity_with_behavior::<OrderLine, _>(OrderLineBehavior::default())
-        .entity_with_behavior::<OrderSearchPreset, _>(OrderSearchPresetBehavior::default())
-        .initial_graph(teaql_runtime::GraphNode::new("CommercePlatform")
+    let mut module = teaql_runtime::RuntimeModule::new();
+    module = module.entity_with_behavior::<CommercePlatform, _>(CommercePlatformBehavior::default());
+    module = module.entity_with_behavior::<Customer, _>(CustomerBehavior::default());
+    module = module.entity_with_behavior::<OrderStatus, _>(OrderStatusBehavior::default());
+    module = module.entity_with_behavior::<CustomerOrder, _>(CustomerOrderBehavior::default());
+    module = module.entity_with_behavior::<Product, _>(ProductBehavior::default());
+    module = module.entity_with_behavior::<OrderLine, _>(OrderLineBehavior::default());
+    module = module.entity_with_behavior::<OrderSearchPreset, _>(OrderSearchPresetBehavior::default());
+    module = module.root_graph(teaql_runtime::GraphNode::new("CommercePlatform")
             .value("id", 1_u64)
             .value("name", "Northwind Demo")
             .value("create_time", teaql_core::time::Timestamp::now())
             .value("update_time", teaql_core::time::Timestamp::now())
-            .value("version", 1_i64))
-        .initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
+            .value("version", 1_i64));
+    module = module.initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
             .value("id", 1001_u64)
             .value("name", "Pending")
             .value("code", "PENDING")
-            .value("color", "#F97316")
-            .value("display_order", "10")
+            .value("color", "string()")
+            .value("display_order", "number()")
             .value("version", 1_i64)
-            .value("commerce_platform_id", 1_u64))
-        .initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
+            .value("commerce_platform_id", 1_u64));
+    module = module.initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
             .value("id", 1002_u64)
-            .value("name", "Processing")
-            .value("code", "PROCESSING")
-            .value("color", "#2563EB")
-            .value("display_order", "20")
+            .value("name", "Confirmed")
+            .value("code", "CONFIRMED")
+            .value("color", "1")
+            .value("display_order", "1")
             .value("version", 1_i64)
-            .value("commerce_platform_id", 1_u64))
-        .initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
-            .value("id", 1003_u64)
-            .value("name", "Shipped")
-            .value("code", "SHIPPED")
-            .value("color", "#16A34A")
-            .value("display_order", "30")
-            .value("version", 1_i64)
-            .value("commerce_platform_id", 1_u64))
-        .initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
-            .value("id", 1004_u64)
-            .value("name", "Completed")
-            .value("code", "COMPLETED")
-            .value("color", "#334155")
-            .value("display_order", "40")
-            .value("version", 1_i64)
-            .value("commerce_platform_id", 1_u64))
+            .value("commerce_platform_id", 1_u64));
+    module
 }
 
 pub fn module_with_behaviors_and_checkers() -> teaql_runtime::RuntimeModule {
-    teaql_runtime::RuntimeModule::new()
-        .entity_with_behavior::<CommercePlatform, _>(CommercePlatformBehavior::default())
-        .checker(teaql_runtime::TypedEntityChecker::<CommercePlatform, _>::new(CommercePlatformChecker::default()))
-        .entity_with_behavior::<Customer, _>(CustomerBehavior::default())
-        .checker(teaql_runtime::TypedEntityChecker::<Customer, _>::new(CustomerChecker::default()))
-        .entity_with_behavior::<OrderStatus, _>(OrderStatusBehavior::default())
-        .checker(teaql_runtime::TypedEntityChecker::<OrderStatus, _>::new(OrderStatusChecker::default()))
-        .entity_with_behavior::<CustomerOrder, _>(CustomerOrderBehavior::default())
-        .checker(teaql_runtime::TypedEntityChecker::<CustomerOrder, _>::new(CustomerOrderChecker::default()))
-        .entity_with_behavior::<Product, _>(ProductBehavior::default())
-        .checker(teaql_runtime::TypedEntityChecker::<Product, _>::new(ProductChecker::default()))
-        .entity_with_behavior::<OrderLine, _>(OrderLineBehavior::default())
-        .checker(teaql_runtime::TypedEntityChecker::<OrderLine, _>::new(OrderLineChecker::default()))
-        .entity_with_behavior::<OrderSearchPreset, _>(OrderSearchPresetBehavior::default())
-        .checker(teaql_runtime::TypedEntityChecker::<OrderSearchPreset, _>::new(OrderSearchPresetChecker::default()))
-        .initial_graph(teaql_runtime::GraphNode::new("CommercePlatform")
+    let mut module = teaql_runtime::RuntimeModule::new();
+    module = module.entity_with_behavior::<CommercePlatform, _>(CommercePlatformBehavior::default());
+    module = module.checker(teaql_runtime::TypedEntityChecker::<CommercePlatform, _>::new(CommercePlatformChecker::default()));
+    module = module.entity_with_behavior::<Customer, _>(CustomerBehavior::default());
+    module = module.checker(teaql_runtime::TypedEntityChecker::<Customer, _>::new(CustomerChecker::default()));
+    module = module.entity_with_behavior::<OrderStatus, _>(OrderStatusBehavior::default());
+    module = module.checker(teaql_runtime::TypedEntityChecker::<OrderStatus, _>::new(OrderStatusChecker::default()));
+    module = module.entity_with_behavior::<CustomerOrder, _>(CustomerOrderBehavior::default());
+    module = module.checker(teaql_runtime::TypedEntityChecker::<CustomerOrder, _>::new(CustomerOrderChecker::default()));
+    module = module.entity_with_behavior::<Product, _>(ProductBehavior::default());
+    module = module.checker(teaql_runtime::TypedEntityChecker::<Product, _>::new(ProductChecker::default()));
+    module = module.entity_with_behavior::<OrderLine, _>(OrderLineBehavior::default());
+    module = module.checker(teaql_runtime::TypedEntityChecker::<OrderLine, _>::new(OrderLineChecker::default()));
+    module = module.entity_with_behavior::<OrderSearchPreset, _>(OrderSearchPresetBehavior::default());
+    module = module.checker(teaql_runtime::TypedEntityChecker::<OrderSearchPreset, _>::new(OrderSearchPresetChecker::default()));
+    module = module.root_graph(teaql_runtime::GraphNode::new("CommercePlatform")
             .value("id", 1_u64)
             .value("name", "Northwind Demo")
             .value("create_time", teaql_core::time::Timestamp::now())
             .value("update_time", teaql_core::time::Timestamp::now())
-            .value("version", 1_i64))
-        .initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
+            .value("version", 1_i64));
+    module = module.initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
             .value("id", 1001_u64)
             .value("name", "Pending")
             .value("code", "PENDING")
-            .value("color", "#F97316")
-            .value("display_order", "10")
+            .value("color", "string()")
+            .value("display_order", "number()")
             .value("version", 1_i64)
-            .value("commerce_platform_id", 1_u64))
-        .initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
+            .value("commerce_platform_id", 1_u64));
+    module = module.initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
             .value("id", 1002_u64)
-            .value("name", "Processing")
-            .value("code", "PROCESSING")
-            .value("color", "#2563EB")
-            .value("display_order", "20")
+            .value("name", "Confirmed")
+            .value("code", "CONFIRMED")
+            .value("color", "1")
+            .value("display_order", "1")
             .value("version", 1_i64)
-            .value("commerce_platform_id", 1_u64))
-        .initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
-            .value("id", 1003_u64)
-            .value("name", "Shipped")
-            .value("code", "SHIPPED")
-            .value("color", "#16A34A")
-            .value("display_order", "30")
-            .value("version", 1_i64)
-            .value("commerce_platform_id", 1_u64))
-        .initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
-            .value("id", 1004_u64)
-            .value("name", "Completed")
-            .value("code", "COMPLETED")
-            .value("color", "#334155")
-            .value("display_order", "40")
-            .value("version", 1_i64)
-            .value("commerce_platform_id", 1_u64))
+            .value("commerce_platform_id", 1_u64));
+    module
 }
