@@ -110,6 +110,62 @@ impl ObjectLocation {
     pub fn level(&self) -> usize {
         self.segments.len()
     }
+
+    /// Canonical casing-neutral path using KSML property names.
+    pub fn model_path(&self) -> String {
+        self.render_path(|name| name.to_owned())
+    }
+
+    /// Rust diagnostic path. KSML snake_case is already idiomatic Rust.
+    pub fn native_path(&self) -> String {
+        self.render_path(|name| name.to_owned())
+    }
+
+    /// RFC 6901 JSON pointer using TeaQL's default lower-camel wire policy.
+    pub fn instance_path(&self) -> String {
+        self.segments
+            .iter()
+            .map(|segment| match segment {
+                LocationSegment::Member(member) => {
+                    format!("/{}", escape_json_pointer(&lower_camel(member)))
+                }
+                LocationSegment::Index(index) => format!("/{index}"),
+            })
+            .collect()
+    }
+
+    fn render_path(&self, property_name: impl Fn(&str) -> String) -> String {
+        let mut result = String::new();
+        for segment in &self.segments {
+            match segment {
+                LocationSegment::Member(member) => {
+                    if !result.is_empty() {
+                        result.push('.');
+                    }
+                    result.push_str(&property_name(member));
+                }
+                LocationSegment::Index(index) => result.push_str(&format!("[{index}]")),
+            }
+        }
+        result
+    }
+}
+
+fn lower_camel(name: &str) -> String {
+    let mut parts = name.split('_');
+    let mut result = parts.next().unwrap_or_default().to_owned();
+    for part in parts {
+        let mut chars = part.chars();
+        if let Some(first) = chars.next() {
+            result.extend(first.to_uppercase());
+            result.extend(chars);
+        }
+    }
+    result
+}
+
+fn escape_json_pointer(value: &str) -> String {
+    value.replace('~', "~0").replace('/', "~1")
 }
 
 impl std::fmt::Display for ObjectLocation {
@@ -440,6 +496,23 @@ mod tests {
 
         assert_eq!(nested.to_string(), "users[2].address.city");
         assert_eq!(nested.level(), 4);
+    }
+
+    #[test]
+    fn object_location_renders_model_native_and_external_paths() {
+        let location = ObjectLocation::hash_root("order_items")
+            .element(2)
+            .member("user_url");
+
+        assert_eq!(location.model_path(), "order_items[2].user_url");
+        assert_eq!(location.native_path(), "order_items[2].user_url");
+        assert_eq!(location.instance_path(), "/orderItems/2/userUrl");
+        assert_eq!(location.to_string(), "order_items[2].user_url");
+    }
+
+    #[test]
+    fn object_location_escapes_json_pointer_members() {
+        assert_eq!(ObjectLocation::hash_root("a~/b").instance_path(), "/a~0~1b");
     }
 
     #[test]
