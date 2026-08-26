@@ -453,23 +453,29 @@ impl teaql_sql::SqlTransactionTransport for SqliteMutationExecutor {
     }
 }
 
-fn initial_graph_exists_sqlite(
+fn initial_graph_row_sqlite(
     executor: &SqliteMutationExecutor,
     dialect: &SqliteDialect,
     entity: &EntityDescriptor,
     graph: &GraphNode,
-) -> Result<bool, MutationExecutorError> {
+) -> Result<Option<teaql_core::CompactRow>, MutationExecutorError> {
     let Some(id) = graph.values.get("id") else {
-        return Ok(false);
+        return Ok(None);
     };
-    let query = dialect.compile_select(
-        entity,
-        &SelectQuery::new(&graph.entity)
-            .project("id")
-            .filter(Expr::eq("id", id.clone()))
-            .limit(1),
-    )?;
-    Ok(!executor.fetch_all_compact(&query)?.is_empty())
+    let mut select = SelectQuery::new(&graph.entity)
+        .filter(Expr::eq("id", id.clone()))
+        .limit(1);
+    for field in graph.values.keys() {
+        select = select.project(field);
+    }
+    if let Some(version) = entity
+        .version_property()
+        .filter(|version| !graph.values.contains_key(&version.name))
+    {
+        select = select.project(&version.name);
+    }
+    let query = dialect.compile_select(entity, &select)?;
+    Ok(executor.fetch_all_compact(&query)?.into_iter().next())
 }
 
 fn compile_initial_graph_insert(
@@ -488,21 +494,45 @@ fn compile_initial_graph_update(
     dialect: &impl SqlDialect,
     entity: &EntityDescriptor,
     graph: &GraphNode,
+    current: &teaql_core::CompactRow,
 ) -> Result<Option<CompiledQuery>, MutationExecutorError> {
     let Some(id) = graph.values.get("id") else {
         return Ok(None);
     };
     let mut command = UpdateCommand::new(&graph.entity, id.clone());
     for (field, value) in &graph.values {
-        if field != "id" {
+        if field != "id"
+            && field != "version"
+            && !bootstrap_values_equal(current.get(field), Some(value))
+        {
             command = command.value(field.clone(), value.clone());
         }
+    }
+    if command.values.is_empty() {
+        return Ok(None);
+    }
+    if let Some(version) = entity
+        .version_property()
+        .and_then(|property| current.get(&property.name))
+        .and_then(Value::try_i64)
+    {
+        command = command.expected_version(version);
     }
     match dialect.compile_update(entity, &command) {
         Ok(query) => Ok(Some(query)),
         Err(SqlCompileError::EmptyMutation(_)) => Ok(None),
         Err(err) => Err(err.into()),
     }
+}
+
+fn bootstrap_values_equal(left: Option<&Value>, right: Option<&Value>) -> bool {
+    let (Some(left), Some(right)) = (left, right) else {
+        return left.is_none() && right.is_none();
+    };
+    if left == right {
+        return true;
+    }
+    matches!((left.try_decimal(), right.try_decimal()), (Some(a), Some(b)) if a == b)
 }
 
 pub trait SqliteSchemaExt {
@@ -573,11 +603,11 @@ pub fn ensure_sqlite_schema_for(context: &UserContext) -> Result<(), MutationExe
             MutationExecutorError::Bind(format!("missing entity: {}", graph.entity))
         })?;
         let counts = seed_counts.entry(graph.entity.clone()).or_insert((0, 0));
-        if initial_graph_exists_sqlite(executor, dialect, entity, graph)? {
-            if let Some(query) = compile_initial_graph_update(dialect, entity, graph)? {
+        if let Some(current) = initial_graph_row_sqlite(executor, dialect, entity, graph)? {
+            if let Some(query) = compile_initial_graph_update(dialect, entity, graph, &current)? {
                 executor.execute(&query)?;
+                counts.1 += 1;
             }
-            counts.1 += 1;
             if let Some(id) = graph.values.get("id").and_then(Value::try_u64) {
                 id_generator.ensure_floor(&graph.entity, id)?;
             }
@@ -596,7 +626,7 @@ pub fn ensure_sqlite_schema_for(context: &UserContext) -> Result<(), MutationExe
         let entity = context.entity(&graph.entity).ok_or_else(|| {
             MutationExecutorError::Bind(format!("missing entity: {}", graph.entity))
         })?;
-        if initial_graph_exists_sqlite(executor, dialect, entity, graph)? {
+        if initial_graph_row_sqlite(executor, dialect, entity, graph)?.is_some() {
             if let Some(id) = graph.values.get("id").and_then(Value::try_u64) {
                 id_generator.ensure_floor(&graph.entity, id)?;
             }
@@ -1445,6 +1475,16 @@ mod tests {
         ]);
         context.use_sqlite_provider(executor.clone());
         ensure_sqlite_schema_for(&context).unwrap();
+        ensure_sqlite_schema_for(&context).unwrap();
+
+        let unchanged = SqliteDialect
+            .compile_select(
+                &entity,
+                &SelectQuery::new("Order").filter(Expr::eq("id", 1001_u64)),
+            )
+            .unwrap();
+        let rows = executor.fetch_all_compact(&unchanged).unwrap();
+        assert_eq!(rows[0].get("version"), Some(&Value::I64(1)));
 
         context.set_initial_graphs(vec![
             GraphNode::new("Order")
@@ -1465,6 +1505,7 @@ mod tests {
             rows[0].get("name"),
             Some(&Value::Text("crimson".to_owned()))
         );
+        assert_eq!(rows[0].get("version"), Some(&Value::I64(2)));
         let generator = SqliteIdSpaceGenerator::from_executor(executor);
         assert_eq!(generator.next_id("Order").unwrap(), 1002);
     }
