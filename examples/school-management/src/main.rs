@@ -90,7 +90,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     assert_query!("known", Q::schools().with_address_is_known(), 1);
     assert_query!("unknown", Q::schools().with_address_is_unknown(), 0);
-    assert_query!("boolean", Q::schools().which_are_active(), 1);
+    assert_query!("boolean true", Q::schools().which_are_active(), 1);
+    assert_query!("boolean false", Q::schools().which_are_not_active(), 0);
     assert_query!("constant relation", Q::schools().with_school_type_is_primary(), 1);
 
     let related = Q::schools()
