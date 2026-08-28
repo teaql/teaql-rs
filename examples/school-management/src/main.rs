@@ -93,6 +93,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_query!("boolean", Q::schools().which_are_active(), 1);
     assert_query!("constant relation", Q::schools().with_school_type_is_primary(), 1);
 
+    let related = Q::schools()
+        .with_name_is("Riverside Primary School")
+        .select_platform_with(Q::platforms_minimal().select_name().select_base_url())
+        .select_school_type_with(Q::school_types_minimal().select_name().select_code())
+        .comment("Query parity: typed forward relations")
+        .purpose("Execute the shared School Query conformance case")
+        .execute_for_one(&context)
+        .await?
+        .expect("School must exist");
+    assert_eq!(
+        related.platform().expect("Platform must be loaded").name(),
+        "Campus Learning Platform"
+    );
+    assert_eq!(
+        related
+            .school_type()
+            .expect("SchoolType must be loaded")
+            .code(),
+        "PRIMARY"
+    );
+
     let projected = Q::schools()
         .select_name()
         .order_by_id_desc()
