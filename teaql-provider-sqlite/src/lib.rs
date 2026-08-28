@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, TimeZone};
 use rusqlite::types::{Value as SqliteValue, ValueRef};
-use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
+use rusqlite::{
+    Connection, OptionalExtension, Row, functions::FunctionFlags, params, params_from_iter,
+};
 use rust_decimal::Decimal;
 use teaql_core::{
     CompactRow, DataType, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, SelectQuery,
@@ -161,6 +163,7 @@ impl SqliteMutationExecutor {
         dialect: &SqliteDialect,
         entities: &[&EntityDescriptor],
     ) -> Result<(), MutationExecutorError> {
+        self.ensure_soundex_function()?;
         self.ensure_id_space_table(DEFAULT_ID_SPACE_TABLE)?;
 
         for entity in entities {
@@ -185,6 +188,19 @@ impl SqliteMutationExecutor {
             }
         }
         self.clear_query_caches();
+        Ok(())
+    }
+
+    fn ensure_soundex_function(&self) -> Result<(), MutationExecutorError> {
+        self.lock()?.create_scalar_function(
+            "soundex",
+            1,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            |ctx| {
+                let input = ctx.get_raw(0).as_str().ok();
+                Ok(sqlite_compatible_soundex(input))
+            },
+        )?;
         Ok(())
     }
 
@@ -322,6 +338,50 @@ impl SqliteMutationExecutor {
             .lock()
             .map_err(|err| MutationExecutorError::Lock(err.to_string()))
     }
+}
+
+fn sqlite_compatible_soundex(input: Option<&str>) -> String {
+    fn code(byte: u8) -> u8 {
+        match byte.to_ascii_uppercase() {
+            b'B' | b'F' | b'P' | b'V' => 1,
+            b'C' | b'G' | b'J' | b'K' | b'Q' | b'S' | b'X' | b'Z' => 2,
+            b'D' | b'T' => 3,
+            b'L' => 4,
+            b'M' | b'N' => 5,
+            b'R' => 6,
+            _ => 0,
+        }
+    }
+    let Some(input) = input else {
+        return "?000".to_owned();
+    };
+    let Some((first_index, first)) = input
+        .bytes()
+        .enumerate()
+        .find(|(_, byte)| byte.is_ascii_alphabetic())
+    else {
+        return "?000".to_owned();
+    };
+    let mut result = String::with_capacity(4);
+    result.push(char::from(first.to_ascii_uppercase()));
+    let mut previous = code(first);
+    for byte in input.bytes().skip(first_index + 1) {
+        if !byte.is_ascii_alphabetic() {
+            continue;
+        }
+        let current = code(byte);
+        if current != 0 && current != previous {
+            result.push(char::from(b'0' + current));
+            if result.len() == 4 {
+                break;
+            }
+        }
+        previous = current;
+    }
+    while result.len() < 4 {
+        result.push('0');
+    }
+    result
 }
 
 impl teaql_data_service::DataServiceExecutor for SqliteMutationExecutor {
@@ -1133,6 +1193,30 @@ mod tests {
     use teaql_core::{DeleteCommand, Record, RecoverCommand};
     use teaql_macros::TeaqlEntity;
     use teaql_runtime::InMemoryMetadataStore;
+
+    #[test]
+    fn ensure_schema_registers_soundex_idempotently() {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        executor.ensure_schema(&SqliteDialect, &[]).unwrap();
+        executor.ensure_schema(&SqliteDialect, &[]).unwrap();
+        let connection = executor.connection();
+        let guard = connection.lock().unwrap();
+        let encoded: String = guard
+            .query_row("SELECT soundex('Robert')", [], |row| row.get(0))
+            .unwrap();
+        let matches: i64 = guard
+            .query_row("SELECT soundex('Robert') = soundex('Rupert')", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let empty: String = guard
+            .query_row("SELECT soundex(NULL)", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(encoded, "R163");
+        assert_eq!(matches, 1);
+        assert_eq!(empty, "?000");
+    }
 
     #[test]
     fn streaming_sql_yields_bounded_chunks_and_releases_cursor_on_drop() {
