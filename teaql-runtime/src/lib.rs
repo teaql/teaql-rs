@@ -3274,6 +3274,7 @@ mod tests {
             order_by: Vec::new(),
             slice: None,
             partition_by: None,
+            top_n_probe_parent_threshold: None,
             trace_chain: Vec::new(),
             aggregates: vec![
                 Aggregate {

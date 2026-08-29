@@ -36,20 +36,78 @@ fn unique_relation_values(rows: &[CompactRow], field: &str) -> Vec<Value> {
     values.into_iter().map(|(_, value)| value).collect()
 }
 
-const SMALL_PARENT_RELATION_PROBE_LIMIT: usize = 16;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelationTopNExecutionPlan {
+    Window,
+    BoundedProbes,
+}
 
-fn should_use_small_parent_relation_probes(
+fn relation_top_n_operation(
+    plan: &RelationLoadPlan,
+    selected_plan: RelationTopNExecutionPlan,
+    parent_count: usize,
+) -> crate::RuntimeOperation {
+    let configured_threshold = plan
+        .query
+        .as_ref()
+        .and_then(|query| query.top_n_probe_parent_threshold)
+        .unwrap_or(0);
+    let per_parent_limit = plan
+        .query
+        .as_ref()
+        .and_then(|query| query.slice)
+        .and_then(|slice| slice.limit)
+        .unwrap_or(0);
+    crate::RuntimeOperation::new(
+        "relation_load",
+        format!("{}.{}", plan.parent_entity, plan.path),
+    )
+    .attribute("teaql.entity.type", plan.parent_entity.clone())
+    .attribute("teaql.relation.name", plan.path.clone())
+    .attribute("teaql.relation.parent_count", parent_count)
+    .attribute("teaql.relation.per_parent_limit", per_parent_limit as usize)
+    .attribute(
+        "teaql.relation.configured_probe_threshold",
+        configured_threshold,
+    )
+    .attribute(
+        "teaql.relation.selected_plan",
+        match selected_plan {
+            RelationTopNExecutionPlan::Window => "WINDOW",
+            RelationTopNExecutionPlan::BoundedProbes => "BOUNDED_PROBES",
+        },
+    )
+    .attribute(
+        "teaql.relation.probe_count",
+        if selected_plan == RelationTopNExecutionPlan::BoundedProbes {
+            parent_count
+        } else {
+            0
+        },
+    )
+}
+
+fn relation_top_n_execution_plan(
     capabilities: &teaql_data_service::DataServiceCapabilities,
     plan: &RelationLoadPlan,
     parent_count: usize,
-) -> bool {
-    capabilities.small_parent_relation_probes
-        && plan.many
-        && parent_count <= SMALL_PARENT_RELATION_PROBE_LIMIT
-        && plan
-            .query
-            .as_ref()
-            .is_some_and(|query| query.slice.is_some())
+) -> RelationTopNExecutionPlan {
+    let Some(query) = plan.query.as_ref().filter(|_| plan.many) else {
+        return RelationTopNExecutionPlan::Window;
+    };
+    if query.slice.is_none() {
+        return RelationTopNExecutionPlan::Window;
+    }
+    let use_probes = match query.top_n_probe_parent_threshold {
+        Some(0) => false,
+        Some(threshold) => parent_count <= threshold,
+        None => capabilities.small_parent_relation_probes,
+    };
+    if use_probes {
+        RelationTopNExecutionPlan::BoundedProbes
+    } else {
+        RelationTopNExecutionPlan::Window
+    }
 }
 
 impl<'a, E> EntityDataService<'a, E>
@@ -471,13 +529,12 @@ where
         Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
     > {
         Box::pin(async move {
+            let capabilities =
+                teaql_data_service::DataServiceExecutor::capabilities(self.data_service.executor);
+            let parent_count = unique_relation_values(parent_rows, &plan.local_key).len();
+            let selected_plan = relation_top_n_execution_plan(&capabilities, plan, parent_count);
             let scope = self.data_service.metadata.context.start_runtime_operation(
-                crate::RuntimeOperation::new(
-                    "relation_load",
-                    format!("{}.{}", plan.parent_entity, plan.path),
-                )
-                .attribute("teaql.entity.type", plan.parent_entity.clone())
-                .attribute("teaql.relation.name", plan.path.clone()),
+                relation_top_n_operation(plan, selected_plan, parent_count),
             );
             let result = scope
                 .run(async {
@@ -863,7 +920,8 @@ where
 
         let capabilities =
             teaql_data_service::DataServiceExecutor::capabilities(self.data_service.executor);
-        let probe = should_use_small_parent_relation_probes(&capabilities, plan, ids.len());
+        let probe = relation_top_n_execution_plan(&capabilities, plan, ids.len())
+            == RelationTopNExecutionPlan::BoundedProbes;
 
         if !probe {
             let query = if compact {
@@ -877,7 +935,12 @@ where
         // With execution metadata disabled, retain one semantic partition query and let an
         // embedded provider execute its indexed parent probes behind one executor boundary.
         // When metadata is enabled we intentionally keep one observable result per SQL probe.
-        if !self.data_service.metadata.capture_execution_metadata() {
+        let provider_owns_probe_batch = capabilities.small_parent_relation_probes
+            && plan
+                .query
+                .as_ref()
+                .is_none_or(|query| query.top_n_probe_parent_threshold.is_none());
+        if provider_owns_probe_batch && !self.data_service.metadata.capture_execution_metadata() {
             let query = if compact {
                 self.query_for_compact_plan(plan, parent_rows)
             } else {
@@ -1054,25 +1117,80 @@ mod planner_tests {
     }
 
     #[test]
-    fn small_parent_probe_requires_provider_opt_in_and_bounded_parent_set() {
+    fn top_n_plan_respects_server_default_threshold_and_sqlite_policy() {
         let plan = limited_many_plan();
         let mut capabilities = teaql_data_service::DataServiceCapabilities::default();
-        assert!(!should_use_small_parent_relation_probes(
-            &capabilities,
-            &plan,
-            6
-        ));
+        assert_eq!(
+            relation_top_n_execution_plan(&capabilities, &plan, 6),
+            RelationTopNExecutionPlan::Window
+        );
 
         capabilities.small_parent_relation_probes = true;
-        assert!(should_use_small_parent_relation_probes(
-            &capabilities,
-            &plan,
-            6
-        ));
-        assert!(!should_use_small_parent_relation_probes(
-            &capabilities,
-            &plan,
-            SMALL_PARENT_RELATION_PROBE_LIMIT + 1
-        ));
+        assert_eq!(
+            relation_top_n_execution_plan(&capabilities, &plan, 10_000),
+            RelationTopNExecutionPlan::BoundedProbes
+        );
+
+        let mut threshold_plan = plan.clone();
+        threshold_plan
+            .query
+            .as_mut()
+            .unwrap()
+            .top_n_probe_parent_threshold = Some(4);
+        capabilities.small_parent_relation_probes = false;
+        assert_eq!(
+            relation_top_n_execution_plan(&capabilities, &threshold_plan, 4),
+            RelationTopNExecutionPlan::BoundedProbes
+        );
+        assert_eq!(
+            relation_top_n_execution_plan(&capabilities, &threshold_plan, 5),
+            RelationTopNExecutionPlan::Window
+        );
+
+        threshold_plan
+            .query
+            .as_mut()
+            .unwrap()
+            .top_n_probe_parent_threshold = Some(0);
+        capabilities.small_parent_relation_probes = true;
+        assert_eq!(
+            relation_top_n_execution_plan(&capabilities, &threshold_plan, 1),
+            RelationTopNExecutionPlan::Window
+        );
+    }
+
+    #[test]
+    fn top_n_plan_telemetry_is_safe_and_complete() {
+        let mut plan = limited_many_plan();
+        plan.query.as_mut().unwrap().top_n_probe_parent_threshold = Some(32);
+        let operation =
+            relation_top_n_operation(&plan, RelationTopNExecutionPlan::BoundedProbes, 6);
+
+        assert_eq!(operation.family, "relation_load");
+        assert_eq!(
+            operation.attributes.get("teaql.relation.selected_plan"),
+            Some(&crate::RuntimeAttributeValue::String(
+                "BOUNDED_PROBES".to_owned()
+            ))
+        );
+        assert_eq!(
+            operation.attributes.get("teaql.relation.parent_count"),
+            Some(&crate::RuntimeAttributeValue::Integer(6))
+        );
+        assert_eq!(
+            operation.attributes.get("teaql.relation.per_parent_limit"),
+            Some(&crate::RuntimeAttributeValue::Integer(10))
+        );
+        assert_eq!(
+            operation
+                .attributes
+                .get("teaql.relation.configured_probe_threshold"),
+            Some(&crate::RuntimeAttributeValue::Integer(32))
+        );
+        assert_eq!(
+            operation.attributes.get("teaql.relation.probe_count"),
+            Some(&crate::RuntimeAttributeValue::Integer(6))
+        );
+        assert!(!operation.attributes.contains_key("teaql.entity.id"));
     }
 }

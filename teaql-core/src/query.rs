@@ -74,6 +74,27 @@ mod hard_limit_tests {
     fn id_set_pagination_rejects_zero_limit() {
         let _ = SelectQuery::new("Order").optimize_pagination_with_id_set_config("orders", 30, 0);
     }
+
+    #[test]
+    fn top_n_probe_threshold_is_explicit_and_zero_selects_window() {
+        assert!(
+            SelectQuery::new("Trip")
+                .top_n_probe_parent_threshold
+                .is_none()
+        );
+        assert_eq!(
+            SelectQuery::new("Trip")
+                .top_n_probe_parent_threshold(32)
+                .top_n_probe_parent_threshold,
+            Some(32)
+        );
+        assert_eq!(
+            SelectQuery::new("Trip")
+                .top_n_probe_parent_threshold(0)
+                .top_n_probe_parent_threshold,
+            Some(0)
+        );
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -423,6 +444,10 @@ pub struct SelectQuery {
     pub slice: Option<Slice>,
     /// Apply `slice` independently inside each value of this property.
     pub partition_by: Option<String>,
+    /// Optional bounded-probe override for per-parent Top-N relation loading.
+    /// Zero forces the provider's window plan; a positive value permits probes
+    /// only when the already-loaded parent count does not exceed the value.
+    pub top_n_probe_parent_threshold: Option<usize>,
     pub aggregates: Vec<Aggregate>,
     pub group_by: Vec<String>,
     pub relations: Vec<RelationLoad>,
@@ -455,6 +480,7 @@ impl SelectQuery {
             order_by: Vec::new(),
             slice: None,
             partition_by: None,
+            top_n_probe_parent_threshold: None,
             aggregates: Vec::new(),
             group_by: Vec::new(),
             relations: Vec::new(),
@@ -816,6 +842,15 @@ impl SelectQuery {
     /// method directly.
     pub fn partition_by(mut self, field: impl Into<String>) -> Self {
         self.partition_by = Some(field.into());
+        self
+    }
+
+    /// Override the provider's per-parent Top-N execution policy.
+    ///
+    /// `0` selects the window plan. A positive threshold selects bounded
+    /// probes only when the parent rows already in memory are at or below it.
+    pub fn top_n_probe_parent_threshold(mut self, threshold: usize) -> Self {
+        self.top_n_probe_parent_threshold = Some(threshold);
         self
     }
 
