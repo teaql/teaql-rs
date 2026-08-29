@@ -49,9 +49,19 @@ impl TfpEndpointError {
             Self::TranslationError(message)
                 if message.contains("Field is not allowed")
                     || message.contains("not writable")
-                    || message.contains("Unknown field") =>
+                    || message.contains("Unknown field")
+                    || message.contains("Unknown or forbidden field") =>
             {
                 "TFP_FORBIDDEN_FIELD"
+            }
+            Self::TranslationError(message)
+                if message.starts_with("Unsupported predicate operator")
+                    || message.starts_with("Filter must not be empty")
+                    || message.starts_with("Predicate for ")
+                    || message.starts_with("$in size must be")
+                    || message.starts_with("$contains requires") =>
+            {
+                "TFP_INVALID_REQUEST"
             }
             Self::TranslationError(_) => "TFP_POLICY_VIOLATION",
             Self::ExecutionError(_) => "TFP_EXECUTION_FAILED",
@@ -718,6 +728,24 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn unsupported_predicate_is_an_invalid_request() {
+        let endpoint = TfpEndpoint::new(Arc::new(StubExecutor), Arc::new(StubExecutor));
+        let error = endpoint
+            .handle_query(
+                &trusted(),
+                json!({
+                    "entity":"CustomerOrder",
+                    "filterCondition":{"id":{"$ne":7}},
+                    "commentText":"exercise invalid operator",
+                    "purposeText":"verify stable TFP error classification"
+                }),
+            )
+            .await
+            .expect_err("unsupported operator must fail closed");
+        assert_eq!(error.code(), "TFP_INVALID_REQUEST");
     }
 
     #[test]
