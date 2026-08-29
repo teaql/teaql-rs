@@ -2023,6 +2023,7 @@ mod tests {
         let mut parents = vec![
             teaql_core::CompactRow::from_map(Record::from([(String::from("id"), Value::U64(11))])),
             teaql_core::CompactRow::from_map(Record::from([(String::from("id"), Value::U64(12))])),
+            teaql_core::CompactRow::from_map(Record::from([(String::from("id"), Value::U64(13))])),
         ];
 
         repo.enhance_relations_internal(&mut parents).await.unwrap();
@@ -2045,7 +2046,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn relation_limit_is_partitioned_per_parent_and_rank_is_internal() {
+    async fn topn_006_008_009_relation_is_stable_empty_safe_and_count_free() {
         let mut rows = Vec::new();
         for (order_id, first_line_id) in [(11_u64, 101_u64), (12_u64, 201_u64)] {
             for rank in 1_u64..=3 {
@@ -2083,7 +2084,7 @@ mod tests {
         let query = SelectQuery::new("Order").relation_query(
             "lines",
             SelectQuery::new("OrderLine")
-                .order_by(OrderBy::desc("id"))
+                .order_by(OrderBy::desc("name"))
                 .limit(3),
         );
 
@@ -2096,14 +2097,24 @@ mod tests {
             .unwrap()
             .queries
             .lock()
-            .unwrap()[0];
+            .unwrap();
+        assert_eq!(
+            captured.len(),
+            1,
+            "TOPN-009 must not issue a plan-selection count query"
+        );
+        assert!(captured[0].aggregates.is_empty());
+        let captured = &captured[0];
         assert_eq!(captured.partition_by.as_deref(), Some("order_id"));
         assert_eq!(captured.slice.and_then(|slice| slice.limit), Some(3));
-        for parent in &parents {
+        assert_eq!(captured.order_by.len(), 2);
+        assert_eq!(captured.order_by[0], OrderBy::desc("name"));
+        assert_eq!(captured.order_by[1], OrderBy::asc("id"));
+        for (index, parent) in parents.iter().enumerate() {
             let Some(Value::List(lines)) = parent.get("lines") else {
                 panic!("missing relation lines")
             };
-            assert_eq!(lines.len(), 3);
+            assert_eq!(lines.len(), if index < 2 { 3 } else { 0 });
             assert!(lines.iter().all(|line| match line {
                 Value::Object(line) => !line.contains_key(teaql_core::PARTITION_RANK_PROPERTY),
                 _ => false,

@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::slice;
 
 use teaql_core::{
-    Aggregate, CompactRow, Expr, ObjectGroupBy, RelationAggregate, RelationLoad, SelectQuery, Value,
+    Aggregate, CompactRow, Expr, ObjectGroupBy, OrderBy, RelationAggregate, RelationLoad,
+    SelectQuery, Value,
 };
 
 use crate::{DataServiceError, MetadataStore, RuntimeError};
@@ -897,6 +898,7 @@ where
         for child in &plan.children {
             ensure_projection(&mut query, &child.local_key);
         }
+        self.ensure_stable_top_n_order(plan, &mut query);
         if !ids.is_empty() {
             query = query.and_filter(Expr::in_list(plan.foreign_key.clone(), ids));
         }
@@ -970,7 +972,29 @@ where
         for child in &plan.children {
             ensure_projection(&mut query, &child.local_key);
         }
+        self.ensure_stable_top_n_order(plan, &mut query);
         query
+    }
+
+    fn ensure_stable_top_n_order(&self, plan: &RelationLoadPlan, query: &mut SelectQuery) {
+        if query.slice.is_none() {
+            return;
+        }
+        let Some(id_property) = self
+            .data_service
+            .metadata
+            .entity(&plan.target_entity)
+            .and_then(|entity| entity.id_property())
+        else {
+            return;
+        };
+        if !query
+            .order_by
+            .iter()
+            .any(|order| order.expr.is_none() && order.field == id_property.name)
+        {
+            query.order_by.push(OrderBy::asc(id_property.name.clone()));
+        }
     }
 
     fn query_for_compact_plan(
@@ -993,6 +1017,7 @@ where
         for child in &plan.children {
             ensure_projection(&mut query, &child.local_key);
         }
+        self.ensure_stable_top_n_order(plan, &mut query);
         if !ids.is_empty() {
             query = query.and_filter(Expr::in_list(plan.foreign_key.clone(), ids));
         }
@@ -1117,7 +1142,7 @@ mod planner_tests {
     }
 
     #[test]
-    fn top_n_plan_respects_server_default_threshold_and_sqlite_policy() {
+    fn topn_001_002_003_004_plan_respects_default_threshold_and_sqlite_policy() {
         let plan = limited_many_plan();
         let mut capabilities = teaql_data_service::DataServiceCapabilities::default();
         assert_eq!(
@@ -1160,7 +1185,7 @@ mod planner_tests {
     }
 
     #[test]
-    fn top_n_plan_telemetry_is_safe_and_complete() {
+    fn topn_010_plan_telemetry_is_safe_and_complete() {
         let mut plan = limited_many_plan();
         plan.query.as_mut().unwrap().top_n_probe_parent_threshold = Some(32);
         let operation =

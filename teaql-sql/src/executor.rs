@@ -763,7 +763,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn executes_trace_off_partition_query_as_one_repeated_probe() {
+    async fn topn_004_011_sqlite_reuses_one_repeated_probe_boundary() {
         let calls = Arc::new(AtomicUsize::new(0));
         let single_calls = Arc::new(AtomicUsize::new(0));
         let executor = SqlDataServiceExecutor::new(
@@ -822,7 +822,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explicit_zero_threshold_forces_window_for_probe_provider() {
+    async fn topn_001_explicit_zero_threshold_forces_window_for_probe_provider() {
         let calls = Arc::new(AtomicUsize::new(0));
         let single_calls = Arc::new(AtomicUsize::new(0));
         let executor = SqlDataServiceExecutor::new(
@@ -849,6 +849,31 @@ mod tests {
 
         assert_eq!(calls.load(Ordering::Relaxed), 0);
         assert_eq!(single_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn topn_007_probe_rewrites_only_partition_membership_filter() {
+        let policy = Expr::eq("tenant_id", 7_u64);
+        let visibility = Expr::gt("version", 0_i64);
+        let business = Expr::eq("status", "ACTIVE");
+        let query = SelectQuery::new("Order")
+            .filter(Expr::and([
+                Expr::in_list("owner_id", [Value::U64(11), Value::U64(12)]),
+                policy.clone(),
+                visibility.clone(),
+                business.clone(),
+            ]))
+            .order_desc("id")
+            .limit(3)
+            .partition_by("owner_id");
+
+        let probe = scalar_partition_probe_query(&query, Value::U64(11)).unwrap();
+        let expected = Expr::and([Expr::eq("owner_id", 11_u64), policy, visibility, business]);
+
+        assert_eq!(probe.filter, Some(expected));
+        assert!(probe.partition_by.is_none());
+        assert_eq!(probe.order_by, query.order_by);
+        assert_eq!(probe.slice, query.slice);
     }
 
     #[tokio::test]

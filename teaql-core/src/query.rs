@@ -76,7 +76,7 @@ mod hard_limit_tests {
     }
 
     #[test]
-    fn top_n_probe_threshold_is_explicit_and_zero_selects_window() {
+    fn topn_001_002_003_probe_threshold_is_explicit_and_bounded() {
         assert!(
             SelectQuery::new("Trip")
                 .top_n_probe_parent_threshold

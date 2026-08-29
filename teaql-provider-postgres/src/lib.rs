@@ -939,7 +939,7 @@ mod streaming_tests {
     }
 
     #[tokio::test]
-    async fn ensure_schema_creates_relation_index_on_first_run_and_is_idempotent() {
+    async fn topn_012_ensure_schema_creates_relation_index_idempotently() {
         let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
             return;
         };
@@ -1838,7 +1838,7 @@ mod tests {
     }
 
     #[test]
-    fn postgres_schema_adds_full_foreign_key_id_desc_index() {
+    fn topn_012_postgres_schema_adds_full_foreign_key_id_desc_index() {
         let trip = EntityDescriptor::new("Trip")
             .table_name("trip_data")
             .property(

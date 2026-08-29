@@ -1903,6 +1903,105 @@ mod tests {
     }
 
     #[test]
+    fn topn_005_007_window_and_probes_preserve_results_and_predicates() {
+        futures_executor::block_on(async {
+            #[derive(Clone)]
+            struct FixedSchema(Arc<EntityDescriptor>);
+
+            impl teaql_data_service::SchemaProvider for FixedSchema {
+                fn get_entity(&self, name: &str) -> Option<Arc<EntityDescriptor>> {
+                    (name == self.0.name).then(|| self.0.clone())
+                }
+            }
+
+            let transport =
+                SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+            let entity = Arc::new(order_line_entity());
+            transport
+                .ensure_schema(&SqliteDialect, &[entity.as_ref()])
+                .unwrap();
+
+            for order_id in [11_u64, 12_u64, 13_u64] {
+                for index in 1_u64..=5 {
+                    let id = order_id * 100 + index;
+                    let name = if index == 4 { "excluded" } else { "visible" };
+                    let insert = SqliteDialect
+                        .compile_insert(
+                            &entity,
+                            &InsertCommand::new("OrderLine")
+                                .value("id", id)
+                                .value("order_id", order_id)
+                                .value("name", name),
+                        )
+                        .unwrap();
+                    transport.execute(&insert).unwrap();
+                }
+            }
+
+            let executor = teaql_sql::SqlDataServiceExecutor::new(
+                SqliteDialect,
+                transport,
+                FixedSchema(entity),
+            );
+            let base = SelectQuery::new("OrderLine")
+                .project("id")
+                .project("order_id")
+                .project("name")
+                .filter(Expr::in_list("order_id", [Value::U64(11), Value::U64(12)]))
+                .and_filter(Expr::eq("name", "visible"))
+                .order_desc("id")
+                .limit(3)
+                .partition_by("order_id");
+            let execute = |query| {
+                teaql_data_service::QueryExecutor::query(
+                    &executor,
+                    teaql_data_service::QueryRequest {
+                        query,
+                        trace_chain: Vec::new(),
+                        comment: Some("TOPN plan equivalence".to_owned()),
+                        capture_debug_query: false,
+                        capture_execution_metadata: false,
+                    },
+                )
+            };
+
+            let probes = execute(base.clone()).await.unwrap().rows;
+            let window = execute(base.top_n_probe_parent_threshold(0))
+                .await
+                .unwrap()
+                .rows;
+            let children_of = |rows: &[CompactRow], parent: i64| {
+                rows.iter()
+                    .filter(|row| row.get("order_id") == Some(&Value::I64(parent)))
+                    .map(|row| (row.get("id").cloned(), row.get("name").cloned()))
+                    .collect::<Vec<_>>()
+            };
+
+            for parent in [11_i64, 12_i64] {
+                assert_eq!(children_of(&probes, parent), children_of(&window, parent));
+            }
+            assert_eq!(
+                children_of(&window, 11),
+                vec![
+                    (Some(Value::I64(1105)), Some(Value::Text("visible".into()))),
+                    (Some(Value::I64(1103)), Some(Value::Text("visible".into()))),
+                    (Some(Value::I64(1102)), Some(Value::Text("visible".into()))),
+                ]
+            );
+            assert_eq!(
+                children_of(&window, 12),
+                vec![
+                    (Some(Value::I64(1205)), Some(Value::Text("visible".into()))),
+                    (Some(Value::I64(1203)), Some(Value::Text("visible".into()))),
+                    (Some(Value::I64(1202)), Some(Value::Text("visible".into()))),
+                ]
+            );
+            assert!(children_of(&probes, 13).is_empty());
+            assert!(children_of(&window, 13).is_empty());
+        });
+    }
+
+    #[test]
     fn sqlite_boolean_new_schema_roundtrips_as_bool() {
         let executor =
             SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
