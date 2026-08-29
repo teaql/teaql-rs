@@ -33,6 +33,8 @@ impl QueryExecutor for StubExecutor {
         let mut row = Record::new();
         row.insert("id".into(), Value::I64(7));
         row.insert("status".into(), Value::Text("NEW".into()));
+        row.insert("orderNumber".into(), Value::Text("ORD-007".into()));
+        row.insert("reviewed".into(), Value::Bool(true));
         Ok(QueryResult {
             rows: vec![teaql_core::CompactRow::from_map(row)],
             metadata: metadata(DataServiceOperation::Query, Some(1), None, request.comment),
@@ -120,6 +122,7 @@ fn trusted() -> TrustedQueryContext {
         ("id".into(), "id".into()),
         ("status".into(), "status".into()),
         ("orderNumber".into(), "order_number".into()),
+        ("reviewed".into(), "reviewed".into()),
     ]);
     TrustedQueryContext {
         tenant_field: "tenant_id".into(),

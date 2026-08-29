@@ -55,11 +55,11 @@ impl TfpEndpointError {
                 "TFP_FORBIDDEN_FIELD"
             }
             Self::TranslationError(message)
-                if message.starts_with("Unsupported predicate operator")
+                if message.starts_with('$')
+                    || message.starts_with("Unsupported predicate operator")
                     || message.starts_with("Filter must not be empty")
                     || message.starts_with("Predicate for ")
-                    || message.starts_with("$in size must be")
-                    || message.starts_with("$contains requires") =>
+                    || message.contains("does not accept null") =>
             {
                 "TFP_INVALID_REQUEST"
             }
@@ -738,7 +738,7 @@ mod tests {
                 &trusted(),
                 json!({
                     "entity":"CustomerOrder",
-                    "filterCondition":{"id":{"$ne":7}},
+                    "filterCondition":{"id":{"$wat":7}},
                     "commentText":"exercise invalid operator",
                     "purposeText":"verify stable TFP error classification"
                 }),

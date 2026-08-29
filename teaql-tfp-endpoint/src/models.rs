@@ -265,31 +265,84 @@ pub fn parse_json_filter(value: &JsonValue) -> Result<Expr, String> {
         }
         let (operator, operand) = predicates.iter().next().unwrap();
         let expression = match operator.as_str() {
-            "$eq" => Expr::eq(field, json_value(operand)?),
+            "$eq" => Expr::eq(field, non_null_value(operator, operand)?),
+            "$ne" => Expr::ne(field, non_null_value(operator, operand)?),
+            "$gt" => Expr::gt(field, non_null_value(operator, operand)?),
             "$gte" => Expr::gte(field, json_value(operand)?),
+            "$lt" => Expr::lt(field, non_null_value(operator, operand)?),
             "$lte" => Expr::lte(field, json_value(operand)?),
             "$contains" => Expr::contain(
                 field,
                 operand.as_str().ok_or("$contains requires a string")?,
             ),
-            "$in" => {
-                let values = operand.as_array().ok_or("$in requires an array")?;
-                if values.is_empty() || values.len() > 100 {
-                    return Err("$in size must be between 1 and 100".into());
-                }
-                Expr::in_list(
-                    field,
-                    values
-                        .iter()
-                        .map(json_value)
-                        .collect::<Result<Vec<_>, _>>()?,
-                )
+            "$notContains" => Expr::not_contain(
+                field,
+                operand.as_str().ok_or("$notContains requires a string")?,
+            ),
+            "$startsWith" => Expr::begin_with(
+                field,
+                operand.as_str().ok_or("$startsWith requires a string")?,
+            ),
+            "$notStartsWith" => Expr::not_begin_with(
+                field,
+                operand.as_str().ok_or("$notStartsWith requires a string")?,
+            ),
+            "$endsWith" => Expr::end_with(
+                field,
+                operand.as_str().ok_or("$endsWith requires a string")?,
+            ),
+            "$notEndsWith" => Expr::not_end_with(
+                field,
+                operand.as_str().ok_or("$notEndsWith requires a string")?,
+            ),
+            "$in" => Expr::in_list(field, bounded_list(operator, operand)?),
+            "$notIn" => Expr::not_in_list(field, bounded_list(operator, operand)?),
+            "$between" => {
+                let values = operand
+                    .as_array()
+                    .filter(|values| values.len() == 2)
+                    .ok_or("$between requires exactly two values")?;
+                Expr::between(field, json_value(&values[0])?, json_value(&values[1])?)
+            }
+            "$isKnown" => {
+                require_true(operator, operand)?;
+                Expr::is_not_null(field)
+            }
+            "$isUnknown" => {
+                require_true(operator, operand)?;
+                Expr::is_null(field)
             }
             _ => return Err(format!("Unsupported predicate operator: {operator}")),
         };
         expressions.push(expression);
     }
     Ok(combine_and(expressions).unwrap())
+}
+
+fn non_null_value(operator: &str, operand: &JsonValue) -> Result<Value, String> {
+    if operand.is_null() {
+        return Err(format!(
+            "{operator} does not accept null; use $isKnown or $isUnknown"
+        ));
+    }
+    json_value(operand)
+}
+
+fn bounded_list(operator: &str, operand: &JsonValue) -> Result<Vec<Value>, String> {
+    let values = operand
+        .as_array()
+        .ok_or_else(|| format!("{operator} requires an array"))?;
+    if values.is_empty() || values.len() > 100 {
+        return Err(format!("{operator} size must be between 1 and 100"));
+    }
+    values.iter().map(json_value).collect()
+}
+
+fn require_true(operator: &str, operand: &JsonValue) -> Result<(), String> {
+    if operand == &JsonValue::Bool(true) {
+        return Ok(());
+    }
+    Err(format!("{operator} requires true"))
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -455,6 +508,39 @@ mod tests {
                 .map_fields(&BTreeMap::from([("id".into(), "id".into())]))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn parses_extended_portable_predicates_and_nullable_boolean() {
+        for filter in [
+            json!({"id":{"$ne":8}}),
+            json!({"id":{"$notIn":[8,9]}}),
+            json!({"id":{"$gt":6}}),
+            json!({"id":{"$lt":8}}),
+            json!({"id":{"$between":[7,9]}}),
+            json!({"orderNumber":{"$notContains":"BAD"}}),
+            json!({"orderNumber":{"$startsWith":"ORD"}}),
+            json!({"orderNumber":{"$notStartsWith":"BAD"}}),
+            json!({"orderNumber":{"$endsWith":"007"}}),
+            json!({"orderNumber":{"$notEndsWith":"999"}}),
+            json!({"reviewed":{"$isKnown":true}}),
+            json!({"reviewed":{"$isUnknown":true}}),
+            json!({"reviewed":{"$eq":true}}),
+            json!({"reviewed":{"$eq":false}}),
+        ] {
+            parse_json_filter(&filter).unwrap_or_else(|error| {
+                panic!("failed to parse {filter}: {error}")
+            });
+        }
+        for filter in [
+            json!({"id":{"$between":[7]}}),
+            json!({"id":{"$notIn":[]}}),
+            json!({"reviewed":{"$isKnown":false}}),
+            json!({"reviewed":{"$isUnknown":null}}),
+            json!({"reviewed":{"$eq":null}}),
+        ] {
+            assert!(parse_json_filter(&filter).is_err(), "accepted {filter}");
+        }
     }
 
     #[test]
