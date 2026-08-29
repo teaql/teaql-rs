@@ -124,7 +124,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     assert_eq!(projected.len(), 1);
     assert_eq!(projected[0].name(), "Riverside Primary School");
-    println!("PASS Rust School bootstrap and portable Query parity");
+
+    let include_all = Q::schools()
+        .with_name_containing("Primary")
+        .facet_by_school_type_as_with_options(
+            "schoolTypeFacet",
+            Q::school_types_minimal()
+                .select_code()
+                .count_schools_as("schoolCount"),
+            true,
+        )
+        .comment("Facet SchoolType values including zero-count constants")
+        .purpose("Verify Rust native SQLite Facet semantics")
+        .execute_for_list(&context)
+        .await?;
+    let all_values = include_all
+        .facet("schoolTypeFacet")
+        .expect("SchoolType facet must be attached to SmartList");
+    assert_eq!(all_values.len(), 2);
+    assert_eq!(all_values[0].get("code").and_then(|v| v.try_text()), Some("PRIMARY"));
+    assert_eq!(all_values[0].get("schoolCount").and_then(|v| v.try_u64()), Some(1));
+    assert_eq!(all_values[1].get("code").and_then(|v| v.try_text()), Some("SECONDARY"));
+    assert_eq!(all_values[1].get("schoolCount").and_then(|v| v.try_u64()), Some(0));
+
+    let matched_only = Q::schools()
+        .with_name_containing("Primary")
+        .facet_by_school_type_as_with_options(
+            "schoolTypeFacet",
+            Q::school_types_minimal()
+                .select_code()
+                .count_schools_as("schoolCount"),
+            false,
+        )
+        .comment("Facet only SchoolType values matched by the outer School filter")
+        .purpose("Verify Rust native SQLite matched-only Facet semantics")
+        .execute_for_list(&context)
+        .await?;
+    let matched_values = matched_only
+        .facet("schoolTypeFacet")
+        .expect("Matched SchoolType facet must be attached to SmartList");
+    assert_eq!(matched_values.len(), 1);
+    assert_eq!(matched_values[0].get("code").and_then(|v| v.try_text()), Some("PRIMARY"));
+    assert_eq!(matched_values[0].get("schoolCount").and_then(|v| v.try_u64()), Some(1));
+
+    println!("PASS Rust School bootstrap, portable Query, and native SQLite Facet parity");
     std::fs::remove_file(database)?;
     Ok(())
 }
