@@ -822,6 +822,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn explicit_zero_threshold_forces_window_for_probe_provider() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let single_calls = Arc::new(AtomicUsize::new(0));
+        let executor = SqlDataServiceExecutor::new(
+            ProbeDialect,
+            RepeatedProbeTransport {
+                calls: calls.clone(),
+                single_calls: single_calls.clone(),
+            },
+            CountingSchemaProvider {
+                lookups: Arc::new(AtomicUsize::new(0)),
+            },
+        );
+        let mut request = query_request(false);
+        request.capture_execution_metadata = false;
+        request.query = request
+            .query
+            .filter(Expr::in_list("id", [Value::U64(7), Value::U64(9)]))
+            .order_desc("id")
+            .limit(1)
+            .partition_by("id")
+            .top_n_probe_parent_threshold(0);
+
+        executor.query(request).await.unwrap();
+
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        assert_eq!(single_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
     async fn cached_select_plan_rebinds_values_and_separates_in_list_lengths() {
         let lookups = Arc::new(AtomicUsize::new(0));
         let executor = SqlDataServiceExecutor::new(
@@ -1009,6 +1039,7 @@ impl<
 
             if !request.capture_execution_metadata
                 && self.dialect.prefers_small_parent_relation_probes()
+                && request.query.top_n_probe_parent_threshold.is_none()
                 && let Some(values) = partition_probe_values(&request.query)
                 && values.len() >= 2
                 && let (Some(first_query), Some(second_query)) = (
