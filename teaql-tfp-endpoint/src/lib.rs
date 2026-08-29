@@ -8,7 +8,7 @@ use teaql_runtime::{
 use thiserror::Error;
 
 pub mod models;
-use models::{TfpMutationQuery, TfpSelectQuery};
+use models::{TfpFacetRequest, TfpMutationQuery, TfpSelectQuery};
 
 #[derive(Clone, Debug)]
 pub struct TrustedQueryContext {
@@ -59,6 +59,11 @@ impl TfpEndpointError {
                     || message.starts_with("Unsupported predicate operator")
                     || message.starts_with("Filter must not be empty")
                     || message.starts_with("Predicate for ")
+                    || message.starts_with("Facet ")
+                    || message.starts_with("A TFP query may")
+                    || message.starts_with("A TFP facet")
+                    || message.starts_with("Nested facets")
+                    || message.starts_with("Duplicate facet")
                     || message.contains("does not accept null") =>
             {
                 "TFP_INVALID_REQUEST"
@@ -169,9 +174,12 @@ where
                     tfp_query.entity
                 ))
             })?;
+        prepare_facets(trusted, &mut tfp_query)
+            .map_err(TfpEndpointError::TranslationError)?;
         tfp_query
             .map_fields(mappings)
             .map_err(TfpEndpointError::TranslationError)?;
+        let facets = std::mem::take(&mut tfp_query.facets);
         let client_comment = tfp_query
             .generated_comment
             .clone()
@@ -206,6 +214,7 @@ where
         };
         core_query.trace_chain.push(trace.clone());
 
+        let outer_query = core_query.clone();
         let request = QueryRequest {
             query: core_query,
             trace_chain: vec![trace],
@@ -230,6 +239,10 @@ where
             .collect();
 
         response_obj.insert("data".to_string(), JsonValue::Array(rows_json));
+        let facet_values = self
+            .execute_facets(trusted, &outer_query, facets)
+            .await?;
+        response_obj.insert("facets".to_string(), JsonValue::Object(facet_values));
         response_obj.insert("resultCode".to_string(), JsonValue::Number(0.into()));
         response_obj.insert("status".to_string(), JsonValue::String("YES".to_string()));
         let trace_json = result
@@ -254,6 +267,98 @@ where
         );
 
         Ok(JsonValue::Object(response_obj))
+    }
+
+    async fn execute_facets(
+        &self,
+        trusted: &TrustedQueryContext,
+        outer_query: &teaql_core::SelectQuery,
+        facets: Vec<TfpFacetRequest>,
+    ) -> Result<serde_json::Map<String, JsonValue>, TfpEndpointError> {
+        let mut output = serde_json::Map::new();
+        for facet in facets {
+            let mut membership = outer_query.clone();
+            membership.projection.clear();
+            membership.expr_projection.clear();
+            membership.order_by.clear();
+            membership.slice = None;
+            membership.group_by = vec![facet.relation_name.clone()];
+            membership.aggregates = vec![teaql_core::Aggregate::new(
+                teaql_core::AggregateFunction::Count,
+                "id",
+                "__tfpFacetCount",
+            )];
+            let membership_result = self
+                .query_executor
+                .query(QueryRequest {
+                    query: membership,
+                    trace_chain: vec![],
+                    comment: Some(format!("TFP facet membership: {}", facet.facet_name)),
+                    capture_debug_query: false,
+                    capture_execution_metadata: true,
+                })
+                .await
+                .map_err(|error| TfpEndpointError::ExecutionError(error.to_string()))?;
+            let mut counts = std::collections::BTreeMap::new();
+            for row in &membership_result.rows {
+                let Some(id) = row.get(&facet.relation_name).map(value_as_json) else {
+                    continue;
+                };
+                let count = row
+                    .get("__tfpFacetCount")
+                    .map(value_as_json)
+                    .and_then(|value| value.as_i64())
+                    .unwrap_or(0);
+                counts.insert(json_key(&id), count);
+            }
+
+            let aliases = facet
+                .query
+                .aggregate_items
+                .iter()
+                .map(|aggregate| aggregate.alias.clone())
+                .collect::<Vec<_>>();
+            let mut nested = *facet.query;
+            nested.aggregate_items.clear();
+            nested.group_by_items.clear();
+            let mut nested_query = nested
+                .to_core()
+                .map_err(TfpEndpointError::TranslationError)?;
+            let tenant = teaql_core::Expr::eq(&trusted.tenant_field, trusted.tenant_id.clone());
+            nested_query.filter = Some(match nested_query.filter.take() {
+                Some(filter) => teaql_core::Expr::And(vec![tenant, filter]),
+                None => tenant,
+            });
+            let nested_result = self
+                .query_executor
+                .query(QueryRequest {
+                    query: nested_query,
+                    trace_chain: vec![],
+                    comment: Some(format!("TFP facet values: {}", facet.facet_name)),
+                    capture_debug_query: false,
+                    capture_execution_metadata: true,
+                })
+                .await
+                .map_err(|error| TfpEndpointError::ExecutionError(error.to_string()))?;
+            let mut values = Vec::new();
+            for row in &nested_result.rows {
+                let mut value = teaql_core::compact_row_to_json_value(row);
+                let id = value.get("id").cloned().unwrap_or(JsonValue::Null);
+                let key = json_key(&id);
+                if !facet.include_all_facets && !counts.contains_key(&key) {
+                    continue;
+                }
+                let count = counts.get(&key).copied().unwrap_or(0);
+                if let Some(object) = value.as_object_mut() {
+                    for alias in &aliases {
+                        object.insert(alias.clone(), JsonValue::Number(count.into()));
+                    }
+                }
+                values.push(value);
+            }
+            output.insert(facet.facet_name, JsonValue::Array(values));
+        }
+        Ok(output)
     }
 
     /// Handles a TFP Mutation request (usually mapped to /mutate).
@@ -367,6 +472,13 @@ fn value_as_json(value: &teaql_core::Value) -> JsonValue {
     teaql_core::record_to_json_value(&record)["value"].clone()
 }
 
+fn json_key(value: &JsonValue) -> String {
+    match value {
+        JsonValue::String(value) => value.clone(),
+        other => other.to_string(),
+    }
+}
+
 fn redact_sql_literals(sql: &str) -> String {
     let mut output = String::with_capacity(sql.len());
     let mut chars = sql.chars().peekable();
@@ -457,6 +569,7 @@ fn validate_policy(trusted: &TrustedQueryContext, query: &TfpSelectQuery) -> Res
         .order_items
         .iter()
         .map(|value| &value.field)
+        .chain(query.select_items.iter())
         .chain(query.group_by_items.iter())
         .chain(query.aggregate_items.iter().map(|value| &value.field))
     {
@@ -465,6 +578,74 @@ fn validate_policy(trusted: &TrustedQueryContext, query: &TfpSelectQuery) -> Res
                 "Field is not allowed by federation policy: {field}"
             ));
         }
+    }
+    Ok(())
+}
+
+fn prepare_facets(
+    trusted: &TrustedQueryContext,
+    query: &mut TfpSelectQuery,
+) -> Result<(), String> {
+    if query.facets.len() > 10 {
+        return Err("A TFP query may contain at most 10 facets".into());
+    }
+    let outer_fields = trusted
+        .field_mappings
+        .get(&query.entity)
+        .ok_or_else(|| format!("No field policy for entity: {}", query.entity))?;
+    let mut names = std::collections::BTreeSet::new();
+    for facet in &mut query.facets {
+        if facet.facet_name.is_empty()
+            || facet.facet_name.len() > 64
+            || !facet
+                .facet_name
+                .chars()
+                .all(|value| value.is_ascii_alphanumeric() || value == '_')
+        {
+            return Err("Facet name must be 1-64 ASCII letters, digits, or underscores".into());
+        }
+        if !names.insert(facet.facet_name.clone()) {
+            return Err(format!("Duplicate facet name: {}", facet.facet_name));
+        }
+        facet.relation_name = outer_fields
+            .get(&facet.relation_name)
+            .ok_or_else(|| format!("Field is not allowed by federation policy: {}", facet.relation_name))?
+            .clone();
+        if !facet.query.facets.is_empty() {
+            return Err("Nested facets are not supported by TFP".into());
+        }
+        validate_policy(trusted, &facet.query)?;
+        let nested_fields = trusted
+            .field_mappings
+            .get(&facet.query.entity)
+            .ok_or_else(|| format!("No field policy for entity: {}", facet.query.entity))?;
+        if facet.query.aggregate_items.is_empty()
+            || facet
+                .query
+                .aggregate_items
+                .iter()
+                .any(|item| !item.function.eq_ignore_ascii_case("count"))
+        {
+            return Err("A TFP facet requires one or more Count aggregates".into());
+        }
+        if facet
+            .query
+            .comment_text
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+            || facet
+                .query
+                .purpose_text
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_none()
+        {
+            return Err("Facet query commentText and purposeText are required".into());
+        }
+        facet.query.map_fields(nested_fields)?;
     }
     Ok(())
 }
@@ -540,10 +721,29 @@ mod tests {
     }
 
     impl QueryExecutor for StubExecutor {
-        async fn query(&self, _request: QueryRequest) -> Result<QueryResult, Self::Error> {
+        async fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
+            let rows = if !request.query.group_by.is_empty() {
+                vec![teaql_core::CompactRow::from_map(Record::from([
+                    ("status_id".into(), teaql_core::Value::I64(1001)),
+                    ("__tfpFacetCount".into(), teaql_core::Value::I64(2)),
+                ]))]
+            } else if request.query.entity == "OrderStatus" {
+                vec![
+                    teaql_core::CompactRow::from_map(Record::from([
+                        ("id".into(), teaql_core::Value::I64(1001)),
+                        ("code".into(), teaql_core::Value::Text("NEW".into())),
+                    ])),
+                    teaql_core::CompactRow::from_map(Record::from([
+                        ("id".into(), teaql_core::Value::I64(1002)),
+                        ("code".into(), teaql_core::Value::Text("PAID".into())),
+                    ])),
+                ]
+            } else {
+                vec![teaql_core::CompactRow::from_map(Record::new())]
+            };
             Ok(QueryResult {
-                rows: vec![teaql_core::CompactRow::from_map(Record::new())],
-                metadata: metadata(DataServiceOperation::Query, Some(1), None),
+                metadata: metadata(DataServiceOperation::Query, Some(rows.len()), None),
+                rows,
             })
         }
     }
@@ -624,14 +824,24 @@ mod tests {
             tenant_id: teaql_core::Value::I64(1),
             authenticated_user: "operator-42".into(),
             approved_purpose: "approved-order-search".into(),
-            allowed_entities: BTreeSet::from(["CustomerOrder".into()]),
-            field_mappings: BTreeMap::from([(
-                "CustomerOrder".into(),
-                BTreeMap::from([
-                    ("id".into(), "id".into()),
-                    ("orderNumber".into(), "order_number".into()),
-                ]),
-            )]),
+            allowed_entities: BTreeSet::from(["CustomerOrder".into(), "OrderStatus".into()]),
+            field_mappings: BTreeMap::from([
+                (
+                    "CustomerOrder".into(),
+                    BTreeMap::from([
+                        ("id".into(), "id".into()),
+                        ("orderNumber".into(), "order_number".into()),
+                        ("status".into(), "status_id".into()),
+                    ]),
+                ),
+                (
+                    "OrderStatus".into(),
+                    BTreeMap::from([
+                        ("id".into(), "id".into()),
+                        ("code".into(), "code".into()),
+                    ]),
+                ),
+            ]),
             writable_field_mappings: BTreeMap::from([(
                 "CustomerOrder".into(),
                 BTreeMap::from([("orderNumber".into(), "order_number".into())]),
@@ -746,6 +956,42 @@ mod tests {
             .await
             .expect_err("unsupported operator must fail closed");
         assert_eq!(error.code(), "TFP_INVALID_REQUEST");
+    }
+
+    #[tokio::test]
+    async fn executes_relation_facet_and_returns_count_alias() {
+        let endpoint = TfpEndpoint::new(Arc::new(StubExecutor), Arc::new(StubExecutor));
+        let response = endpoint
+            .handle_query(
+                &trusted(),
+                json!({
+                    "entity":"CustomerOrder",
+                    "filterCondition":{"id":{"$gt":0}},
+                    "facets":[{
+                        "facetName":"statusFacet",
+                        "relationName":"status",
+                        "includeAllFacets":true,
+                        "query":{
+                            "entity":"OrderStatus",
+                            "selectItems":["id","code"],
+                            "aggregateItems":[{"function":"Count","field":"id","alias":"orderCount"}],
+                            "commentText":"load status facet",
+                            "purposeText":"render order filters"
+                        }
+                    }],
+                    "limitValue":10,
+                    "commentText":"load orders",
+                    "purposeText":"render order list"
+                }),
+            )
+            .await
+            .expect("facet query");
+        let facet = response["facets"]["statusFacet"]
+            .as_array()
+            .expect("facet array");
+        assert_eq!(facet.len(), 2);
+        assert_eq!(facet[0]["orderCount"], 2);
+        assert_eq!(facet[1]["orderCount"], 0);
     }
 
     #[test]

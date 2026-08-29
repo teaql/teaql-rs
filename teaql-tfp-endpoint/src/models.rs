@@ -51,6 +51,8 @@ pub struct TfpSelectQuery {
     pub group_by_items: Vec<String>,
     #[serde(default, alias = "_aggregates")]
     pub aggregate_items: Vec<TfpAggregateItem>,
+    #[serde(default)]
+    pub facets: Vec<TfpFacetRequest>,
     pub comment_text: Option<String>,
     #[serde(default, rename = "_comment")]
     pub generated_comment: Option<String>,
@@ -58,6 +60,20 @@ pub struct TfpSelectQuery {
     pub purpose_text: Option<String>,
     #[serde(default, rename = "_purpose")]
     pub generated_purpose: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TfpFacetRequest {
+    pub facet_name: String,
+    pub relation_name: String,
+    pub query: Box<TfpSelectQuery>,
+    #[serde(default = "default_include_all_facets")]
+    pub include_all_facets: bool,
+}
+
+fn default_include_all_facets() -> bool {
+    true
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -85,6 +101,12 @@ impl TfpSelectQuery {
             order.field = fields
                 .get(&order.field)
                 .ok_or_else(|| format!("Unknown field: {}", order.field))?
+                .clone();
+        }
+        for field in &mut self.select_items {
+            *field = fields
+                .get(field)
+                .ok_or_else(|| format!("Unknown field: {field}"))?
                 .clone();
         }
         for field in &mut self.group_by_items {

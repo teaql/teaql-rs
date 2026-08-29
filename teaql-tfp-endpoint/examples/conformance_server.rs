@@ -30,6 +30,31 @@ impl DataServiceExecutor for StubExecutor {
 }
 impl QueryExecutor for StubExecutor {
     async fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
+        if !request.query.group_by.is_empty() {
+            let mut row = Record::new();
+            row.insert("status".into(), Value::I64(1001));
+            row.insert("__tfpFacetCount".into(), Value::I64(1));
+            return Ok(QueryResult {
+                rows: vec![teaql_core::CompactRow::from_map(row)],
+                metadata: metadata(DataServiceOperation::Query, Some(1), None, request.comment),
+            });
+        }
+        if request.query.entity == "OrderStatus" {
+            let rows = [(1001, "NEW", "New"), (1002, "PAID", "Paid")]
+                .into_iter()
+                .map(|(id, code, label)| {
+                    let mut row = Record::new();
+                    row.insert("id".into(), Value::I64(id));
+                    row.insert("code".into(), Value::Text(code.into()));
+                    row.insert("label".into(), Value::Text(label.into()));
+                    teaql_core::CompactRow::from_map(row)
+                })
+                .collect();
+            return Ok(QueryResult {
+                rows,
+                metadata: metadata(DataServiceOperation::Query, Some(2), None, request.comment),
+            });
+        }
         let mut row = Record::new();
         row.insert("id".into(), Value::I64(7));
         row.insert("status".into(), Value::Text("NEW".into()));
@@ -129,8 +154,15 @@ fn trusted() -> TrustedQueryContext {
         tenant_id: Value::I64(1),
         authenticated_user: "conformance-agent".into(),
         approved_purpose: "tfp-conformance".into(),
-        allowed_entities: BTreeSet::from(["CustomerOrder".into()]),
-        field_mappings: BTreeMap::from([("CustomerOrder".into(), fields)]),
+        allowed_entities: BTreeSet::from(["CustomerOrder".into(), "OrderStatus".into()]),
+        field_mappings: BTreeMap::from([
+            ("CustomerOrder".into(), fields),
+            ("OrderStatus".into(), BTreeMap::from([
+                ("id".into(), "id".into()),
+                ("code".into(), "code".into()),
+                ("label".into(), "label".into()),
+            ])),
+        ]),
         writable_field_mappings: BTreeMap::from([(
             "CustomerOrder".into(),
             BTreeMap::from([("status".into(), "status".into())]),
