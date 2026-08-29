@@ -1358,6 +1358,277 @@ mod tests {
             .property(PropertyDescriptor::new("name", DataType::Text).column_name("name"))
     }
 
+    fn complete_query_record_entity() -> EntityDescriptor {
+        EntityDescriptor::new("QueryRecord")
+            .table_name("query_record_scalar")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(PropertyDescriptor::new("required_text", DataType::Text))
+            .property(PropertyDescriptor::new("optional_text", DataType::Text))
+            .property(PropertyDescriptor::new("required_integer", DataType::I64))
+            .property(PropertyDescriptor::new("optional_long", DataType::I64))
+            .property(PropertyDescriptor::new(
+                "required_decimal",
+                DataType::Decimal,
+            ))
+            .property(PropertyDescriptor::new("required_float", DataType::F64))
+            .property(PropertyDescriptor::new("required_double", DataType::F64))
+            .property(PropertyDescriptor::new("required_date", DataType::Date))
+            .property(PropertyDescriptor::new("required_time", DataType::I64))
+            .property(PropertyDescriptor::new(
+                "required_timestamp",
+                DataType::Timestamp,
+            ))
+            .property(PropertyDescriptor::new("active", DataType::Bool))
+            .property(PropertyDescriptor::new("reviewed", DataType::Bool))
+            .property(
+                PropertyDescriptor::new("version", DataType::I64)
+                    .version()
+                    .not_null(),
+            )
+    }
+
+    #[test]
+    fn complete_scalar_fixture_including_nullable_boolean_executes_on_sqlite() {
+        let executor = SqliteMutationExecutor::from_connection(
+            Connection::open_in_memory().expect("open SQLite fixture"),
+        );
+        executor
+            .connection()
+            .lock()
+            .expect("lock SQLite fixture")
+            .execute_batch("CREATE TABLE query_record_scalar (\
+                    id INTEGER PRIMARY KEY, required_text TEXT, optional_text TEXT,\
+                    required_integer INTEGER, optional_long INTEGER, required_decimal NUMERIC,\
+                    required_float REAL, required_double REAL, required_date DATE,\
+                    required_time INTEGER, required_timestamp TIMESTAMP,\
+                    active BOOLEAN, reviewed BOOLEAN, version INTEGER);\
+                    INSERT INTO query_record_scalar VALUES \
+                    (1,'Alpha','optional',42,42000000000,42.125,42.5,42.75,'2026-08-29',34200000,1777632600000,1,0,1),\
+                    (2,'Beta',NULL,7,NULL,7.500,7.5,7.75,'2026-08-30',36000000,1777720400000,0,NULL,1),\
+                    (3,'Gamma','tail',99,99000000000,99.875,99.5,99.75,'2026-08-31',37800000,1777808200000,1,1,1)")
+            .expect("seed complete scalar fixture");
+        let entity = complete_query_record_entity();
+        let ids = |expr: Expr| {
+            let query = SelectQuery::new("QueryRecord")
+                .project("id")
+                .filter(expr)
+                .order_asc("id");
+            executor
+                .fetch_all_compact(&SqliteDialect.compile_select(&entity, &query).unwrap())
+                .expect("execute scalar predicate")
+                .into_iter()
+                .map(|row| row.get("id").cloned().expect("projected id"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(Expr::eq("required_text", "Alpha")), vec![Value::I64(1)]);
+        assert_eq!(
+            ids(Expr::ne("required_text", "Alpha")),
+            vec![Value::I64(2), Value::I64(3)]
+        );
+        assert_eq!(
+            ids(Expr::in_list(
+                "required_text",
+                [Value::from("Alpha"), Value::from("Gamma")]
+            )),
+            vec![Value::I64(1), Value::I64(3)]
+        );
+        assert_eq!(
+            ids(Expr::contain("required_text", "et")),
+            vec![Value::I64(2)]
+        );
+        assert_eq!(
+            ids(Expr::between("required_integer", 40_i64, 100_i64)),
+            vec![Value::I64(1), Value::I64(3)]
+        );
+        assert_eq!(
+            ids(Expr::gt("required_decimal", Decimal::from(50))),
+            vec![Value::I64(3)]
+        );
+        assert_eq!(
+            ids(Expr::lte("required_float", 7.5_f64)),
+            vec![Value::I64(2)]
+        );
+        assert_eq!(
+            ids(Expr::gte("required_double", 99.75_f64)),
+            vec![Value::I64(3)]
+        );
+        assert_eq!(
+            ids(Expr::between(
+                "required_date",
+                NaiveDate::from_ymd_opt(2026, 8, 30).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 8, 31).unwrap(),
+            )),
+            vec![Value::I64(2), Value::I64(3)]
+        );
+        assert_eq!(
+            ids(Expr::gt("required_time", 36_000_000_i64)),
+            vec![Value::I64(3)]
+        );
+        assert_eq!(
+            ids(Expr::lt(
+                "required_timestamp",
+                teaql_core::time::Timestamp(1_777_750_000_000)
+            )),
+            vec![Value::I64(1), Value::I64(2)]
+        );
+        assert_eq!(ids(Expr::is_null("optional_text")), vec![Value::I64(2)]);
+        assert_eq!(
+            ids(Expr::is_not_null("optional_long")),
+            vec![Value::I64(1), Value::I64(3)]
+        );
+        assert_eq!(ids(Expr::eq("active", false)), vec![Value::I64(2)]);
+        assert_eq!(ids(Expr::eq("reviewed", true)), vec![Value::I64(3)]);
+        assert_eq!(ids(Expr::eq("reviewed", false)), vec![Value::I64(1)]);
+        assert_eq!(ids(Expr::is_null("reviewed")), vec![Value::I64(2)]);
+    }
+
+    #[test]
+    fn relation_subqueries_execute_positive_and_negative_predicates_on_sqlite() {
+        let executor = SqliteMutationExecutor::from_connection(
+            Connection::open_in_memory().expect("open SQLite fixture"),
+        );
+        executor
+            .connection()
+            .lock()
+            .expect("lock SQLite fixture")
+            .execute_batch(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER, name TEXT);\
+                 CREATE TABLE order_line (id INTEGER PRIMARY KEY, order_id INTEGER, name TEXT);\
+                 INSERT INTO orders VALUES (1, 1, 'first'), (2, 1, 'second'), (3, 1, 'third');\
+                 INSERT INTO order_line VALUES\
+                    (10, 1, 'priority'), (11, 1, 'ordinary'), (12, 2, 'ordinary'),\
+                    (13, NULL, 'orphan');",
+            )
+            .expect("seed relation fixture");
+
+        let matching_lines = SelectQuery::new("OrderLine").filter(Expr::eq("name", "priority"));
+        let positive = SelectQuery::new("Order")
+            .project("id")
+            .filter(Expr::in_subquery(
+                "id",
+                order_line_entity(),
+                matching_lines.clone(),
+                "order_id",
+            ))
+            .order_asc("id");
+        let negative = SelectQuery::new("Order")
+            .project("id")
+            .filter(Expr::not_in_subquery(
+                "id",
+                order_line_entity(),
+                matching_lines,
+                "order_id",
+            ))
+            .order_asc("id");
+
+        let ids = |rows: Vec<CompactRow>| {
+            rows.into_iter()
+                .map(|row| row.get("id").cloned().expect("projected id"))
+                .collect::<Vec<_>>()
+        };
+        let order_ids = |query: SelectQuery| {
+            ids(executor
+                .fetch_all_compact(&SqliteDialect.compile_select(&entity(), &query).unwrap())
+                .expect("execute order relation predicate"))
+        };
+        let line_ids = |query: SelectQuery| {
+            ids(executor
+                .fetch_all_compact(
+                    &SqliteDialect
+                        .compile_select(&order_line_entity(), &query)
+                        .unwrap(),
+                )
+                .expect("execute line relation predicate"))
+        };
+
+        // Reverse relation: typed child matching and its negative form.
+        assert_eq!(order_ids(positive), vec![Value::I64(1)]);
+        assert_eq!(order_ids(negative), vec![Value::I64(2), Value::I64(3)]);
+
+        // Forward relation identity state keeps NULL distinct from a known FK.
+        assert_eq!(
+            line_ids(
+                SelectQuery::new("OrderLine")
+                    .project("id")
+                    .filter(Expr::is_not_null("order_id"))
+                    .order_asc("id")
+            ),
+            vec![Value::I64(10), Value::I64(11), Value::I64(12)]
+        );
+        assert_eq!(
+            line_ids(
+                SelectQuery::new("OrderLine")
+                    .project("id")
+                    .filter(Expr::is_null("order_id"))
+                    .order_asc("id")
+            ),
+            vec![Value::I64(13)]
+        );
+
+        // Forward nested matching. SQL NOT IN deliberately excludes the NULL
+        // foreign key; callers use IsUnknown when they want orphan rows.
+        let first_order = SelectQuery::new("Order").filter(Expr::eq("name", "first"));
+        assert_eq!(
+            line_ids(
+                SelectQuery::new("OrderLine")
+                    .project("id")
+                    .filter(Expr::in_subquery(
+                        "order_id",
+                        entity(),
+                        first_order.clone(),
+                        "id",
+                    ))
+                    .order_asc("id")
+            ),
+            vec![Value::I64(10), Value::I64(11)]
+        );
+        assert_eq!(
+            line_ids(
+                SelectQuery::new("OrderLine")
+                    .project("id")
+                    .filter(Expr::not_in_subquery(
+                        "order_id",
+                        entity(),
+                        first_order,
+                        "id",
+                    ))
+                    .order_asc("id")
+            ),
+            vec![Value::I64(12)]
+        );
+
+        // Reverse existence/non-existence without an additional child filter.
+        let all_lines = SelectQuery::new("OrderLine");
+        assert_eq!(
+            order_ids(
+                SelectQuery::new("Order")
+                    .project("id")
+                    .filter(Expr::in_subquery(
+                        "id",
+                        order_line_entity(),
+                        all_lines.clone(),
+                        "order_id",
+                    ))
+                    .order_asc("id")
+            ),
+            vec![Value::I64(1), Value::I64(2)]
+        );
+        assert_eq!(
+            order_ids(
+                SelectQuery::new("Order")
+                    .project("id")
+                    .filter(Expr::not_in_subquery(
+                        "id",
+                        order_line_entity(),
+                        all_lines,
+                        "order_id",
+                    ))
+                    .order_asc("id")
+            ),
+            vec![Value::I64(3)]
+        );
+    }
+
     #[allow(dead_code)]
     #[derive(Debug, PartialEq, TeaqlEntity)]
     #[teaql(entity = "FeatureFlag", table = "feature_flags")]

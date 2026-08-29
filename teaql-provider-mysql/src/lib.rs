@@ -528,7 +528,9 @@ fn compile_initial_graph_update(
     }
 }
 
-pub(crate) async fn ensure_mysql_schema_for(context: &UserContext) -> Result<(), MutationExecutorError> {
+pub(crate) async fn ensure_mysql_schema_for(
+    context: &UserContext,
+) -> Result<(), MutationExecutorError> {
     let dialect = context.get_resource::<MysqlDialect>().ok_or_else(|| {
         MutationExecutorError::Bind("missing typed resource: MysqlDialect".to_owned())
     })?;
