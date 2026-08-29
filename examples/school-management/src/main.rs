@@ -167,7 +167,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(matched_values[0].get("code").and_then(|v| v.try_text()), Some("PRIMARY"));
     assert_eq!(matched_values[0].get("schoolCount").and_then(|v| v.try_u64()), Some(1));
 
-    println!("PASS Rust School bootstrap, portable Query, and native SQLite Facet parity");
+    for (index, name) in [
+        "North School",
+        "East School",
+        "South School",
+        "West School",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut additional = Q::schools()
+            .comment("Create an ID-set pagination fixture")
+            .purpose("Verify generated Rust ID-set pagination on SQLite")
+            .new_entity(&context);
+        additional.update_platform_id(1_u64);
+        additional.update_school_type_to_primary();
+        additional.update_name(name);
+        additional.update_address(format!("{} Pagination Road", index + 1));
+        additional.update_established_date(school_management_service_core::teaql_core::Value::Date(
+            "2000-01-01".parse()?,
+        ));
+        additional.update_student_capacity(100_i64 + index as i64);
+        additional.update_active(true);
+        let timestamp = school_management_service_core::teaql_core::time::Timestamp::now();
+        additional.update_create_time(timestamp);
+        additional.update_update_time(timestamp);
+        additional
+            .audit_as("Create an ID-set pagination fixture")
+            .save(&context)
+            .await?;
+    }
+
+    let jumped_page = Q::schools()
+        .order_by_id_desc()
+        .optimize_pagination_with_id_set_config("school-example", 60, 100)
+        .comment("Jump directly to the second retained ID-set page")
+        .purpose("Verify generated Rust ID-set pagination on SQLite")
+        .execute_for_page(&context, 2, 2)
+        .await?;
+    assert_eq!(jumped_page.total_count, Some(5));
+    assert_eq!(
+        jumped_page.iter().map(|school| school.id()).collect::<Vec<_>>(),
+        vec![3, 2]
+    );
+    assert_eq!(context.id_set_plan().as_deref(), Some("ID_SET_BUILD"));
+
+    let first_page = Q::schools()
+        .order_by_id_desc()
+        .optimize_pagination_with_id_set_config("school-example", 60, 100)
+        .comment("Read the first page from the retained ID set")
+        .purpose("Verify generated Rust ID-set pagination on SQLite")
+        .execute_for_page(&context, 0, 2)
+        .await?;
+    assert_eq!(first_page.total_count, Some(5));
+    assert_eq!(
+        first_page.iter().map(|school| school.id()).collect::<Vec<_>>(),
+        vec![5, 4]
+    );
+    assert_eq!(context.id_set_plan().as_deref(), Some("ID_SET_HIT"));
+
+    println!("PASS Rust School bootstrap, ID-set pagination, portable Query, and native SQLite Facet parity");
     std::fs::remove_file(database)?;
     Ok(())
 }
