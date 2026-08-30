@@ -9,9 +9,9 @@ repository.workspace = true
 readme = "README.md"
 
 [dependencies]
-teaql-cloud-core = { path = "../teaql-cloud-core", version = "4.2.14" }
-teaql-cloud-actuator = { path = "../teaql-cloud-actuator", version = "4.2.14" }
-teaql-cloud-nacos = { path = "../teaql-cloud-nacos", version = "4.2.14" }
-teaql-cloud-consul = { path = "../teaql-cloud-consul", version = "4.2.14" }
+teaql-cloud-core = { path = "../teaql-cloud-core", version = "4.3.0" }
+teaql-cloud-actuator = { path = "../teaql-cloud-actuator", version = "4.3.0" }
+teaql-cloud-nacos = { path = "../teaql-cloud-nacos", version = "4.3.0" }
+teaql-cloud-consul = { path = "../teaql-cloud-consul", version = "4.3.0" }
 axum = { version = "0.8" }
 tokio = { version = "1", features = ["full"] }
