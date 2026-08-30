@@ -19,6 +19,21 @@ pub struct EntityDataService<'a, E> {
 }
 
 impl<'a, E> EntityDataService<'a, E> {
+    pub(crate) fn for_executor(
+        context: &'a UserContext,
+        entity: impl Into<String>,
+        executor: &'a E,
+    ) -> Self {
+        Self {
+            entity: entity.into(),
+            data_service: ContextDataService {
+                metadata: UserContextMetadata { context },
+                executor,
+            },
+            trace_context: Vec::new(),
+        }
+    }
+
     pub fn with_trace_context(mut self, trace_context: Vec<teaql_core::TraceNode>) -> Self {
         self.trace_context = trace_context;
         self

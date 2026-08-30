@@ -52,6 +52,17 @@ pub trait Entity: TeaqlEntity + Sized {
 
     fn into_values(self) -> MutationValues;
 
+    /// Whether a model field was loaded in the entity snapshot used for a
+    /// mutation. Implementations without projection tracking remain fully
+    /// loaded for backwards compatibility.
+    fn is_field_loaded(&self, _field: &str) -> bool {
+        true
+    }
+
+    /// Restore the load boundary while materializing the typed Checker view.
+    /// This is runtime metadata, not mutation intent.
+    fn set_checker_loaded_fields(&mut self, _fields: BTreeSet<String>) {}
+
     /// Returns the set of field names that have been modified since the entity was loaded.
     /// Returns `None` if dirty tracking is not available (backwards compatible default).
     /// This is the Rust equivalent of Java's `entity.getUpdatedProperties()`.

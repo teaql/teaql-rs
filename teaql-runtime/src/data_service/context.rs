@@ -65,9 +65,11 @@ impl UserContext {
     where
         E: teaql_data_service::QueryExecutor
             + teaql_data_service::MutationExecutor
+            + teaql_data_service::TransactionExecutor
             + Send
             + Sync
             + 'static,
+        for<'tx> <E as teaql_data_service::TransactionExecutor>::Tx<'tx>: Send + Sync,
     {
         use std::sync::Arc;
         self.insert_resource::<Arc<dyn crate::entity_save::DynGraphSaver>>(Arc::new(
@@ -79,11 +81,7 @@ impl UserContext {
 
 impl<'a, E> ContextDataService<'a, E>
 where
-    E: teaql_data_service::QueryExecutor
-        + teaql_data_service::MutationExecutor
-        + Send
-        + Sync
-        + 'static,
+    E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
 {
     async fn observe<T, F, N>(
         &self,

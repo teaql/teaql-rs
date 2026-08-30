@@ -23,7 +23,7 @@ mod telemetry_opentelemetry;
 
 pub use context::{
     ContextEntityRef, ContextRootError, ContinuousPageCursor, ContinuousPageCursorStore, DataStore,
-    IdSetStore, InMemoryContinuousPageCursorStore, InMemoryDataStore, InMemoryIdSetStore,
+    FixEvidence, FixEvidenceSource, IdSetStore, InMemoryContinuousPageCursorStore, InMemoryDataStore, InMemoryIdSetStore,
     InfoLogEntry, LogPayload, RemoteLockProvider, RetainedIdSet, SchemaInvocation, SchemaProvider,
     SqlLogEntry, SqlLogOperation, SqlLogOptions, UnifiedLogBuffer, UnifiedLogEntry, UserContext,
 };

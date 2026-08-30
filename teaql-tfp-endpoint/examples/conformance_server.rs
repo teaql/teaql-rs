@@ -157,11 +157,14 @@ fn trusted() -> TrustedQueryContext {
         allowed_entities: BTreeSet::from(["CustomerOrder".into(), "OrderStatus".into()]),
         field_mappings: BTreeMap::from([
             ("CustomerOrder".into(), fields),
-            ("OrderStatus".into(), BTreeMap::from([
-                ("id".into(), "id".into()),
-                ("code".into(), "code".into()),
-                ("label".into(), "label".into()),
-            ])),
+            (
+                "OrderStatus".into(),
+                BTreeMap::from([
+                    ("id".into(), "id".into()),
+                    ("code".into(), "code".into()),
+                    ("label".into(), "label".into()),
+                ]),
+            ),
         ]),
         writable_field_mappings: BTreeMap::from([(
             "CustomerOrder".into(),

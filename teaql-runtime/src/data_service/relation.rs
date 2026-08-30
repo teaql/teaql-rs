@@ -113,11 +113,7 @@ fn relation_top_n_execution_plan(
 
 impl<'a, E> EntityDataService<'a, E>
 where
-    E: teaql_data_service::QueryExecutor
-        + teaql_data_service::MutationExecutor
-        + Send
-        + Sync
-        + 'static,
+    E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
 {
     pub fn relation_loads(&self) -> Vec<String> {
         self.behavior()

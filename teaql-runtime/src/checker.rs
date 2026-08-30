@@ -430,14 +430,48 @@ where
         // with their type defaults. Those defaults are only a checker view;
         // they must never become mutation intent. Keep the original sparse
         // record and merge back only fields the typed checker actually changed.
-        let original_values = std::mem::take(values);
+        let mut original_values = std::mem::take(values);
+        let loaded_fields = match original_values.remove("_loaded_fields") {
+            Some(Value::List(fields)) => Some(
+                fields
+                    .into_iter()
+                    .filter_map(|field| match field {
+                        Value::Text(field) => Some(field),
+                        _ => None,
+                    })
+                    .collect::<std::collections::BTreeSet<_>>(),
+            ),
+            _ => None,
+        };
         let owned_record = original_values.clone().into();
         match T::from_compact_row(teaql_core::CompactRow::from_map(owned_record)) {
             Ok(mut entity) => {
+                if let Some(loaded_fields) = loaded_fields {
+                    entity.set_checker_loaded_fields(loaded_fields);
+                }
                 let before_check = entity.clone().into_values();
                 self.checker
                     .check_and_fix_typed(context, &mut entity, status, location, results);
                 let after_check = entity.into_values();
+                let descriptor = T::entity_descriptor();
+                for property in descriptor
+                    .properties
+                    .iter()
+                    .filter(|property| !property.nullable && !property.is_id && !property.is_version)
+                {
+                    let was_absent_or_null = original_values
+                        .get(&property.name)
+                        .is_none_or(|value| matches!(value, Value::Null));
+                    if was_absent_or_null
+                        && after_check
+                            .get(&property.name)
+                            .is_none_or(|value| matches!(value, Value::Null) || before_check.get(&property.name) == Some(value))
+                    {
+                        results.push(CheckResult::required(
+                            location.clone().member(&property.name),
+                        ));
+                    }
+                }
                 *values = original_values;
                 for (field, after_value) in after_check {
                     if before_check.get(&field) != Some(&after_value) {

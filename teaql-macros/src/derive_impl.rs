@@ -440,6 +440,20 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         Default::default()
     };
 
+    let checker_load_state_impl = if has_load_state_field {
+        quote! {
+            fn is_field_loaded(&self, field: &str) -> bool {
+                self.__load_state.is_loaded(field)
+            }
+
+            fn set_checker_loaded_fields(&mut self, fields: ::std::collections::BTreeSet<String>) {
+                self.__load_state = ::teaql_core::eval::LoadState::Partial(fields.into_iter().collect());
+            }
+        }
+    } else {
+        Default::default()
+    };
+
     let from_compact_body = quote! {
             #(#record_value_slots)*
             for (key, value) in record.iter() {
@@ -521,6 +535,8 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 #(#into_record_fields)*
                 record.into()
             }
+
+            #checker_load_state_impl
 
             fn on_loaded(&mut self, context: &dyn std::any::Any) {
                 #on_loaded_impl

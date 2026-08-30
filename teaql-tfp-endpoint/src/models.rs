@@ -550,9 +550,8 @@ mod tests {
             json!({"reviewed":{"$eq":true}}),
             json!({"reviewed":{"$eq":false}}),
         ] {
-            parse_json_filter(&filter).unwrap_or_else(|error| {
-                panic!("failed to parse {filter}: {error}")
-            });
+            parse_json_filter(&filter)
+                .unwrap_or_else(|error| panic!("failed to parse {filter}: {error}"));
         }
         for filter in [
             json!({"id":{"$between":[7]}}),

@@ -53,11 +53,7 @@ fn decode_compact_rows<T: Entity>(
 
 impl<'a, E> EntityDataService<'a, E>
 where
-    E: teaql_data_service::QueryExecutor
-        + teaql_data_service::MutationExecutor
-        + Send
-        + Sync
-        + 'static,
+    E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
 {
     fn flatten_relation_graph(
         &self,

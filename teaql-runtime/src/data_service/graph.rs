@@ -33,11 +33,7 @@ fn resolve_trace_chain(
 
 impl<'a, E> EntityDataService<'a, E>
 where
-    E: teaql_data_service::QueryExecutor
-        + teaql_data_service::MutationExecutor
-        + Send
-        + Sync
-        + 'static,
+    E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
 {
     pub(crate) async fn save_graph_internal(
         &self,
@@ -1272,12 +1268,12 @@ where
         let new_keys = root.new_keys();
         let change_set = root.current_change_set();
 
-        // Validate and fix every pending ledger record before any query or
-        // mutation is sent to the provider.  The ledger path used to bypass
-        // the ordinary insert/update preparation hooks, which allowed an
-        // invalid generated save to reach the database and surface as a
-        // NOT NULL error.  Retain the fixed records for the eventual batches
-        // so context-derived values are persisted rather than merely checked.
+        // `save_audited_ledger_entity` has already preflighted the complete
+        // typed graph before entering this executor and merged every Fix value
+        // back into the ledger.  Do not run Checker/Fix again over these sparse
+        // change records: unchanged loaded fields are intentionally absent, and
+        // a second pass both violates once-per-save semantics and misclassifies
+        // them as NotLoaded.
         let mut checked_changes = std::collections::BTreeMap::new();
         for (key, record) in change_set.changes() {
             if deleted_keys.contains(key) {
@@ -1287,24 +1283,6 @@ where
             checked
                 .entry("id".to_owned())
                 .or_insert_with(|| key.id.clone());
-            let status = if new_keys.contains(key) {
-                crate::CheckObjectStatus::Create
-            } else {
-                crate::CheckObjectStatus::Update
-            };
-            crate::mark_entity_status(&mut checked, status);
-            let result = self
-                .data_service
-                .metadata
-                .context
-                .check_and_fix_values(&key.entity, &mut checked);
-            crate::clear_entity_status(&mut checked);
-            result.map_err(DataServiceError::Runtime)?;
-            for (field, value) in &checked {
-                if record.get(field) != Some(value) {
-                    root.set(key.clone(), field, value.clone());
-                }
-            }
             checked_changes.insert(key.clone(), checked);
         }
 
@@ -1415,14 +1393,6 @@ where
                 }
                 crate::data_service::helpers::ensure_initial_version(&mut db_record, descriptor);
                 crate::data_service::helpers::ensure_timestamps(&mut db_record, descriptor, true);
-                crate::mark_entity_status(&mut db_record, crate::CheckObjectStatus::Create);
-                let check_result = self
-                    .data_service
-                    .metadata
-                    .context
-                    .check_and_fix_values(&entity, &mut db_record);
-                crate::clear_entity_status(&mut db_record);
-                check_result.map_err(DataServiceError::Runtime)?;
                 cmd.batch_values.push(db_record.into());
                 let my_trace = resolve_trace_chain(root.get_trace_chain(key), &trace_chain);
                 traces.push(my_trace);
@@ -1470,14 +1440,6 @@ where
                     root.get_original_version(key),
                 );
                 crate::data_service::helpers::ensure_timestamps(&mut db_record, descriptor, false);
-                crate::mark_entity_status(&mut db_record, crate::CheckObjectStatus::Update);
-                let check_result = self
-                    .data_service
-                    .metadata
-                    .context
-                    .check_and_fix_values(&signature.0, &mut db_record);
-                crate::clear_entity_status(&mut db_record);
-                check_result.map_err(DataServiceError::Runtime)?;
                 cmd.batch_values.push(db_record.into());
                 cmd.batch_ids.push(key.id.clone());
                 cmd.batch_expected_versions

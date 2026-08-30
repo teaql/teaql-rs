@@ -363,6 +363,32 @@ pub trait SchemaProvider: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'a>>;
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FixEvidenceSource {
+    Clock,
+    Context,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FixEvidence {
+    pub entity_type: String,
+    pub model_path: String,
+    pub source: FixEvidenceSource,
+    pub source_label: String,
+}
+
+impl FixEvidence {
+    pub fn new(entity_type: &str, model_path: &str, source: FixEvidenceSource, source_label: &str) -> Self {
+        assert!(!entity_type.trim().is_empty(), "entity_type must not be blank");
+        assert!(!model_path.trim().is_empty(), "model_path must not be blank");
+        assert!(!source_label.trim().is_empty(), "source_label must not be blank");
+        let normalized = source_label.to_ascii_lowercase();
+        assert!(!normalized.contains("authorization") && !normalized.contains("cookie") && !normalized.contains("token="),
+            "source_label must be a safe framework label");
+        Self { entity_type: entity_type.to_owned(), model_path: model_path.to_owned(), source, source_label: source_label.to_owned() }
+    }
+}
+
 pub struct UserContext {
     active_root: Option<ContextEntityRef>,
     pub(crate) metadata: Option<Box<dyn MetadataStore>>,
@@ -396,6 +422,7 @@ pub struct UserContext {
     local_lock_owner: u64,
     remote_lock_owner: String,
     runtime_telemetry: Arc<dyn crate::RuntimeTelemetry>,
+    last_fix_evidence: Mutex<Vec<FixEvidence>>,
 }
 
 #[derive(Clone, Copy)]
@@ -472,6 +499,7 @@ impl Default for UserContext {
                     .as_nanos()
             ),
             runtime_telemetry: Arc::new(crate::NoopRuntimeTelemetry),
+            last_fix_evidence: Mutex::new(Vec::new()),
         }
     }
 }
@@ -1324,6 +1352,25 @@ impl UserContext {
             .as_ref()
             .and_then(|registry| registry.checker(entity))
             .is_some()
+    }
+
+    /// One deterministic clock value for every Fix executed by the current
+    /// graph save. The task-local scope keeps concurrent saves on one context
+    /// isolated; standalone checker calls receive their own current value.
+    pub fn fix_time(&self) -> teaql_core::time::Timestamp {
+        crate::entity_save::current_graph_fix_time()
+    }
+
+    pub fn record_fix_evidence(&self, evidence: FixEvidence) {
+        crate::entity_save::record_graph_fix_evidence(evidence);
+    }
+
+    pub(crate) fn replace_last_fix_evidence(&self, evidence: Vec<FixEvidence>) {
+        *self.last_fix_evidence.lock().unwrap() = evidence;
+    }
+
+    pub fn last_fix_evidence(&self) -> Vec<FixEvidence> {
+        self.last_fix_evidence.lock().unwrap().clone()
     }
 
     pub fn check_and_fix_values(

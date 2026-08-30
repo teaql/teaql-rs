@@ -174,8 +174,7 @@ where
                     tfp_query.entity
                 ))
             })?;
-        prepare_facets(trusted, &mut tfp_query)
-            .map_err(TfpEndpointError::TranslationError)?;
+        prepare_facets(trusted, &mut tfp_query).map_err(TfpEndpointError::TranslationError)?;
         tfp_query
             .map_fields(mappings)
             .map_err(TfpEndpointError::TranslationError)?;
@@ -239,9 +238,7 @@ where
             .collect();
 
         response_obj.insert("data".to_string(), JsonValue::Array(rows_json));
-        let facet_values = self
-            .execute_facets(trusted, &outer_query, facets)
-            .await?;
+        let facet_values = self.execute_facets(trusted, &outer_query, facets).await?;
         response_obj.insert("facets".to_string(), JsonValue::Object(facet_values));
         response_obj.insert("resultCode".to_string(), JsonValue::Number(0.into()));
         response_obj.insert("status".to_string(), JsonValue::String("YES".to_string()));
@@ -582,10 +579,7 @@ fn validate_policy(trusted: &TrustedQueryContext, query: &TfpSelectQuery) -> Res
     Ok(())
 }
 
-fn prepare_facets(
-    trusted: &TrustedQueryContext,
-    query: &mut TfpSelectQuery,
-) -> Result<(), String> {
+fn prepare_facets(trusted: &TrustedQueryContext, query: &mut TfpSelectQuery) -> Result<(), String> {
     if query.facets.len() > 10 {
         return Err("A TFP query may contain at most 10 facets".into());
     }
@@ -609,7 +603,12 @@ fn prepare_facets(
         }
         facet.relation_name = outer_fields
             .get(&facet.relation_name)
-            .ok_or_else(|| format!("Field is not allowed by federation policy: {}", facet.relation_name))?
+            .ok_or_else(|| {
+                format!(
+                    "Field is not allowed by federation policy: {}",
+                    facet.relation_name
+                )
+            })?
             .clone();
         if !facet.query.facets.is_empty() {
             return Err("Nested facets are not supported by TFP".into());
@@ -836,10 +835,7 @@ mod tests {
                 ),
                 (
                     "OrderStatus".into(),
-                    BTreeMap::from([
-                        ("id".into(), "id".into()),
-                        ("code".into(), "code".into()),
-                    ]),
+                    BTreeMap::from([("id".into(), "id".into()), ("code".into(), "code".into())]),
                 ),
             ]),
             writable_field_mappings: BTreeMap::from([(
