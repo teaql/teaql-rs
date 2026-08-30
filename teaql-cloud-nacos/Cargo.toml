@@ -9,7 +9,7 @@ repository.workspace = true
 readme = "README.md"
 
 [dependencies]
-teaql-cloud-core = { path = "../teaql-cloud-core", version = "4.2.14" }
+teaql-cloud-core = { path = "../teaql-cloud-core", version = "4.3.0" }
 nacos-sdk = "=0.8"
 async-trait = { workspace = true }
 tokio = { workspace = true }
