@@ -140,7 +140,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         updated.version()
     );
 
-    updated.mark_as_delete();
+    updated.mark_for_deletion();
     updated
         .audit_as("Delete the conformance work item")
         .save(&context)

@@ -390,7 +390,9 @@ struct EntityMutationLedger {
 
 #[derive(Debug)]
 pub struct EntityRuntimeState {
-    inner: OnceLock<Arc<Mutex<EntityMutationLedger>>>,
+    // The OnceLock itself is shared so entities composed before the first mutation
+    // still materialize exactly one graph-owned ledger.
+    inner: Arc<OnceLock<Arc<Mutex<EntityMutationLedger>>>>,
     graph: EntityGraphReference,
     loaded_snapshot: Option<teaql_core::CompactRow>,
 }
@@ -459,7 +461,7 @@ impl EntityGraphReference {
 impl Default for EntityRuntimeState {
     fn default() -> Self {
         Self {
-            inner: OnceLock::new(),
+            inner: Arc::default(),
             graph: EntityGraphReference::Strong(Arc::default()),
             loaded_snapshot: None,
         }
@@ -468,12 +470,8 @@ impl Default for EntityRuntimeState {
 
 impl Clone for EntityRuntimeState {
     fn clone(&self) -> Self {
-        let inner = OnceLock::new();
-        if let Some(context) = self.inner.get() {
-            let _ = inner.set(context.clone());
-        }
         Self {
-            inner,
+            inner: self.inner.clone(),
             graph: self.graph.promote(),
             loaded_snapshot: self.loaded_snapshot.clone(),
         }
@@ -491,12 +489,12 @@ enum OriginalSnapshot {
 
 impl PartialEq for EntityRuntimeState {
     fn eq(&self, other: &Self) -> bool {
+        if Arc::ptr_eq(&self.inner, &other.inner) {
+            return true;
+        }
         match (self.inner.get(), other.inner.get()) {
             (Some(left), Some(right)) => Arc::ptr_eq(left, right),
-            (None, None) => {
-                self.graph.pointer() == other.graph.pointer()
-                    && self.loaded_snapshot == other.loaded_snapshot
-            }
+            (None, None) => false,
             _ => false,
         }
     }
@@ -531,7 +529,7 @@ impl EntityRuntimeState {
 
     pub fn fresh_with_shared_graph(source: &EntityRuntimeState) -> Self {
         Self {
-            inner: OnceLock::new(),
+            inner: Arc::default(),
             graph: source.graph.preserve(),
             loaded_snapshot: None,
         }
@@ -541,7 +539,7 @@ impl EntityRuntimeState {
     /// the graph from strongly owning an entity that strongly owns the graph in return.
     pub(crate) fn fresh_with_weak_graph(source: &EntityRuntimeState) -> Self {
         Self {
-            inner: OnceLock::new(),
+            inner: Arc::default(),
             graph: source.graph.weak(),
             loaded_snapshot: None,
         }
@@ -879,6 +877,21 @@ mod lazy_root_tests {
         assert!(!root.has_mutation_context());
 
         root.set(key, "name", Value::Text("updated".to_owned()));
+        assert!(root.has_mutation_context());
+    }
+
+    #[test]
+    fn clone_before_first_mutation_materializes_one_shared_ledger() {
+        let root = EntityRuntimeState::default();
+        let child = root.clone();
+        let child_key = EntityKey::new_static("Child", 2_u64);
+
+        child.set(child_key.clone(), "name", Value::Text("updated".to_owned()));
+
+        assert_eq!(
+            root.get(&child_key, "name"),
+            Some(Value::Text("updated".to_owned()))
+        );
         assert!(root.has_mutation_context());
     }
 

@@ -71,7 +71,7 @@ pub fn expand_teaql_entity_attribute(mut input: ItemStruct) -> proc_macro2::Toke
                 ::teaql_runtime::EntityKey::new(#entity_name, self.#id_field)
             }
 
-            pub fn mark_as_delete(&mut self) -> &mut Self {
+            pub fn mark_for_deletion(&mut self) -> &mut Self {
                 self.__teaql_runtime_state.mark_as_delete(self.entity_key());
                 self
             }
