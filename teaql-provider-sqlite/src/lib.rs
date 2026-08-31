@@ -595,7 +595,9 @@ fn bootstrap_values_equal(left: Option<&Value>, right: Option<&Value>) -> bool {
     matches!((left.try_decimal(), right.try_decimal()), (Some(a), Some(b)) if a == b)
 }
 
-pub(crate) fn ensure_sqlite_schema_for(context: &UserContext) -> Result<(), MutationExecutorError> {
+pub(crate) fn ensure_sqlite_physical_schema_for(
+    context: &UserContext,
+) -> Result<(), MutationExecutorError> {
     let dialect = context.get_resource::<SqliteDialect>().ok_or_else(|| {
         MutationExecutorError::Bind("missing typed resource: SqliteDialect".to_owned())
     })?;
@@ -648,6 +650,21 @@ pub(crate) fn ensure_sqlite_schema_for(context: &UserContext) -> Result<(), Muta
         ));
         let _ = fields_added; // used above for FieldAdded events
     }
+
+    executor.clear_query_caches();
+    Ok(())
+}
+
+pub(crate) fn ensure_sqlite_schema_for(context: &UserContext) -> Result<(), MutationExecutorError> {
+    ensure_sqlite_physical_schema_for(context)?;
+    let dialect = context.get_resource::<SqliteDialect>().ok_or_else(|| {
+        MutationExecutorError::Bind("missing typed resource: SqliteDialect".to_owned())
+    })?;
+    let executor = context
+        .get_resource::<SqliteMutationExecutor>()
+        .ok_or_else(|| {
+            MutationExecutorError::Bind("missing typed resource: SqliteMutationExecutor".to_owned())
+        })?;
 
     // Constant graphs are reconciled so model changes are propagated.
     let id_generator = SqliteIdSpaceGenerator::from_executor(executor.clone());
@@ -1816,6 +1833,14 @@ mod tests {
                 .value("name", "red"),
         ]);
         context.use_sqlite_provider(executor.clone());
+        ensure_sqlite_physical_schema_for(&context).unwrap();
+        let before_bootstrap = SqliteDialect
+            .compile_select(
+                &entity,
+                &SelectQuery::new("Order").filter(Expr::eq("id", 1001_u64)),
+            )
+            .unwrap();
+        assert!(executor.fetch_all_compact(&before_bootstrap).unwrap().is_empty());
         ensure_sqlite_schema_for(&context).unwrap();
         ensure_sqlite_schema_for(&context).unwrap();
 
