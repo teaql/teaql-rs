@@ -12,13 +12,16 @@ const PURPOSE: &str = "Operate the local order-management quick start";
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-    let database = root.join(".local/order.db");
+    let database = std::env::var_os("TEAQL_EXAMPLE_DATABASE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join(".local/order.db"));
     if !database.exists() {
         println!("[database] {} was not found; TeaQL will create it", database.display());
     }
     let context = service_runtime(ServiceRuntimeConfig {
         database_url: database.to_string_lossy().into_owned(),
     }).await?;
+    context.ensure_schema().await?;
     println!("[schema] ensured 7 generated entity tables");
 
     let platforms = Q::commerce_platforms()
