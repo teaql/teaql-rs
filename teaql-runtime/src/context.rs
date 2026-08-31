@@ -19,6 +19,10 @@ use crate::{
     local_id_generator,
 };
 
+tokio::task_local! {
+    static GENERATED_SCHEMA_BOOTSTRAP_MODE: ();
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextEntityRef {
     pub entity_type: String,
@@ -363,6 +367,11 @@ pub trait SchemaProvider: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'a>>;
 }
 
+pub type GeneratedSchemaBootstrapFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'a>>;
+pub type GeneratedSchemaBootstrap =
+    for<'a> fn(&'a UserContext) -> GeneratedSchemaBootstrapFuture<'a>;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FixEvidenceSource {
     Clock,
@@ -378,19 +387,42 @@ pub struct FixEvidence {
 }
 
 impl FixEvidence {
-    pub fn new(entity_type: &str, model_path: &str, source: FixEvidenceSource, source_label: &str) -> Self {
-        assert!(!entity_type.trim().is_empty(), "entity_type must not be blank");
-        assert!(!model_path.trim().is_empty(), "model_path must not be blank");
-        assert!(!source_label.trim().is_empty(), "source_label must not be blank");
+    pub fn new(
+        entity_type: &str,
+        model_path: &str,
+        source: FixEvidenceSource,
+        source_label: &str,
+    ) -> Self {
+        assert!(
+            !entity_type.trim().is_empty(),
+            "entity_type must not be blank"
+        );
+        assert!(
+            !model_path.trim().is_empty(),
+            "model_path must not be blank"
+        );
+        assert!(
+            !source_label.trim().is_empty(),
+            "source_label must not be blank"
+        );
         let normalized = source_label.to_ascii_lowercase();
-        assert!(!normalized.contains("authorization") && !normalized.contains("cookie") && !normalized.contains("token="),
-            "source_label must be a safe framework label");
-        Self { entity_type: entity_type.to_owned(), model_path: model_path.to_owned(), source, source_label: source_label.to_owned() }
+        assert!(
+            !normalized.contains("authorization")
+                && !normalized.contains("cookie")
+                && !normalized.contains("token="),
+            "source_label must be a safe framework label"
+        );
+        Self {
+            entity_type: entity_type.to_owned(),
+            model_path: model_path.to_owned(),
+            source,
+            source_label: source_label.to_owned(),
+        }
     }
 }
 
 pub struct UserContext {
-    active_root: Option<ContextEntityRef>,
+    active_root: OnceLock<ContextEntityRef>,
     pub(crate) metadata: Option<Box<dyn MetadataStore>>,
     pub(crate) entity_registry: Option<Box<dyn EntityRegistry>>,
     pub(crate) entity_graph_decoders: InMemoryEntityGraphDecoderRegistry,
@@ -402,6 +434,7 @@ pub struct UserContext {
     pub(crate) custom_event_sink: Option<Box<dyn crate::SafeAuditEventSink>>,
     pub(crate) internal_id_generator: Option<Box<dyn InternalIdGenerator>>,
     schema_provider: Option<Box<dyn SchemaProvider>>,
+    generated_schema_bootstraps: Vec<GeneratedSchemaBootstrap>,
     language: Language,
     i18n_catalog: Arc<crate::I18nCatalog>,
     typed_resources: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
@@ -454,7 +487,7 @@ impl Default for UserContext {
         let user_id = format!("{os_user}@pid-{pid}.tid-{numeric_thread_id}");
         let owner_sequence = NEXT_LOCAL_LOCK_OWNER.fetch_add(1, Ordering::Relaxed);
         Self {
-            active_root: None,
+            active_root: OnceLock::new(),
             metadata: None,
             entity_registry: None,
             entity_graph_decoders: InMemoryEntityGraphDecoderRegistry::default(),
@@ -472,6 +505,7 @@ impl Default for UserContext {
             locals: BTreeMap::new(),
             initial_graphs: Vec::new(),
             root_graphs: Vec::new(),
+            generated_schema_bootstraps: Vec::new(),
             entity_runtime_state: EntityRuntimeState::default(),
             // Copy-paste SQL contains rendered parameter values. Keep this
             // diagnostic surface opt-in even when ordinary runtime telemetry
@@ -571,31 +605,59 @@ impl UserContext {
     }
 
     pub fn with_active_root(mut self, entity_type: impl Into<String>, id: u64) -> Self {
-        let entity_type = entity_type.into();
+        let entity_type = crate::canonical_id_space_entity(&entity_type.into());
         assert!(
             !entity_type.trim().is_empty(),
             "active root entity type is required"
         );
         assert!(id > 0, "active root id must be positive");
-        self.active_root = Some(ContextEntityRef { entity_type, id });
+        self.active_root
+            .set(ContextEntityRef { entity_type, id })
+            .expect("active root may only be assigned once");
         self
+    }
+
+    #[doc(hidden)]
+    pub fn set_generated_bootstrap_active_root(
+        &self,
+        entity_type: impl Into<String>,
+        id: u64,
+    ) -> Result<(), RuntimeError> {
+        let entity_type = crate::canonical_id_space_entity(&entity_type.into());
+        if entity_type.trim().is_empty() || id == 0 {
+            return Err(RuntimeError::Schema(
+                "invalid generated active root".to_owned(),
+            ));
+        }
+        match self.active_root.get() {
+            Some(existing) if existing.entity_type == entity_type && existing.id == id => Ok(()),
+            Some(existing) => Err(RuntimeError::Schema(format!(
+                "active root already set to {}:{}",
+                existing.entity_type, existing.id
+            ))),
+            None => self
+                .active_root
+                .set(ContextEntityRef { entity_type, id })
+                .map_err(|_| RuntimeError::Schema("active root initialization raced".to_owned())),
+        }
     }
 
     pub fn require_active_root(
         &self,
         expected_entity_type: &str,
     ) -> Result<&ContextEntityRef, ContextRootError> {
-        match &self.active_root {
-            Some(root) if root.entity_type == expected_entity_type => Ok(root),
+        let canonical_expected = crate::canonical_id_space_entity(expected_entity_type);
+        match self.active_root.get() {
+            Some(root) if root.entity_type == canonical_expected => Ok(root),
             actual_root => Err(ContextRootError {
-                expected_entity_type: expected_entity_type.to_owned(),
-                actual_root: actual_root.clone(),
+                expected_entity_type: canonical_expected,
+                actual_root: actual_root.cloned(),
             }),
         }
     }
 
     pub(crate) fn active_root_ref(&self) -> Option<&ContextEntityRef> {
-        self.active_root.as_ref()
+        self.active_root.get()
     }
 
     pub fn with_runtime_telemetry(mut self, telemetry: Arc<dyn crate::RuntimeTelemetry>) -> Self {
@@ -1034,7 +1096,44 @@ impl UserContext {
             .as_ref()
             .ok_or_else(|| RuntimeError::Schema("missing schema provider".to_owned()))?;
         let invocation = SchemaInvocation { _context_owned: () };
-        provider.ensure_schema(self, &invocation).await
+        provider.ensure_schema(self, &invocation).await?;
+        GENERATED_SCHEMA_BOOTSTRAP_MODE
+            .scope((), async {
+                for bootstrap in &self.generated_schema_bootstraps {
+                    bootstrap(self).await?;
+                }
+                Ok::<(), RuntimeError>(())
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) fn is_generated_schema_bootstrap(&self) -> bool {
+        GENERATED_SCHEMA_BOOTSTRAP_MODE
+            .try_with(|_| true)
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn set_generated_schema_bootstraps(
+        &mut self,
+        bootstraps: Vec<GeneratedSchemaBootstrap>,
+    ) {
+        self.generated_schema_bootstraps = bootstraps;
+    }
+
+    #[doc(hidden)]
+    pub fn initialize_generated_bootstrap_entity<E: teaql_core::Entity>(
+        &self,
+        entity: &mut E,
+        entity_name: &str,
+        fixed_id: u64,
+    ) -> Result<(), RuntimeError> {
+        let generator = self.internal_id_generator.as_ref().ok_or_else(|| {
+            RuntimeError::IdGeneration("missing internal ID generator".to_owned())
+        })?;
+        generator.ensure_floor(entity_name, fixed_id)?;
+        entity.mark_as_new();
+        Ok(())
     }
 
     pub fn with_language(mut self, language: Language) -> Self {
@@ -1447,7 +1546,36 @@ impl UserContext {
         }
     }
 
-    pub fn send_event(&self, event: RawAuditEvent) -> Result<(), RuntimeError> {
+    pub fn send_event(&self, mut event: RawAuditEvent) -> Result<(), RuntimeError> {
+        if self.is_generated_schema_bootstrap()
+            && matches!(
+                event.kind,
+                crate::RawAuditEventKind::Created | crate::RawAuditEventKind::Updated
+            )
+        {
+            let reason = event
+                .trace_chain
+                .last()
+                .map(|node| node.comment.clone())
+                .unwrap_or_else(|| "generated runtime bootstrap".to_owned());
+            let resulting_version = event
+                .new_values
+                .as_ref()
+                .and_then(|values| values.get("version"))
+                .or_else(|| event.values.get("version"))
+                .and_then(teaql_core::Value::try_i64);
+            let occurred_at_millis = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            event.bootstrap_audit = Some(crate::BootstrapAuditIdentity {
+                actor: "teaql-generated-bootstrap".to_owned(),
+                category: "runtime-bootstrap".to_owned(),
+                reason,
+                resulting_version,
+                occurred_at_millis,
+            });
+        }
         let scope = self.start_runtime_operation(
             crate::RuntimeOperation::new("audit", format!("{}.event", event.entity))
                 .attribute("teaql.entity.type", event.entity.clone()),

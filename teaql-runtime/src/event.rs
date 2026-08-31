@@ -52,6 +52,16 @@ pub struct RawAuditEvent {
     pub changes: Vec<EntityPropertyChange>,
     /// Annotation trace chain from the graph save scope chain.
     pub trace_chain: Vec<teaql_core::TraceNode>,
+    pub bootstrap_audit: Option<BootstrapAuditIdentity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BootstrapAuditIdentity {
+    pub actor: String,
+    pub category: String,
+    pub reason: String,
+    pub resulting_version: Option<i64>,
+    pub occurred_at_millis: u64,
 }
 
 impl RawAuditEvent {
@@ -71,6 +81,7 @@ impl RawAuditEvent {
             new_values: Some(values),
             changes,
             trace_chain: Vec::new(),
+            bootstrap_audit: None,
         }
     }
 
@@ -86,6 +97,7 @@ impl RawAuditEvent {
             new_values: Some(values),
             changes,
             trace_chain: Vec::new(),
+            bootstrap_audit: None,
         }
     }
 
@@ -107,6 +119,7 @@ impl RawAuditEvent {
             new_values: Some(new_values),
             changes,
             trace_chain: Vec::new(),
+            bootstrap_audit: None,
         }
     }
 
@@ -124,6 +137,7 @@ impl RawAuditEvent {
             new_values: None,
             changes: Vec::new(),
             trace_chain: Vec::new(),
+            bootstrap_audit: None,
         }
     }
 
@@ -163,6 +177,7 @@ impl RawAuditEvent {
             new_values: None,
             changes: Vec::new(),
             trace_chain: Vec::new(),
+            bootstrap_audit: None,
         }
     }
 
@@ -211,6 +226,7 @@ impl RawAuditEvent {
             new_values: None,
             changes,
             trace_chain: Vec::new(),
+            bootstrap_audit: None,
         }
     }
 
@@ -238,6 +254,7 @@ impl RawAuditEvent {
             new_values: None,
             changes,
             trace_chain: Vec::new(),
+            bootstrap_audit: None,
         }
     }
 
@@ -265,6 +282,7 @@ impl RawAuditEvent {
             new_values: None,
             changes,
             trace_chain: Vec::new(),
+            bootstrap_audit: None,
         }
     }
 
@@ -294,6 +312,7 @@ impl RawAuditEvent {
             new_values: None,
             changes,
             trace_chain: Vec::new(),
+            bootstrap_audit: None,
         }
     }
 

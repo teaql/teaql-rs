@@ -454,18 +454,17 @@ where
                     .check_and_fix_typed(context, &mut entity, status, location, results);
                 let after_check = entity.into_values();
                 let descriptor = T::entity_descriptor();
-                for property in descriptor
-                    .properties
-                    .iter()
-                    .filter(|property| !property.nullable && !property.is_id && !property.is_version)
-                {
+                for property in descriptor.properties.iter().filter(|property| {
+                    !property.nullable && !property.is_id && !property.is_version
+                }) {
                     let was_absent_or_null = original_values
                         .get(&property.name)
                         .is_none_or(|value| matches!(value, Value::Null));
                     if was_absent_or_null
-                        && after_check
-                            .get(&property.name)
-                            .is_none_or(|value| matches!(value, Value::Null) || before_check.get(&property.name) == Some(value))
+                        && after_check.get(&property.name).is_none_or(|value| {
+                            matches!(value, Value::Null)
+                                || before_check.get(&property.name) == Some(value)
+                        })
                     {
                         results.push(CheckResult::required(
                             location.clone().member(&property.name),

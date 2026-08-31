@@ -165,17 +165,42 @@ where
             if let Some(new_id) = generated_ids.get(&root_key) {
                 node.values.insert(id_prop.name.clone(), new_id.clone());
             }
-            if let Some(changes) = root.current_change_set().changes().get(&root_key) {
-                for (field, value) in changes {
-                    node.values.insert(field.clone(), value.clone());
+            if was_deleted {
+                if let Some(version_prop) = descriptor.version_property() {
+                    if let Some(version) = saved_version(was_new, true, original_version) {
+                        node.values
+                            .insert(version_prop.name.clone(), Value::I64(version));
+                    }
                 }
-            }
-            if let Some(version_prop) = descriptor.version_property() {
-                let authoritative_version = saved_version(was_new, was_deleted, original_version);
-                if let Some(version) = authoritative_version {
-                    node.values
-                        .insert(version_prop.name.clone(), Value::I64(version));
-                }
+            } else {
+                // The database is authoritative for generated IDs, optimistic
+                // versions, defaults, triggers, and provider-side conversions.
+                // Reconstructing the return value from the pending ledger can
+                // retain the pre-save version and silently disagree with the
+                // committed row.  Read the root back after commit, matching the
+                // ordinary graph-save contract.
+                let persisted_id = node.values.get(&id_prop.name).cloned().ok_or_else(|| {
+                    RuntimeError::Graph(format!(
+                        "saved {entity} missing identity field {}",
+                        id_prop.name
+                    ))
+                })?;
+                let eds = crate::EntityDataService::for_executor(context, &entity, &*executor);
+                node.values = eds
+                    .fetch_graph_current_row_internal(
+                        &entity,
+                        &id_prop.name,
+                        &persisted_id,
+                        Vec::new(),
+                    )
+                    .await
+                    .map_err(|error| RuntimeError::Graph(error.to_string()))?
+                    .map(Into::into)
+                    .ok_or_else(|| {
+                        RuntimeError::Graph(format!(
+                            "persisted {entity} record could not be read back"
+                        ))
+                    })?;
             }
             root.clear_committed();
             Ok(node)

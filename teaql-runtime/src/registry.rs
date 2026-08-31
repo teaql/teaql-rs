@@ -432,6 +432,7 @@ pub struct RuntimeModule {
     language: Option<Language>,
     initial_graphs: Vec<GraphNode>,
     root_graphs: Vec<GraphNode>,
+    generated_schema_bootstraps: Vec<crate::GeneratedSchemaBootstrap>,
     graph_decoders: InMemoryEntityGraphDecoderRegistry,
 }
 
@@ -517,6 +518,14 @@ impl RuntimeModule {
         self
     }
 
+    pub fn generated_schema_bootstrap(
+        mut self,
+        bootstrap: crate::GeneratedSchemaBootstrap,
+    ) -> Self {
+        self.generated_schema_bootstraps.push(bootstrap);
+        self
+    }
+
     pub fn apply_to(self, context: &mut UserContext) {
         context.set_metadata(self.metadata);
         context.set_entity_registry(self.entity_registry);
@@ -525,6 +534,7 @@ impl RuntimeModule {
         context.set_event_sink(self.event_sinks);
         context.set_initial_graphs(self.initial_graphs);
         context.set_root_graphs(self.root_graphs);
+        context.set_generated_schema_bootstraps(self.generated_schema_bootstraps);
         context.set_entity_graph_decoder_registry(self.graph_decoders);
         if let Some(language) = self.language {
             context.set_language(language);

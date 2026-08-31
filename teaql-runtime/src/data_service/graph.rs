@@ -189,7 +189,7 @@ where
         &self,
         plan: GraphMutationPlan,
     ) -> Result<GraphNode, DataServiceError<E::Error>> {
-        let Some(root) = plan.planned_root else {
+        let Some(mut root) = plan.planned_root else {
             return Err(DataServiceError::Runtime(RuntimeError::Graph(
                 "graph mutation plan has no planned root".to_owned(),
             )));
@@ -259,6 +259,51 @@ where
                     // References are skipped in execution, they only validate during traversal
                 }
             }
+        }
+
+        if root.operation != GraphOperation::Remove {
+            let descriptor = self
+                .data_service
+                .metadata
+                .context
+                .require_entity(&root.entity)
+                .map_err(DataServiceError::Runtime)?;
+            let id_property = descriptor.id_property().ok_or_else(|| {
+                DataServiceError::Runtime(RuntimeError::Graph(format!(
+                    "entity {} has no id property",
+                    root.entity
+                )))
+            })?;
+            let id = root.values.get(&id_property.name).cloned().ok_or_else(|| {
+                DataServiceError::Runtime(RuntimeError::Graph(format!(
+                    "saved {} missing identity field {}",
+                    root.entity, id_property.name
+                )))
+            })?;
+            root.values = self
+                .fetch_graph_current_row_internal(
+                    &root.entity,
+                    &id_property.name,
+                    &id,
+                    root.comment
+                        .clone()
+                        .map(|comment| {
+                            vec![teaql_core::TraceNode {
+                                entity_type: root.entity.clone(),
+                                entity_id: id.try_u64(),
+                                comment,
+                            }]
+                        })
+                        .unwrap_or_default(),
+                )
+                .await?
+                .map(Into::into)
+                .ok_or_else(|| {
+                    DataServiceError::Runtime(RuntimeError::Graph(format!(
+                        "persisted {} record could not be read back",
+                        root.entity
+                    )))
+                })?;
         }
 
         Ok(root)

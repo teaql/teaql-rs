@@ -657,6 +657,18 @@ pub(crate) fn ensure_sqlite_physical_schema_for(
 
 pub(crate) fn ensure_sqlite_schema_for(context: &UserContext) -> Result<(), MutationExecutorError> {
     ensure_sqlite_physical_schema_for(context)?;
+    if !context.initial_graphs().is_empty() || !context.root_graphs().is_empty() {
+        return Err(MutationExecutorError::Bind(
+            "generated root/constant bootstrap must use the typed RuntimeModule callback"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn ensure_legacy_sqlite_bootstrap_for(context: &UserContext) -> Result<(), MutationExecutorError> {
+    ensure_sqlite_physical_schema_for(context)?;
     let dialect = context.get_resource::<SqliteDialect>().ok_or_else(|| {
         MutationExecutorError::Bind("missing typed resource: SqliteDialect".to_owned())
     })?;
@@ -876,6 +888,11 @@ impl SqliteIdSpaceGenerator {
 impl InternalIdGenerator for SqliteIdSpaceGenerator {
     fn generate_id(&self, entity: &str) -> Result<u64, RuntimeError> {
         self.next_id(entity)
+            .map_err(|err| RuntimeError::IdGeneration(err.to_string()))
+    }
+
+    fn ensure_floor(&self, entity: &str, floor: u64) -> Result<(), RuntimeError> {
+        SqliteIdSpaceGenerator::ensure_floor(self, entity, floor)
             .map_err(|err| RuntimeError::IdGeneration(err.to_string()))
     }
 }
@@ -1780,7 +1797,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_schema_ensure_does_not_overwrite_existing_initial_graph() {
+    fn physical_schema_never_interprets_generated_bootstrap_graphs() {
         let executor =
             SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
         let entity = entity();
@@ -1794,16 +1811,7 @@ mod tests {
         ]);
         context.use_sqlite_provider(executor.clone());
 
-        ensure_sqlite_schema_for(&context).unwrap();
-        let customize = SqliteDialect
-            .compile_update(
-                &entity,
-                &UpdateCommand::new("Order", 1_u64).value("name", "application value"),
-            )
-            .unwrap();
-        assert_eq!(executor.execute(&customize).unwrap(), 1);
-
-        ensure_sqlite_schema_for(&context).unwrap();
+        ensure_sqlite_physical_schema_for(&context).unwrap();
 
         let select = SqliteDialect
             .compile_select(
@@ -1812,15 +1820,11 @@ mod tests {
             )
             .unwrap();
         let rows = executor.fetch_all_compact(&select).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(
-            rows[0].get("name"),
-            Some(&Value::Text("application value".to_owned()))
-        );
+        assert!(rows.is_empty());
     }
 
     #[test]
-    fn repeated_schema_ensure_reconciles_changed_constant_graph() {
+    fn public_schema_boundary_rejects_legacy_provider_owned_bootstrap_graphs() {
         let executor =
             SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
         let entity = entity();
@@ -1833,48 +1837,16 @@ mod tests {
                 .value("name", "red"),
         ]);
         context.use_sqlite_provider(executor.clone());
-        ensure_sqlite_physical_schema_for(&context).unwrap();
-        let before_bootstrap = SqliteDialect
-            .compile_select(
-                &entity,
-                &SelectQuery::new("Order").filter(Expr::eq("id", 1001_u64)),
-            )
+        let error = ensure_sqlite_schema_for(&context).unwrap_err();
+        assert!(error.to_string().contains(
+            "generated root/constant bootstrap must use the typed RuntimeModule callback"
+        ));
+        let count: i64 = executor
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM orders", [], |row| row.get(0))
             .unwrap();
-        assert!(executor.fetch_all_compact(&before_bootstrap).unwrap().is_empty());
-        ensure_sqlite_schema_for(&context).unwrap();
-        ensure_sqlite_schema_for(&context).unwrap();
-
-        let unchanged = SqliteDialect
-            .compile_select(
-                &entity,
-                &SelectQuery::new("Order").filter(Expr::eq("id", 1001_u64)),
-            )
-            .unwrap();
-        let rows = executor.fetch_all_compact(&unchanged).unwrap();
-        assert_eq!(rows[0].get("version"), Some(&Value::I64(1)));
-
-        context.set_initial_graphs(vec![
-            GraphNode::new("Order")
-                .value("id", 1001_u64)
-                .value("version", 1_i64)
-                .value("name", "crimson"),
-        ]);
-        ensure_sqlite_schema_for(&context).unwrap();
-
-        let select = SqliteDialect
-            .compile_select(
-                &entity,
-                &SelectQuery::new("Order").filter(Expr::eq("id", 1001_u64)),
-            )
-            .unwrap();
-        let rows = executor.fetch_all_compact(&select).unwrap();
-        assert_eq!(
-            rows[0].get("name"),
-            Some(&Value::Text("crimson".to_owned()))
-        );
-        assert_eq!(rows[0].get("version"), Some(&Value::I64(2)));
-        let generator = SqliteIdSpaceGenerator::from_executor(executor);
-        assert_eq!(generator.next_id("Order").unwrap(), 1002);
+        assert_eq!(count, 0);
     }
 
     #[test]

@@ -244,7 +244,7 @@ pub struct EntityChangeSet {
     changes: BTreeMap<EntityKey, MutationValues>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct OriginalVersions {
     first: Option<(EntityKey, i64)>,
     overflow: BTreeMap<EntityKey, i64>,
@@ -270,6 +270,15 @@ impl OriginalVersions {
             Some(_) => {
                 self.overflow.insert(key, version);
             }
+        }
+    }
+
+    fn merge_from(&mut self, source: &Self) {
+        if let Some((key, version)) = &source.first {
+            self.insert(key.clone(), *version);
+        }
+        for (key, version) in &source.overflow {
+            self.insert(key.clone(), *version);
         }
     }
 }
@@ -368,7 +377,7 @@ impl ChangeSetStack {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct EntityMutationLedger {
     change_sets: ChangeSetStack,
     /// Annotation comment for observability during graph save.
@@ -481,7 +490,7 @@ impl Clone for EntityRuntimeState {
 impl std::panic::UnwindSafe for EntityRuntimeState {}
 impl std::panic::RefUnwindSafe for EntityRuntimeState {}
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum OriginalSnapshot {
     Materialized(EntitySnapshot),
     Compact(teaql_core::CompactRow),
@@ -553,6 +562,53 @@ impl EntityRuntimeState {
             graph: source.graph.preserve(),
             loaded_snapshot: self.loaded_snapshot.clone(),
         }
+    }
+
+    /// Adopt the pending mutation intent owned by `source` into this graph.
+    ///
+    /// Explicit graph composition must not lose mutations recorded before the
+    /// child was attached. The receiving graph remains the save boundary and
+    /// the source ledger is left intact so a failed composition is retryable.
+    #[doc(hidden)]
+    pub fn adopt_mutations_from(&self, source: &EntityRuntimeState) {
+        let Some(source_context) = source.inner.get() else {
+            return;
+        };
+        if self
+            .inner
+            .get()
+            .is_some_and(|target_context| Arc::ptr_eq(target_context, source_context))
+        {
+            return;
+        }
+        let snapshot = source_context
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        self.write_context(|target| {
+            for change_set in snapshot.change_sets.stack {
+                for (key, values) in change_set.changes {
+                    for (field, value) in values {
+                        target.change_sets.set(key.clone(), field, value);
+                    }
+                }
+            }
+            target.deleted_keys.extend(snapshot.deleted_keys);
+            target.new_keys.extend(snapshot.new_keys);
+            target
+                .original_versions
+                .merge_from(&snapshot.original_versions);
+            for (key, traces) in snapshot.trace_chains {
+                target.trace_chains.entry(key).or_default().extend(traces);
+            }
+            if target.original_snapshot.is_none() {
+                target.original_snapshot = snapshot.original_snapshot;
+            }
+            if target.comment.is_none() {
+                target.comment = snapshot.comment;
+            }
+            target.is_new |= snapshot.is_new;
+        });
     }
 
     /// Publish a completely assembled graph. It becomes immutable after this call.
@@ -893,6 +949,26 @@ mod lazy_root_tests {
             Some(Value::Text("updated".to_owned()))
         );
         assert!(root.has_mutation_context());
+    }
+
+    #[test]
+    fn explicit_graph_composition_adopts_existing_child_mutations() {
+        let parent = EntityRuntimeState::default();
+        let child = EntityRuntimeState::default();
+        let child_key = EntityKey::new_static("Child", 17_u64);
+
+        child.mark_as_new(child_key.clone());
+        child.set(child_key.clone(), "display_name", "before attach");
+        child.set_original_version(child_key.clone(), 3);
+
+        parent.adopt_mutations_from(&child);
+
+        assert!(parent.is_new(&child_key));
+        assert_eq!(
+            parent.get(&child_key, "display_name"),
+            Some(Value::Text("before attach".to_owned()))
+        );
+        assert_eq!(parent.get_original_version(&child_key), Some(3));
     }
 
     #[test]

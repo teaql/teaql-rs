@@ -1306,11 +1306,18 @@ impl InternalIdGenerator for PgIdSpaceGenerator {
         let entity = entity.to_owned();
         block_on_id_generation(async move { generator.next_id(&entity).await })
     }
+
+    fn ensure_floor(&self, entity: &str, floor: u64) -> Result<(), RuntimeError> {
+        let generator = self.clone();
+        let entity = entity.to_owned();
+        block_on_id_generation(async move { generator.ensure_floor(&entity, floor).await })
+    }
 }
 
-fn block_on_id_generation<F>(future: F) -> Result<u64, RuntimeError>
+fn block_on_id_generation<T, F>(future: F) -> Result<T, RuntimeError>
 where
-    F: Future<Output = Result<u64, MutationExecutorError>> + Send + 'static,
+    T: Send + 'static,
+    F: Future<Output = Result<T, MutationExecutorError>> + Send + 'static,
 {
     let result = match tokio::runtime::Handle::try_current() {
         Ok(handle) => tokio::task::block_in_place(|| handle.block_on(future)),

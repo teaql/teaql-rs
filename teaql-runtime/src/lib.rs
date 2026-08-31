@@ -23,7 +23,8 @@ mod telemetry_opentelemetry;
 
 pub use context::{
     ContextEntityRef, ContextRootError, ContinuousPageCursor, ContinuousPageCursorStore, DataStore,
-    FixEvidence, FixEvidenceSource, IdSetStore, InMemoryContinuousPageCursorStore, InMemoryDataStore, InMemoryIdSetStore,
+    FixEvidence, FixEvidenceSource, GeneratedSchemaBootstrap, GeneratedSchemaBootstrapFuture,
+    IdSetStore, InMemoryContinuousPageCursorStore, InMemoryDataStore, InMemoryIdSetStore,
     InfoLogEntry, LogPayload, RemoteLockProvider, RetainedIdSet, SchemaInvocation, SchemaProvider,
     SqlLogEntry, SqlLogOperation, SqlLogOptions, UnifiedLogBuffer, UnifiedLogEntry, UserContext,
 };
@@ -39,8 +40,8 @@ pub use entity_save::{AuditedSaveExt, graph_node_from_entity, save_audited_ledge
 pub use entity_status::{EntityAction, EntityStatus};
 pub use error::{ContextError, DataServiceError, RuntimeError};
 pub use event::{
-    EntityPropertyChange, InMemoryRawAuditEventSink, RawAuditEvent, RawAuditEventKind,
-    RawAuditEventSink, SafeAuditEvent, SafeAuditEventSink, SafeAuditField,
+    BootstrapAuditIdentity, EntityPropertyChange, InMemoryRawAuditEventSink, RawAuditEvent,
+    RawAuditEventKind, RawAuditEventSink, SafeAuditEvent, SafeAuditEventSink, SafeAuditField,
 };
 pub use generated_support::*;
 pub use graph::{

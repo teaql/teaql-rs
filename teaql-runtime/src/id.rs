@@ -6,6 +6,12 @@ use crate::RuntimeError;
 
 pub trait InternalIdGenerator: Send + Sync {
     fn generate_id(&self, entity: &str) -> Result<u64, RuntimeError>;
+
+    fn ensure_floor(&self, entity: &str, floor: u64) -> Result<(), RuntimeError> {
+        Err(RuntimeError::IdGeneration(format!(
+            "ID generator cannot reserve fixed bootstrap ID floor {floor} for {entity}"
+        )))
+    }
 }
 
 /// Normalize generated Rust type names and model entity names to the same
@@ -58,6 +64,11 @@ impl AtomicCounterIdGenerator {
 impl InternalIdGenerator for AtomicCounterIdGenerator {
     fn generate_id(&self, _entity: &str) -> Result<u64, RuntimeError> {
         Ok(self.counter.fetch_add(1, Ordering::Relaxed) + 1)
+    }
+
+    fn ensure_floor(&self, _entity: &str, floor: u64) -> Result<(), RuntimeError> {
+        self.counter.fetch_max(floor, Ordering::Relaxed);
+        Ok(())
     }
 }
 
@@ -163,6 +174,10 @@ impl InternalIdGenerator for SnowflakeIdGenerator {
             | (self.datacenter_id << Self::DATACENTER_ID_SHIFT)
             | (self.worker_id << Self::WORKER_ID_SHIFT)
             | state.sequence)
+    }
+
+    fn ensure_floor(&self, _entity: &str, _floor: u64) -> Result<(), RuntimeError> {
+        Ok(())
     }
 }
 

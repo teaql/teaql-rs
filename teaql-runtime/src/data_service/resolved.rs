@@ -192,6 +192,14 @@ where
         &self,
         entity: &str,
     ) -> Option<Arc<dyn EntityDataServiceBehavior>> {
+        if self
+            .data_service
+            .metadata
+            .context
+            .is_generated_schema_bootstrap()
+        {
+            return None;
+        }
         self.data_service
             .metadata
             .context
@@ -199,6 +207,14 @@ where
     }
 
     pub(super) fn behavior(&self) -> Option<Arc<dyn EntityDataServiceBehavior>> {
+        if self
+            .data_service
+            .metadata
+            .context
+            .is_generated_schema_bootstrap()
+        {
+            return None;
+        }
         self.data_service
             .metadata
             .context
