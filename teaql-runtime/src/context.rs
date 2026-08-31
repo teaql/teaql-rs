@@ -473,7 +473,10 @@ impl Default for UserContext {
             initial_graphs: Vec::new(),
             root_graphs: Vec::new(),
             entity_runtime_state: EntityRuntimeState::default(),
-            sql_log_options: SqlLogOptions::all(),
+            // Copy-paste SQL contains rendered parameter values. Keep this
+            // diagnostic surface opt-in even when ordinary runtime telemetry
+            // is configured.
+            sql_log_options: SqlLogOptions::disabled(),
             sql_log_entries: Mutex::new(Vec::new()),
             user_identifier: Some(user_id),
             timezone: Some("UTC".to_owned()),
@@ -1614,6 +1617,13 @@ fn pretty_sql(sql: &str) -> String {
 #[cfg(test)]
 mod sql_log_option_tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_sql_log_is_disabled_by_default() {
+        let context = UserContext::default();
+        assert_eq!(context.sql_log_options(), SqlLogOptions::disabled());
+        assert!(context.sql_logs().is_empty());
+    }
 
     #[test]
     fn disabled_sql_log_rejects_executor_metadata_before_recording() {
