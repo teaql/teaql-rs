@@ -134,6 +134,24 @@ impl<R> CustomerOrderRequest<R> {
         Ok(rows)
     }
 
+    pub(crate) async fn _execute_for_rows<'a, C>(
+        self,
+        context: &'a C,
+    ) -> Result<SmartList<teaql_core::CompactRow>, TeaqlDataServiceError<C::CustomerOrderRepository<'a>>>
+    where
+        C: TeaqlRepositoryProvider + ?Sized,
+    {
+        let repository = context
+            .customer_order_repository()
+            .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
+        let query = authorize_query(apply_runtime_metadata(
+            self.query,
+            &self.query_options,
+            &self.child_enhancements,
+        )).map_err(DataServiceError::Runtime)?;
+        repository.fetch_smart_list(&query).await
+    }
+
     pub(crate) async fn _execute_for_stream<'a, C>(
         self,
         context: &'a C,
@@ -601,6 +619,14 @@ impl<R> CustomerOrderRequest<R> {
         self
     }
 
+    /// Select bounded indexed probes for a per-parent Top-N relation only
+    /// when the already-loaded parent count is at or below `threshold`.
+    /// Passing zero explicitly selects the provider window plan.
+    pub fn top_n_probe_parent_threshold(mut self, threshold: usize) -> Self {
+        self.query = self.query.top_n_probe_parent_threshold(threshold);
+        self
+    }
+
     pub fn top(self, top_n: u64) -> Self {
         self.limit(top_n)
     }
@@ -674,6 +700,14 @@ impl<R> CustomerOrderRequest<R> {
     pub fn group_by(mut self, field: impl Into<String>) -> Self {
         self.query = self.query.group_by(field);
         self
+    }
+
+    pub fn count(self) -> Self {
+        self.count_as("count")
+    }
+
+    pub fn count_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_count(alias)
     }
 
     pub fn aggregate_count(mut self, alias: impl Into<String>) -> Self {
@@ -2775,6 +2809,17 @@ impl<R> CustomerOrderRequest<R> {
         self
     }
 
+    fn scalar_from_order_lines_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+        let selection = request.into();
+        self.query_options.relation_aggregates.push(RelationAggregate::new(
+            "order_line_list",
+            alias,
+            selection,
+            true,
+        ));
+        self
+    }
+
     pub fn group_by_order_lines_with_details(self, request: impl Into<QuerySelection>) -> Self {
         self.stats_from_order_lines(request)
     }
@@ -2785,70 +2830,70 @@ impl<R> CustomerOrderRequest<R> {
     }
 
     pub fn sum_quantity_of_order_lines_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_lines_as(alias, request.into().into_query().sum("quantity", "sum_quantity"))
+        self.scalar_from_order_lines_as(alias, request.into().into_query().sum("quantity", "sum_quantity"))
     }
     pub fn min_quantity_of_order_lines(self) -> Self {
         self.min_quantity_of_order_lines_as("min_quantity_of_order_lines", crate::Q::order_lines().unlimited())
     }
 
     pub fn min_quantity_of_order_lines_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_lines_as(alias, request.into().into_query().min("quantity", "min_quantity"))
+        self.scalar_from_order_lines_as(alias, request.into().into_query().min("quantity", "min_quantity"))
     }
     pub fn max_quantity_of_order_lines(self) -> Self {
         self.max_quantity_of_order_lines_as("max_quantity_of_order_lines", crate::Q::order_lines().unlimited())
     }
 
     pub fn max_quantity_of_order_lines_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_lines_as(alias, request.into().into_query().max("quantity", "max_quantity"))
+        self.scalar_from_order_lines_as(alias, request.into().into_query().max("quantity", "max_quantity"))
     }
     pub fn avg_quantity_of_order_lines(self) -> Self {
         self.avg_quantity_of_order_lines_as("avg_quantity_of_order_lines", crate::Q::order_lines().unlimited())
     }
 
     pub fn avg_quantity_of_order_lines_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_lines_as(alias, request.into().into_query().avg("quantity", "avg_quantity"))
+        self.scalar_from_order_lines_as(alias, request.into().into_query().avg("quantity", "avg_quantity"))
     }
     pub fn standard_deviation_quantity_of_order_lines(self) -> Self {
         self.standard_deviation_quantity_of_order_lines_as("standard_deviation_quantity_of_order_lines", crate::Q::order_lines().unlimited())
     }
 
     pub fn standard_deviation_quantity_of_order_lines_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_lines_as(alias, request.into().into_query().stddev("quantity", "stdDev_quantity"))
+        self.scalar_from_order_lines_as(alias, request.into().into_query().stddev("quantity", "stdDev_quantity"))
     }
     pub fn square_root_of_population_standard_deviation_quantity_of_order_lines(self) -> Self {
         self.square_root_of_population_standard_deviation_quantity_of_order_lines_as("square_root_of_population_standard_deviation_quantity_of_order_lines", crate::Q::order_lines().unlimited())
     }
 
     pub fn square_root_of_population_standard_deviation_quantity_of_order_lines_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_lines_as(alias, request.into().into_query().stddev_pop("quantity", "stdDevPop_quantity"))
+        self.scalar_from_order_lines_as(alias, request.into().into_query().stddev_pop("quantity", "stdDevPop_quantity"))
     }
     pub fn sample_variance_quantity_of_order_lines(self) -> Self {
         self.sample_variance_quantity_of_order_lines_as("sample_variance_quantity_of_order_lines", crate::Q::order_lines().unlimited())
     }
 
     pub fn sample_variance_quantity_of_order_lines_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_lines_as(alias, request.into().into_query().var_samp("quantity", "varSamp_quantity"))
+        self.scalar_from_order_lines_as(alias, request.into().into_query().var_samp("quantity", "varSamp_quantity"))
     }
     pub fn sample_population_variance_quantity_of_order_lines(self) -> Self {
         self.sample_population_variance_quantity_of_order_lines_as("sample_population_variance_quantity_of_order_lines", crate::Q::order_lines().unlimited())
     }
 
     pub fn sample_population_variance_quantity_of_order_lines_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_lines_as(alias, request.into().into_query().var_pop("quantity", "varPop_quantity"))
+        self.scalar_from_order_lines_as(alias, request.into().into_query().var_pop("quantity", "varPop_quantity"))
     }
     pub fn min_create_time_of_order_lines(self) -> Self {
         self.min_create_time_of_order_lines_as("min_create_time_of_order_lines", crate::Q::order_lines().unlimited())
     }
 
     pub fn min_create_time_of_order_lines_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_lines_as(alias, request.into().into_query().min("create_time", "min_create_time"))
+        self.scalar_from_order_lines_as(alias, request.into().into_query().min("create_time", "min_create_time"))
     }
     pub fn max_create_time_of_order_lines(self) -> Self {
         self.max_create_time_of_order_lines_as("max_create_time_of_order_lines", crate::Q::order_lines().unlimited())
     }
 
     pub fn max_create_time_of_order_lines_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_lines_as(alias, request.into().into_query().max("create_time", "max_create_time"))
+        self.scalar_from_order_lines_as(alias, request.into().into_query().max("create_time", "max_create_time"))
     }
 }
 
@@ -2958,6 +3003,13 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<CustomerOrderRequest<R>> {
         C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
         self.into_inner_with_trace()._execute_for_list(context).await
+    }
+
+    pub async fn execute_for_rows<'a, C>(self, context: &'a C) -> Result<teaql_core::SmartList<teaql_core::CompactRow>, crate::request_support::TeaqlDataServiceError<C::CustomerOrderRepository<'a>>>
+    where
+        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
+    {
+        self.into_inner_with_trace()._execute_for_rows(context).await
     }
 
     /// Execute query as a lazy entity stream without materializing the result set.

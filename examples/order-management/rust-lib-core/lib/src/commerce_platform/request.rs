@@ -134,6 +134,24 @@ impl<R> CommercePlatformRequest<R> {
         Ok(rows)
     }
 
+    pub(crate) async fn _execute_for_rows<'a, C>(
+        self,
+        context: &'a C,
+    ) -> Result<SmartList<teaql_core::CompactRow>, TeaqlDataServiceError<C::CommercePlatformRepository<'a>>>
+    where
+        C: TeaqlRepositoryProvider + ?Sized,
+    {
+        let repository = context
+            .commerce_platform_repository()
+            .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
+        let query = authorize_query(apply_runtime_metadata(
+            self.query,
+            &self.query_options,
+            &self.child_enhancements,
+        )).map_err(DataServiceError::Runtime)?;
+        repository.fetch_smart_list(&query).await
+    }
+
     pub(crate) async fn _execute_for_stream<'a, C>(
         self,
         context: &'a C,
@@ -608,6 +626,14 @@ impl<R> CommercePlatformRequest<R> {
         self
     }
 
+    /// Select bounded indexed probes for a per-parent Top-N relation only
+    /// when the already-loaded parent count is at or below `threshold`.
+    /// Passing zero explicitly selects the provider window plan.
+    pub fn top_n_probe_parent_threshold(mut self, threshold: usize) -> Self {
+        self.query = self.query.top_n_probe_parent_threshold(threshold);
+        self
+    }
+
     pub fn top(self, top_n: u64) -> Self {
         self.limit(top_n)
     }
@@ -677,6 +703,14 @@ impl<R> CommercePlatformRequest<R> {
     pub fn group_by(mut self, field: impl Into<String>) -> Self {
         self.query = self.query.group_by(field);
         self
+    }
+
+    pub fn count(self) -> Self {
+        self.count_as("count")
+    }
+
+    pub fn count_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_count(alias)
     }
 
     pub fn aggregate_count(mut self, alias: impl Into<String>) -> Self {
@@ -2049,6 +2083,17 @@ impl<R> CommercePlatformRequest<R> {
         self
     }
 
+    fn scalar_from_customers_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+        let selection = request.into();
+        self.query_options.relation_aggregates.push(RelationAggregate::new(
+            "customer_list",
+            alias,
+            selection,
+            true,
+        ));
+        self
+    }
+
     pub fn group_by_customers_with_details(self, request: impl Into<QuerySelection>) -> Self {
         self.stats_from_customers(request)
     }
@@ -2059,28 +2104,28 @@ impl<R> CommercePlatformRequest<R> {
     }
 
     pub fn min_create_time_of_customers_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_customers_as(alias, request.into().into_query().min("create_time", "min_create_time"))
+        self.scalar_from_customers_as(alias, request.into().into_query().min("create_time", "min_create_time"))
     }
     pub fn max_create_time_of_customers(self) -> Self {
         self.max_create_time_of_customers_as("max_create_time_of_customers", crate::Q::customers().unlimited())
     }
 
     pub fn max_create_time_of_customers_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_customers_as(alias, request.into().into_query().max("create_time", "max_create_time"))
+        self.scalar_from_customers_as(alias, request.into().into_query().max("create_time", "max_create_time"))
     }
     pub fn min_update_time_of_customers(self) -> Self {
         self.min_update_time_of_customers_as("min_update_time_of_customers", crate::Q::customers().unlimited())
     }
 
     pub fn min_update_time_of_customers_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_customers_as(alias, request.into().into_query().min("update_time", "min_update_time"))
+        self.scalar_from_customers_as(alias, request.into().into_query().min("update_time", "min_update_time"))
     }
     pub fn max_update_time_of_customers(self) -> Self {
         self.max_update_time_of_customers_as("max_update_time_of_customers", crate::Q::customers().unlimited())
     }
 
     pub fn max_update_time_of_customers_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_customers_as(alias, request.into().into_query().max("update_time", "max_update_time"))
+        self.scalar_from_customers_as(alias, request.into().into_query().max("update_time", "max_update_time"))
     }
 
     pub fn count_order_statuses(self) -> Self {
@@ -2117,6 +2162,17 @@ impl<R> CommercePlatformRequest<R> {
         self
     }
 
+    fn scalar_from_order_statuses_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+        let selection = request.into();
+        self.query_options.relation_aggregates.push(RelationAggregate::new(
+            "order_status_list",
+            alias,
+            selection,
+            true,
+        ));
+        self
+    }
+
     pub fn group_by_order_statuses_with_details(self, request: impl Into<QuerySelection>) -> Self {
         self.stats_from_order_statuses(request)
     }
@@ -2127,56 +2183,56 @@ impl<R> CommercePlatformRequest<R> {
     }
 
     pub fn sum_display_order_of_order_statuses_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_statuses_as(alias, request.into().into_query().sum("display_order", "sum_display_order"))
+        self.scalar_from_order_statuses_as(alias, request.into().into_query().sum("display_order", "sum_display_order"))
     }
     pub fn min_display_order_of_order_statuses(self) -> Self {
         self.min_display_order_of_order_statuses_as("min_display_order_of_order_statuses", crate::Q::order_statuses().unlimited())
     }
 
     pub fn min_display_order_of_order_statuses_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_statuses_as(alias, request.into().into_query().min("display_order", "min_display_order"))
+        self.scalar_from_order_statuses_as(alias, request.into().into_query().min("display_order", "min_display_order"))
     }
     pub fn max_display_order_of_order_statuses(self) -> Self {
         self.max_display_order_of_order_statuses_as("max_display_order_of_order_statuses", crate::Q::order_statuses().unlimited())
     }
 
     pub fn max_display_order_of_order_statuses_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_statuses_as(alias, request.into().into_query().max("display_order", "max_display_order"))
+        self.scalar_from_order_statuses_as(alias, request.into().into_query().max("display_order", "max_display_order"))
     }
     pub fn avg_display_order_of_order_statuses(self) -> Self {
         self.avg_display_order_of_order_statuses_as("avg_display_order_of_order_statuses", crate::Q::order_statuses().unlimited())
     }
 
     pub fn avg_display_order_of_order_statuses_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_statuses_as(alias, request.into().into_query().avg("display_order", "avg_display_order"))
+        self.scalar_from_order_statuses_as(alias, request.into().into_query().avg("display_order", "avg_display_order"))
     }
     pub fn standard_deviation_display_order_of_order_statuses(self) -> Self {
         self.standard_deviation_display_order_of_order_statuses_as("standard_deviation_display_order_of_order_statuses", crate::Q::order_statuses().unlimited())
     }
 
     pub fn standard_deviation_display_order_of_order_statuses_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_statuses_as(alias, request.into().into_query().stddev("display_order", "stdDev_display_order"))
+        self.scalar_from_order_statuses_as(alias, request.into().into_query().stddev("display_order", "stdDev_display_order"))
     }
     pub fn square_root_of_population_standard_deviation_display_order_of_order_statuses(self) -> Self {
         self.square_root_of_population_standard_deviation_display_order_of_order_statuses_as("square_root_of_population_standard_deviation_display_order_of_order_statuses", crate::Q::order_statuses().unlimited())
     }
 
     pub fn square_root_of_population_standard_deviation_display_order_of_order_statuses_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_statuses_as(alias, request.into().into_query().stddev_pop("display_order", "stdDevPop_display_order"))
+        self.scalar_from_order_statuses_as(alias, request.into().into_query().stddev_pop("display_order", "stdDevPop_display_order"))
     }
     pub fn sample_variance_display_order_of_order_statuses(self) -> Self {
         self.sample_variance_display_order_of_order_statuses_as("sample_variance_display_order_of_order_statuses", crate::Q::order_statuses().unlimited())
     }
 
     pub fn sample_variance_display_order_of_order_statuses_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_statuses_as(alias, request.into().into_query().var_samp("display_order", "varSamp_display_order"))
+        self.scalar_from_order_statuses_as(alias, request.into().into_query().var_samp("display_order", "varSamp_display_order"))
     }
     pub fn sample_population_variance_display_order_of_order_statuses(self) -> Self {
         self.sample_population_variance_display_order_of_order_statuses_as("sample_population_variance_display_order_of_order_statuses", crate::Q::order_statuses().unlimited())
     }
 
     pub fn sample_population_variance_display_order_of_order_statuses_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_statuses_as(alias, request.into().into_query().var_pop("display_order", "varPop_display_order"))
+        self.scalar_from_order_statuses_as(alias, request.into().into_query().var_pop("display_order", "varPop_display_order"))
     }
 
     pub fn count_customer_orders(self) -> Self {
@@ -2213,6 +2269,17 @@ impl<R> CommercePlatformRequest<R> {
         self
     }
 
+    fn scalar_from_customer_orders_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+        let selection = request.into();
+        self.query_options.relation_aggregates.push(RelationAggregate::new(
+            "customer_order_list",
+            alias,
+            selection,
+            true,
+        ));
+        self
+    }
+
     pub fn group_by_customer_orders_with_details(self, request: impl Into<QuerySelection>) -> Self {
         self.stats_from_customer_orders(request)
     }
@@ -2223,98 +2290,98 @@ impl<R> CommercePlatformRequest<R> {
     }
 
     pub fn min_order_date_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_customer_orders_as(alias, request.into().into_query().min("order_date", "min_order_date"))
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().min("order_date", "min_order_date"))
     }
     pub fn max_order_date_of_customer_orders(self) -> Self {
         self.max_order_date_of_customer_orders_as("max_order_date_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn max_order_date_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_customer_orders_as(alias, request.into().into_query().max("order_date", "max_order_date"))
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().max("order_date", "max_order_date"))
     }
     pub fn sum_total_amount_of_customer_orders(self) -> Self {
         self.sum_total_amount_of_customer_orders_as("sum_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn sum_total_amount_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_customer_orders_as(alias, request.into().into_query().sum("total_amount", "sum_total_amount"))
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().sum("total_amount", "sum_total_amount"))
     }
     pub fn min_total_amount_of_customer_orders(self) -> Self {
         self.min_total_amount_of_customer_orders_as("min_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn min_total_amount_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_customer_orders_as(alias, request.into().into_query().min("total_amount", "min_total_amount"))
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().min("total_amount", "min_total_amount"))
     }
     pub fn max_total_amount_of_customer_orders(self) -> Self {
         self.max_total_amount_of_customer_orders_as("max_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn max_total_amount_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_customer_orders_as(alias, request.into().into_query().max("total_amount", "max_total_amount"))
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().max("total_amount", "max_total_amount"))
     }
     pub fn avg_total_amount_of_customer_orders(self) -> Self {
         self.avg_total_amount_of_customer_orders_as("avg_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn avg_total_amount_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_customer_orders_as(alias, request.into().into_query().avg("total_amount", "avg_total_amount"))
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().avg("total_amount", "avg_total_amount"))
     }
     pub fn standard_deviation_total_amount_of_customer_orders(self) -> Self {
         self.standard_deviation_total_amount_of_customer_orders_as("standard_deviation_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn standard_deviation_total_amount_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_customer_orders_as(alias, request.into().into_query().stddev("total_amount", "stdDev_total_amount"))
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().stddev("total_amount", "stdDev_total_amount"))
     }
     pub fn square_root_of_population_standard_deviation_total_amount_of_customer_orders(self) -> Self {
         self.square_root_of_population_standard_deviation_total_amount_of_customer_orders_as("square_root_of_population_standard_deviation_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn square_root_of_population_standard_deviation_total_amount_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_customer_orders_as(alias, request.into().into_query().stddev_pop("total_amount", "stdDevPop_total_amount"))
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().stddev_pop("total_amount", "stdDevPop_total_amount"))
     }
     pub fn sample_variance_total_amount_of_customer_orders(self) -> Self {
         self.sample_variance_total_amount_of_customer_orders_as("sample_variance_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn sample_variance_total_amount_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_customer_orders_as(alias, request.into().into_query().var_samp("total_amount", "varSamp_total_amount"))
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().var_samp("total_amount", "varSamp_total_amount"))
     }
     pub fn sample_population_variance_total_amount_of_customer_orders(self) -> Self {
         self.sample_population_variance_total_amount_of_customer_orders_as("sample_population_variance_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn sample_population_variance_total_amount_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_customer_orders_as(alias, request.into().into_query().var_pop("total_amount", "varPop_total_amount"))
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().var_pop("total_amount", "varPop_total_amount"))
     }
     pub fn min_create_time_of_customer_orders(self) -> Self {
         self.min_create_time_of_customer_orders_as("min_create_time_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn min_create_time_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_customer_orders_as(alias, request.into().into_query().min("create_time", "min_create_time"))
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().min("create_time", "min_create_time"))
     }
     pub fn max_create_time_of_customer_orders(self) -> Self {
         self.max_create_time_of_customer_orders_as("max_create_time_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn max_create_time_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_customer_orders_as(alias, request.into().into_query().max("create_time", "max_create_time"))
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().max("create_time", "max_create_time"))
     }
     pub fn min_update_time_of_customer_orders(self) -> Self {
         self.min_update_time_of_customer_orders_as("min_update_time_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn min_update_time_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_customer_orders_as(alias, request.into().into_query().min("update_time", "min_update_time"))
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().min("update_time", "min_update_time"))
     }
     pub fn max_update_time_of_customer_orders(self) -> Self {
         self.max_update_time_of_customer_orders_as("max_update_time_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn max_update_time_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_customer_orders_as(alias, request.into().into_query().max("update_time", "max_update_time"))
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().max("update_time", "max_update_time"))
     }
 
     pub fn count_products(self) -> Self {
@@ -2351,6 +2418,17 @@ impl<R> CommercePlatformRequest<R> {
         self
     }
 
+    fn scalar_from_products_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+        let selection = request.into();
+        self.query_options.relation_aggregates.push(RelationAggregate::new(
+            "product_list",
+            alias,
+            selection,
+            true,
+        ));
+        self
+    }
+
     pub fn group_by_products_with_details(self, request: impl Into<QuerySelection>) -> Self {
         self.stats_from_products(request)
     }
@@ -2361,28 +2439,28 @@ impl<R> CommercePlatformRequest<R> {
     }
 
     pub fn min_create_time_of_products_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_products_as(alias, request.into().into_query().min("create_time", "min_create_time"))
+        self.scalar_from_products_as(alias, request.into().into_query().min("create_time", "min_create_time"))
     }
     pub fn max_create_time_of_products(self) -> Self {
         self.max_create_time_of_products_as("max_create_time_of_products", crate::Q::products().unlimited())
     }
 
     pub fn max_create_time_of_products_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_products_as(alias, request.into().into_query().max("create_time", "max_create_time"))
+        self.scalar_from_products_as(alias, request.into().into_query().max("create_time", "max_create_time"))
     }
     pub fn min_update_time_of_products(self) -> Self {
         self.min_update_time_of_products_as("min_update_time_of_products", crate::Q::products().unlimited())
     }
 
     pub fn min_update_time_of_products_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_products_as(alias, request.into().into_query().min("update_time", "min_update_time"))
+        self.scalar_from_products_as(alias, request.into().into_query().min("update_time", "min_update_time"))
     }
     pub fn max_update_time_of_products(self) -> Self {
         self.max_update_time_of_products_as("max_update_time_of_products", crate::Q::products().unlimited())
     }
 
     pub fn max_update_time_of_products_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_products_as(alias, request.into().into_query().max("update_time", "max_update_time"))
+        self.scalar_from_products_as(alias, request.into().into_query().max("update_time", "max_update_time"))
     }
 
     pub fn count_order_lines(self) -> Self {
@@ -2419,6 +2497,17 @@ impl<R> CommercePlatformRequest<R> {
         self
     }
 
+    fn scalar_from_order_lines_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+        let selection = request.into();
+        self.query_options.relation_aggregates.push(RelationAggregate::new(
+            "order_line_list",
+            alias,
+            selection,
+            true,
+        ));
+        self
+    }
+
     pub fn group_by_order_lines_with_details(self, request: impl Into<QuerySelection>) -> Self {
         self.stats_from_order_lines(request)
     }
@@ -2429,70 +2518,70 @@ impl<R> CommercePlatformRequest<R> {
     }
 
     pub fn sum_quantity_of_order_lines_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_lines_as(alias, request.into().into_query().sum("quantity", "sum_quantity"))
+        self.scalar_from_order_lines_as(alias, request.into().into_query().sum("quantity", "sum_quantity"))
     }
     pub fn min_quantity_of_order_lines(self) -> Self {
         self.min_quantity_of_order_lines_as("min_quantity_of_order_lines", crate::Q::order_lines().unlimited())
     }
 
     pub fn min_quantity_of_order_lines_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_lines_as(alias, request.into().into_query().min("quantity", "min_quantity"))
+        self.scalar_from_order_lines_as(alias, request.into().into_query().min("quantity", "min_quantity"))
     }
     pub fn max_quantity_of_order_lines(self) -> Self {
         self.max_quantity_of_order_lines_as("max_quantity_of_order_lines", crate::Q::order_lines().unlimited())
     }
 
     pub fn max_quantity_of_order_lines_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_lines_as(alias, request.into().into_query().max("quantity", "max_quantity"))
+        self.scalar_from_order_lines_as(alias, request.into().into_query().max("quantity", "max_quantity"))
     }
     pub fn avg_quantity_of_order_lines(self) -> Self {
         self.avg_quantity_of_order_lines_as("avg_quantity_of_order_lines", crate::Q::order_lines().unlimited())
     }
 
     pub fn avg_quantity_of_order_lines_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_lines_as(alias, request.into().into_query().avg("quantity", "avg_quantity"))
+        self.scalar_from_order_lines_as(alias, request.into().into_query().avg("quantity", "avg_quantity"))
     }
     pub fn standard_deviation_quantity_of_order_lines(self) -> Self {
         self.standard_deviation_quantity_of_order_lines_as("standard_deviation_quantity_of_order_lines", crate::Q::order_lines().unlimited())
     }
 
     pub fn standard_deviation_quantity_of_order_lines_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_lines_as(alias, request.into().into_query().stddev("quantity", "stdDev_quantity"))
+        self.scalar_from_order_lines_as(alias, request.into().into_query().stddev("quantity", "stdDev_quantity"))
     }
     pub fn square_root_of_population_standard_deviation_quantity_of_order_lines(self) -> Self {
         self.square_root_of_population_standard_deviation_quantity_of_order_lines_as("square_root_of_population_standard_deviation_quantity_of_order_lines", crate::Q::order_lines().unlimited())
     }
 
     pub fn square_root_of_population_standard_deviation_quantity_of_order_lines_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_lines_as(alias, request.into().into_query().stddev_pop("quantity", "stdDevPop_quantity"))
+        self.scalar_from_order_lines_as(alias, request.into().into_query().stddev_pop("quantity", "stdDevPop_quantity"))
     }
     pub fn sample_variance_quantity_of_order_lines(self) -> Self {
         self.sample_variance_quantity_of_order_lines_as("sample_variance_quantity_of_order_lines", crate::Q::order_lines().unlimited())
     }
 
     pub fn sample_variance_quantity_of_order_lines_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_lines_as(alias, request.into().into_query().var_samp("quantity", "varSamp_quantity"))
+        self.scalar_from_order_lines_as(alias, request.into().into_query().var_samp("quantity", "varSamp_quantity"))
     }
     pub fn sample_population_variance_quantity_of_order_lines(self) -> Self {
         self.sample_population_variance_quantity_of_order_lines_as("sample_population_variance_quantity_of_order_lines", crate::Q::order_lines().unlimited())
     }
 
     pub fn sample_population_variance_quantity_of_order_lines_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_lines_as(alias, request.into().into_query().var_pop("quantity", "varPop_quantity"))
+        self.scalar_from_order_lines_as(alias, request.into().into_query().var_pop("quantity", "varPop_quantity"))
     }
     pub fn min_create_time_of_order_lines(self) -> Self {
         self.min_create_time_of_order_lines_as("min_create_time_of_order_lines", crate::Q::order_lines().unlimited())
     }
 
     pub fn min_create_time_of_order_lines_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_lines_as(alias, request.into().into_query().min("create_time", "min_create_time"))
+        self.scalar_from_order_lines_as(alias, request.into().into_query().min("create_time", "min_create_time"))
     }
     pub fn max_create_time_of_order_lines(self) -> Self {
         self.max_create_time_of_order_lines_as("max_create_time_of_order_lines", crate::Q::order_lines().unlimited())
     }
 
     pub fn max_create_time_of_order_lines_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_lines_as(alias, request.into().into_query().max("create_time", "max_create_time"))
+        self.scalar_from_order_lines_as(alias, request.into().into_query().max("create_time", "max_create_time"))
     }
 
     pub fn count_order_search_presets(self) -> Self {
@@ -2529,6 +2618,17 @@ impl<R> CommercePlatformRequest<R> {
         self
     }
 
+    fn scalar_from_order_search_presets_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+        let selection = request.into();
+        self.query_options.relation_aggregates.push(RelationAggregate::new(
+            "order_search_preset_list",
+            alias,
+            selection,
+            true,
+        ));
+        self
+    }
+
     pub fn group_by_order_search_presets_with_details(self, request: impl Into<QuerySelection>) -> Self {
         self.stats_from_order_search_presets(request)
     }
@@ -2539,28 +2639,28 @@ impl<R> CommercePlatformRequest<R> {
     }
 
     pub fn min_create_time_of_order_search_presets_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_search_presets_as(alias, request.into().into_query().min("create_time", "min_create_time"))
+        self.scalar_from_order_search_presets_as(alias, request.into().into_query().min("create_time", "min_create_time"))
     }
     pub fn max_create_time_of_order_search_presets(self) -> Self {
         self.max_create_time_of_order_search_presets_as("max_create_time_of_order_search_presets", crate::Q::order_search_presets().unlimited())
     }
 
     pub fn max_create_time_of_order_search_presets_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_search_presets_as(alias, request.into().into_query().max("create_time", "max_create_time"))
+        self.scalar_from_order_search_presets_as(alias, request.into().into_query().max("create_time", "max_create_time"))
     }
     pub fn min_update_time_of_order_search_presets(self) -> Self {
         self.min_update_time_of_order_search_presets_as("min_update_time_of_order_search_presets", crate::Q::order_search_presets().unlimited())
     }
 
     pub fn min_update_time_of_order_search_presets_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_search_presets_as(alias, request.into().into_query().min("update_time", "min_update_time"))
+        self.scalar_from_order_search_presets_as(alias, request.into().into_query().min("update_time", "min_update_time"))
     }
     pub fn max_update_time_of_order_search_presets(self) -> Self {
         self.max_update_time_of_order_search_presets_as("max_update_time_of_order_search_presets", crate::Q::order_search_presets().unlimited())
     }
 
     pub fn max_update_time_of_order_search_presets_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.stats_from_order_search_presets_as(alias, request.into().into_query().max("update_time", "max_update_time"))
+        self.scalar_from_order_search_presets_as(alias, request.into().into_query().max("update_time", "max_update_time"))
     }
 }
 
@@ -2670,6 +2770,13 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<CommercePlatformRequest<R>> {
         C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
         self.into_inner_with_trace()._execute_for_list(context).await
+    }
+
+    pub async fn execute_for_rows<'a, C>(self, context: &'a C) -> Result<teaql_core::SmartList<teaql_core::CompactRow>, crate::request_support::TeaqlDataServiceError<C::CommercePlatformRepository<'a>>>
+    where
+        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
+    {
+        self.into_inner_with_trace()._execute_for_rows(context).await
     }
 
     /// Execute query as a lazy entity stream without materializing the result set.

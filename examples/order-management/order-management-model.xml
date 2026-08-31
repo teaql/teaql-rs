@@ -3,8 +3,8 @@
   <commerce_platform name="Northwind Demo" create_time="createTime()" update_time="updateTime()"/>
   <customer name="Acme Retail" email="customer@example.com" commerce_platform="commerce_platform()" create_time="createTime()" update_time="updateTime()"/>
   <order_status id="id()" name="string()" code="string()" color="string()?" display_order="number()?" commerce_platform="commerce_platform()" _constant="true" _identifier="code">
-    <_value id="1001" name="Pending" code="PENDING" commerce_platform="1"/>
-    <_value id="1002" name="Confirmed" code="CONFIRMED" commerce_platform="1"/>
+    <_value id="1001" name="Pending" code="PENDING" color="#F59E0B" display_order="1" commerce_platform="1"/>
+    <_value id="1002" name="Confirmed" code="CONFIRMED" color="#10B981" display_order="2" commerce_platform="1"/>
   </order_status>
   <customer_order order_number="WEB-2026-001" order_date="2026-08-12" total_amount="129.95" status="order_status()" customer="customer()" commerce_platform="commerce_platform()" create_time="createTime()" update_time="updateTime()"/>
   <product name="Tea" sku="TEA-001" image_url="https://example.com/tea.png?" commerce_platform="commerce_platform()" create_time="createTime()" update_time="updateTime()"/>

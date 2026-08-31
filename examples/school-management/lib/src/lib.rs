@@ -1,4 +1,3 @@
-
 //! Generated TeaQL domain crate for `school-management-service-core`.
 //!
 //! **Before writing queries**, read the `AGENTS.md` at the workspace root.
@@ -10,20 +9,20 @@
 //! the crate root before writing code against it.
 
 pub mod e;
+pub mod platform;
 pub mod q;
 pub mod request_support;
 pub mod runtime;
 pub mod sample_data;
-pub mod platform;
-pub mod school_type;
 pub mod school;
+pub mod school_type;
 
-pub use teaql_core;
 pub use e::*;
+pub use platform::*;
 pub use q::*;
 pub use request_support::*;
 pub use runtime::*;
 pub use sample_data::*;
-pub use platform::*;
-pub use school_type::*;
 pub use school::*;
+pub use school_type::*;
+pub use teaql_core;

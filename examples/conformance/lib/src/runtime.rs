@@ -238,16 +238,46 @@ pub fn checker_registry() -> teaql_runtime::InMemoryCheckerRegistry {
         ))
 }
 
+fn ensure_generated_bootstrap<'a>(
+    context: &'a teaql_runtime::UserContext,
+) -> teaql_runtime::GeneratedSchemaBootstrapFuture<'a> {
+    Box::pin(async move {
+        use teaql_core::Entity as _;
+        let root_rows = crate::Q::platforms()
+            .select_self_fields()
+            .with_id_is(1_u64)
+            .comment("what: locate generated Domain Root")
+            .purpose("why: idempotent runtime bootstrap")
+            .execute_for_list(context)
+            .await
+            .map_err(|e| teaql_runtime::RuntimeError::Graph(e.to_string()))?;
+        let domain_root = if let Some(entity) = root_rows.data.into_iter().next() {
+            entity
+        } else {
+            let mut entity = Platform::runtime_new(context.entity_runtime_state());
+            entity.update_id(1_u64);
+            context.initialize_generated_bootstrap_entity(
+                &mut entity,
+                Platform::ENTITY_NAME,
+                1_u64,
+            )?;
+            entity.update_name("Runtime Example");
+            teaql_runtime::AuditedSaveExt::save(
+                entity.audit_as("create generated Domain Root Platform"),
+                context,
+            )
+            .await?
+        };
+        context.set_generated_bootstrap_active_root(Platform::ENTITY_NAME, domain_root.id())?;
+        Ok(())
+    })
+}
+
 pub fn module() -> teaql_runtime::RuntimeModule {
     teaql_runtime::RuntimeModule::new()
         .entity::<Platform>()
         .entity::<WorkItem>()
-        .initial_graph(
-            teaql_runtime::GraphNode::new("Platform")
-                .value("id", 1_u64)
-                .value("name", "Runtime Example")
-                .value("version", 1_i64),
-        )
+        .generated_schema_bootstrap(ensure_generated_bootstrap)
 }
 
 pub fn module_with_checkers() -> teaql_runtime::RuntimeModule {
@@ -260,12 +290,7 @@ pub fn module_with_checkers() -> teaql_runtime::RuntimeModule {
     module = module.checker(teaql_runtime::TypedEntityChecker::<WorkItem, _>::new(
         WorkItemChecker::default(),
     ));
-    module = module.root_graph(
-        teaql_runtime::GraphNode::new("Platform")
-            .value("id", 1_u64)
-            .value("name", "Runtime Example")
-            .value("version", 1_i64),
-    );
+    module = module.generated_schema_bootstrap(ensure_generated_bootstrap);
     module
 }
 
@@ -273,12 +298,7 @@ pub fn module_with_behaviors() -> teaql_runtime::RuntimeModule {
     let mut module = teaql_runtime::RuntimeModule::new();
     module = module.entity_with_behavior::<Platform, _>(PlatformBehavior::default());
     module = module.entity_with_behavior::<WorkItem, _>(WorkItemBehavior::default());
-    module = module.root_graph(
-        teaql_runtime::GraphNode::new("Platform")
-            .value("id", 1_u64)
-            .value("name", "Runtime Example")
-            .value("version", 1_i64),
-    );
+    module = module.generated_schema_bootstrap(ensure_generated_bootstrap);
     module
 }
 
@@ -292,11 +312,6 @@ pub fn module_with_behaviors_and_checkers() -> teaql_runtime::RuntimeModule {
     module = module.checker(teaql_runtime::TypedEntityChecker::<WorkItem, _>::new(
         WorkItemChecker::default(),
     ));
-    module = module.root_graph(
-        teaql_runtime::GraphNode::new("Platform")
-            .value("id", 1_u64)
-            .value("name", "Runtime Example")
-            .value("version", 1_i64),
-    );
+    module = module.generated_schema_bootstrap(ensure_generated_bootstrap);
     module
 }

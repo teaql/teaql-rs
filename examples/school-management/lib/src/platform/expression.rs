@@ -5,7 +5,10 @@ pub struct PlatformExpression<'a> {
 }
 
 impl<'a> PlatformExpression<'a> {
-    pub fn new(result: teaql_core::eval::EvalResult<&'a crate::Platform>, root_desc: std::sync::Arc<String>) -> Self {
+    pub fn new(
+        result: teaql_core::eval::EvalResult<&'a crate::Platform>,
+        root_desc: std::sync::Arc<String>,
+    ) -> Self {
         Self { result, root_desc }
     }
 
@@ -13,9 +16,10 @@ impl<'a> PlatformExpression<'a> {
         match &self.result {
             teaql_core::eval::EvalResult::Value(v) => Some(*v),
             teaql_core::eval::EvalResult::Null => None,
-            teaql_core::eval::EvalResult::NotLoaded { failed_node, attempted_path } => {
-                crate::trigger_logic_bug_panic(&self.root_desc, &failed_node, &attempted_path)
-            }
+            teaql_core::eval::EvalResult::NotLoaded {
+                failed_node,
+                attempted_path,
+            } => crate::trigger_logic_bug_panic(&self.root_desc, &failed_node, &attempted_path),
         }
     }
 
@@ -24,7 +28,8 @@ impl<'a> PlatformExpression<'a> {
     }
 
     pub fn unwrap(&self) -> &'a crate::Platform {
-        self.resolve().expect("Relation was legitimately null in database!")
+        self.resolve()
+            .expect("Relation was legitimately null in database!")
     }
 
     pub fn get_id(self) -> crate::ValueExpression<'a, u64> {
@@ -38,31 +43,43 @@ impl<'a> PlatformExpression<'a> {
     }
 
     pub fn get_base_url(self) -> crate::ValueExpression<'a, String> {
-        let next = self.result.and_then("base_url", |entity| entity.eval_base_url());
+        let next = self
+            .result
+            .and_then("base_url", |entity| entity.eval_base_url());
         crate::ValueExpression::new(next, self.root_desc.clone())
     }
 
     pub fn get_create_time(self) -> crate::ValueExpression<'a, teaql_core::time::Timestamp> {
-        let next = self.result.and_then("create_time", |entity| entity.eval_create_time());
+        let next = self
+            .result
+            .and_then("create_time", |entity| entity.eval_create_time());
         crate::ValueExpression::new(next, self.root_desc.clone())
     }
 
     pub fn get_update_time(self) -> crate::ValueExpression<'a, teaql_core::time::Timestamp> {
-        let next = self.result.and_then("update_time", |entity| entity.eval_update_time());
+        let next = self
+            .result
+            .and_then("update_time", |entity| entity.eval_update_time());
         crate::ValueExpression::new(next, self.root_desc.clone())
     }
 
     pub fn get_version(self) -> crate::ValueExpression<'a, i64> {
-        let next = self.result.and_then("version", |entity| entity.eval_version());
+        let next = self
+            .result
+            .and_then("version", |entity| entity.eval_version());
         crate::ValueExpression::new(next, self.root_desc.clone())
     }
     pub fn get_school_type_list(self) -> crate::SchoolTypeListExpression<'a> {
-        let next = self.result.and_then("school_type_list", |entity| entity.eval_school_type_list());
+        let next = self
+            .result
+            .and_then("school_type_list", |entity| entity.eval_school_type_list());
         crate::SchoolTypeListExpression::new(next, self.root_desc.clone())
     }
 
     pub fn get_school_list(self) -> crate::SchoolListExpression<'a> {
-        let next = self.result.and_then("school_list", |entity| entity.eval_school_list());
+        let next = self
+            .result
+            .and_then("school_list", |entity| entity.eval_school_list());
         crate::SchoolListExpression::new(next, self.root_desc.clone())
     }
 }
@@ -74,7 +91,10 @@ pub struct PlatformListExpression<'a> {
 }
 
 impl<'a> PlatformListExpression<'a> {
-    pub fn new(result: teaql_core::eval::EvalResult<&'a teaql_core::SmartList<crate::Platform>>, root_desc: std::sync::Arc<String>) -> Self {
+    pub fn new(
+        result: teaql_core::eval::EvalResult<&'a teaql_core::SmartList<crate::Platform>>,
+        root_desc: std::sync::Arc<String>,
+    ) -> Self {
         Self { result, root_desc }
     }
 
@@ -82,9 +102,10 @@ impl<'a> PlatformListExpression<'a> {
         match &self.result {
             teaql_core::eval::EvalResult::Value(v) => Some(*v),
             teaql_core::eval::EvalResult::Null => None,
-            teaql_core::eval::EvalResult::NotLoaded { failed_node, attempted_path } => {
-                crate::trigger_logic_bug_panic(&self.root_desc, &failed_node, &attempted_path)
-            }
+            teaql_core::eval::EvalResult::NotLoaded {
+                failed_node,
+                attempted_path,
+            } => crate::trigger_logic_bug_panic(&self.root_desc, &failed_node, &attempted_path),
         }
     }
 
@@ -93,11 +114,14 @@ impl<'a> PlatformListExpression<'a> {
     }
 
     pub fn unwrap(&self) -> &'a teaql_core::SmartList<crate::Platform> {
-        self.resolve().expect("List relation was legitimately null in database!")
+        self.resolve()
+            .expect("List relation was legitimately null in database!")
     }
 
     pub fn size(&self) -> crate::ValueExpression<'a, usize> {
-        let next = self.result.clone().and_then("size", |list| teaql_core::eval::EvalResult::Value(list.len()));
+        let next = self.result.clone().and_then("size", |list| {
+            teaql_core::eval::EvalResult::Value(list.len())
+        });
         crate::ValueExpression::new(next, self.root_desc.clone())
     }
 

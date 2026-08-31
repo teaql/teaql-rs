@@ -86,6 +86,7 @@ impl OrderLine {
     }
 
     pub fn attach_runtime_state_recursive(&mut self, root: teaql_runtime::EntityRuntimeState) {
+        root.adopt_mutations_from(self.__teaql_runtime_state());
         self.__teaql_replace_runtime_state(root.clone());
         if let Some(entity) = &mut self.customer_order {
             entity.attach_runtime_state_recursive(root.clone());

@@ -15,12 +15,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-stream = "0.3"
 futures-util = "0.3"
-teaql-core = { path = "../../../../teaql-core" }
-teaql-macros = { path = "../../../../teaql-macros" }
-teaql-runtime = { path = "../../../../teaql-runtime" }
-teaql-sql = { path = "../../../../teaql-sql" }
-teaql-data-service = { path = "../../../../teaql-data-service" }
+teaql-core = "4.3.1"
+teaql-macros = "4.3.1"
+teaql-runtime = "4.3.1"
+teaql-sql = "4.3.1"
+teaql-data-service = "4.3.1"
 teaql-tool-core = "1.0.0"
-teaql-provider-sqlite = { path = "../../../../teaql-provider-sqlite" }
+teaql-provider-sqlite = "4.3.1"
 rusqlite = { version = "0.40", features = ["bundled", "chrono", "column_decltype"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

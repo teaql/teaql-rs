@@ -221,6 +221,63 @@ pub fn checker_registry() -> teaql_runtime::InMemoryCheckerRegistry {
         .with_checker(teaql_runtime::TypedEntityChecker::<OrderSearchPreset, _>::new(OrderSearchPresetChecker::default()))
 }
 
+fn ensure_generated_bootstrap<'a>(context: &'a teaql_runtime::UserContext) -> teaql_runtime::GeneratedSchemaBootstrapFuture<'a> {
+    Box::pin(async move {
+        use teaql_core::Entity as _;
+        let root_rows = crate::Q::commerce_platforms().select_self_fields().with_id_is(1_u64).comment("what: locate generated Domain Root").purpose("why: idempotent runtime bootstrap").execute_for_list(context).await.map_err(|e| teaql_runtime::RuntimeError::Graph(e.to_string()))?;
+        let domain_root = if let Some(entity) = root_rows.data.into_iter().next() { entity } else {
+            let mut entity = CommercePlatform::runtime_new(context.entity_runtime_state());
+            entity.update_id(1_u64);
+            context.initialize_generated_bootstrap_entity(&mut entity, CommercePlatform::ENTITY_NAME, 1_u64)?;
+            entity.update_name("Northwind Demo");
+            teaql_runtime::AuditedSaveExt::save(entity.audit_as("create generated Domain Root CommercePlatform"), context).await?
+        };
+        context.set_generated_bootstrap_active_root(CommercePlatform::ENTITY_NAME, domain_root.id())?;
+        let rows_constant_order_status_1001 = crate::Q::order_statuses().select_self_fields().with_id_is(1001_u64).comment("what: locate generated constant").purpose("why: idempotent runtime bootstrap").execute_for_list(context).await.map_err(|e| teaql_runtime::RuntimeError::Graph(e.to_string()))?;
+        if let Some(mut constant_order_status_1001) = rows_constant_order_status_1001.data.into_iter().next() {
+            let mut changed = false;
+            if constant_order_status_1001.name() != "Pending" { constant_order_status_1001.update_name("Pending"); changed = true; }
+            if constant_order_status_1001.code() != "PENDING" { constant_order_status_1001.update_code("PENDING"); changed = true; }
+            if constant_order_status_1001.color() != Some(("#F59E0B").into()) { constant_order_status_1001.update_color("#F59E0B"); changed = true; }
+            if constant_order_status_1001.display_order() != Some((rust_decimal::Decimal::from_str_exact("1").unwrap()).into()) { constant_order_status_1001.update_display_order(rust_decimal::Decimal::from_str_exact("1").unwrap()); changed = true; }
+            if constant_order_status_1001.commerce_platform_id() != 1_u64 { constant_order_status_1001.update_commerce_platform_id(1_u64); changed = true; }
+            if changed { let _ = teaql_runtime::AuditedSaveExt::save(constant_order_status_1001.audit_as("reconcile model constant OrderStatus(1001)"), context).await?; }
+        } else {
+            let mut constant_order_status_1001 = OrderStatus::runtime_new(context.entity_runtime_state());
+            constant_order_status_1001.update_id(1001_u64);
+            context.initialize_generated_bootstrap_entity(&mut constant_order_status_1001, OrderStatus::ENTITY_NAME, 1001_u64)?;
+            constant_order_status_1001.update_name("Pending");
+            constant_order_status_1001.update_code("PENDING");
+            constant_order_status_1001.update_color("#F59E0B");
+            constant_order_status_1001.update_display_order(rust_decimal::Decimal::from_str_exact("1").unwrap());
+            constant_order_status_1001.update_commerce_platform_id(1_u64);
+            let _ = teaql_runtime::AuditedSaveExt::save(constant_order_status_1001.audit_as("create model constant OrderStatus(1001)"), context).await?;
+        }
+        let rows_constant_order_status_1002 = crate::Q::order_statuses().select_self_fields().with_id_is(1002_u64).comment("what: locate generated constant").purpose("why: idempotent runtime bootstrap").execute_for_list(context).await.map_err(|e| teaql_runtime::RuntimeError::Graph(e.to_string()))?;
+        if let Some(mut constant_order_status_1002) = rows_constant_order_status_1002.data.into_iter().next() {
+            let mut changed = false;
+            if constant_order_status_1002.name() != "Confirmed" { constant_order_status_1002.update_name("Confirmed"); changed = true; }
+            if constant_order_status_1002.code() != "CONFIRMED" { constant_order_status_1002.update_code("CONFIRMED"); changed = true; }
+            if constant_order_status_1002.color() != Some(("#10B981").into()) { constant_order_status_1002.update_color("#10B981"); changed = true; }
+            if constant_order_status_1002.display_order() != Some((rust_decimal::Decimal::from_str_exact("2").unwrap()).into()) { constant_order_status_1002.update_display_order(rust_decimal::Decimal::from_str_exact("2").unwrap()); changed = true; }
+            if constant_order_status_1002.commerce_platform_id() != 1_u64 { constant_order_status_1002.update_commerce_platform_id(1_u64); changed = true; }
+            if changed { let _ = teaql_runtime::AuditedSaveExt::save(constant_order_status_1002.audit_as("reconcile model constant OrderStatus(1002)"), context).await?; }
+        } else {
+            let mut constant_order_status_1002 = OrderStatus::runtime_new(context.entity_runtime_state());
+            constant_order_status_1002.update_id(1002_u64);
+            context.initialize_generated_bootstrap_entity(&mut constant_order_status_1002, OrderStatus::ENTITY_NAME, 1002_u64)?;
+            constant_order_status_1002.update_name("Confirmed");
+            constant_order_status_1002.update_code("CONFIRMED");
+            constant_order_status_1002.update_color("#10B981");
+            constant_order_status_1002.update_display_order(rust_decimal::Decimal::from_str_exact("2").unwrap());
+            constant_order_status_1002.update_commerce_platform_id(1_u64);
+            let _ = teaql_runtime::AuditedSaveExt::save(constant_order_status_1002.audit_as("create model constant OrderStatus(1002)"), context).await?;
+        }
+        Ok(())
+    })
+}
+
+
 pub fn module() -> teaql_runtime::RuntimeModule {
     teaql_runtime::RuntimeModule::new()
         .entity::<CommercePlatform>()
@@ -230,28 +287,7 @@ pub fn module() -> teaql_runtime::RuntimeModule {
         .entity::<Product>()
         .entity::<OrderLine>()
         .entity::<OrderSearchPreset>()
-        .initial_graph(teaql_runtime::GraphNode::new("CommercePlatform")
-            .value("id", 1_u64)
-            .value("name", "Northwind Demo")
-            .value("create_time", teaql_core::time::Timestamp::now())
-            .value("update_time", teaql_core::time::Timestamp::now())
-            .value("version", 1_i64))
-        .initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
-            .value("id", 1001_u64)
-            .value("name", "Pending")
-            .value("code", "PENDING")
-            .value("color", "string()")
-            .value("display_order", "number()")
-            .value("version", 1_i64)
-            .value("commerce_platform_id", 1_u64))
-        .initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
-            .value("id", 1002_u64)
-            .value("name", "Confirmed")
-            .value("code", "CONFIRMED")
-            .value("color", "1")
-            .value("display_order", "1")
-            .value("version", 1_i64)
-            .value("commerce_platform_id", 1_u64))
+        .generated_schema_bootstrap(ensure_generated_bootstrap)
 }
 
 pub fn module_with_checkers() -> teaql_runtime::RuntimeModule {
@@ -270,28 +306,7 @@ pub fn module_with_checkers() -> teaql_runtime::RuntimeModule {
     module = module.checker(teaql_runtime::TypedEntityChecker::<OrderLine, _>::new(OrderLineChecker::default()));
     module = module.entity::<OrderSearchPreset>();
     module = module.checker(teaql_runtime::TypedEntityChecker::<OrderSearchPreset, _>::new(OrderSearchPresetChecker::default()));
-    module = module.root_graph(teaql_runtime::GraphNode::new("CommercePlatform")
-            .value("id", 1_u64)
-            .value("name", "Northwind Demo")
-            .value("create_time", teaql_core::time::Timestamp::now())
-            .value("update_time", teaql_core::time::Timestamp::now())
-            .value("version", 1_i64));
-    module = module.initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
-            .value("id", 1001_u64)
-            .value("name", "Pending")
-            .value("code", "PENDING")
-            .value("color", "string()")
-            .value("display_order", "number()")
-            .value("version", 1_i64)
-            .value("commerce_platform_id", 1_u64));
-    module = module.initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
-            .value("id", 1002_u64)
-            .value("name", "Confirmed")
-            .value("code", "CONFIRMED")
-            .value("color", "1")
-            .value("display_order", "1")
-            .value("version", 1_i64)
-            .value("commerce_platform_id", 1_u64));
+    module = module.generated_schema_bootstrap(ensure_generated_bootstrap);
     module
 }
 
@@ -304,28 +319,7 @@ pub fn module_with_behaviors() -> teaql_runtime::RuntimeModule {
     module = module.entity_with_behavior::<Product, _>(ProductBehavior::default());
     module = module.entity_with_behavior::<OrderLine, _>(OrderLineBehavior::default());
     module = module.entity_with_behavior::<OrderSearchPreset, _>(OrderSearchPresetBehavior::default());
-    module = module.root_graph(teaql_runtime::GraphNode::new("CommercePlatform")
-            .value("id", 1_u64)
-            .value("name", "Northwind Demo")
-            .value("create_time", teaql_core::time::Timestamp::now())
-            .value("update_time", teaql_core::time::Timestamp::now())
-            .value("version", 1_i64));
-    module = module.initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
-            .value("id", 1001_u64)
-            .value("name", "Pending")
-            .value("code", "PENDING")
-            .value("color", "string()")
-            .value("display_order", "number()")
-            .value("version", 1_i64)
-            .value("commerce_platform_id", 1_u64));
-    module = module.initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
-            .value("id", 1002_u64)
-            .value("name", "Confirmed")
-            .value("code", "CONFIRMED")
-            .value("color", "1")
-            .value("display_order", "1")
-            .value("version", 1_i64)
-            .value("commerce_platform_id", 1_u64));
+    module = module.generated_schema_bootstrap(ensure_generated_bootstrap);
     module
 }
 
@@ -345,27 +339,6 @@ pub fn module_with_behaviors_and_checkers() -> teaql_runtime::RuntimeModule {
     module = module.checker(teaql_runtime::TypedEntityChecker::<OrderLine, _>::new(OrderLineChecker::default()));
     module = module.entity_with_behavior::<OrderSearchPreset, _>(OrderSearchPresetBehavior::default());
     module = module.checker(teaql_runtime::TypedEntityChecker::<OrderSearchPreset, _>::new(OrderSearchPresetChecker::default()));
-    module = module.root_graph(teaql_runtime::GraphNode::new("CommercePlatform")
-            .value("id", 1_u64)
-            .value("name", "Northwind Demo")
-            .value("create_time", teaql_core::time::Timestamp::now())
-            .value("update_time", teaql_core::time::Timestamp::now())
-            .value("version", 1_i64));
-    module = module.initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
-            .value("id", 1001_u64)
-            .value("name", "Pending")
-            .value("code", "PENDING")
-            .value("color", "string()")
-            .value("display_order", "number()")
-            .value("version", 1_i64)
-            .value("commerce_platform_id", 1_u64));
-    module = module.initial_graph(teaql_runtime::GraphNode::new("OrderStatus")
-            .value("id", 1002_u64)
-            .value("name", "Confirmed")
-            .value("code", "CONFIRMED")
-            .value("color", "1")
-            .value("display_order", "1")
-            .value("version", 1_i64)
-            .value("commerce_platform_id", 1_u64));
+    module = module.generated_schema_bootstrap(ensure_generated_bootstrap);
     module
 }

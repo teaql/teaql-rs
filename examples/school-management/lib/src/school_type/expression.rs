@@ -5,7 +5,10 @@ pub struct SchoolTypeExpression<'a> {
 }
 
 impl<'a> SchoolTypeExpression<'a> {
-    pub fn new(result: teaql_core::eval::EvalResult<&'a crate::SchoolType>, root_desc: std::sync::Arc<String>) -> Self {
+    pub fn new(
+        result: teaql_core::eval::EvalResult<&'a crate::SchoolType>,
+        root_desc: std::sync::Arc<String>,
+    ) -> Self {
         Self { result, root_desc }
     }
 
@@ -13,9 +16,10 @@ impl<'a> SchoolTypeExpression<'a> {
         match &self.result {
             teaql_core::eval::EvalResult::Value(v) => Some(*v),
             teaql_core::eval::EvalResult::Null => None,
-            teaql_core::eval::EvalResult::NotLoaded { failed_node, attempted_path } => {
-                crate::trigger_logic_bug_panic(&self.root_desc, &failed_node, &attempted_path)
-            }
+            teaql_core::eval::EvalResult::NotLoaded {
+                failed_node,
+                attempted_path,
+            } => crate::trigger_logic_bug_panic(&self.root_desc, &failed_node, &attempted_path),
         }
     }
 
@@ -24,7 +28,8 @@ impl<'a> SchoolTypeExpression<'a> {
     }
 
     pub fn unwrap(&self) -> &'a crate::SchoolType {
-        self.resolve().expect("Relation was legitimately null in database!")
+        self.resolve()
+            .expect("Relation was legitimately null in database!")
     }
 
     pub fn get_id(self) -> crate::ValueExpression<'a, u64> {
@@ -43,24 +48,34 @@ impl<'a> SchoolTypeExpression<'a> {
     }
 
     pub fn get_display_order(self) -> crate::ValueExpression<'a, rust_decimal::Decimal> {
-        let next = self.result.and_then("display_order", |entity| entity.eval_display_order());
+        let next = self
+            .result
+            .and_then("display_order", |entity| entity.eval_display_order());
         crate::ValueExpression::new(next, self.root_desc.clone())
     }
 
     pub fn get_version(self) -> crate::ValueExpression<'a, i64> {
-        let next = self.result.and_then("version", |entity| entity.eval_version());
+        let next = self
+            .result
+            .and_then("version", |entity| entity.eval_version());
         crate::ValueExpression::new(next, self.root_desc.clone())
     }
     pub fn get_platform_id(self) -> crate::ValueExpression<'a, u64> {
-        let next = self.result.and_then("platform_id", |entity| entity.eval_platform_id());
+        let next = self
+            .result
+            .and_then("platform_id", |entity| entity.eval_platform_id());
         crate::ValueExpression::new(next, self.root_desc.clone())
     }
     pub fn get_platform(self) -> crate::PlatformExpression<'a> {
-        let next = self.result.and_then("platform", |entity| entity.eval_platform());
+        let next = self
+            .result
+            .and_then("platform", |entity| entity.eval_platform());
         crate::PlatformExpression::new(next, self.root_desc.clone())
     }
     pub fn get_school_list(self) -> crate::SchoolListExpression<'a> {
-        let next = self.result.and_then("school_list", |entity| entity.eval_school_list());
+        let next = self
+            .result
+            .and_then("school_list", |entity| entity.eval_school_list());
         crate::SchoolListExpression::new(next, self.root_desc.clone())
     }
 }
@@ -72,7 +87,10 @@ pub struct SchoolTypeListExpression<'a> {
 }
 
 impl<'a> SchoolTypeListExpression<'a> {
-    pub fn new(result: teaql_core::eval::EvalResult<&'a teaql_core::SmartList<crate::SchoolType>>, root_desc: std::sync::Arc<String>) -> Self {
+    pub fn new(
+        result: teaql_core::eval::EvalResult<&'a teaql_core::SmartList<crate::SchoolType>>,
+        root_desc: std::sync::Arc<String>,
+    ) -> Self {
         Self { result, root_desc }
     }
 
@@ -80,9 +98,10 @@ impl<'a> SchoolTypeListExpression<'a> {
         match &self.result {
             teaql_core::eval::EvalResult::Value(v) => Some(*v),
             teaql_core::eval::EvalResult::Null => None,
-            teaql_core::eval::EvalResult::NotLoaded { failed_node, attempted_path } => {
-                crate::trigger_logic_bug_panic(&self.root_desc, &failed_node, &attempted_path)
-            }
+            teaql_core::eval::EvalResult::NotLoaded {
+                failed_node,
+                attempted_path,
+            } => crate::trigger_logic_bug_panic(&self.root_desc, &failed_node, &attempted_path),
         }
     }
 
@@ -91,11 +110,14 @@ impl<'a> SchoolTypeListExpression<'a> {
     }
 
     pub fn unwrap(&self) -> &'a teaql_core::SmartList<crate::SchoolType> {
-        self.resolve().expect("List relation was legitimately null in database!")
+        self.resolve()
+            .expect("List relation was legitimately null in database!")
     }
 
     pub fn size(&self) -> crate::ValueExpression<'a, usize> {
-        let next = self.result.clone().and_then("size", |list| teaql_core::eval::EvalResult::Value(list.len()));
+        let next = self.result.clone().and_then("size", |list| {
+            teaql_core::eval::EvalResult::Value(list.len())
+        });
         crate::ValueExpression::new(next, self.root_desc.clone())
     }
 

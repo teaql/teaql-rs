@@ -11,3 +11,11 @@ rust_decimal = "1"
 env_logger = "0.11"
 
 [workspace]
+
+[patch.crates-io]
+teaql-core = { path = "../../../teaql-core" }
+teaql-macros = { path = "../../../teaql-macros" }
+teaql-runtime = { path = "../../../teaql-runtime" }
+teaql-sql = { path = "../../../teaql-sql" }
+teaql-data-service = { path = "../../../teaql-data-service" }
+teaql-provider-sqlite = { path = "../../../teaql-provider-sqlite" }
