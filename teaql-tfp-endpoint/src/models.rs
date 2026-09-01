@@ -406,6 +406,7 @@ impl TfpMutationQuery {
             .filter(|value| !value.is_empty())
             .ok_or("Mutation audit reason is required")?;
         let trace = vec![TraceNode {
+            kind: teaql_core::TraceKind::AuditReason,
             entity_type: self.entity.clone(),
             entity_id: None, // Can be populated if needed
             comment: comment.to_owned(),

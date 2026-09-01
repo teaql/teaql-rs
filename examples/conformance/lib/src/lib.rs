@@ -1,3 +1,4 @@
+
 //! Generated TeaQL domain crate for `runtime-example-conformance-service-core`.
 //!
 //! **Before writing queries**, read the `AGENTS.md` at the workspace root.
@@ -9,18 +10,18 @@
 //! the crate root before writing code against it.
 
 pub mod e;
-pub mod platform;
 pub mod q;
 pub mod request_support;
 pub mod runtime;
 pub mod sample_data;
+pub mod platform;
 pub mod work_item;
 
+pub use teaql_core;
 pub use e::*;
-pub use platform::*;
 pub use q::*;
 pub use request_support::*;
 pub use runtime::*;
 pub use sample_data::*;
-pub use teaql_core;
+pub use platform::*;
 pub use work_item::*;

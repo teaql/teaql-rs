@@ -289,6 +289,7 @@ where
                         .clone()
                         .map(|comment| {
                             vec![teaql_core::TraceNode {
+                                kind: teaql_core::TraceKind::AuditReason,
                                 entity_type: root.entity.clone(),
                                 entity_id: id.try_u64(),
                                 comment,
@@ -387,6 +388,7 @@ where
             let current_scope = node.comment.as_ref().map(|c| ScopedCommentNode {
                 parent: parent_scope,
                 track: teaql_core::TraceNode {
+                    kind: teaql_core::TraceKind::AuditReason,
                     entity_type: node.entity.clone(),
                     entity_id: node.id().and_then(|v| match v {
                         Value::U64(n) => Some(*n),
@@ -485,6 +487,7 @@ where
                     Arc::new(TraceScopeToken {
                         parent: parent_token.clone(),
                         track: teaql_core::TraceNode {
+                            kind: teaql_core::TraceKind::AuditReason,
                             entity_type: node.entity.clone(),
                             entity_id: node.id().and_then(|v| match v {
                                 Value::U64(n) => Some(*n),
@@ -566,6 +569,7 @@ where
             let current_scope = node.comment.as_ref().map(|c| ScopedCommentNode {
                 parent: parent_scope,
                 track: teaql_core::TraceNode {
+                    kind: teaql_core::TraceKind::AuditReason,
                     entity_type: node.entity.clone(),
                     entity_id: node.id().and_then(|v| match v {
                         Value::U64(n) => Some(*n),
@@ -714,6 +718,7 @@ where
             let current_scope = node.comment.as_ref().map(|c| ScopedCommentNode {
                 parent: parent_scope,
                 track: teaql_core::TraceNode {
+                    kind: teaql_core::TraceKind::AuditReason,
                     entity_type: node.entity.clone(),
                     entity_id: node.id().and_then(|v| match v {
                         Value::U64(n) => Some(*n),
@@ -1259,6 +1264,7 @@ where
             let current_scope = node.comment.as_ref().map(|c| ScopedCommentNode {
                 parent: parent_scope,
                 track: teaql_core::TraceNode {
+                    kind: teaql_core::TraceKind::AuditReason,
                     entity_type: node.entity.clone(),
                     entity_id: node.id().and_then(|v| match v {
                         Value::U64(n) => Some(*n),
@@ -1302,6 +1308,7 @@ where
         let trace_chain = comment
             .map(|c| {
                 vec![teaql_core::TraceNode {
+                    kind: teaql_core::TraceKind::AuditReason,
                     entity_type: self.entity.clone(),
                     entity_id: None,
                     comment: c,

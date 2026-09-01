@@ -1,3 +1,4 @@
+
 use teaql_runtime::{CheckObjectStatus, CheckResults, ObjectLocation, TypedChecker, UserContext};
 
 pub trait PlatformCheckerLogic: Send + Sync {
@@ -19,9 +20,7 @@ pub trait PlatformCheckerLogic: Send + Sync {
         results: &mut CheckResults,
     ) {
         if !value {
-            results.push(teaql_runtime::CheckResult::required(
-                location.clone().member(field),
-            ));
+            results.push(teaql_runtime::CheckResult::required(location.clone().member(field)));
         }
     }
 
@@ -33,9 +32,7 @@ pub trait PlatformCheckerLogic: Send + Sync {
         results: &mut CheckResults,
     ) {
         if value.is_none() {
-            results.push(teaql_runtime::CheckResult::required(
-                location.clone().member(field),
-            ));
+            results.push(teaql_runtime::CheckResult::required(location.clone().member(field)));
         }
     }
 
@@ -47,9 +44,7 @@ pub trait PlatformCheckerLogic: Send + Sync {
         results: &mut CheckResults,
     ) {
         if value.trim().is_empty() {
-            results.push(teaql_runtime::CheckResult::required(
-                location.clone().member(field),
-            ));
+            results.push(teaql_runtime::CheckResult::required(location.clone().member(field)));
         }
     }
 

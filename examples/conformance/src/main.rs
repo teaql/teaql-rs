@@ -82,6 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let listed = Q::work_items()
+        .select_platform_with(Q::platforms().select_name())
         .with_title_is("Initial title")
         .order_by_id_asc()
         .comment("Load the conformance work item")
@@ -95,6 +96,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     require(
         E::work_item(&full).get_title().eval().as_deref() == Some("Initial title"),
         "E loaded title mismatch",
+    )?;
+    require(
+        E::work_item(&full)
+            .get_platform()
+            .get_name()
+            .eval()
+            .as_deref()
+            == Some("Runtime Example"),
+        "E loaded relation mismatch",
     )?;
     require(
         E::work_item(&full)

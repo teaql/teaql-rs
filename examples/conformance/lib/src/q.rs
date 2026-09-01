@@ -10,10 +10,7 @@ pub struct PurposedQuery<T> {
 impl<T> PurposedQuery<T> {
     pub fn new(inner: T, purpose: impl Into<String>) -> Self {
         let purpose = purpose.into();
-        assert!(
-            !purpose.trim().is_empty(),
-            "query purpose must not be empty"
-        );
+        assert!(!purpose.trim().is_empty(), "query purpose must not be empty");
         Self { inner, purpose }
     }
 }
@@ -28,7 +25,8 @@ impl Q {
     }
 
     pub fn platforms_minimal() -> PlatformRequest {
-        PlatformRequest::new().and_filter(Expr::gt("version", 0_i64))
+        PlatformRequest::new()
+            .and_filter(Expr::gt("version", 0_i64))
     }
 
     pub fn platforms_with_children() -> PlatformRequest {
@@ -45,7 +43,8 @@ impl Q {
     }
 
     pub fn work_items_minimal() -> WorkItemRequest {
-        WorkItemRequest::new().and_filter(Expr::gt("version", 0_i64))
+        WorkItemRequest::new()
+            .and_filter(Expr::gt("version", 0_i64))
     }
 
     pub fn work_items_with_children() -> WorkItemRequest {

@@ -37,7 +37,7 @@ pub use query::{
     StreamConfig, compact_row_to_json_value, record_to_json_value,
 };
 pub use safe_expression::{SafeExpression, TeaqlEmpty};
-pub use trace::TraceNode;
+pub use trace::{TraceKind, TraceNode};
 pub use value::{DataType, Decimal, Value};
 pub use web::{ACTION_LIST_KEY, STYLE_KEY, WEB_RESPONSE_VERSION, WebAction, WebResponse, WebStyle};
 pub use xls::{XlsBlock, XlsBlockBuildContext, XlsPage, XlsWorkbook};

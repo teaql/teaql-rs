@@ -160,8 +160,13 @@ where
         let plans = self
             .build_relation_plans_from_loads(&query.entity, &query.relations)
             .map_err(DataServiceError::Runtime)?;
+        let mut parent_trace = self.trace_context.clone();
+        parent_trace.extend(query.trace_chain.clone());
+        let traced = self
+            .scoped_data_service_internal(query.entity.clone())
+            .with_trace_context(parent_trace);
         for plan in plans {
-            self.enhance_plan(parent_rows, &plan).await?;
+            traced.enhance_plan(parent_rows, &plan).await?;
         }
         Ok(())
     }
@@ -367,7 +372,7 @@ where
             return Ok(());
         }
 
-        let child_repo = self.scoped_data_service_internal(plan.target_entity.clone());
+        let child_repo = self.relation_child_repo(&plan);
         let mut query = aggregate.query.clone();
         query.entity = plan.target_entity.clone();
         if query.aggregation_cache.is_none() {
@@ -397,6 +402,7 @@ where
 
         let mut chain = parent_trace_chain.to_vec();
         chain.push(teaql_core::TraceNode {
+            kind: teaql_core::TraceKind::Relation,
             entity_type: query.entity.clone(),
             entity_id: None,
             comment: aggregate.alias.clone(),
@@ -535,7 +541,7 @@ where
             );
             let result = scope
                 .run(async {
-                    let child_repo = self.scoped_data_service_internal(plan.target_entity.clone());
+                    let child_repo = self.relation_child_repo(plan);
                     let mut child_rows = self
                         .fetch_relation_rows(&child_repo, plan, parent_rows, false)
                         .await?;
@@ -589,7 +595,7 @@ where
         Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
     > {
         Box::pin(async move {
-            let child_repo = self.scoped_data_service_internal(plan.target_entity.clone());
+            let child_repo = self.relation_child_repo(plan);
             let mut child_rows = self
                 .fetch_relation_rows(&child_repo, plan, parent_rows, false)
                 .await?;
@@ -736,7 +742,7 @@ where
         Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
     > {
         Box::pin(async move {
-            let child_repo = self.scoped_data_service_internal(plan.target_entity.clone());
+            let child_repo = self.relation_child_repo(plan);
             let child_rows = self
                 .fetch_relation_rows(&child_repo, plan, parent_rows, true)
                 .await?;
@@ -767,7 +773,7 @@ where
         Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
     > {
         Box::pin(async move {
-            let child_repo = self.scoped_data_service_internal(plan.target_entity.clone());
+            let child_repo = self.relation_child_repo(plan);
             let child_rows = self
                 .fetch_relation_rows(&child_repo, plan, parent_rows, true)
                 .await?;
@@ -877,6 +883,18 @@ where
             }
             Ok(())
         })
+    }
+
+    fn relation_child_repo(&self, plan: &RelationLoadPlan) -> EntityDataService<'a, E> {
+        let mut trace = self.trace_context.clone();
+        trace.push(teaql_core::TraceNode::typed(
+            teaql_core::TraceKind::Relation,
+            plan.relation_name.clone(),
+            None,
+            format!("{}.{}", plan.parent_entity, plan.relation_name),
+        ));
+        self.scoped_data_service_internal(plan.target_entity.clone())
+            .with_trace_context(trace)
     }
 
     fn query_for_plan(&self, plan: &RelationLoadPlan, parent_rows: &[CompactRow]) -> SelectQuery {

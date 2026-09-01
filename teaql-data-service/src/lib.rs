@@ -219,11 +219,13 @@ mod tests {
     #[test]
     fn test_mutation_request_trace_and_comment_accessors() {
         let trace1 = TraceNode {
+            kind: teaql_core::TraceKind::Entity,
             entity_type: "User".to_string(),
             entity_id: Some(1),
             comment: "Create User".to_string(),
         };
         let trace2 = TraceNode {
+            kind: teaql_core::TraceKind::Entity,
             entity_type: "Profile".to_string(),
             entity_id: None,
             comment: "Create Profile".to_string(),

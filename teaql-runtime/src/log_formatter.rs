@@ -23,7 +23,10 @@ impl HumanReaderFormatter {
             .then(|| {
                 trace_chain
                     .iter()
-                    .map(|n| n.comment.clone())
+                    .enumerate()
+                    .map(|(level, n)| {
+                        format!("{}:{:?}:{}={}", level, n.kind, n.entity_type, n.comment)
+                    })
                     .collect::<Vec<_>>()
                     .join(" -> ")
             })
@@ -40,13 +43,20 @@ impl LogFormatter for HumanReaderFormatter {
             .unwrap_or_default();
 
         let elapsed_us = (entry.elapsed.as_secs_f64() * 1_000_000.0).round() as u64;
+        let intent = format!(
+            "comment={:?} purpose={:?} auditReason={:?}",
+            entry.comment, entry.purpose, entry.audit_reason
+        );
         format!(
-            "[{}]-[{:>5}µs]-[DEBUG]-SqlLogEntry{} - [{}]\n          {}",
+            "[{}]-[{:>5}µs]-[DEBUG]-SqlLogEntry{} - [{}] {}\n          Parameterized SQL: {} params={:?}\n          Debug SQL: {}",
             ts,
             elapsed_us,
             trace_display,
             entry.result_summary,
-            entry.pretty_sql.replace('\n', " ")
+            intent,
+            entry.sql.replace('\n', " "),
+            entry.params,
+            entry.debug_sql.replace('\n', " ")
         )
     }
 
@@ -98,7 +108,10 @@ impl DebugReaderFormatter {
                 "(Trace: {})",
                 trace_chain
                     .iter()
-                    .map(|n| n.comment.clone())
+                    .enumerate()
+                    .map(|(level, n)| {
+                        format!("{}:{:?}:{}={}", level, n.kind, n.entity_type, n.comment)
+                    })
                     .collect::<Vec<_>>()
                     .join(" -> ")
             ),

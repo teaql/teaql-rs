@@ -694,6 +694,7 @@ impl SelectQuery {
         let comment_str = comment.into();
         self.comment = Some(comment_str.clone());
         self.trace_chain.push(crate::TraceNode {
+            kind: crate::TraceKind::Comment,
             entity_type: self.entity.clone(),
             entity_id: None,
             comment: comment_str,

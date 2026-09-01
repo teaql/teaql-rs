@@ -1114,7 +1114,7 @@ impl<
             let metadata = if request.capture_execution_metadata {
                 let CompiledQuery { sql, params, .. } = compiled;
                 ExecutionMetadata {
-                    backend: "sql".to_string(),
+                    backend: format!("{:?}", self.dialect.kind()).to_ascii_lowercase(),
                     operation: DataServiceOperation::Query,
                     started_at: start.expect("captured query start"),
                     ended_at: end.expect("captured query end"),
@@ -1175,7 +1175,7 @@ impl<
                         generated_values: GeneratedValues::default(),
                         persisted_snapshot: None,
                         metadata: ExecutionMetadata {
-                            backend: "sql".to_string(),
+                            backend: format!("{:?}", self.dialect.kind()).to_ascii_lowercase(),
                             operation: DataServiceOperation::Batch,
                             started_at: start,
                             ended_at: end,
@@ -1235,7 +1235,7 @@ impl<
             };
 
             let metadata = ExecutionMetadata {
-                backend: "sql".to_string(),
+                backend: format!("{:?}", self.dialect.kind()).to_ascii_lowercase(),
                 operation,
                 started_at: start,
                 ended_at: end,
@@ -1357,7 +1357,7 @@ impl<
             let end = SystemTime::now();
 
             let metadata = ExecutionMetadata {
-                backend: "sql".to_string(),
+                backend: format!("{:?}", self.dialect.kind()).to_ascii_lowercase(),
                 operation: DataServiceOperation::Query,
                 started_at: start,
                 ended_at: end,
@@ -1418,7 +1418,7 @@ impl<
                         generated_values: GeneratedValues::default(),
                         persisted_snapshot: None,
                         metadata: ExecutionMetadata {
-                            backend: "sql".to_string(),
+                            backend: format!("{:?}", self.dialect.kind()).to_ascii_lowercase(),
                             operation: DataServiceOperation::Batch,
                             started_at: start,
                             ended_at: end,
@@ -1509,7 +1509,7 @@ impl<
             };
 
             let metadata = ExecutionMetadata {
-                backend: "sql".to_string(),
+                backend: format!("{:?}", self.dialect.kind()).to_ascii_lowercase(),
                 operation,
                 started_at: start,
                 ended_at: end,

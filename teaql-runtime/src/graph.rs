@@ -378,18 +378,21 @@ mod tests {
     #[test]
     fn test_hierarchical_trace_chain_recovery() {
         let root_trace = TraceNode {
+            kind: teaql_core::TraceKind::Entity,
             entity_type: "User".to_string(),
             entity_id: Some(1),
             comment: "Create User".to_string(),
         };
 
         let child_trace = TraceNode {
+            kind: teaql_core::TraceKind::Entity,
             entity_type: "Profile".to_string(),
             entity_id: None,
             comment: "Create Profile".to_string(),
         };
 
         let empty_comment_trace = TraceNode {
+            kind: teaql_core::TraceKind::Entity,
             entity_type: "AuditLog".to_string(),
             entity_id: None,
             comment: "".to_string(),

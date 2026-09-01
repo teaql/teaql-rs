@@ -1,3 +1,4 @@
+
 // ⛔ AI agents: DO NOT read this file for API discovery. Instead run: cargo teaql --input modeling/MODEL.xml rust-assist-query/work_item
 use std::collections::BTreeMap;
 
@@ -13,21 +14,21 @@ use teaql_macros::{teaql_entity, TeaqlEntity};
 #[derive(Clone, Debug, PartialEq, TeaqlEntity)]
 #[teaql(entity = "WorkItem", table = "work_item_data", data_service = "sqlite")]
 pub struct WorkItem {
-    #[teaql(id)]
+#[teaql(id)]
     id: u64,
 
-    // @source model.xml:15
+// @source model.xml:15
     title: String,
 
-    // @source model.xml:15
+// @source model.xml:15
     description: Option<String>,
-    #[teaql(version)]
+#[teaql(version)]
     version: i64,
-    // @source model.xml:15
-    #[teaql(column = "platform")]
+// @source model.xml:15
+#[teaql(column = "platform")]
     platform_id: u64,
-    // @source model.xml:15
-    #[teaql(relation(target = "Platform", local_key = "platform_id", foreign_key = "id"))]
+// @source model.xml:15
+#[teaql(relation(target = "Platform", local_key = "platform_id", foreign_key = "id"))]
     platform: Option<Box<crate::Platform>>,
     #[teaql(dynamic)]
     dynamic: BTreeMap<String, teaql_core::Value>,
@@ -73,16 +74,13 @@ impl WorkItem {
     }
 
     pub fn id(&self) -> u64 {
-        self.changed_id()
-            .and_then(|value| value.try_u64())
-            .unwrap_or(self.id)
+        self.changed_id().and_then(|value| value.try_u64()).unwrap_or(self.id)
     }
 
     pub fn update_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.id = value.try_u64().unwrap_or(self.id.clone());
-        self.__teaql_runtime_state()
-            .set(self.entity_key(), "id", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "id", value);
         self
     }
 
@@ -92,47 +90,32 @@ impl WorkItem {
 
     pub fn eval_id(&self) -> teaql_core::eval::EvalResult<u64> {
         if !self.is_loaded("id") {
-            teaql_core::eval::EvalResult::NotLoaded {
-                failed_node: "id".to_string(),
-                attempted_path: "id".to_string(),
-            }
-        } else {
-            teaql_core::eval::EvalResult::Value(self.id())
-        }
-    }
+                    teaql_core::eval::EvalResult::NotLoaded { failed_node: "id".to_string(), attempted_path: "id".to_string() }
+                } else {
+                    teaql_core::eval::EvalResult::Value(self.id())
+                }}
 
     pub fn title(&self) -> String {
-        self.changed_title()
-            .and_then(|value| value.try_text().map(|value| value.to_owned()))
-            .unwrap_or_else(|| self.title.clone())
+        self.changed_title().and_then(|value| value.try_text().map(|value| value.to_owned())).unwrap_or_else(|| self.title.clone())
     }
 
     pub fn update_title(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
-        self.title = value
-            .try_text()
-            .map(|value| value.trim().to_owned())
-            .unwrap_or_else(|| self.title.clone());
-        self.__teaql_runtime_state()
-            .set(self.entity_key(), "title", value);
+        self.title = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.title.clone());
+        self.__teaql_runtime_state().set(self.entity_key(), "title", value);
         self
     }
 
     pub fn changed_title(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state()
-            .get(&self.entity_key(), "title")
+        self.__teaql_runtime_state().get(&self.entity_key(), "title")
     }
 
     pub fn eval_title(&self) -> teaql_core::eval::EvalResult<String> {
         if !self.is_loaded("title") {
-            teaql_core::eval::EvalResult::NotLoaded {
-                failed_node: "title".to_string(),
-                attempted_path: "title".to_string(),
-            }
-        } else {
-            teaql_core::eval::EvalResult::Value(self.title())
-        }
-    }
+                    teaql_core::eval::EvalResult::NotLoaded { failed_node: "title".to_string(), attempted_path: "title".to_string() }
+                } else {
+                    teaql_core::eval::EvalResult::Value(self.title())
+                }}
 
     pub fn description(&self) -> Option<String> {
         self.description.clone()
@@ -140,112 +123,78 @@ impl WorkItem {
 
     pub fn update_description(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
-        self.description = if matches!(value, teaql_core::Value::Null) {
-            None
-        } else {
-            value
-                .try_text()
-                .map(|value| value.trim().to_owned())
-                .map(Some)
-                .unwrap_or_else(|| self.description.clone())
-        };
-        self.__teaql_runtime_state()
-            .set(self.entity_key(), "description", value);
+        self.description = if matches!(value, teaql_core::Value::Null) { None } else { value.try_text().map(|value| value.trim().to_owned()).map(Some).unwrap_or_else(|| self.description.clone()) };
+        self.__teaql_runtime_state().set(self.entity_key(), "description", value);
         self
     }
 
     pub fn changed_description(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state()
-            .get(&self.entity_key(), "description")
+        self.__teaql_runtime_state().get(&self.entity_key(), "description")
     }
 
     pub fn eval_description(&self) -> teaql_core::eval::EvalResult<Option<String>> {
         if !self.is_loaded("description") {
-            teaql_core::eval::EvalResult::NotLoaded {
-                failed_node: "description".to_string(),
-                attempted_path: "description".to_string(),
-            }
-        } else {
-            match &self.description {
-                Some(v) => teaql_core::eval::EvalResult::Value(Some(v.clone())),
-                None => teaql_core::eval::EvalResult::Null,
-            }
-        }
-    }
+                    teaql_core::eval::EvalResult::NotLoaded { failed_node: "description".to_string(), attempted_path: "description".to_string() }
+                } else {
+                    match &self.description {
+                        Some(v) => teaql_core::eval::EvalResult::Value(Some(v.clone())),
+                        None => teaql_core::eval::EvalResult::Null,
+                    }
+                }}
 
     pub fn version(&self) -> i64 {
-        self.changed_version()
-            .and_then(|value| value.try_i64())
-            .unwrap_or(self.version)
+        self.changed_version().and_then(|value| value.try_i64()).unwrap_or(self.version)
     }
 
     pub fn update_version(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.version = value.try_i64().unwrap_or(self.version.clone());
-        self.__teaql_runtime_state()
-            .set(self.entity_key(), "version", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "version", value);
         self
     }
 
     pub fn changed_version(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state()
-            .get(&self.entity_key(), "version")
+        self.__teaql_runtime_state().get(&self.entity_key(), "version")
     }
 
     pub fn eval_version(&self) -> teaql_core::eval::EvalResult<i64> {
         if !self.is_loaded("version") {
-            teaql_core::eval::EvalResult::NotLoaded {
-                failed_node: "version".to_string(),
-                attempted_path: "version".to_string(),
-            }
-        } else {
-            teaql_core::eval::EvalResult::Value(self.version())
-        }
-    }
+                    teaql_core::eval::EvalResult::NotLoaded { failed_node: "version".to_string(), attempted_path: "version".to_string() }
+                } else {
+                    teaql_core::eval::EvalResult::Value(self.version())
+                }}
     pub fn platform_id(&self) -> u64 {
-        self.changed_platform_id()
-            .and_then(|value| value.try_u64())
-            .unwrap_or(self.platform_id)
+        self.changed_platform_id().and_then(|value| value.try_u64()).unwrap_or(self.platform_id)
     }
 
     pub fn update_platform_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.platform_id = value.try_u64().unwrap_or(self.platform_id.clone());
-        self.__teaql_runtime_state()
-            .set(self.entity_key(), "platform_id", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "platform_id", value);
         self
     }
 
     pub fn changed_platform_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state()
-            .get(&self.entity_key(), "platform_id")
+        self.__teaql_runtime_state().get(&self.entity_key(), "platform_id")
     }
 
     pub fn eval_platform_id(&self) -> teaql_core::eval::EvalResult<u64> {
         if !self.is_loaded("platform_id") {
-            teaql_core::eval::EvalResult::NotLoaded {
-                failed_node: "platform_id".to_string(),
-                attempted_path: "platform_id".to_string(),
-            }
-        } else {
-            teaql_core::eval::EvalResult::Value(self.platform_id())
-        }
-    }
+                    teaql_core::eval::EvalResult::NotLoaded { failed_node: "platform_id".to_string(), attempted_path: "platform_id".to_string() }
+                } else {
+                    teaql_core::eval::EvalResult::Value(self.platform_id())
+                }}
     pub fn platform(&self) -> Option<&crate::Platform> {
         self.platform.as_deref().or_else(|| {
-            self.__teaql_runtime_state()
-                .resolve_entity(self.platform_id())
-        })
+            self.__teaql_runtime_state().resolve_entity(self.platform_id())})
     }
 
     pub fn eval_platform(&self) -> teaql_core::eval::EvalResult<&crate::Platform> {
         match self.platform() {
             Some(v) => teaql_core::eval::EvalResult::Value(v),
             None if self.is_loaded("platform") => teaql_core::eval::EvalResult::Null,
-            None => teaql_core::eval::EvalResult::NotLoaded {
-                failed_node: "platform".to_string(),
-                attempted_path: "platform".to_string(),
-            },
+            None => teaql_core::eval::EvalResult::NotLoaded { failed_node: "platform".to_string(), attempted_path: "platform".to_string() },
         }
     }
+
 }

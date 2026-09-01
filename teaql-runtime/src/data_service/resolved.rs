@@ -1322,15 +1322,20 @@ where
                 && root_query.child_enhancements.is_empty()
             {
                 if let Some((query_plans, behavior_plans)) = flat_plans.as_ref() {
+                    let root_entity = root_query.entity.clone();
+                    let root_trace = root_query.trace_chain.clone();
                     let root_query = root_query.prepare_for_list().map_err(|message| {
                         DataServiceError::Runtime(RuntimeError::Graph(message))
                     })?;
                     let rows = self.fetch_prepared_compact_owned(root_query).await?;
                     let root = crate::EntityRuntimeState::default();
                     let mut graph = crate::EntityGraphBuilder::default();
-                    self.hydrate_compact_flat_plans_internal(&rows, query_plans, &root, &mut graph)
+                    let traced = self
+                        .scoped_data_service_internal(root_entity)
+                        .with_trace_context(root_trace);
+                    traced.hydrate_compact_flat_plans_internal(&rows, query_plans, &root, &mut graph)
                         .await?;
-                    self.hydrate_compact_flat_plans_internal(
+                    traced.hydrate_compact_flat_plans_internal(
                         &rows,
                         behavior_plans,
                         &root,
@@ -1360,9 +1365,12 @@ where
             let root = if let Some((query_plans, behavior_plans)) = flat_plans {
                 let root = crate::EntityRuntimeState::default();
                 let mut graph = crate::EntityGraphBuilder::default();
-                self.hydrate_flat_plans_internal(&mut rows, &query_plans, &root, &mut graph)
+                let traced = self
+                    .scoped_data_service_internal(root_query.entity.clone())
+                    .with_trace_context(root_query.trace_chain.clone());
+                traced.hydrate_flat_plans_internal(&mut rows, &query_plans, &root, &mut graph)
                     .await?;
-                self.hydrate_flat_plans_internal(&mut rows, &behavior_plans, &root, &mut graph)
+                traced.hydrate_flat_plans_internal(&mut rows, &behavior_plans, &root, &mut graph)
                     .await?;
                 root.freeze_graph(graph).map_err(|_| {
                     DataServiceError::Entity(teaql_core::EntityError::new(
@@ -1372,7 +1380,10 @@ where
                 })?;
                 root
             } else {
-                self.enhance_relations_internal(&mut rows).await?;
+                let traced = self
+                    .scoped_data_service_internal(root_query.entity.clone())
+                    .with_trace_context(root_query.trace_chain.clone());
+                traced.enhance_relations_internal(&mut rows).await?;
                 self.attach_flat_relation_graph(&root_query.entity, &mut rows)
                     .map_err(DataServiceError::Entity)?
             };

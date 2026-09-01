@@ -266,10 +266,16 @@ impl SqlLogOperation {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SqlLogOptions {
     pub select: bool,
     pub mutation: bool,
+}
+
+impl Default for SqlLogOptions {
+    fn default() -> Self {
+        Self::all()
+    }
 }
 
 impl SqlLogOptions {
@@ -312,6 +318,10 @@ impl SqlLogOptions {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SqlLogEntry {
     pub operation: SqlLogOperation,
+    pub comment: Option<String>,
+    pub purpose: Option<String>,
+    pub audit_reason: Option<String>,
+    pub trace_path: Vec<teaql_core::TraceNode>,
     pub sql: String,
     pub params: Vec<Value>,
     pub debug_sql: String,
@@ -507,10 +517,10 @@ impl Default for UserContext {
             root_graphs: Vec::new(),
             generated_schema_bootstraps: Vec::new(),
             entity_runtime_state: EntityRuntimeState::default(),
-            // Copy-paste SQL contains rendered parameter values. Keep this
-            // diagnostic surface opt-in even when ordinary runtime telemetry
-            // is configured.
-            sql_log_options: SqlLogOptions::disabled(),
+            // Query and Mutation diagnostic SQL logging are on by default.
+            // They remain independently controllable because performance and
+            // retention policy may differ between the two operation families.
+            sql_log_options: SqlLogOptions::default(),
             sql_log_entries: Mutex::new(Vec::new()),
             user_identifier: Some(user_id),
             timezone: Some("UTC".to_owned()),
@@ -1171,6 +1181,14 @@ impl UserContext {
         self.sql_log_options.mutation = true;
     }
 
+    pub fn disable_select_sql_log(&mut self) {
+        self.sql_log_options.select = false;
+    }
+
+    pub fn disable_mutation_sql_log(&mut self) {
+        self.sql_log_options.mutation = false;
+    }
+
     pub fn enable_all_sql_log(&mut self) {
         self.sql_log_options = SqlLogOptions::all();
     }
@@ -1222,8 +1240,17 @@ impl UserContext {
             &debug_sql,
         );
 
+        let trace_path = canonical_sql_trace_path(
+            operation,
+            &format!("{database_kind:?}").to_ascii_lowercase(),
+            &trace_chain,
+        );
         let sql_log_entry = SqlLogEntry {
             operation,
+            comment: trace_value(&trace_chain, teaql_core::TraceKind::Comment),
+            purpose: trace_value(&trace_chain, teaql_core::TraceKind::Purpose),
+            audit_reason: trace_value(&trace_chain, teaql_core::TraceKind::AuditReason),
+            trace_path: trace_path.clone(),
             sql: query.sql.clone(),
             params: query.params.clone(),
             pretty_sql: pretty_sql(&debug_sql),
@@ -1238,9 +1265,6 @@ impl UserContext {
         };
 
         if let Ok(mut entries) = self.sql_log_entries.lock() {
-            // Keep sql_log_entries backwards-compatible for now if needed,
-            // wait, we modified SqlLogEntry. We can just push it directly since we removed comment.
-            // Wait, we need to push a cloned SqlLogEntry since it doesn't have comment.
             entries.push(sql_log_entry.clone());
         }
 
@@ -1249,13 +1273,13 @@ impl UserContext {
                 entries.push(UnifiedLogEntry {
                     timestamp: started_at,
                     user_identifier: self.user_identifier.clone(),
-                    trace_chain: trace_chain.clone(),
+                    trace_chain: trace_path.clone(),
                     payload: LogPayload::Sql(sql_log_entry.clone()),
                 });
             }
         }
 
-        crate::log_formatter::LogManager::write_sql_log(&trace_chain, &sql_log_entry);
+        crate::log_formatter::LogManager::write_sql_log(&trace_path, &sql_log_entry);
     }
 
     pub(crate) fn record_metadata_log(&self, metadata: &teaql_data_service::ExecutionMetadata) {
@@ -1272,8 +1296,18 @@ impl UserContext {
             return;
         }
         if let Some(debug_sql) = &metadata.debug_query {
+            let trace_path =
+                canonical_sql_trace_path(operation, &metadata.backend, &metadata.trace_chain);
             let sql_log_entry = SqlLogEntry {
                 operation,
+                comment: trace_value(&metadata.trace_chain, teaql_core::TraceKind::Comment)
+                    .or_else(|| metadata.comment.clone()),
+                purpose: trace_value(&metadata.trace_chain, teaql_core::TraceKind::Purpose),
+                audit_reason: trace_value(
+                    &metadata.trace_chain,
+                    teaql_core::TraceKind::AuditReason,
+                ),
+                trace_path: trace_path.clone(),
                 sql: metadata.parameterized_query.clone().unwrap_or_default(),
                 params: metadata.params.clone(),
                 pretty_sql: pretty_sql(debug_sql),
@@ -1310,13 +1344,13 @@ impl UserContext {
                     entries.push(UnifiedLogEntry {
                         timestamp: metadata.started_at,
                         user_identifier: self.user_identifier.clone(),
-                        trace_chain: metadata.trace_chain.clone(),
+                        trace_chain: trace_path.clone(),
                         payload: LogPayload::Sql(final_entry.clone()),
                     });
                 }
             }
 
-            crate::log_formatter::LogManager::write_sql_log(&metadata.trace_chain, &final_entry);
+            crate::log_formatter::LogManager::write_sql_log(&trace_path, &final_entry);
         }
     }
 
@@ -1725,6 +1759,88 @@ fn sql_result_summary(
     }
 }
 
+fn trace_value(
+    trace_path: &[teaql_core::TraceNode],
+    kind: teaql_core::TraceKind,
+) -> Option<String> {
+    trace_path
+        .iter()
+        .rev()
+        .find(|node| node.kind == kind)
+        .map(|node| node.comment.clone())
+}
+
+fn canonical_sql_trace_path(
+    operation: SqlLogOperation,
+    backend: &str,
+    source: &[teaql_core::TraceNode],
+) -> Vec<teaql_core::TraceNode> {
+    use teaql_core::{TraceKind, TraceNode};
+
+    if source.iter().any(|node| node.kind == TraceKind::Operation)
+        && source.iter().any(|node| node.kind == TraceKind::Provider)
+        && source.iter().any(|node| node.kind == TraceKind::Sql)
+    {
+        return source
+            .iter()
+            .filter(|node| {
+                !matches!(
+                    node.kind,
+                    TraceKind::Comment | TraceKind::Purpose | TraceKind::AuditReason
+                )
+            })
+            .cloned()
+            .collect();
+    }
+
+    let entity = source
+        .iter()
+        .find(|node| !node.entity_type.trim().is_empty())
+        .map(|node| node.entity_type.clone())
+        .unwrap_or_else(|| "unknown".to_owned());
+    let family = if operation.is_select() {
+        "query"
+    } else {
+        "mutation"
+    };
+    let statement = match operation {
+        SqlLogOperation::Select => "select",
+        SqlLogOperation::Insert => "insert",
+        SqlLogOperation::Update => "update",
+        SqlLogOperation::Delete => "delete",
+        SqlLogOperation::Recover => "recover",
+    };
+    let mut path = vec![TraceNode::typed(TraceKind::Operation, entity.clone(), None, family)];
+    path.push(TraceNode::typed(
+        if operation.is_select() {
+            TraceKind::Request
+        } else {
+            TraceKind::Entity
+        },
+        entity,
+        None,
+        "",
+    ));
+    path.extend(
+        source
+            .iter()
+            .filter(|node| node.kind == TraceKind::Relation)
+            .cloned(),
+    );
+    path.push(TraceNode::typed(
+        TraceKind::Provider,
+        if backend.trim().is_empty() {
+            "unknown"
+        } else {
+            backend
+        },
+        None,
+        "",
+    ));
+    path.push(TraceNode::typed(TraceKind::Sql, statement, None, ""));
+    path
+}
+
 fn pretty_sql(sql: &str) -> String {
     let mut pretty = sql.to_owned();
     for keyword in [
@@ -1747,10 +1863,20 @@ mod sql_log_option_tests {
     use super::*;
 
     #[test]
-    fn diagnostic_sql_log_is_disabled_by_default() {
-        let context = UserContext::default();
-        assert_eq!(context.sql_log_options(), SqlLogOptions::disabled());
+    fn diagnostic_sql_log_is_enabled_by_default_with_independent_switches() {
+        let mut context = UserContext::default();
+        assert_eq!(context.sql_log_options(), SqlLogOptions::all());
         assert!(context.sql_logs().is_empty());
+
+        context.disable_select_sql_log();
+        assert_eq!(context.sql_log_options(), SqlLogOptions::mutation_only());
+
+        context.enable_select_sql_log();
+        context.disable_mutation_sql_log();
+        assert_eq!(context.sql_log_options(), SqlLogOptions::select_only());
+
+        context.disable_sql_log();
+        assert_eq!(context.sql_log_options(), SqlLogOptions::disabled());
     }
 
     #[test]
@@ -1773,6 +1899,128 @@ mod sql_log_option_tests {
             debug_query: Some("SELECT id FROM sample WHERE id = 1".to_owned()),
         });
         assert!(context.sql_logs().is_empty());
+    }
+
+    #[test]
+    fn metadata_log_retains_structured_intent_sql_forms_and_multilevel_trace() {
+        let context = UserContext::default();
+        let now = SystemTime::now();
+        let query_trace = vec![
+            teaql_core::TraceNode::typed(
+                teaql_core::TraceKind::Comment,
+                "School",
+                None,
+                "what: load school graph",
+            ),
+            teaql_core::TraceNode::typed(
+                teaql_core::TraceKind::Purpose,
+                "School",
+                None,
+                "why: render school details",
+            ),
+            teaql_core::TraceNode::typed(
+                teaql_core::TraceKind::Relation,
+                "platform",
+                None,
+                "School.platform",
+            ),
+            teaql_core::TraceNode::typed(
+                teaql_core::TraceKind::Relation,
+                "organization",
+                None,
+                "Platform.organization",
+            ),
+            teaql_core::TraceNode::typed(
+                teaql_core::TraceKind::Relation,
+                "region",
+                None,
+                "Organization.region",
+            ),
+        ];
+        context.record_metadata_log(&teaql_data_service::ExecutionMetadata {
+            backend: "sqlite".to_owned(),
+            operation: teaql_data_service::DataServiceOperation::Query,
+            started_at: now,
+            ended_at: now,
+            affected_rows: None,
+            result_count: Some(2),
+            trace_chain: query_trace.clone(),
+            comment: None,
+            backend_request_id: None,
+            parameterized_query: Some("SELECT name FROM school_data WHERE id = ?".to_owned()),
+            params: vec![Value::I64(7)],
+            debug_query: Some("SELECT name FROM school_data WHERE id = 7".to_owned()),
+        });
+
+        let query = context.sql_logs().pop().expect("query log");
+        assert_eq!(query.comment.as_deref(), Some("what: load school graph"));
+        assert_eq!(query.purpose.as_deref(), Some("why: render school details"));
+        assert_eq!(query.audit_reason, None);
+        assert_eq!(
+            query
+                .trace_path
+                .iter()
+                .map(|node| node.kind)
+                .collect::<Vec<_>>(),
+            vec![
+                teaql_core::TraceKind::Operation,
+                teaql_core::TraceKind::Request,
+                teaql_core::TraceKind::Relation,
+                teaql_core::TraceKind::Relation,
+                teaql_core::TraceKind::Relation,
+                teaql_core::TraceKind::Provider,
+                teaql_core::TraceKind::Sql,
+            ]
+        );
+        assert_eq!(query.trace_path[0].entity_type, "School");
+        assert_eq!(query.trace_path[5].entity_type, "sqlite");
+        assert_eq!(query.trace_path[6].entity_type, "select");
+        assert_eq!(query.sql, "SELECT name FROM school_data WHERE id = ?");
+        assert_eq!(query.params, vec![Value::I64(7)]);
+        assert_eq!(query.debug_sql, "SELECT name FROM school_data WHERE id = 7");
+        assert_eq!(query.result_count, Some(2));
+
+        let mutation_trace = vec![teaql_core::TraceNode::typed(
+            teaql_core::TraceKind::AuditReason,
+            "School",
+            Some(7),
+            "correct school name",
+        )];
+        context.record_metadata_log(&teaql_data_service::ExecutionMetadata {
+            backend: "sqlite".to_owned(),
+            operation: teaql_data_service::DataServiceOperation::Update,
+            started_at: now,
+            ended_at: now,
+            affected_rows: Some(1),
+            result_count: None,
+            trace_chain: mutation_trace.clone(),
+            comment: None,
+            backend_request_id: None,
+            parameterized_query: Some("UPDATE school_data SET name = ? WHERE id = ?".to_owned()),
+            params: vec![Value::from("Academy"), Value::I64(7)],
+            debug_query: Some("UPDATE school_data SET name = 'Academy' WHERE id = 7".to_owned()),
+        });
+        let mutation = context.sql_logs().pop().expect("mutation log");
+        assert_eq!(mutation.comment, None);
+        assert_eq!(mutation.purpose, None);
+        assert_eq!(
+            mutation.audit_reason.as_deref(),
+            Some("correct school name")
+        );
+        assert_eq!(
+            mutation
+                .trace_path
+                .iter()
+                .map(|node| node.kind)
+                .collect::<Vec<_>>(),
+            vec![
+                teaql_core::TraceKind::Operation,
+                teaql_core::TraceKind::Entity,
+                teaql_core::TraceKind::Provider,
+                teaql_core::TraceKind::Sql,
+            ]
+        );
+        assert_eq!(mutation.affected_rows, Some(1));
     }
 }
 

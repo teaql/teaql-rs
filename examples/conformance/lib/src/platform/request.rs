@@ -91,6 +91,7 @@ impl<R> PlatformRequest<R> {
         self.query
     }
 
+
     pub fn purpose(self, purpose: impl Into<String>) -> crate::PurposedQuery<Self> {
         crate::PurposedQuery::new(self, purpose)
     }
@@ -112,20 +113,18 @@ impl<R> PlatformRequest<R> {
             self.query,
             &query_options,
             &self.child_enhancements,
-        ))
-        .map_err(DataServiceError::Runtime)?;
+        )).map_err(DataServiceError::Runtime)?;
         let (mut rows, facets) = if query_options.facets.is_empty() {
-            let rows = repository
-                .fetch_enhanced_entities_with_relation_aggregates_owned::<R>(
-                    query,
-                    &relation_aggregates,
-                )
-                .await?;
+            let rows = repository.fetch_enhanced_entities_with_relation_aggregates_owned::<R>(
+                query,
+                &relation_aggregates,
+            ).await?;
             (rows, std::collections::BTreeMap::new())
         } else {
-            let rows = repository
-                .fetch_enhanced_entities_with_relation_aggregates::<R>(&query, &relation_aggregates)
-                .await?;
+            let rows = repository.fetch_enhanced_entities_with_relation_aggregates::<R>(
+                &query,
+                &relation_aggregates,
+            ).await?;
             let facets = execute_facets(context, query.as_query(), &query_options)
                 .await
                 .map_err(DataServiceError::Runtime)?;
@@ -149,18 +148,14 @@ impl<R> PlatformRequest<R> {
             self.query,
             &self.query_options,
             &self.child_enhancements,
-        ))
-        .map_err(DataServiceError::Runtime)?;
+        )).map_err(DataServiceError::Runtime)?;
         repository.fetch_smart_list(&query).await
     }
 
     pub(crate) async fn _execute_for_stream<'a, C>(
         self,
         context: &'a C,
-    ) -> Result<
-        TeaqlEntityStream<'a, R, TeaqlDataServiceError<C::PlatformRepository<'a>>>,
-        TeaqlDataServiceError<C::PlatformRepository<'a>>,
-    >
+    ) -> Result<TeaqlEntityStream<'a, R, TeaqlDataServiceError<C::PlatformRepository<'a>>>, TeaqlDataServiceError<C::PlatformRepository<'a>>>
     where
         C: TeaqlRepositoryProvider + ?Sized,
         R: teaql_core::Entity + 'a,
@@ -208,6 +203,7 @@ impl<R> PlatformRequest<R> {
         self._execute_for_first(context).await
     }
 
+
     pub(crate) async fn _execute_for_page<'a, C>(
         self,
         context: &'a C,
@@ -230,10 +226,7 @@ impl<R> PlatformRequest<R> {
             return Ok(rows);
         }
         let total_count = self.clone()._execute_for_count(context).await?;
-        let mut rows = self
-            .page_offset(offset, limit)
-            ._execute_for_list(context)
-            .await?;
+        let mut rows = self.page_offset(offset, limit)._execute_for_list(context).await?;
         rows.total_count = Some(total_count);
         Ok(rows)
     }
@@ -249,8 +242,11 @@ impl<R> PlatformRequest<R> {
             .platform_repository()
             .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
         let query_options = self.query_options.clone();
-        let mut query =
-            apply_runtime_metadata(self.query, &query_options, &self.child_enhancements);
+        let mut query = apply_runtime_metadata(
+            self.query,
+            &query_options,
+            &self.child_enhancements,
+        );
         query.projection.clear();
         query.expr_projection.clear();
         query.order_by.clear();
@@ -262,11 +258,7 @@ impl<R> PlatformRequest<R> {
         rows.first()
             .and_then(|row| row.get(COUNT_ALIAS))
             .and_then(teaql_core::Value::try_u64)
-            .ok_or_else(|| {
-                DataServiceError::Runtime(RuntimeError::Graph(format!(
-                    "count result for Platform is missing or not numeric"
-                )))
-            })
+            .ok_or_else(|| DataServiceError::Runtime(RuntimeError::Graph(format!("count result for Platform is missing or not numeric"))))
     }
 
     pub(crate) async fn _execute_for_exists<'a, C>(
@@ -339,11 +331,10 @@ impl<R> PlatformRequest<R> {
         mut self,
         types: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
-        self.query = self
-            .query
-            .and_filter(Expr::in_list(TYPE_FIELD, types.into_iter().map(Into::into)));
+        self.query = self.query.and_filter(Expr::in_list(TYPE_FIELD, types.into_iter().map(Into::into)));
         self
     }
+
 
     pub fn with_type_group(mut self) -> Self {
         self.query = self.query.project(TYPE_GROUP_FIELD);
@@ -353,12 +344,7 @@ impl<R> PlatformRequest<R> {
     pub fn matching_any_of(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
         let entity = EntityDescriptor::new(selection.query.entity.clone());
-        self.query = self.query.and_filter(Expr::in_subquery(
-            "id",
-            entity,
-            selection.query.clone(),
-            "id",
-        ));
+        self.query = self.query.and_filter(Expr::in_subquery("id", entity, selection.query.clone(), "id"));
         self
     }
 
@@ -375,6 +361,7 @@ impl<R> PlatformRequest<R> {
         let request = self;
         request
     }
+
 
     pub fn comment(mut self, comment: impl Into<String>) -> Self {
         self.query_options.comment = Some(comment.into());
@@ -395,9 +382,7 @@ impl<R> PlatformRequest<R> {
     }
 
     pub fn unsafe_raw_sql_filter(mut self, raw_sql: UnsafeRawSqlSegment) -> Self {
-        self.query_options
-            .raw_sql_search_criteria
-            .push(raw_sql.into_sql());
+        self.query_options.raw_sql_search_criteria.push(raw_sql.into_sql());
         self
     }
     pub fn filter_with_json(self, json_expr: impl Into<String>) -> Self {
@@ -513,9 +498,12 @@ impl<R> PlatformRequest<R> {
     fn apply_dynamic_json_chain_filter(self, head: &str, tail: &str, value: &JsonValue) -> Self {
         let _ = (tail, value);
         match head {
-            "work_item_list" => self.with_work_item_list_matching(
-                crate::Q::work_items_minimal().apply_dynamic_json_filter(tail, value),
-            ),
+            "work_item_list" => {
+                self.with_work_item_list_matching(
+                    crate::Q::work_items_minimal()
+                        .apply_dynamic_json_filter(tail, value),
+                )
+            }
             _ => self,
         }
     }
@@ -600,9 +588,9 @@ impl<R> PlatformRequest<R> {
         ttl_seconds: u64,
         max_ids: u64,
     ) -> Self {
-        self.query =
-            self.query
-                .optimize_pagination_with_id_set_config(namespace, ttl_seconds, max_ids);
+        self.query = self
+            .query
+            .optimize_pagination_with_id_set_config(namespace, ttl_seconds, max_ids);
         self
     }
 
@@ -691,11 +679,7 @@ impl<R> PlatformRequest<R> {
         self
     }
 
-    pub fn aggregate_count_field(
-        mut self,
-        field: impl Into<String>,
-        alias: impl Into<String>,
-    ) -> Self {
+    pub fn aggregate_count_field(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.count_field(field, alias);
         self
     }
@@ -735,20 +719,12 @@ impl<R> PlatformRequest<R> {
         self
     }
 
-    pub fn aggregate_stddev_pop(
-        mut self,
-        field: impl Into<String>,
-        alias: impl Into<String>,
-    ) -> Self {
+    pub fn aggregate_stddev_pop(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.stddev_pop(field, alias);
         self
     }
 
-    pub fn aggregate_var_samp(
-        mut self,
-        field: impl Into<String>,
-        alias: impl Into<String>,
-    ) -> Self {
+    pub fn aggregate_var_samp(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.var_samp(field, alias);
         self
     }
@@ -779,9 +755,7 @@ impl<R> PlatformRequest<R> {
     }
 
     pub fn enable_aggregation_cache_for(mut self, cache_expired_millis: u64) -> Self {
-        self.query = self
-            .query
-            .enable_aggregation_cache_for(cache_expired_millis);
+        self.query = self.query.enable_aggregation_cache_for(cache_expired_millis);
         self
     }
 
@@ -797,7 +771,9 @@ impl<R> PlatformRequest<R> {
     pub fn group_by_id_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
         let mut request = self.group_by("id");
-        request.query = request.query.project_expr(alias, Expr::column("id"));
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column("id"));
         request
     }
 
@@ -850,6 +826,7 @@ impl<R> PlatformRequest<R> {
         self.aggregate_max("id", alias)
     }
 
+
     pub fn with_id(
         mut self,
         operator: FieldOperator,
@@ -867,13 +844,19 @@ impl<R> PlatformRequest<R> {
         operator: FieldOperator,
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
-        field_operator_expr("id", operator, values.into_iter().map(Into::into).collect())
+        field_operator_expr(
+            "id",
+            operator,
+            values.into_iter().map(Into::into).collect(),
+        )
     }
 
     pub fn with_id_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("id", value));
         self
     }
+
+
 
     pub fn with_id_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("id", value));
@@ -884,9 +867,10 @@ impl<R> PlatformRequest<R> {
         mut self,
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
-        self.query = self
-            .query
-            .and_filter(Expr::in_list("id", values.into_iter().map(Into::into)));
+        self.query = self.query.and_filter(Expr::in_list(
+            "id",
+            values.into_iter().map(Into::into),
+        ));
         self
     }
 
@@ -894,9 +878,10 @@ impl<R> PlatformRequest<R> {
         mut self,
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
-        self.query = self
-            .query
-            .and_filter(Expr::not_in_list("id", values.into_iter().map(Into::into)));
+        self.query = self.query.and_filter(Expr::not_in_list(
+            "id",
+            values.into_iter().map(Into::into),
+        ));
         self
     }
 
@@ -919,6 +904,7 @@ impl<R> PlatformRequest<R> {
         self.query = self.query.order_gbk_desc("id");
         self
     }
+
 
     pub fn select_name(mut self) -> Self {
         self.query = self.query.project("name");
@@ -947,7 +933,9 @@ impl<R> PlatformRequest<R> {
     pub fn group_by_name_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
         let mut request = self.group_by("name");
-        request.query = request.query.project_expr(alias, Expr::column("name"));
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column("name"));
         request
     }
 
@@ -1002,11 +990,10 @@ impl<R> PlatformRequest<R> {
 
     pub fn unselect_name(mut self) -> Self {
         self.query.projection.retain(|field| field != "name");
-        self.query_options
-            .raw_projections
-            .retain(|projection| projection.property_name != "name");
+        self.query_options.raw_projections.retain(|projection| projection.property_name != "name");
         self
     }
+
 
     pub fn with_name(
         mut self,
@@ -1037,6 +1024,8 @@ impl<R> PlatformRequest<R> {
         self
     }
 
+
+
     pub fn with_name_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("name", value));
         self
@@ -1047,10 +1036,7 @@ impl<R> PlatformRequest<R> {
         self
     }
 
-    pub fn with_name_greater_than_or_equal_to(
-        mut self,
-        value: impl Into<teaql_core::Value>,
-    ) -> Self {
+    pub fn with_name_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("name", value));
         self
     }
@@ -1078,9 +1064,11 @@ impl<R> PlatformRequest<R> {
     where
         T: Into<teaql_core::Value>,
     {
-        self.query = self
-            .query
-            .and_filter(Expr::between("name", range.start, range.end));
+        self.query = self.query.and_filter(Expr::between(
+            "name",
+            range.start,
+            range.end,
+        ));
         self
     }
 
@@ -1088,9 +1076,10 @@ impl<R> PlatformRequest<R> {
         mut self,
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
-        self.query = self
-            .query
-            .and_filter(Expr::in_list("name", values.into_iter().map(Into::into)));
+        self.query = self.query.and_filter(Expr::in_list(
+            "name",
+            values.into_iter().map(Into::into),
+        ));
         self
     }
 
@@ -1154,10 +1143,13 @@ impl<R> PlatformRequest<R> {
         self
     }
 
+
+
     pub fn with_name_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("name"));
         self
     }
+
 
     pub fn order_by_name_asc(mut self) -> Self {
         self.query = self.query.order_asc("name");
@@ -1186,7 +1178,9 @@ impl<R> PlatformRequest<R> {
     pub fn group_by_version_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
         let mut request = self.group_by("version");
-        request.query = request.query.project_expr(alias, Expr::column("version"));
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column("version"));
         request
     }
 
@@ -1262,9 +1256,14 @@ impl<R> PlatformRequest<R> {
         self.with_name_is("Runtime Example")
     }
 
+
+
     pub fn with_name_is_not_runtime_example(self) -> Self {
         self.with_name_is_not("Runtime Example")
     }
+
+
+
 
     pub fn have_work_items(self) -> Self {
         self.with_work_item_list_matching(crate::Q::work_items_minimal())
@@ -1282,8 +1281,7 @@ impl<R> PlatformRequest<R> {
             selection.query.clone(),
             "platform_id",
         ));
-        self.relation_filters
-            .push(RelationFilter::new("work_item_list", selection));
+        self.relation_filters.push(RelationFilter::new("work_item_list", selection));
         self
     }
 
@@ -1295,8 +1293,7 @@ impl<R> PlatformRequest<R> {
             selection.query.clone(),
             "platform_id",
         ));
-        self.relation_filters
-            .push(RelationFilter::new("work_item_list", selection));
+        self.relation_filters.push(RelationFilter::new("work_item_list", selection));
         self
     }
 
@@ -1307,11 +1304,9 @@ impl<R> PlatformRequest<R> {
 
     pub fn select_work_item_list_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self
-            .query
-            .relation_query("work_item_list", selection.into_query());
+        self.query = self.query.relation_query("work_item_list", selection.into_query());
         self
-    }
+}
     pub fn count_work_items(self) -> Self {
         self.count_work_items_as("count_work_items")
     }
@@ -1320,20 +1315,14 @@ impl<R> PlatformRequest<R> {
         self.count_work_items_with(alias, crate::Q::work_items().unlimited())
     }
 
-    pub fn count_work_items_with(
-        mut self,
-        alias: impl Into<String>,
-        request: impl Into<QuerySelection>,
-    ) -> Self {
+    pub fn count_work_items_with(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query_options
-            .relation_aggregates
-            .push(RelationAggregate::new(
-                "work_item_list",
-                alias,
-                selection,
-                true,
-            ));
+        self.query_options.relation_aggregates.push(RelationAggregate::new(
+            "work_item_list",
+            alias,
+            selection,
+            true,
+        ));
         self
     }
 
@@ -1341,43 +1330,34 @@ impl<R> PlatformRequest<R> {
         self.stats_from_work_items_as("refinements", request)
     }
 
-    pub fn stats_from_work_items_as(
-        mut self,
-        alias: impl Into<String>,
-        request: impl Into<QuerySelection>,
-    ) -> Self {
+    pub fn stats_from_work_items_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query_options
-            .relation_aggregates
-            .push(RelationAggregate::new(
-                "work_item_list",
-                alias,
-                selection,
-                false,
-            ));
+        self.query_options.relation_aggregates.push(RelationAggregate::new(
+            "work_item_list",
+            alias,
+            selection,
+            false,
+        ));
         self
     }
 
-    fn scalar_from_work_items_as(
-        mut self,
-        alias: impl Into<String>,
-        request: impl Into<QuerySelection>,
-    ) -> Self {
+    fn scalar_from_work_items_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query_options
-            .relation_aggregates
-            .push(RelationAggregate::new(
-                "work_item_list",
-                alias,
-                selection,
-                true,
-            ));
+        self.query_options.relation_aggregates.push(RelationAggregate::new(
+            "work_item_list",
+            alias,
+            selection,
+            true,
+        ));
         self
     }
 
     pub fn group_by_work_items_with_details(self, request: impl Into<QuerySelection>) -> Self {
         self.stats_from_work_items(request)
     }
+
+
+
 }
 
 impl<R> Default for PlatformRequest<R> {
@@ -1386,13 +1366,13 @@ impl<R> Default for PlatformRequest<R> {
     }
 }
 
-impl<R> From<PlatformRequest<R>> for SelectQuery {
+impl<R> From< PlatformRequest<R> > for SelectQuery {
     fn from(request: PlatformRequest<R>) -> Self {
         QuerySelection::from(request).into_query()
     }
 }
 
-impl<R> From<PlatformRequest<R>> for QuerySelection {
+impl<R> From< PlatformRequest<R> > for QuerySelection {
     fn from(request: PlatformRequest<R>) -> Self {
         Self {
             query: request.query,
@@ -1404,17 +1384,13 @@ impl<R> From<PlatformRequest<R>> for QuerySelection {
     }
 }
 
-impl<'a, C> crate::request_support::AuditedSave<'a, C> for teaql_core::Audited<crate::Platform>
-where
-    C: crate::request_support::TeaqlRepositoryProvider + ?Sized + 'a,
+
+impl<'a, C> crate::request_support::AuditedSave<'a, C> for teaql_core::Audited<crate::Platform> 
+where C: crate::request_support::TeaqlRepositoryProvider + ?Sized + 'a
 {
     type Error = crate::TeaqlDataServiceError<C::PlatformRepository<'a>>;
     type Entity = crate::Platform;
-    fn save(
-        self,
-        context: &'a C,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Entity, Self::Error>> + '_>>
-    {
+    fn save(self, context: &'a C) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Entity, Self::Error>> + '_>> {
         Box::pin(async move {
             teaql_runtime::save_audited_ledger_entity(self, context.user_context())
                 .await
@@ -1434,8 +1410,7 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<PlatformRequest<R>> {
         C: crate::TeaqlRuntime + ?Sized,
     {
         self.require_comment();
-        let mut entity =
-            crate::Platform::runtime_new(context.user_context().entity_runtime_state());
+        let mut entity = crate::Platform::runtime_new(context.user_context().entity_runtime_state());
         if let Ok(id) = context.user_context().next_id(crate::Platform::ENTITY_NAME) {
             entity.update_id(id);
         }
@@ -1445,14 +1420,12 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<PlatformRequest<R>> {
 
     fn into_inner_with_trace(mut self) -> PlatformRequest<R> {
         self.require_comment();
-        self.inner
-            .query
-            .trace_chain
-            .push(teaql_core::TraceNode::new(
-                self.inner.query.entity.clone(),
-                None,
-                self.purpose,
-            ));
+        self.inner.query.trace_chain.push(teaql_core::TraceNode::typed(
+            teaql_core::TraceKind::Purpose,
+            self.inner.query.entity.clone(),
+            None,
+            self.purpose,
+        ));
         self.inner
     }
 
@@ -1472,16 +1445,11 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<PlatformRequest<R>> {
         context: &'a C,
         offset: u64,
         limit: u64,
-    ) -> Result<
-        teaql_core::SmartList<R>,
-        crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>,
-    >
+    ) -> Result<teaql_core::SmartList<R>, crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>>
     where
         C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
-        self.into_inner_with_trace()
-            ._execute_for_page(context, offset, limit)
-            .await
+        self.into_inner_with_trace()._execute_for_page(context, offset, limit).await
     }
 
     pub async fn execute_for_exists<'a, C>(
@@ -1491,94 +1459,52 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<PlatformRequest<R>> {
     where
         C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
-        self.into_inner_with_trace()
-            ._execute_for_exists(context)
-            .await
+        self.into_inner_with_trace()._execute_for_exists(context).await
     }
 
-    pub async fn execute_for_list<'a, C>(
-        self,
-        context: &'a C,
-    ) -> Result<
-        teaql_core::SmartList<R>,
-        crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>,
-    >
+    pub async fn execute_for_list<'a, C>(self, context: &'a C) -> Result<teaql_core::SmartList<R>, crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>>
     where
         C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
-        self.into_inner_with_trace()
-            ._execute_for_list(context)
-            .await
+        self.into_inner_with_trace()._execute_for_list(context).await
     }
 
-    pub async fn execute_for_rows<'a, C>(
-        self,
-        context: &'a C,
-    ) -> Result<
-        teaql_core::SmartList<teaql_core::CompactRow>,
-        crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>,
-    >
+    pub async fn execute_for_rows<'a, C>(self, context: &'a C) -> Result<teaql_core::SmartList<teaql_core::CompactRow>, crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>>
     where
         C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
-        self.into_inner_with_trace()
-            ._execute_for_rows(context)
-            .await
+        self.into_inner_with_trace()._execute_for_rows(context).await
     }
 
     /// Execute query as a lazy entity stream without materializing the result set.
     /// Set chunk size via .stream(chunk_size) or .stream_default() on the query.
-    pub async fn execute_for_stream<'a, C>(
-        self,
-        context: &'a C,
-    ) -> Result<
-        crate::request_support::TeaqlEntityStream<
-            'a,
-            R,
-            crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>,
-        >,
-        crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>,
-    >
+    pub async fn execute_for_stream<'a, C>(self, context: &'a C) -> Result<crate::request_support::TeaqlEntityStream<'a, R, crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>>, crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>>
     where
         C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
         R: teaql_core::Entity + 'a,
     {
-        self.into_inner_with_trace()
-            ._execute_for_stream(context)
-            .await
+        self.into_inner_with_trace()._execute_for_stream(context).await
     }
 
-    pub async fn execute_for_first<'a, C>(
-        self,
-        context: &'a C,
-    ) -> Result<Option<R>, crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>>
+    pub async fn execute_for_first<'a, C>(self, context: &'a C) -> Result<Option<R>, crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>>
     where
         C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
-        self.into_inner_with_trace()
-            ._execute_for_first(context)
-            .await
+        self.into_inner_with_trace()._execute_for_first(context).await
     }
 
-    pub async fn execute_for_one<'a, C>(
-        self,
-        context: &'a C,
-    ) -> Result<Option<R>, crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>>
+    pub async fn execute_for_one<'a, C>(self, context: &'a C) -> Result<Option<R>, crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>>
     where
         C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
         self.into_inner_with_trace()._execute_for_one(context).await
     }
 
-    pub async fn execute_for_count<'a, C>(
-        self,
-        context: &'a C,
-    ) -> Result<u64, crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>>
+
+    pub async fn execute_for_count<'a, C>(self, context: &'a C) -> Result<u64, crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>>
     where
         C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
-        self.into_inner_with_trace()
-            ._execute_for_count(context)
-            .await
+        self.into_inner_with_trace()._execute_for_count(context).await
     }
 }

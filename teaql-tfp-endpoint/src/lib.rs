@@ -204,6 +204,7 @@ where
             None => tenant,
         });
         let trace = teaql_core::TraceNode {
+            kind: teaql_core::TraceKind::Purpose,
             entity_type: tfp_query.entity.clone(),
             entity_id: None,
             comment: format!(

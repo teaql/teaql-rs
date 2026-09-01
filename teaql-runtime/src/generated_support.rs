@@ -220,6 +220,7 @@ impl PurposedSelectQuery {
             "query purpose must not be empty"
         );
         query.trace_chain.push(TraceNode {
+            kind: teaql_core::TraceKind::Purpose,
             entity_type: query.entity.clone(),
             entity_id: None,
             comment: purpose,
@@ -265,6 +266,7 @@ where
         let entity = query.entity.clone();
         let mut chain = outer_query.trace_chain.clone();
         chain.push(TraceNode {
+            kind: teaql_core::TraceKind::Relation,
             entity_type: query.entity.clone(),
             entity_id: None,
             comment: facet.facet_name.clone(),

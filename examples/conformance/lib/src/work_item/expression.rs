@@ -5,10 +5,7 @@ pub struct WorkItemExpression<'a> {
 }
 
 impl<'a> WorkItemExpression<'a> {
-    pub fn new(
-        result: teaql_core::eval::EvalResult<&'a crate::WorkItem>,
-        root_desc: std::sync::Arc<String>,
-    ) -> Self {
+    pub fn new(result: teaql_core::eval::EvalResult<&'a crate::WorkItem>, root_desc: std::sync::Arc<String>) -> Self {
         Self { result, root_desc }
     }
 
@@ -16,10 +13,9 @@ impl<'a> WorkItemExpression<'a> {
         match &self.result {
             teaql_core::eval::EvalResult::Value(v) => Some(*v),
             teaql_core::eval::EvalResult::Null => None,
-            teaql_core::eval::EvalResult::NotLoaded {
-                failed_node,
-                attempted_path,
-            } => crate::trigger_logic_bug_panic(&self.root_desc, &failed_node, &attempted_path),
+            teaql_core::eval::EvalResult::NotLoaded { failed_node, attempted_path } => {
+                crate::trigger_logic_bug_panic(&self.root_desc, &failed_node, &attempted_path)
+            }
         }
     }
 
@@ -28,8 +24,7 @@ impl<'a> WorkItemExpression<'a> {
     }
 
     pub fn unwrap(&self) -> &'a crate::WorkItem {
-        self.resolve()
-            .expect("Relation was legitimately null in database!")
+        self.resolve().expect("Relation was legitimately null in database!")
     }
 
     pub fn get_id(self) -> crate::ValueExpression<'a, u64> {
@@ -43,28 +38,20 @@ impl<'a> WorkItemExpression<'a> {
     }
 
     pub fn get_description(self) -> crate::ValueExpression<'a, Option<String>> {
-        let next = self
-            .result
-            .and_then("description", |entity| entity.eval_description());
+        let next = self.result.and_then("description", |entity| entity.eval_description());
         crate::ValueExpression::new(next, self.root_desc.clone())
     }
 
     pub fn get_version(self) -> crate::ValueExpression<'a, i64> {
-        let next = self
-            .result
-            .and_then("version", |entity| entity.eval_version());
+        let next = self.result.and_then("version", |entity| entity.eval_version());
         crate::ValueExpression::new(next, self.root_desc.clone())
     }
     pub fn get_platform_id(self) -> crate::ValueExpression<'a, u64> {
-        let next = self
-            .result
-            .and_then("platform_id", |entity| entity.eval_platform_id());
+        let next = self.result.and_then("platform_id", |entity| entity.eval_platform_id());
         crate::ValueExpression::new(next, self.root_desc.clone())
     }
     pub fn get_platform(self) -> crate::PlatformExpression<'a> {
-        let next = self
-            .result
-            .and_then("platform", |entity| entity.eval_platform());
+        let next = self.result.and_then("platform", |entity| entity.eval_platform());
         crate::PlatformExpression::new(next, self.root_desc.clone())
     }
 }
@@ -76,10 +63,7 @@ pub struct WorkItemListExpression<'a> {
 }
 
 impl<'a> WorkItemListExpression<'a> {
-    pub fn new(
-        result: teaql_core::eval::EvalResult<&'a teaql_core::SmartList<crate::WorkItem>>,
-        root_desc: std::sync::Arc<String>,
-    ) -> Self {
+    pub fn new(result: teaql_core::eval::EvalResult<&'a teaql_core::SmartList<crate::WorkItem>>, root_desc: std::sync::Arc<String>) -> Self {
         Self { result, root_desc }
     }
 
@@ -87,10 +71,9 @@ impl<'a> WorkItemListExpression<'a> {
         match &self.result {
             teaql_core::eval::EvalResult::Value(v) => Some(*v),
             teaql_core::eval::EvalResult::Null => None,
-            teaql_core::eval::EvalResult::NotLoaded {
-                failed_node,
-                attempted_path,
-            } => crate::trigger_logic_bug_panic(&self.root_desc, &failed_node, &attempted_path),
+            teaql_core::eval::EvalResult::NotLoaded { failed_node, attempted_path } => {
+                crate::trigger_logic_bug_panic(&self.root_desc, &failed_node, &attempted_path)
+            }
         }
     }
 
@@ -99,14 +82,11 @@ impl<'a> WorkItemListExpression<'a> {
     }
 
     pub fn unwrap(&self) -> &'a teaql_core::SmartList<crate::WorkItem> {
-        self.resolve()
-            .expect("List relation was legitimately null in database!")
+        self.resolve().expect("List relation was legitimately null in database!")
     }
 
     pub fn size(&self) -> crate::ValueExpression<'a, usize> {
-        let next = self.result.clone().and_then("size", |list| {
-            teaql_core::eval::EvalResult::Value(list.len())
-        });
+        let next = self.result.clone().and_then("size", |list| teaql_core::eval::EvalResult::Value(list.len()));
         crate::ValueExpression::new(next, self.root_desc.clone())
     }
 
