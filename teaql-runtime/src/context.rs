@@ -1810,7 +1810,12 @@ fn canonical_sql_trace_path(
         SqlLogOperation::Delete => "delete",
         SqlLogOperation::Recover => "recover",
     };
-    let mut path = vec![TraceNode::typed(TraceKind::Operation, entity.clone(), None, family)];
+    let mut path = vec![TraceNode::typed(
+        TraceKind::Operation,
+        entity.clone(),
+        None,
+        family,
+    )];
     path.push(TraceNode::typed(
         if operation.is_select() {
             TraceKind::Request

@@ -1333,15 +1333,17 @@ where
                     let traced = self
                         .scoped_data_service_internal(root_entity)
                         .with_trace_context(root_trace);
-                    traced.hydrate_compact_flat_plans_internal(&rows, query_plans, &root, &mut graph)
+                    traced
+                        .hydrate_compact_flat_plans_internal(&rows, query_plans, &root, &mut graph)
                         .await?;
-                    traced.hydrate_compact_flat_plans_internal(
-                        &rows,
-                        behavior_plans,
-                        &root,
-                        &mut graph,
-                    )
-                    .await?;
+                    traced
+                        .hydrate_compact_flat_plans_internal(
+                            &rows,
+                            behavior_plans,
+                            &root,
+                            &mut graph,
+                        )
+                        .await?;
                     root.freeze_graph(graph).map_err(|_| {
                         DataServiceError::Entity(teaql_core::EntityError::new(
                             T::ENTITY_NAME,
@@ -1368,9 +1370,11 @@ where
                 let traced = self
                     .scoped_data_service_internal(root_query.entity.clone())
                     .with_trace_context(root_query.trace_chain.clone());
-                traced.hydrate_flat_plans_internal(&mut rows, &query_plans, &root, &mut graph)
+                traced
+                    .hydrate_flat_plans_internal(&mut rows, &query_plans, &root, &mut graph)
                     .await?;
-                traced.hydrate_flat_plans_internal(&mut rows, &behavior_plans, &root, &mut graph)
+                traced
+                    .hydrate_flat_plans_internal(&mut rows, &behavior_plans, &root, &mut graph)
                     .await?;
                 root.freeze_graph(graph).map_err(|_| {
                     DataServiceError::Entity(teaql_core::EntityError::new(
