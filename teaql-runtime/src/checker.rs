@@ -256,16 +256,24 @@ pub struct CheckResult {
     pub source_instance_path: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct WireCheckResult<'a> {
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireCheckResult {
     pub rule_id: String,
-    pub entity_type: Option<&'a str>,
-    pub location: &'a [LocationSegment],
+    pub entity_type: Option<String>,
+    pub location: Vec<WireLocationSegment>,
     pub instance_path: String,
-    pub source_instance_path: Option<&'a str>,
-    pub input_value: Option<&'a Value>,
-    pub system_value: Option<&'a Value>,
-    pub message: Option<&'a str>,
+    pub source_instance_path: Option<String>,
+    pub input_value: Option<serde_json::Value>,
+    pub system_value: Option<serde_json::Value>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum WireLocationSegment {
+    Property { name: String },
+    Index { index: usize },
 }
 
 impl CheckResult {
@@ -334,16 +342,26 @@ impl CheckResult {
         self
     }
 
-    pub fn to_wire(&self, profile: JsonFieldNamingProfile) -> WireCheckResult<'_> {
+    pub fn to_wire(&self, profile: JsonFieldNamingProfile) -> WireCheckResult {
         WireCheckResult {
             rule_id: self.rule.wire_id().to_owned(),
-            entity_type: self.entity_type.as_deref(),
-            location: &self.location.segments,
+            entity_type: self.entity_type.clone(),
+            location: self
+                .location
+                .segments
+                .iter()
+                .map(|segment| match segment {
+                    LocationSegment::Member(name) => WireLocationSegment::Property {
+                        name: name.clone(),
+                    },
+                    LocationSegment::Index(index) => WireLocationSegment::Index { index: *index },
+                })
+                .collect(),
             instance_path: self.location.instance_path_with(profile),
-            source_instance_path: self.source_instance_path.as_deref(),
-            input_value: self.input_value.as_ref(),
-            system_value: self.system_value.as_ref(),
-            message: self.message.as_deref(),
+            source_instance_path: self.source_instance_path.clone(),
+            input_value: self.input_value.as_ref().map(Value::to_json_value),
+            system_value: self.system_value.as_ref().map(Value::to_json_value),
+            message: self.message.clone(),
         }
     }
 }
@@ -650,9 +668,17 @@ mod tests {
             .with_source_instance_path("/user_url");
         let wire = result.to_wire(JsonFieldNamingProfile::CamelCase);
         assert_eq!(wire.rule_id, "required");
-        assert_eq!(wire.entity_type, Some("customer_account"));
+        assert_eq!(wire.entity_type.as_deref(), Some("customer_account"));
         assert_eq!(wire.instance_path, "/userUrl");
-        assert_eq!(wire.source_instance_path, Some("/user_url"));
+        assert_eq!(wire.source_instance_path.as_deref(), Some("/user_url"));
+
+        let json = serde_json::to_value(&wire).expect("wire result must serialize");
+        assert_eq!(json["ruleId"], "required");
+        assert_eq!(json["entityType"], "customer_account");
+        assert_eq!(json["location"][0]["kind"], "property");
+        assert_eq!(json["location"][0]["name"], "user_url");
+        assert_eq!(json["instancePath"], "/userUrl");
+        assert_eq!(json["sourceInstancePath"], "/user_url");
     }
 
     #[test]

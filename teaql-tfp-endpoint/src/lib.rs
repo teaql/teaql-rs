@@ -142,7 +142,9 @@ pub fn retain_submitted_paths(
 ) {
     for result in results {
         let wire = result.to_wire(teaql_runtime::JsonFieldNamingProfile::SnakeCase);
-        let Some(teaql_runtime::LocationSegment::Member(canonical)) = wire.location.first() else {
+        let Some(teaql_runtime::WireLocationSegment::Property { name: canonical }) =
+            wire.location.first()
+        else {
             continue;
         };
         if let Some(path) = normalized.source_instance_paths.get(canonical) {
