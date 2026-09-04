@@ -179,6 +179,7 @@ fn trusted() -> TrustedQueryContext {
                 "Recover".into(),
             ]),
         )]),
+        wire_metadata: BTreeMap::new(),
         max_page_size: 100,
     }
 }

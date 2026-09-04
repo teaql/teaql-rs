@@ -23,7 +23,121 @@ pub struct TrustedQueryContext {
     pub writable_field_mappings:
         std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
     pub allowed_actions: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    /// Generated serializer-independent field metadata, keyed by entity name.
+    pub wire_metadata: std::collections::BTreeMap<String, WireEntityMetadata>,
     pub max_page_size: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WireEntityMetadata {
+    pub canonical_to_wire: std::collections::BTreeMap<String, String>,
+    accepted_to_canonical: std::collections::BTreeMap<String, String>,
+}
+
+impl WireEntityMetadata {
+    pub fn new(
+        canonical_to_wire: std::collections::BTreeMap<String, String>,
+        aliases: std::collections::BTreeMap<String, String>,
+    ) -> Result<Self, String> {
+        let mut accepted = std::collections::BTreeMap::new();
+        for (canonical, wire) in &canonical_to_wire {
+            register_wire_name(&mut accepted, canonical, canonical)?;
+            register_wire_name(&mut accepted, wire, canonical)?;
+        }
+        for (alias, canonical) in aliases {
+            if !canonical_to_wire.contains_key(&canonical) {
+                return Err(format!("Unknown canonical field for alias: {canonical}"));
+            }
+            register_wire_name(&mut accepted, &alias, &canonical)?;
+        }
+        Ok(Self {
+            canonical_to_wire,
+            accepted_to_canonical: accepted,
+        })
+    }
+
+    pub fn canonical_field(&self, submitted: &str) -> Option<&str> {
+        self.accepted_to_canonical
+            .get(submitted)
+            .map(String::as_str)
+    }
+
+    fn accepted_policy_map(
+        &self,
+        canonical_policy: &std::collections::BTreeMap<String, String>,
+    ) -> std::collections::BTreeMap<String, String> {
+        self.accepted_to_canonical
+            .iter()
+            .filter_map(|(accepted, canonical)| {
+                canonical_policy
+                    .get(canonical)
+                    .map(|internal| (accepted.clone(), internal.clone()))
+            })
+            .collect()
+    }
+}
+
+fn register_wire_name(
+    accepted: &mut std::collections::BTreeMap<String, String>,
+    name: &str,
+    canonical: &str,
+) -> Result<(), String> {
+    if let Some(previous) = accepted.insert(name.to_owned(), canonical.to_owned())
+        && previous != canonical
+    {
+        return Err(format!("Wire field alias is ambiguous: {name}"));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NormalizedWireObject {
+    pub values: serde_json::Map<String, JsonValue>,
+    pub source_instance_paths: std::collections::BTreeMap<String, String>,
+}
+
+pub fn normalize_wire_object(
+    submitted: &serde_json::Map<String, JsonValue>,
+    metadata: &WireEntityMetadata,
+) -> Result<NormalizedWireObject, TfpEndpointError> {
+    let mut values = serde_json::Map::new();
+    let mut paths = std::collections::BTreeMap::new();
+    for (name, value) in submitted {
+        let canonical = metadata.canonical_field(name).ok_or_else(|| {
+            TfpEndpointError::WireInput(format!("Unknown field at /{}", escape_pointer(name)))
+        })?;
+        if values.contains_key(canonical) {
+            return Err(TfpEndpointError::WireCollision(format!(
+                "Multiple submitted fields resolve to {canonical}"
+            )));
+        }
+        values.insert(canonical.to_owned(), value.clone());
+        paths.insert(canonical.to_owned(), format!("/{}", escape_pointer(name)));
+    }
+    Ok(NormalizedWireObject {
+        values,
+        source_instance_paths: paths,
+    })
+}
+
+/// Adds the submitted alias path without changing the canonical KSML checker location.
+pub fn retain_submitted_paths(
+    results: &mut [teaql_runtime::CheckResult],
+    normalized: &NormalizedWireObject,
+) {
+    for result in results {
+        let wire = result.to_wire(teaql_runtime::JsonFieldNamingProfile::SnakeCase);
+        let Some(teaql_runtime::LocationSegment::Member(canonical)) = wire.location.first() else {
+            continue;
+        };
+        if let Some(path) = normalized.source_instance_paths.get(canonical) {
+            result.source_instance_path = Some(path.clone());
+        }
+    }
+}
+
+fn escape_pointer(value: &str) -> String {
+    value.replace('~', "~0").replace('/', "~1")
 }
 
 #[derive(Error, Debug)]
@@ -34,6 +148,10 @@ pub enum TfpEndpointError {
     TranslationError(String),
     #[error("Data service error: {0}")]
     ExecutionError(String),
+    #[error("Invalid wire input: {0}")]
+    WireInput(String),
+    #[error("Conflicting wire input: {0}")]
+    WireCollision(String),
 }
 
 impl TfpEndpointError {
@@ -70,6 +188,8 @@ impl TfpEndpointError {
             }
             Self::TranslationError(_) => "TFP_POLICY_VIOLATION",
             Self::ExecutionError(_) => "TFP_EXECUTION_FAILED",
+            Self::WireInput(_) => "WIRE_UNKNOWN_FIELD",
+            Self::WireCollision(_) => "WIRE_FIELD_COLLISION",
         }
     }
 }
@@ -165,15 +285,21 @@ where
             serde_json::from_value(json_payload).map_err(TfpEndpointError::ParseError)?;
 
         validate_policy(trusted, &tfp_query).map_err(TfpEndpointError::TranslationError)?;
-        let mappings = trusted
-            .field_mappings
+        let configured_mappings =
+            trusted
+                .field_mappings
+                .get(&tfp_query.entity)
+                .ok_or_else(|| {
+                    TfpEndpointError::TranslationError(format!(
+                        "No field policy for entity: {}",
+                        tfp_query.entity
+                    ))
+                })?;
+        let generated_mappings = trusted
+            .wire_metadata
             .get(&tfp_query.entity)
-            .ok_or_else(|| {
-                TfpEndpointError::TranslationError(format!(
-                    "No field policy for entity: {}",
-                    tfp_query.entity
-                ))
-            })?;
+            .map(|metadata| metadata.accepted_policy_map(configured_mappings));
+        let mappings = generated_mappings.as_ref().unwrap_or(configured_mappings);
         prepare_facets(trusted, &mut tfp_query).map_err(TfpEndpointError::TranslationError)?;
         tfp_query
             .map_fields(mappings)
@@ -420,6 +546,13 @@ where
                     tfp_mutation.entity
                 ))
             })?;
+        if let Some(metadata) = trusted.wire_metadata.get(&tfp_mutation.entity) {
+            let object = tfp_mutation.payload.as_object().ok_or_else(|| {
+                TfpEndpointError::TranslationError("Mutation payload must be an object".into())
+            })?;
+            tfp_mutation.payload =
+                JsonValue::Object(normalize_wire_object(object, metadata)?.values);
+        }
         tfp_mutation
             .map_writable_fields(mappings)
             .map_err(TfpEndpointError::TranslationError)?;
@@ -559,10 +692,7 @@ fn validate_policy(trusted: &TrustedQueryContext, query: &TfpSelectQuery) -> Res
     if query.limit_value.unwrap_or(0) > trusted.max_page_size {
         return Err("Page size exceeds federation policy".into());
     }
-    let allowed = trusted
-        .field_mappings
-        .get(&query.entity)
-        .ok_or_else(|| format!("No field policy for entity: {}", query.entity))?;
+    let allowed = effective_field_mappings(trusted, &query.entity, false)?;
     for field in query
         .order_items
         .iter()
@@ -584,10 +714,7 @@ fn prepare_facets(trusted: &TrustedQueryContext, query: &mut TfpSelectQuery) -> 
     if query.facets.len() > 10 {
         return Err("A TFP query may contain at most 10 facets".into());
     }
-    let outer_fields = trusted
-        .field_mappings
-        .get(&query.entity)
-        .ok_or_else(|| format!("No field policy for entity: {}", query.entity))?;
+    let outer_fields = effective_field_mappings(trusted, &query.entity, false)?;
     let mut names = std::collections::BTreeSet::new();
     for facet in &mut query.facets {
         if facet.facet_name.is_empty()
@@ -615,10 +742,7 @@ fn prepare_facets(trusted: &TrustedQueryContext, query: &mut TfpSelectQuery) -> 
             return Err("Nested facets are not supported by TFP".into());
         }
         validate_policy(trusted, &facet.query)?;
-        let nested_fields = trusted
-            .field_mappings
-            .get(&facet.query.entity)
-            .ok_or_else(|| format!("No field policy for entity: {}", facet.query.entity))?;
+        let nested_fields = effective_field_mappings(trusted, &facet.query.entity, false)?;
         if facet.query.aggregate_items.is_empty()
             || facet
                 .query
@@ -645,9 +769,27 @@ fn prepare_facets(trusted: &TrustedQueryContext, query: &mut TfpSelectQuery) -> 
         {
             return Err("Facet query commentText and purposeText are required".into());
         }
-        facet.query.map_fields(nested_fields)?;
+        facet.query.map_fields(&nested_fields)?;
     }
     Ok(())
+}
+
+fn effective_field_mappings(
+    trusted: &TrustedQueryContext,
+    entity: &str,
+    writable: bool,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let configured = if writable {
+        trusted.writable_field_mappings.get(entity)
+    } else {
+        trusted.field_mappings.get(entity)
+    }
+    .ok_or_else(|| format!("No field policy for entity: {entity}"))?;
+    Ok(trusted
+        .wire_metadata
+        .get(entity)
+        .map(|metadata| metadata.accepted_policy_map(configured))
+        .unwrap_or_else(|| configured.clone()))
 }
 
 fn validate_mutation_policy(
@@ -852,6 +994,7 @@ mod tests {
                     "Recover".into(),
                 ]),
             )]),
+            wire_metadata: BTreeMap::new(),
             max_page_size: 100,
         }
     }
@@ -1064,5 +1207,49 @@ mod tests {
         ] {
             assert!(endpoint.handle_mutation(&trusted(), payload).await.is_err());
         }
+    }
+
+    #[test]
+    fn wire_metadata_matches_typescript_fixture_and_rejects_collisions() {
+        let metadata = WireEntityMetadata::new(
+            BTreeMap::from([
+                ("user_url".into(), "userUrl".into()),
+                ("school_type".into(), "schoolType".into()),
+            ]),
+            BTreeMap::from([("legacyUrl".into(), "user_url".into())]),
+        )
+        .unwrap();
+        let submitted = json!({"legacyUrl":"https://teaql.io","schoolType":1001});
+        let normalized = normalize_wire_object(submitted.as_object().unwrap(), &metadata).unwrap();
+        assert_eq!(normalized.values["user_url"], json!("https://teaql.io"));
+        assert_eq!(normalized.values["school_type"], json!(1001));
+        assert_eq!(normalized.source_instance_paths["user_url"], "/legacyUrl");
+        assert_eq!(
+            normalized.source_instance_paths["school_type"],
+            "/schoolType"
+        );
+        let mut violations = vec![teaql_runtime::CheckResult::required(
+            teaql_runtime::ObjectLocation::hash_root("user_url"),
+        )];
+        retain_submitted_paths(&mut violations, &normalized);
+        assert_eq!(
+            violations[0].source_instance_path.as_deref(),
+            Some("/legacyUrl")
+        );
+
+        let collision = json!({"userUrl":"a","legacyUrl":"a"});
+        assert_eq!(
+            normalize_wire_object(collision.as_object().unwrap(), &metadata)
+                .unwrap_err()
+                .code(),
+            "WIRE_FIELD_COLLISION"
+        );
+        let unknown = json!({"unknown":1});
+        assert_eq!(
+            normalize_wire_object(unknown.as_object().unwrap(), &metadata)
+                .unwrap_err()
+                .code(),
+            "WIRE_UNKNOWN_FIELD"
+        );
     }
 }
