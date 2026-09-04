@@ -77,6 +77,21 @@ impl WireEntityMetadata {
     }
 }
 
+/// Converts dependency-free metadata emitted by a generated runtime module.
+pub fn wire_metadata_from_generated(
+    mappings: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    mut aliases: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+) -> Result<std::collections::BTreeMap<String, WireEntityMetadata>, String> {
+    mappings
+        .into_iter()
+        .map(|(entity, fields)| {
+            let metadata =
+                WireEntityMetadata::new(fields, aliases.remove(&entity).unwrap_or_default())?;
+            Ok((entity, metadata))
+        })
+        .collect()
+}
+
 fn register_wire_name(
     accepted: &mut std::collections::BTreeMap<String, String>,
     name: &str,
