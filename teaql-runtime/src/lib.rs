@@ -3723,6 +3723,5 @@ pub use checker::{
     CHECK_OBJECT_STATUS_FIELD, CheckObjectStatus, CheckResult, CheckResults, CheckRule, Checker,
     CheckerRegistry, InMemoryCheckerRegistry, JsonFieldNamingProfile, LocationSegment,
     ObjectLocation, TypedChecker, TypedEntityChecker, WireCheckResult, WireLocationSegment,
-    clear_entity_status,
-    mark_entity_status,
+    clear_entity_status, mark_entity_status,
 };

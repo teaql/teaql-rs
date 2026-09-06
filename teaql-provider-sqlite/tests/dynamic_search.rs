@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 use teaql_core::{
-    dynamic_search::*, DataType, EntityDescriptor, Expr, InsertCommand, OrderBy,
-    PropertyDescriptor, SelectQuery, TraceKind, TraceNode, Value,
+    DataType, EntityDescriptor, Expr, InsertCommand, OrderBy, PropertyDescriptor, SelectQuery,
+    TraceKind, TraceNode, Value, dynamic_search::*,
 };
 use teaql_data_service::{QueryExecutor, QueryRequest, SchemaProvider};
 use teaql_provider_sqlite::{SqliteDialect, SqliteMutationExecutor};

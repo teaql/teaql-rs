@@ -351,9 +351,9 @@ impl CheckResult {
                 .segments
                 .iter()
                 .map(|segment| match segment {
-                    LocationSegment::Member(name) => WireLocationSegment::Property {
-                        name: name.clone(),
-                    },
+                    LocationSegment::Member(name) => {
+                        WireLocationSegment::Property { name: name.clone() }
+                    }
                     LocationSegment::Index(index) => WireLocationSegment::Index { index: *index },
                 })
                 .collect(),

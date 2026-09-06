@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use teaql_core::{dynamic_search::*, Expr, OrderBy, SelectQuery};
+use teaql_core::{Expr, OrderBy, SelectQuery, dynamic_search::*};
 
 fn models() -> SearchModels {
     BTreeMap::from([
@@ -49,9 +49,11 @@ fn unknown_complete_clauses_warn_without_values() {
     let json = serde_json::to_string(&warnings).unwrap();
     assert!(!json.contains("secret"));
     assert!(json.contains("fieldPath"));
-    assert!(warnings
-        .iter()
-        .all(|w| w.code == "DYNAMIC_SEARCH_UNKNOWN_FIELD"));
+    assert!(
+        warnings
+            .iter()
+            .all(|w| w.code == "DYNAMIC_SEARCH_UNKNOWN_FIELD")
+    );
 }
 #[test]
 fn invalid_input_remains_fatal() {
@@ -101,26 +103,30 @@ fn dates_booleans_and_exact_decimal_strings_are_retained() {
 }
 #[test]
 fn limits_and_missing_relation_metadata_fail() {
-    assert!(normalize_dynamic_search(
-        r#"{"filter":{"name":"x","gone":1}}"#,
-        "School",
-        &models(),
-        1,
-        None
-    )
-    .is_err());
+    assert!(
+        normalize_dynamic_search(
+            r#"{"filter":{"name":"x","gone":1}}"#,
+            "School",
+            &models(),
+            1,
+            None
+        )
+        .is_err()
+    );
     let source = serde_json::json!({"filter":{"id":{"$in":vec![1;1001]}}}).to_string();
     assert!(normalize_dynamic_search(&source, "School", &models(), 100, None).is_err());
     let mut broken = models();
     broken.remove("Platform");
-    assert!(normalize_dynamic_search(
-        r#"{"filter":{"platform.name":"x"}}"#,
-        "School",
-        &broken,
-        100,
-        None
-    )
-    .is_err());
+    assert!(
+        normalize_dynamic_search(
+            r#"{"filter":{"platform.name":"x"}}"#,
+            "School",
+            &broken,
+            100,
+            None
+        )
+        .is_err()
+    );
 }
 #[test]
 fn composition_preserves_the_original_scope_and_limits() {
@@ -155,22 +161,26 @@ fn composition_preserves_the_original_scope_and_limits() {
 #[test]
 fn late_failures_do_not_emit_warnings() {
     let mut warnings = vec![];
-    assert!(normalize_dynamic_search(
-        r#"{"filter":{"gone":1,"id":"bad"}}"#,
-        "School",
-        &models(),
-        100,
-        Some(&mut |w| warnings.push(w.clone()))
-    )
-    .is_err());
-    assert!(merge_dynamic_search(
-        &SelectQuery::new("School"),
-        r#"{"filter":{"gone":1,"name":"School"}}"#,
-        &models(),
-        |_| Err(DynamicSearchError("binding failure")),
-        |o| Ok(OrderBy::asc(&o.field_path)),
-        Some(&mut |w| warnings.push(w.clone()))
-    )
-    .is_err());
+    assert!(
+        normalize_dynamic_search(
+            r#"{"filter":{"gone":1,"id":"bad"}}"#,
+            "School",
+            &models(),
+            100,
+            Some(&mut |w| warnings.push(w.clone()))
+        )
+        .is_err()
+    );
+    assert!(
+        merge_dynamic_search(
+            &SelectQuery::new("School"),
+            r#"{"filter":{"gone":1,"name":"School"}}"#,
+            &models(),
+            |_| Err(DynamicSearchError("binding failure")),
+            |o| Ok(OrderBy::asc(&o.field_path)),
+            Some(&mut |w| warnings.push(w.clone()))
+        )
+        .is_err()
+    );
     assert!(warnings.is_empty());
 }
