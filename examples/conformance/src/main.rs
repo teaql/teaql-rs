@@ -1,13 +1,17 @@
 use runtime_example_conformance_service_core::teaql_core::Entity as _;
+use runtime_example_conformance_service_core::teaql_core::{CompactRow, Value};
 use runtime_example_conformance_service_core::{
     request_support::AuditedSave as _, service_runtime, ServiceRuntimeConfig, E, Q,
 };
 use std::path::PathBuf;
+use std::sync::Arc;
+use teaql_runtime::{EntityKey, EntityRuntimeState};
 
 const PURPOSE: &str = "Run the retained Rust minimum conformance example";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    verify_same_id_version_isolation()?;
     let database = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".local/conformance.sqlite");
     if database.exists() {
         std::fs::remove_file(&database)?;
@@ -166,7 +170,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Deleted row remains visible to ordinary Q API",
     )?;
     println!("PASS Delete (default Q excludes deleted rows)");
-    println!("PASS Rust minimum runtime conformance: 7/7");
+    println!("PASS Rust minimum runtime conformance: 8/8");
+    Ok(())
+}
+
+fn verify_same_id_version_isolation() -> Result<(), Box<dyn std::error::Error>> {
+    let mut order = EntityRuntimeState::default();
+    order.set_original_compact_row(
+        "Order",
+        CompactRow::new(
+            Arc::from(["id".to_owned(), "version".to_owned()]),
+            vec![Value::U64(1), Value::I64(3)],
+        ),
+    );
+    let mut execution = EntityRuntimeState::default();
+    execution.set_original_compact_row(
+        "InferenceExecution",
+        CompactRow::new(
+            Arc::from(["id".to_owned(), "version".to_owned()]),
+            vec![Value::U64(1), Value::I64(9)],
+        ),
+    );
+    let order_key = EntityKey::new_static("Order", 1_u64);
+    let execution_key = EntityKey::new_static("InferenceExecution", 1_u64);
+    execution.set(
+        execution_key.clone(),
+        "execution_status",
+        Value::Text("COMPLETED".to_owned()),
+    );
+    order.adopt_mutations_from(&execution);
+    require(
+        order.get_original_version(&order_key) == Some(3),
+        "Order#1 version was overwritten",
+    )?;
+    require(
+        order.get_original_version(&execution_key) == Some(9),
+        "InferenceExecution#1 version was resolved through Order#1",
+    )?;
+    println!("PASS Mutation ledger identity (same ID, different entity types keep versions 3/9)");
     Ok(())
 }
 
