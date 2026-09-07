@@ -3721,6 +3721,7 @@ mod tests {
 
 pub use checker::{
     CHECK_OBJECT_STATUS_FIELD, CheckObjectStatus, CheckResult, CheckResults, CheckRule, Checker,
-    CheckerRegistry, InMemoryCheckerRegistry, LocationSegment, ObjectLocation, TypedChecker,
-    TypedEntityChecker, clear_entity_status, mark_entity_status,
+    CheckerRegistry, InMemoryCheckerRegistry, JsonFieldNamingProfile, LocationSegment,
+    ObjectLocation, TypedChecker, TypedEntityChecker, WireCheckResult, WireLocationSegment,
+    clear_entity_status, mark_entity_status,
 };

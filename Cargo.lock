@@ -3535,6 +3535,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "rust_decimal",
+ "serde",
  "serde_json",
  "teaql-core",
  "teaql-data-service",

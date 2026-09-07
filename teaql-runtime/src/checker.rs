@@ -69,10 +69,59 @@ pub enum CheckRule {
     ContextRootMismatch,
 }
 
+impl CheckRule {
+    pub fn wire_id(self) -> &'static str {
+        match self {
+            Self::Required => "required",
+            Self::InvalidType => "invalid_type",
+            Self::Min => "min",
+            Self::Max => "max",
+            Self::MinStringLength => "min_string_length",
+            Self::MaxStringLength => "max_string_length",
+            Self::ContextRootMissing => "context_root_missing",
+            Self::ContextRootMismatch => "context_root_mismatch",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocationSegment {
     Member(String),
     Index(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum JsonFieldNamingProfile {
+    #[default]
+    CamelCase,
+    SnakeCase,
+    PascalCase,
+}
+
+impl JsonFieldNamingProfile {
+    pub fn from_model_value(value: &str) -> Result<Self, String> {
+        match value {
+            "" | "camelCase" => Ok(Self::CamelCase),
+            "snake_case" => Ok(Self::SnakeCase),
+            "PascalCase" => Ok(Self::PascalCase),
+            other => Err(format!("unsupported json_field_naming: {other}")),
+        }
+    }
+
+    fn render(self, name: &str) -> String {
+        match self {
+            Self::SnakeCase => name.to_owned(),
+            Self::CamelCase => lower_camel(name),
+            Self::PascalCase => {
+                let camel = lower_camel(name);
+                let mut chars = camel.chars();
+                chars
+                    .next()
+                    .map(|first| first.to_uppercase().chain(chars).collect())
+                    .unwrap_or_default()
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -123,11 +172,15 @@ impl ObjectLocation {
 
     /// RFC 6901 JSON pointer using TeaQL's default lower-camel wire policy.
     pub fn instance_path(&self) -> String {
+        self.instance_path_with(JsonFieldNamingProfile::CamelCase)
+    }
+
+    pub fn instance_path_with(&self, profile: JsonFieldNamingProfile) -> String {
         self.segments
             .iter()
             .map(|segment| match segment {
                 LocationSegment::Member(member) => {
-                    format!("/{}", escape_json_pointer(&lower_camel(member)))
+                    format!("/{}", escape_json_pointer(&profile.render(member)))
                 }
                 LocationSegment::Index(index) => format!("/{index}"),
             })
@@ -199,6 +252,28 @@ pub struct CheckResult {
     pub input_value: Option<Value>,
     pub system_value: Option<Value>,
     pub message: Option<String>,
+    pub entity_type: Option<String>,
+    pub source_instance_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireCheckResult {
+    pub rule_id: String,
+    pub entity_type: Option<String>,
+    pub location: Vec<WireLocationSegment>,
+    pub instance_path: String,
+    pub source_instance_path: Option<String>,
+    pub input_value: Option<serde_json::Value>,
+    pub system_value: Option<serde_json::Value>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum WireLocationSegment {
+    Property { name: String },
+    Index { index: usize },
 }
 
 impl CheckResult {
@@ -209,6 +284,8 @@ impl CheckResult {
             input_value: None,
             system_value: None,
             message: None,
+            entity_type: None,
+            source_instance_path: None,
         }
     }
 
@@ -253,6 +330,39 @@ impl CheckResult {
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
         self.message = Some(message.into());
         self
+    }
+
+    pub fn with_entity_type(mut self, entity_type: impl Into<String>) -> Self {
+        self.entity_type = Some(entity_type.into());
+        self
+    }
+
+    pub fn with_source_instance_path(mut self, path: impl Into<String>) -> Self {
+        self.source_instance_path = Some(path.into());
+        self
+    }
+
+    pub fn to_wire(&self, profile: JsonFieldNamingProfile) -> WireCheckResult {
+        WireCheckResult {
+            rule_id: self.rule.wire_id().to_owned(),
+            entity_type: self.entity_type.clone(),
+            location: self
+                .location
+                .segments
+                .iter()
+                .map(|segment| match segment {
+                    LocationSegment::Member(name) => {
+                        WireLocationSegment::Property { name: name.clone() }
+                    }
+                    LocationSegment::Index(index) => WireLocationSegment::Index { index: *index },
+                })
+                .collect(),
+            instance_path: self.location.instance_path_with(profile),
+            source_instance_path: self.source_instance_path.clone(),
+            input_value: self.input_value.as_ref().map(Value::to_json_value),
+            system_value: self.system_value.as_ref().map(Value::to_json_value),
+            message: self.message.clone(),
+        }
     }
 }
 
@@ -540,7 +650,35 @@ mod tests {
         assert_eq!(location.model_path(), "order_items[2].user_url");
         assert_eq!(location.native_path(), "order_items[2].user_url");
         assert_eq!(location.instance_path(), "/orderItems/2/userUrl");
+        assert_eq!(
+            location.instance_path_with(JsonFieldNamingProfile::SnakeCase),
+            "/order_items/2/user_url"
+        );
+        assert_eq!(
+            location.instance_path_with(JsonFieldNamingProfile::PascalCase),
+            "/OrderItems/2/UserUrl"
+        );
         assert_eq!(location.to_string(), "order_items[2].user_url");
+    }
+
+    #[test]
+    fn checker_wire_projection_preserves_submitted_alias() {
+        let result = CheckResult::required(ObjectLocation::hash_root("user_url"))
+            .with_entity_type("customer_account")
+            .with_source_instance_path("/user_url");
+        let wire = result.to_wire(JsonFieldNamingProfile::CamelCase);
+        assert_eq!(wire.rule_id, "required");
+        assert_eq!(wire.entity_type.as_deref(), Some("customer_account"));
+        assert_eq!(wire.instance_path, "/userUrl");
+        assert_eq!(wire.source_instance_path.as_deref(), Some("/user_url"));
+
+        let json = serde_json::to_value(&wire).expect("wire result must serialize");
+        assert_eq!(json["ruleId"], "required");
+        assert_eq!(json["entityType"], "customer_account");
+        assert_eq!(json["location"][0]["kind"], "property");
+        assert_eq!(json["location"][0]["name"], "user_url");
+        assert_eq!(json["instancePath"], "/userUrl");
+        assert_eq!(json["sourceInstancePath"], "/user_url");
     }
 
     #[test]

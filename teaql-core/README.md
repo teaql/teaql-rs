@@ -29,7 +29,33 @@ let query = SelectQuery::new("Merchant")
 Use this crate when you need TeaQL metadata, query AST, entity traits, or
 in-memory value conversion without choosing a SQL dialect or runtime executor.
 
-## Workspace
+## Local dynamic-search schema drift
+
+`dynamic_search::normalize_dynamic_search` accepts a local UI-search JSON
+envelope (`filter`, `orderBy`) and application-owned `SearchModels`. Unknown
+fields and relation paths discard the complete clause and return value-free
+`DYNAMIC_SEARCH_UNKNOWN_FIELD` warnings. With no warning callback, warnings are
+logged as JSON to stderr. Malformed JSON, invalid operators/types and trusted
+context controls remain fatal; TFP validation is unchanged.
+
+`dynamic_search::merge_dynamic_search` compiles validated clauses through trusted
+native `Expr`/`OrderBy` bindings and clones the existing scoped query. Its filters
+are ANDed with the original predicate, ordering is appended, and hard limits,
+pagination and trace intent are retained. Bindings must preserve authorization
+inside related queries too. Validation or binding failure emits no partial
+warnings and never mutates the original query.
+
+Metadata types: `string`, `integer`, `number`, `boolean`, `date` (`yyyy-MM-dd`),
+`timestamp` (integer epoch milliseconds), and `decimal` (use strings for exact
+digits). Operators: `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`, `$notIn`,
+and string `$contains`. Merge uses a 100-clause limit; normalization accepts an
+explicit trusted clause limit. Both bound paths to 16 segments and IN lists to
+1,000 values. Automatic generated bindings are not provided by this adapter.
+
+Tests: `teaql-core/tests/dynamic_search.rs` and
+`teaql-provider-sqlite/tests/dynamic_search.rs`.
+
+## Workspace links
 
 This crate is part of the `teaql-rs` workspace:
 
