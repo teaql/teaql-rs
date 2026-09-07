@@ -1,5 +1,5 @@
 use quote::{format_ident, quote};
-use syn::{parse_quote, Data, DeriveInput, Fields, ItemStruct};
+use syn::{Data, DeriveInput, Fields, ItemStruct, parse_quote};
 
 use crate::attr::{parse_container_attrs, parse_field_attrs};
 use crate::mapping::{
