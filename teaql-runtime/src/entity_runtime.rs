@@ -403,7 +403,13 @@ pub struct EntityRuntimeState {
     // still materialize exactly one graph-owned ledger.
     inner: Arc<OnceLock<Arc<Mutex<EntityMutationLedger>>>>,
     graph: EntityGraphReference,
-    loaded_snapshot: Option<teaql_core::CompactRow>,
+    loaded_snapshot: Option<LoadedEntitySnapshot>,
+}
+
+#[derive(Debug, Clone)]
+struct LoadedEntitySnapshot {
+    entity: Arc<str>,
+    row: teaql_core::CompactRow,
 }
 
 #[derive(Debug)]
@@ -585,6 +591,11 @@ impl EntityRuntimeState {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone();
+        let loaded_version = source.loaded_snapshot.as_ref().and_then(|loaded| {
+            let id = loaded.row.get("id")?.clone();
+            let version = loaded.row.get("version")?.try_i64()?;
+            Some((EntityKey::new(loaded.entity.as_ref(), id), version))
+        });
         self.write_context(|target| {
             for change_set in snapshot.change_sets.stack {
                 for (key, values) in change_set.changes {
@@ -598,6 +609,9 @@ impl EntityRuntimeState {
             target
                 .original_versions
                 .merge_from(&snapshot.original_versions);
+            if let Some((key, version)) = loaded_version {
+                target.original_versions.insert(key, version);
+            }
             for (key, traces) in snapshot.trace_chains {
                 target.trace_chains.entry(key).or_default().extend(traces);
             }
@@ -831,14 +845,21 @@ impl EntityRuntimeState {
     }
 
     /// Store a shared-schema snapshot without allocating a mutation ledger.
-    pub fn set_original_compact_row(&mut self, row: teaql_core::CompactRow) {
-        self.loaded_snapshot = Some(row);
+    pub fn set_original_compact_row(
+        &mut self,
+        entity: impl Into<Arc<str>>,
+        row: teaql_core::CompactRow,
+    ) {
+        self.loaded_snapshot = Some(LoadedEntitySnapshot {
+            entity: entity.into(),
+            row,
+        });
     }
 
     /// Retrieve the original loaded entity snapshot.
     pub fn original_snapshot(&self) -> Option<EntitySnapshot> {
-        if let Some(row) = &self.loaded_snapshot {
-            return Some(EntitySnapshot::from(row.clone().into_map()));
+        if let Some(snapshot) = &self.loaded_snapshot {
+            return Some(EntitySnapshot::from(snapshot.row.clone().into_map()));
         }
         self.read_context(None, |context| {
             context
@@ -885,12 +906,16 @@ impl EntityRuntimeState {
     pub fn get_original_version(&self, key: &EntityKey) -> Option<i64> {
         self.read_context(None, |context| context.original_versions.get(key))
             .or_else(|| {
-                self.loaded_snapshot
-                    .as_ref()?
+                let snapshot = self.loaded_snapshot.as_ref()?;
+                if snapshot.entity.as_ref() != key.entity.as_ref() {
+                    return None;
+                }
+                snapshot
+                    .row
                     .get("id")?
                     .try_u64()
                     .filter(|id| Some(*id) == key.id.try_u64())?;
-                self.loaded_snapshot.as_ref()?.get("version")?.try_i64()
+                snapshot.row.get("version")?.try_i64()
             })
     }
 
@@ -921,10 +946,13 @@ mod lazy_root_tests {
     #[test]
     fn loaded_snapshot_does_not_allocate_ledger_until_mutation() {
         let mut root = EntityRuntimeState::default();
-        root.set_original_compact_row(teaql_core::CompactRow::new(
-            Arc::from(["id".to_owned(), "version".to_owned()]),
-            vec![Value::U64(7), Value::I64(3)],
-        ));
+        root.set_original_compact_row(
+            "Example",
+            teaql_core::CompactRow::new(
+                Arc::from(["id".to_owned(), "version".to_owned()]),
+                vec![Value::U64(7), Value::I64(3)],
+            ),
+        );
         let key = EntityKey::new_static("Example", 7_u64);
 
         assert!(!root.has_mutation_context());
@@ -934,6 +962,39 @@ mod lazy_root_tests {
 
         root.set(key, "name", Value::Text("updated".to_owned()));
         assert!(root.has_mutation_context());
+    }
+
+    #[test]
+    fn graph_composition_retains_version_for_same_id_across_entity_types() {
+        let mut parent = EntityRuntimeState::default();
+        parent.set_original_compact_row(
+            "Order",
+            teaql_core::CompactRow::new(
+                Arc::from(["id".to_owned(), "version".to_owned()]),
+                vec![Value::U64(1), Value::I64(1)],
+            ),
+        );
+        let mut execution = EntityRuntimeState::default();
+        execution.set_original_compact_row(
+            "InferenceExecution",
+            teaql_core::CompactRow::new(
+                Arc::from(["id".to_owned(), "version".to_owned()]),
+                vec![Value::U64(1), Value::I64(2)],
+            ),
+        );
+        let order_key = EntityKey::new_static("Order", 1_u64);
+        let execution_key = EntityKey::new_static("InferenceExecution", 1_u64);
+        execution.set(
+            execution_key.clone(),
+            "execution_status",
+            Value::Text("COMPLETED".to_owned()),
+        );
+
+        assert_eq!(parent.get_original_version(&execution_key), None);
+        parent.adopt_mutations_from(&execution);
+
+        assert_eq!(parent.get_original_version(&order_key), Some(1));
+        assert_eq!(parent.get_original_version(&execution_key), Some(2));
     }
 
     #[test]

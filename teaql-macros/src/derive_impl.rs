@@ -395,7 +395,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
 
     let set_original_compact_impl = if let Some(state_ident) = &runtime_state_field_ident {
         quote! {
-            entity.#state_ident.set_original_compact_row(record);
+            entity.#state_ident.set_original_compact_row(#entity_name, record);
         }
     } else {
         Default::default()
