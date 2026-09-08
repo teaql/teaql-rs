@@ -316,6 +316,13 @@ pub struct PgMutationExecutor {
     pool: Pool,
 }
 
+/// A transaction owns one checked-out pooled connection for its complete
+/// lifetime. Using SQL BEGIN/COMMIT avoids a self-referential wrapper around
+/// `tokio_postgres::Transaction` while preserving connection affinity.
+pub struct PgTransactionExecutor {
+    client: deadpool_postgres::Object,
+}
+
 impl SqlTransport for PgMutationExecutor {
     type Error = MutationExecutorError;
 
@@ -378,32 +385,73 @@ impl teaql_sql::StreamingSqlTransport for PgMutationExecutor {
     }
 }
 
-impl teaql_sql::SqlTransaction for PgMutationExecutor {
+impl SqlTransport for PgTransactionExecutor {
+    type Error = MutationExecutorError;
+
+    async fn fetch_all_compact_sql(
+        &self,
+        query: &CompiledQuery,
+    ) -> Result<Vec<teaql_core::CompactRow>, Self::Error> {
+        let mut args = PgArgs { values: Vec::new() };
+        for value in &query.params {
+            bind_pg(&mut args, value)?;
+        }
+        let statement = self.client.prepare_cached(&query.sql).await?;
+        let rows = self.client.query(&statement, &args.as_refs()).await?;
+        let columns: Arc<[String]> = statement
+            .columns()
+            .iter()
+            .map(|column| column.name().to_owned())
+            .collect::<Vec<_>>()
+            .into();
+        rows.iter()
+            .map(|row| {
+                Ok(teaql_core::CompactRow::new(
+                    columns.clone(),
+                    decode_pg_values(row)?,
+                ))
+            })
+            .collect()
+    }
+
+    async fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
+        let mut args = PgArgs { values: Vec::new() };
+        for value in &query.params {
+            bind_pg(&mut args, value)?;
+        }
+        let statement = self.client.prepare_cached(&query.sql).await?;
+        Ok(self.client.execute(&statement, &args.as_refs()).await?)
+    }
+}
+
+impl teaql_sql::SqlTransaction for PgTransactionExecutor {
     type Error = MutationExecutorError;
 
     async fn commit_sql(self) -> Result<(), Self::Error> {
-        Err(MutationExecutorError::Bind(
-            "Transactions not supported yet".to_string(),
-        ))
+        self.client.batch_execute("COMMIT").await?;
+        Ok(())
     }
 
     async fn rollback_sql(self) -> Result<(), Self::Error> {
-        Err(MutationExecutorError::Bind(
-            "Transactions not supported yet".to_string(),
-        ))
+        self.client.batch_execute("ROLLBACK").await?;
+        Ok(())
     }
 }
 
 impl teaql_sql::SqlTransactionTransport for PgMutationExecutor {
     type Tx<'a>
-        = Self
+        = PgTransactionExecutor
     where
         Self: 'a;
 
     async fn begin_sql(&self) -> Result<Self::Tx<'_>, Self::Error> {
-        Err(MutationExecutorError::Bind(
-            "Transactions not supported yet".to_string(),
-        ))
+        let client = self
+            .pool
+            .get()
+            .await
+            .map_err(|error| MutationExecutorError::Pool(error.to_string()))?;
+        client.batch_execute("BEGIN").await?;
+        Ok(PgTransactionExecutor { client })
     }
 }
 
@@ -774,7 +822,7 @@ mod streaming_tests {
     use super::*;
     use futures_util::StreamExt;
     use teaql_core::RelationDescriptor;
-    use teaql_sql::{SqlTransport, StreamingSqlTransport};
+    use teaql_sql::{SqlTransaction, SqlTransactionTransport, SqlTransport, StreamingSqlTransport};
 
     fn configured_pool(url: String) -> Pool {
         let mut config = deadpool_postgres::Config::new();
@@ -806,6 +854,60 @@ mod streaming_tests {
             sizes.push(chunk.unwrap().rows.len());
         }
         assert_eq!(sizes, vec![2, 2, 1]);
+    }
+
+    #[tokio::test]
+    async fn transaction_commit_and_rollback_use_one_connection_when_configured() {
+        let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let executor = PgMutationExecutor::new(configured_pool(url));
+        for sql in [
+            "DROP TABLE IF EXISTS teaql_transaction_runtime_fixture",
+            "CREATE TABLE teaql_transaction_runtime_fixture(id BIGINT PRIMARY KEY)",
+        ] {
+            executor
+                .execute_sql(&CompiledQuery {
+                    sql: sql.to_owned(),
+                    params: vec![],
+                    comment: None,
+                })
+                .await
+                .unwrap();
+        }
+
+        let rolled_back = executor.begin_sql().await.unwrap();
+        rolled_back
+            .execute_sql(&CompiledQuery {
+                sql: "INSERT INTO teaql_transaction_runtime_fixture(id) VALUES ($1)".to_owned(),
+                params: vec![Value::I64(1)],
+                comment: None,
+            })
+            .await
+            .unwrap();
+        rolled_back.rollback_sql().await.unwrap();
+
+        let committed = executor.begin_sql().await.unwrap();
+        committed
+            .execute_sql(&CompiledQuery {
+                sql: "INSERT INTO teaql_transaction_runtime_fixture(id) VALUES ($1)".to_owned(),
+                params: vec![Value::I64(2)],
+                comment: None,
+            })
+            .await
+            .unwrap();
+        committed.commit_sql().await.unwrap();
+
+        let rows = executor
+            .fetch_all_compact_sql(&CompiledQuery {
+                sql: "SELECT id FROM teaql_transaction_runtime_fixture ORDER BY id".to_owned(),
+                params: vec![],
+                comment: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("id"), Some(&Value::I64(2)));
     }
 
     #[tokio::test]
