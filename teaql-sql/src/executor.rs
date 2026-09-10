@@ -1383,6 +1383,46 @@ impl<
     D: SqlDialect + Send + Sync,
     Tx: SqlTransport + SqlTransaction<Error = <Tx as SqlTransport>::Error> + Send + Sync,
     S: teaql_data_service::SchemaProvider + Send + Sync,
+> teaql_data_service::StreamQueryExecutor for SqlDataServiceTransaction<'a, D, Tx, S>
+{
+    fn query_stream(
+        &self,
+        request: QueryRequest,
+        chunk_size: usize,
+    ) -> teaql_data_service::QueryStream<'_, Self::Error> {
+        use std::collections::VecDeque;
+
+        let chunk_size = chunk_size.max(1);
+        Box::pin(futures_util::stream::try_unfold(
+            (Some(request), VecDeque::new(), 0_usize),
+            move |(request, mut rows, chunk_index)| async move {
+                if let Some(request) = request {
+                    rows = QueryExecutor::query(self, request).await?.rows.into();
+                }
+                if rows.is_empty() {
+                    return Ok(None);
+                }
+                let take = rows.len().min(chunk_size);
+                let chunk_rows = rows.drain(..take).collect();
+                let is_last = rows.is_empty();
+                Ok(Some((
+                    teaql_data_service::StreamChunk {
+                        rows: chunk_rows,
+                        chunk_index,
+                        is_last,
+                    },
+                    (None, rows, chunk_index + 1),
+                )))
+            },
+        ))
+    }
+}
+
+impl<
+    'a,
+    D: SqlDialect + Send + Sync,
+    Tx: SqlTransport + SqlTransaction<Error = <Tx as SqlTransport>::Error> + Send + Sync,
+    S: teaql_data_service::SchemaProvider + Send + Sync,
 > MutationExecutor for SqlDataServiceTransaction<'a, D, Tx, S>
 {
     fn mutate(
