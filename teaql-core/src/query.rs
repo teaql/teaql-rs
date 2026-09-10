@@ -295,6 +295,8 @@ pub struct SelectQuery {
     pub having: Option<Expr>,
     pub order_by: Vec<OrderBy>,
     pub slice: Option<Slice>,
+    /// Apply `slice` independently inside each value of this property.
+    pub partition_by: Option<String>,
     pub aggregates: Vec<Aggregate>,
     pub group_by: Vec<String>,
     pub relations: Vec<RelationLoad>,
@@ -321,6 +323,7 @@ impl SelectQuery {
             having: None,
             order_by: Vec::new(),
             slice: None,
+            partition_by: None,
             aggregates: Vec::new(),
             group_by: Vec::new(),
             relations: Vec::new(),
@@ -597,6 +600,16 @@ impl SelectQuery {
         self.offset(offset).limit(limit)
     }
 
+    /// Scope pagination to each distinct value of `field`.
+    ///
+    /// Relation loading sets this automatically. Most application queries
+    /// should use a generated relation selector instead of calling this
+    /// method directly.
+    pub fn partition_by(mut self, field: impl Into<String>) -> Self {
+        self.partition_by = Some(field.into());
+        self
+    }
+
     /// Enable streaming mode with the given chunk size.
     /// When streaming, rows are fetched and enhanced in batches rather than all at once.
     pub fn stream(mut self, chunk_size: usize) -> Self {
@@ -612,6 +625,10 @@ impl SelectQuery {
 }
 
 pub type Record = BTreeMap<String, Value>;
+
+/// Internal projection used to implement per-parent pagination for relation
+/// loads. Runtime relation attachment removes it before exposing child rows.
+pub const PARTITION_RANK_PROPERTY: &str = "__teaql_partition_rank";
 
 pub fn record_to_json_value(record: &Record) -> serde_json::Value {
     serde_json::Value::Object(

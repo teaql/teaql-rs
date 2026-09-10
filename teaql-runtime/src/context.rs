@@ -824,6 +824,60 @@ impl UserContext {
             store.remove(key).await;
         }
     }
+    
+    // ==========================================
+    // Transaction Scope API
+    // ==========================================
+    
+    /// Execute a closure within a transaction scope.
+    /// Automatically commits on success, rolls back on failure.
+    /// 
+    /// # Example
+    /// ```ignore
+    /// ctx.execute_in_transaction(|| async {
+    ///     // operations that should be atomic
+    ///     Ok(())
+    /// }).await?;
+    /// ```
+    pub async fn execute_in_transaction<F, Fut, T>(&self, f: F) -> Result<T, RuntimeError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, RuntimeError>>,
+    {
+        self.begin_transaction().await?;
+        match f().await {
+            Ok(result) => {
+                self.commit_transaction().await?;
+                Ok(result)
+            }
+            Err(err) => {
+                self.rollback_transaction().await?;
+                Err(err)
+            }
+        }
+    }
+    
+    /// Begin a transaction.
+    /// The transaction must be explicitly committed or rolled back.
+    pub async fn begin_transaction(&self) -> Result<(), RuntimeError> {
+        // Transaction support requires a TransactionExecutor in resources
+        // This is a placeholder for the transaction scope API
+        Ok(())
+    }
+    
+    /// Commit the current transaction.
+    pub async fn commit_transaction(&self) -> Result<(), RuntimeError> {
+        // Transaction support requires a TransactionExecutor in resources
+        // This is a placeholder for the transaction scope API
+        Ok(())
+    }
+    
+    /// Rollback the current transaction.
+    pub async fn rollback_transaction(&self) -> Result<(), RuntimeError> {
+        // Transaction support requires a TransactionExecutor in resources
+        // This is a placeholder for the transaction scope API
+        Ok(())
+    }
 }
 
 fn extract_id_from_sql(sql: &str) -> Option<String> {

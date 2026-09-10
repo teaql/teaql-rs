@@ -203,7 +203,26 @@ pub trait SqlDialect {
             return Ok(raw_sql.clone());
         }
 
-        let projection = self.compile_projection(entity, query, params)?;
+        let mut projection = self.compile_projection(entity, query, params)?;
+        let partitioned_slice = query.partition_by.as_deref().zip(query.slice);
+        if let Some((partition_by, _)) = partitioned_slice {
+            let partition_column = self.column_sql(entity, partition_by)?;
+            let window_order = if query.order_by.is_empty() {
+                String::new()
+            } else {
+                let order_by = query
+                    .order_by
+                    .iter()
+                    .map(|order| self.order_by_sql(entity, order, params))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join(", ");
+                format!(" ORDER BY {order_by}")
+            };
+            let rank = self.quote_ident(teaql_core::PARTITION_RANK_PROPERTY);
+            projection.push_str(&format!(
+                ", ROW_NUMBER() OVER (PARTITION BY {partition_column}{window_order}) AS {rank}"
+            ));
+        }
 
         let mut sql = format!(
             "SELECT {projection} FROM {}",
@@ -239,6 +258,19 @@ pub trait SqlDialect {
         if !where_parts.is_empty() {
             sql.push_str(" WHERE ");
             sql.push_str(&where_parts.join(" AND "));
+        }
+
+        if let Some((_, slice)) = partitioned_slice {
+            let rank = self.quote_ident(teaql_core::PARTITION_RANK_PROPERTY);
+            let alias = self.quote_ident("__teaql_partitioned");
+            let mut predicates = vec![format!("{rank} > {}", slice.offset)];
+            if let Some(limit) = slice.limit {
+                predicates.push(format!("{rank} <= {}", slice.offset.saturating_add(limit)));
+            }
+            return Ok(format!(
+                "SELECT * FROM ({sql}) AS {alias} WHERE {} ORDER BY {rank}",
+                predicates.join(" AND ")
+            ));
         }
 
         if !query.group_by.is_empty() {

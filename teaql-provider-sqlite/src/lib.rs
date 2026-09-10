@@ -785,6 +785,23 @@ mod tests {
             .property(PropertyDescriptor::new("name", DataType::Text).column_name("name"))
     }
 
+    fn order_line_entity() -> EntityDescriptor {
+        EntityDescriptor::new("OrderLine")
+            .table_name("order_line")
+            .property(
+                PropertyDescriptor::new("id", DataType::U64)
+                    .column_name("id")
+                    .id()
+                    .not_null(),
+            )
+            .property(
+                PropertyDescriptor::new("order_id", DataType::U64)
+                    .column_name("order_id")
+                    .not_null(),
+            )
+            .property(PropertyDescriptor::new("name", DataType::Text).column_name("name"))
+    }
+
     #[allow(dead_code)]
     #[derive(Debug, PartialEq, TeaqlEntity)]
     #[teaql(entity = "FeatureFlag", table = "feature_flags")]
@@ -891,6 +908,56 @@ mod tests {
         assert_eq!(rows[0].get("id"), Some(&Value::I64(1)));
         assert_eq!(rows[0].get("version"), Some(&Value::I64(1)));
         assert_eq!(rows[0].get("name"), Some(&Value::Text("draft".to_owned())));
+    }
+
+    #[test]
+    fn sqlite_executes_partitioned_relation_limit_per_parent() {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        let entity = order_line_entity();
+        executor.ensure_schema(&SqliteDialect, &[&entity]).unwrap();
+
+        for order_id in [11_u64, 12_u64] {
+            for index in 1_u64..=5 {
+                let id = order_id * 100 + index;
+                let insert = SqliteDialect
+                    .compile_insert(
+                        &entity,
+                        &InsertCommand::new("OrderLine")
+                            .value("id", id)
+                            .value("order_id", order_id)
+                            .value("name", format!("line-{id}")),
+                    )
+                    .unwrap();
+                executor.execute(&insert).unwrap();
+            }
+        }
+
+        let query = SelectQuery::new("OrderLine")
+            .project("id")
+            .project("order_id")
+            .order_desc("id")
+            .limit(3)
+            .partition_by("order_id");
+        let compiled = SqliteDialect.compile_select(&entity, &query).unwrap();
+        let rows = executor.fetch_all(&compiled).unwrap();
+
+        assert_eq!(rows.len(), 6);
+        for order_id in [11_i64, 12_i64] {
+            let ids = rows
+                .iter()
+                .filter(|row| row.get("order_id") == Some(&Value::I64(order_id)))
+                .filter_map(|row| row.get("id").cloned())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                ids,
+                vec![
+                    Value::I64(order_id * 100 + 5),
+                    Value::I64(order_id * 100 + 4),
+                    Value::I64(order_id * 100 + 3),
+                ]
+            );
+        }
     }
 
     #[test]

@@ -201,6 +201,12 @@ mod tests {
         queries: Mutex<Vec<String>>,
     }
 
+    #[derive(Debug, Default)]
+    struct CapturingQueryExecutor {
+        rows: Vec<Record>,
+        queries: Mutex<Vec<SelectQuery>>,
+    }
+
     struct OrderBehavior;
 
     #[allow(dead_code)]
@@ -348,6 +354,8 @@ mod tests {
     }
 
     impl teaql_core::TeaqlEntity for OrderEntity {
+        const ENTITY_NAME: &'static str = "Order";
+
         fn entity_descriptor() -> EntityDescriptor {
             entity()
         }
@@ -452,6 +460,41 @@ mod tests {
                     backend_request_id: None,
                 },
             })
+        }
+    }
+
+    impl DataServiceExecutor for CapturingQueryExecutor {
+        type Error = StubError;
+
+        fn capabilities(&self) -> DataServiceCapabilities {
+            DataServiceCapabilities::default()
+        }
+    }
+
+    impl QueryExecutor for CapturingQueryExecutor {
+        async fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
+            self.queries.lock().unwrap().push(request.query);
+            Ok(QueryResult {
+                rows: self.rows.clone(),
+                metadata: ExecutionMetadata {
+                    debug_query: None,
+                    backend: "capture".to_owned(),
+                    operation: DataServiceOperation::Query,
+                    started_at: std::time::SystemTime::now(),
+                    ended_at: std::time::SystemTime::now(),
+                    affected_rows: None,
+                    result_count: Some(self.rows.len()),
+                    trace_chain: Vec::new(),
+                    comment: None,
+                    backend_request_id: None,
+                },
+            })
+        }
+    }
+
+    impl MutationExecutor for CapturingQueryExecutor {
+        async fn mutate(&self, _request: MutationRequest) -> Result<MutationResult, Self::Error> {
+            unreachable!("relation query test does not mutate")
         }
     }
 
@@ -1379,6 +1422,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn relation_limit_is_partitioned_per_parent_and_rank_is_internal() {
+        let mut rows = Vec::new();
+        for (order_id, first_line_id) in [(11_u64, 101_u64), (12_u64, 201_u64)] {
+            for rank in 1_u64..=3 {
+                rows.push(Record::from([
+                    (String::from("id"), Value::U64(first_line_id + rank - 1)),
+                    (String::from("order_id"), Value::U64(order_id)),
+                    (
+                        String::from(teaql_core::PARTITION_RANK_PROPERTY),
+                        Value::U64(rank),
+                    ),
+                ]));
+            }
+        }
+
+        let mut ctx = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(entity())
+                    .with_entity(line_entity()),
+            )
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"));
+        ctx.insert_resource(PostgresDialect);
+        ctx.insert_resource(CapturingQueryExecutor {
+            rows,
+            queries: Mutex::new(Vec::new()),
+        });
+
+        let repo = ctx
+            .entity_data_service::<CapturingQueryExecutor>("Order")
+            .unwrap();
+        let mut parents = vec![
+            Record::from([(String::from("id"), Value::U64(11))]),
+            Record::from([(String::from("id"), Value::U64(12))]),
+        ];
+        let query = SelectQuery::new("Order").relation_query(
+            "lines",
+            SelectQuery::new("OrderLine")
+                .order_by(OrderBy::desc("id"))
+                .limit(3),
+        );
+
+        repo.enhance_query_relations_internal(&mut parents, &query)
+            .await
+            .unwrap();
+
+        let captured = &ctx
+            .get_resource::<CapturingQueryExecutor>()
+            .unwrap()
+            .queries
+            .lock()
+            .unwrap()[0];
+        assert_eq!(captured.partition_by.as_deref(), Some("order_id"));
+        assert_eq!(captured.slice.and_then(|slice| slice.limit), Some(3));
+        for parent in &parents {
+            let Some(Value::List(lines)) = parent.get("lines") else {
+                panic!("missing relation lines")
+            };
+            assert_eq!(lines.len(), 3);
+            assert!(lines.iter().all(|line| match line {
+                Value::Object(line) => !line.contains_key(teaql_core::PARTITION_RANK_PROPERTY),
+                _ => false,
+            }));
+        }
+    }
+
+    #[tokio::test]
     async fn relation_enhancement_wraps_inverse_many_relation_as_list() {
         let mut ctx = UserContext::new()
             .with_metadata(
@@ -1916,6 +2026,7 @@ mod tests {
             having: None,
             order_by: Vec::new(),
             slice: None,
+            partition_by: None,
             trace_chain: Vec::new(),
             aggregates: vec![
                 Aggregate {
