@@ -1699,23 +1699,36 @@ impl UserContext {
 
     /// Begin a transaction.
     /// The transaction must be explicitly committed or rolled back.
+    ///
+    /// Note: This is a placeholder for the transaction scope API.
+    /// For actual database transactions, use the provider's transaction API directly
+    /// (e.g., `PgMutationExecutor::begin()` for PostgreSQL).
+    ///
+    /// # Example with PostgreSQL
+    /// ```ignore
+    /// use teaql_provider_postgres::PgMutationExecutor;
+    /// 
+    /// let tx = pg_executor.begin().await?;
+    /// // ... execute queries/mutations within transaction
+    /// tx.commit().await?;
+    /// ```
     pub async fn begin_transaction(&self) -> Result<(), RuntimeError> {
-        // Transaction support requires a TransactionExecutor in resources
-        // This is a placeholder for the transaction scope API
+        // Transaction support is provider-specific
+        // Use the provider's transaction API directly for database transactions
         Ok(())
     }
 
     /// Commit the current transaction.
+    ///
+    /// Note: This is a placeholder. Use provider-specific transaction API.
     pub async fn commit_transaction(&self) -> Result<(), RuntimeError> {
-        // Transaction support requires a TransactionExecutor in resources
-        // This is a placeholder for the transaction scope API
         Ok(())
     }
 
     /// Rollback the current transaction.
+    ///
+    /// Note: This is a placeholder. Use provider-specific transaction API.
     pub async fn rollback_transaction(&self) -> Result<(), RuntimeError> {
-        // Transaction support requires a TransactionExecutor in resources
-        // This is a placeholder for the transaction scope API
         Ok(())
     }
 }
