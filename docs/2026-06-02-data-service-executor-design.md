@@ -1,28 +1,28 @@
 # 2026-06-02: Data Service Executor Design
-**设计目标：以数据服务执行器抽象替代数据库执行器抽象，让 SQL 数据库只是 TeaQL Runtime 的一种执行后端**
+**Design Goal: Replace database executor abstraction with data service executor abstraction, making SQL databases just one execution backend for TeaQL Runtime**
 
-## 1. 摘要
+## 1. Abstract
 
-当前 TeaQL Rust 的 runtime repository 使用 `QueryExecutor` 同时承担查询、写入和 graph save 事务边界。这个设计已经能工作，但命名和职责并不精确：它表面上是 query executor，实际却同时执行 mutation，并且暴露事务控制。
+The current TeaQL Rust runtime repository uses `QueryExecutor` to simultaneously handle queries, writes, and graph save transaction boundaries. This design works, but the naming and responsibilities are imprecise: it appears to be a query executor, but actually also executes mutations and exposes transaction control.
 
-目标设计是引入以 `DataServiceExecutor` 为中心的执行模型。TeaQL Runtime 面向数据服务协议编程，而不是面向数据库或 SQL 执行器编程。数据库、远程服务、内存存储、HTTP 数据服务、GraphQL 数据源都可以成为数据服务执行后端。
-
----
-
-## 2. 设计原则
-
-1. **数据服务优先，而不是数据库优先**：runtime 的核心抽象命名为 `DataServiceExecutor`，不使用 `DbExecutor`。
-2. **读写能力分离**：查询和变更是不同能力，分别由 `QueryExecutor` 和 `MutationExecutor` 表达。
-3. **事务是能力，不是默认方法**：事务由 `TransactionExecutor` 显式表达，不能事务化的 executor 不应该暴露 graph save 能力。
-4. **SQL 是 adapter，不是 runtime 协议**：`SqlDialect` 和 `CompiledQuery` 属于 SQL 适配层，不应该成为最终的数据服务协议核心。
-5. **mutation 应保留语义级结构**：runtime 应尽量传递 `InsertCommand`、`UpdateCommand`、`DeleteCommand`、`RecoverCommand` 等语义命令，而不是过早降级为 SQL。
-6. **事务作用域应类型化**：避免裸 `begin/commit/rollback` 分散在调用方，优先使用 transaction scope 或 transaction object 表达生命周期。
+The goal is to introduce an execution model centered on `DataServiceExecutor`. TeaQL Runtime programs against data service protocols, not database or SQL executor protocols. Databases, remote services, in-memory storage, HTTP data services, and GraphQL data sources can all become data service execution backends.
 
 ---
 
-## 3. 目标架构
+## 2. Design Principles
 
-目标分层如下：
+1. **Data service first, not database first**: The runtime's core abstraction is named `DataServiceExecutor`, not `DbExecutor`.
+2. **Separate read and write capabilities**: Queries and mutations are different capabilities, expressed by `QueryExecutor` and `MutationExecutor` respectively.
+3. **Transactions are capabilities, not default methods**: Transactions are explicitly expressed by `TransactionExecutor`; executors that cannot transactionalize should not expose graph save capabilities.
+4. **SQL is an adapter, not a runtime protocol**: `SqlDialect` and `CompiledQuery` belong to the SQL adapter layer and should not be part of the core data service protocol.
+5. **Mutations should preserve semantic-level structure**: The runtime should pass `InsertCommand`, `UpdateCommand`, `DeleteCommand`, `RecoverCommand` and other semantic commands, rather than degrading to SQL prematurely.
+6. **Transaction scopes should be typed**: Avoid raw `begin/commit/rollback` scattered across callers; prefer transaction scope or transaction objects to express lifecycles.
+
+---
+
+## 3. Target Architecture
+
+The target layering is as follows:
 
 ```text
 teaql-core
@@ -45,15 +45,15 @@ teaql-provider-*
   rusqlite / sqlx / mysql / postgres concrete transports
 ```
 
-`teaql-runtime` 依赖数据服务协议，不直接依赖 SQL executor。`teaql-sql` 负责把 TeaQL 的语义级 query/mutation 编译为 SQL，并把 SQL 交给 provider transport 执行。
+`teaql-runtime` depends on the data service protocol, not directly on the SQL executor. `teaql-sql` is responsible for compiling TeaQL's semantic-level query/mutation into SQL and handing SQL to the provider transport for execution.
 
 ---
 
-## 4. 核心 Trait
+## 4. Core Traits
 
 ### 4.1 DataServiceExecutor
 
-`DataServiceExecutor` 是所有数据服务执行器的基础身份，只承载统一错误类型和能力描述。
+`DataServiceExecutor` is the base identity for all data service executors, carrying only unified error type and capability description.
 
 ```rust
 pub trait DataServiceExecutor {
@@ -63,7 +63,7 @@ pub trait DataServiceExecutor {
 }
 ```
 
-能力描述用于 runtime 在启动或调用前判断 executor 是否支持特定功能。
+Capability description is used by the runtime to determine whether the executor supports specific functionality before startup or invocation.
 
 ```rust
 #[derive(Debug, Clone, Default)]
@@ -80,7 +80,7 @@ pub struct DataServiceCapabilities {
 
 ### 4.2 QueryExecutor
 
-查询 executor 接收语义级查询请求，返回结构化查询结果。
+The query executor receives semantic-level query requests and returns structured query results.
 
 ```rust
 pub trait QueryExecutor: DataServiceExecutor {
@@ -103,7 +103,7 @@ pub struct QueryResult {
 
 ### 4.3 MutationExecutor
 
-变更 executor 接收语义级 mutation 请求，返回结构化变更结果。
+The mutation executor receives semantic-level mutation requests and returns structured mutation results.
 
 ```rust
 pub trait MutationExecutor: DataServiceExecutor {
@@ -127,11 +127,11 @@ pub struct MutationResult {
 }
 ```
 
-`generated_values` 用于承载服务端生成的 id、version、审计 id、后端 request id 等扩展信息。即使当前 SQL provider 暂时不使用，也应在协议层保留。
+`generated_values` is used to carry server-generated id, version, audit id, backend request id, and other extension information. Even if the current SQL provider does not use it, it should be preserved at the protocol layer.
 
 ### 4.4 TransactionExecutor
 
-事务不应作为普通 mutation executor 的默认空实现，而应是独立能力。
+Transactions should not be a default empty implementation of a regular mutation executor, but an independent capability.
 
 ```rust
 pub trait TransactionExecutor: DataServiceExecutor {
@@ -154,13 +154,13 @@ pub trait Transaction {
 }
 ```
 
-事务对象本身实现 `QueryExecutor` 和 `MutationExecutor`，所以 graph save 可以在同一个事务作用域内读取当前行、插入、更新、删除和提交。
+The transaction object itself implements `QueryExecutor` and `MutationExecutor`, so graph save can read current rows, insert, update, delete, and commit within the same transaction scope.
 
 ---
 
 ## 5. SQL Adapter
 
-SQL 不再是 runtime 的直接 executor 协议，而是一个 data service adapter。
+SQL is no longer the runtime's direct executor protocol, but a data service adapter.
 
 ```rust
 pub struct SqlDataServiceExecutor<D, T> {
@@ -169,12 +169,12 @@ pub struct SqlDataServiceExecutor<D, T> {
 }
 ```
 
-其中：
+Where:
 
-- `D: SqlDialect` 负责把 `SelectQuery` 和 `MutationRequest` 编译成 `CompiledQuery`。
-- `T` 是 SQL transport，负责执行 `CompiledQuery`。
+- `D: SqlDialect` is responsible for compiling `SelectQuery` and `MutationRequest` into `CompiledQuery`.
+- `T` is the SQL transport, responsible for executing `CompiledQuery`.
 
-SQL transport 可以继续保持较低层的接口：
+The SQL transport can continue to maintain a lower-level interface:
 
 ```rust
 pub trait SqlQueryTransport {
@@ -190,31 +190,31 @@ pub trait SqlMutationTransport {
 }
 ```
 
-这样 provider crate 的职责更清楚：
+This makes provider crate responsibilities clearer:
 
-- `teaql-provider-rusqlite` 提供 rusqlite transport。
-- `teaql-provider-sqlx-postgres` 提供 postgres sqlx transport。
-- `teaql-provider-sqlx-sqlite` 提供 sqlite sqlx transport。
-- `teaql-provider-sqlx-mysql` 提供 mysql sqlx transport。
-- `teaql-sql` 提供 `SqlDataServiceExecutor`，把 TeaQL 语义请求桥接到 SQL transport。
+- `teaql-provider-rusqlite` provides rusqlite transport.
+- `teaql-provider-sqlx-postgres` provides postgres sqlx transport.
+- `teaql-provider-sqlx-sqlite` provides sqlite sqlx transport.
+- `teaql-provider-sqlx-mysql` provides mysql sqlx transport.
+- `teaql-sql` provides `SqlDataServiceExecutor`, bridging TeaQL semantic requests to SQL transport.
 
 ---
 
-## 6. Runtime Repository 职责
+## 6. Runtime Repository Responsibilities
 
-`ResolvedRepository` 不再直接 compile SQL。它负责领域级运行时逻辑：
+`ResolvedRepository` no longer directly compiles SQL. It handles domain-level runtime logic:
 
-1. 应用 `RepositoryBehavior`。
-2. 应用 `RequestPolicy`。
-3. 执行 checker 和 fix。
-4. 生成 id 和初始 version。
-5. 组织 graph save。
-6. 发送 entity events。
-7. 记录 trace chain 和 comment。
-8. 失效 aggregation cache。
-9. 调用 `QueryExecutor` 或 `MutationExecutor`。
+1. Apply `RepositoryBehavior`.
+2. Apply `RequestPolicy`.
+3. Execute checkers and fixes.
+4. Generate id and initial version.
+5. Organize graph save.
+6. Send entity events.
+7. Record trace chain and comments.
+8. Invalidate aggregation cache.
+9. Call `QueryExecutor` or `MutationExecutor`.
 
-示意：
+Example:
 
 ```rust
 impl<'a, S> ResolvedRepository<'a, S>
@@ -231,7 +231,7 @@ where
 }
 ```
 
-graph save 明确要求事务能力：
+Graph save explicitly requires transaction capability:
 
 ```rust
 impl<'a, S> ResolvedRepository<'a, S>
@@ -247,23 +247,23 @@ where
 }
 ```
 
-这比运行时返回 `Unsupported` 更严格。不能事务化的数据服务在编译期就无法调用 graph save。
+This is stricter than returning `Unsupported` at runtime. Data services that cannot transactionalize cannot call graph save at compile time.
 
 ---
 
-## 7. Graph Save 设计
+## 7. Graph Save Design
 
-graph save 是 mutation engine 中最需要事务的部分。目标设计中 graph save 应满足：
+Graph save is the part of the mutation engine that most needs transactions. The target design requires graph save to satisfy:
 
-1. 所有节点 upsert/delete 在一个 transaction scope 内完成。
-2. 判断 create/update 时使用 transaction 内查询，避免读写不一致。
-3. `Reference` 节点只校验存在性，不执行写入。
-4. `Remove` 节点执行 delete/recover 语义，而不是直接拼 SQL。
-5. relation attach 只修改语义级 record，再交给 mutation executor。
-6. dirty fields 继续用于构建最小 update command。
-7. trace chain 和 comment 通过 `ExecutionMetadata` 和 request context 传递。
+1. All nodes upsert/delete complete within a single transaction scope.
+2. Use intra-transaction queries when determining create/update to avoid read-write inconsistency.
+3. `Reference` nodes only verify existence, not execute writes.
+4. `Remove` nodes execute delete/recover semantics, not directly concatenate SQL.
+5. Relation attach only modifies semantic-level records, then hands them to the mutation executor.
+6. Dirty fields continue to be used for building minimal update commands.
+7. Trace chain and comments are passed through `ExecutionMetadata` and request context.
 
-`GraphMutationPlan` 应成为真正的语义执行计划，而不只是统计预览：
+`GraphMutationPlan` should become a true semantic execution plan, not just a statistical preview:
 
 ```rust
 pub struct GraphMutationPlan {
@@ -273,13 +273,13 @@ pub struct GraphMutationPlan {
 }
 ```
 
-如果保留 batch，则 batch 应由 `MutationRequest::Batch` 执行；如果暂不支持批量执行，就不应让 API 暗示已经批量优化。
+If batches are retained, they should be executed by `MutationRequest::Batch`; if batch optimization is not yet supported, the API should not imply that batch optimization has occurred.
 
 ---
 
-## 8. Schema 和 ID Generation
+## 8. Schema and ID Generation
 
-schema 和 id generation 也属于数据服务能力，不应硬编码为数据库 provider 的附属方法。
+Schema and ID generation also belong to data service capabilities and should not be hardcoded as附属 methods of database providers.
 
 ```rust
 pub trait SchemaExecutor: DataServiceExecutor {
@@ -291,13 +291,13 @@ pub trait IdGeneratorExecutor: DataServiceExecutor {
 }
 ```
 
-SQL provider 可以通过 id space table 实现 `IdGeneratorExecutor`。远程 data service 可以通过远程接口生成 id。测试或内存实现可以用本地计数器。
+SQL providers can implement `IdGeneratorExecutor` through id space tables. Remote data services can generate ids through remote interfaces. Test or in-memory implementations can use local counters.
 
 ---
 
-## 9. 执行元数据
+## 9. Execution Metadata
 
-所有 query 和 mutation 都应返回统一的执行元数据。
+All queries and mutations should return unified execution metadata.
 
 ```rust
 pub struct ExecutionMetadata {
@@ -313,44 +313,44 @@ pub struct ExecutionMetadata {
 }
 ```
 
-SQL 日志不再是特殊路径，而是 `ExecutionMetadata` 的一种渲染结果。审计日志、TUI 日志、调试 SQL 都可以从同一份结构化元数据派生。
+SQL logs are no longer a special path, but a rendering result of `ExecutionMetadata`. Audit logs, TUI logs, and debug SQL can all be derived from the same structured metadata.
 
 ---
 
-## 10. Provider 命名
+## 10. Provider Naming
 
-provider 结构体不应继续叫 `*MutationExecutor`，因为它们同时支持 query 和 mutation。
+Provider structs should no longer be called `*MutationExecutor`, because they support both query and mutation.
 
-推荐命名：
+Recommended naming:
 
 - `RusqliteDataService`
 - `SqliteDataService`
 - `PostgresDataService`
 - `MysqlDataService`
 
-或者如果它们只是 SQL transport：
+Or if they are just SQL transports:
 
 - `RusqliteTransport`
 - `SqliteSqlxTransport`
 - `PostgresSqlxTransport`
 - `MysqlSqlxTransport`
 
-最终推荐组合：
+Final recommended composition:
 
 ```rust
 let transport = PostgresSqlxTransport::new(pool);
 let data_service = SqlDataServiceExecutor::new(PostgresDialect, transport);
 ```
 
-这样名称准确表达了两个层次：SQL adapter 和具体 transport。
+This way the name accurately expresses two layers: SQL adapter and specific transport.
 
 ---
 
-## 11. 同步与异步
+## 11. Synchronous and Asynchronous
 
-目标设计应明确同步和异步是两套边界，而不是通过 `block_on` 隐式桥接。
+The target design should clearly define synchronous and asynchronous as two sets of boundaries, rather than implicitly bridging through `block_on`.
 
-同步 trait：
+Synchronous trait:
 
 ```rust
 pub trait QueryExecutor: DataServiceExecutor {
@@ -358,7 +358,7 @@ pub trait QueryExecutor: DataServiceExecutor {
 }
 ```
 
-异步 trait：
+Asynchronous trait:
 
 ```rust
 pub trait AsyncQueryExecutor: DataServiceExecutor {
@@ -366,34 +366,34 @@ pub trait AsyncQueryExecutor: DataServiceExecutor {
 }
 ```
 
-同步 runtime 使用同步 executor。异步 runtime 使用异步 executor。桥接 wrapper 可以存在，但应该是显式 adapter，而不是 provider 内部偷偷 `block_on`。
+Synchronous runtime uses synchronous executor. Asynchronous runtime uses asynchronous executor. Bridging wrappers can exist, but should be explicit adapters, not providers secretly using `block_on` internally.
 
 ---
 
-## 12. 预期收益
+## 12. Expected Benefits
 
-1. **抽象层级准确**：TeaQL Runtime 面向数据服务，不被数据库实现绑死。
-2. **读写职责清晰**：query、mutation、transaction、schema、id generation 都是独立能力。
-3. **graph save 更安全**：事务能力由类型系统表达，而不是运行时 `Unsupported`。
-4. **provider 更容易扩展**：SQL、HTTP、memory、remote service 可以共用 runtime 协议。
-5. **测试更直接**：测试 executor 可以断言语义级 `MutationRequest`，不必解析 SQL。
-6. **日志和审计更统一**：执行结果携带结构化 metadata，SQL 日志只是其中一种表现形式。
-7. **为批量写和远程数据服务预留空间**：`MutationRequest::Batch` 和 `MutationResult::generated_values` 可承载更丰富的后端能力。
-
----
-
-## 13. 主要风险
-
-1. **改动面大**：`Repository`、`ContextRepository`、`ResolvedRepository`、provider、examples 都会受影响。
-2. **泛型复杂度会上升**：尤其是 `TransactionExecutor::Tx<'a>` 这种 GAT 设计，需要谨慎控制 API 可读性。
-3. **SQL 编译位置需要重排**：当前 repository 直接 compile SQL，目标设计要下沉到 `SqlDataServiceExecutor`。
-4. **同步/异步边界必须明确**：如果继续混用 `block_on`，新的抽象会被削弱。
-5. **短期兼容成本高**：现有 `*MutationExecutor` 名称和 API 可能需要 alias 或 breaking change。
+1. **Accurate abstraction level**: TeaQL Runtime programs against data services, not bound to database implementations.
+2. **Clear read/write responsibilities**: query, mutation, transaction, schema, id generation are all independent capabilities.
+3. **Safer graph save**: Transaction capabilities are expressed by the type system, not runtime `Unsupported`.
+4. **Easier provider extension**: SQL, HTTP, memory, remote services can share the runtime protocol.
+5. **More direct testing**: Test executors can assert semantic-level `MutationRequest`, without parsing SQL.
+6. **More unified logging and auditing**: Execution results carry structured metadata; SQL logs are just one manifestation.
+7. **Room for batch writes and remote data services**: `MutationRequest::Batch` and `MutationResult::generated_values` can carry richer backend capabilities.
 
 ---
 
-## 14. 结论
+## 13. Main Risks
 
-最终设计应以 `DataServiceExecutor` 为中心，而不是以数据库 executor 或 SQL executor 为中心。`QueryExecutor` 和 `MutationExecutor` 表达读写能力，`TransactionExecutor` 表达事务能力，`SqlDataServiceExecutor` 只是把 TeaQL 语义协议适配到 SQL 的一个实现。
+1. **Large scope of changes**: `Repository`, `ContextRepository`, `ResolvedRepository`, providers, and examples will all be affected.
+2. **Increased generic complexity**: Especially designs like `TransactionExecutor::Tx<'a>` (GAT), which require careful control of API readability.
+3. **SQL compilation location needs rearrangement**: Currently the repository directly compiles SQL; the target design requires this to move down to `SqlDataServiceExecutor`.
+4. **Synchronous/asynchronous boundaries must be clear**: If `block_on` continues to be mixed, the new abstraction will be weakened.
+5. **High short-term compatibility cost**: Existing `*MutationExecutor` names and APIs may require aliases or breaking changes.
 
-这个方向能让 TeaQL Rust 的 mutation engine 从“数据库 CRUD 执行层”升级为“数据服务执行层”。它保留现有 command、dialect、graph save、checker、event 的优点，同时为非 SQL 后端、远程数据服务、批量 mutation、结构化执行日志留下清晰扩展点。
+---
+
+## 14. Conclusion
+
+The final design should be centered on `DataServiceExecutor`, not on database executor or SQL executor. `QueryExecutor` and `MutationExecutor` express read/write capabilities, `TransactionExecutor` expresses transaction capability, and `SqlDataServiceExecutor` is just one implementation that adapts TeaQL's semantic protocol to SQL.
+
+This direction can upgrade TeaQL Rust's mutation engine from a "database CRUD execution layer" to a "data service execution layer". It preserves the advantages of existing commands, dialects, graph save, checkers, and events, while leaving clear extension points for non-SQL backends, remote data services, batch mutations, and structured execution logs.
