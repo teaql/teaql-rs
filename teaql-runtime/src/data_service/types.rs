@@ -19,7 +19,12 @@ pub struct EntityDataService<'a, E> {
 }
 
 impl<'a, E> EntityDataService<'a, E> {
-    pub(crate) fn for_executor(
+    /// Bind one entity data service to an explicit executor.
+    ///
+    /// Transaction scopes use this constructor to ensure generated repositories
+    /// execute against the transaction-owned connection instead of the ambient
+    /// context executor.
+    pub fn for_executor(
         context: &'a UserContext,
         entity: impl Into<String>,
         executor: &'a E,

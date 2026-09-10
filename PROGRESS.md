@@ -69,7 +69,7 @@ Current progress estimates:
 | Graph entity state semantics | Java has new/reference/remove/deleted status concepts | `GraphOperation::{Upsert, Reference, Remove}` covers first-pass upsert/reference/remove semantics; reference/remove now validate existence, deleted state, child-relation conflicts, and reference version conflicts | MVP+ | High |
 | Attach relation metadata | Java uses attach/reverse relation metadata | `RelationDescriptor` supports `attach/detached` and `delete_missing/keep_missing`; derive supports `attach = false` and `delete_missing = false` | MVP | Medium |
 | Graph write transaction boundary | Java runs through repository/service transaction facilities | `save_graph()` now requires a transactional executor; SQLite auto transaction rollback and PostgreSQL connection-scoped transaction rollback are verified | MVP+ | Medium |
-| Module/file organization | Java code is already split by concern | Rust core/runtime/macros/sql crates are split into focused source modules; the runtime repository layer is now a `repository/` module with separate cache, executor, base repository, context repository, resolved repository, graph, relation, and helper modules | Done | Low |
+| Module/file organization | Java code is already split by concern | Rust core/runtime/macros/sql crates are split into focused source modules; `UserContext` delegates pagination, locking, and typed transaction scopes to focused `context/` modules; the data-service layer remains split into cache, executor, base/context/resolved APIs, graph, relation, and helpers | Done | Low |
 | Published crates | Java artifacts are released through Maven-style repositories | `teaql-core`, `teaql-sql`, `teaql-runtime`, `teaql-macros`, and database-specific SQLx provider crates are the intended published crate set | Done | Low |
 
 ## Current Strengths
@@ -110,7 +110,7 @@ Current progress estimates:
 - SQL and memory paths both support grouped/extended aggregates, Decimal aggregate output, and extended predicates
 - PostgreSQL query paths are validated for array-bound large IN, subqueries, expression projection/function ordering, extended aggregates, grouped aggregates, bit aggregates, and `HAVING`
 - Generated `Q` API validation in an external SQLite crate covers complex object commit, DDD-style subtrait method dispatch, JSON serialization, JSON-expression search, simple aggregates, and relation aggregate statistics
-- Runtime repository code is split by responsibility under `teaql-runtime/src/repository/`, keeping public exports stable while separating cache, executor, base/context/resolved repository APIs, graph writes, relation enhancement, and shared helpers
+- Runtime context code is split by responsibility under `teaql-runtime/src/context/`, and data-service code under `teaql-runtime/src/data_service/`, keeping unrelated pagination, locking, transaction, query, graph-write, relation, and helper concerns out of one monolithic implementation
 
 ## Most Important Gaps
 

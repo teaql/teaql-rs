@@ -3,9 +3,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, SystemTime};
 
 use teaql_core::{EntityDescriptor, Value};
 use teaql_sql::{CompiledQuery, DatabaseKind};
@@ -18,6 +17,17 @@ use crate::{
     MetadataStore, ObjectLocation, RawAuditEvent, RawAuditEventSink, RequestPolicy, RuntimeError,
     local_id_generator,
 };
+
+mod locking;
+mod pagination;
+mod transaction;
+pub use locking::RemoteLockProvider;
+use locking::next_local_lock_owner;
+pub use pagination::{
+    ContinuousPageCursor, ContinuousPageCursorStore, IdSetStore, InMemoryContinuousPageCursorStore,
+    InMemoryIdSetStore, RetainedIdSet,
+};
+pub use transaction::TransactionScope;
 
 tokio::task_local! {
     static GENERATED_SCHEMA_BOOTSTRAP_MODE: ();
@@ -64,186 +74,6 @@ mod active_root_tests {
         assert_eq!(context.require_active_root("Tenant").unwrap().id, 42);
         assert!(context.require_active_root("Organization").is_err());
         assert!(UserContext::new().require_active_root("Tenant").is_err());
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ContinuousPageCursor {
-    pub cursor_id: String,
-    pub query_key: String,
-    pub entity: String,
-    pub direction: teaql_core::SortDirection,
-    pub boundary: Value,
-    pub page_size: u64,
-    pub next_offset: u64,
-    pub expires_at: SystemTime,
-}
-
-#[async_trait::async_trait]
-pub trait ContinuousPageCursorStore: Send + Sync + 'static {
-    async fn get(
-        &self,
-        query_key: &str,
-        target_offset: u64,
-    ) -> Result<Option<ContinuousPageCursor>, String>;
-    async fn put(&self, cursor: ContinuousPageCursor) -> Result<(), String>;
-    async fn invalidate(&self, query_key: &str) -> Result<(), String>;
-}
-
-pub struct InMemoryContinuousPageCursorStore {
-    cursors: Mutex<HashMap<String, ContinuousPageCursor>>,
-    max_entries: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct RetainedIdSet {
-    pub query_key: String,
-    pub ids: Arc<Vec<u64>>,
-    pub expires_at: SystemTime,
-}
-
-#[async_trait::async_trait]
-pub trait IdSetStore: Send + Sync + 'static {
-    async fn get(&self, query_key: &str) -> Result<Option<RetainedIdSet>, String>;
-    async fn put(&self, id_set: RetainedIdSet) -> Result<(), String>;
-    async fn invalidate(&self, query_key: &str) -> Result<(), String>;
-}
-
-pub struct InMemoryIdSetStore {
-    sets: Mutex<HashMap<String, RetainedIdSet>>,
-    max_entries: usize,
-    max_bytes: usize,
-}
-
-impl Default for InMemoryIdSetStore {
-    fn default() -> Self {
-        Self {
-            sets: Mutex::new(HashMap::new()),
-            max_entries: 64,
-            max_bytes: 256 * 1024 * 1024,
-        }
-    }
-}
-
-impl InMemoryIdSetStore {
-    fn retained_bytes(sets: &HashMap<String, RetainedIdSet>) -> usize {
-        sets.values()
-            .map(|value| value.ids.len().saturating_mul(std::mem::size_of::<u64>()))
-            .sum()
-    }
-}
-
-#[async_trait::async_trait]
-impl IdSetStore for InMemoryIdSetStore {
-    async fn get(&self, query_key: &str) -> Result<Option<RetainedIdSet>, String> {
-        let mut sets = self.sets.lock().map_err(|error| error.to_string())?;
-        if sets
-            .get(query_key)
-            .is_some_and(|value| value.expires_at <= SystemTime::now())
-        {
-            sets.remove(query_key);
-        }
-        Ok(sets.get(query_key).cloned())
-    }
-
-    async fn put(&self, id_set: RetainedIdSet) -> Result<(), String> {
-        let incoming_bytes = id_set.ids.len().saturating_mul(std::mem::size_of::<u64>());
-        if incoming_bytes > self.max_bytes {
-            return Err("ID set exceeds the process-local store memory ceiling".to_owned());
-        }
-        let mut sets = self.sets.lock().map_err(|error| error.to_string())?;
-        sets.retain(|_, value| value.expires_at > SystemTime::now());
-        while sets.len() >= self.max_entries
-            || Self::retained_bytes(&sets).saturating_add(incoming_bytes) > self.max_bytes
-        {
-            let Some(oldest) = sets
-                .iter()
-                .min_by_key(|(_, value)| value.expires_at)
-                .map(|(key, _)| key.clone())
-            else {
-                break;
-            };
-            sets.remove(&oldest);
-        }
-        sets.insert(id_set.query_key.clone(), id_set);
-        Ok(())
-    }
-
-    async fn invalidate(&self, query_key: &str) -> Result<(), String> {
-        self.sets
-            .lock()
-            .map_err(|error| error.to_string())?
-            .remove(query_key);
-        Ok(())
-    }
-}
-
-fn id_set_build_lock(query_key: &str) -> Arc<futures_util::lock::Mutex<()>> {
-    static LOCKS: OnceLock<Mutex<HashMap<String, std::sync::Weak<futures_util::lock::Mutex<()>>>>> =
-        OnceLock::new();
-    let mut locks = LOCKS
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .expect("ID set build lock registry poisoned");
-    locks.retain(|_, lock| lock.strong_count() > 0);
-    if let Some(lock) = locks.get(query_key).and_then(std::sync::Weak::upgrade) {
-        return lock;
-    }
-    let lock = Arc::new(futures_util::lock::Mutex::new(()));
-    locks.insert(query_key.to_owned(), Arc::downgrade(&lock));
-    lock
-}
-
-impl Default for InMemoryContinuousPageCursorStore {
-    fn default() -> Self {
-        Self {
-            cursors: Mutex::new(HashMap::new()),
-            max_entries: 4096,
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl ContinuousPageCursorStore for InMemoryContinuousPageCursorStore {
-    async fn get(
-        &self,
-        query_key: &str,
-        target_offset: u64,
-    ) -> Result<Option<ContinuousPageCursor>, String> {
-        let key = format!("{query_key}:{target_offset}");
-        let mut cursors = self.cursors.lock().map_err(|e| e.to_string())?;
-        if cursors
-            .get(&key)
-            .is_some_and(|cursor| cursor.expires_at <= SystemTime::now())
-        {
-            cursors.remove(&key);
-        }
-        Ok(cursors.get(&key).cloned())
-    }
-
-    async fn put(&self, cursor: ContinuousPageCursor) -> Result<(), String> {
-        let key = format!("{}:{}", cursor.query_key, cursor.next_offset);
-        let mut cursors = self.cursors.lock().map_err(|e| e.to_string())?;
-        if cursors.len() >= self.max_entries {
-            if let Some(expired_or_oldest) = cursors
-                .iter()
-                .min_by_key(|(_, value)| value.expires_at)
-                .map(|(key, _)| key.clone())
-            {
-                cursors.remove(&expired_or_oldest);
-            }
-        }
-        cursors.insert(key, cursor);
-        Ok(())
-    }
-
-    async fn invalidate(&self, query_key: &str) -> Result<(), String> {
-        let prefix = format!("{query_key}:");
-        self.cursors
-            .lock()
-            .map_err(|e| e.to_string())?
-            .retain(|key, _| !key.starts_with(&prefix));
-        Ok(())
     }
 }
 
@@ -468,21 +298,6 @@ pub struct UserContext {
     last_fix_evidence: Mutex<Vec<FixEvidence>>,
 }
 
-#[derive(Clone, Copy)]
-struct LocalLockEntry {
-    owner: u64,
-    expires_at: Option<Instant>,
-}
-
-#[derive(Default)]
-struct ProcessLocalLocks {
-    entries: Mutex<HashMap<String, LocalLockEntry>>,
-    changed: Condvar,
-}
-
-static PROCESS_LOCAL_LOCKS: OnceLock<ProcessLocalLocks> = OnceLock::new();
-static NEXT_LOCAL_LOCK_OWNER: AtomicU64 = AtomicU64::new(1);
-
 impl Default for UserContext {
     fn default() -> Self {
         let pid = std::process::id();
@@ -495,7 +310,7 @@ impl Default for UserContext {
             .or_else(|_| std::env::var("USERNAME"))
             .unwrap_or_else(|_| "main".to_owned());
         let user_id = format!("{os_user}@pid-{pid}.tid-{numeric_thread_id}");
-        let owner_sequence = NEXT_LOCAL_LOCK_OWNER.fetch_add(1, Ordering::Relaxed);
+        let owner_sequence = next_local_lock_owner();
         Self {
             active_root: OnceLock::new(),
             metadata: None,
@@ -556,24 +371,6 @@ pub trait DataStore: Send + Sync + 'static {
     async fn get(&self, key: &str) -> Option<Value>;
     async fn put(&self, key: &str, value: Value, timeout_seconds: Option<u64>);
     async fn remove(&self, key: &str);
-}
-
-/// Provider-neutral distributed lock boundary.
-///
-/// Implementations must associate an acquired lock with `owner_token` and
-/// release it only while that token still owns the key. A zero timeout is one
-/// non-blocking attempt; a zero expiry means no automatic lease expiry.
-#[async_trait::async_trait]
-pub trait RemoteLockProvider: Send + Sync + 'static {
-    async fn try_remote_lock(
-        &self,
-        key: &str,
-        owner_token: &str,
-        timeout_millis: u64,
-        expire_millis: u64,
-    ) -> bool;
-
-    async fn unlock_remote(&self, key: &str, owner_token: &str) -> bool;
 }
 
 #[derive(Default)]
@@ -694,171 +491,12 @@ impl UserContext {
         crate::start_runtime_operation(&self.runtime_telemetry, operation)
     }
 
-    pub fn try_local_lock(&self, key: &str, timeout_millis: u64, expire_millis: u64) -> bool {
-        let locks = PROCESS_LOCAL_LOCKS.get_or_init(ProcessLocalLocks::default);
-        let deadline = Instant::now() + Duration::from_millis(timeout_millis);
-        let mut entries = locks.entries.lock().expect("local lock state poisoned");
-        loop {
-            let now = Instant::now();
-            match entries.get(key).copied() {
-                None => {
-                    entries.insert(
-                        key.to_owned(),
-                        LocalLockEntry {
-                            owner: self.local_lock_owner,
-                            expires_at: (expire_millis > 0)
-                                .then(|| now + Duration::from_millis(expire_millis)),
-                        },
-                    );
-                    return true;
-                }
-                Some(current)
-                    if current.owner == self.local_lock_owner
-                        || current.expires_at.is_some_and(|expiry| now >= expiry) =>
-                {
-                    entries.insert(
-                        key.to_owned(),
-                        LocalLockEntry {
-                            owner: self.local_lock_owner,
-                            expires_at: (expire_millis > 0)
-                                .then(|| now + Duration::from_millis(expire_millis)),
-                        },
-                    );
-                    return true;
-                }
-                Some(current) => {
-                    if timeout_millis == 0 || now >= deadline {
-                        return false;
-                    }
-                    let wake_after = current
-                        .expires_at
-                        .map(|expiry| expiry.saturating_duration_since(now))
-                        .unwrap_or_else(|| deadline.saturating_duration_since(now))
-                        .min(deadline.saturating_duration_since(now));
-                    let waited = locks
-                        .changed
-                        .wait_timeout(entries, wake_after)
-                        .expect("local lock state poisoned");
-                    entries = waited.0;
-                }
-            }
-        }
-    }
-
-    pub fn unlock_local(&self, key: &str) {
-        let locks = PROCESS_LOCAL_LOCKS.get_or_init(ProcessLocalLocks::default);
-        let mut entries = locks.entries.lock().expect("local lock state poisoned");
-        if entries
-            .get(key)
-            .is_some_and(|entry| entry.owner == self.local_lock_owner)
-        {
-            entries.remove(key);
-            locks.changed.notify_all();
-        }
-    }
-
-    /// Attempts to acquire a provider-backed distributed lock.
-    ///
-    /// A missing provider remains a no-op success, matching the optional
-    /// Remote Lock boundary in the other TeaQL runtimes. Install an
-    /// `Arc<dyn RemoteLockProvider>` resource to enable distributed exclusion.
-    pub async fn try_remote_lock(
-        &self,
-        key: &str,
-        timeout_millis: u64,
-        expire_millis: u64,
-    ) -> bool {
-        match self.get_resource::<Arc<dyn RemoteLockProvider>>() {
-            Some(provider) => {
-                provider
-                    .try_remote_lock(key, &self.remote_lock_owner, timeout_millis, expire_millis)
-                    .await
-            }
-            None => true,
-        }
-    }
-
-    /// Releases a distributed lock only when this context still owns it.
-    pub async fn unlock_remote(&self, key: &str) -> bool {
-        match self.get_resource::<Arc<dyn RemoteLockProvider>>() {
-            Some(provider) => provider.unlock_remote(key, &self.remote_lock_owner).await,
-            None => true,
-        }
-    }
-
     pub fn user_identifier(&self) -> Option<&str> {
         self.user_identifier.as_deref()
     }
 
     pub fn set_user_identifier(&mut self, user_identifier: impl Into<String>) {
         self.user_identifier = Some(user_identifier.into());
-    }
-
-    pub fn set_continuous_page_cursor_store(
-        &mut self,
-        store: std::sync::Arc<dyn ContinuousPageCursorStore>,
-    ) {
-        self.continuous_page_cursor_store = store;
-    }
-
-    pub fn continuous_page_plan(&self) -> Option<String> {
-        self.continuous_page_observation
-            .lock()
-            .ok()
-            .map(|value| value.0.clone())
-    }
-
-    pub fn continuous_page_cursor_id(&self) -> Option<String> {
-        self.continuous_page_observation
-            .lock()
-            .ok()
-            .and_then(|value| value.1.clone())
-    }
-
-    pub(crate) fn observe_continuous_page(
-        &self,
-        plan: impl Into<String>,
-        cursor_id: Option<String>,
-    ) {
-        if let Ok(mut observation) = self.continuous_page_observation.lock() {
-            *observation = (plan.into(), cursor_id);
-        }
-    }
-
-    pub(crate) fn continuous_page_cursor_store(&self) -> &dyn ContinuousPageCursorStore {
-        self.continuous_page_cursor_store.as_ref()
-    }
-
-    pub fn set_id_set_store(&mut self, store: Arc<dyn IdSetStore>) {
-        self.id_set_store = store;
-    }
-
-    pub fn id_set_plan(&self) -> Option<String> {
-        self.id_set_observation
-            .lock()
-            .ok()
-            .map(|observation| observation.0.clone())
-    }
-
-    pub fn id_set_count(&self) -> Option<u64> {
-        self.id_set_observation
-            .lock()
-            .ok()
-            .and_then(|observation| observation.1)
-    }
-
-    pub(crate) fn observe_id_set(&self, plan: impl Into<String>, count: Option<u64>) {
-        if let Ok(mut observation) = self.id_set_observation.lock() {
-            *observation = (plan.into(), count);
-        }
-    }
-
-    pub(crate) fn id_set_store(&self) -> &dyn IdSetStore {
-        self.id_set_store.as_ref()
-    }
-
-    pub(crate) fn id_set_build_lock(&self, query_key: &str) -> Arc<futures_util::lock::Mutex<()>> {
-        id_set_build_lock(query_key)
     }
 
     pub fn with_user_identifier(mut self, user_identifier: impl Into<String>) -> Self {
@@ -1663,73 +1301,6 @@ impl UserContext {
         if let Some(store) = self.get_resource::<Box<dyn DataStore>>() {
             store.remove(key).await;
         }
-    }
-
-    // ==========================================
-    // Transaction Scope API
-    // ==========================================
-
-    /// Execute a closure within a transaction scope.
-    /// Automatically commits on success, rolls back on failure.
-    ///
-    /// # Example
-    /// ```ignore
-    /// ctx.execute_in_transaction(|| async {
-    ///     // operations that should be atomic
-    ///     Ok(())
-    /// }).await?;
-    /// ```
-    pub async fn execute_in_transaction<F, Fut, T>(&self, f: F) -> Result<T, RuntimeError>
-    where
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<T, RuntimeError>>,
-    {
-        self.begin_transaction().await?;
-        match f().await {
-            Ok(result) => {
-                self.commit_transaction().await?;
-                Ok(result)
-            }
-            Err(err) => {
-                self.rollback_transaction().await?;
-                Err(err)
-            }
-        }
-    }
-
-    /// Begin a transaction.
-    /// The transaction must be explicitly committed or rolled back.
-    ///
-    /// Note: This is a placeholder for the transaction scope API.
-    /// For actual database transactions, use the provider's transaction API directly
-    /// (e.g., `PgMutationExecutor::begin()` for PostgreSQL).
-    ///
-    /// # Example with PostgreSQL
-    /// ```ignore
-    /// use teaql_provider_postgres::PgMutationExecutor;
-    ///
-    /// let tx = pg_executor.begin().await?;
-    /// // ... execute queries/mutations within transaction
-    /// tx.commit().await?;
-    /// ```
-    pub async fn begin_transaction(&self) -> Result<(), RuntimeError> {
-        // Transaction support is provider-specific
-        // Use the provider's transaction API directly for database transactions
-        Ok(())
-    }
-
-    /// Commit the current transaction.
-    ///
-    /// Note: This is a placeholder. Use provider-specific transaction API.
-    pub async fn commit_transaction(&self) -> Result<(), RuntimeError> {
-        Ok(())
-    }
-
-    /// Rollback the current transaction.
-    ///
-    /// Note: This is a placeholder. Use provider-specific transaction API.
-    pub async fn rollback_transaction(&self) -> Result<(), RuntimeError> {
-        Ok(())
     }
 }
 

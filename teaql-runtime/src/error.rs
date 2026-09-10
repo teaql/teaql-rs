@@ -16,6 +16,7 @@ pub enum RuntimeError {
     Language(String),
     UnsupportedLocale(String),
     Schema(String),
+    Transaction(String),
     MissingRelation { entity: String, relation: String },
     OptimisticLockConflict { entity: String, id: String },
 }
@@ -41,6 +42,7 @@ impl std::fmt::Display for RuntimeError {
             Self::Language(message) => write!(f, "language error: {message}"),
             Self::UnsupportedLocale(code) => write!(f, "unsupported locale: {code}"),
             Self::Schema(message) => write!(f, "schema provider error: {message}"),
+            Self::Transaction(message) => write!(f, "transaction error: {message}"),
             Self::MissingRelation { entity, relation } => {
                 write!(f, "missing relation {relation} on entity {entity}")
             }

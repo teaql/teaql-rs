@@ -1375,6 +1375,94 @@ mod tests {
             .property(PropertyDescriptor::new("name", DataType::Text).column_name("name"))
     }
 
+    #[test]
+    fn user_context_transaction_scope_commits_and_rolls_back_on_one_connection() {
+        let executor = SqliteMutationExecutor::from_connection(
+            Connection::open_in_memory().expect("open transaction fixture"),
+        );
+        executor
+            .connection()
+            .lock()
+            .expect("lock transaction fixture")
+            .execute_batch(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name TEXT)",
+            )
+            .expect("create transaction fixture");
+
+        let metadata = InMemoryMetadataStore::new().with_entity(entity());
+        let data_service = teaql_sql::SqlDataServiceExecutor::new(
+            SqliteDialect,
+            executor.clone(),
+            metadata.clone(),
+        );
+        let mut context = UserContext::new().with_metadata(metadata);
+        context.register_executor(data_service);
+
+        type Executor = teaql_sql::SqlDataServiceExecutor<
+            SqliteDialect,
+            SqliteMutationExecutor,
+            InMemoryMetadataStore,
+        >;
+
+        futures_executor::block_on(context.execute_in_transaction::<Executor, _, _>(|scope| {
+            Box::pin(async move {
+                scope
+                    .mutate(teaql_data_service::MutationRequest::Insert(
+                        teaql_core::InsertCommand::new("Order")
+                            .value("id", 1_u64)
+                            .value("version", 1_i64)
+                            .value("name", "first"),
+                    ))
+                    .await?;
+                scope
+                    .mutate(teaql_data_service::MutationRequest::Insert(
+                        teaql_core::InsertCommand::new("Order")
+                            .value("id", 2_u64)
+                            .value("version", 1_i64)
+                            .value("name", "second"),
+                    ))
+                    .await?;
+                Ok(())
+            })
+        }))
+        .expect("commit transaction scope");
+
+        let failed =
+            futures_executor::block_on(context.execute_in_transaction::<Executor, _, _>(|scope| {
+                Box::pin(async move {
+                    scope
+                        .mutate(teaql_data_service::MutationRequest::Insert(
+                            teaql_core::InsertCommand::new("Order")
+                                .value("id", 3_u64)
+                                .value("version", 1_i64)
+                                .value("name", "must roll back"),
+                        ))
+                        .await?;
+                    scope
+                        .mutate(teaql_data_service::MutationRequest::Insert(
+                            teaql_core::InsertCommand::new("Order")
+                                .value("id", 1_u64)
+                                .value("version", 1_i64)
+                                .value("name", "duplicate"),
+                        ))
+                        .await?;
+                    Ok(())
+                })
+            }));
+        assert!(failed.is_err(), "duplicate key must fail the scope");
+
+        let connection = executor.connection();
+        let guard = connection.lock().expect("lock committed fixture");
+        let ids = guard
+            .prepare("SELECT id FROM orders ORDER BY id")
+            .expect("prepare committed ids")
+            .query_map([], |row| row.get::<_, i64>(0))
+            .expect("query committed ids")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read committed ids");
+        assert_eq!(ids, vec![1, 2]);
+    }
+
     fn order_line_entity() -> EntityDescriptor {
         EntityDescriptor::new("OrderLine")
             .table_name("order_line")
