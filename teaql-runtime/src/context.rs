@@ -1707,7 +1707,7 @@ impl UserContext {
     /// # Example with PostgreSQL
     /// ```ignore
     /// use teaql_provider_postgres::PgMutationExecutor;
-    /// 
+    ///
     /// let tx = pg_executor.begin().await?;
     /// // ... execute queries/mutations within transaction
     /// tx.commit().await?;
