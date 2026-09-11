@@ -156,6 +156,25 @@ pub trait Transaction {
 
 The transaction object itself implements `QueryExecutor` and `MutationExecutor`, so graph save can read current rows, insert, update, delete, and commit within the same transaction scope.
 
+`UserContext` exposes this capability only as a typed callback scope. The
+callback receives a `TransactionScope<E>` and must execute through that scope;
+capturing the surrounding `UserContext` would use its ordinary executor and is
+therefore intentionally not treated as transactional work. Raw context-level
+`begin/commit/rollback` methods are not part of the contract because they can
+claim atomicity without carrying the transaction-owned connection.
+
+```rust,ignore
+context
+    .execute_in_transaction::<ServiceRuntimeExecutor, _, _>(|transaction| {
+        Box::pin(async move {
+            transaction.mutate(first_request).await?;
+            transaction.mutate(second_request).await?;
+            Ok(())
+        })
+    })
+    .await?;
+```
+
 ---
 
 ## 5. SQL Adapter

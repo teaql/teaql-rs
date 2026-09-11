@@ -1224,9 +1224,39 @@ fn signed_offset(sign: u8, hours: [u8; 2], minutes: [u8; 2]) -> Option<i32> {
 mod tests {
     use super::*;
     use futures_util::StreamExt;
-    use teaql_core::{DeleteCommand, Record, RecoverCommand};
-    use teaql_macros::TeaqlEntity;
+    use teaql_core::{DeleteCommand, Entity, Record, RecoverCommand, TeaqlEntity as _};
+    use teaql_macros::{TeaqlEntity, teaql_entity};
     use teaql_runtime::InMemoryMetadataStore;
+
+    #[teaql_entity]
+    #[derive(Debug, TeaqlEntity)]
+    #[teaql(entity = "TransactionSchool", table = "transaction_school")]
+    struct TransactionSchool {
+        #[teaql(id)]
+        id: u64,
+        #[teaql(version)]
+        version: i64,
+        name: String,
+    }
+
+    impl TransactionSchool {
+        fn new(id: u64, name: &str) -> (Self, teaql_runtime::EntityRuntimeState) {
+            let state = teaql_runtime::EntityRuntimeState::default();
+            let key = teaql_runtime::EntityKey::new("TransactionSchool", id);
+            state.mark_as_new(key.clone());
+            state.set(key.clone(), "id", id);
+            state.set(key, "name", name);
+            (
+                Self {
+                    id,
+                    version: 0,
+                    name: name.to_owned(),
+                    __teaql_runtime_state: state.clone(),
+                },
+                state,
+            )
+        }
+    }
 
     #[test]
     fn ensure_schema_registers_soundex_idempotently() {
@@ -1373,6 +1403,181 @@ mod tests {
                     .not_null(),
             )
             .property(PropertyDescriptor::new("name", DataType::Text).column_name("name"))
+    }
+
+    #[test]
+    fn user_context_transaction_scope_commits_and_rolls_back_on_one_connection() {
+        let executor = SqliteMutationExecutor::from_connection(
+            Connection::open_in_memory().expect("open transaction fixture"),
+        );
+        executor
+            .connection()
+            .lock()
+            .expect("lock transaction fixture")
+            .execute_batch(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name TEXT)",
+            )
+            .expect("create transaction fixture");
+
+        let metadata = InMemoryMetadataStore::new().with_entity(entity());
+        let data_service = teaql_sql::SqlDataServiceExecutor::new(
+            SqliteDialect,
+            executor.clone(),
+            metadata.clone(),
+        );
+        let mut context = UserContext::new().with_metadata(metadata);
+        context.register_executor(data_service);
+
+        type Executor = teaql_sql::SqlDataServiceExecutor<
+            SqliteDialect,
+            SqliteMutationExecutor,
+            InMemoryMetadataStore,
+        >;
+
+        futures_executor::block_on(context.execute_in_transaction::<Executor, _, _>(|scope| {
+            Box::pin(async move {
+                scope
+                    .mutate(teaql_data_service::MutationRequest::Insert(
+                        teaql_core::InsertCommand::new("Order")
+                            .value("id", 1_u64)
+                            .value("version", 1_i64)
+                            .value("name", "first"),
+                    ))
+                    .await?;
+                scope
+                    .mutate(teaql_data_service::MutationRequest::Insert(
+                        teaql_core::InsertCommand::new("Order")
+                            .value("id", 2_u64)
+                            .value("version", 1_i64)
+                            .value("name", "second"),
+                    ))
+                    .await?;
+                Ok(())
+            })
+        }))
+        .expect("commit transaction scope");
+
+        let failed =
+            futures_executor::block_on(context.execute_in_transaction::<Executor, _, _>(|scope| {
+                Box::pin(async move {
+                    scope
+                        .mutate(teaql_data_service::MutationRequest::Insert(
+                            teaql_core::InsertCommand::new("Order")
+                                .value("id", 3_u64)
+                                .value("version", 1_i64)
+                                .value("name", "must roll back"),
+                        ))
+                        .await?;
+                    scope
+                        .mutate(teaql_data_service::MutationRequest::Insert(
+                            teaql_core::InsertCommand::new("Order")
+                                .value("id", 1_u64)
+                                .value("version", 1_i64)
+                                .value("name", "duplicate"),
+                        ))
+                        .await?;
+                    Ok(())
+                })
+            }));
+        assert!(failed.is_err(), "duplicate key must fail the scope");
+
+        let connection = executor.connection();
+        let guard = connection.lock().expect("lock committed fixture");
+        let ids = guard
+            .prepare("SELECT id FROM orders ORDER BY id")
+            .expect("prepare committed ids")
+            .query_map([], |row| row.get::<_, i64>(0))
+            .expect("query committed ids")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read committed ids");
+        assert_eq!(ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn typed_audited_saves_share_commit_and_rollback_boundary() {
+        let executor = SqliteMutationExecutor::from_connection(
+            Connection::open_in_memory().expect("open audited transaction fixture"),
+        );
+        executor
+            .connection()
+            .lock()
+            .expect("lock audited transaction fixture")
+            .execute_batch(
+                "CREATE TABLE transaction_school (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name TEXT NOT NULL)",
+            )
+            .expect("create audited transaction fixture");
+
+        let metadata = InMemoryMetadataStore::new()
+            .with_entity(TransactionSchool::entity_descriptor().clone());
+        let data_service = teaql_sql::SqlDataServiceExecutor::new(
+            SqliteDialect,
+            executor.clone(),
+            metadata.clone(),
+        );
+        let mut context = UserContext::new().with_metadata(metadata);
+        context.register_executor(data_service);
+
+        type Executor = teaql_sql::SqlDataServiceExecutor<
+            SqliteDialect,
+            SqliteMutationExecutor,
+            InMemoryMetadataStore,
+        >;
+
+        futures_executor::block_on(context.execute_in_transaction::<Executor, _, _>(|scope| {
+            Box::pin(async move {
+                let (first, _) = TransactionSchool::new(1, "first");
+                let (second, _) = TransactionSchool::new(2, "second");
+                let first = scope
+                    .save_audited(first.audit_as("create first school"))
+                    .await?;
+                let second = scope
+                    .save_audited(second.audit_as("create second school"))
+                    .await?;
+                assert_eq!(first.version, 1);
+                assert_eq!(second.version, 1);
+                Ok(())
+            })
+        }))
+        .expect("commit audited transaction scope");
+
+        let (third, third_ledger) = TransactionSchool::new(3, "must roll back");
+        let failed =
+            futures_executor::block_on(context.execute_in_transaction::<Executor, _, _>(|scope| {
+                Box::pin(async move {
+                    scope
+                        .save_audited(third.audit_as("create third school"))
+                        .await?;
+                    let (duplicate, _) = TransactionSchool::new(1, "duplicate");
+                    scope
+                        .save_audited(duplicate.audit_as("force duplicate failure"))
+                        .await?;
+                    Ok(())
+                })
+            }));
+        assert!(
+            failed.is_err(),
+            "duplicate audited save must fail the scope"
+        );
+        assert!(
+            !third_ledger.new_keys().is_empty(),
+            "rolled-back ledger must retain retryable mutation intent"
+        );
+
+        let connection = executor.connection();
+        let guard = connection.lock().expect("lock audited committed fixture");
+        let rows = guard
+            .prepare("SELECT id, name FROM transaction_school ORDER BY id")
+            .expect("prepare audited committed rows")
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("query audited committed rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read audited committed rows");
+        assert_eq!(
+            rows,
+            vec![(1, "first".to_owned()), (2, "second".to_owned())]
+        );
     }
 
     fn order_line_entity() -> EntityDescriptor {

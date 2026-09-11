@@ -26,7 +26,8 @@ pub use context::{
     FixEvidence, FixEvidenceSource, GeneratedSchemaBootstrap, GeneratedSchemaBootstrapFuture,
     IdSetStore, InMemoryContinuousPageCursorStore, InMemoryDataStore, InMemoryIdSetStore,
     InfoLogEntry, LogPayload, RemoteLockProvider, RetainedIdSet, SchemaInvocation, SchemaProvider,
-    SqlLogEntry, SqlLogOperation, SqlLogOptions, UnifiedLogBuffer, UnifiedLogEntry, UserContext,
+    SqlLogEntry, SqlLogOperation, SqlLogOptions, TransactionScope, UnifiedLogBuffer,
+    UnifiedLogEntry, UserContext,
 };
 pub use data_service::{
     AggregationCacheBackend, EntityDataService, GraphTransactionBoundary, InMemoryAggregationCache,
@@ -36,7 +37,10 @@ pub use entity_runtime::{
     ChangeSetStack, EntityChangeSet, EntityGraphBuilder, EntityKey, EntityRuntimeState,
     LedgerEntity, LoadedRelation, RelationHandle,
 };
-pub use entity_save::{AuditedSaveExt, graph_node_from_entity, save_audited_ledger_entity};
+pub use entity_save::{
+    AuditedSaveExt, graph_node_from_entity, save_audited_ledger_entity,
+    save_audited_ledger_entity_with_executor,
+};
 pub use entity_status::{EntityAction, EntityStatus};
 pub use error::{ContextError, DataServiceError, RuntimeError};
 pub use event::{
