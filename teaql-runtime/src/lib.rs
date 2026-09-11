@@ -37,7 +37,10 @@ pub use entity_runtime::{
     ChangeSetStack, EntityChangeSet, EntityGraphBuilder, EntityKey, EntityRuntimeState,
     LedgerEntity, LoadedRelation, RelationHandle,
 };
-pub use entity_save::{AuditedSaveExt, graph_node_from_entity, save_audited_ledger_entity};
+pub use entity_save::{
+    AuditedSaveExt, graph_node_from_entity, save_audited_ledger_entity,
+    save_audited_ledger_entity_with_executor,
+};
 pub use entity_status::{EntityAction, EntityStatus};
 pub use error::{ContextError, DataServiceError, RuntimeError};
 pub use event::{

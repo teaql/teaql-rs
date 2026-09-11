@@ -597,6 +597,140 @@ where
     result
 }
 
+/// Persist an audited generated entity through an executor that is already
+/// bound to an outer transaction.
+///
+/// This function never commits or rolls back the executor. The returned
+/// mutation ledger must only be cleared after the owner commits the enclosing
+/// transaction; retaining it on rollback keeps the mutation intent retryable.
+#[doc(hidden)]
+pub async fn save_audited_ledger_entity_with_executor<T, E>(
+    audited: teaql_core::Audited<T>,
+    context: &UserContext,
+    executor: &E,
+) -> Result<(T, Option<crate::EntityRuntimeState>), RuntimeError>
+where
+    T: crate::LedgerEntity + Send + 'static,
+    E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
+{
+    let evidence = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let result = GRAPH_FIX_TIME
+        .scope(
+            teaql_core::time::Timestamp::now(),
+            GRAPH_FIX_EVIDENCE.scope(
+                evidence.clone(),
+                save_audited_ledger_entity_with_executor_inner(audited, context, executor),
+            ),
+        )
+        .await;
+    context.replace_last_fix_evidence(evidence.lock().unwrap().clone());
+    result
+}
+
+async fn save_audited_ledger_entity_with_executor_inner<T, E>(
+    audited: teaql_core::Audited<T>,
+    context: &UserContext,
+    executor: &E,
+) -> Result<(T, Option<crate::EntityRuntimeState>), RuntimeError>
+where
+    T: crate::LedgerEntity + Send + 'static,
+    E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
+{
+    let entity = audited.into_entity();
+    let root = entity.entity_runtime_state();
+    let mut node = graph_node_from_entity(context, entity)?;
+
+    if let Some(root) = root {
+        let root_id = node.values.get("id").cloned().unwrap_or(Value::I64(0));
+        let root_key = crate::EntityKey::new(node.entity.clone(), root_id);
+        if let Some(changes) = root.current_change_set().changes().get(&root_key) {
+            for (field, value) in changes {
+                node.values.insert(field.clone(), value.clone());
+            }
+        }
+        let mut visited = BTreeSet::from([root_key.clone()]);
+        hydrate_ledger_relations(context, &root, &mut node, &mut visited)?;
+        preflight_graph(context, &mut node, &ObjectLocation::root(), Some(&root))?;
+        merge_relation_mutations_into_root(&root, &node)?;
+        let has_ledger_changes = !root.current_change_set().changes().is_empty()
+            || !root.deleted_keys().is_empty()
+            || !root.new_keys().is_empty();
+        if has_ledger_changes {
+            let entity_name = node.entity.clone();
+            let descriptor = context.require_entity(&entity_name)?;
+            let id_property = descriptor.id_property().ok_or_else(|| {
+                RuntimeError::Graph(format!("entity {entity_name} has no id property"))
+            })?;
+            let was_new = root.new_keys().contains(&root_key);
+            let was_deleted = root.deleted_keys().contains(&root_key);
+            let original_version = root.get_original_version(&root_key);
+            let data_service =
+                crate::EntityDataService::for_executor(context, &entity_name, executor);
+            let generated_ids = data_service
+                .execute_ledger_plan_internal(root.clone())
+                .await
+                .map_err(data_service_error_into_runtime)?;
+
+            if let Some(new_id) = generated_ids.get(&root_key) {
+                node.values.insert(id_property.name.clone(), new_id.clone());
+            }
+            if was_deleted {
+                if let Some(version_property) = descriptor.version_property() {
+                    if let Some(version) = saved_version(was_new, true, original_version) {
+                        node.values
+                            .insert(version_property.name.clone(), Value::I64(version));
+                    }
+                }
+            } else {
+                let persisted_id =
+                    node.values.get(&id_property.name).cloned().ok_or_else(|| {
+                        RuntimeError::Graph(format!(
+                            "saved {entity_name} missing identity field {}",
+                            id_property.name
+                        ))
+                    })?;
+                node.values = data_service
+                    .fetch_graph_current_row_internal(
+                        &entity_name,
+                        &id_property.name,
+                        &persisted_id,
+                        Vec::new(),
+                    )
+                    .await
+                    .map_err(data_service_error_into_runtime)?
+                    .map(Into::into)
+                    .ok_or_else(|| {
+                        RuntimeError::Graph(format!(
+                            "persisted {entity_name} record could not be read back"
+                        ))
+                    })?;
+            }
+            let entity = T::from_compact_row(teaql_core::CompactRow::from_map(node.values.into()))
+                .map_err(|error| RuntimeError::Graph(error.to_string()))?;
+            return Ok((entity, Some(root)));
+        }
+    }
+
+    preflight_graph(context, &mut node, &ObjectLocation::root(), None)?;
+    let entity_name = node.entity.clone();
+    let saved = crate::EntityDataService::for_executor(context, entity_name, executor)
+        .save_graph_internal(node)
+        .await
+        .map_err(data_service_error_into_runtime)?;
+    let entity = T::from_compact_row(teaql_core::CompactRow::from_map(saved.values.into()))
+        .map_err(|error| RuntimeError::Graph(error.to_string()))?;
+    Ok((entity, None))
+}
+
+fn data_service_error_into_runtime<E: std::error::Error>(
+    error: DataServiceError<E>,
+) -> RuntimeError {
+    match error {
+        DataServiceError::Runtime(error) => error,
+        other => RuntimeError::Graph(other.to_string()),
+    }
+}
+
 async fn save_audited_ledger_entity_inner<T>(
     audited: teaql_core::Audited<T>,
     context: &UserContext,
