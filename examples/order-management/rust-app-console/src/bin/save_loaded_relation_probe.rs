@@ -182,5 +182,115 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     assert_eq!(empty_saved.order_line_list().state(), LoadedRelation::Empty);
     println!("SAVE_EMPTY_RELATION_PASS order_id={empty_id}");
+
+    let mut product = Q::products()
+        .comment("what: create a Product with an explicit null image URL")
+        .purpose("why: verify typed Save preserves loaded null scalar state")
+        .new_entity(&context);
+    let product_id = product.id();
+    product
+        .update_name("Scalar state probe Product")
+        .update_sku(format!("SCALAR-STATE-{product_id}"))
+        .update_commerce_platform_id(saved.commerce_platform_id())
+        .update_image_url(order_management_service_core::teaql_core::Value::Null);
+    let created_product = product
+        .audit_as("create a Product with null image URL")
+        .save(&context)
+        .await?;
+    assert_eq!(created_product.id(), product_id);
+    assert_eq!(created_product.version(), 1);
+    assert!(created_product.is_loaded("image_url"));
+    assert!(matches!(
+        created_product.eval_image_url(),
+        order_management_service_core::teaql_core::eval::EvalResult::Null
+    ));
+
+    let mut loaded_product = Q::products()
+        .with_id_is(product_id)
+        .comment("what: load the complete Product including its null image URL")
+        .purpose("why: change a fully loaded scalar without losing null semantics")
+        .execute_for_one(&context)
+        .await?
+        .expect("created Product must persist");
+    assert!(matches!(
+        loaded_product.eval_image_url(),
+        order_management_service_core::teaql_core::eval::EvalResult::Null
+    ));
+    loaded_product.update_image_url("https://example.test/scalar-state.png");
+    let saved_product = loaded_product
+        .audit_as("set Product image URL from null to a concrete value")
+        .save(&context)
+        .await?;
+    assert_eq!(saved_product.id(), product_id);
+    assert_eq!(saved_product.version(), 2);
+    assert!(saved_product.is_loaded("image_url"));
+    assert!(matches!(
+        saved_product.eval_image_url(),
+        order_management_service_core::teaql_core::eval::EvalResult::Value(Some(ref url))
+            if url == "https://example.test/scalar-state.png"
+    ));
+
+    let mut transaction_product = Q::products()
+        .with_id_is(product_id)
+        .comment("what: reload the complete Product before a transaction-scoped null update")
+        .purpose("why: verify explicit transaction Save returns authoritative null state")
+        .execute_for_one(&context)
+        .await?
+        .expect("updated Product must persist");
+    transaction_product.update_image_url(order_management_service_core::teaql_core::Value::Null);
+    let transaction_product = context
+        .execute_in_transaction::<DataServiceExecutor, _, _>(|scope| {
+            Box::pin(async move {
+                scope
+                    .save_audited(transaction_product.audit_as("clear Product image URL in transaction"))
+                    .await
+            })
+        })
+        .await?;
+    assert_eq!(transaction_product.id(), product_id);
+    assert_eq!(transaction_product.version(), 3);
+    assert!(transaction_product.is_loaded("image_url"));
+    assert!(matches!(
+        transaction_product.eval_image_url(),
+        order_management_service_core::teaql_core::eval::EvalResult::Null
+    ));
+
+    let mut partial_product = Q::products_minimal()
+        .with_id_is(product_id)
+        .select_name()
+        .comment("what: deliberately load only Product identity and name")
+        .purpose("why: prove NotLoaded scalars cannot be silently saved")
+        .execute_for_one(&context)
+        .await?
+        .expect("Product must exist in a minimal projection");
+    assert!(!partial_product.is_loaded("image_url"));
+    assert!(matches!(
+        partial_product.eval_image_url(),
+        order_management_service_core::teaql_core::eval::EvalResult::NotLoaded { .. }
+    ));
+    partial_product.update_name("Must not persist from an incomplete Product");
+    let incomplete_error = partial_product
+        .audit_as("reject an incomplete Product update")
+        .save(&context)
+        .await
+        .expect_err("checker must reject an update from a NotLoaded scalar projection");
+    assert!(
+        incomplete_error.to_string().contains("fully loaded"),
+        "{incomplete_error}"
+    );
+    let persisted_product = Q::products()
+        .with_id_is(product_id)
+        .comment("what: reload Product after rejected incomplete Save")
+        .purpose("why: prove the checker rejected the mutation before database write")
+        .execute_for_one(&context)
+        .await?
+        .expect("rejected Save must not delete Product");
+    assert_eq!(persisted_product.name(), "Scalar state probe Product");
+    assert_eq!(persisted_product.version(), 3);
+    assert!(matches!(
+        persisted_product.eval_image_url(),
+        order_management_service_core::teaql_core::eval::EvalResult::Null
+    ));
+    println!("SAVE_SCALAR_STATE_PASS product_id={product_id}");
     Ok(())
 }
