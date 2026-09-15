@@ -19,15 +19,15 @@ verify_expected_output() {
 }
 
 if [[ "${1:-}" == "--self-test" ]]; then
-  green='test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s'
+  green='test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s'
   partial='test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s'
-  ignored='test result: ok. 28 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.00s'
-  verify_expected_output postgres 28 "$green"
-  if verify_expected_output postgres 28 "$partial" >/dev/null 2>&1; then
+  ignored='test result: ok. 29 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.00s'
+  verify_expected_output postgres 29 "$green"
+  if verify_expected_output postgres 29 "$partial" >/dev/null 2>&1; then
     printf 'FAIL self-test: partial execution was accepted\n' >&2
     exit 1
   fi
-  if verify_expected_output postgres 28 "$ignored" >/dev/null 2>&1; then
+  if verify_expected_output postgres 29 "$ignored" >/dev/null 2>&1; then
     printf 'FAIL self-test: ignored test was accepted\n' >&2
     exit 1
   fi
@@ -69,6 +69,6 @@ run_expected_suite() {
 }
 
 run_expected_suite teaql-provider-sqlite '41,1' --lib --tests
-run_expected_suite teaql-provider-postgres '28' --lib
+run_expected_suite teaql-provider-postgres '29' --lib
 run_expected_suite teaql-provider-mysql '23' --lib
 printf 'PASS live SQLite/PostgreSQL/MySQL provider suites (isolated database URLs supplied)\n'

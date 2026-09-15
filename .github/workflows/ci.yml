@@ -27,6 +27,45 @@ jobs:
       - name: Run Tests
         run: cargo test --all-targets --all-features
 
+  live-sql-providers:
+    name: Live SQLite/PostgreSQL/MySQL providers
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: teaql_ci
+          POSTGRES_PASSWORD: teaql-ci-test-only
+          POSTGRES_DB: teaql_rust_provider_ci_postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U teaql_ci -d teaql_rust_provider_ci_postgres"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: teaql-ci-root-test-only
+          MYSQL_DATABASE: teaql_rust_provider_ci_mysql
+          MYSQL_USER: teaql_ci
+          MYSQL_PASSWORD: teaql-ci-test-only
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pteaql-ci-root-test-only"
+          --health-interval=10s --health-timeout=5s --health-start-period=30s --health-retries=15
+    env:
+      TEAQL_TEST_POSTGRES_URL: postgresql://teaql_ci:teaql-ci-test-only@127.0.0.1:5432/teaql_rust_provider_ci_postgres
+      TEAQL_TEST_MYSQL_URL: mysql://teaql_ci:teaql-ci-test-only@127.0.0.1:3306/teaql_rust_provider_ci_mysql
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+      - name: Verify live providers with exact zero-ignored counts
+        run: ./scripts/verify-live-sql-providers.sh
+
   security-audit:
     name: Security Audit
     runs-on: ubuntu-latest
