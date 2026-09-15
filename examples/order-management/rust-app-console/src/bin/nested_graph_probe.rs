@@ -11,10 +11,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database_url = std::env::var("TEAQL_NESTED_PROBE_DATABASE")?;
     let database_path = database_url
         .strip_prefix("sqlite:file:")
-        .ok_or_else(|| std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "nested graph probe requires a sqlite:file: URL",
-        ))?
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "nested graph probe requires a sqlite:file: URL",
+            )
+        })?
         .to_owned();
     let context = service_runtime(ServiceRuntimeConfig { database_url }).await?;
     context.ensure_schema().await?;
@@ -235,6 +237,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .audit_as("Update order, modify a child, delete a child, and add a child")
         .save(&context)
         .await?;
+    let mixed_reason = "Update order, modify a child, delete a child, and add a child";
+    let mixed_sql_logs: Vec<_> = context
+        .sql_logs()
+        .into_iter()
+        .filter(|entry| entry.operation.is_mutation())
+        .filter(|entry| entry.audit_reason.as_deref() == Some(mixed_reason))
+        .collect();
+    assert!(
+        mixed_sql_logs.len() >= 4,
+        "mixed graph Save must retain audit intent on parent and three child statements: {mixed_sql_logs:?}"
+    );
+    let mut child_statements = 0_usize;
+    for entry in &mixed_sql_logs {
+        let frames = &entry.trace_path;
+        assert!(
+            frames.len() >= 4,
+            "mutation trace is too shallow: {frames:?}"
+        );
+        assert_eq!(
+            frames.first().map(|frame| frame.kind),
+            Some(order_management_service_core::teaql_core::TraceKind::Operation)
+        );
+        assert_eq!(
+            frames[frames.len() - 2].kind,
+            order_management_service_core::teaql_core::TraceKind::Provider
+        );
+        assert_eq!(
+            frames.last().map(|frame| frame.kind),
+            Some(order_management_service_core::teaql_core::TraceKind::Sql)
+        );
+        if frames.iter().any(|frame| {
+            frame.kind == order_management_service_core::teaql_core::TraceKind::Entity
+                && frame.entity_type == "OrderLine"
+        }) {
+            child_statements += 1;
+        }
+    }
+    assert!(
+        child_statements >= 3,
+        "mixed graph Save must identify update/delete/insert OrderLine statements: {mixed_sql_logs:?}"
+    );
+    println!(
+        "MULTILEVEL_MUTATION_TRACE_PASS statements={}",
+        mixed_sql_logs.len()
+    );
 
     let parent_after = Q::customer_orders()
         .with_id_is(order_id)
@@ -267,7 +314,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(existing_after.quantity(), 2);
     assert_eq!(existing_after.version(), existing_version_before + 1);
     assert_eq!(added_after.len(), 1);
-    assert!(removed_after.is_empty(), "deleted child remained in normal results");
+    assert!(
+        removed_after.is_empty(),
+        "deleted child remained in normal results"
+    );
     // A conformance-only direct read distinguishes soft deletion from physical deletion.
     let database = rusqlite::Connection::open(database_path)?;
     let deleted_version: i64 = database.query_row(
@@ -369,7 +419,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         [i64::try_from(cancelled_id)?],
         |row| row.get(0),
     )?;
-    assert_eq!(cancelled_rows, 0, "cancelled new child reached the database");
+    assert_eq!(
+        cancelled_rows, 0,
+        "cancelled new child reached the database"
+    );
     println!("CANCELLED: new_child_id={cancelled_id}, database_rows=0");
     println!(
         "MIXED: parent_id={order_id}, updated_child={line_id}, deleted_child={removable_id}, added_child={added_id}"
