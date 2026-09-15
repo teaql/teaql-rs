@@ -10,12 +10,9 @@ use rusqlite::{
     Connection, OptionalExtension, Row, functions::FunctionFlags, params, params_from_iter,
 };
 use rust_decimal::Decimal;
-use teaql_core::{
-    CompactRow, DataType, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, SelectQuery,
-    UpdateCommand, Value,
-};
+use teaql_core::{CompactRow, DataType, EntityDescriptor, PropertyDescriptor, Value};
 use teaql_runtime::{
-    GraphNode, InternalIdGenerator, RawAuditEvent, RuntimeError, SchemaProvider, UserContext,
+    InternalIdGenerator, RawAuditEvent, RuntimeError, SchemaProvider, UserContext,
     canonical_id_space_entity,
 };
 use teaql_sql::{
@@ -867,88 +864,6 @@ impl teaql_sql::SqlTransactionTransport for SqliteMutationExecutor {
     }
 }
 
-fn initial_graph_row_sqlite(
-    executor: &SqliteMutationExecutor,
-    dialect: &SqliteDialect,
-    entity: &EntityDescriptor,
-    graph: &GraphNode,
-) -> Result<Option<teaql_core::CompactRow>, MutationExecutorError> {
-    let Some(id) = graph.values.get("id") else {
-        return Ok(None);
-    };
-    let mut select = SelectQuery::new(&graph.entity)
-        .filter(Expr::eq("id", id.clone()))
-        .limit(1);
-    for field in graph.values.keys() {
-        select = select.project(field);
-    }
-    if let Some(version) = entity
-        .version_property()
-        .filter(|version| !graph.values.contains_key(&version.name))
-    {
-        select = select.project(&version.name);
-    }
-    let query = dialect.compile_select(entity, &select)?;
-    Ok(executor.fetch_all_compact(&query)?.into_iter().next())
-}
-
-fn compile_initial_graph_insert(
-    dialect: &impl SqlDialect,
-    entity: &EntityDescriptor,
-    graph: &GraphNode,
-) -> Result<CompiledQuery, MutationExecutorError> {
-    let mut command = InsertCommand::new(&graph.entity);
-    for (field, value) in &graph.values {
-        command = command.value(field.clone(), value.clone());
-    }
-    dialect.compile_insert(entity, &command).map_err(Into::into)
-}
-
-fn compile_initial_graph_update(
-    dialect: &impl SqlDialect,
-    entity: &EntityDescriptor,
-    graph: &GraphNode,
-    current: &teaql_core::CompactRow,
-) -> Result<Option<CompiledQuery>, MutationExecutorError> {
-    let Some(id) = graph.values.get("id") else {
-        return Ok(None);
-    };
-    let mut command = UpdateCommand::new(&graph.entity, id.clone());
-    for (field, value) in &graph.values {
-        if field != "id"
-            && field != "version"
-            && !bootstrap_values_equal(current.get(field), Some(value))
-        {
-            command = command.value(field.clone(), value.clone());
-        }
-    }
-    if command.values.is_empty() {
-        return Ok(None);
-    }
-    if let Some(version) = entity
-        .version_property()
-        .and_then(|property| current.get(&property.name))
-        .and_then(Value::try_i64)
-    {
-        command = command.expected_version(version);
-    }
-    match dialect.compile_update(entity, &command) {
-        Ok(query) => Ok(Some(query)),
-        Err(SqlCompileError::EmptyMutation(_)) => Ok(None),
-        Err(err) => Err(err.into()),
-    }
-}
-
-fn bootstrap_values_equal(left: Option<&Value>, right: Option<&Value>) -> bool {
-    let (Some(left), Some(right)) = (left, right) else {
-        return left.is_none() && right.is_none();
-    };
-    if left == right {
-        return true;
-    }
-    matches!((left.try_decimal(), right.try_decimal()), (Some(a), Some(b)) if a == b)
-}
-
 pub(crate) fn ensure_sqlite_physical_schema_for(
     context: &UserContext,
 ) -> Result<(), MutationExecutorError> {
@@ -1056,80 +971,6 @@ pub(crate) fn ensure_sqlite_schema_for(context: &UserContext) -> Result<(), Muta
                 .to_owned(),
         ));
     }
-    Ok(())
-}
-
-#[allow(dead_code)]
-fn ensure_legacy_sqlite_bootstrap_for(context: &UserContext) -> Result<(), MutationExecutorError> {
-    ensure_sqlite_physical_schema_for(context)?;
-    let dialect = context.get_resource::<SqliteDialect>().ok_or_else(|| {
-        MutationExecutorError::Bind("missing typed resource: SqliteDialect".to_owned())
-    })?;
-    let executor = context
-        .get_resource::<SqliteMutationExecutor>()
-        .ok_or_else(|| {
-            MutationExecutorError::Bind("missing typed resource: SqliteMutationExecutor".to_owned())
-        })?;
-
-    // Constant graphs are reconciled so model changes are propagated.
-    let id_generator = SqliteIdSpaceGenerator::from_executor(executor.clone());
-    let mut seed_counts: BTreeMap<String, (usize, usize)> = BTreeMap::new(); // (inserted, updated)
-    for graph in context.initial_graphs() {
-        let entity = context.entity(&graph.entity).ok_or_else(|| {
-            MutationExecutorError::Bind(format!("missing entity: {}", graph.entity))
-        })?;
-        let counts = seed_counts.entry(graph.entity.clone()).or_insert((0, 0));
-        if let Some(current) = initial_graph_row_sqlite(executor, dialect, entity, graph)? {
-            if let Some(query) = compile_initial_graph_update(dialect, entity, graph, &current)? {
-                executor.execute(&query)?;
-                counts.1 += 1;
-            }
-            if let Some(id) = graph.values.get("id").and_then(Value::try_u64) {
-                id_generator.ensure_floor(&graph.entity, id)?;
-            }
-            continue;
-        }
-        let query = compile_initial_graph_insert(dialect, entity, graph)?;
-        executor.execute(&query)?;
-        counts.0 += 1; // inserted
-        if let Some(id) = graph.values.get("id").and_then(Value::try_u64) {
-            id_generator.ensure_floor(&graph.entity, id)?;
-        }
-    }
-
-    // Roots are create-if-absent. Once present, application-owned values win.
-    for graph in context.root_graphs() {
-        let entity = context.entity(&graph.entity).ok_or_else(|| {
-            MutationExecutorError::Bind(format!("missing entity: {}", graph.entity))
-        })?;
-        if initial_graph_row_sqlite(executor, dialect, entity, graph)?.is_some() {
-            if let Some(id) = graph.values.get("id").and_then(Value::try_u64) {
-                id_generator.ensure_floor(&graph.entity, id)?;
-            }
-            continue;
-        }
-        let query = compile_initial_graph_insert(dialect, entity, graph)?;
-        executor.execute(&query)?;
-        seed_counts.entry(graph.entity.clone()).or_insert((0, 0)).0 += 1;
-        if let Some(id) = graph.values.get("id").and_then(Value::try_u64) {
-            id_generator.ensure_floor(&graph.entity, id)?;
-        }
-    }
-
-    // Fire DataSeeded events per entity type
-    for (entity_name, (inserted, updated)) in &seed_counts {
-        let entity = context.entity(entity_name).ok_or_else(|| {
-            MutationExecutorError::Bind(format!("missing entity: {}", entity_name))
-        })?;
-        let _ = context.send_event(RawAuditEvent::data_seeded(
-            entity_name,
-            &entity.table_name,
-            *inserted,
-            *updated,
-        ));
-    }
-
-    executor.clear_query_caches();
     Ok(())
 }
 
@@ -1715,10 +1556,11 @@ mod tests {
     use super::*;
     use futures_util::StreamExt;
     use teaql_core::{
-        DeleteCommand, Entity, Record, RecoverCommand, RelationDescriptor, TeaqlEntity as _,
+        DeleteCommand, Entity, Expr, InsertCommand, Record, RecoverCommand, RelationDescriptor,
+        SelectQuery, TeaqlEntity as _, UpdateCommand,
     };
     use teaql_macros::{TeaqlEntity, teaql_entity};
-    use teaql_runtime::InMemoryMetadataStore;
+    use teaql_runtime::{GraphNode, InMemoryMetadataStore};
 
     #[teaql_entity]
     #[derive(Debug, TeaqlEntity)]

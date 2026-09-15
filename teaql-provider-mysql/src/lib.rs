@@ -6,13 +6,13 @@ use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
 use rust_decimal::Decimal;
 use std::str::FromStr;
 use std::sync::Arc;
-use teaql_core::{
-    CompactRow, DataType, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, SelectQuery,
-    UpdateCommand, Value,
-};
+use teaql_core::{CompactRow, DataType, EntityDescriptor, PropertyDescriptor, Value};
+#[cfg(test)]
+use teaql_core::{InsertCommand, UpdateCommand};
+#[cfg(test)]
+use teaql_runtime::GraphNode;
 use teaql_runtime::{
-    GraphNode, InternalIdGenerator, RuntimeError, SchemaProvider, UserContext,
-    canonical_id_space_entity,
+    InternalIdGenerator, RuntimeError, SchemaProvider, UserContext, canonical_id_space_entity,
 };
 use teaql_sql::{
     CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, quote_identifier_if_needed,
@@ -764,62 +764,6 @@ impl teaql_sql::SqlTransactionTransport for MysqlMutationExecutor {
     }
 }
 
-async fn ensure_initial_graphs_mysql(
-    executor: &MysqlMutationExecutor,
-    dialect: &MysqlDialect,
-    context: &UserContext,
-) -> Result<(), MutationExecutorError> {
-    for graph in context.initial_graphs() {
-        let entity = context.entity(&graph.entity).ok_or_else(|| {
-            MutationExecutorError::Bind(format!("missing entity: {}", graph.entity))
-        })?;
-        if initial_graph_exists_mysql(executor, dialect, entity, graph).await? {
-            if let Some(query) = compile_initial_graph_update(dialect, entity, graph)? {
-                executor.execute(&query).await?;
-            }
-            continue;
-        }
-        let query = compile_initial_graph_insert(dialect, entity, graph)?;
-        executor.execute(&query).await?;
-    }
-    for graph in context.root_graphs() {
-        let entity = context.entity(&graph.entity).ok_or_else(|| {
-            MutationExecutorError::Bind(format!("missing entity: {}", graph.entity))
-        })?;
-        if initial_graph_exists_mysql(executor, dialect, entity, graph).await? {
-            continue;
-        }
-        let query = compile_initial_graph_insert(dialect, entity, graph)?;
-        executor.execute(&query).await?;
-    }
-    let generator = MysqlIdSpaceGenerator::new(executor.pool.clone());
-    for graph in context.initial_graphs().iter().chain(context.root_graphs()) {
-        if let Some(id) = graph.values.get("id").and_then(Value::try_u64) {
-            generator.ensure_floor(&graph.entity, id).await?;
-        }
-    }
-    Ok(())
-}
-
-async fn initial_graph_exists_mysql(
-    executor: &MysqlMutationExecutor,
-    dialect: &MysqlDialect,
-    entity: &EntityDescriptor,
-    graph: &GraphNode,
-) -> Result<bool, MutationExecutorError> {
-    let Some(id) = graph.values.get("id") else {
-        return Ok(false);
-    };
-    let query = dialect.compile_select(
-        entity,
-        &SelectQuery::new(&graph.entity)
-            .project("id")
-            .filter(Expr::eq("id", id.clone()))
-            .limit(1),
-    )?;
-    Ok(!executor.fetch_all_compact(&query).await?.is_empty())
-}
-
 #[derive(Clone)]
 pub struct MysqlTransactionExecutor {
     conn: Arc<Mutex<Option<mysql_async::Conn>>>,
@@ -896,39 +840,6 @@ impl MysqlTransactionExecutor {
     }
 }
 
-fn compile_initial_graph_insert(
-    dialect: &impl SqlDialect,
-    entity: &EntityDescriptor,
-    graph: &GraphNode,
-) -> Result<CompiledQuery, MutationExecutorError> {
-    let mut command = InsertCommand::new(&graph.entity);
-    for (field, value) in &graph.values {
-        command = command.value(field.clone(), value.clone());
-    }
-    dialect.compile_insert(entity, &command).map_err(Into::into)
-}
-
-fn compile_initial_graph_update(
-    dialect: &impl SqlDialect,
-    entity: &EntityDescriptor,
-    graph: &crate::GraphNode,
-) -> Result<Option<CompiledQuery>, MutationExecutorError> {
-    let Some(id) = graph.values.get("id") else {
-        return Ok(None);
-    };
-    let mut command = UpdateCommand::new(&graph.entity, id.clone());
-    for (field, value) in &graph.values {
-        if field != "id" {
-            command = command.value(field.clone(), value.clone());
-        }
-    }
-    match dialect.compile_update(entity, &command) {
-        Ok(query) => Ok(Some(query)),
-        Err(SqlCompileError::EmptyMutation(_)) => Ok(None),
-        Err(err) => Err(err.into()),
-    }
-}
-
 pub(crate) async fn ensure_mysql_schema_for(
     context: &UserContext,
 ) -> Result<(), MutationExecutorError> {
@@ -944,7 +855,13 @@ pub(crate) async fn ensure_mysql_schema_for(
     let entities = context.all_entities();
 
     executor.ensure_schema(dialect, &entities).await?;
-    ensure_initial_graphs_mysql(executor, dialect, context).await
+    if !context.initial_graphs().is_empty() || !context.root_graphs().is_empty() {
+        return Err(MutationExecutorError::Bind(
+            "generated root/constant bootstrap must use the typed RuntimeModule callback"
+                .to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -964,6 +881,46 @@ mod streaming_tests {
                     .not_null(),
             )
             .property(PropertyDescriptor::new("name", DataType::Text))
+    }
+
+    #[tokio::test]
+    async fn context_schema_rejects_provider_owned_bootstrap_graphs_when_configured() {
+        let Ok(url) = std::env::var("TEAQL_TEST_MYSQL_URL") else {
+            return;
+        };
+        let pool = mysql_async::Pool::new(url.as_str());
+        let executor = MysqlMutationExecutor::new(pool.clone());
+        let entity = schema_entity("LegacyBootstrapProbe", "teaql_gabm_legacy_mysql_rejection");
+        let mut context = UserContext::new()
+            .with_metadata(teaql_runtime::InMemoryMetadataStore::new().with_entity(entity));
+        context.set_initial_graphs(vec![
+            GraphNode::new("LegacyBootstrapProbe")
+                .value("id", 1001_u64)
+                .value("version", 1_i64)
+                .value("name", "provider-owned bootstrap must not run"),
+        ]);
+        context.use_mysql_provider(executor);
+        let error = context.ensure_schema().await.unwrap_err();
+        assert!(error.to_string().contains(
+            "generated root/constant bootstrap must use the typed RuntimeModule callback"
+        ));
+        context.set_initial_graphs(Vec::new());
+        context.set_root_graphs(vec![
+            GraphNode::new("LegacyBootstrapProbe")
+                .value("id", 1_u64)
+                .value("version", 1_i64)
+                .value("name", "provider-owned root must not run"),
+        ]);
+        let root_error = context.ensure_schema().await.unwrap_err();
+        assert!(root_error.to_string().contains(
+            "generated root/constant bootstrap must use the typed RuntimeModule callback"
+        ));
+        let mut conn = pool.get_conn().await.unwrap();
+        let count: Option<u64> = conn
+            .query_first("SELECT COUNT(*) FROM teaql_gabm_legacy_mysql_rejection")
+            .await
+            .unwrap();
+        assert_eq!(count, Some(0));
     }
 
     #[tokio::test]
