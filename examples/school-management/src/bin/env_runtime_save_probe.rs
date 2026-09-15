@@ -31,7 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .save(&context)
         .await?;
     assert!(saved.id() > 0);
-    let reread = Q::schools()
+    let mut reread = Q::schools()
         .with_id_is(saved.id())
         .select_self_fields()
         .comment("Reload School created through service_runtime_from_env")
@@ -41,10 +41,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("environment helper must persist the audited School");
     assert_eq!(reread.name(), "Env Helper School");
     assert_eq!(reread.version(), saved.version());
+    // The physical FK column is `school_type`, the same spelling as the
+    // relation. Scalar hydration must not fabricate a partial SchoolType.
+    assert_eq!(reread.school_type_id(), 1001);
+    assert!(reread.school_type().is_none());
+    reread.update_name("Env Helper School Renamed");
+    let updated = reread
+        .audit_as("Verify scalar FK hydration does not create a ghost relation")
+        .save(&context)
+        .await?;
+    assert_eq!(updated.version(), saved.version() + 1);
+    let verified = Q::schools()
+        .with_id_is(updated.id())
+        .select_self_fields()
+        .comment("Reload School after colliding-column audited update")
+        .purpose("Verify physical school_type column does not create a ghost relation")
+        .execute_for_one(&context)
+        .await?
+        .expect("updated School must remain queryable");
+    assert_eq!(verified.name(), "Env Helper School Renamed");
+    assert_eq!(verified.school_type_id(), 1001);
+    assert_eq!(verified.version(), updated.version());
     println!(
         "ENV_RUNTIME_SAVE_PASS school_id={} version={}",
         saved.id(),
-        saved.version()
+        updated.version()
     );
+    println!("COLLIDING_FK_SAVE_PASS school_type_id=1001");
     Ok(())
 }
