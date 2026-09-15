@@ -1,0 +1,29 @@
+name: Rust release SemVer audit
+
+on:
+  workflow_dispatch:
+
+jobs:
+  compare-published-api:
+    name: SemVer patch against 4.3.5 (${{ matrix.crate }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - teaql-macros
+          - teaql-core
+          - teaql-data-service
+          - teaql-sql
+          - teaql-runtime
+          - teaql-provider-sqlite
+          - teaql-provider-postgres
+          - teaql-provider-mysql
+    steps:
+      - uses: actions/checkout@v5
+      - name: Compare source API with published 4.3.5
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: ${{ matrix.crate }}
+          baseline-version: "4.3.5"
+          release-type: patch
