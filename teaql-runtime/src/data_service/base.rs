@@ -3,7 +3,7 @@
 
 use teaql_core::{
     CompactRow, DeleteCommand, Entity, InsertCommand, MutationValues, RecoverCommand, SelectQuery,
-    SmartList, UpdateCommand,
+    SmartList, TraceKind, TraceNode, UpdateCommand,
 };
 use teaql_data_service::{MutationRequest, QueryRequest};
 
@@ -15,6 +15,16 @@ fn conflict_id(id: &teaql_core::Value) -> String {
     id.try_u64()
         .map(|value| value.to_string())
         .unwrap_or_else(|| format!("{id:?}"))
+}
+
+fn sql_statement_trace(mut lineage: Vec<TraceNode>, entity: &str) -> Vec<TraceNode> {
+    if !lineage
+        .iter()
+        .any(|frame| frame.kind == TraceKind::Entity && frame.entity_type == entity)
+    {
+        lineage.push(TraceNode::typed(TraceKind::Entity, entity, None, ""));
+    }
+    lineage
 }
 
 impl<'a, M, E> RuntimeDataService<'a, M, E>
@@ -109,7 +119,9 @@ where
         &self,
         command: &InsertCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
-        let request = MutationRequest::Insert(command.clone());
+        let mut command = command.clone();
+        command.trace_chain = sql_statement_trace(command.trace_chain, &command.entity);
+        let request = MutationRequest::Insert(command);
         let res = self
             .executor
             .mutate(request)
@@ -123,7 +135,9 @@ where
         &self,
         command: &UpdateCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
-        let request = MutationRequest::Update(command.clone());
+        let mut command = command.clone();
+        command.trace_chain = sql_statement_trace(command.trace_chain, &command.entity);
+        let request = MutationRequest::Update(command);
         let res = self
             .executor
             .mutate(request)
@@ -148,7 +162,9 @@ where
         &self,
         command: &DeleteCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
-        let request = MutationRequest::Delete(command.clone());
+        let mut command = command.clone();
+        command.trace_chain = sql_statement_trace(command.trace_chain, &command.entity);
+        let request = MutationRequest::Delete(command);
         let res = self
             .executor
             .mutate(request)
@@ -181,6 +197,8 @@ where
             if i < command.trace_chains.len() {
                 insert_cmd.trace_chain = command.trace_chains[i].clone();
             }
+            insert_cmd.trace_chain =
+                sql_statement_trace(insert_cmd.trace_chain, &insert_cmd.entity);
             let res = self
                 .executor
                 .mutate(MutationRequest::Insert(insert_cmd))
@@ -217,6 +235,8 @@ where
             if i < command.trace_chains.len() {
                 update_cmd.trace_chain = command.trace_chains[i].clone();
             }
+            update_cmd.trace_chain =
+                sql_statement_trace(update_cmd.trace_chain, &update_cmd.entity);
             let expected_version = update_cmd.expected_version;
             let res = self
                 .executor
@@ -253,7 +273,9 @@ where
         &self,
         command: &RecoverCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
-        let request = MutationRequest::Recover(command.clone());
+        let mut command = command.clone();
+        command.trace_chain = sql_statement_trace(command.trace_chain, &command.entity);
+        let request = MutationRequest::Recover(command);
         let res = self
             .executor
             .mutate(request)

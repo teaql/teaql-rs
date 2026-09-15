@@ -285,11 +285,21 @@ fn canonical_sql_trace_path(
             .cloned()
             .collect();
     }
-    let entity = source
+    let operation_entity = source
         .iter()
         .find(|node| !node.entity_type.trim().is_empty())
         .map(|node| node.entity_type.clone())
         .unwrap_or_else(|| "unknown".to_owned());
+    let statement_entity = if operation.is_select() {
+        operation_entity.clone()
+    } else {
+        source
+            .iter()
+            .rev()
+            .find(|node| node.kind == TraceKind::Entity && !node.entity_type.trim().is_empty())
+            .map(|node| node.entity_type.clone())
+            .unwrap_or_else(|| operation_entity.clone())
+    };
     let family = if operation.is_select() {
         "query"
     } else {
@@ -304,7 +314,7 @@ fn canonical_sql_trace_path(
     };
     let mut path = vec![TraceNode::typed(
         TraceKind::Operation,
-        entity.clone(),
+        operation_entity,
         None,
         family,
     )];
@@ -314,7 +324,7 @@ fn canonical_sql_trace_path(
         } else {
             TraceKind::Entity
         },
-        entity,
+        statement_entity,
         None,
         "",
     ));

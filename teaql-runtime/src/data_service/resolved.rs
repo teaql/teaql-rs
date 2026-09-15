@@ -1548,8 +1548,12 @@ where
         &self,
         command: &DeleteCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
-        self.delete_scoped_internal(command, self.trace_context.clone())
-            .await
+        let trace_chain = if command.trace_chain.is_empty() {
+            self.trace_context.clone()
+        } else {
+            command.trace_chain.clone()
+        };
+        self.delete_scoped_internal(command, trace_chain).await
     }
 
     pub(crate) async fn delete_scoped_internal(
