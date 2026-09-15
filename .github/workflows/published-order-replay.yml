@@ -28,7 +28,7 @@ jobs:
           fi
           manifest=examples/order-management/published-replay/Cargo.toml
           for crate in teaql-core teaql-macros teaql-runtime teaql-sql teaql-data-service teaql-provider-sqlite; do
-            sed -i "s/^${crate} = \"=4.3.5\"$/${crate} = \"=${TEAQL_ARCHIVE_VERSION}\"/" "$manifest"
+            sed -i -E "s/^(${crate} = \"=)[0-9]+\.[0-9]+\.[0-9]+(\"$)/\1${TEAQL_ARCHIVE_VERSION}\2/" "$manifest"
             grep -Fx "${crate} = \"=${TEAQL_ARCHIVE_VERSION}\"" "$manifest"
           done
       - name: Verify exact official package sources before execution
