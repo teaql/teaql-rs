@@ -2,22 +2,46 @@ name: Rust published Order archive replay
 
 on:
   workflow_dispatch:
+    inputs:
+      runtime_version:
+        description: Exact published Rust runtime version to replay
+        required: true
+        default: "4.3.5"
+        type: string
 
 jobs:
-  replay-official-435:
-    name: Two-pass mixed graph against official 4.3.5
+  replay-official-archive:
+    name: Two-pass mixed graph against official ${{ inputs.runtime_version }}
     runs-on: ubuntu-latest
+    env:
+      TEAQL_ARCHIVE_VERSION: ${{ inputs.runtime_version }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+      - name: Pin requested exact archive version in disposable checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$TEAQL_ARCHIVE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo 'runtime_version must be a numeric x.y.z version' >&2
+            exit 2
+          fi
+          manifest=examples/order-management/published-replay/Cargo.toml
+          for crate in teaql-core teaql-macros teaql-runtime teaql-sql teaql-data-service teaql-provider-sqlite; do
+            sed -i "s/^${crate} = \"=4.3.5\"$/${crate} = \"=${TEAQL_ARCHIVE_VERSION}\"/" "$manifest"
+            grep -Fx "${crate} = \"=${TEAQL_ARCHIVE_VERSION}\"" "$manifest"
+          done
       - name: Verify exact official package sources before execution
         shell: bash
         run: |
           set -euo pipefail
           cargo metadata --manifest-path examples/order-management/published-replay/Cargo.toml --format-version 1 |
             python3 -c '
-          import json, sys
+          import json, os, re, sys, tomllib
+          from pathlib import Path
           metadata = json.load(sys.stdin)
+          version_requested = os.environ["TEAQL_ARCHIVE_VERSION"]
+          lock = tomllib.loads(Path("examples/order-management/published-replay/Cargo.lock").read_text())
           required = ("teaql-core", "teaql-macros", "teaql-runtime", "teaql-sql", "teaql-data-service", "teaql-provider-sqlite")
           for crate in required:
               matches = [package for package in metadata["packages"] if package["name"] == crate]
@@ -25,18 +49,23 @@ jobs:
               package = matches[0]
               version = package["version"]
               source = package["source"]
-              assert version == "4.3.5", f"RED {crate}: resolved {version}"
+              assert version == version_requested, f"RED {crate}: resolved {version}, requested {version_requested}"
               assert source == "registry+https://github.com/rust-lang/crates.io-index", f"RED {crate}: not an official archive: {source}"
-              print(f"OFFICIAL_435 {crate} {version} {source}")
+              locked = [entry for entry in lock["package"] if entry["name"] == crate and entry["version"] == version_requested]
+              assert len(locked) == 1, f"RED {crate}: no unique exact package in Cargo.lock"
+              assert locked[0].get("source") == source, f"RED {crate}: Cargo.lock source differs from metadata"
+              assert re.fullmatch(r"[0-9a-f]{64}", locked[0].get("checksum", "")), f"RED {crate}: missing archive checksum"
+              checksum = locked[0]["checksum"]
+              print(f"OFFICIAL_ARCHIVE {crate} {version} {source} checksum={checksum}")
           '
       - name: Run existing generated Order consumer twice on one SQLite file
         shell: bash
         run: |
           set -euo pipefail
           teaql_archive_replay_dir="$(mktemp -d)"
-          trap 'rm -rf -- "$teaql_archive_replay_dir"' EXIT
+          trap 'rm -r -- "$teaql_archive_replay_dir"' EXIT
           for replay_pass in 1 2; do
-            echo "PUBLISHED_435_REPLAY_PASS=$replay_pass"
+            echo "PUBLISHED_ARCHIVE_REPLAY_VERSION=$TEAQL_ARCHIVE_VERSION PASS=$replay_pass"
             TEAQL_NESTED_PROBE_DATABASE="sqlite:file:$teaql_archive_replay_dir/graph.db" \
               cargo run --manifest-path examples/order-management/published-replay/Cargo.toml --bin nested_graph_probe
           done
