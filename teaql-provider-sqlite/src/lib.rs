@@ -1032,7 +1032,21 @@ impl SqliteIdSpaceGenerator {
     }
 
     pub fn ensure_table(&self) -> Result<(), MutationExecutorError> {
-        self.executor.ensure_id_space_table(&self.table_name)
+        for _ in 1..=100 {
+            match self.executor.ensure_id_space_table(&self.table_name) {
+                Ok(()) => return Ok(()),
+                Err(MutationExecutorError::Sqlite(error))
+                    if retryable_sqlite_id_space_lock(&error) =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(MutationExecutorError::Bind(format!(
+            "SQLite ID provider was unable to ensure ID-space table {} after 100 lock-contention attempts",
+            self.table_name
+        )))
     }
 
     pub fn next_id(&self, entity: &str) -> Result<u64, MutationExecutorError> {
@@ -1046,40 +1060,51 @@ impl SqliteIdSpaceGenerator {
             "UPDATE {table} SET current_level = ? WHERE type_name = ? AND current_level = ?"
         );
         for attempt in 1..=100 {
-            let connection = self.executor.lock()?;
-            let current = connection
-                .query_row(&select_sql, [entity], |row| row.get::<_, i64>(0))
-                .optional()?;
-            if let Some(current) = current {
-                let next = current.checked_add(1).ok_or_else(|| {
-                    MutationExecutorError::Bind(format!(
-                        "SQLite ID provider overflow for ID space {entity} in table {} on optimistic-lock attempt {attempt}",
-                        self.table_name
-                    ))
-                })?;
-                if connection.execute(&update_sql, params![next, entity, current])? == 1 {
-                    return u64::try_from(next).map_err(|_| {
+            let result = (|| -> Result<Option<u64>, MutationExecutorError> {
+                let connection = self.executor.lock()?;
+                let current = connection
+                    .query_row(&select_sql, [entity], |row| row.get::<_, i64>(0))
+                    .optional()?;
+                if let Some(current) = current {
+                    let next = current.checked_add(1).ok_or_else(|| {
                         MutationExecutorError::Bind(format!(
-                            "SQLite ID provider generated id {next} for ID space {entity} in table {} that cannot be represented as u64",
+                            "SQLite ID provider overflow for ID space {entity} in table {} on optimistic-lock attempt {attempt}",
                             self.table_name
                         ))
-                    });
-                }
-            } else {
-                match connection.execute(&insert_sql, params![entity]) {
-                    Ok(1) => return Ok(1),
-                    Ok(changed) => {
-                        return Err(MutationExecutorError::Bind(format!(
-                            "SQLite ID provider insert for ID space {entity} in table {} changed {changed} rows on optimistic-lock attempt {attempt}",
-                            self.table_name
-                        )));
+                    })?;
+                    if connection.execute(&update_sql, params![next, entity, current])? == 1 {
+                        return u64::try_from(next).map(Some).map_err(|_| {
+                            MutationExecutorError::Bind(format!(
+                                "SQLite ID provider generated id {next} for ID space {entity} in table {} that cannot be represented as u64",
+                                self.table_name
+                            ))
+                        });
                     }
-                    Err(error)
-                        if error.sqlite_error_code()
-                            == Some(rusqlite::ErrorCode::ConstraintViolation) => {}
-                    Err(error) => return Err(error.into()),
+                } else {
+                    match connection.execute(&insert_sql, params![entity]) {
+                        Ok(1) => return Ok(Some(1)),
+                        Ok(changed) => {
+                            return Err(MutationExecutorError::Bind(format!(
+                                "SQLite ID provider insert for ID space {entity} in table {} changed {changed} rows on optimistic-lock attempt {attempt}",
+                                self.table_name
+                            )));
+                        }
+                        Err(error)
+                            if error.sqlite_error_code()
+                                == Some(rusqlite::ErrorCode::ConstraintViolation) => {}
+                        Err(error) => return Err(error.into()),
+                    }
                 }
+                Ok(None)
+            })();
+            match result {
+                Ok(Some(id)) => return Ok(id),
+                Ok(None) => {}
+                Err(MutationExecutorError::Sqlite(error))
+                    if retryable_sqlite_id_space_lock(&error) => {}
+                Err(error) => return Err(error),
             }
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
         Err(MutationExecutorError::Bind(format!(
             "SQLite ID provider was unable to allocate ID space {entity} in table {} after 100 optimistic-lock attempts",
@@ -1131,6 +1156,13 @@ impl SqliteIdSpaceGenerator {
             self.table_name
         )))
     }
+}
+
+fn retryable_sqlite_id_space_lock(error: &rusqlite::Error) -> bool {
+    matches!(
+        error.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
 }
 
 impl InternalIdGenerator for SqliteIdSpaceGenerator {
