@@ -59,6 +59,11 @@ For the latest published Rust runtime package, see
 [`teaql-runtime` on crates.io](https://crates.io/crates/teaql-runtime).
 The `main` branch can contain changes that have not yet been packaged; use a
 specific released version when validating a downloaded artifact.
+For release provenance, run `./scripts/verify-release-provenance.sh <version>`
+from a checkout with the relevant tags and signing public key. It compares the
+eight published crate archives with crates.io checksums, requires one VCS source
+commit, and verifies that `v<version>` is signed and points to that commit.
+This is a provenance gate, not a functional database-conformance test.
 
 ## Cloud Integration
 
