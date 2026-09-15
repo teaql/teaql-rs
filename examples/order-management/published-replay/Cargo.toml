@@ -1,0 +1,24 @@
+[package]
+name = "teaql-order-published-replay"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "nested_graph_probe"
+path = "../rust-app-console/src/bin/nested_graph_probe.rs"
+
+[dependencies]
+order-management-service-core = { path = "../rust-lib-core/lib" }
+teaql-core = "=4.3.5"
+teaql-macros = "=4.3.5"
+teaql-runtime = "=4.3.5"
+teaql-sql = "=4.3.5"
+teaql-data-service = "=4.3.5"
+teaql-provider-sqlite = "=4.3.5"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+chrono = "0.4"
+rust_decimal = "1"
+rusqlite = { version = "0.40", features = ["bundled"] }

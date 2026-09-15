@@ -1,0 +1,42 @@
+name: Rust published Order archive replay
+
+on:
+  workflow_dispatch:
+
+jobs:
+  replay-official-435:
+    name: Two-pass mixed graph against official 4.3.5
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify exact official package sources before execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo metadata --manifest-path examples/order-management/published-replay/Cargo.toml --format-version 1 |
+            python3 -c '
+          import json, sys
+          metadata = json.load(sys.stdin)
+          required = ("teaql-core", "teaql-macros", "teaql-runtime", "teaql-sql", "teaql-data-service", "teaql-provider-sqlite")
+          for crate in required:
+              matches = [package for package in metadata["packages"] if package["name"] == crate]
+              assert len(matches) == 1, f"RED {crate}: expected exactly one resolved package, found {len(matches)}"
+              package = matches[0]
+              version = package["version"]
+              source = package["source"]
+              assert version == "4.3.5", f"RED {crate}: resolved {version}"
+              assert source == "registry+https://github.com/rust-lang/crates.io-index", f"RED {crate}: not an official archive: {source}"
+              print(f"OFFICIAL_435 {crate} {version} {source}")
+          '
+      - name: Run existing generated Order consumer twice on one SQLite file
+        shell: bash
+        run: |
+          set -euo pipefail
+          teaql_archive_replay_dir="$(mktemp -d)"
+          trap 'rm -rf -- "$teaql_archive_replay_dir"' EXIT
+          for replay_pass in 1 2; do
+            echo "PUBLISHED_435_REPLAY_PASS=$replay_pass"
+            TEAQL_NESTED_PROBE_DATABASE="sqlite:file:$teaql_archive_replay_dir/graph.db" \
+              cargo run --manifest-path examples/order-management/published-replay/Cargo.toml --bin nested_graph_probe
+          done
