@@ -617,7 +617,6 @@ dependencies = [
  "teaql-provider-sqlite",
  "teaql-runtime",
  "teaql-sql",
- "teaql-tool-core",
  "tokio",
 ]
 
@@ -818,15 +817,6 @@ dependencies = [
  "futures-util",
  "teaql-core",
  "teaql-data-service",
-]
-
-[[package]]
-name = "teaql-tool-core"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46737efe3ca338cd11d1bffb923940ecd2474bd37529e12b4ee6b6a235306ca2"
-dependencies = [
- "thiserror",
 ]
 
 [[package]]

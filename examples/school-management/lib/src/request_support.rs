@@ -195,16 +195,21 @@ pub(crate) fn authorize_query(mut query: SelectQuery) -> Result<PurposedSelectQu
             "generated query reached the repository without .comment(...)".to_owned(),
         ));
     }
-    let purpose = query
+    let purpose_index = query
         .trace_chain
-        .pop()
-        .map(|node| node.comment)
-        .filter(|purpose| !purpose.trim().is_empty())
+        .iter()
+        .rposition(|node| node.kind == teaql_core::TraceKind::Purpose)
         .ok_or_else(|| {
             RuntimeError::Graph(
                 "generated query reached the repository without .purpose(...)".to_owned(),
             )
         })?;
+    let purpose = query.trace_chain.remove(purpose_index).comment;
+    if purpose.trim().is_empty() {
+        return Err(RuntimeError::Graph(
+            "generated query reached the repository without .purpose(...)".to_owned(),
+        ));
+    }
     Ok(PurposedSelectQuery::new(query, purpose))
 }
 

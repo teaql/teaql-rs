@@ -2485,7 +2485,8 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<SchoolTypeRequest<R>> {
         self.inner
             .query
             .trace_chain
-            .push(teaql_core::TraceNode::new(
+            .push(teaql_core::TraceNode::typed(
+                teaql_core::TraceKind::Purpose,
                 self.inner.query.entity.clone(),
                 None,
                 self.purpose,
