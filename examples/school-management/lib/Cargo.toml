@@ -20,7 +20,6 @@ teaql-macros = "4.3.2"
 teaql-runtime = "4.3.2"
 teaql-sql = "4.3.2"
 teaql-data-service = "4.3.2"
-teaql-tool-core = "1.0.0"
 teaql-provider-sqlite = "4.3.2"
 rusqlite = { version = "0.40", features = ["bundled", "chrono", "column_decltype"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -180,14 +180,9 @@ pub async fn service_runtime_from_pool(
     context.register_executor(executor.clone());
     context.insert_resource(executor);
 
-    // Load runtime configuration only. Schema installation is an explicit application action.
-    let env_config = teaql_tool_core::audit_config_from_env(&[
-        "platform_data",
-        "school_type_data",
-        "school_data",
-    ]);
-    context.insert_resource(env_config.config.clone());
-    context.insert_resource(env_config);
+    // SQL logging is owned by teaql-runtime. The legacy teaql-tool-core
+    // environment whitelist rejects runtime logging variables and must not
+    // gate generated application startup. Schema remains explicit.
 
     Ok(context)
 }
