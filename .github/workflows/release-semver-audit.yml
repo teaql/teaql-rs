@@ -36,19 +36,32 @@ jobs:
         macro-source: [published-4.3.5, current-main]
     steps:
       - uses: actions/checkout@v5
+      - name: Isolate generated fixture from example workspace patches
+        run: cp -a examples/school-management/lib "$RUNNER_TEMP/teaql-macro-fixture"
       - name: Confirm fixture resolves the published 4.3.5 API boundary
         shell: bash
         run: |
           set -euo pipefail
           for teaql_crate in teaql-core teaql-macros teaql-runtime teaql-sql teaql-data-service teaql-provider-sqlite; do
-            cargo tree --manifest-path examples/school-management/lib/Cargo.toml --depth 1 --prefix none |
+            cargo tree --manifest-path "$RUNNER_TEMP/teaql-macro-fixture/Cargo.toml" --depth 1 --prefix none |
               grep -F "$teaql_crate v4.3.5"
           done
+          if cargo tree --manifest-path "$RUNNER_TEMP/teaql-macro-fixture/Cargo.toml" --depth 1 --prefix none |
+            grep -F "$GITHUB_WORKSPACE/teaql-"; then
+            echo 'RED: fixture resolved a local TeaQL path instead of official archives' >&2
+            exit 1
+          fi
       - name: Compile generated School with published 4.3.5 package set
         if: matrix.macro-source == 'published-4.3.5'
-        run: cargo check --manifest-path examples/school-management/lib/Cargo.toml
+        run: cargo check --manifest-path "$RUNNER_TEMP/teaql-macro-fixture/Cargo.toml"
       - name: Compile generated School with current local macro and published dependencies
         if: matrix.macro-source == 'current-main'
-        run: >-
-          cargo --config 'patch.crates-io.teaql-macros.path="./teaql-macros"'
-          check --manifest-path examples/school-management/lib/Cargo.toml
+        run: |
+          teaql_macro_patch="patch.crates-io.teaql-macros.path=\"$GITHUB_WORKSPACE/teaql-macros\""
+          cargo --config "$teaql_macro_patch" update \
+            --manifest-path "$RUNNER_TEMP/teaql-macro-fixture/Cargo.toml" -p teaql-macros
+          cargo --config "$teaql_macro_patch" tree \
+            --manifest-path "$RUNNER_TEMP/teaql-macro-fixture/Cargo.toml" --depth 1 --prefix none |
+            grep -F "teaql-macros v4.3.5 (proc-macro) ($GITHUB_WORKSPACE/teaql-macros)"
+          cargo --config "$teaql_macro_patch" \
+            check --manifest-path "$RUNNER_TEMP/teaql-macro-fixture/Cargo.toml"
