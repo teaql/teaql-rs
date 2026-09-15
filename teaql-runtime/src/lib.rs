@@ -1139,16 +1139,29 @@ mod tests {
 
     #[test]
     fn scalar_fk_column_named_like_relation_does_not_create_related_entity() {
+        let descriptor = PaymentOrderWithCollidingColumnRow::entity_descriptor();
+        let sql = PostgresDialect
+            .compile_select(
+                &descriptor,
+                &SelectQuery::new("PaymentOrder")
+                    .project("id")
+                    .project("channel_id"),
+            )
+            .unwrap()
+            .sql;
+        assert!(sql.contains("channel AS channel_id"), "{sql}");
+
+        // The SQL compiler aliases the physical `channel` column to the KSML
+        // scalar property `channel_id` before CompactRow hydration.
         let row = teaql_core::CompactRow::from_map(Record::from([
             (String::from("id"), Value::I64(9)),
-            (String::from("channel"), Value::I64(1002)),
+            (String::from("channel_id"), Value::I64(1002)),
         ]));
         let loaded = PaymentOrderWithCollidingColumnRow::from_compact_row(row).unwrap();
         assert_eq!(loaded.id, 9);
         assert_eq!(loaded.channel_id, 1002);
         assert_eq!(loaded.channel, None);
 
-        let descriptor = PaymentOrderWithCollidingColumnRow::entity_descriptor();
         assert_eq!(
             descriptor
                 .properties
