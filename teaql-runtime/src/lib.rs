@@ -397,6 +397,32 @@ mod tests {
         root: EntityRuntimeState,
     }
 
+    // Regression for teaql-rs#58: the physical FK column is named exactly like
+    // the relation, but a scalar row must not manufacture a related entity.
+    #[derive(Debug, PartialEq, DeriveTeaqlEntity)]
+    #[teaql(entity = "PaymentChannel", table = "payment_channel")]
+    struct PaymentChannelRow {
+        #[teaql(id)]
+        id: u64,
+        #[teaql(version)]
+        version: i64,
+    }
+
+    #[derive(Debug, PartialEq, DeriveTeaqlEntity)]
+    #[teaql(entity = "PaymentOrder", table = "payment_order")]
+    struct PaymentOrderWithCollidingColumnRow {
+        #[teaql(id)]
+        id: u64,
+        #[teaql(column = "channel")]
+        channel_id: u64,
+        #[teaql(relation(
+            target = "PaymentChannel",
+            local_key = "channel_id",
+            foreign_key = "id"
+        ))]
+        channel: Option<PaymentChannelRow>,
+    }
+
     impl FlatTripRow {
         fn vendor(&self) -> Option<&FlatVendorRow> {
             self.vendor
@@ -1109,6 +1135,36 @@ mod tests {
             *next += 1;
             Ok(id)
         }
+    }
+
+    #[test]
+    fn scalar_fk_column_named_like_relation_does_not_create_related_entity() {
+        let row = teaql_core::CompactRow::from_map(Record::from([
+            (String::from("id"), Value::I64(9)),
+            (String::from("channel"), Value::I64(1002)),
+        ]));
+        let loaded = PaymentOrderWithCollidingColumnRow::from_compact_row(row).unwrap();
+        assert_eq!(loaded.id, 9);
+        assert_eq!(loaded.channel_id, 1002);
+        assert_eq!(loaded.channel, None);
+
+        let descriptor = PaymentOrderWithCollidingColumnRow::entity_descriptor();
+        assert_eq!(
+            descriptor
+                .properties
+                .iter()
+                .filter(|p| p.column_name == "channel")
+                .count(),
+            1
+        );
+        assert_eq!(
+            descriptor
+                .relations
+                .iter()
+                .filter(|r| r.name == "channel")
+                .count(),
+            1
+        );
     }
 
     #[test]
