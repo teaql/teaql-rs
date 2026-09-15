@@ -15,6 +15,8 @@ cd "$repo"
 cargo test -p teaql-examples --all-targets
 cargo run --quiet --manifest-path examples/conformance/Cargo.toml
 cargo run --quiet --manifest-path examples/school-management/Cargo.toml
+SCHOOL_MANAGEMENT_SERVICE_CORE_DATABASE_URL="$verification_dir/env-helper.db" \
+  cargo run --quiet --manifest-path examples/school-management/Cargo.toml --bin env_runtime_save_probe
 TEAQL_EXAMPLE_DATABASE="$verification_dir/order.db" \
   cargo run --quiet --manifest-path examples/order-management/rust-app-console/Cargo.toml
 for graph_pass in 1 2; do
