@@ -1201,6 +1201,11 @@ mod streaming_tests {
         ]);
         context.use_postgres_provider(executor);
         let error = context.ensure_schema().await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("postgres ensure_schema physical DDL/ID-space failed")
+        );
         assert!(error.to_string().contains(
             "generated root/constant bootstrap must use the typed RuntimeModule callback"
         ));
@@ -1212,6 +1217,11 @@ mod streaming_tests {
                 .value("name", "provider-owned root must not run"),
         ]);
         let root_error = context.ensure_schema().await.unwrap_err();
+        assert!(
+            root_error
+                .to_string()
+                .contains("postgres ensure_schema physical DDL/ID-space failed")
+        );
         assert!(root_error.to_string().contains(
             "generated root/constant bootstrap must use the typed RuntimeModule callback"
         ));
@@ -2146,6 +2156,61 @@ mod streaming_tests {
     }
 
     #[tokio::test]
+    async fn concurrent_blank_schema_creation_is_idempotent_when_configured() {
+        let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let _schema_guard = LIVE_SCHEMA_FIXTURE_LOCK.lock().await;
+        let pool = configured_pool(url);
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let table_name = format!("teaql_blank_schema_{}_{}", std::process::id(), nonce);
+        let entity = Arc::new(
+            EntityDescriptor::new("BlankSchemaFixture")
+                .table_name(table_name.clone())
+                .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+                .property(
+                    PropertyDescriptor::new("version", DataType::I64)
+                        .version()
+                        .not_null(),
+                ),
+        );
+        let barrier = Arc::new(tokio::sync::Barrier::new(8));
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..8 {
+            let executor = PgMutationExecutor::new(pool.clone());
+            let entity = Arc::clone(&entity);
+            let barrier = Arc::clone(&barrier);
+            tasks.spawn(async move {
+                barrier.wait().await;
+                executor
+                    .ensure_schema(&PostgresDialect, &[entity.as_ref()])
+                    .await
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap().unwrap();
+        }
+        let client = pool.get().await.unwrap();
+        let table_count: i64 = client
+            .query_one(
+                "SELECT COUNT(*) FROM information_schema.tables \
+                 WHERE table_schema=current_schema() AND table_name=$1",
+                &[&table_name],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(table_count, 1);
+        client
+            .batch_execute(&format!("DROP TABLE {table_name}"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn ensure_schema_creates_foreign_key_once_by_semantics() {
         let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
             return;
@@ -2585,9 +2650,11 @@ impl SchemaProvider for PostgresSchemaProvider {
         _invocation: &'a teaql_runtime::SchemaInvocation,
     ) -> Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
-            ensure_postgres_schema_for(context)
-                .await
-                .map_err(|err| RuntimeError::Schema(err.to_string()))
+            ensure_postgres_schema_for(context).await.map_err(|err| {
+                RuntimeError::Schema(format!(
+                    "postgres ensure_schema physical DDL/ID-space failed: {err}"
+                ))
+            })
         })
     }
 }
