@@ -824,6 +824,10 @@ mod streaming_tests {
     use teaql_core::RelationDescriptor;
     use teaql_sql::{SqlTransaction, SqlTransactionTransport, SqlTransport, StreamingSqlTransport};
 
+    // Live ensure_schema tests share the provider's teaql_id_space table.
+    // Serialize only those schema-mutating fixtures, not the whole test suite.
+    static LIVE_SCHEMA_FIXTURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     fn configured_pool(url: String) -> Pool {
         let mut config = deadpool_postgres::Config::new();
         config.url = Some(url);
@@ -1088,6 +1092,7 @@ mod streaming_tests {
         let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
             return;
         };
+        let _schema_guard = LIVE_SCHEMA_FIXTURE_LOCK.lock().await;
         let pool = configured_pool(url);
         let client = pool.get().await.unwrap();
         client
@@ -1136,6 +1141,7 @@ mod streaming_tests {
         let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
             return;
         };
+        let _schema_guard = LIVE_SCHEMA_FIXTURE_LOCK.lock().await;
         let pool = configured_pool(url);
         let client = pool.get().await.unwrap();
         client
