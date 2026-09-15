@@ -312,7 +312,22 @@ pub enum MutationExecutorError {
 impl std::fmt::Display for MutationExecutorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Driver(err) => err.fmt(f),
+            Self::Driver(err) => {
+                if let Some(db_error) = err.as_db_error() {
+                    write!(
+                        f,
+                        "postgres SQLSTATE {}: {}",
+                        db_error.code().code(),
+                        db_error.message()
+                    )?;
+                    if let Some(constraint) = db_error.constraint() {
+                        write!(f, "; constraint={constraint}")?;
+                    }
+                    Ok(())
+                } else {
+                    err.fmt(f)
+                }
+            }
             Self::Pool(err) => write!(f, "postgres pool error: {err}"),
             Self::SqlCompile(err) => err.fmt(f),
             Self::UnsupportedValue(kind) => {
