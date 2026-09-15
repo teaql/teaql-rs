@@ -185,6 +185,16 @@ impl UserContext {
         }
         let trace_path =
             canonical_sql_trace_path(operation, &metadata.backend, &metadata.trace_chain);
+        if std::env::var_os("RUST_TEAQL_TRACE_INTENT_DEBUG").is_some()
+            && metadata
+                .trace_chain
+                .iter()
+                .filter(|node| node.kind == teaql_core::TraceKind::Relation)
+                .count()
+                >= 2
+        {
+            eprintln!("TRACE_INTENT_DEBUG raw={:?}", metadata.trace_chain);
+        }
         let result_summary = metadata
             .result_count
             .map(|count| format!("{count} rows returned"))
