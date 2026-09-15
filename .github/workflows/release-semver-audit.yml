@@ -11,7 +11,6 @@ jobs:
       fail-fast: false
       matrix:
         crate:
-          - teaql-macros
           - teaql-core
           - teaql-data-service
           - teaql-sql
@@ -27,3 +26,29 @@ jobs:
           package: ${{ matrix.crate }}
           baseline-version: "4.3.5"
           release-type: patch
+
+  macro-generated-client-compile:
+    name: Generated School against ${{ matrix.macro-source }} macro
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        macro-source: [published-4.3.5, current-main]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Confirm fixture resolves the published 4.3.5 API boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          for teaql_crate in teaql-core teaql-macros teaql-runtime teaql-sql teaql-data-service teaql-provider-sqlite; do
+            cargo tree --manifest-path examples/school-management/lib/Cargo.toml --depth 1 --prefix none |
+              grep -F "$teaql_crate v4.3.5"
+          done
+      - name: Compile generated School with published 4.3.5 package set
+        if: matrix.macro-source == 'published-4.3.5'
+        run: cargo check --manifest-path examples/school-management/lib/Cargo.toml
+      - name: Compile generated School with current local macro and published dependencies
+        if: matrix.macro-source == 'current-main'
+        run: >-
+          cargo --config 'patch.crates-io.teaql-macros.path="./teaql-macros"'
+          check --manifest-path examples/school-management/lib/Cargo.toml
