@@ -1,7 +1,7 @@
 use chrono::NaiveDate;
 use order_management_service_core::teaql_core::Entity as _;
 use order_management_service_core::{
-    request_support::AuditedSave as _, service_runtime, ServiceRuntimeConfig, Q,
+    request_support::AuditedSave as _, service_runtime, DataServiceExecutor, ServiceRuntimeConfig, Q,
 };
 use rust_decimal::Decimal;
 use teaql_runtime::{LedgerEntity as _, LoadedRelation};
@@ -74,6 +74,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         saved.version(),
         skus_after.len()
     );
+
+    let mut transaction_order = Q::customer_orders()
+        .with_id_is(order_id)
+        .select_order_line_list_with(Q::order_lines().select_self_fields().limit(10))
+        .comment("what: load the Order relation before a transaction-scoped Save")
+        .purpose("why: verify transaction Save preserves an unchanged loaded view")
+        .execute_for_one(&context)
+        .await?
+        .expect("saved Order must still exist");
+    assert_eq!(transaction_order.order_line_list().state(), LoadedRelation::Loaded);
+    let transaction_version_before = transaction_order.version();
+    let transaction_amount = transaction_order.total_amount() + Decimal::new(100, 2);
+    transaction_order.update_total_amount(transaction_amount);
+    let transaction_saved = context
+        .execute_in_transaction::<DataServiceExecutor, _, _>(|scope| {
+            Box::pin(async move {
+                scope
+                    .save_audited(transaction_order.audit_as("change Order amount in one transaction"))
+                    .await
+            })
+        })
+        .await?;
+    assert_eq!(transaction_saved.id(), order_id);
+    assert_eq!(transaction_saved.version(), transaction_version_before + 1);
+    assert_eq!(transaction_saved.total_amount(), transaction_amount);
+    let transaction_relation = transaction_saved.order_line_list();
+    assert_eq!(transaction_relation.state(), LoadedRelation::Loaded);
+    let transaction_skus = transaction_relation
+        .value()
+        .expect("unchanged transaction relation must retain its list")
+        .iter()
+        .map(|line| line.sku().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(transaction_skus, skus_before);
+    println!("TRANSACTION_SAVE_LOADED_RELATION_PASS order_id={order_id}");
 
     let parent = Q::customer_orders()
         .with_id_is(order_id)

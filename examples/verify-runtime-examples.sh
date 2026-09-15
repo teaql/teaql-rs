@@ -66,6 +66,7 @@ for attempt in 1 2; do
     exit 1
   fi
   if ! grep -Fq 'SAVE_LOADED_RELATION_PASS' "$relation_log" \
+      || ! grep -Fq 'TRANSACTION_SAVE_LOADED_RELATION_PASS' "$relation_log" \
       || ! grep -Fq 'SAVE_CHANGED_RELATION_INVALIDATED' "$relation_log" \
       || ! grep -Fq 'SAVE_EMPTY_RELATION_PASS' "$relation_log"; then
     printf 'FAIL order-management Save relation state run %s missing acceptance markers\n' "$attempt" >&2
@@ -73,7 +74,7 @@ for attempt in 1 2; do
     exit 1
   fi
 done
-printf 'PASS order-management Save relation state (Loaded/Empty retained, changed invalidated; two runs, same database)\n'
+printf 'PASS order-management Save relation state (ordinary/transaction Loaded, Empty retained, changed invalidated; two runs, same database)\n'
 
 for attempt in 1 2; do
   forward_log="$run_dir/save_forward_fk_$attempt.log"
