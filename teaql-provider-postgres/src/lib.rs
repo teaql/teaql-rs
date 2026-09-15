@@ -978,6 +978,49 @@ mod streaming_tests {
     }
 
     #[tokio::test]
+    async fn generic_null_binds_across_postgres_column_types_when_configured() {
+        let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let executor = PgMutationExecutor::new(configured_pool(url));
+        for sql in [
+            "DROP TABLE IF EXISTS teaql_generic_null_runtime_fixture",
+            "CREATE TABLE teaql_generic_null_runtime_fixture(id BIGINT PRIMARY KEY, paid_at TIMESTAMPTZ, established_date DATE, note TEXT, amount NUMERIC, active BOOLEAN)",
+        ] {
+            executor
+                .execute_sql(&CompiledQuery {
+                    sql: sql.to_owned(),
+                    params: vec![],
+                    comment: None,
+                })
+                .await
+                .unwrap();
+        }
+        executor.execute_sql(&CompiledQuery {
+            sql: "INSERT INTO teaql_generic_null_runtime_fixture(id, paid_at, established_date, note, amount, active) VALUES ($1, $2, $3, $4, $5, $6)".to_owned(),
+            params: vec![Value::I64(1), Value::Null, Value::Null, Value::Null, Value::Null, Value::Null],
+            comment: None,
+        }).await.unwrap();
+        let rows = executor.fetch_all_compact_sql(&CompiledQuery {
+            sql: "SELECT paid_at, established_date, note, amount, active FROM teaql_generic_null_runtime_fixture WHERE id = $1".to_owned(),
+            params: vec![Value::I64(1)],
+            comment: None,
+        }).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        for column in ["paid_at", "established_date", "note", "amount", "active"] {
+            assert_eq!(rows[0].get(column), Some(&Value::Null), "column {column}");
+        }
+        executor
+            .execute_sql(&CompiledQuery {
+                sql: "DROP TABLE teaql_generic_null_runtime_fixture".to_owned(),
+                params: vec![],
+                comment: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn teaql_long_binds_to_legacy_postgres_int4_scalars_and_arrays() {
         let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
             return;
