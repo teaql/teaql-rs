@@ -55,7 +55,10 @@ The Rust rewrite keeps the scope deliberately narrow:
 - compatibility with every Java implementation detail is not a goal, but the
   high-level TeaQL programming model is being carried over where it is useful
 
-Current published release: `4.2.27`.
+For the latest published Rust runtime package, see
+[`teaql-runtime` on crates.io](https://crates.io/crates/teaql-runtime).
+The `main` branch can contain changes that have not yet been packaged; use a
+specific released version when validating a downloaded artifact.
 
 ## Cloud Integration
 
