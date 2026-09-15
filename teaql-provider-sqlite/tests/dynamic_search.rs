@@ -4,7 +4,8 @@ use teaql_core::{
     TraceKind, TraceNode, Value, dynamic_search::*,
 };
 use teaql_data_service::{QueryExecutor, QueryRequest, SchemaProvider};
-use teaql_provider_sqlite::{SqliteDialect, SqliteMutationExecutor};
+use teaql_provider_sqlite::{SqliteDialect, SqliteMutationExecutor, SqliteProviderExt};
+use teaql_runtime::{InMemoryMetadataStore, UserContext};
 use teaql_sql::{SqlDataServiceExecutor, SqlDialect};
 
 #[derive(Clone)]
@@ -32,10 +33,14 @@ fn scoped_dynamic_search_retains_outer_and_related_tenant_filters() {
         let transport = SqliteMutationExecutor::from_connection(
             rusqlite::Connection::open_in_memory().unwrap(),
         );
-        // Provider boundary fixture, separate from generated bootstrap lifecycle tests.
-        transport
-            .ensure_schema(&SqliteDialect, &[&platform, &school])
-            .unwrap();
+        // Physical schema is installed through the same context boundary as an application.
+        let mut context = UserContext::new().with_metadata(
+            InMemoryMetadataStore::new()
+                .with_entity(platform.clone())
+                .with_entity(school.clone()),
+        );
+        context.use_sqlite_provider(transport.clone());
+        context.ensure_schema().await.unwrap();
         for (id, tenant) in [(1i64, 7i64), (2, 8)] {
             let command = InsertCommand::new("Platform")
                 .value("id", id)

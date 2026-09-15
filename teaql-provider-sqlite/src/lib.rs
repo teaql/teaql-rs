@@ -241,7 +241,8 @@ impl SqliteMutationExecutor {
         Arc::clone(&self.connection)
     }
 
-    pub fn ensure_schema(
+    #[cfg(test)]
+    fn ensure_schema(
         &self,
         dialect: &SqliteDialect,
         entities: &[&EntityDescriptor],
@@ -268,6 +269,7 @@ impl SqliteMutationExecutor {
         Ok(())
     }
 
+    #[cfg(test)]
     fn ensure_schema_with_connection(
         connection: &Connection,
         dialect: &SqliteDialect,
@@ -1146,6 +1148,12 @@ impl SchemaProvider for SqliteSchemaProvider {
     }
 }
 
+/// Installs the SQLite provider; schema changes must then go through
+/// `UserContext::ensure_schema`, not the executor's private physical DDL path.
+///
+/// ```compile_fail
+/// let _ = teaql_provider_sqlite::SqliteMutationExecutor::ensure_schema;
+/// ```
 pub trait SqliteProviderExt {
     fn use_sqlite_provider(&mut self, executor: SqliteMutationExecutor) -> &mut Self;
 }

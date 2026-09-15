@@ -517,7 +517,7 @@ impl PgMutationExecutor {
         self.pool.clone()
     }
 
-    pub async fn ensure_schema(
+    async fn ensure_schema(
         &self,
         dialect: &PostgresDialect,
         entities: &[&EntityDescriptor],
@@ -2626,6 +2626,12 @@ impl SchemaProvider for PostgresSchemaProvider {
     }
 }
 
+/// Installs the PostgreSQL provider; schema changes require the context-owned
+/// invocation path rather than direct executor DDL calls.
+///
+/// ```compile_fail
+/// let _ = teaql_provider_postgres::PgMutationExecutor::ensure_schema;
+/// ```
 pub trait PostgresProviderExt {
     fn use_postgres_provider(&mut self, executor: PgMutationExecutor) -> &mut Self;
 }

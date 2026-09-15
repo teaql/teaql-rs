@@ -1,13 +1,6 @@
 use teaql_core::{SmartList, TeaqlEntity};
 use teaql_macros::TeaqlEntity;
-// use teaql_provider_postgres::{
-//     MutationExecutorError as PgMutationExecutorError, PgMutationExecutor, PostgresDialect,
-//     PostgresProviderExt,
-// };
-use teaql_provider_sqlite::{
-    MutationExecutorError as SqliteMutationExecutorError, SqliteDialect, SqliteMutationExecutor,
-    SqliteProviderExt,
-};
+use teaql_provider_sqlite::{SqliteDialect, SqliteMutationExecutor, SqliteProviderExt};
 use teaql_runtime::{
     EntityDataServiceBehavior, InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityRegistry,
     InMemoryMetadataStore, RuntimeModule, UserContext,
@@ -95,69 +88,4 @@ pub fn sqlite_context(executor: SqliteMutationExecutor) -> UserContext {
     let data_service = SqlDataServiceExecutor::new(SqliteDialect, executor, metadata());
     context.register_executor(data_service);
     context
-}
-
-// pub fn postgres_context(executor: PgMutationExecutor) -> UserContext {
-//     let mut context = UserContext::new()
-//         .with_metadata(metadata())
-//         .with_entity_registry(entity_registry())
-//         .with_entity_data_service_behavior_registry(behavior_registry());
-//     context.use_postgres_provider(executor.clone());
-//
-//     // Build and inject SqlDataServiceExecutor instead of the data service executor
-//     let data_service = SqlDataServiceExecutor::new(
-//         PostgresDialect,
-//         executor,
-//         metadata()
-//     );
-//     context.insert_resource(data_service);
-//     context
-// }
-//
-// pub async fn reset_postgres_schema(
-//     pool: &sqlx::PgPool,
-//     executor: &PgMutationExecutor,
-// ) -> Result<(), PgMutationExecutorError> {
-//     sqlx::query("DROP TABLE IF EXISTS example_orderline")
-//         .execute(pool)
-//         .await?;
-//     sqlx::query("DROP TABLE IF EXISTS example_product")
-//         .execute(pool)
-//         .await?;
-//     sqlx::query("DROP TABLE IF EXISTS example_orders")
-//         .execute(pool)
-//         .await?;
-//     executor
-//         .ensure_schema(
-//             &PostgresDialect,
-//             &[
-//                 &Order::entity_descriptor(),
-//                 &OrderLine::entity_descriptor(),
-//                 &Product::entity_descriptor(),
-//             ],
-//         )
-//         .await
-// }
-
-pub async fn reset_sqlite_schema(
-    executor: &SqliteMutationExecutor,
-) -> Result<(), SqliteMutationExecutorError> {
-    {
-        let conn = executor.connection();
-        let conn = conn.lock().unwrap();
-        conn.execute("DROP TABLE IF EXISTS example_orderline", [])
-            .unwrap();
-        conn.execute("DROP TABLE IF EXISTS example_product", [])
-            .unwrap();
-        conn.execute("DROP TABLE IF EXISTS example_orders", [])
-            .unwrap();
-    }
-    executor.ensure_schema(
-        &SqliteDialect,
-        &[
-            &Order::entity_descriptor(),
-            &OrderLine::entity_descriptor(),
-            &Product::entity_descriptor(),
-        ],
-    )
 }

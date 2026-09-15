@@ -76,20 +76,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let connection = rusqlite::Connection::open_in_memory()?;
     let executor = SqliteMutationExecutor::from_connection(connection);
 
-    {
-        let conn = executor.connection();
-        let conn = conn.lock().unwrap();
-        conn.execute("DROP TABLE IF EXISTS student", []).unwrap();
-        conn.execute("DROP TABLE IF EXISTS school", []).unwrap();
-    }
-    executor
-        .ensure_schema(
-            &SqliteDialect,
-            &[&School::entity_descriptor(), &Student::entity_descriptor()],
-        )
-        .unwrap();
-
     let context = sqlite_context(executor);
+    context.ensure_schema().await?;
 
     // ---- NEW API: school.audit_as("...").save(&context).await? ----
     use teaql_core::Entity;

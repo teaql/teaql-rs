@@ -222,7 +222,7 @@ impl MysqlMutationExecutor {
         Self { pool }
     }
 
-    pub async fn ensure_schema(
+    async fn ensure_schema(
         &self,
         dialect: &MysqlDialect,
         entities: &[&EntityDescriptor],
@@ -2274,6 +2274,12 @@ impl SchemaProvider for MysqlSchemaProvider {
     }
 }
 
+/// Installs the MySQL provider; schema changes require the context-owned
+/// invocation path rather than direct executor DDL calls.
+///
+/// ```compile_fail
+/// let _ = teaql_provider_mysql::MysqlMutationExecutor::ensure_schema;
+/// ```
 pub trait MysqlProviderExt {
     fn use_mysql_provider(&mut self, executor: MysqlMutationExecutor) -> &mut Self;
 }

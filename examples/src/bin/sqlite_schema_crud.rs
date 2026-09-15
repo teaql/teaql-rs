@@ -1,5 +1,5 @@
 use teaql_core::{Entity, Expr, SmartList};
-use teaql_examples::{Order, reset_sqlite_schema, sqlite_context};
+use teaql_examples::{Order, sqlite_context};
 use teaql_provider_sqlite::{SqliteDialect, SqliteMutationExecutor};
 use teaql_runtime::{AuditedSaveExt, EntityKey, PurposedSelectQuery};
 
@@ -7,9 +7,8 @@ use teaql_runtime::{AuditedSaveExt, EntityKey, PurposedSelectQuery};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let connection = rusqlite::Connection::open_in_memory()?;
     let executor = SqliteMutationExecutor::from_connection(connection);
-    reset_sqlite_schema(&executor).await?;
-
     let context = sqlite_context(executor);
+    context.ensure_schema().await?;
     let data_service = context.entity_data_service::<teaql_sql::SqlDataServiceExecutor<
         SqliteDialect,
         SqliteMutationExecutor,
