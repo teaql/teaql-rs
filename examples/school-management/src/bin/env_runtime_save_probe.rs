@@ -6,7 +6,7 @@ use school_management_service_core::{
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The generated helper must install its graph saver; this application does
     // not call register_executor or add a type-erased saver manually.
-    let context = service_runtime_from_env().await?;
+    let mut context = service_runtime_from_env().await?;
     context.ensure_schema().await?;
 
     let mut school = Q::schools()
@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .save(&context)
         .await?;
     assert_eq!(updated.version(), saved.version() + 1);
-    let verified = Q::schools()
+    let mut verified = Q::schools()
         .with_id_is(updated.id())
         .select_self_fields()
         .comment("Reload School after colliding-column audited update")
@@ -62,10 +62,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(verified.name(), "Env Helper School Renamed");
     assert_eq!(verified.school_type_id(), 1001);
     assert_eq!(verified.version(), updated.version());
+
+    let select_logs_before = context
+        .sql_logs()
+        .into_iter()
+        .filter(|entry| entry.operation.is_select())
+        .count();
+    context.disable_select_sql_log();
+    let ignored_query = Q::schools()
+        .with_id_is(updated.id())
+        .select_self_fields()
+        .comment("what: query School while Query SQL logging is disabled")
+        .purpose("why: verify the Query log switch does not disable execution")
+        .execute_for_one(&context)
+        .await?;
+    assert!(ignored_query.is_some());
+    assert_eq!(
+        context
+            .sql_logs()
+            .into_iter()
+            .filter(|entry| entry.operation.is_select())
+            .count(),
+        select_logs_before
+    );
+    context.enable_select_sql_log();
+
+    let mutation_logs_before = context
+        .sql_logs()
+        .into_iter()
+        .filter(|entry| entry.operation.is_mutation())
+        .count();
+    context.disable_mutation_sql_log();
+    verified.update_address("2 Runtime Road");
+    let final_saved = verified
+        .audit_as("Verify audited update executes with Mutation SQL logging disabled")
+        .save(&context)
+        .await?;
+    assert_eq!(final_saved.version(), updated.version() + 1);
+    assert_eq!(
+        context
+            .sql_logs()
+            .into_iter()
+            .filter(|entry| entry.operation.is_mutation())
+            .count(),
+        mutation_logs_before
+    );
+    context.enable_mutation_sql_log();
+    let final_reread = Q::schools()
+        .with_id_is(final_saved.id())
+        .select_self_fields()
+        .comment("what: reload School after Mutation SQL logging was disabled")
+        .purpose("why: prove the muted audited update still reached SQLite")
+        .execute_for_one(&context)
+        .await?
+        .expect("muted audited update must still persist");
+    assert_eq!(final_reread.address(), "2 Runtime Road");
+    println!("SQL_LOG_SWITCH_SQLITE_PASS query=off mutation=off");
     println!(
         "ENV_RUNTIME_SAVE_PASS school_id={} version={}",
         saved.id(),
-        updated.version()
+        final_saved.version()
     );
     println!("COLLIDING_FK_SAVE_PASS school_type_id=1001");
     Ok(())
