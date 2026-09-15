@@ -18,9 +18,11 @@ transaction Save paths. The controlled example script runs
 this probe twice on one SQLite file without cleanup between runs; its SQLite
 rows were checked directly on September 15.
 
-The SQLite provider's retained runtime test additionally changes one constant,
-verifies that its version advances exactly once, and verifies an unchanged
-constant remains at version 1.
+The generated-crate School bootstrap integration test in `teaql-code-gen`
+additionally changes one constant, verifies that its version advances exactly
+once, and verifies an unchanged constant remains at version 1. This repository's
+School example itself checks first and repeated seeds; it does not claim that
+constant reconciliation is exercised by the SQLite provider unit tests.
 
 From the repository root, `examples/verify-runtime-examples.sh` runs this and
 the minimum conformance example against current path-patched runtime sources.
