@@ -81,4 +81,5 @@ jobs:
             --manifest-path "$RUNNER_TEMP/school/macro-compat/Cargo.toml" --depth 1 --prefix none |
             grep -F "teaql-macros v4.3.5 (proc-macro) ($GITHUB_WORKSPACE/teaql-macros)"
           cargo --config "$teaql_macro_patch" \
-            test --manifest-path "$RUNNER_TEMP/school/macro-compat/Cargo.toml"
+            test --manifest-path "$RUNNER_TEMP/school/macro-compat/Cargo.toml" \
+            --features macro-hygiene

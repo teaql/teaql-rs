@@ -272,14 +272,14 @@ pub fn into_relation_value_tokens(
         if option_inner_type(ty).and_then(box_inner_type).is_some() {
             return quote! {
                 match #value_expr {
-                    Some(entity) => Some(::teaql_core::Value::object((*entity).into_values().into())),
+                    Some(entity) => Some(::teaql_core::Value::object(::teaql_core::Entity::into_values(*entity).into())),
                     None => None,
                 }
             };
         }
         return quote! {
             match #value_expr {
-                Some(entity) => Some(::teaql_core::Value::object(entity.into_values().into())),
+                Some(entity) => Some(::teaql_core::Value::object(::teaql_core::Entity::into_values(entity).into())),
                 None => None,
             }
         };
@@ -290,7 +290,7 @@ pub fn into_relation_value_tokens(
             Some(::teaql_core::Value::List(
                 (#value_expr)
                     .into_iter()
-                    .map(|entity| ::teaql_core::Value::object(entity.into_values().into()))
+                    .map(|entity| ::teaql_core::Value::object(::teaql_core::Entity::into_values(entity).into()))
                     .collect(),
             ))
         };

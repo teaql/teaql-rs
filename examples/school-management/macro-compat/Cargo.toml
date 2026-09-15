@@ -6,6 +6,9 @@ publish = false
 
 [workspace]
 
+[features]
+macro-hygiene = []
+
 [dependencies]
 teaql-core = "=4.3.5"
 teaql-macros = "=4.3.5"

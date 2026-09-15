@@ -2,6 +2,8 @@
 
 use school_management_service_core::School;
 use teaql_core::{CompactRow, EntityDescriptor, EntityError, TeaqlBoxedRelations, Value};
+#[cfg(not(feature = "macro-hygiene"))]
+use teaql_core::Entity;
 use teaql_macros::TeaqlReverseRelations;
 
 #[derive(TeaqlReverseRelations)]
