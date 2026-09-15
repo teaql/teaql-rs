@@ -1,9 +1,12 @@
+// Recursive graph futures expose stable internal boundaries used during generator migration.
+#![allow(dead_code, clippy::type_complexity)]
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use teaql_core::{
-    DeleteCommand, Entity, EntityDescriptor, Expr, InsertCommand, MutationValues,
-    PropertyDescriptor, SelectQuery, UpdateCommand, Value,
+    DeleteCommand, Entity, EntityDescriptor, InsertCommand, MutationValues, PropertyDescriptor,
+    UpdateCommand, Value,
 };
 
 use crate::entity_status::EntityStatus;
@@ -206,7 +209,7 @@ where
                 GraphMutationKind::Create => {
                     let mut cmd = teaql_core::BatchInsertCommand::new(&batch.entity);
                     for item in batch.items {
-                        cmd.batch_values.push(item.values.into());
+                        cmd.batch_values.push(item.values);
                         cmd.trace_chains
                             .push(recover_trace_or_default(&item.scope_token));
                     }
@@ -229,10 +232,10 @@ where
                             teaql_core::Value::I64(n) => Some(*n),
                             _ => None,
                         });
-                        cmd.batch_values.push(item.values.into());
+                        cmd.batch_values.push(item.values);
                         cmd.batch_ids.push(id);
                         cmd.batch_expected_versions.push(version);
-                        cmd.batch_old_values.push(item.old_values.map(Into::into));
+                        cmd.batch_old_values.push(item.old_values);
                         cmd.trace_chains
                             .push(recover_trace_or_default(&item.scope_token));
                     }
@@ -329,7 +332,7 @@ where
         let comment = entity.get_comment();
         let mut node = self.graph_node_from_values(&descriptor.name, entity.into_values())?;
         node.dirty_fields = dirty_fields;
-        node.original_values = original_values.map(Into::into);
+        node.original_values = original_values;
         if is_deleted {
             node.operation = GraphOperation::Remove;
             node.relations.clear();
@@ -408,13 +411,12 @@ where
                     .cloned()
             });
 
-            if let Some(id_val) = &id {
-                if !plan
+            if let Some(id_val) = &id
+                && !plan
                     .visited_nodes
                     .insert((node.entity.clone(), graph_identity_key(id_val)))
-                {
-                    return Ok(());
-                }
+            {
+                return Ok(());
             }
 
             let is_create_op = node.operation == GraphOperation::Create
@@ -461,22 +463,22 @@ where
                     false,
                 );
             }
-            let update_fields = is_update
-                .then(|| {
-                    let mut excluded = Vec::new();
-                    if let Some(id_property) = id_property.as_ref() {
-                        excluded.push(id_property.name.clone());
-                    }
-                    if let Some(version_property) = descriptor.version_property() {
-                        excluded.push(version_property.name.clone());
-                    }
-                    let mut fields = sorted_update_fields(&node.values, excluded);
-                    if let Some(dirty) = &node.dirty_fields {
-                        fields.retain(|f| dirty.contains(f));
-                    }
-                    fields
-                })
-                .unwrap_or_default();
+            let update_fields = if is_update {
+                let mut excluded = Vec::new();
+                if let Some(id_property) = id_property.as_ref() {
+                    excluded.push(id_property.name.clone());
+                }
+                if let Some(version_property) = descriptor.version_property() {
+                    excluded.push(version_property.name.clone());
+                }
+                let mut fields = sorted_update_fields(&node.values, excluded);
+                if let Some(dirty) = &node.dirty_fields {
+                    fields.retain(|f| dirty.contains(f));
+                }
+                fields
+            } else {
+                Default::default()
+            };
 
             // Build the TraceScopeToken for this node (only if it has a comment).
             // This is an Arc-linked persistent list: zero-copy, O(1) creation.
@@ -649,24 +651,24 @@ where
             self.execute_prepared_insert_with_comment(command.clone(), lineage)
                 .await?;
             node.values = command.values.into();
-            if let Some(id_property) = descriptor.id_property() {
-                if let Some(id) = node.values.get(&id_property.name).cloned() {
-                    node.values = self
-                        .fetch_graph_current_row_internal(
-                            &node.entity,
-                            &id_property.name,
-                            &id,
-                            active_scope.map(|s| s.to_trace_chain()).unwrap_or_default(),
-                        )
-                        .await?
-                        .map(Into::into)
-                        .ok_or_else(|| {
-                            DataServiceError::Runtime(RuntimeError::Graph(format!(
-                                "persisted {} record could not be read back",
-                                node.entity
-                            )))
-                        })?;
-                }
+            if let Some(id_property) = descriptor.id_property()
+                && let Some(id) = node.values.get(&id_property.name).cloned()
+            {
+                node.values = self
+                    .fetch_graph_current_row_internal(
+                        &node.entity,
+                        &id_property.name,
+                        &id,
+                        active_scope.map(|s| s.to_trace_chain()).unwrap_or_default(),
+                    )
+                    .await?
+                    .map(Into::into)
+                    .ok_or_else(|| {
+                        DataServiceError::Runtime(RuntimeError::Graph(format!(
+                            "persisted {} record could not be read back",
+                            node.entity
+                        )))
+                    })?;
             }
 
             for (name, relation, children) in many_relations {
@@ -850,13 +852,13 @@ where
                 for (field, value) in &prepared_update.values {
                     node.values.insert(field.clone(), value.clone());
                 }
-                if let Some(version_property) = descriptor.version_property() {
-                    if let Some(expected_version) = prepared_update.expected_version {
-                        node.values.insert(
-                            version_property.name.clone(),
-                            Value::I64(expected_version + 1),
-                        );
-                    }
+                if let Some(version_property) = descriptor.version_property()
+                    && let Some(expected_version) = prepared_update.expected_version
+                {
+                    node.values.insert(
+                        version_property.name.clone(),
+                        Value::I64(expected_version + 1),
+                    );
                 }
                 node.values = self
                     .fetch_graph_current_row_internal(
@@ -999,30 +1001,29 @@ where
                 )))
             })?;
 
-        if let Some(version_property) = descriptor.version_property() {
-            if let Some(Value::I64(existing_version)) = current.get(&version_property.name) {
-                if *existing_version < 0 {
-                    return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
-                        "reference node {}({}) is deleted",
-                        node.entity,
-                        graph_identity_key(&id)
-                    ))));
-                }
-                if let Some(Value::I64(expected_version)) = node.values.get(&version_property.name)
-                {
-                    if expected_version != existing_version {
-                        println!(
-                            "OptimisticLockConflict in validate_reference_node! entity={}, expected={}, existing={}",
-                            node.entity, expected_version, existing_version
-                        );
-                        return Err(DataServiceError::Runtime(
-                            RuntimeError::OptimisticLockConflict {
-                                entity: node.entity,
-                                id: graph_identity_key(&id),
-                            },
-                        ));
-                    }
-                }
+        if let Some(version_property) = descriptor.version_property()
+            && let Some(Value::I64(existing_version)) = current.get(&version_property.name)
+        {
+            if *existing_version < 0 {
+                return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
+                    "reference node {}({}) is deleted",
+                    node.entity,
+                    graph_identity_key(&id)
+                ))));
+            }
+            if let Some(Value::I64(expected_version)) = node.values.get(&version_property.name)
+                && expected_version != existing_version
+            {
+                println!(
+                    "OptimisticLockConflict in validate_reference_node! entity={}, expected={}, existing={}",
+                    node.entity, expected_version, existing_version
+                );
+                return Err(DataServiceError::Runtime(
+                    RuntimeError::OptimisticLockConflict {
+                        entity: node.entity,
+                        id: graph_identity_key(&id),
+                    },
+                ));
             }
         }
 
@@ -1081,16 +1082,15 @@ where
                     graph_identity_key(&id)
                 )))
             })?;
-        if let Some(version_property) = descriptor.version_property() {
-            if let Some(Value::I64(existing_version)) = current.get(&version_property.name) {
-                if *existing_version < 0 {
-                    return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
-                        "remove node {}({}) is already deleted",
-                        node.entity,
-                        graph_identity_key(&id)
-                    ))));
-                }
-            }
+        if let Some(version_property) = descriptor.version_property()
+            && let Some(Value::I64(existing_version)) = current.get(&version_property.name)
+            && *existing_version < 0
+        {
+            return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
+                "remove node {}({}) is already deleted",
+                node.entity,
+                graph_identity_key(&id)
+            ))));
         }
         Ok(())
     }
@@ -1197,11 +1197,11 @@ where
         check_result.map_err(DataServiceError::Runtime)?;
 
         let mut command = UpdateCommand::new(node.entity.clone(), id.clone());
-        command.old_values = node.original_values.clone().map(Into::into);
-        if let Some(version_property) = descriptor.version_property() {
-            if let Some(Value::I64(version)) = node.values.get(&version_property.name) {
-                command = command.expected_version(*version);
-            }
+        command.old_values = node.original_values.clone();
+        if let Some(version_property) = descriptor.version_property()
+            && let Some(Value::I64(version)) = node.values.get(&version_property.name)
+        {
+            command = command.expected_version(*version);
         }
         // Filter properties by dirty_fields when available (Java-style minimal UPDATE).
         // When dirty_fields is Some, only modified fields are included in the SET clause.
@@ -1254,10 +1254,10 @@ where
                     )))
                 })?;
             let mut delete = DeleteCommand::new(node.entity.clone(), id);
-            if let Some(version_property) = descriptor.version_property() {
-                if let Some(Value::I64(version)) = node.values.get(&version_property.name) {
-                    delete = delete.expected_version(*version);
-                }
+            if let Some(version_property) = descriptor.version_property()
+                && let Some(Value::I64(version)) = node.values.get(&version_property.name)
+            {
+                delete = delete.expected_version(*version);
             }
 
             // Create scope node for deletion if parent/node comment is present
@@ -1298,11 +1298,127 @@ where
         Ok(rows.pop())
     }
 
+    pub(crate) fn order_new_ledger_keys(
+        &self,
+        keys: impl IntoIterator<Item = crate::EntityKey>,
+        changes: &std::collections::BTreeMap<crate::EntityKey, crate::EntityValues>,
+    ) -> Result<Vec<crate::EntityKey>, RuntimeError> {
+        let keys = keys.into_iter().collect::<std::collections::BTreeSet<_>>();
+        let mut incoming = keys
+            .iter()
+            .cloned()
+            .map(|key| (key, 0_usize))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut outgoing = std::collections::BTreeMap::<
+            crate::EntityKey,
+            std::collections::BTreeSet<crate::EntityKey>,
+        >::new();
+
+        let add_dependency =
+            |parent: &crate::EntityKey,
+             child: &crate::EntityKey,
+             incoming: &mut std::collections::BTreeMap<crate::EntityKey, usize>,
+             outgoing: &mut std::collections::BTreeMap<
+                crate::EntityKey,
+                std::collections::BTreeSet<crate::EntityKey>,
+            >| {
+                if parent != child
+                    && outgoing
+                        .entry(parent.clone())
+                        .or_default()
+                        .insert(child.clone())
+                {
+                    *incoming
+                        .get_mut(child)
+                        .expect("every inserted key has an indegree") += 1;
+                }
+            };
+
+        for source in &keys {
+            let descriptor = self
+                .data_service
+                .metadata
+                .context
+                .require_entity(source.entity.as_ref())?;
+            let Some(values) = changes.get(source) else {
+                continue;
+            };
+            for relation in &descriptor.relations {
+                let Some(source_value) = values
+                    .get(&relation.local_key)
+                    .filter(|value| !matches!(value, Value::Null | Value::TypedNull(_)))
+                else {
+                    continue;
+                };
+
+                for target in keys
+                    .iter()
+                    .filter(|target| target.entity.as_ref() == relation.target_entity)
+                {
+                    let target_value = changes
+                        .get(target)
+                        .and_then(|record| record.get(&relation.foreign_key))
+                        .or_else(|| (relation.foreign_key == "id").then_some(&target.id));
+                    if target_value != Some(source_value) {
+                        continue;
+                    }
+                    if relation.many {
+                        add_dependency(source, target, &mut incoming, &mut outgoing);
+                    } else {
+                        add_dependency(target, source, &mut incoming, &mut outgoing);
+                    }
+                }
+            }
+        }
+
+        let mut ready = incoming
+            .iter()
+            .filter(|(_, count)| **count == 0)
+            .map(|(key, _)| key.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut ordered = Vec::with_capacity(keys.len());
+        while let Some(key) = ready.pop_first() {
+            ordered.push(key.clone());
+            if let Some(dependents) = outgoing.get(&key) {
+                for dependent in dependents {
+                    let count = incoming
+                        .get_mut(dependent)
+                        .expect("every dependent key has an indegree");
+                    *count -= 1;
+                    if *count == 0 {
+                        ready.insert(dependent.clone());
+                    }
+                }
+            }
+        }
+
+        if ordered.len() != keys.len() {
+            let cyclic_entities = incoming
+                .into_iter()
+                .filter(|(_, count)| *count > 0)
+                .map(|(key, _)| key.entity.into_owned())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(RuntimeError::Graph(format!(
+                "new entity graph contains a required foreign-key cycle among: {cyclic_entities}"
+            )));
+        }
+        Ok(ordered)
+    }
+
     pub(crate) async fn execute_ledger_plan_internal(
         &self,
         root: crate::EntityRuntimeState,
+        locations: &std::collections::BTreeMap<crate::EntityKey, crate::ObjectLocation>,
     ) -> Result<std::collections::BTreeMap<crate::EntityKey, Value>, DataServiceError<E::Error>>
     {
+        if let Some(error) = root.first_composition_error() {
+            return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
+                "generated entity graph attachment failed before save: {error}"
+            ))));
+        }
         let mut generated_ids = std::collections::BTreeMap::new();
         let comment = root.get_comment();
         let trace_chain = comment
@@ -1319,6 +1435,27 @@ where
         let deleted_keys = root.deleted_keys();
         let new_keys = root.new_keys();
         let change_set = root.current_change_set();
+
+        // Deletion of an existing versioned entity must carry the version
+        // obtained by loading that entity. A newly created entity deleted
+        // before save has no database row and is cancelled within the graph.
+        for key in &deleted_keys {
+            if new_keys.contains(key) {
+                continue;
+            }
+            let descriptor = self
+                .data_service
+                .metadata
+                .context
+                .require_entity(&key.entity)
+                .map_err(DataServiceError::Runtime)?;
+            if descriptor.version_property().is_some() && root.get_original_version(key).is_none() {
+                return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
+                    "cannot delete {}({:?}) without its loaded original version; load the full entity before mutation",
+                    key.entity, key.id
+                ))));
+            }
+        }
 
         // `save_audited_ledger_entity` has already preflighted the complete
         // typed graph before entering this executor and merged every Fix value
@@ -1338,18 +1475,9 @@ where
             checked_changes.insert(key.clone(), checked);
         }
 
-        // 1. Execute Deletes
-        for key in deleted_keys.iter() {
-            let id = key.id.clone();
-            let mut cmd = teaql_core::DeleteCommand::new(key.entity.as_ref(), id);
-            if let Some(version) = root.get_original_version(key) {
-                cmd = cmd.expected_version(version);
-            }
-            cmd.trace_chain = resolve_trace_chain(root.get_trace_chain(key), &trace_chain);
-            self.delete_internal(&cmd).await?;
-        }
-
-        // 2. Execute Updates and Inserts
+        // Plan updates and inserts before any mutation. A sparse ledger CREATE
+        // must be validated against the exact payload sent to SQL, not merely
+        // against the typed object's default-filled in-memory snapshot.
         let mut update_batches: std::collections::BTreeMap<
             (String, String),
             Vec<crate::EntityKey>,
@@ -1387,6 +1515,13 @@ where
                     .await?;
                 if current_row.is_none() {
                     is_new = true;
+                } else if descriptor.version_property().is_some()
+                    && root.get_original_version(key).is_none()
+                {
+                    return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
+                        "cannot update {}({:?}) without its loaded original version; load the full entity before mutation",
+                        key.entity, key.id
+                    ))));
                 }
             }
 
@@ -1409,11 +1544,23 @@ where
             }
         }
 
-        let mut insert_order: Vec<String> = insert_batches.keys().cloned().collect();
-        insert_order.sort();
+        let ordered_insert_keys = self
+            .order_new_ledger_keys(insert_batches.values().flatten().cloned(), &checked_changes)
+            .map_err(DataServiceError::Runtime)?;
+        let mut ordered_insert_batches = Vec::<(String, Vec<crate::EntityKey>)>::new();
+        for key in ordered_insert_keys {
+            let entity = key.entity.to_string();
+            if let Some((batch_entity, keys)) = ordered_insert_batches.last_mut()
+                && *batch_entity == entity
+            {
+                keys.push(key);
+            } else {
+                ordered_insert_batches.push((entity, vec![key]));
+            }
+        }
 
-        for entity in insert_order {
-            let keys = insert_batches.get(&entity).unwrap();
+        let mut prepared_insert_batches = Vec::new();
+        for (entity, keys) in ordered_insert_batches {
             let descriptor = self
                 .data_service
                 .metadata
@@ -1422,7 +1569,7 @@ where
                 .map_err(DataServiceError::Runtime)?;
             let mut cmd = teaql_core::BatchInsertCommand::new(&descriptor.name);
             let mut traces = Vec::new();
-            for key in keys {
+            for key in &keys {
                 let record = checked_changes.get(key).unwrap();
                 let mut db_record = crate::EntityValues::new();
                 let mut real_id = key.id.clone();
@@ -1445,11 +1592,37 @@ where
                 }
                 crate::data_service::helpers::ensure_initial_version(&mut db_record, descriptor);
                 crate::data_service::helpers::ensure_timestamps(&mut db_record, descriptor, true);
+                let location = locations.get(key).cloned().unwrap_or_default();
+                self.data_service
+                    .metadata
+                    .context
+                    .validate_required_create_payload(&entity, &db_record, &location)
+                    .map_err(DataServiceError::Runtime)?;
                 cmd.batch_values.push(db_record.into());
                 let my_trace = resolve_trace_chain(root.get_trace_chain(key), &trace_chain);
                 traces.push(my_trace);
             }
             cmd.trace_chains = traces;
+            prepared_insert_batches.push(cmd);
+        }
+
+        // The required-field gate above is complete before Deletes, Inserts,
+        // or Updates. Ledger deletion is versioned soft delete, so physical
+        // foreign keys do not impose child-before-parent ordering here.
+        for key in &deleted_keys {
+            if new_keys.contains(key) {
+                continue;
+            }
+            let id = key.id.clone();
+            let mut cmd = teaql_core::DeleteCommand::new(key.entity.as_ref(), id);
+            if let Some(version) = root.get_original_version(key) {
+                cmd = cmd.expected_version(version);
+            }
+            cmd.trace_chain = resolve_trace_chain(root.get_trace_chain(key), &trace_chain);
+            self.delete_internal(&cmd).await?;
+        }
+
+        for cmd in prepared_insert_batches {
             self.execute_prepared_batch_insert(cmd).await?;
         }
 
@@ -1473,6 +1646,11 @@ where
                 && !update_fields.contains(&"update_time".to_owned())
             {
                 update_fields.push("update_time".to_owned());
+            }
+            if let Some(version_property) = descriptor.version_property()
+                && !update_fields.contains(&version_property.name)
+            {
+                update_fields.push(version_property.name.clone());
             }
             let mut cmd = teaql_core::BatchUpdateCommand::new(&descriptor.name, update_fields);
             let mut traces = Vec::new();

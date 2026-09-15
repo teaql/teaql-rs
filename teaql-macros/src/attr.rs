@@ -130,6 +130,9 @@ pub struct ParsedFieldAttrs {
     pub skip: bool,
     pub boxed_relations: bool,
     pub column: Option<String>,
+    pub max_length: Option<u32>,
+    pub numeric_precision: Option<u32>,
+    pub numeric_scale: Option<u32>,
     pub relation: Option<ParsedRelation>,
 }
 
@@ -167,6 +170,12 @@ pub fn parse_field_attrs(attrs: &[syn::Attribute]) -> ParsedFieldAttrs {
             } else if meta.path.is_ident("column") {
                 let value = meta.value()?;
                 parsed.column = Some(parse_string_expr(&value.parse::<Expr>()?));
+            } else if meta.path.is_ident("max_length") {
+                parsed.max_length = parse_u32_expr(&meta.value()?.parse::<Expr>()?);
+            } else if meta.path.is_ident("numeric_precision") {
+                parsed.numeric_precision = parse_u32_expr(&meta.value()?.parse::<Expr>()?);
+            } else if meta.path.is_ident("numeric_scale") {
+                parsed.numeric_scale = parse_u32_expr(&meta.value()?.parse::<Expr>()?);
             } else if meta.path.is_ident("relation") {
                 let mut relation = ParsedRelation::default();
                 meta.parse_nested_meta(|nested| {
@@ -220,5 +229,16 @@ fn parse_bool_expr(expr: &Expr) -> bool {
             _ => panic!("expected bool literal"),
         },
         _ => panic!("expected bool literal"),
+    }
+}
+
+fn parse_u32_expr(expr: &Expr) -> Option<u32> {
+    match expr {
+        Expr::Lit(expr_lit) => match &expr_lit.lit {
+            Lit::Int(value) => value.base10_parse().ok(),
+            Lit::Str(value) => value.value().parse().ok(),
+            _ => None,
+        },
+        _ => None,
     }
 }

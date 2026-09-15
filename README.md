@@ -365,6 +365,34 @@ Current examples cover:
 - audited graph saves through `entity.audit_as("why").save(&ctx)`
 - default SQL trace-log output
 
+Ledger-backed `save(&ctx)` reads the authoritative persisted root row on the
+write transaction before committing. The returned typed entity therefore uses
+database-generated IDs, defaults and actual versions from that transaction,
+including an existing soft-delete tombstone. If the readback fails, the write
+transaction rolls back and the mutation ledger remains retryable. An executor
+already bound to an outer transaction uses that same executor and leaves commit
+or rollback to its owner. See [issue #127](https://github.com/teaql/teaql-rs/issues/127)
+for the retained concurrency and rollback regression.
+
+## Live SQL provider verification
+
+The PostgreSQL and MySQL provider tests contain real-database cases that return
+early when their URL is absent. A green plain `cargo test` result therefore does
+not by itself prove those cases executed. Use the retained gate instead:
+
+```bash
+TEAQL_TEST_POSTGRES_URL='postgresql://<user>:<password>@<host>/<dedicated-db>' \
+TEAQL_TEST_MYSQL_URL='mysql://<user>:<password>@<host>/<dedicated-db>' \
+  scripts/verify-live-sql-providers.sh
+```
+
+Create a disposable database named `teaql_rust_provider_*` on each engine first.
+The script rejects missing URLs and other database names, then runs the complete
+SQLite, PostgreSQL and MySQL provider suites. It does **not** create or drop the
+databases; the caller must verify and clean up those exact test databases after
+the run. The provider tests create and remove fixed-name fixture tables within
+them, so never point this gate at a shared or production database.
+
 ## Environment Variables
 
 TeaQL supports the following environment variables for configuration and debugging:

@@ -19,18 +19,16 @@ pub struct HumanReaderFormatter;
 
 impl HumanReaderFormatter {
     fn format_trace_chain(&self, trace_chain: &[TraceNode]) -> String {
-        (!trace_chain.is_empty())
-            .then(|| {
-                trace_chain
-                    .iter()
-                    .enumerate()
-                    .map(|(level, n)| {
-                        format!("{}:{:?}:{}={}", level, n.kind, n.entity_type, n.comment)
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" -> ")
-            })
-            .unwrap_or_default()
+        if !trace_chain.is_empty() {
+            trace_chain
+                .iter()
+                .enumerate()
+                .map(|(level, n)| format!("{}:{:?}:{}={}", level, n.kind, n.entity_type, n.comment))
+                .collect::<Vec<_>>()
+                .join(" -> ")
+        } else {
+            Default::default()
+        }
     }
 }
 
@@ -38,9 +36,11 @@ impl LogFormatter for HumanReaderFormatter {
     fn format_sql_log(&self, trace_chain: &[TraceNode], entry: &SqlLogEntry) -> String {
         let ts = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f");
         let trace_str = self.format_trace_chain(trace_chain);
-        let trace_display = (!trace_str.is_empty())
-            .then(|| format!(" - [{}]", trace_str))
-            .unwrap_or_default();
+        let trace_display = if !trace_str.is_empty() {
+            format!(" - [{}]", trace_str)
+        } else {
+            Default::default()
+        };
 
         let elapsed_us = (entry.elapsed.as_secs_f64() * 1_000_000.0).round() as u64;
         let intent = format!(
@@ -63,9 +63,11 @@ impl LogFormatter for HumanReaderFormatter {
     fn format_audit_log(&self, event: &RawAuditEvent) -> String {
         let ts = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f");
         let trace_str = self.format_trace_chain(&event.trace_chain);
-        let trace_display = (!trace_str.is_empty())
-            .then(|| format!(" (Trace: {})", trace_str))
-            .unwrap_or_default();
+        let trace_display = if !trace_str.is_empty() {
+            format!(" (Trace: {})", trace_str)
+        } else {
+            Default::default()
+        };
 
         let mut field_changes = Vec::new();
         for change in &event.changes {
@@ -79,15 +81,17 @@ impl LogFormatter for HumanReaderFormatter {
                 .unwrap_or_else(|| "null".to_string());
             field_changes.push(format!("{}: {}", change.field, val));
         }
-        let fields_part = (!field_changes.is_empty())
-            .then(|| format!(" {{{}}}", field_changes.join(", ")))
-            .unwrap_or_default();
+        let fields_part = if !field_changes.is_empty() {
+            format!(" {{{}}}", field_changes.join(", "))
+        } else {
+            Default::default()
+        };
 
         let mut entity_id = "Unknown".to_string();
-        if let Some(vals) = &event.new_values {
-            if let Some(id_val) = vals.get("id") {
-                entity_id = format!("{:?}", id_val);
-            }
+        if let Some(vals) = &event.new_values
+            && let Some(id_val) = vals.get("id")
+        {
+            entity_id = format!("{:?}", id_val);
         }
 
         format!(
@@ -221,10 +225,10 @@ impl LogConfig {
         if self.audit_level == LogLevel::Silent {
             return false;
         }
-        if let Some(entities) = &self.audit_entities {
-            if !entities.iter().any(|e| e.eq_ignore_ascii_case(entity)) {
-                return false;
-            }
+        if let Some(entities) = &self.audit_entities
+            && !entities.iter().any(|e| e.eq_ignore_ascii_case(entity))
+        {
+            return false;
         }
         true
     }
@@ -249,10 +253,10 @@ impl LogConfig {
         if self.tool_level == LogLevel::Silent {
             return false;
         }
-        if let Some(focus) = &self.tool_focus {
-            if !focus.iter().any(|f| f.eq_ignore_ascii_case(module)) {
-                return false;
-            }
+        if let Some(focus) = &self.tool_focus
+            && !focus.iter().any(|f| f.eq_ignore_ascii_case(module))
+        {
+            return false;
         }
         true
     }
@@ -289,10 +293,10 @@ impl LogManager {
                     .ok()
                     .filter(|v| !v.is_empty())
                     .or_else(|| {
-                        if let Ok(val) = std::env::var("TEAQL_DOMAIN") {
-                            if !val.is_empty() {
-                                return Some(format!("{}.log", val));
-                            }
+                        if let Ok(val) = std::env::var("TEAQL_DOMAIN")
+                            && !val.is_empty()
+                        {
+                            return Some(format!("{}.log", val));
                         }
                         let exe_name = std::env::current_exe()
                             .ok()

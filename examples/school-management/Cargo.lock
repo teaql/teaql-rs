@@ -594,6 +594,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 name = "school-management-bootstrap-example"
 version = "0.1.0"
 dependencies = [
+ "rusqlite",
  "school-management-service-core",
  "tokio",
 ]
@@ -749,7 +750,7 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
 name = "teaql-core"
-version = "4.3.1"
+version = "4.3.5"
 dependencies = [
  "chrono",
  "rust_decimal",
@@ -760,7 +761,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-data-service"
-version = "4.3.1"
+version = "4.3.5"
 dependencies = [
  "futures-core",
  "teaql-core",
@@ -768,7 +769,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-macros"
-version = "4.3.1"
+version = "4.3.5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -777,7 +778,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-provider-sqlite"
-version = "4.3.1"
+version = "4.3.5"
 dependencies = [
  "async-stream",
  "chrono",
@@ -794,13 +795,14 @@ dependencies = [
 
 [[package]]
 name = "teaql-runtime"
-version = "4.3.1"
+version = "4.3.5"
 dependencies = [
  "async-trait",
  "chrono",
  "futures-core",
  "futures-util",
  "rust_decimal",
+ "serde",
  "serde_json",
  "teaql-core",
  "teaql-data-service",
@@ -810,7 +812,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-sql"
-version = "4.3.1"
+version = "4.3.5"
 dependencies = [
  "futures-core",
  "futures-util",

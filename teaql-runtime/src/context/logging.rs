@@ -1,10 +1,8 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use teaql_core::Value;
-use teaql_sql::{CompiledQuery, DatabaseKind};
-
 use super::UserContext;
+use teaql_core::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SqlLogOperation {
@@ -104,6 +102,7 @@ pub struct UnifiedLogEntry {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)] // Boxing Sql would break the public constructor shape.
 pub enum LogPayload {
     Sql(SqlLogEntry),
     Info(InfoLogEntry),
@@ -171,57 +170,6 @@ impl UserContext {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn record_sql_log(
-        &self,
-        operation: SqlLogOperation,
-        query: &CompiledQuery,
-        database_kind: DatabaseKind,
-        started_at: SystemTime,
-        ended_at: SystemTime,
-        elapsed: Duration,
-        result_count: Option<usize>,
-        result_type: Option<String>,
-        affected_rows: Option<u64>,
-        trace_chain: Vec<teaql_core::TraceNode>,
-    ) {
-        if !self.sql_log_options.enabled_for(operation) {
-            return;
-        }
-        let debug_sql = query.debug_sql(database_kind);
-        let result_summary = sql_result_summary(
-            operation,
-            result_count,
-            result_type.as_deref(),
-            affected_rows,
-            &debug_sql,
-        );
-        let trace_path = canonical_sql_trace_path(
-            operation,
-            &format!("{database_kind:?}").to_ascii_lowercase(),
-            &trace_chain,
-        );
-        let entry = SqlLogEntry {
-            operation,
-            comment: trace_value(&trace_chain, teaql_core::TraceKind::Comment),
-            purpose: trace_value(&trace_chain, teaql_core::TraceKind::Purpose),
-            audit_reason: trace_value(&trace_chain, teaql_core::TraceKind::AuditReason),
-            trace_path: trace_path.clone(),
-            sql: query.sql.clone(),
-            params: query.params.clone(),
-            pretty_sql: pretty_sql(&debug_sql),
-            debug_sql,
-            started_at,
-            ended_at,
-            elapsed,
-            result_summary,
-            result_count,
-            result_type,
-            affected_rows,
-        };
-        self.append_sql_log(started_at, trace_path, entry);
-    }
-
     pub(crate) fn record_metadata_log(&self, metadata: &teaql_data_service::ExecutionMetadata) {
         let operation = match metadata.operation {
             teaql_data_service::DataServiceOperation::Query => SqlLogOperation::Select,
@@ -283,97 +231,17 @@ impl UserContext {
         if let Ok(mut entries) = self.sql_log_entries.lock() {
             entries.push(entry.clone());
         }
-        if let Some(buffer) = self.get_resource::<UnifiedLogBuffer>() {
-            if let Ok(mut entries) = buffer.entries.lock() {
-                entries.push(UnifiedLogEntry {
-                    timestamp,
-                    user_identifier: self.user_identifier.clone(),
-                    trace_chain: trace_path.clone(),
-                    payload: LogPayload::Sql(entry.clone()),
-                });
-            }
+        if let Some(buffer) = self.get_resource::<UnifiedLogBuffer>()
+            && let Ok(mut entries) = buffer.entries.lock()
+        {
+            entries.push(UnifiedLogEntry {
+                timestamp,
+                user_identifier: self.user_identifier.clone(),
+                trace_chain: trace_path.clone(),
+                payload: LogPayload::Sql(entry.clone()),
+            });
         }
         crate::log_formatter::LogManager::write_sql_log(&trace_path, &entry);
-    }
-}
-
-fn extract_id_from_sql(sql: &str) -> Option<String> {
-    let sql_lower = sql.to_lowercase();
-    let where_clause = &sql_lower[sql_lower.find("where")? + 5..];
-    let bytes = where_clause.as_bytes();
-    let mut index = 0;
-    while index + 1 < bytes.len() {
-        if &bytes[index..index + 2] == b"id" {
-            let before_is_boundary = index == 0 || {
-                let previous = bytes[index - 1] as char;
-                !previous.is_ascii_alphanumeric() && previous != '_' && previous != '.'
-            };
-            let after_is_boundary = index + 2 == bytes.len() || {
-                let next = bytes[index + 2] as char;
-                !next.is_ascii_alphanumeric() && next != '_'
-            };
-            if before_is_boundary && after_is_boundary {
-                let mut value_index = index + 2;
-                while value_index < bytes.len() && (bytes[value_index] as char).is_whitespace() {
-                    value_index += 1;
-                }
-                if value_index < bytes.len() && bytes[value_index] == b'=' {
-                    value_index += 1;
-                    while value_index < bytes.len() && (bytes[value_index] as char).is_whitespace()
-                    {
-                        value_index += 1;
-                    }
-                    let quoted = value_index < bytes.len() && bytes[value_index] == b'\'';
-                    if quoted {
-                        value_index += 1;
-                    }
-                    let mut value = String::new();
-                    while value_index < bytes.len() {
-                        let character = bytes[value_index] as char;
-                        if (quoted && character == '\'')
-                            || (!quoted
-                                && !character.is_ascii_alphanumeric()
-                                && character != '_'
-                                && character != '-')
-                        {
-                            break;
-                        }
-                        value.push(character);
-                        value_index += 1;
-                    }
-                    if !value.is_empty() {
-                        return Some(value);
-                    }
-                }
-            }
-        }
-        index += 1;
-    }
-    None
-}
-
-fn sql_result_summary(
-    operation: SqlLogOperation,
-    result_count: Option<usize>,
-    result_type: Option<&str>,
-    affected_rows: Option<u64>,
-    debug_sql: &str,
-) -> String {
-    match operation {
-        SqlLogOperation::Select => match result_count.unwrap_or(0) {
-            0 => "MISS".to_owned(),
-            1 => result_type
-                .map(|result_type| {
-                    extract_id_from_sql(debug_sql)
-                        .map(|id| format!("{result_type}({id})"))
-                        .unwrap_or_else(|| result_type.to_owned())
-                })
-                .unwrap_or_else(|| "row".to_owned()),
-            count => result_type
-                .map(|result_type| format!("{count}*{result_type}"))
-                .unwrap_or_else(|| format!("{count}*rows")),
-        },
-        _ => format!("{} UPDATED", affected_rows.unwrap_or(0)),
     }
 }
 

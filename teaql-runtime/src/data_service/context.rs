@@ -1,3 +1,6 @@
+// Compatibility adapters retained while generated callers migrate to EntityDataService.
+#![allow(dead_code)]
+
 use std::fmt::Write;
 use std::sync::Arc;
 use std::{collections::BTreeMap, future::Future};
@@ -7,9 +10,7 @@ use teaql_core::{
     UpdateCommand,
 };
 
-use crate::{
-    ContextError, DataServiceError, GraphMutationPlan, GraphNode, RuntimeError, UserContext,
-};
+use crate::{ContextError, DataServiceError, UserContext};
 
 use super::{
     AggregationCacheBackend, ContextDataService, EntityDataService, InMemoryAggregationCache,

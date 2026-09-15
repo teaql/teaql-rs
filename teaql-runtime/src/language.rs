@@ -1,7 +1,8 @@
 use crate::{CheckResult, ObjectLocation};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum Language {
+    #[default]
     English,
     Chinese,
     TraditionalChinese,
@@ -17,12 +18,6 @@ pub enum Language {
     Filipino,
     Ukrainian,
     Vietnamese,
-}
-
-impl Default for Language {
-    fn default() -> Self {
-        Self::English
-    }
 }
 
 impl Language {

@@ -8,6 +8,9 @@ pub struct PropertyDescriptor {
     pub column_name: String,
     pub is_id: bool,
     pub is_version: bool,
+    pub max_length: Option<u32>,
+    pub numeric_precision: Option<u32>,
+    pub numeric_scale: Option<u32>,
 }
 
 impl PropertyDescriptor {
@@ -20,6 +23,9 @@ impl PropertyDescriptor {
             nullable: true,
             is_id: false,
             is_version: false,
+            max_length: None,
+            numeric_precision: None,
+            numeric_scale: None,
         }
     }
 
@@ -40,6 +46,21 @@ impl PropertyDescriptor {
 
     pub fn version(mut self) -> Self {
         self.is_version = true;
+        self
+    }
+
+    pub fn max_length(mut self, max_length: u32) -> Self {
+        self.max_length = Some(max_length);
+        self
+    }
+
+    pub fn numeric_precision(mut self, precision: u32) -> Self {
+        self.numeric_precision = Some(precision);
+        self
+    }
+
+    pub fn numeric_scale(mut self, scale: u32) -> Self {
+        self.numeric_scale = Some(scale);
         self
     }
 }
@@ -192,7 +213,10 @@ mod tests {
             .column_name("user_name")
             .not_null()
             .id()
-            .version();
+            .version()
+            .max_length(120)
+            .numeric_precision(19)
+            .numeric_scale(7);
 
         assert_eq!(prop.name, "username");
         assert_eq!(prop.column_name, "user_name");
@@ -200,6 +224,9 @@ mod tests {
         assert!(!prop.nullable);
         assert!(prop.is_id);
         assert!(prop.is_version);
+        assert_eq!(prop.max_length, Some(120));
+        assert_eq!(prop.numeric_precision, Some(19));
+        assert_eq!(prop.numeric_scale, Some(7));
     }
 
     #[test]

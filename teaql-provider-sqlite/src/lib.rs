@@ -20,7 +20,7 @@ use teaql_runtime::{
 };
 use teaql_sql::{
     CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, SqlTransport,
-    quote_identifier_if_needed,
+    quote_identifier_if_needed, schema_index_specs,
 };
 
 pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";
@@ -51,18 +51,21 @@ impl SqlDialect for SqliteDialect {
         &self,
         data_type: DataType,
         property: &PropertyDescriptor,
-    ) -> Result<&'static str, SqlCompileError> {
+    ) -> Result<String, SqlCompileError> {
         match data_type {
-            DataType::Bool => Ok("BOOLEAN"),
-            DataType::I64 | DataType::U64 if property.is_id => Ok("INTEGER"),
-            DataType::I64 | DataType::U64 => Ok("INTEGER"),
-            DataType::F64 => Ok("REAL"),
-            DataType::Decimal => Ok("NUMERIC"),
-            DataType::Text => Ok("VARCHAR(255)"),
-            DataType::LargeText => Ok("TEXT"),
-            DataType::Json => Ok("JSON"),
-            DataType::Date => Ok("DATE"),
-            DataType::Timestamp => Ok("TIMESTAMP"),
+            DataType::Bool => Ok("BOOLEAN".to_owned()),
+            DataType::I64 | DataType::U64 if property.is_id => Ok("INTEGER".to_owned()),
+            DataType::I64 | DataType::U64 => Ok("INTEGER".to_owned()),
+            DataType::F64 => Ok("REAL".to_owned()),
+            DataType::Decimal => match (property.numeric_precision, property.numeric_scale) {
+                (Some(precision), Some(scale)) => Ok(format!("NUMERIC({precision},{scale})")),
+                _ => Ok("NUMERIC".to_owned()),
+            },
+            DataType::Text => Ok(format!("VARCHAR({})", property.max_length.unwrap_or(255))),
+            DataType::LargeText => Ok("TEXT".to_owned()),
+            DataType::Json => Ok("JSON".to_owned()),
+            DataType::Date => Ok("DATE".to_owned()),
+            DataType::Timestamp => Ok("TIMESTAMP".to_owned()),
         }
     }
 
@@ -71,18 +74,98 @@ impl SqlDialect for SqliteDialect {
         entity: &EntityDescriptor,
         property: &PropertyDescriptor,
     ) -> Result<String, SqlCompileError> {
-        // SQLite does not support adding NOT NULL columns without a DEFAULT.
-        // Since TeaQL enforces nullability at the application layer, we can safely
-        // strip the NOT NULL constraint when adding columns to existing tables.
         let def = self.column_definition_sql(property)?;
-        let def_without_not_null = def.replace(" NOT NULL", "");
-
         Ok(format!(
             "ALTER TABLE {} ADD COLUMN {}",
             self.quote_ident(&entity.table_name),
-            def_without_not_null
+            def
         ))
     }
+}
+
+fn sqlite_foreign_keys_for(
+    source_entity: &EntityDescriptor,
+    entities: &[&EntityDescriptor],
+) -> Result<Vec<(String, String, String)>, MutationExecutorError> {
+    let mut foreign_keys = BTreeSet::new();
+    for entity in entities {
+        for relation in &entity.relations {
+            let Some(target) = entities
+                .iter()
+                .copied()
+                .find(|candidate| candidate.name == relation.target_entity)
+            else {
+                continue;
+            };
+            if entity.data_service != target.data_service {
+                continue;
+            }
+            let (source, source_key, referenced, referenced_key) = if relation.many {
+                (target, &relation.foreign_key, *entity, &relation.local_key)
+            } else {
+                (*entity, &relation.local_key, target, &relation.foreign_key)
+            };
+            if source.name != source_entity.name {
+                continue;
+            }
+            let source_property = source.property_by_name(source_key).ok_or_else(|| {
+                MutationExecutorError::Bind(format!(
+                    "cannot ensure relation {}.{}: source key {}.{} does not exist",
+                    entity.name, relation.name, source.name, source_key
+                ))
+            })?;
+            let referenced_property =
+                referenced.property_by_name(referenced_key).ok_or_else(|| {
+                    MutationExecutorError::Bind(format!(
+                        "cannot ensure relation {}.{}: referenced key {}.{} does not exist",
+                        entity.name, relation.name, referenced.name, referenced_key
+                    ))
+                })?;
+            foreign_keys.insert((
+                source_property.column_name.clone(),
+                referenced.table_name.clone(),
+                referenced_property.column_name.clone(),
+            ));
+        }
+    }
+    Ok(foreign_keys.into_iter().collect())
+}
+
+struct SqliteForeignKeyRow {
+    id: i64,
+    seq: i64,
+    source_column: String,
+    referenced_table: String,
+    referenced_column: String,
+    update_action: String,
+    delete_action: String,
+}
+
+fn compile_sqlite_create_table(
+    dialect: &SqliteDialect,
+    entity: &EntityDescriptor,
+    entities: &[&EntityDescriptor],
+) -> Result<String, MutationExecutorError> {
+    let mut definitions = entity
+        .properties
+        .iter()
+        .map(|property| dialect.column_definition_sql(property))
+        .collect::<Result<Vec<_>, _>>()?;
+    for (source_column, referenced_table, referenced_column) in
+        sqlite_foreign_keys_for(entity, entities)?
+    {
+        definitions.push(format!(
+            "FOREIGN KEY ({}) REFERENCES {} ({})",
+            dialect.quote_ident(&source_column),
+            dialect.quote_ident(&referenced_table),
+            dialect.quote_ident(&referenced_column),
+        ));
+    }
+    Ok(format!(
+        "CREATE TABLE IF NOT EXISTS {} ({})",
+        dialect.quote_ident(&entity.table_name),
+        definitions.join(", ")
+    ))
 }
 
 #[derive(Debug)]
@@ -163,36 +246,150 @@ impl SqliteMutationExecutor {
         dialect: &SqliteDialect,
         entities: &[&EntityDescriptor],
     ) -> Result<(), MutationExecutorError> {
-        self.ensure_soundex_function()?;
-        self.ensure_id_space_table(DEFAULT_ID_SPACE_TABLE)?;
-
-        for entity in entities {
-            if !self.table_exists(&entity.table_name)? {
-                let sql = dialect.compile_create_table(entity)?;
-                self.lock()?.execute(&sql, [])?;
-                continue;
-            }
-
-            let existing_columns = self.table_columns(&entity.table_name)?;
-            for property in &entity.properties {
-                let bare_column = strip_identifier_quotes(&property.column_name).to_lowercase();
-                if existing_columns.contains(&bare_column) {
-                    continue;
+        let connection = self.lock()?;
+        Self::ensure_soundex_function(&connection)?;
+        connection.pragma_update(None, "foreign_keys", true)?;
+        connection.execute("BEGIN IMMEDIATE", [])?;
+        let result = Self::ensure_schema_with_connection(&connection, dialect, entities);
+        match result {
+            Ok(()) => {
+                if let Err(error) = connection.execute("COMMIT", []) {
+                    let _ = connection.execute("ROLLBACK", []);
+                    return Err(error.into());
                 }
-                let sql = dialect.compile_add_column(entity, property)?;
-                self.lock()?.execute(&sql, [])?;
             }
-
-            for sql in dialect.schema_indexes_sqls(entity)? {
-                self.lock()?.execute(&sql, [])?;
+            Err(error) => {
+                let _ = connection.execute("ROLLBACK", []);
+                return Err(error);
             }
         }
+        drop(connection);
         self.clear_query_caches();
         Ok(())
     }
 
-    fn ensure_soundex_function(&self) -> Result<(), MutationExecutorError> {
-        self.lock()?.create_scalar_function(
+    fn ensure_schema_with_connection(
+        connection: &Connection,
+        dialect: &SqliteDialect,
+        entities: &[&EntityDescriptor],
+    ) -> Result<(), MutationExecutorError> {
+        Self::ensure_id_space_table_with_connection(connection, DEFAULT_ID_SPACE_TABLE)?;
+
+        for entity in entities {
+            if !Self::table_exists_with_connection(connection, &entity.table_name)? {
+                let sql = compile_sqlite_create_table(dialect, entity, entities)?;
+                connection.execute(&sql, [])?;
+            } else {
+                let existing_columns =
+                    Self::table_columns_with_connection(connection, &entity.table_name)?;
+                for property in &entity.properties {
+                    let bare_column = strip_identifier_quotes(&property.column_name).to_lowercase();
+                    if let Some((actual_type, actual_nullable)) = existing_columns.get(&bare_column)
+                    {
+                        ensure_sqlite_column_compatibility(
+                            entity,
+                            property,
+                            actual_type,
+                            *actual_nullable,
+                        )?;
+                        continue;
+                    }
+                    Self::ensure_required_column_can_be_added(connection, entity, property)?;
+                    let sql = dialect.compile_add_column(entity, property)?;
+                    connection.execute(&sql, [])?;
+                }
+            }
+
+            for sql in dialect.schema_indexes_sqls(entity)? {
+                connection.execute(&sql, [])?;
+            }
+            ensure_sqlite_declared_index_shapes(connection, entity)?;
+        }
+        Self::ensure_foreign_keys_with_connection(connection, entities)?;
+        Ok(())
+    }
+
+    fn ensure_foreign_keys_with_connection(
+        connection: &Connection,
+        entities: &[&EntityDescriptor],
+    ) -> Result<(), MutationExecutorError> {
+        for entity in entities {
+            let expected = sqlite_foreign_keys_for(entity, entities)?;
+            if expected.is_empty() {
+                continue;
+            }
+            let pragma = format!(
+                "PRAGMA foreign_key_list({})",
+                quote_ident(&entity.table_name)
+            );
+            let mut statement = connection.prepare(&pragma)?;
+            let rows = statement.query_map([], |row| {
+                Ok(SqliteForeignKeyRow {
+                    id: row.get("id")?,
+                    seq: row.get("seq")?,
+                    source_column: row.get("from")?,
+                    referenced_table: row.get("table")?,
+                    referenced_column: row.get("to")?,
+                    update_action: row.get("on_update")?,
+                    delete_action: row.get("on_delete")?,
+                })
+            })?;
+            let actual = rows.collect::<Result<Vec<_>, _>>()?;
+            for (source_column, referenced_table, referenced_column) in expected {
+                let restricts = |action: &str| {
+                    action.eq_ignore_ascii_case("NO ACTION")
+                        || action.eq_ignore_ascii_case("RESTRICT")
+                };
+                let mut found = false;
+                let mut incompatible = None;
+                for candidate in actual.iter().filter(|candidate| {
+                    candidate.source_column.eq_ignore_ascii_case(&source_column)
+                        && candidate
+                            .referenced_table
+                            .eq_ignore_ascii_case(&referenced_table)
+                        && candidate
+                            .referenced_column
+                            .eq_ignore_ascii_case(&referenced_column)
+                }) {
+                    found = true;
+                    let key_count = actual.iter().filter(|row| row.id == candidate.id).count();
+                    if candidate.seq == 0
+                        && key_count == 1
+                        && restricts(&candidate.update_action)
+                        && restricts(&candidate.delete_action)
+                    {
+                        incompatible = None;
+                        break;
+                    }
+                    incompatible.get_or_insert_with(|| format!(
+                        "ensure schema incompatible SQLite foreign-key shape: table={}, column={}, referenced_table={}, referenced_column={}, expected=one full-column key with RESTRICT actions, installed_fk_id={}, installed_seq={}, installed_key_count={}, installed_update={}, installed_delete={}; rebuild/migrate the table explicitly before retrying",
+                        entity.table_name,
+                        source_column,
+                        referenced_table,
+                        referenced_column,
+                        candidate.id,
+                        candidate.seq,
+                        key_count,
+                        candidate.update_action,
+                        candidate.delete_action
+                    ));
+                }
+                if !found {
+                    return Err(MutationExecutorError::Bind(format!(
+                        "ensure schema cannot add missing SQLite foreign key in place: table={}, column={}, referenced_table={}, referenced_column={}; rebuild/migrate the table explicitly before retrying",
+                        entity.table_name, source_column, referenced_table, referenced_column
+                    )));
+                }
+                if let Some(message) = incompatible {
+                    return Err(MutationExecutorError::Bind(message));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_soundex_function(connection: &Connection) -> Result<(), MutationExecutorError> {
+        connection.create_scalar_function(
             "soundex",
             1,
             FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
@@ -214,11 +411,19 @@ impl SqliteMutationExecutor {
     }
 
     pub fn ensure_id_space_table(&self, table_name: &str) -> Result<(), MutationExecutorError> {
+        let connection = self.lock()?;
+        Self::ensure_id_space_table_with_connection(&connection, table_name)
+    }
+
+    fn ensure_id_space_table_with_connection(
+        connection: &Connection,
+        table_name: &str,
+    ) -> Result<(), MutationExecutorError> {
         let sql = format!(
             "CREATE TABLE IF NOT EXISTS {} (type_name VARCHAR(100) PRIMARY KEY, current_level BIGINT NOT NULL)",
             quote_ident(table_name)
         );
-        self.lock()?.execute(&sql, [])?;
+        connection.execute(&sql, [])?;
         Ok(())
     }
 
@@ -310,7 +515,15 @@ impl SqliteMutationExecutor {
     }
 
     pub fn table_exists(&self, table_name: &str) -> Result<bool, MutationExecutorError> {
-        let exists: i64 = self.lock()?.query_row(
+        let connection = self.lock()?;
+        Self::table_exists_with_connection(&connection, table_name)
+    }
+
+    fn table_exists_with_connection(
+        connection: &Connection,
+        table_name: &str,
+    ) -> Result<bool, MutationExecutorError> {
+        let exists: i64 = connection.query_row(
             "SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = ?",
             [table_name],
             |row| row.get(0),
@@ -321,22 +534,161 @@ impl SqliteMutationExecutor {
     pub fn table_columns(
         &self,
         table_name: &str,
-    ) -> Result<BTreeSet<String>, MutationExecutorError> {
-        let pragma_sql = format!("PRAGMA table_info({})", quote_ident(table_name));
+    ) -> Result<BTreeMap<String, (String, bool)>, MutationExecutorError> {
         let connection = self.lock()?;
+        Self::table_columns_with_connection(&connection, table_name)
+    }
+
+    fn table_columns_with_connection(
+        connection: &Connection,
+        table_name: &str,
+    ) -> Result<BTreeMap<String, (String, bool)>, MutationExecutorError> {
+        let pragma_sql = format!("PRAGMA table_info({})", quote_ident(table_name));
         let mut statement = connection.prepare(&pragma_sql)?;
-        let rows = statement.query_map([], |row| row.get::<_, String>("name"))?;
-        let mut columns = BTreeSet::new();
+        let rows = statement.query_map([], |row| {
+            let not_null = row.get::<_, i64>("notnull")? != 0;
+            let primary_key = row.get::<_, i64>("pk")? != 0;
+            Ok((
+                row.get::<_, String>("name")?,
+                row.get::<_, String>("type")?,
+                !(not_null || primary_key),
+            ))
+        })?;
+        let mut columns = BTreeMap::new();
         for row in rows {
-            columns.insert(row?.to_lowercase());
+            let (name, data_type, nullable) = row?;
+            columns.insert(name.to_lowercase(), (data_type, nullable));
         }
         Ok(columns)
+    }
+
+    fn ensure_required_column_can_be_added(
+        connection: &Connection,
+        entity: &EntityDescriptor,
+        property: &PropertyDescriptor,
+    ) -> Result<(), MutationExecutorError> {
+        if property.nullable {
+            return Ok(());
+        }
+        let sql = format!(
+            "SELECT EXISTS(SELECT 1 FROM {} LIMIT 1)",
+            quote_ident(&entity.table_name)
+        );
+        let has_rows: bool = connection.query_row(&sql, [], |row| row.get(0))?;
+        if !has_rows {
+            return Ok(());
+        }
+        Err(MutationExecutorError::Bind(format!(
+            "ensure schema cannot add required column without a deterministic backfill: entity={}, table={}, column={}; the table contains rows, so migrate/backfill explicitly before retrying",
+            entity.name, entity.table_name, property.column_name
+        )))
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, Connection>, MutationExecutorError> {
         self.connection
             .lock()
             .map_err(|err| MutationExecutorError::Lock(err.to_string()))
+    }
+}
+
+fn ensure_sqlite_column_compatibility(
+    entity: &EntityDescriptor,
+    property: &PropertyDescriptor,
+    actual: &str,
+    actual_nullable: bool,
+) -> Result<(), MutationExecutorError> {
+    let actual_family = sqlite_type_family(actual);
+    let compatible = match property.data_type {
+        DataType::Bool => matches!(actual_family.as_str(), "boolean" | "integer"),
+        DataType::I64 | DataType::U64 => actual_family == "integer",
+        DataType::F64 => actual_family == "real",
+        DataType::Decimal => actual_family == "numeric",
+        DataType::Text | DataType::LargeText => actual_family == "text",
+        DataType::Json => matches!(actual_family.as_str(), "json" | "text"),
+        DataType::Date => matches!(actual_family.as_str(), "date" | "text"),
+        DataType::Timestamp => matches!(actual_family.as_str(), "timestamp" | "integer"),
+    };
+    if !compatible {
+        return Err(MutationExecutorError::Bind(format!(
+            "ensure schema incompatible column type: entity={}, table={}, column={}, expected={:?}, actual={actual}",
+            entity.name, entity.table_name, property.column_name, property.data_type
+        )));
+    }
+    if property.nullable != actual_nullable {
+        return Err(MutationExecutorError::Bind(format!(
+            "ensure schema incompatible column nullability: entity={}, table={}, column={}, expected_nullable={}, actual_nullable={actual_nullable}",
+            entity.name, entity.table_name, property.column_name, property.nullable
+        )));
+    }
+    let declared_args = sqlite_declared_type_args(actual);
+    if let Some(expected) = property.max_length {
+        let actual_length = declared_args.first().copied();
+        if !teaql_sql::storage_length_covers(expected, actual_length) {
+            return Err(MutationExecutorError::Bind(format!(
+                "ensure schema existing column is too narrow: entity={}, table={}, column={}, required_max_length={expected}, actual_max_length={actual_length:?}",
+                entity.name, entity.table_name, property.column_name
+            )));
+        }
+    }
+    if let (Some(expected_precision), Some(expected_scale)) =
+        (property.numeric_precision, property.numeric_scale)
+    {
+        let actual_precision = declared_args.first().copied();
+        let actual_scale = declared_args.get(1).copied();
+        if !teaql_sql::storage_numeric_covers(
+            expected_precision,
+            expected_scale,
+            actual_precision,
+            actual_scale,
+        ) {
+            return Err(MutationExecutorError::Bind(format!(
+                "ensure schema existing numeric column does not cover the model value domain: entity={}, table={}, column={}, required_precision={expected_precision}, required_scale={expected_scale}, actual_precision={actual_precision:?}, actual_scale={actual_scale:?}",
+                entity.name, entity.table_name, property.column_name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn sqlite_declared_type_args(data_type: &str) -> Vec<u32> {
+    let Some(start) = data_type.find('(') else {
+        return Vec::new();
+    };
+    let Some(end) = data_type[start + 1..].find(')') else {
+        return Vec::new();
+    };
+    data_type[start + 1..start + 1 + end]
+        .split(',')
+        .filter_map(|part| part.trim().parse().ok())
+        .collect()
+}
+
+fn sqlite_type_family(data_type: &str) -> String {
+    let normalized = data_type.trim().to_ascii_uppercase();
+    if normalized.contains("INT") {
+        "integer".to_owned()
+    } else if normalized.contains("CHAR")
+        || normalized.contains("CLOB")
+        || normalized.contains("TEXT")
+    {
+        "text".to_owned()
+    } else if normalized.contains("REAL")
+        || normalized.contains("FLOA")
+        || normalized.contains("DOUB")
+    {
+        "real".to_owned()
+    } else if normalized.contains("NUM") || normalized.contains("DEC") {
+        "numeric".to_owned()
+    } else if normalized.contains("BOOL") {
+        "boolean".to_owned()
+    } else if normalized.contains("JSON") {
+        "json".to_owned()
+    } else if normalized.contains("TIMESTAMP") || normalized.contains("DATETIME") {
+        "timestamp".to_owned()
+    } else if normalized.contains("DATE") {
+        "date".to_owned()
+    } else {
+        normalized.to_ascii_lowercase()
     }
 }
 
@@ -608,49 +960,88 @@ pub(crate) fn ensure_sqlite_physical_schema_for(
         })?;
 
     let entities = context.all_entities();
+    let connection = executor.lock()?;
+    SqliteMutationExecutor::ensure_soundex_function(&connection)?;
+    connection.pragma_update(None, "foreign_keys", true)?;
+    connection.execute("BEGIN IMMEDIATE", [])?;
+    let result = (|| -> Result<(), MutationExecutorError> {
+        SqliteMutationExecutor::ensure_id_space_table_with_connection(
+            &connection,
+            DEFAULT_ID_SPACE_TABLE,
+        )?;
 
-    // Ensure id space table exists
-    executor.ensure_id_space_table(DEFAULT_ID_SPACE_TABLE)?;
+        // Process each entity table individually with granular events.
+        for entity in &entities {
+            let field_count = entity.properties.len();
+            if !SqliteMutationExecutor::table_exists_with_connection(
+                &connection,
+                &entity.table_name,
+            )? {
+                let sql = compile_sqlite_create_table(dialect, entity, &entities)?;
+                connection.execute(&sql, [])?;
+                let _ = context.send_event(RawAuditEvent::schema_created(
+                    &entity.name,
+                    &entity.table_name,
+                    field_count,
+                ));
+            } else {
+                let existing_columns = SqliteMutationExecutor::table_columns_with_connection(
+                    &connection,
+                    &entity.table_name,
+                )?;
+                for property in &entity.properties {
+                    let bare_column = strip_identifier_quotes(&property.column_name).to_lowercase();
+                    if let Some((actual_type, actual_nullable)) = existing_columns.get(&bare_column)
+                    {
+                        ensure_sqlite_column_compatibility(
+                            entity,
+                            property,
+                            actual_type,
+                            *actual_nullable,
+                        )?;
+                        continue;
+                    }
+                    SqliteMutationExecutor::ensure_required_column_can_be_added(
+                        &connection,
+                        entity,
+                        property,
+                    )?;
+                    let sql = dialect.compile_add_column(entity, property)?;
+                    connection.execute(&sql, [])?;
+                    let _ = context.send_event(RawAuditEvent::field_added(
+                        &entity.name,
+                        &entity.table_name,
+                        &property.column_name,
+                    ));
+                }
+            }
 
-    // Process each entity table individually with granular events
-    for entity in &entities {
-        let field_count = entity.properties.len();
-        if !executor.table_exists(&entity.table_name)? {
-            // New table: create it
-            let sql = dialect.compile_create_table(entity)?;
-            executor.lock()?.execute(&sql, [])?;
-            let _ = context.send_event(RawAuditEvent::schema_created(
+            for sql in dialect.schema_indexes_sqls(entity)? {
+                connection.execute(&sql, [])?;
+            }
+            ensure_sqlite_declared_index_shapes(&connection, entity)?;
+            let _ = context.send_event(RawAuditEvent::schema_verified(
                 &entity.name,
                 &entity.table_name,
                 field_count,
             ));
-            continue;
         }
-        // Existing table: check for missing columns
-        let existing_columns = executor.table_columns(&entity.table_name)?;
-        let mut fields_added = 0;
-        for property in &entity.properties {
-            let bare_column = strip_identifier_quotes(&property.column_name).to_lowercase();
-            if existing_columns.contains(&bare_column) {
-                continue;
+        SqliteMutationExecutor::ensure_foreign_keys_with_connection(&connection, &entities)?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            if let Err(error) = connection.execute("COMMIT", []) {
+                let _ = connection.execute("ROLLBACK", []);
+                return Err(error.into());
             }
-            let sql = dialect.compile_add_column(entity, property)?;
-            executor.lock()?.execute(&sql, [])?;
-            let _ = context.send_event(RawAuditEvent::field_added(
-                &entity.name,
-                &entity.table_name,
-                &property.column_name,
-            ));
-            fields_added += 1;
         }
-        let _ = context.send_event(RawAuditEvent::schema_verified(
-            &entity.name,
-            &entity.table_name,
-            field_count,
-        ));
-        let _ = fields_added; // used above for FieldAdded events
+        Err(error) => {
+            let _ = connection.execute("ROLLBACK", []);
+            return Err(error);
+        }
     }
-
+    drop(connection);
     executor.clear_query_caches();
     Ok(())
 }
@@ -813,13 +1204,15 @@ impl SqliteIdSpaceGenerator {
             if let Some(current) = current {
                 let next = current.checked_add(1).ok_or_else(|| {
                     MutationExecutorError::Bind(format!(
-                        "ID space overflow for {entity} on optimistic-lock attempt {attempt}"
+                        "SQLite ID provider overflow for ID space {entity} in table {} on optimistic-lock attempt {attempt}",
+                        self.table_name
                     ))
                 })?;
                 if connection.execute(&update_sql, params![next, entity, current])? == 1 {
                     return u64::try_from(next).map_err(|_| {
                         MutationExecutorError::Bind(format!(
-                            "generated id {next} cannot be represented as u64"
+                            "SQLite ID provider generated id {next} for ID space {entity} in table {} that cannot be represented as u64",
+                            self.table_name
                         ))
                     });
                 }
@@ -828,7 +1221,8 @@ impl SqliteIdSpaceGenerator {
                     Ok(1) => return Ok(1),
                     Ok(changed) => {
                         return Err(MutationExecutorError::Bind(format!(
-                            "ID space insert for {entity} changed {changed} rows"
+                            "SQLite ID provider insert for ID space {entity} in table {} changed {changed} rows on optimistic-lock attempt {attempt}",
+                            self.table_name
                         )));
                     }
                     Err(error)
@@ -839,7 +1233,8 @@ impl SqliteIdSpaceGenerator {
             }
         }
         Err(MutationExecutorError::Bind(format!(
-            "Unable to allocate ID for {entity} after 100 optimistic-lock attempts"
+            "SQLite ID provider was unable to allocate ID space {entity} in table {} after 100 optimistic-lock attempts",
+            self.table_name
         )))
     }
 
@@ -848,7 +1243,10 @@ impl SqliteIdSpaceGenerator {
         let entity = entity.as_str();
         self.ensure_table()?;
         let floor = i64::try_from(floor).map_err(|_| {
-            MutationExecutorError::Bind(format!("ID space floor {floor} for {entity} exceeds i64"))
+            MutationExecutorError::Bind(format!(
+                "SQLite ID provider floor {floor} for ID space {entity} in table {} exceeds i64",
+                self.table_name
+            ))
         })?;
         let table = quote_ident(&self.table_name);
         for _ in 1..=100 {
@@ -880,7 +1278,8 @@ impl SqliteIdSpaceGenerator {
             }
         }
         Err(MutationExecutorError::Bind(format!(
-            "Unable to synchronize ID space floor for {entity} after 100 optimistic-lock attempts"
+            "SQLite ID provider was unable to synchronize floor for ID space {entity} in table {} after 100 optimistic-lock attempts",
+            self.table_name
         )))
     }
 }
@@ -920,6 +1319,89 @@ fn strip_identifier_quotes(ident: &str) -> &str {
         }
     }
     ident
+}
+
+fn ensure_sqlite_declared_index_shapes(
+    connection: &Connection,
+    entity: &EntityDescriptor,
+) -> Result<(), MutationExecutorError> {
+    let table = strip_identifier_quotes(&entity.table_name);
+    for spec in schema_index_specs(entity, None) {
+        let name = &spec.name;
+        let expected_unique = spec.unique;
+        let expected_columns = &spec.columns;
+        let installed_table: Option<String> = connection
+            .query_row(
+                "SELECT tbl_name FROM sqlite_master WHERE type='index' AND name=?1",
+                [&name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(installed_table) = installed_table else {
+            return Err(MutationExecutorError::Bind(format!(
+                "SQLite declared index missing: table={table} index={name}"
+            )));
+        };
+        let list_sql = format!("PRAGMA index_list({})", quote_ident(table));
+        let mut list = connection.prepare(&list_sql)?;
+        let rows = list.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })?;
+        let actual_flags = rows
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .find(|(index_name, _, _)| index_name == name);
+
+        let xinfo_sql = format!("PRAGMA index_xinfo({})", quote_ident(name));
+        let mut xinfo = connection.prepare(&xinfo_sql)?;
+        let columns = xinfo
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let actual_key_columns = columns
+            .iter()
+            .filter(|column| column.5 == 1)
+            .collect::<Vec<_>>();
+        let keys_match = actual_key_columns.len() == expected_columns.len()
+            && actual_key_columns
+                .iter()
+                .zip(expected_columns)
+                .all(|(actual, expected)| {
+                    actual.1 >= 0
+                        && actual.2.as_deref().is_some_and(|column| {
+                            column.eq_ignore_ascii_case(strip_identifier_quotes(expected))
+                        })
+                        && actual.3 == 0
+                        && actual.4.eq_ignore_ascii_case("BINARY")
+                });
+        let flags_match = actual_flags.as_ref().is_some_and(|(_, unique, partial)| {
+            *unique == i64::from(expected_unique) && *partial == 0
+        });
+        if !installed_table.eq_ignore_ascii_case(table) || !flags_match || !keys_match {
+            return Err(MutationExecutorError::Bind(format!(
+                "SQLite declared index shape mismatch: table={table} index={name}; expected={} on ({}) with ascending BINARY full-column keys; installed table={installed_table}, flags={actual_flags:?}, keys={actual_key_columns:?}; drop/rename the colliding index or migrate the table explicitly",
+                if expected_unique {
+                    "unique"
+                } else {
+                    "non-unique"
+                },
+                expected_columns.join(", ")
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn bind_values(values: &[Value]) -> Result<Vec<SqliteValue>, MutationExecutorError> {
@@ -1224,7 +1706,9 @@ fn signed_offset(sign: u8, hours: [u8; 2], minutes: [u8; 2]) -> Option<i32> {
 mod tests {
     use super::*;
     use futures_util::StreamExt;
-    use teaql_core::{DeleteCommand, Entity, Record, RecoverCommand, TeaqlEntity as _};
+    use teaql_core::{
+        DeleteCommand, Entity, Record, RecoverCommand, RelationDescriptor, TeaqlEntity as _,
+    };
     use teaql_macros::{TeaqlEntity, teaql_entity};
     use teaql_runtime::InMemoryMetadataStore;
 
@@ -1280,6 +1764,29 @@ mod tests {
         assert_eq!(encoded, "R163");
         assert_eq!(matches, 1);
         assert_eq!(empty, "?000");
+    }
+
+    #[test]
+    fn installing_runtime_module_does_not_create_schema() {
+        futures_executor::block_on(async {
+            let executor =
+                SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+            let entity = order_line_entity();
+            let table = entity.table_name.clone();
+            let mut context = UserContext::new()
+                .with_module(teaql_runtime::RuntimeModule::new().descriptor(entity));
+            context.use_sqlite_provider(executor.clone());
+
+            assert!(!executor.table_exists(&table).unwrap());
+            assert!(!executor.table_exists(DEFAULT_ID_SPACE_TABLE).unwrap());
+
+            context.ensure_schema().await.unwrap();
+            assert!(executor.table_exists(&table).unwrap());
+            assert!(executor.table_exists(DEFAULT_ID_SPACE_TABLE).unwrap());
+
+            context.ensure_schema().await.unwrap();
+            assert!(executor.table_exists(&table).unwrap());
+        });
     }
 
     #[test]
@@ -1403,6 +1910,519 @@ mod tests {
                     .not_null(),
             )
             .property(PropertyDescriptor::new("name", DataType::Text).column_name("name"))
+    }
+
+    #[test]
+    fn schema_compatibility_covers_boolean_and_temporal_storage_contracts() {
+        let entity = EntityDescriptor::new("HighRiskFixture").table_name("high_risk_fixture");
+        let bool_property = PropertyDescriptor::new("enabled", DataType::Bool);
+        let date_property = PropertyDescriptor::new("business_date", DataType::Date);
+        let timestamp_property = PropertyDescriptor::new("occurred_at", DataType::Timestamp);
+
+        assert!(
+            ensure_sqlite_column_compatibility(&entity, &bool_property, "BOOLEAN", true).is_ok()
+        );
+        assert!(
+            ensure_sqlite_column_compatibility(&entity, &bool_property, "INTEGER", true).is_ok()
+        );
+        assert!(ensure_sqlite_column_compatibility(&entity, &bool_property, "TEXT", true).is_err());
+        assert!(ensure_sqlite_column_compatibility(&entity, &date_property, "DATE", true).is_ok());
+        assert!(ensure_sqlite_column_compatibility(&entity, &date_property, "TEXT", true).is_ok());
+        assert!(
+            ensure_sqlite_column_compatibility(&entity, &date_property, "INTEGER", true).is_err()
+        );
+        assert!(
+            ensure_sqlite_column_compatibility(&entity, &timestamp_property, "TIMESTAMP", true)
+                .is_ok()
+        );
+        assert!(
+            ensure_sqlite_column_compatibility(&entity, &timestamp_property, "INTEGER", true)
+                .is_ok()
+        );
+        assert!(
+            ensure_sqlite_column_compatibility(&entity, &timestamp_property, "TEXT", true).is_err()
+        );
+    }
+
+    #[test]
+    fn ensure_schema_rejects_incompatible_existing_column_type() {
+        let executor = SqliteMutationExecutor::from_connection(
+            Connection::open_in_memory().expect("open schema mismatch fixture"),
+        );
+        executor
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name INTEGER)",
+            )
+            .unwrap();
+
+        let error = executor
+            .ensure_schema(&SqliteDialect, &[&entity()])
+            .expect_err("incompatible storage type must fail schema ensure");
+        let message = error.to_string();
+        assert!(message.contains("entity=Order"), "{message}");
+        assert!(message.contains("table=orders"), "{message}");
+        assert!(message.contains("column=name"), "{message}");
+        assert!(message.contains("expected=Text"), "{message}");
+        assert!(message.contains("actual=INTEGER"), "{message}");
+    }
+
+    #[test]
+    fn ensure_schema_accepts_covering_shapes_and_rejects_narrower_sqlite_columns() {
+        let executor = SqliteMutationExecutor::from_connection(
+            Connection::open_in_memory().expect("open shape mismatch fixture"),
+        );
+        executor
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE shape_fixture (
+                   id INTEGER PRIMARY KEY,
+                   version INTEGER NOT NULL,
+                   name VARCHAR(255),
+                   amount NUMERIC(38,10)
+                 )",
+            )
+            .unwrap();
+        let length_model = EntityDescriptor::new("ShapeFixture")
+            .table_name("shape_fixture")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(
+                PropertyDescriptor::new("version", DataType::I64)
+                    .version()
+                    .not_null(),
+            )
+            .property(PropertyDescriptor::new("name", DataType::Text).max_length(100));
+        executor
+            .ensure_schema(&SqliteDialect, &[&length_model])
+            .expect("wider VARCHAR storage must cover the model");
+
+        let numeric_model = EntityDescriptor::new("ShapeFixture")
+            .table_name("shape_fixture")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(
+                PropertyDescriptor::new("version", DataType::I64)
+                    .version()
+                    .not_null(),
+            )
+            .property(
+                PropertyDescriptor::new("amount", DataType::Decimal)
+                    .numeric_precision(19)
+                    .numeric_scale(7),
+            );
+        executor
+            .ensure_schema(&SqliteDialect, &[&numeric_model])
+            .expect("wider NUMERIC storage must cover the model");
+
+        executor
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "DROP TABLE shape_fixture;
+                 CREATE TABLE shape_fixture (
+                   id INTEGER PRIMARY KEY,
+                   version INTEGER NOT NULL,
+                   name VARCHAR(32),
+                   amount NUMERIC(18,2)
+                 )",
+            )
+            .unwrap();
+        let message = executor
+            .ensure_schema(&SqliteDialect, &[&length_model])
+            .expect_err("narrower VARCHAR storage must fail")
+            .to_string();
+        assert!(message.contains("required_max_length=100"), "{message}");
+        assert!(message.contains("actual_max_length=Some(32)"), "{message}");
+
+        let message = executor
+            .ensure_schema(&SqliteDialect, &[&numeric_model])
+            .expect_err("narrower numeric storage must fail")
+            .to_string();
+        assert!(message.contains("required_precision=19"), "{message}");
+        assert!(message.contains("required_scale=7"), "{message}");
+        assert!(message.contains("actual_precision=Some(18)"), "{message}");
+        assert!(message.contains("actual_scale=Some(2)"), "{message}");
+    }
+
+    #[test]
+    fn sqlite_schema_ddl_uses_declared_length_and_numeric_shape() {
+        let shaped = EntityDescriptor::new("ShapeFixture")
+            .table_name("shape_fixture")
+            .property(PropertyDescriptor::new("name", DataType::Text).max_length(100))
+            .property(
+                PropertyDescriptor::new("amount", DataType::Decimal)
+                    .numeric_precision(19)
+                    .numeric_scale(7),
+            );
+        assert_eq!(
+            SqliteDialect.compile_create_table(&shaped).unwrap(),
+            "CREATE TABLE IF NOT EXISTS shape_fixture (name VARCHAR(100), amount NUMERIC(19,7))"
+        );
+    }
+
+    #[test]
+    fn ensure_schema_rejects_incompatible_existing_column_nullability() {
+        let executor = SqliteMutationExecutor::from_connection(
+            Connection::open_in_memory().expect("open nullability mismatch fixture"),
+        );
+        executor
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name TEXT)",
+            )
+            .unwrap();
+        let required_name = entity().property(
+            PropertyDescriptor::new("required_name", DataType::Text)
+                .column_name("name")
+                .not_null(),
+        );
+
+        let error = executor
+            .ensure_schema(&SqliteDialect, &[&required_name])
+            .expect_err("nullable storage must not satisfy a required model field");
+        let message = error.to_string();
+        assert!(message.contains("entity=Order"), "{message}");
+        assert!(message.contains("column=name"), "{message}");
+        assert!(message.contains("expected_nullable=false"), "{message}");
+        assert!(message.contains("actual_nullable=true"), "{message}");
+    }
+
+    #[test]
+    fn ensure_schema_adds_required_column_to_empty_sqlite_table_idempotently() {
+        let executor = SqliteMutationExecutor::from_connection(
+            Connection::open_in_memory().expect("open empty required-column fixture"),
+        );
+        executor
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name TEXT)",
+            )
+            .unwrap();
+        let evolved = entity().property(
+            PropertyDescriptor::new("code", DataType::Text)
+                .column_name("code")
+                .not_null(),
+        );
+
+        executor.ensure_schema(&SqliteDialect, &[&evolved]).unwrap();
+        executor.ensure_schema(&SqliteDialect, &[&evolved]).unwrap();
+        let columns = executor.table_columns("orders").unwrap();
+        assert_eq!(
+            columns.get("code"),
+            Some(&("VARCHAR(255)".to_owned(), false))
+        );
+    }
+
+    #[test]
+    fn ensure_schema_rejects_required_column_on_populated_sqlite_table_without_partial_change() {
+        let executor = SqliteMutationExecutor::from_connection(
+            Connection::open_in_memory().expect("open populated required-column fixture"),
+        );
+        executor
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name TEXT);
+                 INSERT INTO orders(id, version, name) VALUES (1, 1, 'existing');",
+            )
+            .unwrap();
+        let evolved = entity().property(
+            PropertyDescriptor::new("code", DataType::Text)
+                .column_name("code")
+                .not_null(),
+        );
+
+        let message = executor
+            .ensure_schema(&SqliteDialect, &[&evolved])
+            .expect_err("required column without a backfill must fail before ALTER TABLE")
+            .to_string();
+        assert!(message.contains("entity=Order"), "{message}");
+        assert!(message.contains("table=orders"), "{message}");
+        assert!(message.contains("column=code"), "{message}");
+        assert!(message.contains("migrate/backfill explicitly"), "{message}");
+        assert!(
+            !executor
+                .table_columns("orders")
+                .unwrap()
+                .contains_key("code")
+        );
+    }
+
+    #[test]
+    fn concurrent_schema_evolution_is_idempotent_across_connections() {
+        let path = std::env::temp_dir().join(format!(
+            "teaql-concurrent-schema-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE teaql_concurrent_schema_fixture (
+                    id INTEGER PRIMARY KEY NOT NULL,
+                    version INTEGER NOT NULL
+                 );",
+            )
+            .unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let mut threads = Vec::new();
+        for _ in 0..8 {
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            threads.push(std::thread::spawn(move || {
+                let executor = SqliteMutationExecutor::from_connection(
+                    Connection::open(path).expect("open concurrent schema fixture"),
+                );
+                let entity = EntityDescriptor::new("ConcurrentSchemaFixture")
+                    .table_name("teaql_concurrent_schema_fixture")
+                    .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+                    .property(
+                        PropertyDescriptor::new("version", DataType::I64)
+                            .version()
+                            .not_null(),
+                    )
+                    .property(PropertyDescriptor::new("name", DataType::Text))
+                    .property(PropertyDescriptor::new("code", DataType::Text));
+                barrier.wait();
+                executor.ensure_schema(&SqliteDialect, &[&entity])
+            }));
+        }
+        for thread in threads {
+            thread.join().unwrap().unwrap();
+        }
+        let connection = Connection::open(&path).unwrap();
+        let count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('teaql_concurrent_schema_fixture')
+                  WHERE name IN ('name', 'code')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 2);
+        drop(connection);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn ensure_schema_creates_and_enforces_sqlite_foreign_keys() {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        let parent = EntityDescriptor::new("SqliteFkParentFixture")
+            .table_name("teaql_sqlite_fk_parent_fixture")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .relation(
+                RelationDescriptor::new("children", "SqliteFkChildFixture")
+                    .local_key("id")
+                    .foreign_key("parent_id")
+                    .many(),
+            );
+        let child = EntityDescriptor::new("SqliteFkChildFixture")
+            .table_name("teaql_sqlite_fk_child_fixture")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(PropertyDescriptor::new("parent_id", DataType::U64).not_null())
+            .relation(
+                RelationDescriptor::new("parent", "SqliteFkParentFixture")
+                    .local_key("parent_id")
+                    .foreign_key("id"),
+            );
+        executor
+            .ensure_schema(&SqliteDialect, &[&child, &parent])
+            .unwrap();
+        executor
+            .ensure_schema(&SqliteDialect, &[&parent, &child])
+            .unwrap();
+        let connection = executor.lock().unwrap();
+        let count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_foreign_key_list('teaql_sqlite_fk_child_fixture')
+                  WHERE `from`='parent_id'
+                    AND `table`='teaql_sqlite_fk_parent_fixture'
+                    AND `to`='id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        let violation = connection.execute(
+            "INSERT INTO teaql_sqlite_fk_child_fixture(id, parent_id) VALUES (1, 999)",
+            [],
+        );
+        assert!(violation.is_err());
+    }
+
+    #[test]
+    fn ensure_schema_rejects_existing_sqlite_table_without_required_foreign_key() {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        executor
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE teaql_sqlite_fk_parent_fixture (id INTEGER PRIMARY KEY NOT NULL);
+                 CREATE TABLE teaql_sqlite_fk_child_fixture (
+                   id INTEGER PRIMARY KEY NOT NULL,
+                   parent_id INTEGER NOT NULL
+                 );",
+            )
+            .unwrap();
+        let parent = EntityDescriptor::new("SqliteFkParentFixture")
+            .table_name("teaql_sqlite_fk_parent_fixture")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null());
+        let child = EntityDescriptor::new("SqliteFkChildFixture")
+            .table_name("teaql_sqlite_fk_child_fixture")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(PropertyDescriptor::new("parent_id", DataType::U64).not_null())
+            .relation(
+                RelationDescriptor::new("parent", "SqliteFkParentFixture")
+                    .local_key("parent_id")
+                    .foreign_key("id"),
+            );
+        let message = executor
+            .ensure_schema(&SqliteDialect, &[&child, &parent])
+            .expect_err("SQLite cannot silently accept a missing physical foreign key")
+            .to_string();
+        assert!(message.contains("table=teaql_sqlite_fk_child_fixture"));
+        assert!(message.contains("column=parent_id"));
+        assert!(message.contains("rebuild/migrate the table explicitly"));
+    }
+
+    #[test]
+    fn ensure_schema_rejects_composite_fk_that_matches_only_first_key() {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        let parent_table = "teaql_sqlite_fk_composite_parent";
+        let child_table = "teaql_sqlite_fk_composite_child";
+        executor
+            .lock()
+            .unwrap()
+            .execute_batch(&format!(
+                "CREATE TABLE {parent_table}(
+                   id INTEGER PRIMARY KEY NOT NULL, scope_id INTEGER NOT NULL,
+                   UNIQUE(id, scope_id));
+                 CREATE TABLE {child_table}(
+                   id INTEGER PRIMARY KEY NOT NULL, parent_id INTEGER NOT NULL,
+                   scope_id INTEGER NOT NULL,
+                   FOREIGN KEY(parent_id, scope_id) REFERENCES {parent_table}(id, scope_id));"
+            ))
+            .unwrap();
+        let parent = EntityDescriptor::new("SqliteFkCompositeParent")
+            .table_name(parent_table)
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null());
+        let child = EntityDescriptor::new("SqliteFkCompositeChild")
+            .table_name(child_table)
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(PropertyDescriptor::new("parent_id", DataType::U64).not_null())
+            .relation(
+                RelationDescriptor::new("parent", "SqliteFkCompositeParent")
+                    .local_key("parent_id")
+                    .foreign_key("id"),
+            );
+        let message = executor
+            .ensure_schema(&SqliteDialect, &[&child, &parent])
+            .expect_err("a composite FK must not stand in for a single-key FK")
+            .to_string();
+        assert!(message.contains("installed_key_count=2"), "{message}");
+        executor
+            .lock()
+            .unwrap()
+            .execute_batch(&format!(
+                "DROP TABLE {child_table};
+                 CREATE TABLE {child_table}(
+                   id INTEGER PRIMARY KEY NOT NULL, parent_id INTEGER NOT NULL,
+                   FOREIGN KEY(parent_id) REFERENCES {parent_table}(id));"
+            ))
+            .unwrap();
+        executor
+            .ensure_schema(&SqliteDialect, &[&child, &parent])
+            .expect("a full single-key FK must qualify after explicit rebuild");
+        executor
+            .ensure_schema(&SqliteDialect, &[&child, &parent])
+            .expect("the rebuilt FK must remain idempotent");
+        executor
+            .lock()
+            .unwrap()
+            .execute_batch(&format!(
+                "DROP TABLE {child_table};
+                 CREATE TABLE {child_table}(
+                   id INTEGER PRIMARY KEY NOT NULL, parent_id INTEGER NOT NULL,
+                   FOREIGN KEY(parent_id) REFERENCES {parent_table}(id) ON DELETE CASCADE);"
+            ))
+            .unwrap();
+        let message = executor
+            .ensure_schema(&SqliteDialect, &[&child, &parent])
+            .expect_err("CASCADE must not stand in for the generated RESTRICT/NO ACTION FK")
+            .to_string();
+        assert!(message.contains("installed_delete=CASCADE"), "{message}");
+    }
+
+    #[test]
+    fn first_schema_install_creates_declared_indexes() {
+        let executor = SqliteMutationExecutor::from_connection(
+            Connection::open_in_memory().expect("open first-install index fixture"),
+        );
+        executor
+            .ensure_schema(&SqliteDialect, &[&entity()])
+            .unwrap();
+
+        let index_count: i64 = executor
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(1) FROM sqlite_master WHERE type='index' AND name='PK_ORDERS_ID_VERSION'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_count, 1);
+    }
+
+    #[test]
+    fn ensure_schema_rejects_colliding_declared_index_with_wrong_shape() {
+        let executor = SqliteMutationExecutor::from_connection(
+            Connection::open_in_memory().expect("open index-collision fixture"),
+        );
+        {
+            let connection = executor.lock().unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE orders (id INTEGER NOT NULL, version INTEGER NOT NULL, name TEXT); \
+                     CREATE INDEX PK_ORDERS_ID_VERSION ON orders (version, id);",
+                )
+                .unwrap();
+        }
+        let error = executor
+            .ensure_schema(&SqliteDialect, &[&entity()])
+            .expect_err("an existing index with reversed keys must not be accepted");
+        let message = error.to_string();
+        assert!(message.contains("PK_ORDERS_ID_VERSION"), "{message}");
+        assert!(message.contains("orders"), "{message}");
+        for definition in [
+            "CREATE UNIQUE INDEX PK_ORDERS_ID_VERSION ON orders (id, version) WHERE version > 0",
+            "CREATE UNIQUE INDEX PK_ORDERS_ID_VERSION ON orders (id DESC, version)",
+            "CREATE UNIQUE INDEX PK_ORDERS_ID_VERSION ON orders (id, version COLLATE NOCASE)",
+            "CREATE UNIQUE INDEX PK_ORDERS_ID_VERSION ON orders (id, (version + 1))",
+        ] {
+            {
+                let connection = executor.lock().unwrap();
+                connection
+                    .execute_batch(&format!("DROP INDEX PK_ORDERS_ID_VERSION; {definition};"))
+                    .unwrap();
+            }
+            let error = executor
+                .ensure_schema(&SqliteDialect, &[&entity()])
+                .expect_err("an incompatible index definition must be rejected");
+            assert!(
+                error.to_string().contains("PK_ORDERS_ID_VERSION"),
+                "definition={definition}, error={error}"
+            );
+        }
     }
 
     #[test]
@@ -2378,6 +3398,30 @@ mod tests {
         let generator = SqliteIdSpaceGenerator::from_executor(executor);
         assert_eq!(generator.next_id("Order").unwrap(), 1);
         assert_eq!(generator.next_id("Order").unwrap(), 2);
+    }
+
+    #[test]
+    fn sqlite_id_space_overflow_reports_safe_actionable_context() {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        let table = "teaql_id_space_diagnostic";
+        let generator =
+            SqliteIdSpaceGenerator::from_executor(executor.clone()).with_table_name(table);
+        generator.ensure_table().unwrap();
+        executor
+            .execute(&CompiledQuery {
+                sql: format!("INSERT INTO {table}(type_name, current_level) VALUES (?, ?)"),
+                params: vec![Value::Text("order".to_owned()), Value::I64(i64::MAX)],
+                comment: None,
+            })
+            .unwrap();
+
+        let message = generator.next_id("Order").unwrap_err().to_string();
+        assert!(message.contains("SQLite ID provider"), "{message}");
+        assert!(message.contains("ID space order"), "{message}");
+        assert!(message.contains(table), "{message}");
+        assert!(message.contains("attempt 1"), "{message}");
+        assert!(!message.contains("sqlite:"), "{message}");
     }
 
     #[test]

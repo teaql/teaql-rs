@@ -3,7 +3,6 @@ use runtime_example_conformance_service_core::teaql_core::{CompactRow, Value};
 use runtime_example_conformance_service_core::{
     request_support::AuditedSave as _, service_runtime, ServiceRuntimeConfig, E, Q,
 };
-use std::path::PathBuf;
 use std::sync::Arc;
 use teaql_runtime::{EntityKey, EntityRuntimeState};
 
@@ -12,7 +11,10 @@ const PURPOSE: &str = "Run the retained Rust minimum conformance example";
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     verify_same_id_version_isolation()?;
-    let database = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".local/conformance.sqlite");
+    let database = std::env::temp_dir().join(format!(
+        "teaql-conformance-rust-{}.sqlite",
+        std::process::id()
+    ));
     if database.exists() {
         std::fs::remove_file(&database)?;
     }
@@ -171,6 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     println!("PASS Delete (default Q excludes deleted rows)");
     println!("PASS Rust minimum runtime conformance: 8/8");
+    std::fs::remove_file(database)?;
     Ok(())
 }
 

@@ -1,12 +1,21 @@
+// Compatibility adapters retained while generated callers migrate to EntityDataService.
+#![allow(dead_code)]
+
 use teaql_core::{
-    BatchInsertCommand, BatchUpdateCommand, CompactRow, DeleteCommand, Entity, InsertCommand,
-    MutationValues, RecoverCommand, SelectQuery, SmartList, UpdateCommand,
+    CompactRow, DeleteCommand, Entity, InsertCommand, MutationValues, RecoverCommand, SelectQuery,
+    SmartList, UpdateCommand,
 };
 use teaql_data_service::{MutationRequest, QueryRequest};
 
 use crate::{DataServiceError, MetadataStore, RuntimeError};
 
 use super::RuntimeDataService;
+
+fn conflict_id(id: &teaql_core::Value) -> String {
+    id.try_u64()
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| format!("{id:?}"))
+}
 
 impl<'a, M, E> RuntimeDataService<'a, M, E>
 where
@@ -124,18 +133,10 @@ where
         let affected = res.affected_rows;
 
         if command.expected_version.is_some() && affected == 0 {
-            println!(
-                "OptimisticLockConflict in base.rs update! entity={}, id={:?}",
-                command.entity, command.id
-            );
-            println!(
-                "Backtrace: {:#?}",
-                std::backtrace::Backtrace::force_capture()
-            );
             return Err(DataServiceError::Runtime(
                 RuntimeError::OptimisticLockConflict {
                     entity: command.entity.clone(),
-                    id: format!("{:?}", command.id),
+                    id: conflict_id(&command.id),
                 },
             ));
         }
@@ -160,7 +161,7 @@ where
             return Err(DataServiceError::Runtime(
                 RuntimeError::OptimisticLockConflict {
                     entity: command.entity.clone(),
-                    id: format!("{:?}", command.id),
+                    id: conflict_id(&command.id),
                 },
             ));
         }
@@ -216,30 +217,33 @@ where
             if i < command.trace_chains.len() {
                 update_cmd.trace_chain = command.trace_chains[i].clone();
             }
+            let expected_version = update_cmd.expected_version;
             let res = self
                 .executor
                 .mutate(MutationRequest::Update(update_cmd))
                 .await
                 .map_err(DataServiceError::Executor)?;
             self.metadata.record_metadata_log(&res.metadata);
-            affected += res.affected_rows;
-        }
-
-        if command.batch_expected_versions.iter().any(|v| v.is_some()) {
-            if affected != command.batch_ids.len() as u64 {
-                println!(
-                    "OptimisticLockConflict in batch_update! entity={}, affected={}, expected={}",
-                    command.entity,
-                    affected,
-                    command.batch_ids.len()
-                );
+            if expected_version.is_some() && res.affected_rows == 0 {
                 return Err(DataServiceError::Runtime(
                     RuntimeError::OptimisticLockConflict {
                         entity: command.entity.clone(),
-                        id: "BATCH".to_owned(),
+                        id: conflict_id(&command.batch_ids[i]),
                     },
                 ));
             }
+            affected += res.affected_rows;
+        }
+
+        if command.batch_expected_versions.iter().any(|v| v.is_some())
+            && affected != command.batch_ids.len() as u64
+        {
+            return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
+                "batch update for {} affected {} rows for {} IDs despite version checks",
+                command.entity,
+                affected,
+                command.batch_ids.len()
+            ))));
         }
 
         Ok(affected)

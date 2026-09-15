@@ -17,5 +17,11 @@ cargo run --quiet --manifest-path examples/conformance/Cargo.toml
 cargo run --quiet --manifest-path examples/school-management/Cargo.toml
 TEAQL_EXAMPLE_DATABASE="$verification_dir/order.db" \
   cargo run --quiet --manifest-path examples/order-management/rust-app-console/Cargo.toml
+TEAQL_NESTED_PROBE_DATABASE="sqlite:file:$verification_dir/graph.db" \
+  cargo run --quiet --manifest-path examples/order-management/rust-app-console/Cargo.toml --bin nested_graph_probe
+TEAQL_SAVE_LOAD_STATE_DATABASE="sqlite:file:$verification_dir/graph.db" \
+  cargo run --quiet --manifest-path examples/order-management/rust-app-console/Cargo.toml --bin save_loaded_relation_probe
+TEAQL_SAVE_LOAD_STATE_DATABASE="sqlite:file:$verification_dir/graph.db" \
+  cargo run --quiet --manifest-path examples/order-management/rust-app-console/Cargo.toml --bin save_forward_fk_probe
 cargo test -p teaql-tfp-endpoint --examples
 echo "PASS: all Rust examples"

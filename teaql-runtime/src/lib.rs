@@ -1,4 +1,3 @@
-#![allow(warnings)]
 extern crate self as teaql_runtime;
 mod checker;
 mod context;
@@ -15,6 +14,9 @@ mod id;
 pub mod inmemory_engine;
 mod language;
 pub mod log_formatter;
+// Deterministic test oracle; the published runtime uses provider executors.
+#[cfg(test)]
+#[allow(dead_code)]
 mod memory;
 mod registry;
 mod telemetry;
@@ -35,7 +37,7 @@ pub use data_service::{
 };
 pub use entity_runtime::{
     ChangeSetStack, EntityChangeSet, EntityGraphBuilder, EntityKey, EntityRuntimeState,
-    LedgerEntity, LoadedRelation, RelationHandle,
+    LedgerCompositionError, LedgerEntity, LoadedRelation, RelationHandle,
 };
 pub use entity_save::{
     AuditedSaveExt, graph_node_from_entity, save_audited_ledger_entity,
@@ -62,7 +64,6 @@ pub use language::{
     BuiltinTranslator, Language, Locale, MessageTranslator, translate_check_result,
     translate_location,
 };
-pub(crate) use memory::MemoryDataService;
 pub use registry::{
     EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry, EntityRegistry,
     InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityGraphDecoderRegistry,
@@ -78,23 +79,30 @@ pub use telemetry::{
 pub use telemetry_opentelemetry::OpenTelemetryRuntimeTelemetry;
 
 #[cfg(test)]
+#[allow(dead_code, unused_imports)]
+#[allow(
+    clippy::cloned_ref_to_slice_refs,
+    clippy::collapsible_if,
+    clippy::items_after_test_module
+)]
 mod tests {
     use std::collections::{BTreeMap, VecDeque};
     use std::sync::{Arc, Mutex};
 
     use super::{
         AggregationCacheBackend, CHECK_OBJECT_STATUS_FIELD, CheckObjectStatus, CheckResult,
-        CheckResults, CheckRule, Checker, DataServiceError, EntityDataServiceBehavior,
-        EntityRuntimeState, EntityValues, GraphMutationKind, GraphNode, I18nCatalog,
-        InMemoryAggregationCache, InMemoryCheckerRegistry,
+        CheckResults, CheckRule, Checker, DataServiceError, EntityDataService,
+        EntityDataServiceBehavior, EntityKey, EntityRuntimeState, EntityValues, GraphMutationKind,
+        GraphNode, I18nCatalog, InMemoryAggregationCache, InMemoryCheckerRegistry,
         InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityRegistry, InMemoryMetadataStore,
-        InternalIdGenerator, Language, MemoryDataService, MetadataStore, ObjectLocation,
-        RawAuditEvent, RawAuditEventKind, RawAuditEventSink, RemoteLockProvider, RequestPolicy,
-        RuntimeError, RuntimeModule, RuntimeOperation, RuntimeTelemetry, RuntimeTelemetryScope,
-        SafeAuditEvent, SafeAuditEventSink, SqlLogOperation, SqlLogOptions, TypedChecker,
-        TypedEntityChecker, UserContext, translate_check_result,
+        InternalIdGenerator, Language, MetadataStore, ObjectLocation, RawAuditEvent,
+        RawAuditEventKind, RawAuditEventSink, RemoteLockProvider, RequestPolicy, RuntimeError,
+        RuntimeModule, RuntimeOperation, RuntimeTelemetry, RuntimeTelemetryScope, SafeAuditEvent,
+        SafeAuditEventSink, SqlLogOperation, SqlLogOptions, TypedChecker, TypedEntityChecker,
+        UserContext, translate_check_result,
     };
     use crate::data_service::RuntimeDataService;
+    use crate::memory::MemoryDataService;
     use teaql_core::{
         Aggregate, AggregateFunction, BinaryOp, DataType, Decimal, DeleteCommand, Entity,
         EntityDescriptor, EntityError, Expr, GeneratedValues, InsertCommand, OrderBy,
@@ -132,18 +140,21 @@ mod tests {
         fn schema_type_sql(
             &self,
             data_type: DataType,
-            _property: &PropertyDescriptor,
-        ) -> Result<&'static str, SqlCompileError> {
+            property: &PropertyDescriptor,
+        ) -> Result<String, SqlCompileError> {
             match data_type {
-                DataType::Bool => Ok("BOOLEAN"),
-                DataType::I64 | DataType::U64 => Ok("BIGINT"),
-                DataType::F64 => Ok("DOUBLE PRECISION"),
-                DataType::Decimal => Ok("NUMERIC"),
-                DataType::Text => Ok("VARCHAR(255)"),
-                DataType::LargeText => Ok("TEXT"),
-                DataType::Json => Ok("JSONB"),
-                DataType::Date => Ok("DATE"),
-                DataType::Timestamp => Ok("TIMESTAMPTZ"),
+                DataType::Bool => Ok("BOOLEAN".to_owned()),
+                DataType::I64 | DataType::U64 => Ok("BIGINT".to_owned()),
+                DataType::F64 => Ok("DOUBLE PRECISION".to_owned()),
+                DataType::Decimal => match (property.numeric_precision, property.numeric_scale) {
+                    (Some(precision), Some(scale)) => Ok(format!("NUMERIC({precision},{scale})")),
+                    _ => Ok("NUMERIC".to_owned()),
+                },
+                DataType::Text => Ok(format!("VARCHAR({})", property.max_length.unwrap_or(255))),
+                DataType::LargeText => Ok("TEXT".to_owned()),
+                DataType::Json => Ok("JSONB".to_owned()),
+                DataType::Date => Ok("DATE".to_owned()),
+                DataType::Timestamp => Ok("TIMESTAMPTZ".to_owned()),
             }
         }
     }
@@ -1483,6 +1494,203 @@ mod tests {
     }
 
     #[test]
+    fn sparse_ledger_create_payload_reports_required_field_before_sql() {
+        let context = UserContext::new().with_metadata(
+            InMemoryMetadataStore::new().with_entity(
+                EntityDescriptor::new("School")
+                    .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+                    .property(PropertyDescriptor::new("address", DataType::Text).not_null())
+                    .property(
+                        PropertyDescriptor::new("version", DataType::I64)
+                            .version()
+                            .not_null(),
+                    ),
+            ),
+        );
+        let mut payload = EntityValues::from(Record::from([
+            ("id".to_owned(), Value::U64(1)),
+            ("version".to_owned(), Value::I64(1)),
+        ]));
+        let error = context
+            .validate_required_create_payload("School", &payload, &ObjectLocation::root())
+            .unwrap_err();
+        match error {
+            RuntimeError::Check(results) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].rule, CheckRule::Required);
+                assert_eq!(results[0].location.to_string(), "address");
+            }
+            other => panic!("unexpected sparse payload error: {other:?}"),
+        }
+
+        let nested = ObjectLocation::root().member("school_list").element(2);
+        let nested_error = context
+            .validate_required_create_payload("School", &payload, &nested)
+            .unwrap_err();
+        match nested_error {
+            RuntimeError::Check(results) => {
+                assert_eq!(results[0].location.model_path(), "school_list[2].address");
+                assert_eq!(results[0].location.instance_path(), "/schoolList/2/address");
+            }
+            other => panic!("unexpected nested sparse payload error: {other:?}"),
+        }
+
+        payload.insert(
+            "address".to_owned(),
+            Value::Text("12 River Road".to_owned()),
+        );
+        context
+            .validate_required_create_payload("School", &payload, &ObjectLocation::root())
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn nested_sparse_ledger_insert_plan_rejects_required_field_at_child_path() {
+        let context = UserContext::new().with_metadata(
+            InMemoryMetadataStore::new().with_entity(
+                EntityDescriptor::new("OrderLine")
+                    .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+                    .property(PropertyDescriptor::new("order_id", DataType::U64).not_null())
+                    .property(PropertyDescriptor::new("name", DataType::Text).not_null()),
+            ),
+        );
+        let executor = StubExecutor::default();
+        let repo = EntityDataService::for_executor(&context, "OrderLine", &executor);
+        let root = EntityRuntimeState::default();
+        let child_key = EntityKey::new("OrderLine", 9_u64);
+        root.mark_as_new(child_key.clone());
+        root.set(child_key.clone(), "order_id", Value::U64(7));
+        let child_location = ObjectLocation::root().member("line_items").element(0);
+        let locations = BTreeMap::from([(child_key, child_location)]);
+
+        let error = repo
+            .execute_ledger_plan_internal(root, &locations)
+            .await
+            .unwrap_err();
+        match error {
+            DataServiceError::Runtime(RuntimeError::Check(results)) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].rule, CheckRule::Required);
+                assert_eq!(results[0].location.model_path(), "line_items[0].name");
+                assert_eq!(results[0].location.instance_path(), "/lineItems/0/name");
+            }
+            other => panic!("unexpected nested ledger planner error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ledger_update_of_existing_versioned_row_requires_loaded_original_version() {
+        let context = UserContext::new().with_metadata(
+            InMemoryMetadataStore::new().with_entity(
+                EntityDescriptor::new("School")
+                    .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+                    .property(PropertyDescriptor::new("name", DataType::Text).not_null())
+                    .property(
+                        PropertyDescriptor::new("version", DataType::I64)
+                            .version()
+                            .not_null(),
+                    ),
+            ),
+        );
+        let executor = StubExecutor {
+            rows: vec![Record::from([
+                ("id".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::Text("Old School".to_owned())),
+                ("version".to_owned(), Value::I64(3)),
+            ])],
+            ..Default::default()
+        };
+        let repo = EntityDataService::for_executor(&context, "School", &executor);
+        let root = EntityRuntimeState::default();
+        root.set(
+            EntityKey::new("School", 1_u64),
+            "name",
+            Value::Text("New School".to_owned()),
+        );
+        let error = repo
+            .execute_ledger_plan_internal(root, &BTreeMap::new())
+            .await
+            .unwrap_err();
+        match error {
+            DataServiceError::Runtime(RuntimeError::Graph(message)) => {
+                assert!(message.contains("cannot update School"));
+                assert!(message.contains("without its loaded original version"));
+            }
+            other => panic!("unexpected versionless update error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn generated_attachment_version_conflict_rejects_ledger_plan_before_sql() {
+        let context = UserContext::new().with_metadata(
+            InMemoryMetadataStore::new().with_entity(
+                EntityDescriptor::new("School")
+                    .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+                    .property(PropertyDescriptor::new("name", DataType::Text).not_null())
+                    .property(
+                        PropertyDescriptor::new("version", DataType::I64)
+                            .version()
+                            .not_null(),
+                    ),
+            ),
+        );
+        let executor = StubExecutor::default();
+        let repo = EntityDataService::for_executor(&context, "School", &executor);
+        let root = EntityRuntimeState::default();
+        let stale = EntityRuntimeState::default();
+        let key = EntityKey::new("School", 1_u64);
+        root.set_original_version(key.clone(), 2);
+        root.set(key.clone(), "name", Value::Text("Newer".to_owned()));
+        stale.set_original_version(key.clone(), 1);
+        stale.set(key, "name", Value::Text("Stale".to_owned()));
+        root.adopt_mutations_from(&stale);
+
+        let error = repo
+            .execute_ledger_plan_internal(root, &BTreeMap::new())
+            .await
+            .unwrap_err();
+        match error {
+            DataServiceError::Runtime(RuntimeError::Graph(message)) => {
+                assert!(message.contains("generated entity graph attachment failed before save"));
+                assert!(message.contains("School#1"));
+                assert!(message.contains("version 2"));
+                assert!(message.contains("version 1"));
+            }
+            other => panic!("unexpected attachment conflict error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ledger_delete_of_existing_versioned_row_requires_loaded_original_version() {
+        let context = UserContext::new().with_metadata(
+            InMemoryMetadataStore::new().with_entity(
+                EntityDescriptor::new("School")
+                    .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+                    .property(
+                        PropertyDescriptor::new("version", DataType::I64)
+                            .version()
+                            .not_null(),
+                    ),
+            ),
+        );
+        let executor = StubExecutor::default();
+        let repo = EntityDataService::for_executor(&context, "School", &executor);
+        let root = EntityRuntimeState::default();
+        root.mark_as_delete(EntityKey::new("School", 1_u64));
+        let error = repo
+            .execute_ledger_plan_internal(root, &BTreeMap::new())
+            .await
+            .unwrap_err();
+        match error {
+            DataServiceError::Runtime(RuntimeError::Graph(message)) => {
+                assert!(message.contains("cannot delete School"));
+                assert!(message.contains("without its loaded original version"));
+            }
+            other => panic!("unexpected versionless delete error: {other:?}"),
+        }
+    }
+
+    #[test]
     fn metadata_validation_does_not_require_runtime_managed_version_on_create() {
         let context = UserContext::new().with_metadata(
             InMemoryMetadataStore::new().with_entity(
@@ -1904,6 +2112,137 @@ mod tests {
             .expect("application audit event should contain the changed name field");
         assert!(name.masked);
         assert_ne!(name.value.as_deref(), Some("created"));
+    }
+
+    #[test]
+    fn ledger_insert_order_places_foreign_key_parent_before_child() {
+        let context = UserContext::new().with_metadata(
+            InMemoryMetadataStore::new()
+                .with_entity(line_entity())
+                .with_entity(product_entity()),
+        );
+        let executor = StubExecutor {
+            affected: 1,
+            rows: Vec::new(),
+        };
+        let repo = EntityDataService::for_executor(&context, "OrderLine", &executor);
+        let line = EntityKey::new("OrderLine", 10_u64);
+        let product = EntityKey::new("Product", 88_u64);
+        let changes = BTreeMap::from([
+            (
+                line.clone(),
+                EntityValues::from(BTreeMap::from([
+                    ("id".to_owned(), Value::U64(10)),
+                    ("product_id".to_owned(), Value::U64(88)),
+                ])),
+            ),
+            (
+                product.clone(),
+                EntityValues::from(BTreeMap::from([("id".to_owned(), Value::U64(88))])),
+            ),
+        ]);
+
+        let ordered = repo
+            .order_new_ledger_keys([line.clone(), product.clone()], &changes)
+            .unwrap();
+
+        assert_eq!(ordered, vec![product, line]);
+    }
+
+    #[test]
+    fn ledger_insert_order_honors_reverse_many_and_forward_parents() {
+        let context = UserContext::new().with_metadata(
+            InMemoryMetadataStore::new()
+                .with_entity(entity())
+                .with_entity(line_entity())
+                .with_entity(product_entity()),
+        );
+        let executor = StubExecutor {
+            affected: 1,
+            rows: Vec::new(),
+        };
+        let repo = EntityDataService::for_executor(&context, "OrderLine", &executor);
+        let order = EntityKey::new("Order", 77_u64);
+        let line = EntityKey::new("OrderLine", 10_u64);
+        let product = EntityKey::new("Product", 88_u64);
+        let changes = BTreeMap::from([
+            (
+                order.clone(),
+                EntityValues::from(BTreeMap::from([("id".to_owned(), Value::U64(77))])),
+            ),
+            (
+                product.clone(),
+                EntityValues::from(BTreeMap::from([("id".to_owned(), Value::U64(88))])),
+            ),
+            (
+                line.clone(),
+                EntityValues::from(BTreeMap::from([
+                    ("id".to_owned(), Value::U64(10)),
+                    ("order_id".to_owned(), Value::U64(77)),
+                    ("product_id".to_owned(), Value::U64(88)),
+                ])),
+            ),
+        ]);
+
+        let ordered = repo
+            .order_new_ledger_keys([line.clone(), product.clone(), order.clone()], &changes)
+            .unwrap();
+
+        assert_eq!(ordered, vec![order, product, line]);
+    }
+
+    #[test]
+    fn ledger_insert_order_reports_required_foreign_key_cycle_before_sql() {
+        let alpha = EntityDescriptor::new("Alpha")
+            .property(PropertyDescriptor::new("id", DataType::U64).id())
+            .property(PropertyDescriptor::new("beta_id", DataType::U64).not_null())
+            .relation(
+                teaql_core::RelationDescriptor::new("beta", "Beta")
+                    .local_key("beta_id")
+                    .foreign_key("id"),
+            );
+        let beta = EntityDescriptor::new("Beta")
+            .property(PropertyDescriptor::new("id", DataType::U64).id())
+            .property(PropertyDescriptor::new("alpha_id", DataType::U64).not_null())
+            .relation(
+                teaql_core::RelationDescriptor::new("alpha", "Alpha")
+                    .local_key("alpha_id")
+                    .foreign_key("id"),
+            );
+        let context = UserContext::new().with_metadata(
+            InMemoryMetadataStore::new()
+                .with_entity(alpha)
+                .with_entity(beta),
+        );
+        let executor = StubExecutor {
+            affected: 1,
+            rows: Vec::new(),
+        };
+        let repo = EntityDataService::for_executor(&context, "Alpha", &executor);
+        let alpha_key = EntityKey::new("Alpha", 1_u64);
+        let beta_key = EntityKey::new("Beta", 2_u64);
+        let changes = BTreeMap::from([
+            (
+                alpha_key.clone(),
+                EntityValues::from(BTreeMap::from([
+                    ("id".to_owned(), Value::U64(1)),
+                    ("beta_id".to_owned(), Value::U64(2)),
+                ])),
+            ),
+            (
+                beta_key.clone(),
+                EntityValues::from(BTreeMap::from([
+                    ("id".to_owned(), Value::U64(2)),
+                    ("alpha_id".to_owned(), Value::U64(1)),
+                ])),
+            ),
+        ]);
+
+        let error = repo
+            .order_new_ledger_keys([alpha_key, beta_key], &changes)
+            .unwrap_err();
+        assert!(matches!(error, RuntimeError::Graph(message)
+            if message.contains("Alpha") && message.contains("Beta")));
     }
 
     #[tokio::test]

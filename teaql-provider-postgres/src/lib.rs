@@ -1,9 +1,8 @@
-#![allow(warnings)]
 use std::future::Future;
 use std::pin::Pin;
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
-use deadpool_postgres::Pool;
+use deadpool_postgres::{GenericClient, Pool};
 use rust_decimal::Decimal;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -16,27 +15,35 @@ use teaql_runtime::{
     canonical_id_space_entity,
 };
 use teaql_sql::{
-    CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect, SqlTransport,
-    quote_identifier_if_needed,
+    CompiledQuery, DatabaseKind, SchemaIndexSpec, SqlCompileError, SqlDialect, SqlTransport,
+    bounded_sql_identifier, quote_identifier_if_needed, schema_foreign_key_name,
+    schema_index_specs, validate_schema_identifier_lengths,
 };
-use tokio::sync::Mutex;
 
 pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct PostgresDialect;
 
+#[derive(Debug)]
+struct PostgresRelationIndexSpec {
+    name: String,
+    table: String,
+    foreign_key: String,
+    id: String,
+}
+
 impl PostgresDialect {
     /// Indexes supporting the common "recent children for each parent" access
     /// pattern.  This deliberately uses a full index: PostgreSQL cannot use a
     /// partial `WHERE version > 0` index for a generic prepared plan whose
     /// version predicate is parameterized.
-    fn relation_indexes_sqls(&self, entity: &EntityDescriptor) -> Vec<String> {
+    fn relation_index_specs(&self, entity: &EntityDescriptor) -> Vec<PostgresRelationIndexSpec> {
         let Some(id_property) = entity.id_property() else {
             return Vec::new();
         };
         let mut indexed_columns = HashSet::new();
-        let mut sqls = Vec::new();
+        let mut specs = Vec::new();
 
         for relation in &entity.relations {
             // A to-one relation whose local key is not the entity ID represents
@@ -57,58 +64,38 @@ impl PostgresDialect {
                 &foreign_key_property.column_name,
                 &id_property.column_name,
             );
-            sqls.push(format!(
-                "CREATE INDEX IF NOT EXISTS {} ON {} ({}, {} DESC)",
-                self.quote_ident(&index_name),
-                self.quote_ident(&entity.table_name),
-                self.quote_ident(&foreign_key_property.column_name),
-                self.quote_ident(&id_property.column_name),
-            ));
+            specs.push(PostgresRelationIndexSpec {
+                name: index_name,
+                table: entity.table_name.clone(),
+                foreign_key: foreign_key_property.column_name.clone(),
+                id: id_property.column_name.clone(),
+            });
         }
-        sqls
+        specs
+    }
+
+    #[cfg(test)]
+    fn relation_indexes_sqls(&self, entity: &EntityDescriptor) -> Vec<String> {
+        self.relation_index_specs(entity)
+            .into_iter()
+            .map(|spec| self.relation_index_sql(&spec))
+            .collect()
+    }
+
+    fn relation_index_sql(&self, spec: &PostgresRelationIndexSpec) -> String {
+        format!(
+            "CREATE INDEX IF NOT EXISTS {} ON {} ({}, {} DESC)",
+            self.quote_ident(&spec.name),
+            self.quote_ident(&spec.table),
+            self.quote_ident(&spec.foreign_key),
+            self.quote_ident(&spec.id),
+        )
     }
 }
 
 fn postgres_index_name(table: &str, foreign_key: &str, id: &str) -> String {
     let full = format!("IDX_{table}_{foreign_key}_{id}_DESC").to_uppercase();
-    if full.len() <= 63 {
-        return full;
-    }
-
-    // PostgreSQL silently truncates identifiers to 63 bytes. Add a stable hash
-    // ourselves so two long generated names cannot collapse to the same index.
-    let hash = full.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
-    });
-    let suffix = format!("_{hash:016X}");
-    let prefix_bytes = 63 - suffix.len();
-    let mut end = prefix_bytes.min(full.len());
-    while !full.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}{}", &full[..end], suffix)
-}
-
-fn postgres_foreign_key_name(
-    source_table: &str,
-    source_column: &str,
-    referenced_table: &str,
-    referenced_column: &str,
-) -> String {
-    let full = format!("FK_{source_table}_{source_column}_{referenced_table}_{referenced_column}")
-        .to_uppercase();
-    if full.len() <= 63 {
-        return full;
-    }
-    let hash = full.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
-    });
-    let suffix = format!("_{hash:016X}");
-    let mut end = (63 - suffix.len()).min(full.len());
-    while !full.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}{}", &full[..end], suffix)
+    bounded_sql_identifier(&full, 63)
 }
 
 impl SqlDialect for PostgresDialect {
@@ -132,22 +119,64 @@ impl SqlDialect for PostgresDialect {
         &[CREATE_SOUNDEX_FUNCTION]
     }
 
+    fn schema_indexes_sqls(
+        &self,
+        entity: &EntityDescriptor,
+    ) -> Result<Vec<String>, SqlCompileError> {
+        Ok(schema_index_specs(entity, Some(63))
+            .into_iter()
+            .map(|spec| {
+                let columns = spec
+                    .columns
+                    .iter()
+                    .map(|column| self.quote_ident(column))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "{} {} ON {} ({columns})",
+                    if spec.unique {
+                        "CREATE UNIQUE INDEX IF NOT EXISTS"
+                    } else {
+                        "CREATE INDEX IF NOT EXISTS"
+                    },
+                    self.quote_ident(&spec.name),
+                    self.quote_ident(&spec.table)
+                )
+            })
+            .collect())
+    }
+
     fn schema_type_sql(
         &self,
         data_type: DataType,
-        _property: &PropertyDescriptor,
-    ) -> Result<&'static str, SqlCompileError> {
+        property: &PropertyDescriptor,
+    ) -> Result<String, SqlCompileError> {
         match data_type {
-            DataType::Bool => Ok("BOOLEAN"),
-            DataType::I64 | DataType::U64 => Ok("BIGINT"),
-            DataType::F64 => Ok("DOUBLE PRECISION"),
-            DataType::Decimal => Ok("NUMERIC"),
-            DataType::Text => Ok("VARCHAR(255)"),
-            DataType::LargeText => Ok("TEXT"),
-            DataType::Json => Ok("JSONB"),
-            DataType::Date => Ok("DATE"),
-            DataType::Timestamp => Ok("TIMESTAMPTZ"),
+            DataType::Bool => Ok("BOOLEAN".to_owned()),
+            DataType::I64 | DataType::U64 => Ok("BIGINT".to_owned()),
+            DataType::F64 => Ok("DOUBLE PRECISION".to_owned()),
+            DataType::Decimal => match (property.numeric_precision, property.numeric_scale) {
+                (Some(precision), Some(scale)) => Ok(format!("NUMERIC({precision},{scale})")),
+                _ => Ok("NUMERIC".to_owned()),
+            },
+            DataType::Text => Ok(format!("VARCHAR({})", property.max_length.unwrap_or(255))),
+            DataType::LargeText => Ok("TEXT".to_owned()),
+            DataType::Json => Ok("JSONB".to_owned()),
+            DataType::Date => Ok("DATE".to_owned()),
+            DataType::Timestamp => Ok("TIMESTAMPTZ".to_owned()),
         }
+    }
+
+    fn compile_add_column(
+        &self,
+        entity: &EntityDescriptor,
+        property: &PropertyDescriptor,
+    ) -> Result<String, SqlCompileError> {
+        Ok(format!(
+            "ALTER TABLE {} ADD COLUMN {}",
+            self.quote_ident(&entity.table_name),
+            self.column_definition_sql(property)?
+        ))
     }
 
     fn compile_in(
@@ -316,6 +345,15 @@ pub struct PgMutationExecutor {
     pool: Pool,
 }
 
+#[derive(Debug, Clone)]
+struct PostgresColumnMetadata {
+    data_type: String,
+    nullable: bool,
+    max_length: Option<u32>,
+    numeric_precision: Option<u32>,
+    numeric_scale: Option<u32>,
+}
+
 /// A transaction owns one checked-out pooled connection for its complete
 /// lifetime. Using SQL BEGIN/COMMIT avoids a self-referential wrapper around
 /// `tokio_postgres::Transaction` while preserving connection affinity.
@@ -469,37 +507,63 @@ impl PgMutationExecutor {
         dialect: &PostgresDialect,
         entities: &[&EntityDescriptor],
     ) -> Result<(), MutationExecutorError> {
+        validate_schema_identifier_lengths(entities, 63)?;
         let mut client = self
             .pool
             .get()
             .await
             .map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
-        {
-            let transaction = client.transaction().await?;
-            transaction
-                .query_one(
-                    "SELECT pg_advisory_xact_lock(hashtextextended('teaql-schema-setup', 0))",
-                    &[],
-                )
-                .await?;
-            for sql in dialect.schema_setup_sqls() {
-                transaction.execute(*sql, &[]).await?;
+        let transaction = client.transaction().await?;
+        transaction
+            .query_one(
+                "SELECT pg_advisory_xact_lock(hashtextextended('teaql-schema-setup', 0))",
+                &[],
+            )
+            .await?;
+        let result = self
+            .ensure_schema_with_client(&transaction, dialect, entities)
+            .await;
+        match result {
+            Ok(()) => transaction.commit().await?,
+            Err(error) => {
+                let _ = transaction.rollback().await;
+                return Err(error);
             }
-            transaction.commit().await?;
         }
-        self.ensure_id_space_table(DEFAULT_ID_SPACE_TABLE).await?;
+        Ok(())
+    }
+
+    async fn ensure_schema_with_client<C>(
+        &self,
+        client: &C,
+        dialect: &PostgresDialect,
+        entities: &[&EntityDescriptor],
+    ) -> Result<(), MutationExecutorError>
+    where
+        C: GenericClient + Sync,
+    {
+        for sql in dialect.schema_setup_sqls() {
+            client.execute(*sql, &[]).await?;
+        }
+        let id_space_sql = format!(
+            "CREATE TABLE IF NOT EXISTS {} (type_name VARCHAR(100) PRIMARY KEY, current_level BIGINT NOT NULL)",
+            quote_ident(DEFAULT_ID_SPACE_TABLE)
+        );
+        client.execute(&id_space_sql, &[]).await?;
 
         for entity in entities {
-            if !self.table_exists(&entity.table_name).await? {
+            if !Self::table_exists(client, &entity.table_name).await? {
                 let sql = dialect.compile_create_table(entity)?;
                 client.execute(&sql, &[]).await?;
             } else {
-                let existing_columns = self.table_columns(&entity.table_name).await?;
+                let existing_columns = Self::table_columns(client, &entity.table_name).await?;
                 for property in &entity.properties {
                     let bare_column = strip_identifier_quotes(&property.column_name).to_lowercase();
-                    if existing_columns.contains(&bare_column) {
+                    if let Some(actual) = existing_columns.get(&bare_column) {
+                        ensure_postgres_column_compatibility(entity, property, actual)?;
                         continue;
                     }
+                    Self::ensure_required_column_can_be_added(client, entity, property).await?;
                     let sql = dialect.compile_add_column(entity, property)?;
                     client.execute(&sql, &[]).await?;
                 }
@@ -508,8 +572,14 @@ impl PgMutationExecutor {
             for sql in dialect.schema_indexes_sqls(entity)? {
                 client.execute(&sql, &[]).await?;
             }
-            for sql in dialect.relation_indexes_sqls(entity) {
-                client.execute(&sql, &[]).await?;
+            for spec in schema_index_specs(entity, Some(63)) {
+                Self::ensure_declared_index_shape(client, &spec).await?;
+            }
+            for spec in dialect.relation_index_specs(entity) {
+                client
+                    .execute(&dialect.relation_index_sql(&spec), &[])
+                    .await?;
+                Self::ensure_relation_index_shape(client, &spec).await?;
             }
         }
 
@@ -549,7 +619,8 @@ impl PgMutationExecutor {
                             entity.name, relation.name, referenced.name, referenced_key
                         ))
                     })?;
-                self.ensure_foreign_key(
+                Self::ensure_foreign_key(
+                    client,
                     &source.table_name,
                     &source_property.column_name,
                     &referenced.table_name,
@@ -561,63 +632,298 @@ impl PgMutationExecutor {
         Ok(())
     }
 
-    async fn ensure_foreign_key(
-        &self,
+    async fn ensure_declared_index_shape<C>(
+        client: &C,
+        spec: &SchemaIndexSpec,
+    ) -> Result<(), MutationExecutorError>
+    where
+        C: GenericClient + Sync,
+    {
+        let table = postgres_stored_ident(&spec.table);
+        let index = postgres_stored_ident(&spec.name);
+        let rows = client
+            .query(
+                "SELECT i.indisvalid, i.indisready, i.indisunique, am.amname,
+                        i.indnkeyatts::int, i.indnatts::int,
+                        i.indpred IS NULL, i.indexprs IS NULL,
+                        first_column.attname, second_column.attname,
+                        COALESCE((i.indoption[0]::int & 1) <> 0, false),
+                        COALESCE((i.indoption[1]::int & 1) <> 0, false),
+                        COALESCE((i.indoption[0]::int & 2) <> 0, false),
+                        COALESCE((i.indoption[1]::int & 2) <> 0, false),
+                        first_opclass.opcdefault, second_opclass.opcdefault,
+                        i.indcollation[0] = first_column.attcollation,
+                        i.indcollation[1] = second_column.attcollation
+                 FROM pg_index i
+                 JOIN pg_class table_class ON table_class.oid = i.indrelid
+                 JOIN pg_namespace namespace ON namespace.oid = table_class.relnamespace
+                 JOIN pg_class index_class ON index_class.oid = i.indexrelid
+                 JOIN pg_am am ON am.oid = index_class.relam
+                 LEFT JOIN pg_attribute first_column
+                   ON first_column.attrelid = table_class.oid
+                  AND first_column.attnum = i.indkey[0]
+                 LEFT JOIN pg_attribute second_column
+                   ON second_column.attrelid = table_class.oid
+                  AND second_column.attnum = i.indkey[1]
+                 LEFT JOIN pg_opclass first_opclass ON first_opclass.oid = i.indclass[0]
+                 LEFT JOIN pg_opclass second_opclass ON second_opclass.oid = i.indclass[1]
+                 WHERE namespace.nspname = current_schema()
+                   AND table_class.relname = $1 AND index_class.relname = $2",
+                &[&table, &index],
+            )
+            .await?;
+        let Some(row) = rows.first() else {
+            return Err(MutationExecutorError::Bind(format!(
+                "PostgreSQL declared index missing after installation: table={}, index={}",
+                spec.table, spec.name
+            )));
+        };
+        let valid: bool = row.try_get(0)?;
+        let ready: bool = row.try_get(1)?;
+        let unique: bool = row.try_get(2)?;
+        let method: String = row.try_get(3)?;
+        let key_count: i32 = row.try_get(4)?;
+        let total_columns: i32 = row.try_get(5)?;
+        let unfiltered: bool = row.try_get(6)?;
+        let direct: bool = row.try_get(7)?;
+        let first: Option<String> = row.try_get(8)?;
+        let second: Option<String> = row.try_get(9)?;
+        let first_desc: bool = row.try_get(10)?;
+        let second_desc: bool = row.try_get(11)?;
+        let first_nulls_first: bool = row.try_get(12)?;
+        let second_nulls_first: bool = row.try_get(13)?;
+        let first_default_opclass: Option<bool> = row.try_get(14)?;
+        let second_default_opclass: Option<bool> = row.try_get(15)?;
+        let first_default_collation: Option<bool> = row.try_get(16)?;
+        let second_default_collation: Option<bool> = row.try_get(17)?;
+        let installed = [first.as_deref(), second.as_deref()];
+        let expected = spec
+            .columns
+            .iter()
+            .map(|column| postgres_stored_ident(column))
+            .collect::<Vec<_>>();
+        let column_match = expected
+            .iter()
+            .enumerate()
+            .all(|(position, column)| installed[position] == Some(column.as_str()));
+        let flags_match = !first_desc
+            && !first_nulls_first
+            && first_default_opclass == Some(true)
+            && first_default_collation == Some(true)
+            && (expected.len() == 1
+                || (!second_desc
+                    && !second_nulls_first
+                    && second_default_opclass == Some(true)
+                    && second_default_collation == Some(true)));
+        if valid
+            && ready
+            && unique == spec.unique
+            && method == "btree"
+            && key_count == expected.len() as i32
+            && total_columns == key_count
+            && unfiltered
+            && direct
+            && column_match
+            && flags_match
+        {
+            return Ok(());
+        }
+        Err(MutationExecutorError::Bind(format!(
+            "PostgreSQL declared index has incompatible shape: table={}, index={}, expected={} full/valid btree({}) with ascending default keys, actual=unique={unique}, method={method}, keys={key_count}/{total_columns}, columns={first:?}/{second:?}, desc={first_desc}/{second_desc}, nulls_first={first_nulls_first}/{second_nulls_first}, default_opclass={first_default_opclass:?}/{second_default_opclass:?}, default_collation={first_default_collation:?}/{second_default_collation:?}, full={unfiltered}, direct={direct}, valid={valid}, ready={ready}; drop or rename the conflicting index before retrying",
+            spec.table,
+            spec.name,
+            if spec.unique { "unique" } else { "non-unique" },
+            spec.columns.join(", ")
+        )))
+    }
+
+    async fn ensure_relation_index_shape<C>(
+        client: &C,
+        spec: &PostgresRelationIndexSpec,
+    ) -> Result<(), MutationExecutorError>
+    where
+        C: GenericClient + Sync,
+    {
+        let table = postgres_stored_ident(&spec.table);
+        let index = postgres_stored_ident(&spec.name);
+        let rows = client
+            .query(
+                "SELECT i.indisvalid, i.indisready, am.amname, i.indnkeyatts::int,
+                        i.indpred IS NULL, i.indexprs IS NULL,
+                        first_column.attname, second_column.attname,
+                        (i.indoption[0]::int & 1) <> 0,
+                        (i.indoption[1]::int & 1) <> 0,
+                        i.indisunique, i.indnatts::int,
+                        (i.indoption[0]::int & 2) <> 0,
+                        (i.indoption[1]::int & 2) <> 0,
+                        first_opclass.opcdefault, second_opclass.opcdefault,
+                        i.indcollation[0] = first_column.attcollation,
+                        i.indcollation[1] = second_column.attcollation
+                 FROM pg_index i
+                 JOIN pg_class table_class ON table_class.oid = i.indrelid
+                 JOIN pg_namespace namespace ON namespace.oid = table_class.relnamespace
+                 JOIN pg_class index_class ON index_class.oid = i.indexrelid
+                 JOIN pg_am am ON am.oid = index_class.relam
+                 LEFT JOIN pg_attribute first_column
+                   ON first_column.attrelid = table_class.oid
+                  AND first_column.attnum = i.indkey[0]
+                 LEFT JOIN pg_attribute second_column
+                   ON second_column.attrelid = table_class.oid
+                  AND second_column.attnum = i.indkey[1]
+                 LEFT JOIN pg_opclass first_opclass ON first_opclass.oid = i.indclass[0]
+                 LEFT JOIN pg_opclass second_opclass ON second_opclass.oid = i.indclass[1]
+                 WHERE namespace.nspname = current_schema()
+                   AND table_class.relname = $1 AND index_class.relname = $2",
+                &[&table, &index],
+            )
+            .await?;
+        let Some(row) = rows.first() else {
+            return Err(MutationExecutorError::Bind(format!(
+                "ensure schema relation index missing after installation: table={}, index={}",
+                spec.table, spec.name
+            )));
+        };
+        let valid: bool = row.try_get(0)?;
+        let ready: bool = row.try_get(1)?;
+        let method: String = row.try_get(2)?;
+        let key_count: i32 = row.try_get(3)?;
+        let unfiltered: bool = row.try_get(4)?;
+        let direct_columns: bool = row.try_get(5)?;
+        let first: Option<String> = row.try_get(6)?;
+        let second: Option<String> = row.try_get(7)?;
+        let first_desc: bool = row.try_get(8)?;
+        let second_desc: bool = row.try_get(9)?;
+        let unique: bool = row.try_get(10)?;
+        let total_columns: i32 = row.try_get(11)?;
+        let first_nulls_first: bool = row.try_get(12)?;
+        let second_nulls_first: bool = row.try_get(13)?;
+        let first_default_opclass: Option<bool> = row.try_get(14)?;
+        let second_default_opclass: Option<bool> = row.try_get(15)?;
+        let first_default_collation: Option<bool> = row.try_get(16)?;
+        let second_default_collation: Option<bool> = row.try_get(17)?;
+        let expected_first = postgres_stored_ident(&spec.foreign_key);
+        let expected_second = postgres_stored_ident(&spec.id);
+
+        if valid
+            && ready
+            && method == "btree"
+            && key_count == 2
+            && total_columns == key_count
+            && !unique
+            && unfiltered
+            && direct_columns
+            && first.as_deref() == Some(expected_first.as_str())
+            && second.as_deref() == Some(expected_second.as_str())
+            && !first_desc
+            && second_desc
+            && !first_nulls_first
+            && second_nulls_first
+            && first_default_opclass == Some(true)
+            && second_default_opclass == Some(true)
+            && first_default_collation == Some(true)
+            && second_default_collation == Some(true)
+        {
+            return Ok(());
+        }
+        Err(MutationExecutorError::Bind(format!(
+            "ensure schema relation index has incompatible shape: table={}, index={}, expected=non-unique btree({}, {} DESC) with two full/valid default keys, actual=method={method}, unique={unique}, keys={key_count}/{total_columns}, columns={first:?}/{second:?}, desc={first_desc}/{second_desc}, nulls_first={first_nulls_first}/{second_nulls_first}, default_opclass={first_default_opclass:?}/{second_default_opclass:?}, default_collation={first_default_collation:?}/{second_default_collation:?}, full={unfiltered}, direct={direct_columns}, valid={valid}, ready={ready}; drop or rename the conflicting index before retrying",
+            spec.table, spec.name, spec.foreign_key, spec.id
+        )))
+    }
+
+    async fn ensure_foreign_key<C>(
+        client: &C,
         source_table: &str,
         source_column: &str,
         referenced_table: &str,
         referenced_column: &str,
-    ) -> Result<(), MutationExecutorError> {
-        let semantic_key = format!(
-            "teaql-fk:{source_table}:{source_column}:{referenced_table}:{referenced_column}:a:a"
-        );
-        let mut client = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
-        let transaction = client.transaction().await?;
-        transaction
-            .query_one(
-                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-                &[&semantic_key],
-            )
-            .await?;
-        let exists: bool = transaction
-            .query_one(
-                "SELECT EXISTS (
-                    SELECT 1
-                      FROM pg_constraint c
-                      JOIN pg_class st ON st.oid = c.conrelid
-                      JOIN pg_namespace sn ON sn.oid = st.relnamespace
-                      JOIN pg_class rt ON rt.oid = c.confrelid
-                      JOIN pg_namespace rn ON rn.oid = rt.relnamespace
-                      JOIN pg_attribute sc ON sc.attrelid = c.conrelid AND sc.attnum = c.conkey[1]
-                      JOIN pg_attribute rc ON rc.attrelid = c.confrelid AND rc.attnum = c.confkey[1]
-                     WHERE c.contype = 'f'
-                       AND sn.nspname = current_schema()
-                       AND rn.nspname = current_schema()
-                       AND st.relname = $1 AND sc.attname = $2
-                       AND rt.relname = $3 AND rc.attname = $4
-                       AND cardinality(c.conkey) = 1 AND cardinality(c.confkey) = 1
-                       AND c.confupdtype = 'a' AND c.confdeltype = 'a'
-                )",
+    ) -> Result<(), MutationExecutorError>
+    where
+        C: GenericClient + Sync,
+    {
+        let candidates = client
+            .query(
+                "SELECT CAST(c.conname AS TEXT), c.convalidated, c.condeferrable,
+                        c.condeferred, CAST(c.confupdtype AS TEXT),
+                        CAST(c.confdeltype AS TEXT), CAST(c.confmatchtype AS TEXT),
+                        pg_get_constraintdef(c.oid)
+                   FROM pg_constraint c
+                   JOIN pg_class st ON st.oid = c.conrelid
+                   JOIN pg_namespace sn ON sn.oid = st.relnamespace
+                   JOIN pg_class rt ON rt.oid = c.confrelid
+                   JOIN pg_namespace rn ON rn.oid = rt.relnamespace
+                   JOIN pg_attribute sc ON sc.attrelid = c.conrelid AND sc.attnum = c.conkey[1]
+                   JOIN pg_attribute rc ON rc.attrelid = c.confrelid AND rc.attnum = c.confkey[1]
+                  WHERE c.contype = 'f'
+                    AND sn.nspname = current_schema()
+                    AND rn.nspname = current_schema()
+                    AND st.relname = $1 AND sc.attname = $2
+                    AND rt.relname = $3 AND rc.attname = $4
+                    AND cardinality(c.conkey) = 1 AND cardinality(c.confkey) = 1",
                 &[
-                    &strip_identifier_quotes(source_table),
-                    &strip_identifier_quotes(source_column),
-                    &strip_identifier_quotes(referenced_table),
-                    &strip_identifier_quotes(referenced_column),
+                    &postgres_stored_ident(source_table),
+                    &postgres_stored_ident(source_column),
+                    &postgres_stored_ident(referenced_table),
+                    &postgres_stored_ident(referenced_column),
                 ],
             )
-            .await?
-            .try_get(0)?;
-        if !exists {
-            let constraint_name = postgres_foreign_key_name(
+            .await?;
+        let mut incompatible = None;
+        for row in candidates {
+            let name: String = row.try_get(0)?;
+            let validated: bool = row.try_get(1)?;
+            let deferrable: bool = row.try_get(2)?;
+            let initially_deferred: bool = row.try_get(3)?;
+            let update_action: String = row.try_get(4)?;
+            let delete_action: String = row.try_get(5)?;
+            let match_type: String = row.try_get(6)?;
+            let definition: String = row.try_get(7)?;
+            if validated
+                && !deferrable
+                && !initially_deferred
+                && update_action == "a"
+                && delete_action == "a"
+                && match_type == "s"
+            {
+                return Ok(());
+            }
+            incompatible.get_or_insert_with(|| format!(
+                "PostgreSQL ensure schema incompatible existing foreign key: table={source_table}, column={source_column}, referenced_table={referenced_table}, referenced_column={referenced_column}, expected=validated non-deferrable MATCH SIMPLE with NO ACTION, installed_constraint={name}, installed_validated={validated}, installed_deferrable={deferrable}, installed_initially_deferred={initially_deferred}, installed_update={update_action}, installed_delete={delete_action}, installed_match={match_type}, installed_definition={definition}; validate or migrate the constraint explicitly before retrying"
+            ));
+        }
+        if let Some(message) = incompatible {
+            return Err(MutationExecutorError::Bind(message));
+        }
+        {
+            let constraint_name = schema_foreign_key_name(
                 source_table,
                 source_column,
                 referenced_table,
                 referenced_column,
+                63,
             );
+            let collision = client
+                .query_opt(
+                    "SELECT CAST(c.contype AS TEXT), pg_get_constraintdef(c.oid)
+                       FROM pg_constraint c
+                       JOIN pg_class t ON t.oid = c.conrelid
+                       JOIN pg_namespace n ON n.oid = t.relnamespace
+                      WHERE n.nspname = current_schema()
+                        AND t.relname = $1 AND c.conname = $2
+                      LIMIT 1",
+                    &[
+                        &postgres_stored_ident(source_table),
+                        &postgres_stored_ident(&constraint_name),
+                    ],
+                )
+                .await?;
+            if let Some(row) = collision {
+                let kind: String = row.try_get(0)?;
+                let definition: String = row.try_get(1)?;
+                return Err(MutationExecutorError::Bind(format!(
+                    "PostgreSQL ensure schema foreign-key name collision: table={source_table}, constraint={constraint_name}, expected=FOREIGN KEY ({source_column}) REFERENCES {referenced_table}({referenced_column}) with NO ACTION, installed_kind={kind}, installed_definition={definition}; rename/drop the colliding constraint or migrate explicitly before retrying"
+                )));
+            }
             let sql = format!(
                 "ALTER TABLE {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({})",
                 quote_ident(source_table),
@@ -626,9 +932,8 @@ impl PgMutationExecutor {
                 quote_ident(referenced_table),
                 quote_ident(referenced_column),
             );
-            transaction.execute(&sql, &[]).await?;
+            client.execute(&sql, &[]).await?;
         }
-        transaction.commit().await?;
         Ok(())
     }
 
@@ -664,12 +969,10 @@ impl PgMutationExecutor {
         Ok(result)
     }
 
-    async fn table_exists(&self, table_name: &str) -> Result<bool, MutationExecutorError> {
-        let client = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
+    async fn table_exists<C>(client: &C, table_name: &str) -> Result<bool, MutationExecutorError>
+    where
+        C: GenericClient + Sync,
+    {
         let row = client
             .query_one(
                 "SELECT COUNT(1)
@@ -683,31 +986,131 @@ impl PgMutationExecutor {
         Ok(exists > 0)
     }
 
-    async fn table_columns(
-        &self,
+    async fn table_columns<C>(
+        client: &C,
         table_name: &str,
-    ) -> Result<std::collections::BTreeSet<String>, MutationExecutorError> {
-        let client = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| MutationExecutorError::Pool(e.to_string()))?;
+    ) -> Result<std::collections::BTreeMap<String, PostgresColumnMetadata>, MutationExecutorError>
+    where
+        C: GenericClient + Sync,
+    {
         let rows = client
             .query(
-                "SELECT column_name
+                "SELECT column_name, data_type, is_nullable,
+                        character_maximum_length, numeric_precision, numeric_scale
              FROM information_schema.columns
              WHERE table_schema = current_schema()
                AND table_name = $1",
                 &[&table_name],
             )
             .await?;
-        let mut columns = std::collections::BTreeSet::new();
+        let mut columns = std::collections::BTreeMap::new();
         for row in rows {
             let name: String = row.try_get("column_name")?;
-            columns.insert(name.to_lowercase());
+            let data_type: String = row.try_get("data_type")?;
+            let is_nullable: String = row.try_get("is_nullable")?;
+            let max_length: Option<i32> = row.try_get("character_maximum_length")?;
+            let numeric_precision: Option<i32> = row.try_get("numeric_precision")?;
+            let numeric_scale: Option<i32> = row.try_get("numeric_scale")?;
+            columns.insert(
+                name.to_lowercase(),
+                PostgresColumnMetadata {
+                    data_type,
+                    nullable: is_nullable.eq_ignore_ascii_case("YES"),
+                    max_length: max_length.and_then(|value| value.try_into().ok()),
+                    numeric_precision: numeric_precision.and_then(|value| value.try_into().ok()),
+                    numeric_scale: numeric_scale.and_then(|value| value.try_into().ok()),
+                },
+            );
         }
         Ok(columns)
     }
+
+    async fn ensure_required_column_can_be_added<C>(
+        client: &C,
+        entity: &EntityDescriptor,
+        property: &PropertyDescriptor,
+    ) -> Result<(), MutationExecutorError>
+    where
+        C: GenericClient + Sync,
+    {
+        if property.nullable {
+            return Ok(());
+        }
+        let sql = format!(
+            "SELECT EXISTS(SELECT 1 FROM {} LIMIT 1)",
+            quote_ident(&entity.table_name)
+        );
+        let has_rows: bool = client.query_one(&sql, &[]).await?.try_get(0)?;
+        if !has_rows {
+            return Ok(());
+        }
+        Err(MutationExecutorError::Bind(format!(
+            "ensure schema cannot add required column without a deterministic backfill: entity={}, table={}, column={}; the table contains rows, so migrate/backfill explicitly before retrying",
+            entity.name, entity.table_name, property.column_name
+        )))
+    }
+}
+
+fn ensure_postgres_column_compatibility(
+    entity: &EntityDescriptor,
+    property: &PropertyDescriptor,
+    metadata: &PostgresColumnMetadata,
+) -> Result<(), MutationExecutorError> {
+    let actual = metadata.data_type.trim().to_ascii_lowercase();
+    let compatible = match property.data_type {
+        DataType::Bool => actual == "boolean",
+        DataType::I64 | DataType::U64 => actual == "bigint",
+        DataType::F64 => matches!(actual.as_str(), "double precision" | "real"),
+        DataType::Decimal => matches!(actual.as_str(), "numeric" | "decimal"),
+        DataType::Text => matches!(actual.as_str(), "character varying" | "text"),
+        DataType::LargeText => matches!(actual.as_str(), "text" | "character varying"),
+        DataType::Json => matches!(actual.as_str(), "jsonb" | "json"),
+        DataType::Date => actual == "date",
+        DataType::Timestamp => actual == "timestamp with time zone",
+    };
+    if !compatible {
+        return Err(MutationExecutorError::Bind(format!(
+            "ensure schema incompatible column type: entity={}, table={}, column={}, expected={:?}, actual={actual}",
+            entity.name, entity.table_name, property.column_name, property.data_type
+        )));
+    }
+    if property.nullable != metadata.nullable {
+        return Err(MutationExecutorError::Bind(format!(
+            "ensure schema incompatible column nullability: entity={}, table={}, column={}, expected_nullable={}, actual_nullable={}",
+            entity.name,
+            entity.table_name,
+            property.column_name,
+            property.nullable,
+            metadata.nullable
+        )));
+    }
+    if let Some(expected) = property.max_length
+        && !teaql_sql::storage_length_covers(expected, metadata.max_length)
+    {
+        return Err(MutationExecutorError::Bind(format!(
+            "ensure schema existing column is too narrow: entity={}, table={}, column={}, required_max_length={expected}, actual_max_length={:?}",
+            entity.name, entity.table_name, property.column_name, metadata.max_length
+        )));
+    }
+    if let (Some(expected_precision), Some(expected_scale)) =
+        (property.numeric_precision, property.numeric_scale)
+        && !teaql_sql::storage_numeric_covers(
+            expected_precision,
+            expected_scale,
+            metadata.numeric_precision,
+            metadata.numeric_scale,
+        )
+    {
+        return Err(MutationExecutorError::Bind(format!(
+            "ensure schema existing numeric column does not cover the model value domain: entity={}, table={}, column={}, required_precision={expected_precision}, required_scale={expected_scale}, actual_precision={:?}, actual_scale={:?}",
+            entity.name,
+            entity.table_name,
+            property.column_name,
+            metadata.numeric_precision,
+            metadata.numeric_scale
+        )));
+    }
+    Ok(())
 }
 
 async fn ensure_initial_graphs_postgres(
@@ -823,10 +1226,6 @@ mod streaming_tests {
     use futures_util::StreamExt;
     use teaql_core::RelationDescriptor;
     use teaql_sql::{SqlTransaction, SqlTransactionTransport, SqlTransport, StreamingSqlTransport};
-
-    // Live ensure_schema tests share the provider's teaql_id_space table.
-    // Serialize only those schema-mutating fixtures, not the whole test suite.
-    static LIVE_SCHEMA_FIXTURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     fn configured_pool(url: String) -> Pool {
         let mut config = deadpool_postgres::Config::new();
@@ -1092,7 +1491,6 @@ mod streaming_tests {
         let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
             return;
         };
-        let _schema_guard = LIVE_SCHEMA_FIXTURE_LOCK.lock().await;
         let pool = configured_pool(url);
         let client = pool.get().await.unwrap();
         client
@@ -1137,11 +1535,635 @@ mod streaming_tests {
     }
 
     #[tokio::test]
+    async fn ensure_schema_rejects_wrong_shape_behind_declared_index_name() {
+        let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let pool = configured_pool(url);
+        let client = pool.get().await.unwrap();
+        let table = "teaql_declared_index_fixture";
+        let index = "PK_TEAQL_DECLARED_INDEX_FIXTURE_ID_VERSION";
+        client
+            .batch_execute(&format!(
+                "DROP TABLE IF EXISTS {table}; \
+                 CREATE TABLE {table} (id BIGINT NOT NULL, version BIGINT NOT NULL, name TEXT); \
+                 CREATE INDEX {index} ON {table} (version, id)"
+            ))
+            .await
+            .unwrap();
+        let entity = EntityDescriptor::new("DeclaredIndexFixture")
+            .table_name(table)
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(
+                PropertyDescriptor::new("version", DataType::I64)
+                    .version()
+                    .not_null(),
+            )
+            .property(PropertyDescriptor::new("name", DataType::Text));
+        let executor = PgMutationExecutor::new(pool.clone());
+        let error = executor
+            .ensure_schema(&PostgresDialect, &[&entity])
+            .await
+            .expect_err("colliding declared index must fail");
+        let message = error.to_string();
+        assert!(message.contains(table), "{message}");
+        assert!(message.contains(index), "{message}");
+        for definition in [
+            format!("CREATE UNIQUE INDEX {index} ON {table} (id, version) WHERE version > 0"),
+            format!("CREATE UNIQUE INDEX {index} ON {table} (id DESC, version)"),
+            format!("CREATE UNIQUE INDEX {index} ON {table} (id, version) INCLUDE (name)"),
+            format!("CREATE UNIQUE INDEX {index} ON {table} (id, (version + 1))"),
+            format!("CREATE UNIQUE INDEX {index} ON {table} (id NULLS FIRST, version)"),
+        ] {
+            client
+                .batch_execute(&format!("DROP INDEX {index}; {definition}"))
+                .await
+                .unwrap();
+            let error = executor
+                .ensure_schema(&PostgresDialect, &[&entity])
+                .await
+                .expect_err("a wrong-shape declared index must be rejected");
+            assert!(
+                error.to_string().contains(index),
+                "definition={definition}, error={error}"
+            );
+        }
+        client
+            .batch_execute(&format!(
+                "DROP INDEX {index}; CREATE UNIQUE INDEX {index} ON {table} (id, version)"
+            ))
+            .await
+            .unwrap();
+        executor
+            .ensure_schema(&PostgresDialect, &[&entity])
+            .await
+            .expect("a matching declared index must be accepted");
+        executor
+            .ensure_schema(&PostgresDialect, &[&entity])
+            .await
+            .expect("a matching declared index must remain idempotent");
+        let other_table = "teaql_declared_index_wrong_table_fixture";
+        client
+            .batch_execute(&format!(
+                "DROP INDEX {index}; CREATE TABLE {other_table} (id BIGINT); \
+                 CREATE INDEX {index} ON {other_table} (id)"
+            ))
+            .await
+            .unwrap();
+        let error = executor
+            .ensure_schema(&PostgresDialect, &[&entity])
+            .await
+            .expect_err("an index name on the wrong table cannot satisfy schema");
+        let message = error.to_string();
+        assert!(message.contains(table), "{message}");
+        assert!(message.contains(index), "{message}");
+        client
+            .batch_execute(&format!("DROP TABLE {other_table}; DROP TABLE {table}"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_schema_uses_bounded_stable_declared_index_names() {
+        let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let pool = configured_pool(url);
+        let client = pool.get().await.unwrap();
+        let table = "teaql_long_declared_index_fixture_aaaaaaaaaaaaaaaaaaaaa";
+        client
+            .batch_execute(&format!("DROP TABLE IF EXISTS {table}"))
+            .await
+            .unwrap();
+        let entity = EntityDescriptor::new("LongDeclaredIndexFixture")
+            .table_name(table)
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(
+                PropertyDescriptor::new("version", DataType::I64)
+                    .version()
+                    .not_null(),
+            );
+        let executor = PgMutationExecutor::new(pool.clone());
+        executor
+            .ensure_schema(&PostgresDialect, &[&entity])
+            .await
+            .expect("long declared index names must install without truncation drift");
+        executor
+            .ensure_schema(&PostgresDialect, &[&entity])
+            .await
+            .expect("the bounded declared index must remain stable");
+        client
+            .batch_execute(&format!("DROP TABLE {table}"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_schema_rejects_overlong_model_identifiers_before_connecting() {
+        let pool = configured_pool("postgres://127.0.0.1:1/teaql_no_database".to_owned());
+        let executor = PgMutationExecutor::new(pool);
+        let long_table = EntityDescriptor::new("School")
+            .table_name("a".repeat(64))
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null());
+        let error = executor
+            .ensure_schema(&PostgresDialect, &[&long_table])
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            MutationExecutorError::SqlCompile(SqlCompileError::SchemaIdentifierTooLong {
+                actual_bytes: 64,
+                max_bytes: 63,
+                ..
+            })
+        ));
+
+        let long_column = EntityDescriptor::new("School")
+            .table_name("school_data")
+            .property(
+                PropertyDescriptor::new("contactPhone", DataType::Text).column_name("b".repeat(64)),
+            );
+        let message = executor
+            .ensure_schema(&PostgresDialect, &[&long_column])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("column for entity School property contactPhone"));
+        assert!(message.contains("at most 63 bytes"));
+    }
+
+    #[tokio::test]
+    async fn ensure_schema_rejects_wrong_shape_behind_relation_index_name() {
+        let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let pool = configured_pool(url);
+        let client = pool.get().await.unwrap();
+        client
+            .batch_execute("DROP TABLE IF EXISTS teaql_relation_index_shape_fixture")
+            .await
+            .unwrap();
+
+        let entity = EntityDescriptor::new("RelationIndexShapeFixture")
+            .table_name("teaql_relation_index_shape_fixture")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(PropertyDescriptor::new("version", DataType::I64).version())
+            .property(PropertyDescriptor::new("vendor_id", DataType::U64).not_null())
+            .relation(
+                RelationDescriptor::new("vendor", "Vendor")
+                    .local_key("vendor_id")
+                    .foreign_key("id"),
+            );
+        let executor = PgMutationExecutor::new(pool.clone());
+        executor
+            .ensure_schema(&PostgresDialect, &[&entity])
+            .await
+            .unwrap();
+
+        let relation_index =
+            postgres_index_name("teaql_relation_index_shape_fixture", "vendor_id", "id");
+        client
+            .batch_execute(&format!(
+                "DROP INDEX {relation_index}; CREATE INDEX {relation_index} ON teaql_relation_index_shape_fixture (id, vendor_id)"
+            ))
+            .await
+            .unwrap();
+
+        let result = executor.ensure_schema(&PostgresDialect, &[&entity]).await;
+        assert!(
+            result.is_err(),
+            "a colliding index with reversed columns must fail"
+        );
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("teaql_relation_index_shape_fixture"));
+        assert!(error.contains(&relation_index));
+
+        client
+            .batch_execute(&format!(
+                "DROP INDEX {relation_index}; CREATE INDEX {relation_index} ON teaql_relation_index_shape_fixture (vendor_id, id DESC) WHERE version > 0"
+            ))
+            .await
+            .unwrap();
+        let result = executor.ensure_schema(&PostgresDialect, &[&entity]).await;
+        assert!(
+            result.is_err(),
+            "a partial colliding index must not qualify"
+        );
+        assert!(result.unwrap_err().to_string().contains("full=false"));
+
+        client
+            .batch_execute(&format!(
+                "DROP INDEX {relation_index}; CREATE INDEX {relation_index} ON teaql_relation_index_shape_fixture (vendor_id, id)"
+            ))
+            .await
+            .unwrap();
+        let result = executor.ensure_schema(&PostgresDialect, &[&entity]).await;
+        assert!(result.is_err(), "an ascending ID index must not qualify");
+        assert!(result.unwrap_err().to_string().contains("desc=false/false"));
+
+        client
+            .batch_execute(&format!(
+                "DROP INDEX {relation_index}; CREATE UNIQUE INDEX {relation_index} ON teaql_relation_index_shape_fixture (vendor_id, id DESC)"
+            ))
+            .await
+            .unwrap();
+        let result = executor.ensure_schema(&PostgresDialect, &[&entity]).await;
+        assert!(
+            result.is_err(),
+            "a unique colliding index must not qualify as the owned non-unique relation index"
+        );
+
+        client
+            .batch_execute(&format!(
+                "DROP INDEX {relation_index}; CREATE INDEX {relation_index} ON teaql_relation_index_shape_fixture (vendor_id, id DESC) INCLUDE (version)"
+            ))
+            .await
+            .unwrap();
+        let result = executor.ensure_schema(&PostgresDialect, &[&entity]).await;
+        assert!(
+            result.is_err(),
+            "an INCLUDE column must not qualify as the exact owned relation index"
+        );
+
+        client
+            .batch_execute(&format!(
+                "DROP INDEX {relation_index}; CREATE INDEX {relation_index} ON teaql_relation_index_shape_fixture (vendor_id, id DESC NULLS LAST)"
+            ))
+            .await
+            .unwrap();
+        let result = executor.ensure_schema(&PostgresDialect, &[&entity]).await;
+        assert!(
+            result.is_err(),
+            "non-default ID null ordering must not qualify as the owned relation index"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("nulls_first=false/false")
+        );
+
+        client
+            .batch_execute(&format!(
+                "DROP INDEX {relation_index}; CREATE INDEX {relation_index} ON teaql_relation_index_shape_fixture (vendor_id, id DESC)"
+            ))
+            .await
+            .unwrap();
+        executor
+            .ensure_schema(&PostgresDialect, &[&entity])
+            .await
+            .unwrap();
+        executor
+            .ensure_schema(&PostgresDialect, &[&entity])
+            .await
+            .unwrap();
+
+        client
+            .batch_execute("DROP TABLE teaql_relation_index_shape_fixture")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_schema_rejects_incompatible_existing_column_type() {
+        let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let pool = configured_pool(url);
+        let client = pool.get().await.unwrap();
+        client
+            .batch_execute(
+                "DROP TABLE IF EXISTS teaql_schema_type_fixture;
+                 CREATE TABLE teaql_schema_type_fixture (
+                   id BIGINT PRIMARY KEY,
+                   version BIGINT NOT NULL,
+                   name BIGINT
+                 )",
+            )
+            .await
+            .unwrap();
+        let entity = EntityDescriptor::new("SchemaTypeFixture")
+            .table_name("teaql_schema_type_fixture")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(
+                PropertyDescriptor::new("version", DataType::I64)
+                    .version()
+                    .not_null(),
+            )
+            .property(PropertyDescriptor::new("name", DataType::Text));
+        let executor = PgMutationExecutor::new(pool.clone());
+
+        let error = executor
+            .ensure_schema(&PostgresDialect, &[&entity])
+            .await
+            .expect_err("incompatible storage type must fail schema ensure");
+        let message = error.to_string();
+        assert!(message.contains("entity=SchemaTypeFixture"), "{message}");
+        assert!(
+            message.contains("table=teaql_schema_type_fixture"),
+            "{message}"
+        );
+        assert!(message.contains("column=name"), "{message}");
+        assert!(message.contains("expected=Text"), "{message}");
+        assert!(message.contains("actual=bigint"), "{message}");
+
+        client
+            .batch_execute("DROP TABLE teaql_schema_type_fixture")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_schema_accepts_covering_shapes_and_rejects_narrower_postgres_columns() {
+        let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let pool = configured_pool(url);
+        let client = pool.get().await.unwrap();
+        client
+            .batch_execute(
+                "DROP TABLE IF EXISTS teaql_schema_shape_fixture;
+                 CREATE TABLE teaql_schema_shape_fixture (
+                   id BIGINT PRIMARY KEY,
+                   version BIGINT NOT NULL,
+                   name VARCHAR(255),
+                   amount NUMERIC(38,10)
+                 )",
+            )
+            .await
+            .unwrap();
+        let base = || {
+            EntityDescriptor::new("SchemaShapeFixture")
+                .table_name("teaql_schema_shape_fixture")
+                .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+                .property(
+                    PropertyDescriptor::new("version", DataType::I64)
+                        .version()
+                        .not_null(),
+                )
+        };
+        let executor = PgMutationExecutor::new(pool.clone());
+        let length_model =
+            base().property(PropertyDescriptor::new("name", DataType::Text).max_length(100));
+        executor
+            .ensure_schema(&PostgresDialect, &[&length_model])
+            .await
+            .expect("wider VARCHAR storage must cover the model");
+
+        let numeric_model = base().property(
+            PropertyDescriptor::new("amount", DataType::Decimal)
+                .numeric_precision(19)
+                .numeric_scale(7),
+        );
+        executor
+            .ensure_schema(&PostgresDialect, &[&numeric_model])
+            .await
+            .expect("wider NUMERIC storage must cover the model");
+
+        client
+            .batch_execute(
+                "DROP TABLE teaql_schema_shape_fixture;
+                 CREATE TABLE teaql_schema_shape_fixture (
+                   id BIGINT PRIMARY KEY,
+                   version BIGINT NOT NULL,
+                   name VARCHAR(32),
+                   amount NUMERIC(18,2)
+                 )",
+            )
+            .await
+            .unwrap();
+        let message = executor
+            .ensure_schema(&PostgresDialect, &[&length_model])
+            .await
+            .expect_err("narrower VARCHAR storage must fail")
+            .to_string();
+        assert!(message.contains("required_max_length=100"), "{message}");
+        assert!(message.contains("actual_max_length=Some(32)"), "{message}");
+
+        let message = executor
+            .ensure_schema(&PostgresDialect, &[&numeric_model])
+            .await
+            .expect_err("narrower numeric storage must fail")
+            .to_string();
+        assert!(message.contains("required_precision=19"), "{message}");
+        assert!(message.contains("required_scale=7"), "{message}");
+        assert!(message.contains("actual_precision=Some(18)"), "{message}");
+        assert!(message.contains("actual_scale=Some(2)"), "{message}");
+        client
+            .batch_execute("DROP TABLE teaql_schema_shape_fixture")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_schema_rejects_incompatible_existing_column_nullability() {
+        let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let pool = configured_pool(url);
+        let client = pool.get().await.unwrap();
+        client
+            .batch_execute(
+                "DROP TABLE IF EXISTS teaql_schema_nullability_fixture;
+                 CREATE TABLE teaql_schema_nullability_fixture (
+                   id BIGINT PRIMARY KEY,
+                   version BIGINT NOT NULL,
+                   name VARCHAR(255)
+                 )",
+            )
+            .await
+            .unwrap();
+        let entity = EntityDescriptor::new("SchemaNullabilityFixture")
+            .table_name("teaql_schema_nullability_fixture")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(
+                PropertyDescriptor::new("version", DataType::I64)
+                    .version()
+                    .not_null(),
+            )
+            .property(PropertyDescriptor::new("name", DataType::Text).not_null());
+        let executor = PgMutationExecutor::new(pool.clone());
+
+        let message = executor
+            .ensure_schema(&PostgresDialect, &[&entity])
+            .await
+            .expect_err("nullable storage must not satisfy a required model field")
+            .to_string();
+        assert!(
+            message.contains("entity=SchemaNullabilityFixture"),
+            "{message}"
+        );
+        assert!(message.contains("column=name"), "{message}");
+        assert!(message.contains("expected_nullable=false"), "{message}");
+        assert!(message.contains("actual_nullable=true"), "{message}");
+        client
+            .batch_execute("DROP TABLE teaql_schema_nullability_fixture")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn required_column_evolution_has_no_postgres_magic_default() {
+        let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let pool = configured_pool(url);
+        let client = pool.get().await.unwrap();
+        client
+            .batch_execute(
+                "DROP TABLE IF EXISTS teaql_required_evolution_fixture;
+                 CREATE TABLE teaql_required_evolution_fixture (
+                   id BIGINT PRIMARY KEY,
+                   version BIGINT NOT NULL,
+                   name VARCHAR(255)
+                 );
+                 INSERT INTO teaql_required_evolution_fixture(id, version, name)
+                 VALUES (1, 1, 'existing');",
+            )
+            .await
+            .unwrap();
+        let entity = EntityDescriptor::new("RequiredEvolutionFixture")
+            .table_name("teaql_required_evolution_fixture")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(
+                PropertyDescriptor::new("version", DataType::I64)
+                    .version()
+                    .not_null(),
+            )
+            .property(PropertyDescriptor::new("name", DataType::Text))
+            .property(PropertyDescriptor::new("code", DataType::Text).not_null());
+        let executor = PgMutationExecutor::new(pool.clone());
+
+        let message = executor
+            .ensure_schema(&PostgresDialect, &[&entity])
+            .await
+            .expect_err("required column without a backfill must fail before ALTER TABLE")
+            .to_string();
+        assert!(
+            message.contains("entity=RequiredEvolutionFixture"),
+            "{message}"
+        );
+        assert!(message.contains("column=code"), "{message}");
+        assert!(message.contains("migrate/backfill explicitly"), "{message}");
+        let count: i64 = client
+            .query_one(
+                "SELECT COUNT(*) FROM information_schema.columns
+                  WHERE table_schema=current_schema()
+                    AND table_name='teaql_required_evolution_fixture'
+                    AND column_name='code'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(count, 0);
+        client
+            .batch_execute("DROP TABLE teaql_required_evolution_fixture")
+            .await
+            .unwrap();
+        client
+            .batch_execute(
+                "CREATE TABLE teaql_required_evolution_fixture (
+                   id BIGINT PRIMARY KEY,
+                   version BIGINT NOT NULL,
+                   name VARCHAR(255)
+                 )",
+            )
+            .await
+            .unwrap();
+        executor
+            .ensure_schema(&PostgresDialect, &[&entity])
+            .await
+            .unwrap();
+        executor
+            .ensure_schema(&PostgresDialect, &[&entity])
+            .await
+            .unwrap();
+        let row = client
+            .query_one(
+                "SELECT is_nullable, column_default FROM information_schema.columns
+                  WHERE table_schema=current_schema()
+                    AND table_name='teaql_required_evolution_fixture'
+                    AND column_name='code'",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(row.get::<_, String>("is_nullable"), "NO");
+        assert_eq!(row.get::<_, Option<String>>("column_default"), None);
+        client
+            .batch_execute("DROP TABLE teaql_required_evolution_fixture")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn concurrent_schema_evolution_is_idempotent_when_configured() {
+        let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let pool = configured_pool(url);
+        let client = pool.get().await.unwrap();
+        client
+            .batch_execute(
+                "DROP TABLE IF EXISTS teaql_concurrent_schema_fixture;
+                 CREATE TABLE teaql_concurrent_schema_fixture (
+                   id BIGINT PRIMARY KEY,
+                   version BIGINT NOT NULL
+                 );",
+            )
+            .await
+            .unwrap();
+        let entity = Arc::new(
+            EntityDescriptor::new("ConcurrentSchemaFixture")
+                .table_name("teaql_concurrent_schema_fixture")
+                .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+                .property(
+                    PropertyDescriptor::new("version", DataType::I64)
+                        .version()
+                        .not_null(),
+                )
+                .property(PropertyDescriptor::new("code", DataType::Text)),
+        );
+        let barrier = Arc::new(tokio::sync::Barrier::new(8));
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..8 {
+            let executor = PgMutationExecutor::new(pool.clone());
+            let entity = Arc::clone(&entity);
+            let barrier = Arc::clone(&barrier);
+            tasks.spawn(async move {
+                barrier.wait().await;
+                executor
+                    .ensure_schema(&PostgresDialect, &[entity.as_ref()])
+                    .await
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap().unwrap();
+        }
+        let count: i64 = client
+            .query_one(
+                "SELECT COUNT(*) FROM information_schema.columns
+                  WHERE table_schema=current_schema()
+                    AND table_name='teaql_concurrent_schema_fixture'
+                    AND column_name='code'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(count, 1);
+        client
+            .batch_execute("DROP TABLE teaql_concurrent_schema_fixture")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn ensure_schema_creates_foreign_key_once_by_semantics() {
         let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
             return;
         };
-        let _schema_guard = LIVE_SCHEMA_FIXTURE_LOCK.lock().await;
         let pool = configured_pool(url);
         let client = pool.get().await.unwrap();
         client
@@ -1209,6 +2231,295 @@ mod streaming_tests {
                 "DROP TABLE teaql_fk_child_fixture;
                  DROP TABLE teaql_fk_parent_fixture;",
             )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_schema_reports_colliding_foreign_key_name_before_add_constraint() {
+        let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let pool = configured_pool(url);
+        let client = pool.get().await.unwrap();
+        let target = "teaql_fk_name_target_pg";
+        let wrong = "teaql_fk_name_wrong_pg";
+        let child_table = "teaql_fk_name_child_pg";
+        client
+            .batch_execute(&format!(
+                "DROP TABLE IF EXISTS {child_table}; DROP TABLE IF EXISTS {target}; DROP TABLE IF EXISTS {wrong};"
+            ))
+            .await
+            .unwrap();
+        let name = schema_foreign_key_name(child_table, "parent_id", target, "id", 63);
+        client
+            .batch_execute(&format!(
+                "CREATE TABLE {target}(id BIGINT PRIMARY KEY);
+                 CREATE TABLE {wrong}(id BIGINT PRIMARY KEY);
+                 CREATE TABLE {child_table}(
+                   id BIGINT PRIMARY KEY, parent_id BIGINT NOT NULL,
+                   CONSTRAINT {} FOREIGN KEY(parent_id) REFERENCES {wrong}(id)
+                 );",
+                quote_ident(&name)
+            ))
+            .await
+            .unwrap();
+        let parent = EntityDescriptor::new("FkNameTargetPg")
+            .table_name(target)
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null());
+        let child = EntityDescriptor::new("FkNameChildPg")
+            .table_name(child_table)
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(PropertyDescriptor::new("parent_id", DataType::U64).not_null())
+            .relation(
+                RelationDescriptor::new("parent", "FkNameTargetPg")
+                    .local_key("parent_id")
+                    .foreign_key("id"),
+            );
+        let executor = PgMutationExecutor::new(pool.clone());
+        let error = executor
+            .ensure_schema(&PostgresDialect, &[&child, &parent])
+            .await
+            .expect_err("a same-name wrong-target constraint must fail before ADD CONSTRAINT");
+        let message = error.to_string();
+        assert!(message.contains("foreign-key name collision"), "{error:?}");
+        assert!(message.contains(&name), "{message}");
+        assert!(message.contains(wrong), "{message}");
+        client
+            .batch_execute(&format!(
+                "DROP TABLE {child_table}; DROP TABLE {target}; DROP TABLE {wrong};"
+            ))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_schema_rejects_unvalidated_or_deferrable_existing_foreign_key() {
+        let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let pool = configured_pool(url);
+        let client = pool.get().await.unwrap();
+        let parent_table = "teaql_fk_state_parent_pg";
+        let child_table = "teaql_fk_state_child_pg";
+        client
+            .batch_execute(&format!(
+                "DROP TABLE IF EXISTS {child_table}; DROP TABLE IF EXISTS {parent_table};
+                 CREATE TABLE {parent_table}(id BIGINT PRIMARY KEY);
+                 CREATE TABLE {child_table}(id BIGINT PRIMARY KEY, parent_id BIGINT NOT NULL);"
+            ))
+            .await
+            .unwrap();
+        let parent = EntityDescriptor::new("FkStateParentPg")
+            .table_name(parent_table)
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null());
+        let child = EntityDescriptor::new("FkStateChildPg")
+            .table_name(child_table)
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(PropertyDescriptor::new("parent_id", DataType::U64).not_null())
+            .relation(
+                RelationDescriptor::new("parent", "FkStateParentPg")
+                    .local_key("parent_id")
+                    .foreign_key("id"),
+            );
+        let executor = PgMutationExecutor::new(pool.clone());
+        let fk_sql = format!(
+            "ALTER TABLE {child_table} ADD CONSTRAINT teaql_fk_state_old
+             FOREIGN KEY(parent_id) REFERENCES {parent_table}(id)"
+        );
+        client
+            .batch_execute(&format!("{fk_sql} NOT VALID"))
+            .await
+            .unwrap();
+        let message = executor
+            .ensure_schema(&PostgresDialect, &[&child, &parent])
+            .await
+            .expect_err("NOT VALID must not count as installed schema")
+            .to_string();
+        assert!(message.contains("installed_validated=false"), "{message}");
+        client
+            .batch_execute(&format!(
+                "ALTER TABLE {child_table} DROP CONSTRAINT teaql_fk_state_old;
+                 {fk_sql} DEFERRABLE INITIALLY DEFERRED"
+            ))
+            .await
+            .unwrap();
+        let message = executor
+            .ensure_schema(&PostgresDialect, &[&child, &parent])
+            .await
+            .expect_err("DEFERRABLE must not count as immediate FK governance")
+            .to_string();
+        assert!(message.contains("installed_deferrable=true"), "{message}");
+        client
+            .batch_execute(&format!(
+                "ALTER TABLE {child_table} DROP CONSTRAINT teaql_fk_state_old;
+                 {fk_sql}"
+            ))
+            .await
+            .unwrap();
+        executor
+            .ensure_schema(&PostgresDialect, &[&child, &parent])
+            .await
+            .expect("a validated non-deferrable equivalent FK must be accepted");
+        executor
+            .ensure_schema(&PostgresDialect, &[&child, &parent])
+            .await
+            .expect("an equivalent FK must remain idempotent");
+        client
+            .batch_execute(&format!(
+                "DROP TABLE {child_table}; DROP TABLE {parent_table};"
+            ))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_schema_keeps_cross_datasource_and_external_relations_logical() {
+        let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let pool = configured_pool(url);
+        let client = pool.get().await.unwrap();
+        client
+            .batch_execute(
+                "DROP TABLE IF EXISTS teaql_fk_logical_child_fixture;
+                 DROP TABLE IF EXISTS teaql_fk_logical_parent_fixture;",
+            )
+            .await
+            .unwrap();
+
+        let parent = EntityDescriptor::new("LogicalParentFixture")
+            .table_name("teaql_fk_logical_parent_fixture")
+            .data_service("customer_db")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null());
+        let child = EntityDescriptor::new("LogicalChildFixture")
+            .table_name("teaql_fk_logical_child_fixture")
+            .data_service("order_db")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(PropertyDescriptor::new("parent_id", DataType::U64))
+            .property(PropertyDescriptor::new("external_id", DataType::U64))
+            .relation(
+                RelationDescriptor::new("parent", "LogicalParentFixture")
+                    .local_key("parent_id")
+                    .foreign_key("id"),
+            )
+            .relation(
+                RelationDescriptor::new("external", "NotInstalledFixture")
+                    .local_key("external_id")
+                    .foreign_key("id"),
+            );
+
+        let executor = PgMutationExecutor::new(pool.clone());
+        executor
+            .ensure_schema(&PostgresDialect, &[&child, &parent])
+            .await
+            .unwrap();
+        executor
+            .ensure_schema(&PostgresDialect, &[&parent, &child])
+            .await
+            .unwrap();
+        let foreign_key_count: i64 = client
+            .query_one(
+                "SELECT COUNT(*) FROM pg_constraint c
+                   JOIN pg_class t ON t.oid = c.conrelid
+                  WHERE c.contype = 'f'
+                    AND t.relname = 'teaql_fk_logical_child_fixture'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(foreign_key_count, 0);
+
+        client
+            .batch_execute(
+                "DROP TABLE teaql_fk_logical_child_fixture;
+                 DROP TABLE teaql_fk_logical_parent_fixture;",
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_id_space_is_safe_across_concurrent_generators() {
+        let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let pool = configured_pool(url);
+        let table = format!(
+            "teaql_id_space_deep_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let generator = PgIdSpaceGenerator::new(pool.clone()).with_table_name(&table);
+        generator.ensure_table().await.unwrap();
+        generator.ensure_floor("SchoolType", 1002).await.unwrap();
+        assert_eq!(generator.next_id("SchoolType").await.unwrap(), 1003);
+
+        let mut jobs = Vec::new();
+        for _ in 0..4 {
+            let independent = PgIdSpaceGenerator::new(pool.clone()).with_table_name(&table);
+            jobs.push(tokio::spawn(async move {
+                let mut ids = Vec::new();
+                for _ in 0..20 {
+                    ids.push(independent.next_id("Order").await.unwrap());
+                }
+                ids
+            }));
+        }
+        let mut ids = Vec::new();
+        for job in jobs {
+            ids.extend(job.await.unwrap());
+        }
+        ids.sort_unstable();
+        assert_eq!(ids, (1_u64..=80).collect::<Vec<_>>());
+
+        let restarted = PgIdSpaceGenerator::new(pool.clone()).with_table_name(&table);
+        assert_eq!(restarted.next_id("Order").await.unwrap(), 81);
+        let client = pool.get().await.unwrap();
+        client
+            .batch_execute(&format!("DROP TABLE {}", quote_ident(&table)))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_id_space_overflow_reports_safe_actionable_context() {
+        let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let pool = configured_pool(url);
+        let table = format!(
+            "teaql_id_space_diagnostic_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let generator = PgIdSpaceGenerator::new(pool.clone()).with_table_name(&table);
+        generator.ensure_table().await.unwrap();
+        let client = pool.get().await.unwrap();
+        client
+            .execute(
+                &format!(
+                    "INSERT INTO {}(type_name, current_level) VALUES ($1, $2)",
+                    quote_ident(&table)
+                ),
+                &[&"order", &i64::MAX],
+            )
+            .await
+            .unwrap();
+
+        let message = generator.next_id("Order").await.unwrap_err().to_string();
+        assert!(message.contains("PostgreSQL ID provider"), "{message}");
+        assert!(message.contains("ID space order"), "{message}");
+        assert!(message.contains(&table), "{message}");
+        assert!(message.contains("attempt 1"), "{message}");
+        assert!(!message.contains("postgres://"), "{message}");
+        client
+            .batch_execute(&format!("DROP TABLE {}", quote_ident(&table)))
             .await
             .unwrap();
     }
@@ -1351,7 +2662,7 @@ impl PgIdSpaceGenerator {
         let update_sql = format!(
             "UPDATE {table} SET current_level = $1 WHERE type_name = $2 AND current_level = $3"
         );
-        for _ in 1..=100 {
+        for attempt in 1..=100 {
             let current = client
                 .query_opt(&select_sql, &[&entity])
                 .await?
@@ -1359,7 +2670,10 @@ impl PgIdSpaceGenerator {
                 .transpose()?;
             if let Some(current) = current {
                 let next = current.checked_add(1).ok_or_else(|| {
-                    MutationExecutorError::Bind(format!("ID space overflow for {entity}"))
+                    MutationExecutorError::Bind(format!(
+                        "PostgreSQL ID provider overflow for ID space {entity} in table {} on optimistic-lock attempt {attempt}",
+                        self.table_name
+                    ))
                 })?;
                 if client
                     .execute(&update_sql, &[&next, &entity, &current])
@@ -1368,7 +2682,8 @@ impl PgIdSpaceGenerator {
                 {
                     return u64::try_from(next).map_err(|_| {
                         MutationExecutorError::Bind(format!(
-                            "generated id {next} cannot be represented as u64"
+                            "PostgreSQL ID provider generated id {next} for ID space {entity} in table {} that cannot be represented as u64",
+                            self.table_name
                         ))
                     });
                 }
@@ -1377,7 +2692,8 @@ impl PgIdSpaceGenerator {
                     Ok(1) => return Ok(1),
                     Ok(changed) => {
                         return Err(MutationExecutorError::Bind(format!(
-                            "ID space insert for {entity} changed {changed} rows"
+                            "PostgreSQL ID provider insert for ID space {entity} in table {} changed {changed} rows on optimistic-lock attempt {attempt}",
+                            self.table_name
                         )));
                     }
                     Err(error) => {
@@ -1389,7 +2705,8 @@ impl PgIdSpaceGenerator {
             }
         }
         Err(MutationExecutorError::Bind(format!(
-            "Unable to allocate ID for {entity} after 100 optimistic-lock attempts"
+            "PostgreSQL ID provider was unable to allocate ID space {entity} in table {} after 100 optimistic-lock attempts",
+            self.table_name
         )))
     }
 
@@ -1403,7 +2720,8 @@ impl PgIdSpaceGenerator {
         self.ensure_table().await?;
         let floor = i64::try_from(floor).map_err(|_| {
             MutationExecutorError::Bind(format!(
-                "ID space floor {floor} for {entity} exceeds BIGINT"
+                "PostgreSQL ID provider floor {floor} for ID space {entity} in table {} exceeds BIGINT",
+                self.table_name
             ))
         })?;
         let table = quote_ident(&self.table_name);
@@ -1446,7 +2764,8 @@ impl PgIdSpaceGenerator {
             }
         }
         Err(MutationExecutorError::Bind(format!(
-            "Unable to synchronize ID space floor for {entity} after 100 optimistic-lock attempts"
+            "PostgreSQL ID provider was unable to synchronize floor for ID space {entity} in table {} after 100 optimistic-lock attempts",
+            self.table_name
         )))
     }
 }
@@ -1483,6 +2802,15 @@ where
 
 fn quote_ident(ident: &str) -> String {
     quote_identifier_if_needed(ident, '"')
+}
+
+fn postgres_stored_ident(ident: &str) -> String {
+    let quoted = quote_ident(ident);
+    if quoted.starts_with('"') {
+        strip_identifier_quotes(&quoted).to_owned()
+    } else {
+        strip_identifier_quotes(&quoted).to_ascii_lowercase()
+    }
 }
 
 /// Strip wrapping identifier quotes from a SQL identifier so that bare column
@@ -1528,20 +2856,20 @@ struct PgNull;
 impl tokio_postgres::types::ToSql for PgNull {
     fn to_sql(
         &self,
-        ty: &tokio_postgres::types::Type,
-        out: &mut bytes::BytesMut,
+        _ty: &tokio_postgres::types::Type,
+        _out: &mut bytes::BytesMut,
     ) -> Result<tokio_postgres::types::IsNull, Box<dyn std::error::Error + Sync + Send>> {
         Ok(tokio_postgres::types::IsNull::Yes)
     }
 
-    fn accepts(ty: &tokio_postgres::types::Type) -> bool {
+    fn accepts(_ty: &tokio_postgres::types::Type) -> bool {
         true
     }
 
     fn to_sql_checked(
         &self,
-        ty: &tokio_postgres::types::Type,
-        out: &mut bytes::BytesMut,
+        _ty: &tokio_postgres::types::Type,
+        _out: &mut bytes::BytesMut,
     ) -> Result<tokio_postgres::types::IsNull, Box<dyn std::error::Error + Sync + Send>> {
         Ok(tokio_postgres::types::IsNull::Yes)
     }
@@ -1853,7 +3181,7 @@ fn decode_pg_values(row: &tokio_postgres::Row) -> Result<Vec<Value>, MutationExe
             "json" | "jsonb" => {
                 let v: Option<serde_json::Value> = row.try_get(index)?;
                 match v {
-                    Some(j) => Value::Json(j.into()),
+                    Some(j) => Value::Json(j),
                     None => Value::Null,
                 }
             }
@@ -1921,6 +3249,73 @@ mod tests {
             .property(PropertyDescriptor::new("name", DataType::Text).column_name("name"))
     }
 
+    fn postgres_metadata(data_type: &str) -> PostgresColumnMetadata {
+        PostgresColumnMetadata {
+            data_type: data_type.to_owned(),
+            nullable: true,
+            max_length: None,
+            numeric_precision: None,
+            numeric_scale: None,
+        }
+    }
+
+    #[test]
+    fn schema_compatibility_covers_boolean_and_temporal_storage_contracts() {
+        let entity = EntityDescriptor::new("HighRiskFixture").table_name("high_risk_fixture");
+        let bool_property = PropertyDescriptor::new("enabled", DataType::Bool);
+        let date_property = PropertyDescriptor::new("business_date", DataType::Date);
+        let timestamp_property = PropertyDescriptor::new("occurred_at", DataType::Timestamp);
+
+        assert!(
+            ensure_postgres_column_compatibility(
+                &entity,
+                &bool_property,
+                &postgres_metadata("boolean")
+            )
+            .is_ok()
+        );
+        assert!(
+            ensure_postgres_column_compatibility(
+                &entity,
+                &bool_property,
+                &postgres_metadata("bigint")
+            )
+            .is_err()
+        );
+        assert!(
+            ensure_postgres_column_compatibility(
+                &entity,
+                &date_property,
+                &postgres_metadata("date")
+            )
+            .is_ok()
+        );
+        assert!(
+            ensure_postgres_column_compatibility(
+                &entity,
+                &date_property,
+                &postgres_metadata("timestamp with time zone")
+            )
+            .is_err()
+        );
+        assert!(
+            ensure_postgres_column_compatibility(
+                &entity,
+                &timestamp_property,
+                &postgres_metadata("timestamp with time zone")
+            )
+            .is_ok()
+        );
+        assert!(
+            ensure_postgres_column_compatibility(
+                &entity,
+                &timestamp_property,
+                &postgres_metadata("timestamp without time zone")
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn postgres_dialect_compiles_mutations_with_numbered_placeholders() {
         let insert = PostgresDialect
@@ -1971,6 +3366,38 @@ mod tests {
         assert_eq!(
             create,
             "CREATE TABLE IF NOT EXISTS orders (id BIGINT PRIMARY KEY NOT NULL, version BIGINT NOT NULL, name VARCHAR(255))"
+        );
+        let required = PostgresDialect
+            .compile_add_column(
+                &entity(),
+                &PropertyDescriptor::new("code", DataType::Text).not_null(),
+            )
+            .unwrap();
+        assert_eq!(
+            required,
+            "ALTER TABLE orders ADD COLUMN code VARCHAR(255) NOT NULL"
+        );
+        let shaped_text = PostgresDialect
+            .compile_add_column(
+                &entity(),
+                &PropertyDescriptor::new("short_code", DataType::Text).max_length(32),
+            )
+            .unwrap();
+        assert_eq!(
+            shaped_text,
+            "ALTER TABLE orders ADD COLUMN short_code VARCHAR(32)"
+        );
+        let shaped_decimal = PostgresDialect
+            .compile_add_column(
+                &entity(),
+                &PropertyDescriptor::new("amount", DataType::Decimal)
+                    .numeric_precision(19)
+                    .numeric_scale(7),
+            )
+            .unwrap();
+        assert_eq!(
+            shaped_decimal,
+            "ALTER TABLE orders ADD COLUMN amount NUMERIC(19,7)"
         );
         assert!(
             PostgresDialect

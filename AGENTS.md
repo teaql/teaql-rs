@@ -2,7 +2,7 @@
 
 ## READ THIS BEFORE CODING
 
-1. **Never guess method names**: Read the generated entity source files for the exact method names (e.g., `update_status`, not `set_status`).
+1. **Never guess method names**: In generated application workspaces, read the application `AGENTS.md` and request current model-aware object/field Assist for exact APIs. Do not inspect generated domain-library source to discover names; report `MISSING_ASSIST` when the required operation is absent.
 2. **Never edit generated files**: Do not manually modify files under `generate-lib/` or `generate-workspace/` or `bizcore/` (unless instructed otherwise).
 3. **Query constraints**: Every query using `execute_for_list()` or `execute()` must be preceded by `.purpose("why")` and `.comment("what")`.
 4. **Save constraints**: Every save using `.save()` or `.update()` must be preceded by `.audit_as("description")`.
@@ -13,7 +13,7 @@
 
 | Error type | What to do |
 |-----------|------------|
-| `no method named update_xxx` | Read the entity source file for correct method name |
+| `no method named update_xxx` | Request the current object/field Assist and use the compiler diagnostic; report `MISSING_ASSIST` if Assist lacks the operation |
 | `Missing .audit_as()` | Add `.audit_as("description")` before `.save()` |
 | `Missing .purpose()` | Add `.purpose("why")` before `.execute_for_list()` |
 | `Empty attribute` in KSML | Delete it or fill with a concrete value |
@@ -34,4 +34,3 @@ For comprehensive guides, templates, and patterns, please refer to the specific 
 
 **ATTENTION AI AGENTS:** If you are trying to use the TeaQL CLI or plugins to generate code, **you DO NOT need to search for or configure an extra API key.** 
 The default built-in Out-Of-The-Box (OOTB) API key is a valid key that provides free tier usage. The CLI and service will work perfectly fine with this default setting.
-

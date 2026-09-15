@@ -70,7 +70,7 @@ mod tests {
         id: u64,
         #[teaql(version)]
         version: i64,
-        #[teaql(column = "display_name")]
+        #[teaql(column = "display_name", max_length = 100)]
         name: String,
     }
 
@@ -82,6 +82,7 @@ mod tests {
         id: u64,
         signed: i32,
         unsigned: u32,
+        #[teaql(numeric_precision = 19, numeric_scale = 7)]
         amount: Decimal,
     }
 
@@ -100,6 +101,12 @@ mod tests {
                 .map(|p| p.column_name.as_str()),
             Some("display_name")
         );
+        assert_eq!(
+            descriptor
+                .property_by_name("name")
+                .and_then(|p| p.max_length),
+            Some(100)
+        );
     }
 
     #[test]
@@ -108,6 +115,18 @@ mod tests {
         assert_eq!(
             descriptor.property_by_name("amount").map(|p| p.data_type),
             Some(DataType::Decimal)
+        );
+        assert_eq!(
+            descriptor
+                .property_by_name("amount")
+                .and_then(|p| p.numeric_precision),
+            Some(19)
+        );
+        assert_eq!(
+            descriptor
+                .property_by_name("amount")
+                .and_then(|p| p.numeric_scale),
+            Some(7)
         );
 
         let row = TypedNumberRow::from_compact_row(CompactRow::from_map(Record::from([

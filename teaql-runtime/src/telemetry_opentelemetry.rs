@@ -203,7 +203,7 @@ impl RuntimeTelemetryScope for OpenTelemetryScope {
     }
 
     fn success(&mut self, attributes: BTreeMap<String, RuntimeAttributeValue>) {
-        self.finish("success", None, |mut span| {
+        self.finish("success", None, |span| {
             for (key, value) in attributes {
                 if key == "teaql.result.cardinality" || key == "teaql.cache.result" {
                     span.set_attribute(KeyValue::new(key, otel_value(&value)));
@@ -215,7 +215,7 @@ impl RuntimeTelemetryScope for OpenTelemetryScope {
 
     fn failure(&mut self, error_type: &str) {
         let category = runtime_error_category(error_type);
-        self.finish("failure", Some(category), |mut span| {
+        self.finish("failure", Some(category), |span| {
             span.set_attribute(KeyValue::new("teaql.error.type", error_type.to_owned()));
             span.set_attribute(KeyValue::new("teaql.error.category", category));
             span.set_status(Status::error("TeaQL operation failed"));
@@ -247,11 +247,11 @@ mod tests {
     use super::*;
     use crate::start_runtime_operation;
 
-    static GLOBAL_OTEL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static GLOBAL_OTEL_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     #[tokio::test(flavor = "current_thread")]
     async fn preserves_nested_context_across_async_polling() {
-        let _global_otel_guard = GLOBAL_OTEL_TEST_LOCK.lock().expect("OTel test lock");
+        let _global_otel_guard = GLOBAL_OTEL_TEST_LOCK.lock().await;
         let exporter = InMemorySpanExporter::default();
         let provider = SdkTracerProvider::builder()
             .with_simple_exporter(exporter.clone())
@@ -317,7 +317,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn extracts_case_insensitive_w3c_carrier_as_direct_parent() {
-        let _global_otel_guard = GLOBAL_OTEL_TEST_LOCK.lock().expect("OTel test lock");
+        let _global_otel_guard = GLOBAL_OTEL_TEST_LOCK.lock().await;
         let exporter = InMemorySpanExporter::default();
         let provider = SdkTracerProvider::builder()
             .with_simple_exporter(exporter.clone())

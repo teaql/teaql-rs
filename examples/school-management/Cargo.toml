@@ -2,10 +2,12 @@
 name = "school-management-bootstrap-example"
 version = "0.1.0"
 edition = "2021"
+default-run = "school-management-bootstrap-example"
 
 [dependencies]
 school_management_service_core = { package = "school-management-service-core", path = "lib" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+rusqlite = "0.40"
 
 [workspace]
 

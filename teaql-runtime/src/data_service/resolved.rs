@@ -1,3 +1,6 @@
+// Compatibility adapters retained while generated callers move to the public resolved API.
+#![allow(dead_code, clippy::type_complexity)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -281,14 +284,14 @@ where
         }
         // Ensure local_key fields for relation loads are projected so that
         // enhance_query_relations can match parent rows to child records.
-        if !query.relations.is_empty() {
-            if let Some(descriptor) = self.data_service.metadata.context.entity(&query.entity) {
-                for load in &query.relations {
-                    if let Some(relation) = descriptor.relation_by_name(&load.name) {
-                        if !query.projection.contains(&relation.local_key) {
-                            query.projection.push(relation.local_key.clone());
-                        }
-                    }
+        if !query.relations.is_empty()
+            && let Some(descriptor) = self.data_service.metadata.context.entity(&query.entity)
+        {
+            for load in &query.relations {
+                if let Some(relation) = descriptor.relation_by_name(&load.name)
+                    && !query.projection.contains(&relation.local_key)
+                {
+                    query.projection.push(relation.local_key.clone());
                 }
             }
         }
@@ -684,7 +687,7 @@ where
                 .observe_id_set("ID_SET_FALLBACK_UNSUPPORTED_SHAPE", None);
             return Ok((query, None));
         };
-        let Some(page_size) = slice.limit else {
+        let Some(_page_size) = slice.limit else {
             self.data_service
                 .metadata
                 .context
@@ -914,9 +917,11 @@ where
         let capture_metadata = self.data_service.metadata.capture_execution_metadata();
         let request = teaql_data_service::QueryRequest {
             query: query.clone(),
-            trace_chain: capture_metadata
-                .then(|| query.trace_chain.clone())
-                .unwrap_or_default(),
+            trace_chain: if capture_metadata {
+                query.trace_chain.clone()
+            } else {
+                Default::default()
+            },
             comment: capture_metadata.then(|| query.comment.clone()).flatten(),
             capture_debug_query: self.data_service.metadata.capture_query_debug(),
             capture_execution_metadata: capture_metadata,
@@ -998,9 +1003,11 @@ where
         let capture_metadata = self.data_service.metadata.capture_execution_metadata();
         let request = teaql_data_service::QueryRequest {
             query: query.clone(),
-            trace_chain: capture_metadata
-                .then(|| query.trace_chain.clone())
-                .unwrap_or_default(),
+            trace_chain: if capture_metadata {
+                query.trace_chain.clone()
+            } else {
+                Default::default()
+            },
             comment: capture_metadata.then(|| query.comment.clone()).flatten(),
             capture_debug_query: self.data_service.metadata.capture_query_debug(),
             capture_execution_metadata: capture_metadata,
@@ -1320,41 +1327,35 @@ where
                 && root_query.continuous_page_fetch.is_none()
                 && root_query.object_group_bys.is_empty()
                 && root_query.child_enhancements.is_empty()
+                && let Some((query_plans, behavior_plans)) = flat_plans.as_ref()
             {
-                if let Some((query_plans, behavior_plans)) = flat_plans.as_ref() {
-                    let root_entity = root_query.entity.clone();
-                    let root_trace = root_query.trace_chain.clone();
-                    let root_query = root_query.prepare_for_list().map_err(|message| {
-                        DataServiceError::Runtime(RuntimeError::Graph(message))
-                    })?;
-                    let rows = self.fetch_prepared_compact_owned(root_query).await?;
-                    let root = crate::EntityRuntimeState::default();
-                    let mut graph = crate::EntityGraphBuilder::default();
-                    let traced = self
-                        .scoped_data_service_internal(root_entity)
-                        .with_trace_context(root_trace);
-                    traced
-                        .hydrate_compact_flat_plans_internal(&rows, query_plans, &root, &mut graph)
-                        .await?;
-                    traced
-                        .hydrate_compact_flat_plans_internal(
-                            &rows,
-                            behavior_plans,
-                            &root,
-                            &mut graph,
-                        )
-                        .await?;
-                    root.freeze_graph(graph).map_err(|_| {
-                        DataServiceError::Entity(teaql_core::EntityError::new(
-                            T::ENTITY_NAME,
-                            "identity graph was already frozen",
-                        ))
-                    })?;
-                    return decode_compact_rows::<T>(rows, &root)
-                        .map(SmartList::from)
-                        .map(|list| with_total_count(list, id_set_total_count))
-                        .map_err(DataServiceError::Entity);
-                }
+                let root_entity = root_query.entity.clone();
+                let root_trace = root_query.trace_chain.clone();
+                let root_query = root_query
+                    .prepare_for_list()
+                    .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
+                let rows = self.fetch_prepared_compact_owned(root_query).await?;
+                let root = crate::EntityRuntimeState::default();
+                let mut graph = crate::EntityGraphBuilder::default();
+                let traced = self
+                    .scoped_data_service_internal(root_entity)
+                    .with_trace_context(root_trace);
+                traced
+                    .hydrate_compact_flat_plans_internal(&rows, query_plans, &root, &mut graph)
+                    .await?;
+                traced
+                    .hydrate_compact_flat_plans_internal(&rows, behavior_plans, &root, &mut graph)
+                    .await?;
+                root.freeze_graph(graph).map_err(|_| {
+                    DataServiceError::Entity(teaql_core::EntityError::new(
+                        T::ENTITY_NAME,
+                        "identity graph was already frozen",
+                    ))
+                })?;
+                return decode_compact_rows::<T>(rows, &root)
+                    .map(SmartList::from)
+                    .map(|list| with_total_count(list, id_set_total_count))
+                    .map_err(DataServiceError::Entity);
             }
             let mut rows = self.fetch_prepared_all(&root_query).await?;
             self.enhance_relation_aggregates_internal(

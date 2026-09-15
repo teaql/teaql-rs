@@ -24,6 +24,179 @@ pub fn quote_identifier_if_needed(ident: &str, quote: char) -> String {
     ident.to_owned()
 }
 
+/// Keep generated SQL identifiers within a provider's byte limit without
+/// relying on its silent truncation rules. Short names remain unchanged; long
+/// names retain a readable prefix plus a stable FNV-1a suffix.
+pub fn bounded_sql_identifier(full: &str, max_bytes: usize) -> String {
+    if full.len() <= max_bytes {
+        return full.to_owned();
+    }
+    let hash = full.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    });
+    let suffix = format!("_{hash:016X}");
+    assert!(
+        max_bytes >= suffix.len(),
+        "SQL identifier byte limit is too small"
+    );
+    let mut end = max_bytes - suffix.len();
+    while !full.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{}", &full[..end], suffix)
+}
+
+/// The ordinary indexes derived from model properties. Providers may cap the
+/// generated name to their physical identifier limit, but both DDL and schema
+/// verification must consume this same list of specs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchemaIndexSpec {
+    pub name: String,
+    pub table: String,
+    pub columns: Vec<String>,
+    pub unique: bool,
+}
+
+pub fn schema_index_specs(
+    entity: &EntityDescriptor,
+    max_name_bytes: Option<usize>,
+) -> Vec<SchemaIndexSpec> {
+    let name = |full: String| match max_name_bytes {
+        Some(limit) => bounded_sql_identifier(&full, limit),
+        None => full,
+    };
+    let mut specs = Vec::new();
+    let table_upper = entity.table_name.to_uppercase();
+    if let Some(version) = entity
+        .properties
+        .iter()
+        .find(|property| property.is_version)
+    {
+        let id = entity
+            .properties
+            .iter()
+            .find(|property| property.is_id)
+            .map(|property| property.column_name.as_str())
+            .unwrap_or("id");
+        specs.push(SchemaIndexSpec {
+            name: name(format!("PK_{table_upper}_ID_VERSION")),
+            table: entity.table_name.clone(),
+            columns: vec![id.to_owned(), version.column_name.clone()],
+            unique: true,
+        });
+    }
+    for property in &entity.properties {
+        if property.name.ends_with("Id")
+            || property.name.ends_with("Time")
+            || property.name.ends_with("_time")
+            || property.name == "create_time"
+            || property.name == "update_time"
+        {
+            specs.push(SchemaIndexSpec {
+                name: name(format!(
+                    "IDX_{table_upper}_{}",
+                    property.column_name.to_uppercase()
+                )),
+                table: entity.table_name.clone(),
+                columns: vec![property.column_name.clone()],
+                unique: false,
+            });
+        }
+    }
+    specs
+}
+
+/// A stable physical name for a model-derived foreign-key constraint.
+/// Database providers must use the same name for creation and collision checks.
+pub fn schema_foreign_key_name(
+    source_table: &str,
+    source_column: &str,
+    referenced_table: &str,
+    referenced_column: &str,
+    max_name_bytes: usize,
+) -> String {
+    let full = format!("FK_{source_table}_{source_column}_{referenced_table}_{referenced_column}")
+        .to_uppercase();
+    bounded_sql_identifier(&full, max_name_bytes)
+}
+
+/// Reject model-owned identifiers that a database would truncate or reject.
+/// Generated index names are bounded separately; table and column names must
+/// not be rewritten because they are part of the model's storage contract.
+pub fn validate_schema_identifier_lengths(
+    entities: &[&EntityDescriptor],
+    max_bytes: usize,
+) -> Result<(), SqlCompileError> {
+    let validate = |object: String, identifier: &str| {
+        let physical = if let Some(inner) = identifier
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+        {
+            inner.replace("\"\"", "\"")
+        } else if let Some(inner) = identifier
+            .strip_prefix('`')
+            .and_then(|value| value.strip_suffix('`'))
+        {
+            inner.replace("``", "`")
+        } else {
+            identifier.to_owned()
+        };
+        let actual_bytes = physical.len();
+        if actual_bytes > max_bytes {
+            return Err(SqlCompileError::SchemaIdentifierTooLong {
+                object,
+                identifier: identifier.to_owned(),
+                actual_bytes,
+                max_bytes,
+            });
+        }
+        Ok(())
+    };
+    for entity in entities {
+        validate(
+            format!("table for entity {}", entity.name),
+            &entity.table_name,
+        )?;
+        for property in &entity.properties {
+            validate(
+                format!(
+                    "column for entity {} property {}",
+                    entity.name, property.name
+                ),
+                &property.column_name,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Returns whether an existing storage length can represent every value allowed
+/// by the model. `None` denotes an unbounded storage type such as PostgreSQL
+/// `text`.
+pub fn storage_length_covers(expected: u32, actual: Option<u32>) -> bool {
+    actual.is_none_or(|actual| actual >= expected)
+}
+
+/// Returns whether an existing decimal shape can represent every value allowed
+/// by the model. Decimal containment requires at least as many fractional and
+/// integer digits. An unbounded storage `NUMERIC` covers every bounded model.
+pub fn storage_numeric_covers(
+    expected_precision: u32,
+    expected_scale: u32,
+    actual_precision: Option<u32>,
+    actual_scale: Option<u32>,
+) -> bool {
+    match (actual_precision, actual_scale) {
+        (None, None) => true,
+        (Some(actual_precision), Some(actual_scale)) => {
+            actual_scale >= expected_scale
+                && actual_precision.saturating_sub(actual_scale)
+                    >= expected_precision.saturating_sub(expected_scale)
+        }
+        _ => false,
+    }
+}
+
 fn is_wrapped_identifier(ident: &str) -> bool {
     (ident.starts_with('"') && ident.ends_with('"'))
         || (ident.starts_with('`') && ident.ends_with('`'))
@@ -68,16 +241,19 @@ pub trait SqlDialect {
     fn schema_type_sql(
         &self,
         data_type: DataType,
-        _property: &PropertyDescriptor,
-    ) -> Result<&'static str, SqlCompileError> {
+        property: &PropertyDescriptor,
+    ) -> Result<String, SqlCompileError> {
         match data_type {
-            DataType::Bool => Ok("BOOLEAN"),
-            DataType::I64 | DataType::U64 => Ok("INTEGER"),
-            DataType::F64 => Ok("REAL"),
-            DataType::Decimal => Ok("NUMERIC"),
-            DataType::Text => Ok("VARCHAR(255)"),
+            DataType::Bool => Ok("BOOLEAN".to_owned()),
+            DataType::I64 | DataType::U64 => Ok("INTEGER".to_owned()),
+            DataType::F64 => Ok("REAL".to_owned()),
+            DataType::Decimal => match (property.numeric_precision, property.numeric_scale) {
+                (Some(precision), Some(scale)) => Ok(format!("NUMERIC({precision},{scale})")),
+                _ => Ok("NUMERIC".to_owned()),
+            },
+            DataType::Text => Ok(format!("VARCHAR({})", property.max_length.unwrap_or(255))),
             DataType::LargeText | DataType::Json | DataType::Date | DataType::Timestamp => {
-                Ok("TEXT")
+                Ok("TEXT".to_owned())
             }
         }
     }
@@ -86,6 +262,7 @@ pub trait SqlDialect {
         &self,
         property: &PropertyDescriptor,
     ) -> Result<String, SqlCompileError> {
+        validate_schema_shape(property)?;
         let mut parts = vec![
             self.quote_ident(&property.column_name),
             self.schema_type_sql(property.data_type, property)?
@@ -119,46 +296,27 @@ pub trait SqlDialect {
         &self,
         entity: &EntityDescriptor,
     ) -> Result<Vec<String>, SqlCompileError> {
-        let mut sqls = Vec::new();
-        let table_name_upper = entity.table_name.to_uppercase();
-        let quoted_table = self.quote_ident(&entity.table_name);
-
-        if let Some(version_col) = entity.properties.iter().find(|p| p.is_version) {
-            let default_id = "id".to_string();
-            let id_col = entity
-                .properties
-                .iter()
-                .find(|p| p.is_id)
-                .map(|p| &p.column_name)
-                .unwrap_or(&default_id);
-            let idx_name = format!("PK_{}_ID_VERSION", table_name_upper);
-            sqls.push(format!(
-                "CREATE UNIQUE INDEX IF NOT EXISTS {} ON {} ({}, {})",
-                self.quote_ident(&idx_name),
-                quoted_table,
-                self.quote_ident(id_col),
-                self.quote_ident(&version_col.column_name)
-            ));
-        }
-
-        for p in &entity.properties {
-            if p.name.ends_with("Id")
-                || p.name.ends_with("Time")
-                || p.name.ends_with("_time")
-                || p.name == "create_time"
-                || p.name == "update_time"
-            {
-                let idx_name = format!("IDX_{}_{}", table_name_upper, p.column_name.to_uppercase());
-                sqls.push(format!(
-                    "CREATE INDEX IF NOT EXISTS {} ON {} ({})",
-                    self.quote_ident(&idx_name),
-                    quoted_table,
-                    self.quote_ident(&p.column_name)
-                ));
-            }
-        }
-
-        Ok(sqls)
+        Ok(schema_index_specs(entity, None)
+            .into_iter()
+            .map(|spec| {
+                let columns = spec
+                    .columns
+                    .iter()
+                    .map(|column| self.quote_ident(column))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "{} {} ON {} ({columns})",
+                    if spec.unique {
+                        "CREATE UNIQUE INDEX IF NOT EXISTS"
+                    } else {
+                        "CREATE INDEX IF NOT EXISTS"
+                    },
+                    self.quote_ident(&spec.name),
+                    self.quote_ident(&spec.table),
+                )
+            })
+            .collect())
     }
 
     fn fallback_default_value_sql(&self, data_type: DataType) -> &'static str {
@@ -1179,6 +1337,59 @@ pub trait SqlDialect {
     }
 }
 
+fn validate_schema_shape(property: &PropertyDescriptor) -> Result<(), SqlCompileError> {
+    let invalid = |reason: String| SqlCompileError::InvalidSchemaShape {
+        property: property.name.clone(),
+        reason,
+    };
+
+    match property.data_type {
+        DataType::Text => {
+            if property.max_length == Some(0) {
+                return Err(invalid("max_length must be greater than zero".to_owned()));
+            }
+        }
+        _ if property.max_length.is_some() => {
+            return Err(invalid(format!(
+                "max_length is only valid for Text, not {:?}",
+                property.data_type
+            )));
+        }
+        _ => {}
+    }
+
+    match property.data_type {
+        DataType::Decimal => match (property.numeric_precision, property.numeric_scale) {
+            (None, None) => {}
+            (Some(0), _) => {
+                return Err(invalid(
+                    "numeric_precision must be greater than zero".to_owned(),
+                ));
+            }
+            (Some(precision), Some(scale)) if scale <= precision => {}
+            (Some(precision), Some(scale)) => {
+                return Err(invalid(format!(
+                    "numeric_scale ({scale}) must not exceed numeric_precision ({precision})"
+                )));
+            }
+            _ => {
+                return Err(invalid(
+                    "numeric_precision and numeric_scale must be specified together".to_owned(),
+                ));
+            }
+        },
+        _ if property.numeric_precision.is_some() || property.numeric_scale.is_some() => {
+            return Err(invalid(format!(
+                "numeric_precision/numeric_scale are only valid for Decimal, not {:?}",
+                property.data_type
+            )));
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1200,8 +1411,8 @@ mod tests {
             &self,
             _data_type: DataType,
             _property: &PropertyDescriptor,
-        ) -> Result<&'static str, SqlCompileError> {
-            Ok("TEST")
+        ) -> Result<String, SqlCompileError> {
+            Ok("TEST".to_owned())
         }
     }
 
@@ -1220,5 +1431,45 @@ mod tests {
         // The value should be converted to TypedNull(Timestamp)
         assert_eq!(query.params.len(), 1);
         assert_eq!(query.params[0], Value::TypedNull(DataType::Timestamp));
+    }
+
+    #[test]
+    fn rejects_invalid_schema_shape_before_emitting_ddl() {
+        let dialect = TestDialect;
+        let mut entity = EntityDescriptor::new("Order").table_name("orders");
+
+        for property in [
+            PropertyDescriptor::new("empty_text", DataType::Text).max_length(0),
+            PropertyDescriptor::new("partial_decimal", DataType::Decimal).numeric_precision(19),
+            PropertyDescriptor::new("invalid_decimal", DataType::Decimal)
+                .numeric_precision(5)
+                .numeric_scale(7),
+            PropertyDescriptor::new("numeric_text", DataType::Text)
+                .numeric_precision(19)
+                .numeric_scale(7),
+        ] {
+            entity.properties = vec![property.clone()];
+            let error = dialect
+                .compile_create_table(&entity)
+                .expect_err("invalid metadata must fail before DDL");
+            assert!(matches!(error, SqlCompileError::InvalidSchemaShape { .. }));
+            assert!(error.to_string().contains(&property.name));
+        }
+    }
+
+    #[test]
+    fn existing_storage_shape_must_cover_the_model_value_domain() {
+        assert!(storage_length_covers(100, Some(100)));
+        assert!(storage_length_covers(100, Some(255)));
+        assert!(storage_length_covers(100, None));
+        assert!(!storage_length_covers(100, Some(32)));
+
+        assert!(storage_numeric_covers(19, 7, Some(19), Some(7)));
+        assert!(storage_numeric_covers(19, 7, Some(38), Some(10)));
+        assert!(storage_numeric_covers(19, 7, None, None));
+        assert!(!storage_numeric_covers(19, 7, Some(18), Some(2)));
+        assert!(!storage_numeric_covers(19, 7, Some(19), Some(8)));
+        assert!(!storage_numeric_covers(19, 7, Some(20), Some(6)));
+        assert!(!storage_numeric_covers(19, 7, Some(38), None));
     }
 }

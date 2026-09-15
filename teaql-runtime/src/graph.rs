@@ -193,31 +193,27 @@ impl GraphMutationPlan {
     }
 
     pub fn rebuild_batches(&mut self) {
-        let mut grouped: BTreeMap<
-            (String, GraphMutationKind, Vec<String>),
-            Vec<GraphMutationPlanItem>,
-        > = BTreeMap::new();
+        self.batches.clear();
         for item in &self.items {
             let update_fields = match item.kind {
                 GraphMutationKind::Update => item.update_fields.clone(),
                 _ => Vec::new(),
             };
-            grouped
-                .entry((item.entity.clone(), item.kind, update_fields))
-                .or_default()
-                .push(item.clone());
+            if let Some(batch) = self.batches.last_mut()
+                && batch.entity == item.entity
+                && batch.kind == item.kind
+                && batch.update_fields == update_fields
+            {
+                batch.items.push(item.clone());
+                continue;
+            }
+            self.batches.push(GraphMutationBatch {
+                entity: item.entity.clone(),
+                kind: item.kind,
+                update_fields,
+                items: vec![item.clone()],
+            });
         }
-        self.batches = grouped
-            .into_iter()
-            .map(
-                |((entity, kind, update_fields), items)| GraphMutationBatch {
-                    entity,
-                    kind,
-                    update_fields,
-                    items,
-                },
-            )
-            .collect();
     }
 
     pub fn grouped_counts(&self) -> BTreeMap<(String, GraphMutationKind), usize> {
@@ -507,10 +503,15 @@ mod tests {
 
         // We expect 4 batches:
         // 1. User Create (2 items)
-        // 2. User Update ["email"] (1 item)
-        // 3. User Update ["name"] (2 items)
+        // 2. User Update ["name"] (2 items)
+        // 3. User Update ["email"] (1 item)
         // 4. Profile Create (1 item)
         assert_eq!(plan.batch_count(), 4);
+        assert_eq!(plan.batches[0].entity, "User");
+        assert_eq!(plan.batches[0].kind, GraphMutationKind::Create);
+        assert_eq!(plan.batches[1].update_fields, vec!["name"]);
+        assert_eq!(plan.batches[2].update_fields, vec!["email"]);
+        assert_eq!(plan.batches[3].entity, "Profile");
 
         let counts = plan.grouped_counts();
         assert_eq!(counts.len(), 3);

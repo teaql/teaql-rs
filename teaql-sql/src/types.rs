@@ -274,6 +274,16 @@ pub enum SqlCompileError {
     EmptyMutation(String),
     InvalidRecoverVersion(i64),
     UnsupportedSchemaType(DataType),
+    InvalidSchemaShape {
+        property: String,
+        reason: String,
+    },
+    SchemaIdentifierTooLong {
+        object: String,
+        identifier: String,
+        actual_bytes: usize,
+        max_bytes: usize,
+    },
     InvalidFunctionArguments(String),
     InvalidSubQueryOperator(String),
 }
@@ -295,6 +305,18 @@ impl std::fmt::Display for SqlCompileError {
             Self::UnsupportedSchemaType(data_type) => {
                 write!(f, "unsupported schema type: {data_type:?}")
             }
+            Self::InvalidSchemaShape { property, reason } => {
+                write!(f, "invalid schema shape for property {property}: {reason}")
+            }
+            Self::SchemaIdentifierTooLong {
+                object,
+                identifier,
+                actual_bytes,
+                max_bytes,
+            } => write!(
+                f,
+                "{object} SQL identifier {identifier:?} is {actual_bytes} bytes; this database allows at most {max_bytes} bytes. Shorten the model-derived table or column name before ensure_schema"
+            ),
             Self::InvalidFunctionArguments(message) => write!(f, "{message}"),
             Self::InvalidSubQueryOperator(operator) => {
                 write!(f, "subquery does not support operator: {operator}")

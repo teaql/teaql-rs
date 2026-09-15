@@ -334,15 +334,15 @@ where
             );
         };
 
-        if let Some(expected_version) = command.expected_version {
-            if rows[index].get(version_property) != Some(&Value::I64(expected_version)) {
-                return Err(DataServiceError::Runtime(
-                    RuntimeError::OptimisticLockConflict {
-                        entity: command.entity.clone(),
-                        id: format!("{:?}", command.id),
-                    },
-                ));
-            }
+        if let Some(expected_version) = command.expected_version
+            && rows[index].get(version_property) != Some(&Value::I64(expected_version))
+        {
+            return Err(DataServiceError::Runtime(
+                RuntimeError::OptimisticLockConflict {
+                    entity: command.entity.clone(),
+                    id: format!("{:?}", command.id),
+                },
+            ));
         }
 
         match command.soft_delete {
@@ -891,9 +891,11 @@ fn numeric_avg(rows: &[&CompactRow], field: &str) -> Result<Value, MemoryDataSer
             }
         }
     }
-    Ok((count > 0)
-        .then(|| Value::Decimal(sum / Decimal::from(count)))
-        .unwrap_or(Value::Null))
+    Ok(if count > 0 {
+        Value::Decimal(sum / Decimal::from(count))
+    } else {
+        Value::Null
+    })
 }
 
 fn decimal_from_f64(value: f64) -> Decimal {

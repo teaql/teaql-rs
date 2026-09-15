@@ -408,14 +408,14 @@ pub trait Checker: Send + Sync {
         location: &ObjectLocation,
         results: &mut CheckResults,
     ) {
-        if let Some(Value::Text(value)) = values.get(field) {
-            if value.chars().count() < min_len {
-                results.push(CheckResult::min_str(
-                    location.clone().member(field),
-                    min_len as u64,
-                    value.clone(),
-                ));
-            }
+        if let Some(Value::Text(value)) = values.get(field)
+            && value.chars().count() < min_len
+        {
+            results.push(CheckResult::min_str(
+                location.clone().member(field),
+                min_len as u64,
+                value.clone(),
+            ));
         }
     }
 
@@ -427,14 +427,14 @@ pub trait Checker: Send + Sync {
         location: &ObjectLocation,
         results: &mut CheckResults,
     ) {
-        if let Some(Value::Text(value)) = values.get(field) {
-            if value.chars().count() > max_len {
-                results.push(CheckResult::max_str(
-                    location.clone().member(field),
-                    max_len as u64,
-                    value.clone(),
-                ));
-            }
+        if let Some(Value::Text(value)) = values.get(field)
+            && value.chars().count() > max_len
+        {
+            results.push(CheckResult::max_str(
+                location.clone().member(field),
+                max_len as u64,
+                value.clone(),
+            ));
         }
     }
 }

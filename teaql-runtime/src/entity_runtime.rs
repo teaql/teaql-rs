@@ -116,6 +116,7 @@ fn entity_identity_key(value: &Value) -> EntityIdentityKey {
     match value {
         Value::Null | Value::TypedNull(_) => EntityIdentityKey::Null,
         Value::Bool(value) => EntityIdentityKey::Bool(*value),
+        Value::I64(value) if *value >= 0 => EntityIdentityKey::U64(*value as u64),
         Value::I64(value) => EntityIdentityKey::I64(*value),
         Value::U64(value) => EntityIdentityKey::U64(*value),
         Value::F64(value) => EntityIdentityKey::F64(value.to_bits()),
@@ -393,6 +394,9 @@ struct EntityMutationLedger {
     trace_chains: std::collections::BTreeMap<EntityKey, Vec<teaql_core::TraceNode>>,
     /// Original versions of entities to perform optimistic concurrency control.
     original_versions: OriginalVersions,
+    /// A generated, void-returning graph attachment could not safely merge two snapshots.
+    /// Preserve the failure until save so attachment cannot silently lose mutation intent.
+    composition_errors: Vec<LedgerCompositionError>,
     /// Indicates if this entity root is entirely new.
     is_new: bool,
 }
@@ -440,13 +444,6 @@ impl EntityGraphReference {
         match self {
             Self::Strong(graph) => Self::Weak(Arc::downgrade(graph)),
             Self::Weak(graph) => Self::Weak(graph.clone()),
-        }
-    }
-
-    fn pointer(&self) -> *const OnceLock<FrozenEntityGraph> {
-        match self {
-            Self::Strong(graph) => Arc::as_ptr(graph),
-            Self::Weak(graph) => graph.as_ptr(),
         }
     }
 
@@ -499,6 +496,7 @@ impl std::panic::RefUnwindSafe for EntityRuntimeState {}
 #[derive(Debug, Clone)]
 enum OriginalSnapshot {
     Materialized(EntitySnapshot),
+    #[allow(dead_code)] // Retained for zero-copy CompactRow hydration rollout.
     Compact(teaql_core::CompactRow),
 }
 
@@ -577,15 +575,24 @@ impl EntityRuntimeState {
     /// the source ledger is left intact so a failed composition is retryable.
     #[doc(hidden)]
     pub fn adopt_mutations_from(&self, source: &EntityRuntimeState) {
+        if let Err(error) = self.adopt_mutations_from_checked(source) {
+            self.write_context(|target| target.composition_errors.push(error));
+        }
+    }
+
+    fn adopt_mutations_from_checked(
+        &self,
+        source: &EntityRuntimeState,
+    ) -> Result<(), LedgerCompositionError> {
         let Some(source_context) = source.inner.get() else {
-            return;
+            return Ok(());
         };
         if self
             .inner
             .get()
             .is_some_and(|target_context| Arc::ptr_eq(target_context, source_context))
         {
-            return;
+            return Ok(());
         }
         let snapshot = source_context
             .lock()
@@ -597,6 +604,42 @@ impl EntityRuntimeState {
             Some((EntityKey::new(loaded.entity.as_ref(), id), version))
         });
         self.write_context(|target| {
+            let source_versions = snapshot
+                .original_versions
+                .first
+                .iter()
+                .map(|(key, version)| (key, *version))
+                .chain(
+                    snapshot
+                        .original_versions
+                        .overflow
+                        .iter()
+                        .map(|(key, version)| (key, *version)),
+                )
+                .chain(loaded_version.iter().map(|(key, version)| (key, *version)));
+            for (key, source_version) in source_versions {
+                let target_version = target.original_versions.get(key).or_else(|| {
+                    let loaded = self.loaded_snapshot.as_ref()?;
+                    (loaded.entity.as_ref() == key.entity.as_ref()
+                        && loaded.row.get("id")?.try_u64() == key.id.try_u64())
+                    .then(|| loaded.row.get("version")?.try_i64())
+                    .flatten()
+                });
+                if let Some(target_version) = target_version
+                    && target_version != source_version
+                {
+                    return Err(LedgerCompositionError::ConflictingOriginalVersion {
+                        entity: key.entity.to_string(),
+                        id: key
+                            .id
+                            .try_u64()
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| format!("{:?}", key.id)),
+                        target: target_version,
+                        source: source_version,
+                    });
+                }
+            }
             for change_set in snapshot.change_sets.stack {
                 for (key, values) in change_set.changes {
                     for (field, value) in values {
@@ -622,7 +665,8 @@ impl EntityRuntimeState {
                 target.comment = snapshot.comment;
             }
             target.is_new |= snapshot.is_new;
-        });
+            Ok(())
+        })
     }
 
     /// Publish a completely assembled graph. It becomes immutable after this call.
@@ -928,10 +972,257 @@ impl EntityRuntimeState {
     pub fn set_original_version(&self, key: EntityKey, version: i64) {
         self.write_context(|context| context.original_versions.insert(key, version));
     }
+
+    pub(crate) fn first_composition_error(&self) -> Option<LedgerCompositionError> {
+        self.read_context(None, |context| context.composition_errors.first().cloned())
+    }
 }
+
+/// An explicit graph composition failed before any database write.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LedgerCompositionError {
+    MissingTargetState,
+    MissingSourceState,
+    ConflictingOriginalVersion {
+        entity: String,
+        id: String,
+        target: i64,
+        source: i64,
+    },
+}
+
+impl std::fmt::Display for LedgerCompositionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingTargetState => formatter.write_str("target entity has no mutation ledger"),
+            Self::MissingSourceState => formatter.write_str("source entity has no mutation ledger"),
+            Self::ConflictingOriginalVersion {
+                entity,
+                id,
+                target,
+                source,
+            } => write!(
+                formatter,
+                "cannot compose {entity}#{id}: receiving ledger expects version {target}, source expects version {source}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for LedgerCompositionError {}
 
 pub trait LedgerEntity: teaql_core::Entity {
     fn entity_runtime_state(&self) -> Option<EntityRuntimeState>;
+
+    /// Include another entity's pending mutation intent in this entity's save boundary.
+    ///
+    /// This is explicit: it does not load a relation, query the database, or save either
+    /// entity. The source keeps its ledger so a failed save can be retried. Set the
+    /// modeled relationship on the source before composing it into the target graph.
+    fn include_pending_mutations_from<E: LedgerEntity>(
+        &self,
+        source: &E,
+    ) -> Result<(), LedgerCompositionError> {
+        let target = self
+            .entity_runtime_state()
+            .ok_or(LedgerCompositionError::MissingTargetState)?;
+        let source = source
+            .entity_runtime_state()
+            .ok_or(LedgerCompositionError::MissingSourceState)?;
+        target.adopt_mutations_from_checked(&source)
+    }
+}
+
+#[cfg(test)]
+mod composition_api_tests {
+    use super::*;
+    use teaql_core::{CompactRow, EntityDescriptor, EntityError, MutationValues, TeaqlEntity};
+
+    #[test]
+    fn numeric_id_keys_match_across_sqlite_signed_and_entity_unsigned_values() {
+        let signed = EntityKey::new_static("Child", Value::I64(1));
+        let unsigned = EntityKey::new_static("Child", Value::U64(1));
+        assert_eq!(signed, unsigned);
+        assert_eq!(signed.cmp(&unsigned), std::cmp::Ordering::Equal);
+        assert_ne!(signed, EntityKey::new_static("OtherChild", Value::U64(1)));
+        assert_ne!(
+            EntityKey::new_static("Child", Value::I64(-1)),
+            EntityKey::new_static("Child", Value::U64(u64::MAX))
+        );
+    }
+
+    struct TestEntity(Option<EntityRuntimeState>);
+
+    impl TeaqlEntity for TestEntity {
+        const ENTITY_NAME: &'static str = "TestEntity";
+
+        fn entity_descriptor() -> EntityDescriptor {
+            EntityDescriptor::new(Self::ENTITY_NAME)
+        }
+    }
+
+    impl teaql_core::Entity for TestEntity {
+        fn from_compact_row(_row: CompactRow) -> Result<Self, EntityError> {
+            Err(EntityError::new(Self::ENTITY_NAME, "not used by this test"))
+        }
+
+        fn into_values(self) -> MutationValues {
+            MutationValues::new()
+        }
+    }
+
+    impl LedgerEntity for TestEntity {
+        fn entity_runtime_state(&self) -> Option<EntityRuntimeState> {
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn public_composition_reports_missing_ledgers_without_silent_success() {
+        let present = TestEntity(Some(EntityRuntimeState::default()));
+        let missing = TestEntity(None);
+        assert_eq!(
+            missing.include_pending_mutations_from(&present),
+            Err(LedgerCompositionError::MissingTargetState)
+        );
+        assert_eq!(
+            present.include_pending_mutations_from(&missing),
+            Err(LedgerCompositionError::MissingSourceState)
+        );
+    }
+
+    #[test]
+    fn public_composition_copies_intent_without_sharing_source_ledger() {
+        let target_state = EntityRuntimeState::default();
+        let source_state = EntityRuntimeState::default();
+        let key = EntityKey::new_static("Child", 42_u64);
+        source_state.set(key.clone(), "name", Value::Text("first".to_owned()));
+        let target = TestEntity(Some(target_state.clone()));
+        let source = TestEntity(Some(source_state.clone()));
+
+        target.include_pending_mutations_from(&source).unwrap();
+        assert_eq!(
+            target_state.get(&key, "name"),
+            Some(Value::Text("first".to_owned()))
+        );
+        source_state.set(key.clone(), "name", Value::Text("second".to_owned()));
+        assert_eq!(
+            target_state.get(&key, "name"),
+            Some(Value::Text("first".to_owned()))
+        );
+        target.include_pending_mutations_from(&source).unwrap();
+        assert_eq!(
+            target_state.get(&key, "name"),
+            Some(Value::Text("second".to_owned()))
+        );
+    }
+
+    #[test]
+    fn public_composition_retains_sqlite_signed_snapshot_version_for_unsigned_entity_id() {
+        let target_state = EntityRuntimeState::default();
+        let mut source_state = EntityRuntimeState::default();
+        source_state.set_original_compact_row(
+            "Child",
+            CompactRow::new(
+                Arc::from(["id".to_owned(), "version".to_owned()]),
+                vec![Value::I64(1), Value::I64(7)],
+            ),
+        );
+        let entity_key = EntityKey::new_static("Child", Value::U64(1));
+        source_state.set(entity_key.clone(), "quantity", Value::I64(2));
+        TestEntity(Some(target_state.clone()))
+            .include_pending_mutations_from(&TestEntity(Some(source_state)))
+            .unwrap();
+        assert_eq!(target_state.get_original_version(&entity_key), Some(7));
+    }
+
+    #[test]
+    fn public_composition_rejects_conflicting_versions_without_copying_intent() {
+        let mut target_state = EntityRuntimeState::default();
+        let mut source_state = EntityRuntimeState::default();
+        let unsigned_key = EntityKey::new_static("Child", Value::U64(1));
+        let schema: Arc<[String]> = Arc::from(["id".to_owned(), "version".to_owned()]);
+        target_state.set_original_compact_row(
+            "Child",
+            CompactRow::new(schema.clone(), vec![Value::I64(1), Value::I64(2)]),
+        );
+        target_state.set(unsigned_key.clone(), "quantity", Value::I64(4));
+        source_state.set_original_compact_row(
+            "Child",
+            CompactRow::new(schema, vec![Value::I64(1), Value::I64(1)]),
+        );
+        source_state.set(unsigned_key.clone(), "quantity", Value::I64(3));
+
+        let result = TestEntity(Some(target_state.clone()))
+            .include_pending_mutations_from(&TestEntity(Some(source_state.clone())));
+        assert_eq!(
+            result,
+            Err(LedgerCompositionError::ConflictingOriginalVersion {
+                entity: "Child".to_owned(),
+                id: "1".to_owned(),
+                target: 2,
+                source: 1,
+            })
+        );
+        assert_eq!(target_state.get_original_version(&unsigned_key), Some(2));
+        assert_eq!(
+            target_state.get(&unsigned_key, "quantity"),
+            Some(Value::I64(4))
+        );
+        assert_eq!(source_state.get_original_version(&unsigned_key), Some(1));
+        assert_eq!(
+            source_state.get(&unsigned_key, "quantity"),
+            Some(Value::I64(3))
+        );
+    }
+
+    #[test]
+    fn public_composition_accepts_equal_versions_and_distinct_entity_keys() {
+        let target_state = EntityRuntimeState::default();
+        let source_state = EntityRuntimeState::default();
+        let same_key = EntityKey::new_static("Child", 1_u64);
+        let other_key = EntityKey::new_static("OtherChild", 1_u64);
+        target_state.set_original_version(same_key.clone(), 2);
+        source_state.set_original_version(same_key.clone(), 2);
+        source_state.set_original_version(other_key.clone(), 9);
+        source_state.set(same_key.clone(), "quantity", Value::I64(3));
+        source_state.set(other_key.clone(), "name", Value::Text("other".to_owned()));
+
+        TestEntity(Some(target_state.clone()))
+            .include_pending_mutations_from(&TestEntity(Some(source_state)))
+            .unwrap();
+        assert_eq!(target_state.get_original_version(&same_key), Some(2));
+        assert_eq!(target_state.get_original_version(&other_key), Some(9));
+        assert_eq!(target_state.get(&same_key, "quantity"), Some(Value::I64(3)));
+        assert_eq!(
+            target_state.get(&other_key, "name"),
+            Some(Value::Text("other".to_owned()))
+        );
+    }
+
+    #[test]
+    fn generated_void_attachment_retains_version_conflict_for_save_preflight() {
+        let target_state = EntityRuntimeState::default();
+        let source_state = EntityRuntimeState::default();
+        let key = EntityKey::new_static("Child", 1_u64);
+        target_state.set_original_version(key.clone(), 2);
+        source_state.set_original_version(key.clone(), 1);
+        source_state.set(key.clone(), "quantity", Value::I64(3));
+
+        target_state.adopt_mutations_from(&source_state);
+        assert_eq!(
+            target_state.first_composition_error(),
+            Some(LedgerCompositionError::ConflictingOriginalVersion {
+                entity: "Child".to_owned(),
+                id: "1".to_owned(),
+                target: 2,
+                source: 1,
+            })
+        );
+        assert_eq!(target_state.get_original_version(&key), Some(2));
+        assert_eq!(target_state.get(&key, "quantity"), None);
+        assert_eq!(source_state.get(&key, "quantity"), Some(Value::I64(3)));
+    }
 }
 
 #[cfg(test)]

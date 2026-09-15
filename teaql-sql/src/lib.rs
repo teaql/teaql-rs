@@ -2,7 +2,11 @@ mod dialect;
 mod executor;
 mod types;
 
-pub use dialect::{SqlDialect, quote_identifier_if_needed};
+pub use dialect::{
+    SchemaIndexSpec, SqlDialect, bounded_sql_identifier, quote_identifier_if_needed,
+    schema_foreign_key_name, schema_index_specs, storage_length_covers, storage_numeric_covers,
+    validate_schema_identifier_lengths,
+};
 pub use executor::{
     SqlDataServiceExecutor, SqlDataServiceTransaction, SqlExecutorError, SqlTransaction,
     SqlTransactionTransport, SqlTransport, StreamingSqlTransport,
@@ -89,6 +93,127 @@ mod tests {
             crate::quote_identifier_if_needed("\"already_wrapped\"", '"'),
             "\"already_wrapped\""
         );
+    }
+
+    #[test]
+    fn bounded_identifier_preserves_short_names_and_disambiguates_long_names() {
+        assert_eq!(
+            crate::bounded_sql_identifier("IDX_ORDER_ID", 63),
+            "IDX_ORDER_ID"
+        );
+        let left = format!("PK_{}_ID_VERSION", "A".repeat(56));
+        let right = format!("PK_{}_ID_VERSION", "A".repeat(55) + "B");
+        let left_bounded = crate::bounded_sql_identifier(&left, 63);
+        let right_bounded = crate::bounded_sql_identifier(&right, 63);
+        assert!(left_bounded.len() <= 63);
+        assert!(right_bounded.len() <= 63);
+        assert_ne!(left_bounded, right_bounded);
+        assert_eq!(left_bounded, crate::bounded_sql_identifier(&left, 63));
+        let unicode = format!("IDX_{}", "学校".repeat(20));
+        let unicode_bounded = crate::bounded_sql_identifier(&unicode, 64);
+        assert!(unicode_bounded.len() <= 64);
+        assert!(unicode_bounded.chars().last().unwrap().is_ascii_hexdigit());
+    }
+
+    #[test]
+    fn generated_index_specs_are_the_source_of_ddl_order_and_columns() {
+        let entity = EntityDescriptor::new("Order")
+            .table_name("orders")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(
+                PropertyDescriptor::new("version", DataType::I64)
+                    .version()
+                    .not_null(),
+            )
+            .property(PropertyDescriptor::new("tenantId", DataType::U64).column_name("tenant_id"))
+            .property(PropertyDescriptor::new("create_time", DataType::Timestamp));
+        let specs = crate::schema_index_specs(&entity, None);
+        assert_eq!(specs.len(), 3);
+        assert_eq!(specs[0].name, "PK_ORDERS_ID_VERSION");
+        assert_eq!(specs[0].columns, ["id", "version"]);
+        assert!(specs[0].unique);
+        assert_eq!(specs[1].name, "IDX_ORDERS_TENANT_ID");
+        assert_eq!(specs[1].columns, ["tenant_id"]);
+        assert!(!specs[1].unique);
+        assert_eq!(specs[2].name, "IDX_ORDERS_CREATE_TIME");
+        assert_eq!(specs[2].columns, ["create_time"]);
+        let sql = TestDialect.schema_indexes_sqls(&entity).unwrap();
+        assert_eq!(
+            sql,
+            [
+                "CREATE UNIQUE INDEX IF NOT EXISTS \"PK_ORDERS_ID_VERSION\" ON \"orders\" (\"id\", \"version\")",
+                "CREATE INDEX IF NOT EXISTS \"IDX_ORDERS_TENANT_ID\" ON \"orders\" (\"tenant_id\")",
+                "CREATE INDEX IF NOT EXISTS \"IDX_ORDERS_CREATE_TIME\" ON \"orders\" (\"create_time\")",
+            ]
+        );
+        let bounded = crate::schema_index_specs(&entity, Some(63));
+        assert_eq!(bounded, specs);
+    }
+
+    #[test]
+    fn schema_identifier_limits_reject_model_tables_and_columns_without_truncation() {
+        let max_table = EntityDescriptor::new("School")
+            .table_name("a".repeat(63))
+            .property(PropertyDescriptor::new("id", DataType::U64).id());
+        assert!(crate::validate_schema_identifier_lengths(&[&max_table], 63).is_ok());
+
+        let long_table = EntityDescriptor::new("School")
+            .table_name("a".repeat(64))
+            .property(PropertyDescriptor::new("id", DataType::U64).id());
+        let error = crate::validate_schema_identifier_lengths(&[&long_table], 63).unwrap_err();
+        assert!(matches!(
+            error,
+            crate::SqlCompileError::SchemaIdentifierTooLong {
+                actual_bytes: 64,
+                max_bytes: 63,
+                ..
+            }
+        ));
+        assert!(error.to_string().contains("table for entity School"));
+        assert!(crate::validate_schema_identifier_lengths(&[&long_table], 64).is_ok());
+
+        let long_column = EntityDescriptor::new("School")
+            .table_name("school_data")
+            .property(
+                PropertyDescriptor::new("contactPhone", DataType::Text)
+                    .column_name("学校".repeat(22)),
+            );
+        let error = crate::validate_schema_identifier_lengths(&[&long_column], 64).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("column for entity School property contactPhone")
+        );
+        assert!(error.to_string().contains("132 bytes"));
+
+        let quoted = EntityDescriptor::new("School")
+            .table_name(format!("\"{}\"", "a".repeat(63)))
+            .property(
+                PropertyDescriptor::new("id", DataType::U64)
+                    .column_name(format!("`{}`", "b".repeat(64))),
+            );
+        assert!(crate::validate_schema_identifier_lengths(&[&quoted], 64).is_ok());
+        assert!(crate::validate_schema_identifier_lengths(&[&quoted], 63).is_err());
+    }
+
+    #[test]
+    fn foreign_key_names_share_stable_provider_bounds() {
+        let short = crate::schema_foreign_key_name("school", "platform_id", "platform", "id", 63);
+        assert_eq!(short, "FK_SCHOOL_PLATFORM_ID_PLATFORM_ID");
+        let table = "school_type_relation_".repeat(3);
+        let pg = crate::schema_foreign_key_name(&table, "school_type_id", "school_type", "id", 63);
+        let mysql =
+            crate::schema_foreign_key_name(&table, "school_type_id", "school_type", "id", 64);
+        assert!(pg.len() <= 63);
+        assert!(mysql.len() <= 64);
+        assert_ne!(pg, mysql);
+        assert_eq!(
+            pg,
+            crate::schema_foreign_key_name(&table, "school_type_id", "school_type", "id", 63)
+        );
+        let unicode = crate::schema_foreign_key_name("学校", &"学校".repeat(20), "平台", "id", 63);
+        assert!(unicode.len() <= 63);
+        assert!(unicode.is_char_boundary(unicode.len()));
     }
 
     fn line_entity() -> EntityDescriptor {

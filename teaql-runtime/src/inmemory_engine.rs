@@ -72,7 +72,7 @@ impl InMemoryQueryEngine {
     }
 
     /// Sort rows in-place according to the given [`OrderBy`] list (multi-column).
-    fn sort(rows: &mut Vec<CompactRow>, order_by: &[OrderBy]) {
+    fn sort(rows: &mut [CompactRow], order_by: &[OrderBy]) {
         rows.sort_by(|a, b| {
             for ob in order_by {
                 let va = a.get(&ob.field).unwrap_or(&Value::Null);
@@ -434,29 +434,31 @@ fn compute_aggregate(agg: &Aggregate, rows: &[CompactRow]) -> Value {
             let mut sum: f64 = 0.0;
             let mut found = false;
             for row in rows {
-                if let Some(v) = row.get(&agg.field) {
-                    if let Some(f) = v.try_f64() {
-                        sum += f;
-                        found = true;
-                    }
+                if let Some(v) = row.get(&agg.field)
+                    && let Some(f) = v.try_f64()
+                {
+                    sum += f;
+                    found = true;
                 }
             }
-            found.then(|| Value::F64(sum)).unwrap_or(Value::Null)
+            if found { Value::F64(sum) } else { Value::Null }
         }
         AggregateFunction::Avg => {
             let mut sum: f64 = 0.0;
             let mut count: u64 = 0;
             for row in rows {
-                if let Some(v) = row.get(&agg.field) {
-                    if let Some(f) = v.try_f64() {
-                        sum += f;
-                        count += 1;
-                    }
+                if let Some(v) = row.get(&agg.field)
+                    && let Some(f) = v.try_f64()
+                {
+                    sum += f;
+                    count += 1;
                 }
             }
-            (count > 0)
-                .then(|| Value::F64(sum / count as f64))
-                .unwrap_or(Value::Null)
+            if count > 0 {
+                Value::F64(sum / count as f64)
+            } else {
+                Value::Null
+            }
         }
         AggregateFunction::Max => {
             let mut max: Option<&Value> = None;
@@ -504,7 +506,7 @@ fn compute_aggregate(agg: &Aggregate, rows: &[CompactRow]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use teaql_core::{Aggregate, AggregateFunction, CompactRow, SelectQuery, Value};
+    use teaql_core::{Aggregate, CompactRow, SelectQuery, Value};
 
     fn make_row(pairs: Vec<(&str, Value)>) -> CompactRow {
         CompactRow::from_map(pairs.into_iter().map(|(k, v)| (k.to_owned(), v)).collect())

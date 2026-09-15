@@ -24,9 +24,10 @@ pub enum EntityAction {
 /// | UpdatedDeleted    | Delete  | UpdatedDeleted    |
 /// | UpdatedRecover    | Persist | Persisted         |
 /// | UpdatedRecover    | Recover | UpdatedRecover    |
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum EntityStatus {
     /// A newly created entity that has not been persisted yet.
+    #[default]
     New,
     /// An entity that has been persisted to the database.
     Persisted,
@@ -40,12 +41,6 @@ pub enum EntityStatus {
     UpdatedRecover,
     /// A reference to an entity managed elsewhere.
     Refer,
-}
-
-impl Default for EntityStatus {
-    fn default() -> Self {
-        EntityStatus::New
-    }
 }
 
 impl EntityStatus {

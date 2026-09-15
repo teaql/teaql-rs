@@ -274,10 +274,10 @@ impl DataStore for InMemoryDataStore {
     async fn get(&self, key: &str) -> Option<Value> {
         let lock = self.cache.read().unwrap();
         if let Some((val, expires_at)) = lock.get(key) {
-            if let Some(exp) = expires_at {
-                if std::time::Instant::now() > *exp {
-                    return None;
-                }
+            if let Some(exp) = expires_at
+                && std::time::Instant::now() > *exp
+            {
+                return None;
             }
             return Some(val.clone());
         }
@@ -302,7 +302,7 @@ impl UserContext {
         Self::default()
     }
 
-    pub fn with_active_root(mut self, entity_type: impl Into<String>, id: u64) -> Self {
+    pub fn with_active_root(self, entity_type: impl Into<String>, id: u64) -> Self {
         let entity_type = crate::canonical_id_space_entity(&entity_type.into());
         assert!(
             !entity_type.trim().is_empty(),
@@ -497,6 +497,7 @@ impl UserContext {
             .decode_compact(entity, row, root, graph)
     }
 
+    #[allow(clippy::too_many_arguments)] // Mirrors the generated decoder contract.
     pub(crate) fn decode_compact_entity_list_into_graph(
         &self,
         entity: &str,
@@ -529,6 +530,7 @@ impl UserContext {
             .decode_compact_batch(entity, rows, root, graph)
     }
 
+    #[allow(clippy::too_many_arguments)] // Mirrors the generated decoder contract.
     pub(crate) fn decode_compact_entity_option_into_graph(
         &self,
         entity: &str,
@@ -587,6 +589,7 @@ impl UserContext {
         self.checker_registry = Some(Box::new(registry));
     }
 
+    #[cfg(test)]
     pub(crate) fn with_event_sink(mut self, sink: impl RawAuditEventSink + 'static) -> Self {
         self.event_sink = Some(Box::new(sink));
         self
@@ -872,10 +875,51 @@ impl UserContext {
             checker.check_and_fix(self, values, location, &mut results);
         }
 
+        // Custom checkers get the first chance to supply or fix a value.
+        self.collect_required_property_results(entity, values, status, location, &mut results);
+        if results.is_empty() {
+            return Ok(());
+        }
+        self.translate_check_results(&mut results);
+        Err(RuntimeError::Check(results))
+    }
+
+    /// Validate the sparse values that a ledger CREATE will actually insert.
+    /// This is intentionally metadata-only: the complete typed graph already
+    /// ran Checker/Fix once, and running it again on sparse changes would
+    /// misclassify unchanged loaded fields and repeat Fix side effects.
+    pub(crate) fn validate_required_create_payload(
+        &self,
+        entity: &str,
+        values: &crate::EntityValues,
+        location: &ObjectLocation,
+    ) -> Result<(), RuntimeError> {
+        let mut results = CheckResults::new();
+        self.collect_required_property_results(
+            entity,
+            values,
+            CheckObjectStatus::Create,
+            location,
+            &mut results,
+        );
+        if results.is_empty() {
+            return Ok(());
+        }
+        self.translate_check_results(&mut results);
+        Err(RuntimeError::Check(results))
+    }
+
+    fn collect_required_property_results(
+        &self,
+        entity: &str,
+        values: &crate::EntityValues,
+        status: CheckObjectStatus,
+        location: &ObjectLocation,
+        results: &mut CheckResults,
+    ) {
         // Keep runtime validation aligned with the schema generated from the
-        // same metadata. Custom checkers get the first chance to supply or fix
-        // a value; afterwards every NOT NULL property must be present on a
-        // create, and an update must not explicitly clear one.
+        // same metadata. Every NOT NULL property must be present on a create,
+        // and an update must not explicitly clear one.
         if let Some(descriptor) = self
             .metadata
             .as_ref()
@@ -901,11 +945,6 @@ impl UserContext {
                 }
             }
         }
-        if results.is_empty() {
-            return Ok(());
-        }
-        self.translate_check_results(&mut results);
-        Err(RuntimeError::Check(results))
     }
 
     pub fn translate_check_results(&self, results: &mut CheckResults) {

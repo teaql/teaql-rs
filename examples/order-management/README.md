@@ -9,7 +9,7 @@ cargo run
 
 The first run creates `../.local/order.db`, ensures schema, seeds through generated entities, performs a compile-time governed query, and saves an audited preset. The second run demonstrates idempotency.
 
-Read `rust-app-console/src/main.rs` first (handwritten), then `rust-lib-core/lib/src/q.rs`, `customer_order/request.rs`, and `customer_order/entity.rs` (generated). Notice that `purpose(...)` returns the only type exposing execute methods; `comment(...)` may occur earlier in the request-building chain.
+Read `rust-app-console/src/main.rs` first (handwritten). For model-aware API discovery in a newly generated workspace, use the generated application `AGENTS.md` and object/field Assist, for example `cargo teaql rust-assist-query/customer_order --input examples/order-management/order-management-model.xml`; do not browse generated library source to guess APIs. Notice that `purpose(...)` returns the only type exposing execute methods; `comment(...)` may occur earlier in the request-building chain.
 
 ## Verify the first result
 
@@ -18,6 +18,18 @@ Expect `WEB-2026-001`, `2026-08-12`, and the exact decimal `129.95`. Run twice: 
 ## Customize it
 
 Edit the typed filter or ordering in `src/main.rs`. Compiler errors lead directly to the generated request API—do not guess method names. Keep application policy in the console and regenerate `rust-lib-core`; the shared generation model is provenance, not a runtime input.
+
+## Nested graph-save regression
+
+The retained `nested_graph_probe` checks a parent `CustomerOrder` save with a new `OrderLine`. Missing required `sku` must be rejected at `order_line_list[0].sku` before any child row is written; after filling it, one child row must persist. It then performs one mixed graph save: parent and existing-child updates, versioned soft deletion of another child, and insertion of a new child. An independently loaded stale child must fail with its exact ID. The generated, void-returning recursive attachment method must also preserve a same-ID version conflict and reject its save before SQL; the child row remains unchanged. A new child marked for deletion before save must never reach SQLite. The probe uses a SQLite URL supplied by the caller:
+
+```bash
+TEAQL_NESTED_PROBE_DATABASE="sqlite:file:/tmp/teaql-order-nested-example.sqlite" \
+  cargo run --bin nested_graph_probe
+```
+
+The repository's `examples/verify-runtime-examples.sh` allocates a temporary database path and runs this probe **twice against the same file without cleanup** alongside the other Rust examples. It uses the explicit `LedgerEntity::include_pending_mutations_from` API on current local source. Published runtime packages do not yet contain this method; the model-aware Assist guidance is a version-gated local generator candidate until the corresponding runtime ABI is released.
+
 ### Materialized-list hard limit
 
 `execute_for_list` protects the service by applying a default hard limit of 10,000 rows. A requested page size above that ceiling fails explicitly. Trusted application code can call `hard_limit(...)` to override the outer-query ceiling. **Caution:** most applications should not override it; do so only for a reviewed, exceptional requirement. This setting does not describe streaming execution.

@@ -64,14 +64,13 @@ impl ContinuousPageCursorStore for InMemoryContinuousPageCursorStore {
     async fn put(&self, cursor: ContinuousPageCursor) -> Result<(), String> {
         let key = format!("{}:{}", cursor.query_key, cursor.next_offset);
         let mut cursors = self.cursors.lock().map_err(|error| error.to_string())?;
-        if cursors.len() >= self.max_entries {
-            if let Some(oldest) = cursors
+        if cursors.len() >= self.max_entries
+            && let Some(oldest) = cursors
                 .iter()
                 .min_by_key(|(_, value)| value.expires_at)
                 .map(|(key, _)| key.clone())
-            {
-                cursors.remove(&oldest);
-            }
+        {
+            cursors.remove(&oldest);
         }
         cursors.insert(key, cursor);
         Ok(())

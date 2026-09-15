@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use teaql_core::{
     CompactRow, DeleteCommand, Entity, EntityDescriptor, EntityDescriptorStore, EntityError,
-    IdentifiableEntity, InsertCommand, RecoverCommand, SelectQuery, TeaqlEntity, UpdateCommand,
+    IdentifiableEntity, InsertCommand, RecoverCommand, SelectQuery, UpdateCommand,
 };
 
 use crate::{
@@ -157,6 +157,7 @@ impl InMemoryEntityGraphDecoderRegistry {
         })?(row, root, graph)
     }
 
+    #[allow(clippy::too_many_arguments)] // Stable generated decoder boundary.
     pub fn decode_compact_list(
         &self,
         entity: &str,
@@ -190,6 +191,7 @@ impl InMemoryEntityGraphDecoderRegistry {
         })?(rows, root, graph)
     }
 
+    #[allow(clippy::too_many_arguments)] // Stable generated decoder boundary.
     pub fn decode_compact_option(
         &self,
         entity: &str,

@@ -254,6 +254,15 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         let nullable = is_option(&field.ty);
         let id = parsed.id;
         let version = parsed.version;
+        let max_length = parsed
+            .max_length
+            .map(|value| quote! { .max_length(#value) });
+        let numeric_precision = parsed
+            .numeric_precision
+            .map(|value| quote! { .numeric_precision(#value) });
+        let numeric_scale = parsed
+            .numeric_scale
+            .map(|value| quote! { .numeric_scale(#value) });
 
         let nullable_tokens = if !nullable {
             quote! { .not_null() }
@@ -302,6 +311,9 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                     #nullable_tokens
                     #id_tokens
                     #version_tokens
+                    #max_length
+                    #numeric_precision
+                    #numeric_scale
             );
         });
 

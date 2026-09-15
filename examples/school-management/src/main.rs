@@ -226,7 +226,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     assert_eq!(context.id_set_plan().as_deref(), Some("ID_SET_HIT"));
 
-    println!("PASS Rust School bootstrap, ID-set pagination, portable Query, and native SQLite Facet parity");
+    // A sparse new-entity ledger must reject a missing required field before
+    // the insert reaches SQLite. Run this after the fixed-ID query fixtures:
+    // allocating a rejected entity may leave an intentional gap in ID space.
+    let mut incomplete = Q::schools()
+        .comment("Allocate an intentionally incomplete School")
+        .purpose("Verify Checker rejects sparse CREATE payloads")
+        .new_entity(&context);
+    incomplete.update_name("Incomplete School");
+    let error = match incomplete
+        .audit_as("Verify required address rejection")
+        .save(&context)
+        .await
+    {
+        Ok(_) => panic!("incomplete School must not be persisted"),
+        Err(error) => error,
+    };
+    let diagnosis = error.to_string().to_lowercase();
+    assert!(diagnosis.contains("required"), "{diagnosis}");
+    assert!(diagnosis.contains("address"), "{diagnosis}");
+    assert!(!diagnosis.contains("transport error"), "{diagnosis}");
+    let rejected = Q::schools()
+        .with_name_is("Incomplete School")
+        .comment("Confirm Checker rejection did not insert a School")
+        .purpose("Verify sparse CREATE was rejected before SQLite write")
+        .execute_for_list(&context)
+        .await?;
+    assert_eq!(rejected.len(), 0);
+
+    println!("PASS Rust School bootstrap, ID-set pagination, portable Query, native SQLite Facet, and sparse ledger Checker parity");
     std::fs::remove_file(database)?;
     Ok(())
 }

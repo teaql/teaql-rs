@@ -1,3 +1,6 @@
+// Named aliases will replace these recursive relation-future signatures in a later API cycle.
+#![allow(clippy::type_complexity)]
+
 use std::collections::BTreeMap;
 use std::slice;
 
@@ -327,10 +330,10 @@ where
                     })
                     .collect::<BTreeMap<_, _>>();
                 for row in rows.iter_mut() {
-                    if let Some(key) = row.get("id").map(graph_identity_key) {
-                        if let Some(child) = child_rows.get(&key) {
-                            row.extend(child.clone());
-                        }
+                    if let Some(key) = row.get("id").map(graph_identity_key)
+                        && let Some(child) = child_rows.get(&key)
+                    {
+                        row.extend(child.clone());
                     }
                 }
             }
@@ -375,12 +378,12 @@ where
         let child_repo = self.relation_child_repo(&plan);
         let mut query = aggregate.query.clone();
         query.entity = plan.target_entity.clone();
-        if query.aggregation_cache.is_none() {
-            if let Some(options) = parent_cache_options.filter(|options| options.propagate) {
-                query.aggregation_cache = Some(teaql_core::AggregationCacheOptions::enabled(
-                    options.propagate_cache_expired_millis,
-                ));
-            }
+        if query.aggregation_cache.is_none()
+            && let Some(options) = parent_cache_options.filter(|options| options.propagate)
+        {
+            query.aggregation_cache = Some(teaql_core::AggregationCacheOptions::enabled(
+                options.propagate_cache_expired_millis,
+            ));
         }
         query.projection.clear();
         query.expr_projection.clear();
@@ -428,10 +431,10 @@ where
             foreign_key_column.filter(|column| column != &plan.foreign_key)
         {
             for row in &mut aggregate_rows {
-                if !row.contains_key(&plan.foreign_key) {
-                    if let Some(value) = row.remove(&foreign_key_column) {
-                        row.insert(plan.foreign_key.clone(), value);
-                    }
+                if !row.contains_key(&plan.foreign_key)
+                    && let Some(value) = row.remove(&foreign_key_column)
+                {
+                    row.insert(plan.foreign_key.clone(), value);
                 }
             }
         }

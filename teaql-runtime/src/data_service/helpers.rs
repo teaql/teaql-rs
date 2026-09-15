@@ -1,3 +1,5 @@
+#![allow(clippy::items_after_test_module)] // Helper tests remain beside the group they specify.
+
 use std::collections::BTreeMap;
 
 use teaql_core::{
@@ -110,11 +112,10 @@ fn canonical_expr(expr: Expr) -> Expr {
             if matches!(
                 op,
                 BinaryOp::In | BinaryOp::NotIn | BinaryOp::InLarge | BinaryOp::NotInLarge
-            ) {
-                if let Expr::Value(Value::List(values)) = &mut right {
-                    values.sort_by_cached_key(|value| format!("{value:?}"));
-                    values.dedup();
-                }
+            ) && let Expr::Value(Value::List(values)) = &mut right
+            {
+                values.sort_by_cached_key(|value| format!("{value:?}"));
+                values.dedup();
             }
             Expr::Binary {
                 left: Box::new(left),
@@ -276,10 +277,10 @@ pub(super) fn ensure_initial_version(
     descriptor: &EntityDescriptor,
 ) {
     if let Some(version_property) = descriptor.version_property() {
-        let needs_version = match values.get(&version_property.name) {
-            None | Some(Value::Null) | Some(Value::I64(0)) | Some(Value::U64(0)) => true,
-            _ => false,
-        };
+        let needs_version = matches!(
+            values.get(&version_property.name),
+            None | Some(Value::Null) | Some(Value::I64(0)) | Some(Value::U64(0))
+        );
         if needs_version {
             values.insert(version_property.name.clone(), Value::I64(1));
         }
@@ -296,22 +297,20 @@ pub(super) fn ensure_timestamps(
         |name: &str| -> bool { descriptor.properties.iter().any(|p| p.name == name) };
 
     if is_new && has_property("create_time") {
-        let needs_time = match values.get("create_time") {
-            None | Some(Value::Null) => true,
-            Some(Value::I64(0)) | Some(Value::U64(0)) => true,
-            _ => false,
-        };
+        let needs_time = matches!(
+            values.get("create_time"),
+            None | Some(Value::Null) | Some(Value::I64(0)) | Some(Value::U64(0))
+        );
         if needs_time {
             values.insert("create_time".to_owned(), now.clone());
         }
     }
 
     if has_property("update_time") {
-        let needs_time = match values.get("update_time") {
-            None | Some(Value::Null) => true,
-            Some(Value::I64(0)) | Some(Value::U64(0)) => true,
-            _ => false,
-        };
+        let needs_time = matches!(
+            values.get("update_time"),
+            None | Some(Value::Null) | Some(Value::I64(0)) | Some(Value::U64(0))
+        );
         if needs_time {
             values.insert("update_time".to_owned(), now);
         }
@@ -358,9 +357,7 @@ pub(crate) fn increment_version(
     original_version: Option<i64>,
 ) {
     if let Some(prop) = descriptor.version_property() {
-        if !values.contains_key(&prop.name) {
-            let next_version = original_version.map(|v| v + 1).unwrap_or(2);
-            values.insert(prop.name.clone(), teaql_core::Value::I64(next_version));
-        }
+        let next_version = original_version.map(|v| v + 1).unwrap_or(2);
+        values.insert(prop.name.clone(), teaql_core::Value::I64(next_version));
     }
 }
