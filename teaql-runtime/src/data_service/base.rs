@@ -137,7 +137,7 @@ where
     ) -> Result<u64, DataServiceError<E::Error>> {
         let mut command = command.clone();
         command.trace_chain = sql_statement_trace(command.trace_chain, &command.entity);
-        let request = MutationRequest::Update(command);
+        let request = MutationRequest::Update(command.clone());
         let res = self
             .executor
             .mutate(request)
@@ -164,7 +164,7 @@ where
     ) -> Result<u64, DataServiceError<E::Error>> {
         let mut command = command.clone();
         command.trace_chain = sql_statement_trace(command.trace_chain, &command.entity);
-        let request = MutationRequest::Delete(command);
+        let request = MutationRequest::Delete(command.clone());
         let res = self
             .executor
             .mutate(request)
@@ -275,7 +275,7 @@ where
     ) -> Result<u64, DataServiceError<E::Error>> {
         let mut command = command.clone();
         command.trace_chain = sql_statement_trace(command.trace_chain, &command.entity);
-        let request = MutationRequest::Recover(command);
+        let request = MutationRequest::Recover(command.clone());
         let res = self
             .executor
             .mutate(request)
