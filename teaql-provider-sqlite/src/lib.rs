@@ -1605,6 +1605,37 @@ mod tests {
         name: String,
     }
 
+    #[derive(Debug, PartialEq, TeaqlEntity)]
+    #[teaql(
+        entity = "PaymentChannelCollision",
+        table = "payment_channel_collision"
+    )]
+    struct PaymentChannelCollision {
+        #[teaql(id)]
+        id: u64,
+        #[teaql(version)]
+        version: i64,
+        label: String,
+    }
+
+    #[derive(Debug, PartialEq, TeaqlEntity)]
+    #[teaql(entity = "PaymentOrderCollision", table = "payment_order_collision")]
+    struct PaymentOrderCollision {
+        #[teaql(id)]
+        id: u64,
+        #[teaql(version)]
+        version: i64,
+        #[teaql(column = "channel")]
+        channel_id: u64,
+        name: String,
+        #[teaql(relation(
+            target = "PaymentChannelCollision",
+            local_key = "channel_id",
+            foreign_key = "id"
+        ))]
+        channel: Option<PaymentChannelCollision>,
+    }
+
     impl TransactionSchool {
         fn new(id: u64, name: &str) -> (Self, teaql_runtime::EntityRuntimeState) {
             let state = teaql_runtime::EntityRuntimeState::default();
@@ -2789,6 +2820,86 @@ mod tests {
             ("enabled".to_owned(), enabled),
             ("optional_enabled".to_owned(), optional_enabled),
         ])
+    }
+
+    #[test]
+    fn sqlite_relation_name_collision_hydrates_only_fk_and_updates_existing_parent() {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        let channel = PaymentChannelCollision::entity_descriptor();
+        let order = PaymentOrderCollision::entity_descriptor();
+        executor
+            .ensure_schema(&SqliteDialect, &[&channel, &order])
+            .unwrap();
+        executor
+            .execute(
+                &SqliteDialect
+                    .compile_insert(
+                        &channel,
+                        &InsertCommand::new("PaymentChannelCollision")
+                            .value("id", 1002_u64)
+                            .value("version", 1_i64)
+                            .value("label", "Primary"),
+                    )
+                    .unwrap(),
+            )
+            .unwrap();
+        executor
+            .execute(
+                &SqliteDialect
+                    .compile_insert(
+                        &order,
+                        &InsertCommand::new("PaymentOrderCollision")
+                            .value("id", 9_u64)
+                            .value("version", 1_i64)
+                            .value("channel_id", 1002_u64)
+                            .value("name", "before"),
+                    )
+                    .unwrap(),
+            )
+            .unwrap();
+
+        let select = SqliteDialect
+            .compile_select(
+                &order,
+                &SelectQuery::new("PaymentOrderCollision").filter(Expr::eq("id", 9_u64)),
+            )
+            .unwrap();
+        assert!(
+            select.sql.contains("channel AS channel_id"),
+            "{}",
+            select.sql
+        );
+        let rows = executor.fetch_all_compact(&select).unwrap();
+        assert_eq!(rows.len(), 1);
+        let loaded = <PaymentOrderCollision as Entity>::from_compact_row(rows[0].clone()).unwrap();
+        assert_eq!(loaded.channel_id, 1002);
+        assert_eq!(
+            loaded.channel, None,
+            "scalar FK must not synthesize a child"
+        );
+        assert_eq!(loaded.version, 1);
+
+        let affected = executor
+            .execute(
+                &SqliteDialect
+                    .compile_update(
+                        &order,
+                        &UpdateCommand::new("PaymentOrderCollision", loaded.id)
+                            .expected_version(loaded.version)
+                            .value("name", "after"),
+                    )
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(affected, 1);
+        let rows = executor.fetch_all_compact(&select).unwrap();
+        let reloaded =
+            <PaymentOrderCollision as Entity>::from_compact_row(rows[0].clone()).unwrap();
+        assert_eq!(reloaded.channel_id, 1002);
+        assert_eq!(reloaded.channel, None);
+        assert_eq!(reloaded.version, 2);
+        assert_eq!(reloaded.name, "after");
     }
 
     #[test]
