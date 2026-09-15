@@ -5,10 +5,8 @@ use school_management_service_core::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let database = std::env::temp_dir().join(format!(
-        "teaql-school-rust-{}.sqlite",
-        std::process::id()
-    ));
+    let database =
+        std::env::temp_dir().join(format!("teaql-school-rust-{}.sqlite", std::process::id()));
     if database.exists() {
         std::fs::remove_file(&database)?;
     }
@@ -68,18 +66,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }};
     }
 
-    assert_query!("string equality", Q::schools().with_name_is("Riverside Primary School"), 1);
-    assert_query!("string inequality", Q::schools().with_name_is_not("Another School"), 1);
-    assert_query!("string membership", Q::schools().with_name_in(["Riverside Primary School", "Another School"]), 1);
-    assert_query!("negative membership", Q::schools().with_name_not_in(["Another School"]), 1);
+    assert_query!(
+        "string equality",
+        Q::schools().with_name_is("Riverside Primary School"),
+        1
+    );
+    assert_query!(
+        "string inequality",
+        Q::schools().with_name_is_not("Another School"),
+        1
+    );
+    assert_query!(
+        "string membership",
+        Q::schools().with_name_in(["Riverside Primary School", "Another School"]),
+        1
+    );
+    assert_query!(
+        "negative membership",
+        Q::schools().with_name_not_in(["Another School"]),
+        1
+    );
     assert_query!("contains", Q::schools().with_name_containing("Primary"), 1);
-    assert_query!("negative contains", Q::schools().with_name_not_containing("Secondary"), 1);
-    assert_query!("starts with", Q::schools().with_name_starting_with("Riverside"), 1);
-    assert_query!("negative starts with", Q::schools().with_name_not_starting_with("Lakeside"), 1);
+    assert_query!(
+        "negative contains",
+        Q::schools().with_name_not_containing("Secondary"),
+        1
+    );
+    assert_query!(
+        "starts with",
+        Q::schools().with_name_starting_with("Riverside"),
+        1
+    );
+    assert_query!(
+        "negative starts with",
+        Q::schools().with_name_not_starting_with("Lakeside"),
+        1
+    );
     assert_query!("ends with", Q::schools().with_name_ending_with("School"), 1);
-    assert_query!("negative ends with", Q::schools().with_name_not_ending_with("Academy"), 1);
-    assert_query!("number range", Q::schools().with_student_capacity_between(700_i64, 900_i64), 1);
-    assert_query!("strict comparison", Q::schools().with_student_capacity_greater_than(799_i64).with_student_capacity_less_than(801_i64), 1);
+    assert_query!(
+        "negative ends with",
+        Q::schools().with_name_not_ending_with("Academy"),
+        1
+    );
+    assert_query!(
+        "number range",
+        Q::schools().with_student_capacity_between(700_i64, 900_i64),
+        1
+    );
+    assert_query!(
+        "strict comparison",
+        Q::schools()
+            .with_student_capacity_greater_than(799_i64)
+            .with_student_capacity_less_than(801_i64),
+        1
+    );
     assert_query!(
         "date range",
         Q::schools().with_established_date_between(
@@ -92,7 +132,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_query!("unknown", Q::schools().with_address_is_unknown(), 0);
     assert_query!("boolean true", Q::schools().which_are_active(), 1);
     assert_query!("boolean false", Q::schools().which_are_not_active(), 0);
-    assert_query!("constant relation", Q::schools().with_school_type_is_primary(), 1);
+    assert_query!(
+        "constant relation",
+        Q::schools().with_school_type_is_primary(),
+        1
+    );
 
     let related = Q::schools()
         .with_name_is("Riverside Primary School")
@@ -142,10 +186,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .facet("schoolTypeFacet")
         .expect("SchoolType facet must be attached to SmartList");
     assert_eq!(all_values.len(), 2);
-    assert_eq!(all_values[0].get("code").and_then(|v| v.try_text()), Some("PRIMARY"));
-    assert_eq!(all_values[0].get("schoolCount").and_then(|v| v.try_u64()), Some(1));
-    assert_eq!(all_values[1].get("code").and_then(|v| v.try_text()), Some("SECONDARY"));
-    assert_eq!(all_values[1].get("schoolCount").and_then(|v| v.try_u64()), Some(0));
+    assert_eq!(
+        all_values[0].get("code").and_then(|v| v.try_text()),
+        Some("PRIMARY")
+    );
+    assert_eq!(
+        all_values[0].get("schoolCount").and_then(|v| v.try_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        all_values[1].get("code").and_then(|v| v.try_text()),
+        Some("SECONDARY")
+    );
+    assert_eq!(
+        all_values[1].get("schoolCount").and_then(|v| v.try_u64()),
+        Some(0)
+    );
 
     let matched_only = Q::schools()
         .with_name_containing("Primary")
@@ -164,17 +220,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .facet("schoolTypeFacet")
         .expect("Matched SchoolType facet must be attached to SmartList");
     assert_eq!(matched_values.len(), 1);
-    assert_eq!(matched_values[0].get("code").and_then(|v| v.try_text()), Some("PRIMARY"));
-    assert_eq!(matched_values[0].get("schoolCount").and_then(|v| v.try_u64()), Some(1));
+    assert_eq!(
+        matched_values[0].get("code").and_then(|v| v.try_text()),
+        Some("PRIMARY")
+    );
+    assert_eq!(
+        matched_values[0]
+            .get("schoolCount")
+            .and_then(|v| v.try_u64()),
+        Some(1)
+    );
 
-    for (index, name) in [
-        "North School",
-        "East School",
-        "South School",
-        "West School",
-    ]
-    .into_iter()
-    .enumerate()
+    for (index, name) in ["North School", "East School", "South School", "West School"]
+        .into_iter()
+        .enumerate()
     {
         let mut additional = Q::schools()
             .comment("Create an ID-set pagination fixture")
@@ -184,9 +243,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         additional.update_school_type_to_primary();
         additional.update_name(name);
         additional.update_address(format!("{} Pagination Road", index + 1));
-        additional.update_established_date(school_management_service_core::teaql_core::Value::Date(
-            "2000-01-01".parse()?,
-        ));
+        additional.update_established_date(
+            school_management_service_core::teaql_core::Value::Date("2000-01-01".parse()?),
+        );
         additional.update_student_capacity(100_i64 + index as i64);
         additional.update_active(true);
         let timestamp = school_management_service_core::teaql_core::time::Timestamp::now();
@@ -207,7 +266,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     assert_eq!(jumped_page.total_count, Some(5));
     assert_eq!(
-        jumped_page.iter().map(|school| school.id()).collect::<Vec<_>>(),
+        jumped_page
+            .iter()
+            .map(|school| school.id())
+            .collect::<Vec<_>>(),
         vec![3, 2]
     );
     assert_eq!(context.id_set_plan().as_deref(), Some("ID_SET_BUILD"));
@@ -221,10 +283,72 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     assert_eq!(first_page.total_count, Some(5));
     assert_eq!(
-        first_page.iter().map(|school| school.id()).collect::<Vec<_>>(),
+        first_page
+            .iter()
+            .map(|school| school.id())
+            .collect::<Vec<_>>(),
         vec![5, 4]
     );
     assert_eq!(context.id_set_plan().as_deref(), Some("ID_SET_HIT"));
+
+    // Two independently loaded objects must not share pending mutation intent
+    // merely because the same UserContext is used for both requests.
+    let mut committed = Q::schools()
+        .with_name_is("Riverside Primary School")
+        .select_self_fields()
+        .select_platform_with(Q::platforms_minimal().select_name())
+        .select_school_type_with(Q::school_types_minimal().select_code())
+        .comment("Load the complete School and forward relations for ledger isolation")
+        .purpose("Verify audited Save touches only this independently loaded graph")
+        .execute_for_one(&context)
+        .await?
+        .expect("Riverside School must exist before the isolation gate");
+    let mut abandoned = Q::schools()
+        .with_name_is("North School")
+        .select_self_fields()
+        .comment("Load a second complete School in the same UserContext")
+        .purpose("Verify its unsaved ledger cannot leak into the first Save")
+        .execute_for_one(&context)
+        .await?
+        .expect("North School must exist before the isolation gate");
+    let committed_id = committed.id();
+    let committed_version = committed.version();
+    let abandoned_id = abandoned.id();
+    let abandoned_version = abandoned.version();
+    committed.update_name("Riverside Primary Academy");
+    abandoned.update_name("North School Unsaved");
+
+    let saved = committed
+        .audit_as("Rename only Riverside School, not the separate pending North School")
+        .save(&context)
+        .await?;
+    assert_eq!(saved.id(), committed_id);
+    assert_eq!(saved.version(), committed_version + 1);
+    assert_eq!(saved.name(), "Riverside Primary Academy");
+    assert_eq!(
+        saved
+            .platform()
+            .expect("loaded Platform must survive Save")
+            .name(),
+        "Campus Learning Platform"
+    );
+    assert_eq!(
+        saved
+            .school_type()
+            .expect("loaded SchoolType must survive Save")
+            .code(),
+        "PRIMARY"
+    );
+    let untouched = Q::schools()
+        .with_id_is(abandoned_id)
+        .select_self_fields()
+        .comment("Reload the independent School that was modified but not saved")
+        .purpose("Prove no pending mutation leaked through UserContext")
+        .execute_for_one(&context)
+        .await?
+        .expect("North School must remain in SQLite");
+    assert_eq!(untouched.name(), "North School");
+    assert_eq!(untouched.version(), abandoned_version);
 
     // A sparse new-entity ledger must reject a missing required field before
     // the insert reaches SQLite. Run this after the fixed-ID query fixtures:
@@ -254,7 +378,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     assert_eq!(rejected.len(), 0);
 
-    println!("PASS Rust School bootstrap, ID-set pagination, portable Query, native SQLite Facet, and sparse ledger Checker parity");
+    println!("PASS Rust School bootstrap, ID-set pagination, portable Query, native SQLite Facet, independent ledger isolation, and sparse ledger Checker parity");
     std::fs::remove_file(database)?;
     Ok(())
 }
