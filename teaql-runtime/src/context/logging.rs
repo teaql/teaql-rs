@@ -183,9 +183,6 @@ impl UserContext {
         if !self.sql_log_options.enabled_for(operation) {
             return;
         }
-        let Some(debug_sql) = &metadata.debug_query else {
-            return;
-        };
         let trace_path =
             canonical_sql_trace_path(operation, &metadata.backend, &metadata.trace_chain);
         let result_summary = metadata
@@ -197,7 +194,8 @@ impl UserContext {
                     .map(|affected| format!("{affected} rows affected"))
             })
             .unwrap_or_default();
-        let entry = SqlLogEntry {
+        let debug_sql = metadata.debug_query.as_deref().unwrap_or_default();
+        let sensitive_entry = SqlLogEntry {
             operation,
             comment: trace_value(&metadata.trace_chain, teaql_core::TraceKind::Comment)
                 .or_else(|| metadata.comment.clone()),
@@ -207,7 +205,7 @@ impl UserContext {
             sql: metadata.parameterized_query.clone().unwrap_or_default(),
             params: metadata.params.clone(),
             pretty_sql: pretty_sql(debug_sql),
-            debug_sql: debug_sql.clone(),
+            debug_sql: debug_sql.to_owned(),
             started_at: metadata.started_at,
             ended_at: metadata.ended_at,
             elapsed: metadata
@@ -219,17 +217,25 @@ impl UserContext {
             affected_rows: metadata.affected_rows,
             result_summary,
         };
-        self.append_sql_log(metadata.started_at, trace_path, entry);
+        // The ordinary context buffer and default operator log are safe
+        // telemetry. Values and copy-paste SQL are only sent to an explicitly
+        // configured diagnostic sink, never retained in this buffer.
+        let mut safe_entry = sensitive_entry.clone();
+        safe_entry.params.clear();
+        safe_entry.debug_sql.clear();
+        safe_entry.pretty_sql.clear();
+        self.append_sql_log(metadata.started_at, trace_path, safe_entry, sensitive_entry);
     }
 
     fn append_sql_log(
         &self,
         timestamp: SystemTime,
         trace_path: Vec<teaql_core::TraceNode>,
-        entry: SqlLogEntry,
+        safe_entry: SqlLogEntry,
+        sensitive_entry: SqlLogEntry,
     ) {
         if let Ok(mut entries) = self.sql_log_entries.lock() {
-            entries.push(entry.clone());
+            entries.push(safe_entry.clone());
         }
         if let Some(buffer) = self.get_resource::<UnifiedLogBuffer>()
             && let Ok(mut entries) = buffer.entries.lock()
@@ -238,10 +244,11 @@ impl UserContext {
                 timestamp,
                 user_identifier: self.user_identifier.clone(),
                 trace_chain: trace_path.clone(),
-                payload: LogPayload::Sql(entry.clone()),
+                payload: LogPayload::Sql(safe_entry.clone()),
             });
         }
-        crate::log_formatter::LogManager::write_sql_log(&trace_path, &entry);
+        crate::log_formatter::LogManager::write_sql_log(&trace_path, &safe_entry);
+        crate::log_formatter::LogManager::write_sensitive_sql_log(&trace_path, &sensitive_entry);
     }
 }
 

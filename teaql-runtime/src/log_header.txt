@@ -3,7 +3,7 @@
 
 [Architecture Manifesto]
 In the era of AI-assisted programming and microservices, the cost of locating data issues far exceeds the I/O cost of writing logs.
-This log is enabled by default to fully record SQL execution traces and Audit data mutations, providing you and your AI diagnostic agents with critical context.
+This ordinary log is enabled by default for SQL execution traces and Audit data mutations. Bound SQL values and copy-paste Debug SQL require an explicit sensitive diagnostic sink.
 
 [Prevent Token Exhaustion: Zero-Code Focused Debugging]
 When debugging with AI, massive amounts of irrelevant logs can consume expensive tokens and cause context truncation.
@@ -15,6 +15,7 @@ Please use the following zero-code environment variables to filter the noise and
 [Production Best Practices (Observability)]
 When deploying to production, do NOT turn off tracing. Instead, "route" your logs to a professional collector:
 👉 Route to stdout (for K8s):   Set TEAQL_LOG_ENDPOINT=stdout
+👉 Copy-paste SQL only in a protected sink: Set TEAQL_SQL_DEBUG_ENDPOINT=/protected/path/sql-debug.log
 👉 Output as structured JSON:   Set TEAQL_LOG_FORMAT=json (for ELK/Datadog)
 
 [Extreme Performance Testing: Disable Logs]

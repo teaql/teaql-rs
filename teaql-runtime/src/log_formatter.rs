@@ -47,17 +47,23 @@ impl LogFormatter for HumanReaderFormatter {
             "comment={:?} purpose={:?} auditReason={:?}",
             entry.comment, entry.purpose, entry.audit_reason
         );
-        format!(
-            "[{}]-[{:>5}µs]-[DEBUG]-SqlLogEntry{} - [{}] {}\n          Parameterized SQL: {} params={:?}\n          Debug SQL: {}",
+        let mut output = format!(
+            "[{}]-[{:>5}µs]-[DEBUG]-SqlLogEntry{} - [{}] {}\n          Parameterized SQL: {}",
             ts,
             elapsed_us,
             trace_display,
             entry.result_summary,
             intent,
-            entry.sql.replace('\n', " "),
-            entry.params,
-            entry.debug_sql.replace('\n', " ")
-        )
+            entry.sql.replace('\n', " ")
+        );
+        if !entry.debug_sql.is_empty() {
+            output.push_str(&format!(
+                " params={:?}\n          Debug SQL: {}",
+                entry.params,
+                entry.debug_sql.replace('\n', " ")
+            ));
+        }
+        output
     }
 
     fn format_audit_log(&self, event: &RawAuditEvent) -> String {
@@ -266,6 +272,7 @@ impl LogConfig {
 pub struct LogManager;
 
 static LOG_ENDPOINT: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+static SQL_DEBUG_ENDPOINT: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
 static HEADER_WRITTEN: std::sync::Once = std::sync::Once::new();
 
 const EXTREME_TEST_FLAG: &str =
@@ -304,6 +311,16 @@ impl LogManager {
                             .unwrap_or_else(|| "teaql".to_string());
                         Some(format!("{}.log", exe_name))
                     })
+            })
+            .as_deref()
+    }
+
+    fn get_sql_debug_endpoint() -> Option<&'static str> {
+        SQL_DEBUG_ENDPOINT
+            .get_or_init(|| {
+                std::env::var("TEAQL_SQL_DEBUG_ENDPOINT")
+                    .ok()
+                    .filter(|endpoint| !endpoint.trim().is_empty())
             })
             .as_deref()
     }
@@ -367,6 +384,34 @@ impl LogManager {
         }
     }
 
+    pub(crate) fn write_sensitive_sql_log(trace_chain: &[TraceNode], entry: &SqlLogEntry) {
+        if !Self::config().should_log_sql(&entry.sql)
+            || matches!(Self::get_log_endpoint(), Some("off"))
+        {
+            return;
+        }
+        let Some(endpoint) = Self::get_sql_debug_endpoint() else {
+            return;
+        };
+        let content = LogFormatterFactory::get_formatter().format_sql_log(trace_chain, entry);
+        // If a diagnostic statement exceeds the bound, its partial rendering
+        // must be visibly non-executable rather than appearing copy-pasteable.
+        let content = truncate_sensitive_sql_log(&content, 64 * 1024);
+        match endpoint {
+            "stdout" => println!("{content}"),
+            path => {
+                if let Ok(mut file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                {
+                    use std::io::Write;
+                    let _ = writeln!(file, "{content}");
+                }
+            }
+        }
+    }
+
     pub fn write_audit_log(event: &RawAuditEvent) {
         if !Self::config().should_log_audit(&event.entity) {
             return;
@@ -378,5 +423,33 @@ impl LogManager {
             let content = LogFormatterFactory::get_formatter().format_audit_log(event);
             Self::write_to_file(&content);
         }
+    }
+}
+
+fn truncate_sensitive_sql_log(content: &str, max_bytes: usize) -> String {
+    if content.len() <= max_bytes {
+        return content.to_owned();
+    }
+    let mut end = max_bytes;
+    while !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}\n[TRUNCATED; NOT EXECUTABLE: diagnostic SQL exceeded {} bytes]",
+        &content[..end],
+        max_bytes
+    )
+}
+
+#[cfg(test)]
+mod sensitive_sql_log_tests {
+    use super::truncate_sensitive_sql_log;
+
+    #[test]
+    fn bounded_diagnostic_log_marks_partial_sql_non_executable() {
+        assert_eq!(truncate_sensitive_sql_log("SELECT 1", 100), "SELECT 1");
+        let truncated = truncate_sensitive_sql_log("SELECT '🔐private-value'", 11);
+        assert!(truncated.contains("TRUNCATED; NOT EXECUTABLE"));
+        assert!(!truncated.contains("private-value"));
     }
 }

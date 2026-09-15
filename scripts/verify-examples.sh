@@ -16,7 +16,17 @@ cargo test -p teaql-examples --all-targets
 cargo run --quiet --manifest-path examples/conformance/Cargo.toml
 cargo run --quiet --manifest-path examples/school-management/Cargo.toml
 SCHOOL_MANAGEMENT_SERVICE_CORE_DATABASE_URL="$verification_dir/env-helper.db" \
+  TEAQL_LOG_ENDPOINT="$verification_dir/env-helper-safe.log" \
+  TEAQL_SQL_DEBUG_ENDPOINT="$verification_dir/env-helper-sensitive.log" \
+  TEAQL_AUDIT_LOG=_silent \
   cargo run --quiet --manifest-path examples/school-management/Cargo.toml --bin env_runtime_save_probe
+rg -q 'Parameterized SQL:' "$verification_dir/env-helper-safe.log"
+if rg -q 'Debug SQL:|Env Helper School' "$verification_dir/env-helper-safe.log"; then
+  echo 'ordinary SQL log leaked copy-paste SQL or a bound School name' >&2
+  exit 1
+fi
+rg -q 'Debug SQL:.*Env Helper School' "$verification_dir/env-helper-sensitive.log"
+echo 'PASS: explicit SQL debug sink separated from ordinary log'
 TEAQL_EXAMPLE_DATABASE="$verification_dir/order.db" \
   cargo run --quiet --manifest-path examples/order-management/rust-app-console/Cargo.toml
 for graph_pass in 1 2; do
