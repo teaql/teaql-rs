@@ -63,6 +63,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(verified.school_type_id(), 1001);
     assert_eq!(verified.version(), updated.version());
 
+    let nested = Q::schools()
+        .with_id_is(updated.id())
+        .select_self_fields()
+        .select_school_type_with(
+            Q::school_types_minimal()
+                .select_self_fields()
+                .select_platform_with(Q::platforms_minimal().select_self_fields()),
+        )
+        .comment("what: load School through SchoolType to Platform")
+        .purpose("why: verify multilevel generated Query trace inheritance")
+        .execute_for_one(&context)
+        .await?
+        .expect("nested School query must find the saved row");
+    let school_type = nested.school_type().expect("SchoolType must be loaded");
+    assert_eq!(school_type.code(), "PRIMARY");
+    assert_eq!(
+        school_type
+            .platform()
+            .expect("Platform must be loaded")
+            .name(),
+        "Campus Learning Platform"
+    );
+    let nested_log = context
+        .sql_logs()
+        .into_iter()
+        .filter(|entry| entry.operation.is_select())
+        .find(|entry| {
+            entry
+                .trace_path
+                .iter()
+                .filter(|frame| {
+                    frame.kind == school_management_service_core::teaql_core::TraceKind::Relation
+                })
+                .count()
+                >= 2
+        })
+        .expect("nested Query SQL log must retain both relation frames");
+    let relation_names: Vec<_> = nested_log
+        .trace_path
+        .iter()
+        .filter(|frame| {
+            frame.kind == school_management_service_core::teaql_core::TraceKind::Relation
+        })
+        .map(|frame| frame.entity_type.as_str())
+        .collect();
+    assert_eq!(relation_names, vec!["school_type", "platform"]);
+    assert_eq!(
+        nested_log.comment.as_deref(),
+        Some("what: load School through SchoolType to Platform")
+    );
+    assert_eq!(
+        nested_log.purpose.as_deref(),
+        Some("why: verify multilevel generated Query trace inheritance")
+    );
+    println!("MULTILEVEL_QUERY_TRACE_PASS school_type->platform");
+
     let select_logs_before = context
         .sql_logs()
         .into_iter()
