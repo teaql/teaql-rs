@@ -2,10 +2,17 @@ name: Rust release SemVer audit
 
 on:
   workflow_dispatch:
+    inputs:
+      release_type:
+        description: SemVer release category to audit against official 4.3.5
+        required: true
+        default: patch
+        type: choice
+        options: [patch, minor, major]
 
 jobs:
   compare-published-api:
-    name: SemVer patch against 4.3.5 (${{ matrix.crate }})
+    name: SemVer ${{ inputs.release_type }} against 4.3.5 (${{ matrix.crate }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -25,7 +32,7 @@ jobs:
         with:
           package: ${{ matrix.crate }}
           baseline-version: "4.3.5"
-          release-type: patch
+          release-type: ${{ inputs.release_type }}
 
   macro-generated-client-compile:
     name: School and reverse relation against ${{ matrix.macro-source }} macro
