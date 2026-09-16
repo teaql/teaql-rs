@@ -2988,7 +2988,7 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
 name = "teaql-cache-integration-redis"
-version = "4.3.5"
+version = "5.0.0"
 dependencies = [
  "async-trait",
  "redis",
@@ -3000,7 +3000,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-cloud-actuator"
-version = "4.3.5"
+version = "5.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -3013,7 +3013,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-cloud-consul"
-version = "4.3.5"
+version = "5.0.0"
 dependencies = [
  "async-trait",
  "reqwest 0.13.4",
@@ -3024,7 +3024,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-cloud-core"
-version = "4.3.5"
+version = "5.0.0"
 dependencies = [
  "async-trait",
  "serde",
@@ -3035,7 +3035,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-cloud-nacos"
-version = "4.3.5"
+version = "5.0.0"
 dependencies = [
  "async-trait",
  "nacos-sdk",
@@ -3047,7 +3047,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-cloud-starter"
-version = "4.3.5"
+version = "5.0.0"
 dependencies = [
  "axum",
  "teaql-cloud-actuator",
@@ -3059,7 +3059,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-cloud-tests"
-version = "4.3.5"
+version = "5.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -3074,7 +3074,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-core"
-version = "4.3.5"
+version = "5.0.0"
 dependencies = [
  "chrono",
  "rust_decimal",
@@ -3086,7 +3086,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-data-service"
-version = "4.3.5"
+version = "5.0.0"
 dependencies = [
  "futures-core",
  "teaql-core",
@@ -3094,7 +3094,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-examples"
-version = "4.3.5"
+version = "5.0.0"
 dependencies = [
  "rusqlite",
  "teaql-core",
@@ -3107,7 +3107,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-macros"
-version = "4.3.5"
+version = "5.0.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3116,7 +3116,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-provider-linux"
-version = "4.3.5"
+version = "5.0.0"
 dependencies = [
  "chrono",
  "futures-util",
@@ -3129,7 +3129,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-provider-meilisearch"
-version = "4.3.5"
+version = "5.0.0"
 dependencies = [
  "async-trait",
  "reqwest 0.12.28",
@@ -3142,7 +3142,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-provider-mysql"
-version = "4.3.5"
+version = "5.0.0"
 dependencies = [
  "async-stream",
  "chrono",
@@ -3160,7 +3160,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-provider-postgres"
-version = "4.3.5"
+version = "5.0.0"
 dependencies = [
  "async-stream",
  "bytes",
@@ -3180,7 +3180,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-provider-sqlite"
-version = "4.3.5"
+version = "5.0.0"
 dependencies = [
  "async-stream",
  "chrono",
@@ -3199,7 +3199,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-runtime"
-version = "4.3.5"
+version = "5.0.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3220,7 +3220,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-sql"
-version = "4.3.5"
+version = "5.0.0"
 dependencies = [
  "futures-core",
  "futures-util",
@@ -3231,7 +3231,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-tfp-endpoint"
-version = "4.3.5"
+version = "5.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -3246,7 +3246,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-web-integration-axum"
-version = "4.3.5"
+version = "5.0.0"
 dependencies = [
  "axum",
  "serde",
