@@ -7,11 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [5.0.0] - Source prepared 2026-09-16; publication pending
+## [5.0.0] - 2026-09-16
 
 Release tracking: [Rust #144](https://github.com/teaql/teaql-rs/issues/144).
-This entry describes the source-version transition, not a crates.io release or
-an available signed `v5.0.0` tag.
+The coordinated nine-crate release is available on crates.io, with a signed
+[`v5.0.0`](https://github.com/teaql/teaql-rs/releases/tag/v5.0.0) tag on the
+verified source commit.
 
 ### Changed
 
@@ -32,8 +33,9 @@ an available signed `v5.0.0` tag.
 - Local verification: `cargo test --workspace --lib --tests --quiet` and
   `scripts/verify-examples.sh` completed with no failures. One Redis-only test
   remains explicitly ignored without `TEAQL_REDIS_URL`.
-- Published-artifact replay, generator adoption, public release provenance,
-  and signed-tag verification remain separate release gates.
+- Public archive provenance, signed-tag verification, and a clean downloaded
+  Order consumer replay passed. Generator default-version adoption remains a
+  separate release gate.
 
 ## [4.2.2] - 2026-07-31
 
