@@ -585,15 +585,30 @@ where
                 .map_err(|error| TfpEndpointError::ExecutionError(error.to_string()))?;
             let mut counts = std::collections::BTreeMap::new();
             for row in &membership_result.rows {
-                let Some(id) = row.get(&facet.relation_name).map(value_as_json) else {
+                let relation = row.get(&facet.relation_name).ok_or_else(|| {
+                    TfpEndpointError::ExecutionError(format!(
+                        "Facet membership row is missing relation field: {}",
+                        facet.relation_name
+                    ))
+                })?;
+                let count = row.get("__tfpFacetCount").ok_or_else(|| {
+                    TfpEndpointError::ExecutionError(
+                        "Facet membership row is missing count field: __tfpFacetCount".into(),
+                    )
+                })?;
+                let count = facet_count_value(count).map_err(TfpEndpointError::ExecutionError)?;
+                if matches!(
+                    relation,
+                    teaql_core::Value::Null | teaql_core::Value::TypedNull(_)
+                ) {
                     continue;
-                };
-                let count = row
-                    .get("__tfpFacetCount")
-                    .map(value_as_json)
-                    .and_then(|value| value.as_i64())
-                    .unwrap_or(0);
-                counts.insert(json_key(&id), count);
+                }
+                let key = json_key(&value_as_json(relation));
+                if counts.insert(key.clone(), count).is_some() {
+                    return Err(TfpEndpointError::ExecutionError(format!(
+                        "Facet membership result contains duplicate identity: {key}"
+                    )));
+                }
             }
 
             let aliases = facet
@@ -649,7 +664,15 @@ where
                 let mut value =
                     compact_row_to_wire_json(row, &nested_response_fields, &no_aggregate_aliases)
                         .map_err(TfpEndpointError::ExecutionError)?;
-                let id = value.get("id").cloned().unwrap_or(JsonValue::Null);
+                let id = value
+                    .get("id")
+                    .filter(|id| !id.is_null())
+                    .cloned()
+                    .ok_or_else(|| {
+                        TfpEndpointError::ExecutionError(
+                            "Facet value row is missing non-null identity field: id".into(),
+                        )
+                    })?;
                 let key = json_key(&id);
                 if !facet.include_all_facets && !counts.contains_key(&key) {
                     continue;
@@ -828,6 +851,14 @@ fn value_as_json(value: &teaql_core::Value) -> JsonValue {
     teaql_core::record_to_json_value(&record)["value"].clone()
 }
 
+fn facet_count_value(value: &teaql_core::Value) -> Result<u64, String> {
+    match value {
+        teaql_core::Value::I64(value) if *value >= 0 => Ok(*value as u64),
+        teaql_core::Value::U64(value) => Ok(*value),
+        _ => Err("Facet membership count must be a non-negative integer".into()),
+    }
+}
+
 fn json_key(value: &JsonValue) -> String {
     match value {
         JsonValue::String(value) => value.clone(),
@@ -999,6 +1030,18 @@ fn prepare_facets(trusted: &TrustedQueryContext, query: &mut TfpSelectQuery) -> 
         }
         validate_policy(trusted, &facet.query)?;
         let nested_fields = effective_field_mappings(trusted, &facet.query.entity, false)?;
+        let nested_id = nested_fields
+            .get("id")
+            .ok_or("Facet query requires a governed id field")?;
+        if !facet.query.select_items.is_empty()
+            && !facet
+                .query
+                .select_items
+                .iter()
+                .any(|field| nested_fields.get(field) == Some(nested_id))
+        {
+            return Err("Facet query explicit projection must include id".into());
+        }
         if !facet.query.group_by_items.is_empty() {
             return Err(
                 "A TFP facet does not accept groupByItems; relation grouping is derived".into(),
@@ -1111,6 +1154,19 @@ mod tests {
     #[derive(Clone, Default)]
     struct WireFacetExecutor;
 
+    #[derive(Clone, Copy)]
+    enum MalformedFacetResult {
+        MissingRelation,
+        MissingCount,
+        NegativeCount,
+        TextCount,
+        DuplicateMembership,
+        MissingNestedId,
+    }
+
+    #[derive(Clone, Copy)]
+    struct MalformedFacetExecutor(MalformedFacetResult);
+
     #[derive(Clone, Default)]
     struct GeneratedValuesMutationExecutor;
 
@@ -1199,6 +1255,85 @@ mod tests {
                         teaql_core::Value::Text("New order".into()),
                     ),
                 ]))]
+            } else {
+                Vec::new()
+            };
+            Ok(QueryResult {
+                metadata: metadata(DataServiceOperation::Query, Some(rows.len()), None),
+                rows,
+            })
+        }
+    }
+
+    impl DataServiceExecutor for MalformedFacetExecutor {
+        type Error = StubError;
+
+        fn capabilities(&self) -> DataServiceCapabilities {
+            DataServiceCapabilities::default()
+        }
+    }
+
+    impl QueryExecutor for MalformedFacetExecutor {
+        async fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
+            let rows = if !request.query.group_by.is_empty() {
+                match self.0 {
+                    MalformedFacetResult::MissingRelation => {
+                        vec![teaql_core::CompactRow::from_map(Record::from([(
+                            "__tfpFacetCount".into(),
+                            teaql_core::Value::I64(2),
+                        )]))]
+                    }
+                    MalformedFacetResult::MissingCount => {
+                        vec![teaql_core::CompactRow::from_map(Record::from([(
+                            "status_id".into(),
+                            teaql_core::Value::I64(1001),
+                        )]))]
+                    }
+                    MalformedFacetResult::NegativeCount => {
+                        vec![teaql_core::CompactRow::from_map(Record::from([
+                            ("status_id".into(), teaql_core::Value::I64(1001)),
+                            ("__tfpFacetCount".into(), teaql_core::Value::I64(-1)),
+                        ]))]
+                    }
+                    MalformedFacetResult::TextCount => {
+                        vec![teaql_core::CompactRow::from_map(Record::from([
+                            ("status_id".into(), teaql_core::Value::I64(1001)),
+                            (
+                                "__tfpFacetCount".into(),
+                                teaql_core::Value::Text("two".into()),
+                            ),
+                        ]))]
+                    }
+                    MalformedFacetResult::DuplicateMembership => vec![
+                        teaql_core::CompactRow::from_map(Record::from([
+                            ("status_id".into(), teaql_core::Value::I64(1001)),
+                            ("__tfpFacetCount".into(), teaql_core::Value::I64(1)),
+                        ])),
+                        teaql_core::CompactRow::from_map(Record::from([
+                            ("status_id".into(), teaql_core::Value::I64(1001)),
+                            ("__tfpFacetCount".into(), teaql_core::Value::U64(2)),
+                        ])),
+                    ],
+                    MalformedFacetResult::MissingNestedId => {
+                        vec![teaql_core::CompactRow::from_map(Record::from([
+                            ("status_id".into(), teaql_core::Value::I64(1001)),
+                            ("__tfpFacetCount".into(), teaql_core::Value::U64(2)),
+                        ]))]
+                    }
+                }
+            } else if request.query.entity == "OrderStatus" {
+                match self.0 {
+                    MalformedFacetResult::MissingNestedId => {
+                        vec![teaql_core::CompactRow::from_map(Record::from([(
+                            "code".into(),
+                            teaql_core::Value::Text("NEW".into()),
+                        )]))]
+                    }
+                    _ => vec![teaql_core::CompactRow::from_map(Record::from([
+                        ("id".into(), teaql_core::Value::I64(1001)),
+                        ("code".into(), teaql_core::Value::Text("NEW".into())),
+                    ]))],
+                }
             } else {
                 Vec::new()
             };
@@ -2127,6 +2262,83 @@ mod tests {
         assert_eq!(facet.len(), 2);
         assert_eq!(facet[0]["orderCount"], 2);
         assert_eq!(facet[1]["orderCount"], 0);
+    }
+
+    #[tokio::test]
+    async fn facet_projection_requires_identity_before_execution() {
+        let queries = Arc::new(Mutex::new(Vec::new()));
+        let endpoint = TfpEndpoint::new(
+            Arc::new(RecordingQueryExecutor(queries.clone())),
+            Arc::new(StubExecutor),
+        );
+        let error = endpoint
+            .handle_query(
+                &trusted(),
+                json!({
+                    "entity":"CustomerOrder",
+                    "facets":[{
+                        "facetName":"statusFacet", "relationName":"status",
+                        "query":{
+                            "entity":"OrderStatus", "selectItems":["code"],
+                            "aggregateItems":[{
+                                "function":"Count", "field":"id", "alias":"orderCount"
+                            }],
+                            "limitValue":20,
+                            "commentText":"load status facet",
+                            "purposeText":"render order filters"
+                        }
+                    }],
+                    "limitValue":10,
+                    "commentText":"load orders",
+                    "purposeText":"render order list"
+                }),
+            )
+            .await
+            .expect_err("facet projection without id must fail closed");
+        assert_eq!(error.code(), "TFP_INVALID_REQUEST");
+        assert!(queries.lock().expect("recorded queries").is_empty());
+    }
+
+    #[tokio::test]
+    async fn malformed_facet_executor_rows_fail_closed() {
+        for malformed in [
+            MalformedFacetResult::MissingRelation,
+            MalformedFacetResult::MissingCount,
+            MalformedFacetResult::NegativeCount,
+            MalformedFacetResult::TextCount,
+            MalformedFacetResult::DuplicateMembership,
+            MalformedFacetResult::MissingNestedId,
+        ] {
+            let endpoint = TfpEndpoint::new(
+                Arc::new(MalformedFacetExecutor(malformed)),
+                Arc::new(StubExecutor),
+            );
+            let error = endpoint
+                .handle_query(
+                    &trusted(),
+                    json!({
+                        "entity":"CustomerOrder",
+                        "facets":[{
+                            "facetName":"statusFacet", "relationName":"status",
+                            "query":{
+                                "entity":"OrderStatus", "selectItems":["id", "code"],
+                                "aggregateItems":[{
+                                    "function":"Count", "field":"id", "alias":"orderCount"
+                                }],
+                                "limitValue":20,
+                                "commentText":"load status facet",
+                                "purposeText":"render order filters"
+                            }
+                        }],
+                        "limitValue":10,
+                        "commentText":"load orders",
+                        "purposeText":"render order list"
+                    }),
+                )
+                .await
+                .expect_err("malformed facet result must fail closed");
+            assert_eq!(error.code(), "TFP_EXECUTION_FAILED");
+        }
     }
 
     #[tokio::test]
