@@ -18,7 +18,8 @@ cargo run --quiet --manifest-path examples/school-management/Cargo.toml
 SCHOOL_MANAGEMENT_SERVICE_CORE_DATABASE_URL="$verification_dir/env-helper.db" \
   TEAQL_LOG_ENDPOINT="$verification_dir/env-helper-safe.log" \
   TEAQL_SQL_DEBUG_ENDPOINT="$verification_dir/env-helper-sensitive.log" \
-  TEAQL_AUDIT_LOG=_silent \
+  TEAQL_AUDIT_DEBUG_ENDPOINT="$verification_dir/env-helper-audit-sensitive.log" \
+  TEAQL_AUDIT_LOG=_full_with_payload \
   cargo run --quiet --manifest-path examples/school-management/Cargo.toml --bin env_runtime_save_probe
 grep -E -q 'Parameterized SQL:' "$verification_dir/env-helper-safe.log"
 if grep -E -q 'Debug SQL:|Env Helper School' "$verification_dir/env-helper-safe.log"; then
@@ -26,7 +27,12 @@ if grep -E -q 'Debug SQL:|Env Helper School' "$verification_dir/env-helper-safe.
   exit 1
 fi
 grep -E -q 'Debug SQL:.*Env Helper School' "$verification_dir/env-helper-sensitive.log"
-echo 'PASS: explicit SQL debug sink separated from ordinary log'
+grep -E -q '\[AUDIT\].*Env Helper School' "$verification_dir/env-helper-audit-sensitive.log"
+if grep -Fq 'Debug SQL:' "$verification_dir/env-helper-audit-sensitive.log"; then
+  echo 'sensitive audit sink received SQL diagnostics' >&2
+  exit 1
+fi
+echo 'PASS: explicit SQL and audit debug sinks separated from ordinary log'
 TEAQL_EXAMPLE_DATABASE="$verification_dir/order.db" \
   cargo run --quiet --manifest-path examples/order-management/rust-app-console/Cargo.toml
 for graph_pass in 1 2; do

@@ -16,6 +16,7 @@ Please use the following zero-code environment variables to filter the noise and
 When deploying to production, do NOT turn off tracing. Instead, "route" your logs to a professional collector:
 👉 Route to stdout (for K8s):   Set TEAQL_LOG_ENDPOINT=stdout
 👉 Copy-paste SQL only in a protected sink: Set TEAQL_SQL_DEBUG_ENDPOINT=/protected/path/sql-debug.log
+👉 Raw audit values only with dual opt-in: Set TEAQL_AUDIT_LOG=_full_with_payload and TEAQL_AUDIT_DEBUG_ENDPOINT=/protected/path/audit-debug.log
 👉 Output as structured JSON:   Set TEAQL_LOG_FORMAT=json (for ELK/Datadog)
 
 [Extreme Performance Testing: Disable Logs]
