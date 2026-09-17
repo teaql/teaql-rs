@@ -1854,7 +1854,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn null_range_operands_fail_before_execution() {
+    async fn null_and_normalized_null_operands_fail_before_execution() {
         let queries = Arc::new(Mutex::new(Vec::new()));
         let query_executor = RecordingQueryExecutor(queries.clone());
         let endpoint = TfpEndpoint::new(Arc::new(query_executor), Arc::new(StubExecutor));
@@ -1864,6 +1864,10 @@ mod tests {
             json!({"id":{"$lte":null}}),
             json!({"id":{"$between":[null, 10]}}),
             json!({"id":{"$between":[1, null]}}),
+            json!({"id":{"$eq":{"id":null}}}),
+            json!({"id":{"$ne":{"id":null}}}),
+            json!({"id":{"$gte":{"id":null}}}),
+            json!({"id":{"$between":[{"id":null}, 10]}}),
         ] {
             let error = endpoint
                 .handle_query(

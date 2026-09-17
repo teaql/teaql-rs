@@ -414,12 +414,12 @@ pub fn parse_json_filter(value: &JsonValue) -> Result<Expr, String> {
 }
 
 fn non_null_value(operator: &str, operand: &JsonValue) -> Result<Value, String> {
-    if operand.is_null() {
-        return Err(format!(
+    match json_value(operand)? {
+        Value::Null => Err(format!(
             "{operator} does not accept null; use $isKnown or $isUnknown"
-        ));
+        )),
+        value => Ok(value),
     }
-    json_value(operand)
 }
 
 fn bounded_list(operator: &str, operand: &JsonValue) -> Result<Vec<Value>, String> {
@@ -676,9 +676,14 @@ mod tests {
             json!({"id":{"$lte":null}}),
             json!({"id":{"$between":[null, 10]}}),
             json!({"id":{"$between":[1, null]}}),
+            json!({"id":{"$eq":{"id":null}}}),
+            json!({"id":{"$ne":{"id":null}}}),
+            json!({"id":{"$gte":{"id":null}}}),
+            json!({"id":{"$between":[{"id":null}, 10]}}),
         ] {
             assert!(parse_json_filter(&filter).is_err(), "accepted {filter}");
         }
+        assert!(parse_json_filter(&json!({"id":{"$eq":{"id":42}}})).is_ok());
         let values: Vec<_> = (0..101).collect();
         assert!(parse_json_filter(&json!({"id":{"$in":values}})).is_err());
         let mut query: TfpSelectQuery = serde_json::from_value(json!({
