@@ -1156,6 +1156,7 @@ fn validate_mutation_policy(
             mutation.entity
         ));
     }
+    mutation.validate_action_shape()?;
     let actions = trusted
         .allowed_actions
         .get(&mutation.entity)
@@ -2998,6 +2999,43 @@ mod tests {
         ] {
             assert!(endpoint.handle_mutation(&trusted(), payload).await.is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn malformed_and_disallowed_mutation_actions_have_distinct_codes() {
+        let mutations = Arc::new(RecordingMutationExecutor::new(1));
+        let endpoint = TfpEndpoint::new(Arc::new(StubExecutor), mutations.clone());
+
+        let malformed = endpoint
+            .handle_mutation(
+                &trusted(),
+                json!({
+                    "entity":"CustomerOrder", "action":"Publish",
+                    "payload":{}, "comment":"publish order"
+                }),
+            )
+            .await
+            .expect_err("unknown canonical action must be invalid input");
+        assert_eq!(malformed.code(), "TFP_INVALID_REQUEST");
+
+        let mut restricted = trusted();
+        restricted
+            .allowed_actions
+            .insert("CustomerOrder".into(), BTreeSet::from(["Create".into()]));
+        let forbidden = endpoint
+            .handle_mutation(
+                &restricted,
+                json!({
+                    "entity":"CustomerOrder", "action":"Update", "id":1,
+                    "expectedVersion":1, "payload":{"orderNumber":"O-1"},
+                    "comment":"update order"
+                }),
+            )
+            .await
+            .expect_err("known but disallowed action remains policy violation");
+        assert_eq!(forbidden.code(), "TFP_POLICY_VIOLATION");
+        assert!(mutations.ordinary.lock().expect("ordinary").is_empty());
+        assert!(mutations.guarded.lock().expect("guarded").is_empty());
     }
 
     #[tokio::test]

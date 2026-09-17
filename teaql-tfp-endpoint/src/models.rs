@@ -592,6 +592,7 @@ pub struct TfpMutationQuery {
 
 impl TfpMutationQuery {
     pub(crate) fn validate_request_shape(&self) -> Result<(), String> {
+        self.validate_action_shape()?;
         let payload = self
             .payload
             .as_object()
@@ -664,6 +665,19 @@ impl TfpMutationQuery {
         }
         self.resolved_comment()?;
         Ok(())
+    }
+
+    pub(crate) fn validate_action_shape(&self) -> Result<(), String> {
+        if matches!(
+            self.action.as_str(),
+            "Create" | "Update" | "Delete" | "Recover"
+        ) {
+            return Ok(());
+        }
+        Err(format!(
+            "Invalid mutation request: unsupported action {}",
+            self.action
+        ))
     }
 
     fn resolved_comment(&self) -> Result<&str, String> {
@@ -1396,6 +1410,22 @@ mod tests {
                 format!("Invalid mutation request: {action} requires an empty payload")
             );
         }
+    }
+
+    #[test]
+    fn direct_translation_rejects_non_canonical_mutation_action() {
+        let mutation = TfpMutationQuery {
+            entity: "CustomerOrder".into(),
+            action: "Publish".into(),
+            payload: json!({}),
+            id: None,
+            expected_version: None,
+            comment: Some("publish order".into()),
+        };
+        assert_eq!(
+            mutation.to_core().unwrap_err(),
+            "Invalid mutation request: unsupported action Publish"
+        );
     }
 
     #[test]
