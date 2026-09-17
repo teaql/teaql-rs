@@ -20,6 +20,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Check Formatting
         run: cargo fmt --all -- --check
+      - name: Check release provenance crate contract
+        run: ./scripts/test-release-provenance-contract.sh
       - name: Clippy Lints
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Build
