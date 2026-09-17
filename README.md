@@ -61,8 +61,11 @@ The `main` branch can contain changes that have not yet been packaged; use a
 specific released version when validating a downloaded artifact.
 For release provenance, run `./scripts/verify-release-provenance.sh <version>`
 from a checkout with the relevant tags and signing public key. It compares the
-eight published crate archives with crates.io checksums, requires one VCS source
-commit, and verifies that `v<version>` is signed and points to that commit.
+archives for every crate in the retained public-release contract with crates.io
+checksums, requires one VCS source commit, and verifies that `v<version>` is
+signed and points to that commit. Run the script with `--list-crates` to inspect
+the exact current package boundary instead of relying on a duplicated count in
+documentation.
 This is a provenance gate, not a functional database-conformance test.
 
 ## Cloud Integration
