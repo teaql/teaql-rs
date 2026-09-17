@@ -68,6 +68,15 @@ the exact current package boundary instead of relying on a duplicated count in
 documentation.
 This is a provenance gate, not a functional database-conformance test.
 
+For a new release, first push the signed `v<version>` tag on the exact
+`origin/main` commit, then run `./publish.sh <version> --check-only`. A green
+preflight permits `./publish.sh <version>` to publish the retained nine-crate
+boundary in dependency order with Cargo verification enabled. The publisher is
+resume-safe only when an existing archive has the expected checksum and clean
+VCS source; it finishes by running the provenance gate above. It intentionally
+refuses dirty trees, unsigned or unpushed tags, non-main source, and manifest
+version drift.
+
 ## Cloud Integration
 
 TeaQL provides cloud-native crates for embedding Rust services into Java (Spring Cloud) microservice architectures:

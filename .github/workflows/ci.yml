@@ -22,6 +22,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Check release provenance crate contract
         run: ./scripts/test-release-provenance-contract.sh
+      - name: Check fail-closed publish contract
+        run: ./scripts/test-publish-contract.sh
       - name: Check published Order replay version pinning
         run: ./scripts/test-pin-rust-order-replay-version.sh
       - name: Clippy Lints
