@@ -466,21 +466,13 @@ where
             .map(|aggregate| aggregate.alias.clone())
             .collect::<std::collections::BTreeSet<_>>();
         let client_comment = tfp_query
-            .generated_comment
-            .clone()
-            .or(tfp_query.comment_text.clone())
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| {
-                TfpEndpointError::TranslationError("Query comment is required".into())
-            })?;
+            .resolved_comment()
+            .map_err(TfpEndpointError::TranslationError)?
+            .to_owned();
         let requested_purpose = tfp_query
-            .generated_purpose
-            .clone()
-            .or(tfp_query.purpose_text.clone())
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| {
-                TfpEndpointError::TranslationError("Query purpose is required".into())
-            })?;
+            .resolved_purpose()
+            .map_err(TfpEndpointError::TranslationError)?
+            .to_owned();
         let mut core_query = tfp_query
             .to_core()
             .map_err(TfpEndpointError::TranslationError)?;
@@ -614,21 +606,13 @@ where
             nested.aggregate_items.clear();
             nested.group_by_items.clear();
             let nested_comment = nested
-                .generated_comment
-                .clone()
-                .or(nested.comment_text.clone())
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| {
-                    TfpEndpointError::TranslationError("Facet query comment is required".into())
-                })?;
+                .resolved_comment()
+                .map_err(TfpEndpointError::TranslationError)?
+                .to_owned();
             let nested_purpose = nested
-                .generated_purpose
-                .clone()
-                .or(nested.purpose_text.clone())
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| {
-                    TfpEndpointError::TranslationError("Facet query purpose is required".into())
-                })?;
+                .resolved_purpose()
+                .map_err(TfpEndpointError::TranslationError)?
+                .to_owned();
             let mut nested_query = nested
                 .to_core()
                 .map_err(TfpEndpointError::TranslationError)?;
@@ -932,6 +916,8 @@ fn validate_policy(trusted: &TrustedQueryContext, query: &TfpSelectQuery) -> Res
     if query.limit_value.unwrap_or(0) > trusted.max_page_size {
         return Err("Page size exceeds federation policy".into());
     }
+    query.resolved_comment()?;
+    query.resolved_purpose()?;
     let allowed = effective_field_mappings(trusted, &query.entity, false)?;
     for field in query
         .order_items
@@ -1021,25 +1007,6 @@ fn prepare_facets(trusted: &TrustedQueryContext, query: &mut TfpSelectQuery) -> 
         let aggregate = &facet.query.aggregate_items[0];
         if !aggregate.function.eq_ignore_ascii_case("count") || aggregate.field != "id" {
             return Err("A TFP facet requires exactly one Count(id) aggregate".into());
-        }
-        if facet
-            .query
-            .generated_comment
-            .as_deref()
-            .or(facet.query.comment_text.as_deref())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .is_none()
-            || facet
-                .query
-                .generated_purpose
-                .as_deref()
-                .or(facet.query.purpose_text.as_deref())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .is_none()
-        {
-            return Err("Facet query commentText and purposeText are required".into());
         }
         facet.query.map_fields(&nested_fields)?;
     }
@@ -1787,6 +1754,59 @@ mod tests {
                 .expect_err("unbounded query must fail closed");
             assert_eq!(error.code(), "TFP_INVALID_REQUEST");
         }
+    }
+
+    #[tokio::test]
+    async fn missing_blank_or_conflicting_query_evidence_fails_before_execution() {
+        let queries = Arc::new(Mutex::new(Vec::new()));
+        let endpoint = TfpEndpoint::new(
+            Arc::new(RecordingQueryExecutor(queries.clone())),
+            Arc::new(StubExecutor),
+        );
+
+        for payload in [
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "purposeText":"render orders"
+            }),
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "commentText":"load orders", "purposeText":" "
+            }),
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "commentText":"load orders", "_comment":"legacy load",
+                "purposeText":"render orders"
+            }),
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "commentText":"load orders", "purposeText":"render orders",
+                "_purpose":"legacy render"
+            }),
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "facets":[{
+                    "facetName":"statusFacet", "relationName":"status",
+                    "query":{
+                        "entity":"OrderStatus", "limitValue":10,
+                        "selectItems":["id"],
+                        "aggregateItems":[{
+                            "function":"Count", "field":"id", "alias":"orderCount"
+                        }],
+                        "purposeText":"render order filters"
+                    }
+                }],
+                "commentText":"load orders", "purposeText":"render orders"
+            }),
+        ] {
+            let error = endpoint
+                .handle_query(&trusted(), payload)
+                .await
+                .expect_err("invalid query evidence must fail closed");
+            assert_eq!(error.code(), "TFP_INVALID_REQUEST");
+        }
+
+        assert!(queries.lock().expect("recorded queries").is_empty());
     }
 
     #[tokio::test]

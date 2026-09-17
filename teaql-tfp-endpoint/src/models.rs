@@ -97,6 +97,8 @@ impl TfpSelectQuery {
     pub(crate) fn validate_request_shape(&self) -> Result<(), String> {
         self.validate_filter_shape()?;
         self.validate_limit_shape()?;
+        self.resolved_comment()?;
+        self.resolved_purpose()?;
         Ok(())
     }
 
@@ -105,6 +107,24 @@ impl TfpSelectQuery {
             return Err("A TFP query requires an explicit positive limit".into());
         }
         Ok(())
+    }
+
+    pub(crate) fn resolved_comment(&self) -> Result<&str, String> {
+        resolve_query_evidence(
+            "commentText",
+            self.comment_text.as_deref(),
+            "_comment",
+            self.generated_comment.as_deref(),
+        )
+    }
+
+    pub(crate) fn resolved_purpose(&self) -> Result<&str, String> {
+        resolve_query_evidence(
+            "purposeText",
+            self.purpose_text.as_deref(),
+            "_purpose",
+            self.generated_purpose.as_deref(),
+        )
     }
 
     pub fn validate_filter_shape(&self) -> Result<(), String> {
@@ -220,6 +240,24 @@ impl TfpSelectQuery {
 
         Ok(q)
     }
+}
+
+fn resolve_query_evidence<'a>(
+    canonical_name: &str,
+    canonical_value: Option<&'a str>,
+    legacy_name: &str,
+    legacy_value: Option<&'a str>,
+) -> Result<&'a str, String> {
+    if canonical_value.is_some() && legacy_value.is_some() {
+        return Err(format!(
+            "A TFP query cannot provide both {canonical_name} and {legacy_name}"
+        ));
+    }
+    canonical_value
+        .or(legacy_value)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("A TFP query requires non-blank {canonical_name} or {legacy_name}"))
 }
 
 fn validate_filter_tree(
@@ -755,6 +793,51 @@ mod tests {
             query.to_core().unwrap_err(),
             "Facet execution requires TfpEndpoint and cannot use direct query translation"
         );
+    }
+
+    #[test]
+    fn direct_translation_requires_unambiguous_comment_and_purpose() {
+        for payload in [
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "purposeText":"render orders"
+            }),
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "commentText":" ", "purposeText":"render orders"
+            }),
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "commentText":"load orders"
+            }),
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "commentText":"load orders", "_comment":"legacy load",
+                "purposeText":"render orders"
+            }),
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "commentText":"load orders", "purposeText":"render orders",
+                "_purpose":"legacy render"
+            }),
+        ] {
+            let query: TfpSelectQuery = serde_json::from_value(payload).unwrap();
+            assert!(query.to_core().is_err(), "accepted {query:?}");
+        }
+
+        for payload in [
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "commentText":"load orders", "purposeText":"render orders"
+            }),
+            json!({
+                "entity":"CustomerOrder", "_limit":10,
+                "_comment":"load orders", "_purpose":"render orders"
+            }),
+        ] {
+            let query: TfpSelectQuery = serde_json::from_value(payload).unwrap();
+            query.to_core().expect("one supported evidence spelling");
+        }
     }
 
     #[test]
