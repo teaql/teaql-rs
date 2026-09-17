@@ -9,6 +9,7 @@ expected="$({
         teaql-data-service \
         teaql-sql \
         teaql-runtime \
+        teaql-tfp-endpoint \
         teaql-provider-postgres \
         teaql-provider-sqlite \
         teaql-provider-mysql \
@@ -22,9 +23,9 @@ if [[ "$actual" != "$expected" ]]; then
     exit 1
 fi
 
-if [[ "$(wc -l <<<"$actual")" -ne 9 ]]; then
-    printf 'FAIL expected exactly nine public release crates\n' >&2
+if [[ "$(wc -l <<<"$actual")" -ne 10 ]]; then
+    printf 'FAIL expected exactly ten public release crates\n' >&2
     exit 1
 fi
 
-printf 'PASS release provenance contract: 9/9 public crates\n'
+printf 'PASS release provenance contract: 10/10 public crates\n'

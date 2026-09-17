@@ -1,0 +1,86 @@
+name: Rust published TFP wire-profile replay
+
+on:
+  workflow_dispatch:
+    inputs:
+      runtime_version:
+        description: Exact published Rust runtime and TFP endpoint version
+        required: true
+        default: "5.0.1"
+        type: string
+
+jobs:
+  replay-official-archives:
+    name: Wire metadata against official ${{ inputs.runtime_version }}
+    runs-on: ubuntu-latest
+    env:
+      TEAQL_ARCHIVE_VERSION: ${{ inputs.runtime_version }}
+      REPLAY_MANIFEST: release-fixtures/tfp-wire-profile/Cargo.toml
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Pin one exact public package generation
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/pin-rust-tfp-replay-version.sh \
+            "$TEAQL_ARCHIVE_VERSION" "$REPLAY_MANIFEST"
+          cargo generate-lockfile --manifest-path "$REPLAY_MANIFEST"
+      - name: Reject path, git, mixed-version, and checksum-free resolution
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo metadata --locked --manifest-path "$REPLAY_MANIFEST" --format-version 1 |
+            python3 -c '
+          import json, os, re, sys, tomllib
+          from pathlib import Path
+          metadata = json.load(sys.stdin)
+          requested = os.environ["TEAQL_ARCHIVE_VERSION"]
+          manifest = Path(os.environ["REPLAY_MANIFEST"])
+          lock = tomllib.loads((manifest.parent / "Cargo.lock").read_text())
+          required = ("teaql-core", "teaql-data-service", "teaql-runtime", "teaql-tfp-endpoint")
+          registry = "registry+https://github.com/rust-lang/crates.io-index"
+          for crate in required:
+              packages = [item for item in metadata["packages"] if item["name"] == crate]
+              assert len(packages) == 1, f"RED {crate}: expected one package, found {len(packages)}"
+              package = packages[0]
+              actual_version = package["version"]
+              actual_source = package["source"]
+              assert actual_version == requested, f"RED {crate}: {actual_version} != {requested}"
+              assert actual_source == registry, f"RED {crate}: non-official source {actual_source}"
+              entries = [item for item in lock["package"] if item["name"] == crate and item["version"] == requested]
+              assert len(entries) == 1, f"RED {crate}: missing unique lock entry"
+              assert entries[0].get("source") == registry, f"RED {crate}: lock source mismatch"
+              assert re.fullmatch(r"[0-9a-f]{64}", entries[0].get("checksum", "")), f"RED {crate}: missing checksum"
+              checksum = entries[0]["checksum"]
+              print(f"OFFICIAL_ARCHIVE {crate} {requested} checksum={checksum}")
+          '
+      - name: Match every archive VCS source to the release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_commit="$(git rev-list -n 1 "v$TEAQL_ARCHIVE_VERSION")"
+          test -n "$release_commit"
+          replay_archives="$(mktemp -d)"
+          trap 'rm -r -- "$replay_archives"' EXIT
+          for crate_name in \
+            teaql-core teaql-data-service teaql-runtime teaql-tfp-endpoint
+          do
+            archive="$replay_archives/$crate_name-$TEAQL_ARCHIVE_VERSION.crate"
+            curl -fsSL --retry 2 --max-time 30 \
+              -H 'User-Agent: teaql-tfp-release-replay/1.0 (info@teaql.io)' \
+              -o "$archive" \
+              "https://static.crates.io/crates/$crate_name/$crate_name-$TEAQL_ARCHIVE_VERSION.crate"
+            vcs="$(tar -xOzf "$archive" \
+              "$crate_name-$TEAQL_ARCHIVE_VERSION/.cargo_vcs_info.json")"
+            crate_commit="$(jq -er '.git.sha1' <<<"$vcs")"
+            dirty="$(jq -r '.git.dirty // false' <<<"$vcs")"
+            test "$crate_commit" = "$release_commit"
+            test "$dirty" = false
+            echo "ARCHIVE_VCS $crate_name $crate_commit clean"
+          done
+      - name: Execute wire metadata and rejection semantics
+        shell: bash
+        run: cargo run --locked --manifest-path "$REPLAY_MANIFEST"
