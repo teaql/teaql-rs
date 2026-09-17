@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.1] - 2026-09-17
+
+Release tracking: [Rust #147](https://github.com/teaql/teaql-rs/issues/147).
+
+### Fixed
+
+- Preserve the number of bound SQL parameters in ordinary `UserContext` log
+  entries without retaining their values. Each safe entry now carries one
+  redacted `Null` slot per parameter and exposes `SqlLogEntry::parameter_count()`.
+- Keep raw parameter values and copy-paste SQL confined to the explicitly
+  configured sensitive diagnostic sink; the default context buffer remains
+  safe for application logs and generated Debug Assist.
+
+### Migration and verification
+
+- Generated Debug Assist should use `parameter_count()` and must not infer
+  value-bearing SQL from the ordinary context buffer.
+- Runtime, provider, security, retained-example, public-package provenance,
+  and exact generated-consumer evidence are tracked in issue #147.
+
 ## [5.0.0] - 2026-09-16
 
 Release tracking: [Rust #144](https://github.com/teaql/teaql-rs/issues/144).
