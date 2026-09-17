@@ -69,5 +69,6 @@ TEAQL_TEST_NACOS_PASSWORD='<test-password>' \
 The example rejects a partial credential pair and never logs the credentials.
 
 The example verifies explicit instance identity, metadata and weight discovery,
-configuration publish/read, health and metrics, then removes both the instance
+service-change push, configuration publish/read and change push, functional
+subscription cancellation, health and metrics, then removes both the instance
 and configuration evidence.

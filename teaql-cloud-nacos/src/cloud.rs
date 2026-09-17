@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use nacos_sdk::api::config::{
     ConfigChangeListener, ConfigResponse, ConfigService, ConfigServiceBuilder,
 };
-use nacos_sdk::api::naming::{NamingService, NamingServiceBuilder};
+use nacos_sdk::api::naming::{NamingEventListener, NamingService, NamingServiceBuilder};
 use nacos_sdk::api::plugin::AuthPlugin;
 use nacos_sdk::api::props::ClientProps;
 
@@ -192,20 +192,27 @@ impl ServiceDiscovery for NacosCloud {
         let svc_name = service_name.to_string();
         let grp = group_name(group);
 
-        let listener = Arc::new(NacosEventSubscriber {
+        let listener: Arc<dyn NamingEventListener> = Arc::new(NacosEventSubscriber {
             service_name: svc_name.clone(),
             callback,
         });
 
         self.naming
-            .subscribe(svc_name.clone(), grp.clone(), Vec::new(), listener)
+            .subscribe(svc_name.clone(), grp.clone(), Vec::new(), listener.clone())
             .await
             .map_err(|e| CloudError::Discovery(e.to_string()))?;
 
-        // Return a handle that can unsubscribe (no-op for now,
-        // nacos-sdk 0.8 does not expose unsubscribe cleanly)
-        Ok(SubscriptionHandle::new(|| {
-            // nacos-sdk 0.8 does not support unsubscribe via API
+        let naming = self.naming.clone();
+        let runtime = tokio::runtime::Handle::current();
+        Ok(SubscriptionHandle::new(move || {
+            runtime.spawn(async move {
+                if let Err(error) = naming
+                    .unsubscribe(svc_name, grp, Vec::new(), listener)
+                    .await
+                {
+                    tracing::warn!(%error, "failed to unsubscribe Nacos service listener");
+                }
+            });
         }))
     }
 }
@@ -262,14 +269,26 @@ impl ConfigSource for NacosCloud {
         config_id: &ConfigId,
         callback: Box<dyn Fn(String) + Send + Sync>,
     ) -> Result<WatchHandle, CloudError> {
-        let listener = Arc::new(NacosConfigWatcher { callback });
+        let listener: Arc<dyn ConfigChangeListener> = Arc::new(NacosConfigWatcher { callback });
         self.config_svc
-            .add_listener(config_id.data_id.clone(), config_id.group.clone(), listener)
+            .add_listener(
+                config_id.data_id.clone(),
+                config_id.group.clone(),
+                listener.clone(),
+            )
             .await
             .map_err(|e| CloudError::Config(e.to_string()))?;
 
-        Ok(WatchHandle::new(|| {
-            // nacos-sdk 0.8 does not expose remove_listener
+        let config_svc = self.config_svc.clone();
+        let data_id = config_id.data_id.clone();
+        let group = config_id.group.clone();
+        let runtime = tokio::runtime::Handle::current();
+        Ok(WatchHandle::new(move || {
+            runtime.spawn(async move {
+                if let Err(error) = config_svc.remove_listener(data_id, group, listener).await {
+                    tracing::warn!(%error, "failed to remove Nacos config listener");
+                }
+            });
         }))
     }
 }
