@@ -1112,7 +1112,8 @@ mod sql_log_option_tests {
         let entry = context.sql_logs().pop().expect("safe SQL log");
         assert_eq!(entry.sql, "SELECT id FROM account WHERE secret = ?");
         assert_eq!(entry.result_count, Some(1));
-        assert!(entry.params.is_empty());
+        assert_eq!(entry.parameter_count(), 1);
+        assert_eq!(entry.params, vec![Value::Null]);
         assert!(entry.debug_sql.is_empty());
         assert!(entry.pretty_sql.is_empty());
         let buffered = buffer.entries.lock().unwrap();
@@ -1215,7 +1216,8 @@ mod sql_log_option_tests {
         assert_eq!(query.trace_path[5].entity_type, "sqlite");
         assert_eq!(query.trace_path[6].entity_type, "select");
         assert_eq!(query.sql, "SELECT name FROM school_data WHERE id = ?");
-        assert!(query.params.is_empty());
+        assert_eq!(query.parameter_count(), 1);
+        assert_eq!(query.params, vec![Value::Null]);
         assert!(query.debug_sql.is_empty());
         assert_eq!(query.result_count, Some(2));
 
@@ -1240,6 +1242,8 @@ mod sql_log_option_tests {
             debug_query: Some("UPDATE school_data SET name = 'Academy' WHERE id = 7".to_owned()),
         });
         let mutation = context.sql_logs().pop().expect("mutation log");
+        assert_eq!(mutation.parameter_count(), 2);
+        assert_eq!(mutation.params, vec![Value::Null, Value::Null]);
         assert_eq!(mutation.comment, None);
         assert_eq!(mutation.purpose, None);
         assert_eq!(
@@ -1260,7 +1264,6 @@ mod sql_log_option_tests {
             ]
         );
         assert_eq!(mutation.affected_rows, Some(1));
-        assert!(mutation.params.is_empty());
         assert!(mutation.debug_sql.is_empty());
     }
 }
