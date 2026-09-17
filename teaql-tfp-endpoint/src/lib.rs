@@ -263,6 +263,22 @@ fn compact_row_to_wire_json(
     Ok(JsonValue::Object(output))
 }
 
+fn generated_values_to_wire_json(
+    generated: &teaql_core::Record,
+    response_fields: &std::collections::BTreeMap<String, String>,
+) -> JsonValue {
+    let JsonValue::Object(raw) = teaql_core::record_to_json_value(generated) else {
+        return JsonValue::Object(serde_json::Map::new());
+    };
+    let mut output = serde_json::Map::new();
+    for (internal, value) in raw {
+        if let Some(public) = response_fields.get(&internal) {
+            output.insert(public.clone(), value);
+        }
+    }
+    JsonValue::Object(output)
+}
+
 #[derive(Error, Debug)]
 pub enum TfpEndpointError {
     #[error("Failed to parse JSON payload: {0}")]
@@ -709,6 +725,11 @@ where
 
         validate_mutation_policy(trusted, &tfp_mutation)
             .map_err(TfpEndpointError::TranslationError)?;
+        let response_fields = match trusted.field_mappings.get(&tfp_mutation.entity) {
+            Some(_) => effective_response_field_mappings(trusted, &tfp_mutation.entity)
+                .map_err(TfpEndpointError::TranslationError)?,
+            None => std::collections::BTreeMap::new(),
+        };
         let mappings = trusted
             .writable_field_mappings
             .get(&tfp_mutation.entity)
@@ -773,7 +794,13 @@ where
         let mut data_arr = Vec::new();
         if !result.generated_values.is_empty() {
             let generated: teaql_core::Record = result.generated_values.clone().into();
-            data_arr.push(teaql_core::record_to_json_value(&generated));
+            let public_generated = generated_values_to_wire_json(&generated, &response_fields);
+            if public_generated
+                .as_object()
+                .is_some_and(|values| !values.is_empty())
+            {
+                data_arr.push(public_generated);
+            }
         }
         response_obj.insert("data".to_string(), JsonValue::Array(data_arr));
 
@@ -1138,6 +1165,9 @@ mod tests {
     #[derive(Clone, Default)]
     struct WireFacetExecutor;
 
+    #[derive(Clone, Default)]
+    struct GeneratedValuesMutationExecutor;
+
     #[derive(Debug)]
     struct StubError;
     impl std::fmt::Display for StubError {
@@ -1245,6 +1275,46 @@ mod tests {
     }
 
     impl GuardedMutationExecutor for StubExecutor {
+        async fn mutate_guarded(
+            &self,
+            request: GuardedMutationRequest,
+        ) -> Result<MutationResult, Self::Error> {
+            self.mutate(request.mutation).await
+        }
+    }
+
+    impl DataServiceExecutor for GeneratedValuesMutationExecutor {
+        type Error = StubError;
+
+        fn capabilities(&self) -> DataServiceCapabilities {
+            DataServiceCapabilities::default()
+        }
+    }
+
+    impl MutationExecutor for GeneratedValuesMutationExecutor {
+        async fn mutate(&self, _request: MutationRequest) -> Result<MutationResult, Self::Error> {
+            Ok(MutationResult {
+                affected_rows: 1,
+                generated_values: Record::from([
+                    ("id".into(), teaql_core::Value::I64(42)),
+                    (
+                        "order_number".into(),
+                        teaql_core::Value::Text("ORD-42".into()),
+                    ),
+                    ("commerce_platform_id".into(), teaql_core::Value::I64(7)),
+                    (
+                        "provider_private".into(),
+                        teaql_core::Value::Text("hidden".into()),
+                    ),
+                ])
+                .into(),
+                persisted_snapshot: None,
+                metadata: metadata(DataServiceOperation::Insert, None, Some(1)),
+            })
+        }
+    }
+
+    impl GuardedMutationExecutor for GeneratedValuesMutationExecutor {
         async fn mutate_guarded(
             &self,
             request: GuardedMutationRequest,
@@ -1422,6 +1492,35 @@ mod tests {
             wire_metadata: BTreeMap::new(),
             max_page_size: 100,
         }
+    }
+
+    fn trusted_with_generated_wire_metadata() -> TrustedQueryContext {
+        let mut context = trusted();
+        context.field_mappings.insert(
+            "CustomerOrder".into(),
+            BTreeMap::from([
+                ("id".into(), "id".into()),
+                ("order_number".into(), "order_number".into()),
+                ("status".into(), "status_id".into()),
+            ]),
+        );
+        context.writable_field_mappings.insert(
+            "CustomerOrder".into(),
+            BTreeMap::from([("order_number".into(), "order_number".into())]),
+        );
+        context.wire_metadata.insert(
+            "CustomerOrder".into(),
+            WireEntityMetadata::new(
+                BTreeMap::from([
+                    ("id".into(), "id".into()),
+                    ("order_number".into(), "orderNumber".into()),
+                    ("status".into(), "status".into()),
+                ]),
+                BTreeMap::new(),
+            )
+            .expect("order wire metadata"),
+        );
+        context
     }
 
     #[test]
@@ -2119,6 +2218,69 @@ mod tests {
         assert_eq!(
             insert.values.get("commerce_platform_id"),
             Some(&teaql_core::Value::I64(1))
+        );
+    }
+
+    #[tokio::test]
+    async fn mutation_generated_values_are_filtered_and_mapped_to_wire_names() {
+        let endpoint = TfpEndpoint::new(
+            Arc::new(StubExecutor),
+            Arc::new(GeneratedValuesMutationExecutor),
+        );
+        let response = endpoint
+            .handle_mutation(
+                &trusted_with_generated_wire_metadata(),
+                json!({
+                    "entity":"CustomerOrder", "action":"Create",
+                    "payload":{"orderNumber":"ORD-42"}, "comment":"create order"
+                }),
+            )
+            .await
+            .expect("create mutation");
+
+        assert_eq!(response["affectedRows"], 1);
+        assert_eq!(response["data"][0]["id"], 42);
+        assert_eq!(response["data"][0]["orderNumber"], "ORD-42");
+        assert!(response["data"][0].get("order_number").is_none());
+        assert!(response["data"][0].get("commerce_platform_id").is_none());
+        assert!(response["data"][0].get("provider_private").is_none());
+    }
+
+    #[tokio::test]
+    async fn ambiguous_mutation_response_mapping_fails_before_execution() {
+        let mutations = Arc::new(RecordingMutationExecutor::new(1));
+        let endpoint = TfpEndpoint::new(Arc::new(StubExecutor), mutations.clone());
+        let mut context = trusted_with_generated_wire_metadata();
+        context
+            .field_mappings
+            .get_mut("CustomerOrder")
+            .expect("order field policy")
+            .insert("status".into(), "order_number".into());
+
+        let error = endpoint
+            .handle_mutation(
+                &context,
+                json!({
+                    "entity":"CustomerOrder", "action":"Create",
+                    "payload":{"orderNumber":"ORD-42"}, "comment":"create order"
+                }),
+            )
+            .await
+            .expect_err("ambiguous response mapping must fail closed");
+        assert_eq!(error.code(), "TFP_POLICY_VIOLATION");
+        assert!(
+            mutations
+                .ordinary
+                .lock()
+                .expect("ordinary mutations")
+                .is_empty()
+        );
+        assert!(
+            mutations
+                .guarded
+                .lock()
+                .expect("guarded mutations")
+                .is_empty()
         );
     }
 
