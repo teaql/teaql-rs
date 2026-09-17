@@ -578,6 +578,11 @@ where
         tfp_mutation
             .map_writable_fields(mappings)
             .map_err(TfpEndpointError::TranslationError)?;
+        if tfp_mutation.payload.get(&trusted.tenant_field).is_some() {
+            return Err(TfpEndpointError::TranslationError(
+                "Tenant field is server-owned and not allowed".into(),
+            ));
+        }
         if tfp_mutation.action == "Create" {
             let tenant_json = value_as_json(&trusted.tenant_id);
             tfp_mutation
@@ -1313,6 +1318,31 @@ mod tests {
         ] {
             assert!(endpoint.handle_mutation(&trusted(), payload).await.is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn tenant_field_is_rejected_after_public_field_mapping() {
+        let endpoint = TfpEndpoint::new(Arc::new(StubExecutor), Arc::new(StubExecutor));
+        let mut policy = trusted();
+        policy
+            .writable_field_mappings
+            .get_mut("CustomerOrder")
+            .expect("writable policy")
+            .insert("tenant".into(), "commerce_platform_id".into());
+
+        let error = endpoint
+            .handle_mutation(
+                &policy,
+                json!({
+                    "entity":"CustomerOrder", "action":"Update", "id":42,
+                    "payload":{"tenant":99}, "comment":"try tenant transfer"
+                }),
+            )
+            .await
+            .expect_err("mapped tenant field must remain server-owned");
+
+        assert!(matches!(error, TfpEndpointError::TranslationError(_)));
+        assert_eq!(error.code(), "TFP_POLICY_VIOLATION");
     }
 
     #[tokio::test]
