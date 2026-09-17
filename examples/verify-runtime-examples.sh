@@ -23,7 +23,7 @@ run_example() {
 run_example "conformance" "$repo_dir/examples/conformance/Cargo.toml" \
   "PASS Rust minimum runtime conformance: 8/8"
 run_example "school-management" "$repo_dir/examples/school-management/Cargo.toml" \
-  "PASS Rust School bootstrap, ID-set pagination, portable Query, native SQLite Facet, and sparse ledger Checker parity"
+  "PASS Rust School bootstrap, ID-set pagination, portable Query, native SQLite Facet, independent ledger isolation, and sparse ledger Checker parity"
 
 school_delete_database="$run_dir/school_soft_delete_return.sqlite"
 for attempt in 1 2; do
