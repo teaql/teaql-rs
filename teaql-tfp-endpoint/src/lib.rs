@@ -1097,9 +1097,7 @@ fn validate_mutation_policy(
             mutation.action
         ));
     }
-    if !mutation.payload.is_object() {
-        return Err("Mutation payload must be an object".into());
-    }
+    mutation.validate_action_payload()?;
     if mutation
         .comment
         .as_deref()
@@ -2156,6 +2154,50 @@ mod tests {
                 .expect_err("invalid lifecycle mutation must fail before execution");
             assert_eq!(error.code(), "TFP_INVALID_REQUEST");
         }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_mutations_reject_non_empty_payload_before_execution() {
+        let mutations = Arc::new(RecordingMutationExecutor::new(1));
+        let endpoint = TfpEndpoint::new(Arc::new(StubExecutor), mutations.clone());
+
+        for payload in [
+            json!({
+                "entity":"CustomerOrder", "action":"Delete", "id":42,
+                "expectedVersion":3, "payload":{"orderNumber":"ignored before #170"},
+                "comment":"delete order"
+            }),
+            json!({
+                "entity":"CustomerOrder", "action":"Recover", "id":42,
+                "expectedVersion":-4, "payload":{"orderNumber":"ignored before #170"},
+                "comment":"recover order"
+            }),
+        ] {
+            let action = payload["action"].as_str().expect("action").to_owned();
+            let error = endpoint
+                .handle_mutation(&trusted(), payload)
+                .await
+                .expect_err("lifecycle values must not be silently ignored");
+            assert_eq!(error.code(), "TFP_INVALID_REQUEST");
+            assert!(error.to_string().contains(&format!(
+                "Invalid mutation request: {action} requires an empty payload"
+            )));
+        }
+
+        assert!(
+            mutations
+                .ordinary
+                .lock()
+                .expect("ordinary mutations")
+                .is_empty()
+        );
+        assert!(
+            mutations
+                .guarded
+                .lock()
+                .expect("guarded mutations")
+                .is_empty()
+        );
     }
 
     #[tokio::test]

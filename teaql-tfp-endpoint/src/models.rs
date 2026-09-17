@@ -448,6 +448,20 @@ pub struct TfpMutationQuery {
 }
 
 impl TfpMutationQuery {
+    pub(crate) fn validate_action_payload(&self) -> Result<(), String> {
+        let payload = self
+            .payload
+            .as_object()
+            .ok_or("Mutation payload must be an object")?;
+        if matches!(self.action.as_str(), "Delete" | "Recover") && !payload.is_empty() {
+            return Err(format!(
+                "Invalid mutation request: {} requires an empty payload",
+                self.action
+            ));
+        }
+        Ok(())
+    }
+
     pub fn map_writable_fields(
         &mut self,
         fields: &std::collections::BTreeMap<String, String>,
@@ -467,6 +481,7 @@ impl TfpMutationQuery {
     }
 
     pub fn to_core(&self) -> Result<MutationRequest, String> {
+        self.validate_action_payload()?;
         let comment = self
             .comment
             .as_deref()
@@ -749,5 +764,24 @@ mod tests {
             missing_reason.to_core().unwrap_err(),
             "Mutation audit reason is required"
         );
+    }
+
+    #[test]
+    fn lifecycle_mutations_reject_payload_values_in_direct_translation() {
+        for (action, expected_version) in [("Delete", 2), ("Recover", -2)] {
+            let mutation = TfpMutationQuery {
+                entity: "CustomerOrder".into(),
+                action: action.into(),
+                payload: json!({"order_number":"must not be ignored"}),
+                id: Some(json!(42)),
+                expected_version: Some(expected_version),
+                comment: Some(format!("{action} order")),
+            };
+
+            assert_eq!(
+                mutation.to_core().unwrap_err(),
+                format!("Invalid mutation request: {action} requires an empty payload")
+            );
+        }
     }
 }
