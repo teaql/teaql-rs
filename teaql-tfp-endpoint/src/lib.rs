@@ -204,6 +204,7 @@ impl TfpEndpointError {
             }
             Self::TranslationError(message)
                 if message.starts_with('$')
+                    || message.starts_with("Invalid mutation request:")
                     || message.starts_with("Unsupported predicate operator")
                     || message.starts_with("Filter must not be empty")
                     || message.starts_with("Predicate for ")
@@ -892,6 +893,37 @@ fn validate_mutation_policy(
     if mutation.payload.get(&trusted.tenant_field).is_some() {
         return Err("Tenant field is server-owned and not allowed".into());
     }
+    let has_id = mutation.id.as_ref().is_some_and(|id| !id.is_null());
+    match mutation.action.as_str() {
+        "Create" if mutation.expected_version.is_some() => {
+            return Err("Invalid mutation request: Create must not carry expectedVersion".into());
+        }
+        "Update" | "Delete" => {
+            if !has_id {
+                return Err(format!(
+                    "Invalid mutation request: {} requires id",
+                    mutation.action
+                ));
+            }
+            if !mutation.expected_version.is_some_and(|version| version > 0) {
+                return Err(format!(
+                    "Invalid mutation request: {} requires a positive expectedVersion",
+                    mutation.action
+                ));
+            }
+        }
+        "Recover" => {
+            if !has_id {
+                return Err("Invalid mutation request: Recover requires id".into());
+            }
+            if !mutation.expected_version.is_some_and(|version| version < 0) {
+                return Err(
+                    "Invalid mutation request: Recover requires a negative expectedVersion".into(),
+                );
+            }
+        }
+        _ => {}
+    }
     Ok(())
 }
 
@@ -1390,6 +1422,47 @@ mod tests {
             json!({"entity":"CustomerOrder","action":"Create","payload":{"commerce_platform_id":99},"comment":"x"}),
         ] {
             assert!(endpoint.handle_mutation(&trusted(), payload).await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn mutation_lifecycle_requires_id_and_correct_optimistic_version_sign() {
+        let endpoint = TfpEndpoint::new(Arc::new(StubExecutor), Arc::new(StubExecutor));
+        for payload in [
+            json!({
+                "entity":"CustomerOrder", "action":"Create",
+                "expectedVersion":1, "payload":{"orderNumber":"O-1"}, "comment":"create"
+            }),
+            json!({
+                "entity":"CustomerOrder", "action":"Update",
+                "payload":{"orderNumber":"O-1"}, "comment":"update"
+            }),
+            json!({
+                "entity":"CustomerOrder", "action":"Update", "id":1,
+                "payload":{"orderNumber":"O-1"}, "comment":"update"
+            }),
+            json!({
+                "entity":"CustomerOrder", "action":"Update", "id":1,
+                "expectedVersion":-2, "payload":{"orderNumber":"O-1"}, "comment":"update"
+            }),
+            json!({
+                "entity":"CustomerOrder", "action":"Delete", "id":1,
+                "expectedVersion":0, "payload":{}, "comment":"delete"
+            }),
+            json!({
+                "entity":"CustomerOrder", "action":"Recover", "id":1,
+                "expectedVersion":2, "payload":{}, "comment":"recover"
+            }),
+            json!({
+                "entity":"CustomerOrder", "action":"Recover",
+                "expectedVersion":-2, "payload":{}, "comment":"recover"
+            }),
+        ] {
+            let error = endpoint
+                .handle_mutation(&trusted(), payload)
+                .await
+                .expect_err("invalid lifecycle mutation must fail before execution");
+            assert_eq!(error.code(), "TFP_INVALID_REQUEST");
         }
     }
 

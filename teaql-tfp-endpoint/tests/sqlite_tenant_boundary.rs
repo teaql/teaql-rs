@@ -138,6 +138,31 @@ async fn tfp_json_enforces_tenant_boundary_in_real_sqlite_statement() {
     assert_eq!(rows[0]["id"], 1);
     assert_eq!(rows[0]["order_number"], "TENANT-ONE-ORDER");
 
+    for invalid in [
+        json!({
+            "entity": "CustomerOrder", "action": "Update", "id": 1,
+            "payload": {"orderNumber": "VERSIONLESS"},
+            "comment": "attempt update without optimistic version"
+        }),
+        json!({
+            "entity": "CustomerOrder", "action": "Update", "id": 4,
+            "expectedVersion": -2,
+            "payload": {"orderNumber": "MUTATED-TOMBSTONE"},
+            "comment": "attempt update of a tombstone"
+        }),
+        json!({
+            "entity": "CustomerOrder", "action": "Delete", "id": 4,
+            "expectedVersion": -2, "payload": {},
+            "comment": "attempt repeated delete of a tombstone"
+        }),
+    ] {
+        let error = endpoint
+            .handle_mutation(&trusted, invalid)
+            .await
+            .expect_err("invalid mutation lifecycle must fail closed");
+        assert_eq!(error.code(), "TFP_INVALID_REQUEST");
+    }
+
     let cross_tenant_error = endpoint
         .handle_mutation(
             &trusted,
