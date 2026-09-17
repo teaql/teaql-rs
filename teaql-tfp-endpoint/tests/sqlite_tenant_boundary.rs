@@ -157,6 +157,23 @@ async fn tfp_json_enforces_tenant_boundary_in_real_sqlite_statement() {
     assert_eq!(rows[0]["id"], 1);
     assert_eq!(rows[0]["order_number"], "TENANT-ONE-ORDER");
 
+    let implicit_projection = endpoint
+        .handle_query(
+            &trusted,
+            json!({
+                "entity": "CustomerOrder",
+                "_limit": 10,
+                "_comment": "read the trusted default projection",
+                "_purpose": "prove non-allowlisted tenant storage stays hidden"
+            }),
+        )
+        .await
+        .expect("allowlisted default projection");
+    let implicit_row = &implicit_projection["data"].as_array().expect("query rows")[0];
+    assert_eq!(implicit_row["id"], 1);
+    assert_eq!(implicit_row["order_number"], "TENANT-ONE-ORDER");
+    assert!(implicit_row.get("commerce_platform_id").is_none());
+
     for invalid in [
         json!({
             "entity": "CustomerOrder", "action": "Update", "id": 1,

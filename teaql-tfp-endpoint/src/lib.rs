@@ -184,6 +184,32 @@ fn approved_query_trace(
     }
 }
 
+fn apply_allowlisted_default_projection(
+    query: &mut teaql_core::SelectQuery,
+    mappings: &std::collections::BTreeMap<String, String>,
+) -> Result<(), String> {
+    if !query.projection.is_empty()
+        || !query.expr_projection.is_empty()
+        || !query.group_by.is_empty()
+        || !query.aggregates.is_empty()
+    {
+        return Ok(());
+    }
+    query.projection = mappings
+        .values()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if query.projection.is_empty() {
+        return Err(format!(
+            "No readable fields are allowed for entity: {}",
+            query.entity
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Error, Debug)]
 pub enum TfpEndpointError {
     #[error("Failed to parse JSON payload: {0}")]
@@ -373,6 +399,8 @@ where
         let mut core_query = tfp_query
             .to_core()
             .map_err(TfpEndpointError::TranslationError)?;
+        apply_allowlisted_default_projection(&mut core_query, mappings)
+            .map_err(TfpEndpointError::TranslationError)?;
         core_query.hard_limit = trusted.max_page_size as u64;
         let trusted_scope = trusted_query_scope(trusted, &tfp_query.entity)
             .map_err(TfpEndpointError::TranslationError)?;
@@ -514,6 +542,10 @@ where
                 })?;
             let mut nested_query = nested
                 .to_core()
+                .map_err(TfpEndpointError::TranslationError)?;
+            let nested_mappings = effective_field_mappings(trusted, &nested.entity, false)
+                .map_err(TfpEndpointError::TranslationError)?;
+            apply_allowlisted_default_projection(&mut nested_query, &nested_mappings)
                 .map_err(TfpEndpointError::TranslationError)?;
             nested_query.hard_limit = trusted.max_page_size as u64;
             let trusted_scope = trusted_query_scope(trusted, &nested.entity)
@@ -1444,6 +1476,47 @@ mod tests {
             queries[2].query.trace_chain, queries[2].trace_chain,
             "core query and executor request must retain the same purpose evidence"
         );
+    }
+
+    #[tokio::test]
+    async fn empty_outer_and_facet_projections_are_narrowed_to_allowlisted_fields() {
+        let queries = Arc::new(Mutex::new(Vec::new()));
+        let query_executor = RecordingQueryExecutor(queries.clone());
+        let endpoint = TfpEndpoint::new(Arc::new(query_executor), Arc::new(StubExecutor));
+
+        endpoint
+            .handle_query(
+                &trusted(),
+                json!({
+                    "entity":"CustomerOrder",
+                    "facets":[{
+                        "facetName":"statusFacet",
+                        "relationName":"status",
+                        "query":{
+                            "entity":"OrderStatus",
+                            "aggregateItems":[{"function":"Count","field":"id","alias":"orderCount"}],
+                            "limitValue":20,
+                            "commentText":"load trusted status fields",
+                            "purposeText":"render the status filter"
+                        }
+                    }],
+                    "limitValue":10,
+                    "commentText":"load trusted order fields",
+                    "purposeText":"render the order list"
+                }),
+            )
+            .await
+            .expect("allowlisted default projections");
+
+        let queries = queries.lock().expect("recorded queries");
+        assert_eq!(queries.len(), 3);
+        assert_eq!(
+            queries[0].query.projection,
+            vec!["id", "order_number", "status_id"]
+        );
+        assert!(queries[1].query.projection.is_empty());
+        assert_eq!(queries[1].query.group_by, vec!["status_id"]);
+        assert_eq!(queries[2].query.projection, vec!["code", "id"]);
     }
 
     #[tokio::test]
