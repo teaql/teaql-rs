@@ -330,6 +330,11 @@ fn map_filter_fields(
         let mapped = fields
             .get(&field)
             .ok_or_else(|| format!("Unknown or forbidden field: {field}"))?;
+        if object.contains_key(mapped) {
+            return Err(format!(
+                "Filter field aliases collide after mapping: {mapped}"
+            ));
+        }
         object.insert(mapped.clone(), predicate);
     }
     Ok(())
@@ -899,6 +904,24 @@ mod tests {
             query
                 .map_fields(&BTreeMap::from([("id".into(), "id".into())]))
                 .is_err()
+        );
+
+        let mut collision: TfpSelectQuery = serde_json::from_value(json!({
+            "entity":"CustomerOrder",
+            "filterCondition":{
+                "order_number":{"$startsWith":"SAFE"},
+                "orderNumber":{"$contains":"OTHER"}
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            collision
+                .map_fields(&BTreeMap::from([
+                    ("order_number".into(), "order_number".into()),
+                    ("orderNumber".into(), "order_number".into()),
+                ]))
+                .unwrap_err(),
+            "Filter field aliases collide after mapping: order_number"
         );
     }
 

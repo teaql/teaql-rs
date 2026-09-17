@@ -318,6 +318,7 @@ impl TfpEndpointError {
                     || message.starts_with("Invalid mutation request:")
                     || message.starts_with("Unsupported predicate operator")
                     || message.starts_with("Filter must not be empty")
+                    || message.starts_with("Filter field aliases collide")
                     || message.starts_with("Filter nesting depth")
                     || message.starts_with("Filter predicate count")
                     || message.starts_with("Logical filter")
@@ -2007,6 +2008,24 @@ mod tests {
                 .expect_err("invalid filter tree must fail closed");
             assert_eq!(error.code(), "TFP_INVALID_REQUEST");
         }
+
+        let error = endpoint
+            .handle_query(
+                &trusted_with_generated_wire_metadata(),
+                json!({
+                    "entity":"CustomerOrder",
+                    "filterCondition":{
+                        "order_number":{"$startsWith":"SAFE"},
+                        "orderNumber":{"$contains":"OTHER"}
+                    },
+                    "limitValue":10,
+                    "commentText":"attempt alias collision",
+                    "purposeText":"prove every submitted predicate is enforced"
+                }),
+            )
+            .await
+            .expect_err("filter aliases must not overwrite a predicate");
+        assert_eq!(error.code(), "TFP_INVALID_REQUEST");
         assert!(queries.lock().expect("recorded queries").is_empty());
     }
 
