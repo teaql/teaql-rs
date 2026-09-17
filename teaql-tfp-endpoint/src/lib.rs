@@ -279,6 +279,27 @@ fn generated_values_to_wire_json(
     JsonValue::Object(output)
 }
 
+fn governed_query_result_limit(query: &teaql_core::SelectQuery) -> u64 {
+    query
+        .slice
+        .and_then(|slice| slice.limit)
+        .unwrap_or(query.hard_limit)
+        .min(query.hard_limit)
+}
+
+fn validate_query_result_bound(
+    governed_limit: u64,
+    actual_rows: usize,
+    phase: &str,
+) -> Result<(), String> {
+    if u64::try_from(actual_rows).unwrap_or(u64::MAX) > governed_limit {
+        return Err(format!(
+            "TFP {phase} executor returned {actual_rows} rows, exceeding governed limit {governed_limit}"
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Error, Debug)]
 pub enum TfpEndpointError {
     #[error("Failed to parse JSON payload: {0}")]
@@ -492,6 +513,7 @@ where
         core_query.trace_chain.push(trace.clone());
 
         let outer_query = core_query.clone();
+        let response_bound = governed_query_result_limit(&outer_query);
         let request = QueryRequest {
             query: core_query,
             trace_chain: vec![trace],
@@ -505,6 +527,8 @@ where
             .query(request)
             .await
             .map_err(|e| TfpEndpointError::ExecutionError(e.to_string()))?;
+        validate_query_result_bound(response_bound, result.rows.len(), "query")
+            .map_err(TfpEndpointError::ExecutionError)?;
 
         // Format into a standard response JSON.
         // We'll wrap the rows in a generic data format expected by TeaQL frontend.
@@ -568,6 +592,7 @@ where
                 "id",
                 "__tfpFacetCount",
             )];
+            let membership_bound = governed_query_result_limit(&membership);
             let membership_trace = outer_query.trace_chain.clone();
             let membership_result = self
                 .query_executor
@@ -583,6 +608,12 @@ where
                 })
                 .await
                 .map_err(|error| TfpEndpointError::ExecutionError(error.to_string()))?;
+            validate_query_result_bound(
+                membership_bound,
+                membership_result.rows.len(),
+                "facet membership",
+            )
+            .map_err(TfpEndpointError::ExecutionError)?;
             let mut counts = std::collections::BTreeMap::new();
             for row in &membership_result.rows {
                 let relation = row.get(&facet.relation_name).ok_or_else(|| {
@@ -647,6 +678,7 @@ where
             });
             let nested_trace = approved_query_trace(trusted, &nested.entity, &nested_purpose);
             nested_query.trace_chain.push(nested_trace.clone());
+            let nested_bound = governed_query_result_limit(&nested_query);
             let nested_result = self
                 .query_executor
                 .query(QueryRequest {
@@ -658,6 +690,8 @@ where
                 })
                 .await
                 .map_err(|error| TfpEndpointError::ExecutionError(error.to_string()))?;
+            validate_query_result_bound(nested_bound, nested_result.rows.len(), "facet value")
+                .map_err(TfpEndpointError::ExecutionError)?;
             let mut values = Vec::new();
             let no_aggregate_aliases = std::collections::BTreeSet::new();
             for row in &nested_result.rows {
@@ -1167,6 +1201,17 @@ mod tests {
     #[derive(Clone, Copy)]
     struct MalformedFacetExecutor(MalformedFacetResult);
 
+    #[derive(Clone, Copy)]
+    enum OverReturningStage {
+        Outer,
+        Membership,
+        Nested,
+        ExactOuterBoundary,
+    }
+
+    #[derive(Clone, Copy)]
+    struct OverReturningExecutor(OverReturningStage);
+
     #[derive(Clone, Default)]
     struct GeneratedValuesMutationExecutor;
 
@@ -1336,6 +1381,65 @@ mod tests {
                 }
             } else {
                 Vec::new()
+            };
+            Ok(QueryResult {
+                metadata: metadata(DataServiceOperation::Query, Some(rows.len()), None),
+                rows,
+            })
+        }
+    }
+
+    impl DataServiceExecutor for OverReturningExecutor {
+        type Error = StubError;
+
+        fn capabilities(&self) -> DataServiceCapabilities {
+            DataServiceCapabilities::default()
+        }
+    }
+
+    impl QueryExecutor for OverReturningExecutor {
+        async fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
+            let limit = governed_query_result_limit(&request.query) as usize;
+            let rows: Vec<teaql_core::CompactRow> = if !request.query.group_by.is_empty() {
+                let count = if matches!(self.0, OverReturningStage::Membership) {
+                    limit + 1
+                } else {
+                    1
+                };
+                (0..count)
+                    .map(|index| {
+                        teaql_core::CompactRow::from_map(Record::from([
+                            ("status_id".into(), teaql_core::Value::U64(index as u64 + 1)),
+                            ("__tfpFacetCount".into(), teaql_core::Value::U64(1)),
+                        ]))
+                    })
+                    .collect()
+            } else if request.query.entity == "OrderStatus" {
+                let count = if matches!(self.0, OverReturningStage::Nested) {
+                    limit + 1
+                } else {
+                    1
+                };
+                (0..count)
+                    .map(|index| {
+                        teaql_core::CompactRow::from_map(Record::from([
+                            ("id".into(), teaql_core::Value::U64(index as u64 + 1)),
+                            (
+                                "code".into(),
+                                teaql_core::Value::Text(format!("STATUS_{index}")),
+                            ),
+                        ]))
+                    })
+                    .collect()
+            } else {
+                let count = match self.0 {
+                    OverReturningStage::Outer => limit + 1,
+                    OverReturningStage::ExactOuterBoundary => limit,
+                    OverReturningStage::Membership | OverReturningStage::Nested => 0,
+                };
+                (0..count)
+                    .map(|_| teaql_core::CompactRow::from_map(Record::new()))
+                    .collect()
             };
             Ok(QueryResult {
                 metadata: metadata(DataServiceOperation::Query, Some(rows.len()), None),
@@ -2338,6 +2442,79 @@ mod tests {
                 .await
                 .expect_err("malformed facet result must fail closed");
             assert_eq!(error.code(), "TFP_EXECUTION_FAILED");
+        }
+    }
+
+    #[tokio::test]
+    async fn executor_results_must_respect_governed_query_limits() {
+        let outer_payload = json!({
+            "entity":"CustomerOrder",
+            "selectItems":[],
+            "limitValue":2,
+            "commentText":"load bounded orders",
+            "purposeText":"verify executor result limits"
+        });
+        let exact_endpoint = TfpEndpoint::new(
+            Arc::new(OverReturningExecutor(
+                OverReturningStage::ExactOuterBoundary,
+            )),
+            Arc::new(StubExecutor),
+        );
+        let exact = exact_endpoint
+            .handle_query(&trusted(), outer_payload.clone())
+            .await
+            .expect("rows at the exact governed boundary remain valid");
+        assert_eq!(exact["data"].as_array().expect("response data").len(), 2);
+
+        let outer_endpoint = TfpEndpoint::new(
+            Arc::new(OverReturningExecutor(OverReturningStage::Outer)),
+            Arc::new(StubExecutor),
+        );
+        let error = outer_endpoint
+            .handle_query(&trusted(), outer_payload)
+            .await
+            .expect_err("an over-returning outer executor must fail closed");
+        assert_eq!(error.code(), "TFP_EXECUTION_FAILED");
+        assert!(
+            error
+                .to_string()
+                .contains("TFP query executor returned 3 rows")
+        );
+
+        for (stage, phase) in [
+            (OverReturningStage::Membership, "facet membership"),
+            (OverReturningStage::Nested, "facet value"),
+        ] {
+            let endpoint = TfpEndpoint::new(
+                Arc::new(OverReturningExecutor(stage)),
+                Arc::new(StubExecutor),
+            );
+            let error = endpoint
+                .handle_query(
+                    &trusted(),
+                    json!({
+                        "entity":"CustomerOrder",
+                        "facets":[{
+                            "facetName":"statusFacet", "relationName":"status",
+                            "query":{
+                                "entity":"OrderStatus", "selectItems":["id", "code"],
+                                "aggregateItems":[{
+                                    "function":"Count", "field":"id", "alias":"orderCount"
+                                }],
+                                "limitValue":1,
+                                "commentText":"load bounded status facet",
+                                "purposeText":"verify executor result limits"
+                            }
+                        }],
+                        "limitValue":1,
+                        "commentText":"load bounded orders",
+                        "purposeText":"verify executor result limits"
+                    }),
+                )
+                .await
+                .expect_err("an over-returning facet executor must fail closed");
+            assert_eq!(error.code(), "TFP_EXECUTION_FAILED");
+            assert!(error.to_string().contains(phase));
         }
     }
 
