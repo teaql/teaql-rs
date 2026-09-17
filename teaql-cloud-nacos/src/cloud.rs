@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use nacos_sdk::api::config::{
@@ -192,9 +193,11 @@ impl ServiceDiscovery for NacosCloud {
         let svc_name = service_name.to_string();
         let grp = group_name(group);
 
+        let active = Arc::new(AtomicBool::new(true));
         let listener: Arc<dyn NamingEventListener> = Arc::new(NacosEventSubscriber {
             service_name: svc_name.clone(),
             callback,
+            active: active.clone(),
         });
 
         self.naming
@@ -205,6 +208,7 @@ impl ServiceDiscovery for NacosCloud {
         let naming = self.naming.clone();
         let runtime = tokio::runtime::Handle::current();
         Ok(SubscriptionHandle::new(move || {
+            active.store(false, Ordering::Release);
             runtime.spawn(async move {
                 if let Err(error) = naming
                     .unsubscribe(svc_name, grp, Vec::new(), listener)
@@ -221,10 +225,14 @@ impl ServiceDiscovery for NacosCloud {
 struct NacosEventSubscriber {
     service_name: String,
     callback: Box<dyn Fn(ServiceChangeEvent) + Send + Sync>,
+    active: Arc<AtomicBool>,
 }
 
 impl nacos_sdk::api::naming::NamingEventListener for NacosEventSubscriber {
     fn event(&self, event: Arc<nacos_sdk::api::naming::NamingChangeEvent>) {
+        if !self.active.load(Ordering::Acquire) {
+            return;
+        }
         let instances = event
             .instances
             .iter()
@@ -269,7 +277,11 @@ impl ConfigSource for NacosCloud {
         config_id: &ConfigId,
         callback: Box<dyn Fn(String) + Send + Sync>,
     ) -> Result<WatchHandle, CloudError> {
-        let listener: Arc<dyn ConfigChangeListener> = Arc::new(NacosConfigWatcher { callback });
+        let active = Arc::new(AtomicBool::new(true));
+        let listener: Arc<dyn ConfigChangeListener> = Arc::new(NacosConfigWatcher {
+            callback,
+            active: active.clone(),
+        });
         self.config_svc
             .add_listener(
                 config_id.data_id.clone(),
@@ -284,6 +296,7 @@ impl ConfigSource for NacosCloud {
         let group = config_id.group.clone();
         let runtime = tokio::runtime::Handle::current();
         Ok(WatchHandle::new(move || {
+            active.store(false, Ordering::Release);
             runtime.spawn(async move {
                 if let Err(error) = config_svc.remove_listener(data_id, group, listener).await {
                     tracing::warn!(%error, "failed to remove Nacos config listener");
@@ -296,10 +309,14 @@ impl ConfigSource for NacosCloud {
 /// Bridge between nacos-sdk's ConfigChangeListener and our callback API.
 struct NacosConfigWatcher {
     callback: Box<dyn Fn(String) + Send + Sync>,
+    active: Arc<AtomicBool>,
 }
 
 impl ConfigChangeListener for NacosConfigWatcher {
     fn notify(&self, config_resp: ConfigResponse) {
+        if !self.active.load(Ordering::Acquire) {
+            return;
+        }
         (self.callback)(config_resp.content().to_string());
     }
 }
@@ -362,5 +379,68 @@ impl MetricsCollector for NacosCloud {
             )
             .with_label("server", &self.nacos_config.server_addr),
         ]
+    }
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use nacos_sdk::api::config::ConfigChangeListener;
+    use nacos_sdk::api::naming::{NamingChangeEvent, NamingEventListener};
+
+    use super::*;
+
+    #[test]
+    fn service_listener_stops_callbacks_immediately_when_deactivated() {
+        let active = Arc::new(AtomicBool::new(true));
+        let callbacks = Arc::new(AtomicUsize::new(0));
+        let callback_count = callbacks.clone();
+        let listener = NacosEventSubscriber {
+            service_name: "orders".to_string(),
+            callback: Box::new(move |_| {
+                callback_count.fetch_add(1, Ordering::Relaxed);
+            }),
+            active: active.clone(),
+        };
+        let event = Arc::new(NamingChangeEvent {
+            service_name: "orders".to_string(),
+            group_name: "DEFAULT_GROUP".to_string(),
+            clusters: "DEFAULT".to_string(),
+            instances: Some(Vec::new()),
+        });
+
+        listener.event(event.clone());
+        active.store(false, Ordering::Release);
+        listener.event(event);
+
+        assert_eq!(callbacks.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn config_listener_stops_callbacks_immediately_when_deactivated() {
+        let active = Arc::new(AtomicBool::new(true));
+        let callbacks = Arc::new(AtomicUsize::new(0));
+        let callback_count = callbacks.clone();
+        let listener = NacosConfigWatcher {
+            callback: Box::new(move |_| {
+                callback_count.fetch_add(1, Ordering::Relaxed);
+            }),
+            active: active.clone(),
+        };
+        let response = ConfigResponse::new(
+            "orders.yaml".to_string(),
+            "DEFAULT_GROUP".to_string(),
+            String::new(),
+            "enabled: true".to_string(),
+            "yaml".to_string(),
+            "md5".to_string(),
+        );
+
+        listener.notify(response.clone());
+        active.store(false, Ordering::Release);
+        listener.notify(response);
+
+        assert_eq!(callbacks.load(Ordering::Relaxed), 1);
     }
 }
