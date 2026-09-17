@@ -16,6 +16,10 @@ use models::{TfpFacetRequest, TfpMutationQuery, TfpSelectQuery};
 pub struct TrustedQueryContext {
     pub tenant_field: String,
     pub tenant_id: teaql_core::Value,
+    /// Per-entity internal version fields used to hide soft-deleted rows from
+    /// ordinary federated queries. This is trusted generated metadata, not a
+    /// client-selectable visibility switch.
+    pub active_version_fields: std::collections::BTreeMap<String, String>,
     pub authenticated_user: String,
     pub approved_purpose: String,
     pub allowed_entities: std::collections::BTreeSet<String>,
@@ -346,10 +350,10 @@ where
         let mut core_query = tfp_query
             .to_core()
             .map_err(TfpEndpointError::TranslationError)?;
-        let tenant = teaql_core::Expr::eq(&trusted.tenant_field, trusted.tenant_id.clone());
+        let trusted_scope = trusted_query_scope(trusted, &tfp_query.entity);
         core_query.filter = Some(match core_query.filter.take() {
-            Some(filter) => teaql_core::Expr::And(vec![tenant, filter]),
-            None => tenant,
+            Some(filter) => teaql_core::Expr::And(vec![trusted_scope, filter]),
+            None => trusted_scope,
         });
         let trace = teaql_core::TraceNode {
             kind: teaql_core::TraceKind::Purpose,
@@ -470,10 +474,10 @@ where
             let mut nested_query = nested
                 .to_core()
                 .map_err(TfpEndpointError::TranslationError)?;
-            let tenant = teaql_core::Expr::eq(&trusted.tenant_field, trusted.tenant_id.clone());
+            let trusted_scope = trusted_query_scope(trusted, &nested.entity);
             nested_query.filter = Some(match nested_query.filter.take() {
-                Some(filter) => teaql_core::Expr::And(vec![tenant, filter]),
-                None => tenant,
+                Some(filter) => teaql_core::Expr::And(vec![trusted_scope, filter]),
+                None => trusted_scope,
             });
             let nested_result = self
                 .query_executor
@@ -628,6 +632,16 @@ where
         response_obj.insert("data".to_string(), JsonValue::Array(data_arr));
 
         Ok(JsonValue::Object(response_obj))
+    }
+}
+
+fn trusted_query_scope(trusted: &TrustedQueryContext, entity: &str) -> teaql_core::Expr {
+    let tenant = teaql_core::Expr::eq(&trusted.tenant_field, trusted.tenant_id.clone());
+    match trusted.active_version_fields.get(entity) {
+        Some(version_field) => {
+            teaql_core::Expr::And(vec![tenant, teaql_core::Expr::gt(version_field, 0_i64)])
+        }
+        None => tenant,
     }
 }
 
@@ -1075,6 +1089,7 @@ mod tests {
         TrustedQueryContext {
             tenant_field: "commerce_platform_id".into(),
             tenant_id: teaql_core::Value::I64(1),
+            active_version_fields: BTreeMap::from([("CustomerOrder".into(), "version".into())]),
             authenticated_user: "operator-42".into(),
             approved_purpose: "approved-order-search".into(),
             allowed_entities: BTreeSet::from(["CustomerOrder".into(), "OrderStatus".into()]),
@@ -1126,6 +1141,22 @@ mod tests {
         assert!(
             reject_privileged_input(&json!({"entity":"CustomerOrder","_purpose":"requested"}))
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn trusted_query_scope_adds_active_visibility_only_for_versioned_entities() {
+        let context = trusted();
+        assert_eq!(
+            trusted_query_scope(&context, "CustomerOrder"),
+            teaql_core::Expr::And(vec![
+                teaql_core::Expr::eq("commerce_platform_id", 1_i64),
+                teaql_core::Expr::gt("version", 0_i64),
+            ])
+        );
+        assert_eq!(
+            trusted_query_scope(&context, "OrderStatus"),
+            teaql_core::Expr::eq("commerce_platform_id", 1_i64)
         );
     }
 

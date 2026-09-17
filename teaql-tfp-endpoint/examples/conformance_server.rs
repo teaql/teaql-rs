@@ -162,6 +162,10 @@ fn trusted() -> TrustedQueryContext {
     TrustedQueryContext {
         tenant_field: "tenant_id".into(),
         tenant_id: Value::I64(1),
+        active_version_fields: BTreeMap::from([
+            ("CustomerOrder".into(), "version".into()),
+            ("OrderStatus".into(), "version".into()),
+        ]),
         authenticated_user: "conformance-agent".into(),
         approved_purpose: "tfp-conformance".into(),
         allowed_entities: BTreeSet::from(["CustomerOrder".into(), "OrderStatus".into()]),

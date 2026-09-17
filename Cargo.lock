@@ -3235,11 +3235,14 @@ version = "5.0.1"
 dependencies = [
  "async-trait",
  "axum",
+ "rusqlite",
  "serde",
  "serde_json",
  "teaql-core",
  "teaql-data-service",
+ "teaql-provider-sqlite",
  "teaql-runtime",
+ "teaql-sql",
  "thiserror",
  "tokio",
 ]
