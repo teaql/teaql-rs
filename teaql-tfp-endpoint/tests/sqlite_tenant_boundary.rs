@@ -122,6 +122,25 @@ async fn tfp_json_enforces_tenant_boundary_in_real_sqlite_statement() {
     let endpoint = TfpEndpoint::new(executor.clone(), executor);
     let trusted = trusted_tenant_one();
 
+    for unbounded in [
+        json!({
+            "entity": "CustomerOrder",
+            "_comment": "attempt query without a limit",
+            "_purpose": "prove federation queries stay bounded"
+        }),
+        json!({
+            "entity": "CustomerOrder", "_limit": 0,
+            "_comment": "attempt query with a zero limit",
+            "_purpose": "prove zero cannot bypass the bound"
+        }),
+    ] {
+        let error = endpoint
+            .handle_query(&trusted, unbounded)
+            .await
+            .expect_err("unbounded query must not execute");
+        assert_eq!(error.code(), "TFP_INVALID_REQUEST");
+    }
+
     let query = json!({
         "entity": "CustomerOrder",
         "selectItems": ["id", "version", "orderNumber"],

@@ -209,7 +209,7 @@ impl TfpEndpointError {
                     || message.starts_with("Filter must not be empty")
                     || message.starts_with("Predicate for ")
                     || message.starts_with("Facet ")
-                    || message.starts_with("A TFP query may")
+                    || message.starts_with("A TFP query ")
                     || message.starts_with("A TFP facet")
                     || message.starts_with("Nested facets")
                     || message.starts_with("Duplicate facet")
@@ -356,6 +356,7 @@ where
         let mut core_query = tfp_query
             .to_core()
             .map_err(TfpEndpointError::TranslationError)?;
+        core_query.hard_limit = trusted.max_page_size as u64;
         let trusted_scope = trusted_query_scope(trusted, &tfp_query.entity)
             .map_err(TfpEndpointError::TranslationError)?;
         core_query.filter = Some(match core_query.filter.take() {
@@ -439,6 +440,7 @@ where
             membership.expr_projection.clear();
             membership.order_by.clear();
             membership.slice = None;
+            membership = membership.limit(trusted.max_page_size as u64);
             membership.group_by = vec![facet.relation_name.clone()];
             membership.aggregates = vec![teaql_core::Aggregate::new(
                 teaql_core::AggregateFunction::Count,
@@ -481,6 +483,7 @@ where
             let mut nested_query = nested
                 .to_core()
                 .map_err(TfpEndpointError::TranslationError)?;
+            nested_query.hard_limit = trusted.max_page_size as u64;
             let trusted_scope = trusted_query_scope(trusted, &nested.entity)
                 .map_err(TfpEndpointError::TranslationError)?;
             nested_query.filter = Some(match nested_query.filter.take() {
@@ -755,6 +758,9 @@ fn validate_policy(trusted: &TrustedQueryContext, query: &TfpSelectQuery) -> Res
             query.entity
         ));
     }
+    if !query.limit_value.is_some_and(|limit| limit > 0) {
+        return Err("A TFP query requires an explicit positive limit".into());
+    }
     if query.limit_value.unwrap_or(0) > trusted.max_page_size {
         return Err("Page size exceeds federation policy".into());
     }
@@ -944,6 +950,9 @@ mod tests {
     #[derive(Clone, Default)]
     struct StubExecutor;
 
+    #[derive(Clone, Default)]
+    struct RecordingQueryExecutor(Arc<Mutex<Vec<QueryRequest>>>);
+
     #[derive(Debug)]
     struct StubError;
     impl std::fmt::Display for StubError {
@@ -984,6 +993,24 @@ mod tests {
             Ok(QueryResult {
                 metadata: metadata(DataServiceOperation::Query, Some(rows.len()), None),
                 rows,
+            })
+        }
+    }
+
+    impl DataServiceExecutor for RecordingQueryExecutor {
+        type Error = StubError;
+
+        fn capabilities(&self) -> DataServiceCapabilities {
+            DataServiceCapabilities::default()
+        }
+    }
+
+    impl QueryExecutor for RecordingQueryExecutor {
+        async fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
+            self.0.lock().expect("recorded queries").push(request);
+            Ok(QueryResult {
+                metadata: metadata(DataServiceOperation::Query, Some(0), None),
+                rows: Vec::new(),
             })
         }
     }
@@ -1285,6 +1312,14 @@ mod tests {
             )
             .is_err()
         );
+        assert!(validate_policy(&context, &query(json!({"entity":"CustomerOrder"}))).is_err());
+        assert!(
+            validate_policy(
+                &context,
+                &query(json!({"entity":"CustomerOrder", "_limit":0}))
+            )
+            .is_err()
+        );
         assert!(
             validate_policy(
                 &context,
@@ -1297,6 +1332,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bounded_query_and_facets_retain_trusted_hard_ceiling() {
+        let queries = Arc::new(Mutex::new(Vec::new()));
+        let query_executor = RecordingQueryExecutor(queries.clone());
+        let endpoint = TfpEndpoint::new(Arc::new(query_executor), Arc::new(StubExecutor));
+
+        endpoint
+            .handle_query(
+                &trusted(),
+                json!({
+                    "entity":"CustomerOrder",
+                    "facets":[{
+                        "facetName":"statusFacet",
+                        "relationName":"status",
+                        "query":{
+                            "entity":"OrderStatus",
+                            "selectItems":["id","code"],
+                            "aggregateItems":[{"function":"Count","field":"id","alias":"orderCount"}],
+                            "limitValue":20,
+                            "commentText":"load bounded status facet",
+                            "purposeText":"render bounded order filters"
+                        }
+                    }],
+                    "limitValue":10,
+                    "commentText":"load bounded orders",
+                    "purposeText":"render bounded order list"
+                }),
+            )
+            .await
+            .expect("bounded query");
+
+        let queries = queries.lock().expect("recorded queries");
+        assert_eq!(queries.len(), 3);
+        assert!(
+            queries
+                .iter()
+                .all(|request| request.query.hard_limit == 100)
+        );
+        assert_eq!(queries[0].query.slice.as_ref().unwrap().limit, Some(10));
+        assert_eq!(queries[1].query.slice.as_ref().unwrap().limit, Some(100));
+        assert_eq!(queries[2].query.slice.as_ref().unwrap().limit, Some(20));
+    }
+
+    #[tokio::test]
+    async fn missing_or_zero_outer_and_facet_limits_fail_before_execution() {
+        let endpoint = TfpEndpoint::new(Arc::new(StubExecutor), Arc::new(StubExecutor));
+        for payload in [
+            json!({
+                "entity":"CustomerOrder", "commentText":"missing limit",
+                "purposeText":"prove outer query is bounded"
+            }),
+            json!({
+                "entity":"CustomerOrder", "limitValue":0, "commentText":"zero limit",
+                "purposeText":"prove zero cannot bypass the bound"
+            }),
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "facets":[{
+                    "facetName":"statusFacet", "relationName":"status",
+                    "query":{
+                        "entity":"OrderStatus", "selectItems":["id"],
+                        "aggregateItems":[{"function":"Count","field":"id","alias":"orderCount"}],
+                        "commentText":"missing facet limit", "purposeText":"prove facet is bounded"
+                    }
+                }],
+                "commentText":"load orders", "purposeText":"render orders"
+            }),
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "facets":[{
+                    "facetName":"statusFacet", "relationName":"status",
+                    "query":{
+                        "entity":"OrderStatus", "selectItems":["id"], "limitValue":0,
+                        "aggregateItems":[{"function":"Count","field":"id","alias":"orderCount"}],
+                        "commentText":"zero facet limit", "purposeText":"prove facet is bounded"
+                    }
+                }],
+                "commentText":"load orders", "purposeText":"render orders"
+            }),
+        ] {
+            let error = endpoint
+                .handle_query(&trusted(), payload)
+                .await
+                .expect_err("unbounded query must fail closed");
+            assert_eq!(error.code(), "TFP_INVALID_REQUEST");
+        }
+    }
+
+    #[tokio::test]
     async fn unsupported_predicate_is_an_invalid_request() {
         let endpoint = TfpEndpoint::new(Arc::new(StubExecutor), Arc::new(StubExecutor));
         let error = endpoint
@@ -1305,6 +1428,7 @@ mod tests {
                 json!({
                     "entity":"CustomerOrder",
                     "filterCondition":{"id":{"$wat":7}},
+                    "limitValue":10,
                     "commentText":"exercise invalid operator",
                     "purposeText":"verify stable TFP error classification"
                 }),
@@ -1331,6 +1455,7 @@ mod tests {
                             "entity":"OrderStatus",
                             "selectItems":["id","code"],
                             "aggregateItems":[{"function":"Count","field":"id","alias":"orderCount"}],
+                            "limitValue":100,
                             "commentText":"load status facet",
                             "purposeText":"render order filters"
                         }
