@@ -86,6 +86,20 @@ impl WireEntityMetadata {
             })
             .collect()
     }
+
+    fn response_policy_map(
+        &self,
+        canonical_policy: &std::collections::BTreeMap<String, String>,
+    ) -> Result<std::collections::BTreeMap<String, String>, String> {
+        let mut response = std::collections::BTreeMap::new();
+        for (canonical, internal) in canonical_policy {
+            let wire = self.canonical_to_wire.get(canonical).ok_or_else(|| {
+                format!("Missing generated wire name for canonical field: {canonical}")
+            })?;
+            register_response_name(&mut response, internal, wire)?;
+        }
+        Ok(response)
+    }
 }
 
 /// Converts dependency-free metadata emitted by a generated runtime module.
@@ -112,6 +126,21 @@ fn register_wire_name(
         && previous != canonical
     {
         return Err(format!("Wire field alias is ambiguous: {name}"));
+    }
+    Ok(())
+}
+
+fn register_response_name(
+    response: &mut std::collections::BTreeMap<String, String>,
+    internal: &str,
+    public: &str,
+) -> Result<(), String> {
+    if let Some(previous) = response.insert(internal.to_owned(), public.to_owned())
+        && previous != public
+    {
+        return Err(format!(
+            "Runtime field has ambiguous response names: {internal}"
+        ));
     }
     Ok(())
 }
@@ -210,6 +239,30 @@ fn apply_allowlisted_default_projection(
     Ok(())
 }
 
+fn compact_row_to_wire_json(
+    row: &teaql_core::CompactRow,
+    response_fields: &std::collections::BTreeMap<String, String>,
+    aggregate_aliases: &std::collections::BTreeSet<String>,
+) -> Result<JsonValue, String> {
+    let JsonValue::Object(raw) = teaql_core::compact_row_to_json_value(row) else {
+        return Err("TFP query result row must be an object".into());
+    };
+    let mut output = serde_json::Map::new();
+    for (internal, value) in raw {
+        let public = if let Some(public) = response_fields.get(&internal) {
+            public.clone()
+        } else if aggregate_aliases.contains(&internal) {
+            internal.clone()
+        } else {
+            return Err(format!("Unexpected query result field: {internal}"));
+        };
+        if output.insert(public.clone(), value).is_some() {
+            return Err(format!("Duplicate TFP response field: {public}"));
+        }
+    }
+    Ok(JsonValue::Object(output))
+}
+
 #[derive(Error, Debug)]
 pub enum TfpEndpointError {
     #[error("Failed to parse JSON payload: {0}")]
@@ -255,6 +308,8 @@ impl TfpEndpointError {
                     || message.starts_with("A TFP facet")
                     || message.starts_with("Nested facets")
                     || message.starts_with("Duplicate facet")
+                    || message.starts_with("Duplicate aggregate alias")
+                    || message.starts_with("Aggregate alias")
                     || message.starts_with("Order expressions")
                     || message.contains("does not accept null") =>
             {
@@ -375,11 +430,18 @@ where
             .get(&tfp_query.entity)
             .map(|metadata| metadata.accepted_policy_map(configured_mappings));
         let mappings = generated_mappings.as_ref().unwrap_or(configured_mappings);
+        let response_fields = effective_response_field_mappings(trusted, &tfp_query.entity)
+            .map_err(TfpEndpointError::TranslationError)?;
         prepare_facets(trusted, &mut tfp_query).map_err(TfpEndpointError::TranslationError)?;
         tfp_query
             .map_fields(mappings)
             .map_err(TfpEndpointError::TranslationError)?;
         let facets = std::mem::take(&mut tfp_query.facets);
+        let aggregate_aliases = tfp_query
+            .aggregate_items
+            .iter()
+            .map(|aggregate| aggregate.alias.clone())
+            .collect::<std::collections::BTreeSet<_>>();
         let client_comment = tfp_query
             .generated_comment
             .clone()
@@ -432,8 +494,9 @@ where
         let rows_json: Vec<JsonValue> = result
             .rows
             .iter()
-            .map(teaql_core::compact_row_to_json_value)
-            .collect();
+            .map(|row| compact_row_to_wire_json(row, &response_fields, &aggregate_aliases))
+            .collect::<Result<_, _>>()
+            .map_err(TfpEndpointError::ExecutionError)?;
 
         response_obj.insert("data".to_string(), JsonValue::Array(rows_json));
         let facet_values = self
@@ -521,6 +584,9 @@ where
                 .iter()
                 .map(|aggregate| aggregate.alias.clone())
                 .collect::<Vec<_>>();
+            let nested_response_fields =
+                effective_response_field_mappings(trusted, &facet.query.entity)
+                    .map_err(TfpEndpointError::TranslationError)?;
             let mut nested = *facet.query;
             nested.aggregate_items.clear();
             nested.group_by_items.clear();
@@ -568,8 +634,11 @@ where
                 .await
                 .map_err(|error| TfpEndpointError::ExecutionError(error.to_string()))?;
             let mut values = Vec::new();
+            let no_aggregate_aliases = std::collections::BTreeSet::new();
             for row in &nested_result.rows {
-                let mut value = teaql_core::compact_row_to_json_value(row);
+                let mut value =
+                    compact_row_to_wire_json(row, &nested_response_fields, &no_aggregate_aliases)
+                        .map_err(TfpEndpointError::ExecutionError)?;
                 let id = value.get("id").cloned().unwrap_or(JsonValue::Null);
                 let key = json_key(&id);
                 if !facet.include_all_facets && !counts.contains_key(&key) {
@@ -845,6 +914,33 @@ fn validate_policy(trusted: &TrustedQueryContext, query: &TfpSelectQuery) -> Res
             ));
         }
     }
+    let response_fields = effective_response_field_mappings(trusted, &query.entity)?;
+    let public_fields = response_fields
+        .values()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut aliases = std::collections::BTreeSet::new();
+    for aggregate in &query.aggregate_items {
+        let alias = aggregate.alias.as_str();
+        if alias.is_empty()
+            || alias.len() > 64
+            || !alias
+                .chars()
+                .all(|value| value.is_ascii_alphanumeric() || value == '_')
+        {
+            return Err(
+                "Aggregate alias must be 1-64 ASCII letters, digits, or underscores".into(),
+            );
+        }
+        if !aliases.insert(alias) {
+            return Err(format!("Duplicate aggregate alias: {alias}"));
+        }
+        if public_fields.contains(alias) {
+            return Err(format!(
+                "Aggregate alias collides with a response field: {alias}"
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -930,6 +1026,24 @@ fn effective_field_mappings(
         .get(entity)
         .map(|metadata| metadata.accepted_policy_map(configured))
         .unwrap_or_else(|| configured.clone()))
+}
+
+fn effective_response_field_mappings(
+    trusted: &TrustedQueryContext,
+    entity: &str,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let configured = trusted
+        .field_mappings
+        .get(entity)
+        .ok_or_else(|| format!("No field policy for entity: {entity}"))?;
+    if let Some(metadata) = trusted.wire_metadata.get(entity) {
+        return metadata.response_policy_map(configured);
+    }
+    let mut response = std::collections::BTreeMap::new();
+    for (public, internal) in configured {
+        register_response_name(&mut response, internal, public)?;
+    }
+    Ok(response)
 }
 
 fn validate_mutation_policy(
@@ -1021,6 +1135,9 @@ mod tests {
     #[derive(Clone, Default)]
     struct RecordingQueryExecutor(Arc<Mutex<Vec<QueryRequest>>>);
 
+    #[derive(Clone, Default)]
+    struct WireFacetExecutor;
+
     #[derive(Debug)]
     struct StubError;
     impl std::fmt::Display for StubError {
@@ -1079,6 +1196,39 @@ mod tests {
             Ok(QueryResult {
                 metadata: metadata(DataServiceOperation::Query, Some(0), None),
                 rows: Vec::new(),
+            })
+        }
+    }
+
+    impl DataServiceExecutor for WireFacetExecutor {
+        type Error = StubError;
+
+        fn capabilities(&self) -> DataServiceCapabilities {
+            DataServiceCapabilities::default()
+        }
+    }
+
+    impl QueryExecutor for WireFacetExecutor {
+        async fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
+            let rows = if !request.query.group_by.is_empty() {
+                vec![teaql_core::CompactRow::from_map(Record::from([
+                    ("status_id".into(), teaql_core::Value::I64(1001)),
+                    ("__tfpFacetCount".into(), teaql_core::Value::I64(2)),
+                ]))]
+            } else if request.query.entity == "OrderStatus" {
+                vec![teaql_core::CompactRow::from_map(Record::from([
+                    ("id".into(), teaql_core::Value::I64(1001)),
+                    (
+                        "display_name".into(),
+                        teaql_core::Value::Text("New order".into()),
+                    ),
+                ]))]
+            } else {
+                Vec::new()
+            };
+            Ok(QueryResult {
+                metadata: metadata(DataServiceOperation::Query, Some(rows.len()), None),
+                rows,
             })
         }
     }
@@ -1644,6 +1794,113 @@ mod tests {
         assert_eq!(facet.len(), 2);
         assert_eq!(facet[0]["orderCount"], 2);
         assert_eq!(facet[1]["orderCount"], 0);
+    }
+
+    #[tokio::test]
+    async fn facet_values_use_generated_wire_names_and_preserve_count_alias() {
+        let mut context = trusted();
+        context
+            .field_mappings
+            .get_mut("OrderStatus")
+            .expect("status field policy")
+            .insert("display_name".into(), "display_name".into());
+        context.wire_metadata.insert(
+            "OrderStatus".into(),
+            WireEntityMetadata::new(
+                BTreeMap::from([
+                    ("id".into(), "id".into()),
+                    ("code".into(), "code".into()),
+                    ("display_name".into(), "displayName".into()),
+                ]),
+                BTreeMap::new(),
+            )
+            .expect("status wire metadata"),
+        );
+        let endpoint = TfpEndpoint::new(Arc::new(WireFacetExecutor), Arc::new(StubExecutor));
+        let response = endpoint
+            .handle_query(
+                &context,
+                json!({
+                    "entity":"CustomerOrder",
+                    "facets":[{
+                        "facetName":"statusFacet",
+                        "relationName":"status",
+                        "query":{
+                            "entity":"OrderStatus",
+                            "selectItems":["id","displayName"],
+                            "aggregateItems":[{"function":"Count","field":"id","alias":"orderCount"}],
+                            "limitValue":20,
+                            "commentText":"load status facet labels",
+                            "purposeText":"render the order status filter"
+                        }
+                    }],
+                    "limitValue":10,
+                    "commentText":"load orders",
+                    "purposeText":"render the order list"
+                }),
+            )
+            .await
+            .expect("wire-mapped facet query");
+        let value = &response["facets"]["statusFacet"][0];
+        assert_eq!(value["id"], 1001);
+        assert_eq!(value["displayName"], "New order");
+        assert_eq!(value["orderCount"], 2);
+        assert!(value.get("display_name").is_none());
+    }
+
+    #[test]
+    fn response_mapping_and_aggregate_aliases_fail_closed_on_collisions() {
+        let metadata = WireEntityMetadata::new(
+            BTreeMap::from([
+                ("first_name".into(), "firstName".into()),
+                ("legal_name".into(), "legalName".into()),
+            ]),
+            BTreeMap::new(),
+        )
+        .expect("wire metadata");
+        assert!(
+            metadata
+                .response_policy_map(&BTreeMap::from([
+                    ("first_name".into(), "name".into()),
+                    ("legal_name".into(), "name".into()),
+                ]))
+                .is_err()
+        );
+
+        let context = trusted();
+        for payload in [
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "aggregateItems":[
+                    {"function":"Count","field":"id","alias":"total"},
+                    {"function":"Count","field":"id","alias":"total"}
+                ]
+            }),
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "aggregateItems":[{"function":"Count","field":"id","alias":"id"}]
+            }),
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "aggregateItems":[{"function":"Count","field":"id","alias":"bad-name"}]
+            }),
+        ] {
+            let query: TfpSelectQuery = serde_json::from_value(payload).expect("TFP query");
+            assert!(validate_policy(&context, &query).is_err());
+        }
+
+        let unexpected = teaql_core::CompactRow::from_map(Record::from([(
+            "private_value".into(),
+            teaql_core::Value::Text("secret".into()),
+        )]));
+        assert!(
+            compact_row_to_wire_json(
+                &unexpected,
+                &BTreeMap::from([("id".into(), "id".into())]),
+                &BTreeSet::new(),
+            )
+            .is_err()
+        );
     }
 
     #[test]

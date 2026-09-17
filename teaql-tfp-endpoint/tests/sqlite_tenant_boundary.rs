@@ -155,7 +155,8 @@ async fn tfp_json_enforces_tenant_boundary_in_real_sqlite_statement() {
     let rows = initial["data"].as_array().expect("query rows");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["id"], 1);
-    assert_eq!(rows[0]["order_number"], "TENANT-ONE-ORDER");
+    assert_eq!(rows[0]["orderNumber"], "TENANT-ONE-ORDER");
+    assert!(rows[0].get("order_number").is_none());
 
     let implicit_projection = endpoint
         .handle_query(
@@ -171,7 +172,8 @@ async fn tfp_json_enforces_tenant_boundary_in_real_sqlite_statement() {
         .expect("allowlisted default projection");
     let implicit_row = &implicit_projection["data"].as_array().expect("query rows")[0];
     assert_eq!(implicit_row["id"], 1);
-    assert_eq!(implicit_row["order_number"], "TENANT-ONE-ORDER");
+    assert_eq!(implicit_row["orderNumber"], "TENANT-ONE-ORDER");
+    assert!(implicit_row.get("order_number").is_none());
     assert!(implicit_row.get("commerce_platform_id").is_none());
 
     for invalid in [
@@ -242,7 +244,7 @@ async fn tfp_json_enforces_tenant_boundary_in_real_sqlite_statement() {
     let rows = after["data"].as_array().expect("query rows");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["version"], 2);
-    assert_eq!(rows[0]["order_number"], "TENANT-ONE-UPDATED");
+    assert_eq!(rows[0]["orderNumber"], "TENANT-ONE-UPDATED");
 
     let cross_tenant_delete = endpoint
         .handle_mutation(
@@ -332,7 +334,7 @@ async fn tfp_json_enforces_tenant_boundary_in_real_sqlite_statement() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["id"], 4);
     assert_eq!(rows[0]["version"], 3);
-    assert_eq!(rows[0]["order_number"], "TENANT-ONE-DELETED");
+    assert_eq!(rows[0]["orderNumber"], "TENANT-ONE-DELETED");
 
     let connection = transport.connection();
     let connection = connection.lock().expect("sqlite connection");
