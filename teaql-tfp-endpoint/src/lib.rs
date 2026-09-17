@@ -318,6 +318,9 @@ impl TfpEndpointError {
                     || message.starts_with("Invalid mutation request:")
                     || message.starts_with("Unsupported predicate operator")
                     || message.starts_with("Filter must not be empty")
+                    || message.starts_with("Filter nesting depth")
+                    || message.starts_with("Filter predicate count")
+                    || message.starts_with("Logical filter")
                     || message.starts_with("Predicate for ")
                     || message.starts_with("Facet ")
                     || message.starts_with("A TFP query ")
@@ -914,6 +917,7 @@ fn reject_privileged_input(payload: &JsonValue) -> Result<(), String> {
 }
 
 fn validate_policy(trusted: &TrustedQueryContext, query: &TfpSelectQuery) -> Result<(), String> {
+    query.validate_filter_shape()?;
     if !trusted.allowed_entities.contains(&query.entity) {
         return Err(format!(
             "Entity is not allowed by federation policy: {}",
@@ -1830,6 +1834,42 @@ mod tests {
             .await
             .expect_err("unsupported operator must fail closed");
         assert_eq!(error.code(), "TFP_INVALID_REQUEST");
+    }
+
+    #[tokio::test]
+    async fn ambiguous_and_excessive_filters_fail_before_execution() {
+        let queries = Arc::new(Mutex::new(Vec::new()));
+        let query_executor = RecordingQueryExecutor(queries.clone());
+        let endpoint = TfpEndpoint::new(Arc::new(query_executor), Arc::new(StubExecutor));
+        let excessive_filters = (0..=256)
+            .map(|id| json!({"id":{"$eq":id}}))
+            .collect::<Vec<_>>();
+        for payload in [
+            json!({
+                "entity":"CustomerOrder",
+                "filterCondition":{
+                    "$and":[{"id":{"$eq":1}}],
+                    "id":{"$eq":2}
+                },
+                "limitValue":10,
+                "commentText":"attempt ambiguous filter",
+                "purposeText":"prove every submitted predicate is enforced"
+            }),
+            json!({
+                "entity":"CustomerOrder",
+                "_filters":excessive_filters,
+                "limitValue":10,
+                "commentText":"attempt excessive filters",
+                "purposeText":"prove filter work stays bounded"
+            }),
+        ] {
+            let error = endpoint
+                .handle_query(&trusted(), payload)
+                .await
+                .expect_err("invalid filter tree must fail closed");
+            assert_eq!(error.code(), "TFP_INVALID_REQUEST");
+        }
+        assert!(queries.lock().expect("recorded queries").is_empty());
     }
 
     #[tokio::test]

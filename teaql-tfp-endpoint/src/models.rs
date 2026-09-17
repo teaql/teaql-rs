@@ -89,11 +89,27 @@ pub struct TfpAggregateItem {
     pub alias: String,
 }
 
+const MAX_LOGICAL_FILTER_CHILDREN: usize = 100;
+const MAX_FILTER_DEPTH: usize = 16;
+const MAX_FILTER_PREDICATES: usize = 256;
+
 impl TfpSelectQuery {
+    pub fn validate_filter_shape(&self) -> Result<(), String> {
+        let mut predicates = 0;
+        if let Some(filter) = &self.filter_condition {
+            validate_filter_tree(filter, 0, &mut predicates)?;
+        }
+        for filter in &self.filters {
+            validate_filter_tree(filter, 0, &mut predicates)?;
+        }
+        Ok(())
+    }
+
     pub fn map_fields(
         &mut self,
         fields: &std::collections::BTreeMap<String, String>,
     ) -> Result<(), String> {
+        self.validate_filter_shape()?;
         if let Some(filter) = &mut self.filter_condition {
             map_filter_fields(filter, fields)?;
         }
@@ -130,6 +146,7 @@ impl TfpSelectQuery {
     }
 
     pub fn to_core(&self) -> Result<SelectQuery, String> {
+        self.validate_filter_shape()?;
         let mut filters = Vec::new();
         if let Some(filter) = &self.filter_condition {
             filters.push(parse_json_filter(filter)?);
@@ -184,6 +201,49 @@ impl TfpSelectQuery {
 
         Ok(q)
     }
+}
+
+fn validate_filter_tree(
+    value: &JsonValue,
+    depth: usize,
+    predicates: &mut usize,
+) -> Result<(), String> {
+    if depth > MAX_FILTER_DEPTH {
+        return Err(format!("Filter nesting depth exceeds {MAX_FILTER_DEPTH}"));
+    }
+    let object = value.as_object().ok_or("Filter must be an object")?;
+    let has_and = object.contains_key("$and");
+    let has_or = object.contains_key("$or");
+    if has_and || has_or {
+        if object.len() != 1 || has_and == has_or {
+            return Err("Logical filter must contain exactly one $and or $or key".into());
+        }
+        let key = if has_and { "$and" } else { "$or" };
+        let children = object[key]
+            .as_array()
+            .ok_or_else(|| format!("{key} must be an array"))?;
+        if children.is_empty() || children.len() > MAX_LOGICAL_FILTER_CHILDREN {
+            return Err(format!(
+                "Logical filter child count must be between 1 and {MAX_LOGICAL_FILTER_CHILDREN}"
+            ));
+        }
+        for child in children {
+            validate_filter_tree(child, depth + 1, predicates)?;
+        }
+        return Ok(());
+    }
+    if object.is_empty() {
+        return Err("Filter must not be empty".into());
+    }
+    *predicates = predicates
+        .checked_add(object.len())
+        .ok_or("Filter predicate count overflow")?;
+    if *predicates > MAX_FILTER_PREDICATES {
+        return Err(format!(
+            "Filter predicate count exceeds {MAX_FILTER_PREDICATES}"
+        ));
+    }
+    Ok(())
 }
 
 fn map_filter_fields(
@@ -248,6 +308,11 @@ fn json_value(value: &JsonValue) -> Result<Value, String> {
 
 pub fn parse_json_filter(value: &JsonValue) -> Result<Expr, String> {
     let object = value.as_object().ok_or("Filter must be an object")?;
+    let has_and = object.contains_key("$and");
+    let has_or = object.contains_key("$or");
+    if (has_and || has_or) && (object.len() != 1 || has_and == has_or) {
+        return Err("Logical filter must contain exactly one $and or $or key".into());
+    }
     if let Some(items) = object.get("$and") {
         let items = items.as_array().ok_or("$and must be an array")?;
         if items.is_empty() {
@@ -557,6 +622,63 @@ mod tests {
             query
                 .map_fields(&BTreeMap::from([("id".into(), "id".into())]))
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_ambiguous_or_unbounded_filter_trees() {
+        for filter in [
+            json!({"$and":[{"id":{"$eq":1}}], "id":{"$eq":2}}),
+            json!({
+                "$and":[{"id":{"$eq":1}}],
+                "$or":[{"id":{"$eq":2}}]
+            }),
+        ] {
+            assert!(parse_json_filter(&filter).is_err(), "accepted {filter}");
+        }
+
+        let broad = json!({"$or": (0..=MAX_LOGICAL_FILTER_CHILDREN)
+            .map(|id| json!({"id":{"$eq":id}}))
+            .collect::<Vec<_>>()});
+        let broad_query: TfpSelectQuery = serde_json::from_value(json!({
+            "entity":"CustomerOrder", "filterCondition":broad
+        }))
+        .unwrap();
+        assert!(broad_query.validate_filter_shape().is_err());
+
+        let mut deep = json!({"id":{"$eq":1}});
+        for _ in 0..=MAX_FILTER_DEPTH {
+            deep = json!({"$and":[deep]});
+        }
+        let deep_query: TfpSelectQuery = serde_json::from_value(json!({
+            "entity":"CustomerOrder", "filterCondition":deep
+        }))
+        .unwrap();
+        assert!(deep_query.validate_filter_shape().is_err());
+
+        let filters = (0..=MAX_FILTER_PREDICATES)
+            .map(|id| json!({"id":{"$eq":id}}))
+            .collect::<Vec<_>>();
+        let excessive_query: TfpSelectQuery = serde_json::from_value(json!({
+            "entity":"CustomerOrder", "_filters":filters
+        }))
+        .unwrap();
+        assert!(excessive_query.validate_filter_shape().is_err());
+    }
+
+    #[test]
+    fn retains_valid_nested_logic_and_ordinary_implicit_and() {
+        let filter = json!({"$or":[
+            {"$and":[{"id":{"$gt":1}}, {"id":{"$lt":10}}]},
+            {"reviewed":{"$eq":true}}
+        ]});
+        assert!(parse_json_filter(&filter).is_ok());
+        assert!(
+            parse_json_filter(&json!({
+                "id":{"$gt":1},
+                "reviewed":{"$eq":true}
+            }))
+            .is_ok()
         );
     }
 
