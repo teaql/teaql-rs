@@ -473,6 +473,25 @@ impl TfpMutationQuery {
         }
 
         let has_id = self.id.as_ref().is_some_and(|id| !id.is_null());
+        let require_valid_id = || -> Result<(), String> {
+            let id =
+                self.id.as_ref().filter(|id| !id.is_null()).ok_or_else(|| {
+                    format!("Invalid mutation request: {} requires id", self.action)
+                })?;
+            let normalized = json_value(id).map_err(|_| {
+                format!(
+                    "Invalid mutation request: {} requires an integer or text id",
+                    self.action
+                )
+            })?;
+            if matches!(normalized, Value::I64(_) | Value::U64(_) | Value::Text(_)) {
+                return Ok(());
+            }
+            Err(format!(
+                "Invalid mutation request: {} requires an integer or text id",
+                self.action
+            ))
+        };
         match self.action.as_str() {
             "Create" => {
                 if has_id {
@@ -485,12 +504,7 @@ impl TfpMutationQuery {
                 }
             }
             "Update" | "Delete" => {
-                if !has_id {
-                    return Err(format!(
-                        "Invalid mutation request: {} requires id",
-                        self.action
-                    ));
-                }
+                require_valid_id()?;
                 if !self.expected_version.is_some_and(|version| version > 0) {
                     return Err(format!(
                         "Invalid mutation request: {} requires a positive expectedVersion",
@@ -499,9 +513,7 @@ impl TfpMutationQuery {
                 }
             }
             "Recover" => {
-                if !has_id {
-                    return Err("Invalid mutation request: Recover requires id".into());
-                }
+                require_valid_id()?;
                 if !self.expected_version.is_some_and(|version| version < 0) {
                     return Err(
                         "Invalid mutation request: Recover requires a negative expectedVersion"
@@ -904,5 +916,40 @@ mod tests {
 
             assert_eq!(mutation.to_core().unwrap_err(), expected_error);
         }
+
+        for (action, id, expected_version) in [
+            ("Update", json!({"id":null}), 1),
+            ("Delete", json!([42]), 1),
+            ("Recover", json!(true), -1),
+            ("Update", json!(1.5), 1),
+        ] {
+            let mutation = TfpMutationQuery {
+                entity: "CustomerOrder".into(),
+                action: action.into(),
+                payload: json!({}),
+                id: Some(id),
+                expected_version: Some(expected_version),
+                comment: Some(format!("{action} order")),
+            };
+            assert_eq!(
+                mutation.to_core().unwrap_err(),
+                format!("Invalid mutation request: {action} requires an integer or text id")
+            );
+        }
+
+        let valid_reference = TfpMutationQuery {
+            entity: "CustomerOrder".into(),
+            action: "Update".into(),
+            payload: json!({"name":"updated"}),
+            id: Some(json!({"id":42})),
+            expected_version: Some(1),
+            comment: Some("update order".into()),
+        }
+        .to_core()
+        .expect("non-null entity reference id");
+        let MutationRequest::Update(command) = valid_reference else {
+            panic!("expected update command")
+        };
+        assert_eq!(command.id, Value::I64(42));
     }
 }

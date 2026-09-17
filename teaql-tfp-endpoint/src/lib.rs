@@ -2302,6 +2302,33 @@ mod tests {
 
         for payload in [
             json!({
+                "entity":"CustomerOrder", "action":"Update", "id":{"id":null},
+                "expectedVersion":3, "payload":{"orderNumber":"O-42"},
+                "comment":"update order"
+            }),
+            json!({
+                "entity":"CustomerOrder", "action":"Delete", "id":[42],
+                "expectedVersion":3, "payload":{}, "comment":"delete order"
+            }),
+            json!({
+                "entity":"CustomerOrder", "action":"Recover", "id":true,
+                "expectedVersion":-3, "payload":{}, "comment":"recover order"
+            }),
+            json!({
+                "entity":"CustomerOrder", "action":"Update", "id":1.5,
+                "expectedVersion":3, "payload":{"orderNumber":"O-42"},
+                "comment":"update order"
+            }),
+        ] {
+            let error = endpoint
+                .handle_mutation(&trusted(), payload)
+                .await
+                .expect_err("invalid mutation id must fail before execution");
+            assert_eq!(error.code(), "TFP_INVALID_REQUEST");
+        }
+
+        for payload in [
+            json!({
                 "entity":"CustomerOrder", "action":"Delete", "id":42,
                 "expectedVersion":3, "payload":{"orderNumber":"ignored before #170"},
                 "comment":"delete order"
