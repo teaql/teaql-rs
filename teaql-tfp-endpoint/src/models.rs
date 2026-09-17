@@ -19,6 +19,9 @@ pub struct TfpOrderBy {
 
 impl TfpOrderBy {
     pub fn to_core(&self) -> Result<OrderBy, String> {
+        if self.expr.is_some() {
+            return Err("Order expressions are not supported by canonical TFP v1".to_string());
+        }
         let dir = match self.direction.as_str() {
             value if value.eq_ignore_ascii_case("asc") => SortDirection::Asc,
             value if value.eq_ignore_ascii_case("desc") => SortDirection::Desc,
@@ -26,7 +29,7 @@ impl TfpOrderBy {
         };
         Ok(OrderBy {
             field: self.field.clone(),
-            expr: None, // TODO: parse expression if needed
+            expr: None,
             direction: dir,
         })
     }
@@ -513,6 +516,30 @@ mod tests {
         assert_eq!(core.order_by[0].field, "order_number");
         assert!(core.continuous_page_fetch.is_none());
         assert!(core.id_set_pagination.is_none());
+    }
+
+    #[test]
+    fn rejects_order_expression_instead_of_silently_dropping_it() {
+        let order = TfpOrderBy {
+            field: "id".into(),
+            expr: Some(json!({"function":"lower", "arguments":["name"]})),
+            direction: "asc".into(),
+        };
+        assert_eq!(
+            order.to_core().unwrap_err(),
+            "Order expressions are not supported by canonical TFP v1"
+        );
+
+        let field_order = TfpOrderBy {
+            field: "order_number".into(),
+            expr: None,
+            direction: "desc".into(),
+        }
+        .to_core()
+        .expect("ordinary field order");
+        assert_eq!(field_order.field, "order_number");
+        assert!(field_order.expr.is_none());
+        assert_eq!(field_order.direction, SortDirection::Desc);
     }
 
     #[test]

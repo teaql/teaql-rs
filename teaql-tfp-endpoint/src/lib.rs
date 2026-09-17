@@ -213,6 +213,7 @@ impl TfpEndpointError {
                     || message.starts_with("A TFP facet")
                     || message.starts_with("Nested facets")
                     || message.starts_with("Duplicate facet")
+                    || message.starts_with("Order expressions")
                     || message.contains("does not accept null") =>
             {
                 "TFP_INVALID_REQUEST"
@@ -1436,6 +1437,32 @@ mod tests {
             .await
             .expect_err("unsupported operator must fail closed");
         assert_eq!(error.code(), "TFP_INVALID_REQUEST");
+    }
+
+    #[tokio::test]
+    async fn unsupported_order_expression_fails_before_execution() {
+        let queries = Arc::new(Mutex::new(Vec::new()));
+        let query_executor = RecordingQueryExecutor(queries.clone());
+        let endpoint = TfpEndpoint::new(Arc::new(query_executor), Arc::new(StubExecutor));
+        let error = endpoint
+            .handle_query(
+                &trusted(),
+                json!({
+                    "entity":"CustomerOrder",
+                    "orderItems":[{
+                        "field":"id",
+                        "expr":{"function":"lower", "arguments":["orderNumber"]},
+                        "direction":"asc"
+                    }],
+                    "limitValue":10,
+                    "commentText":"attempt expression ordering",
+                    "purposeText":"prove unsupported semantics fail closed"
+                }),
+            )
+            .await
+            .expect_err("unsupported order expression must fail closed");
+        assert_eq!(error.code(), "TFP_INVALID_REQUEST");
+        assert!(queries.lock().expect("recorded queries").is_empty());
     }
 
     #[tokio::test]
