@@ -68,7 +68,7 @@ run_expected_suite() {
   verify_expected_output "$package" "$expected" "$output"
 }
 
-run_expected_suite teaql-provider-sqlite '42,1' --lib --tests
-run_expected_suite teaql-provider-postgres '29' --lib
-run_expected_suite teaql-provider-mysql '23' --lib
+run_expected_suite teaql-provider-sqlite '42,1,1' --lib --tests
+run_expected_suite teaql-provider-postgres '29,1' --lib --tests
+run_expected_suite teaql-provider-mysql '23,1' --lib --tests
 printf 'PASS live SQLite/PostgreSQL/MySQL provider suites (isolated database URLs supplied)\n'
