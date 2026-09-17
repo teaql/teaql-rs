@@ -1854,6 +1854,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn null_range_operands_fail_before_execution() {
+        let queries = Arc::new(Mutex::new(Vec::new()));
+        let query_executor = RecordingQueryExecutor(queries.clone());
+        let endpoint = TfpEndpoint::new(Arc::new(query_executor), Arc::new(StubExecutor));
+
+        for filter in [
+            json!({"id":{"$gte":null}}),
+            json!({"id":{"$lte":null}}),
+            json!({"id":{"$between":[null, 10]}}),
+            json!({"id":{"$between":[1, null]}}),
+        ] {
+            let error = endpoint
+                .handle_query(
+                    &trusted(),
+                    json!({
+                        "entity":"CustomerOrder", "filterCondition":filter,
+                        "limitValue":10, "commentText":"exercise null range",
+                        "purposeText":"verify explicit known-value semantics"
+                    }),
+                )
+                .await
+                .expect_err("null range operands must fail closed");
+            assert_eq!(error.code(), "TFP_INVALID_REQUEST");
+        }
+
+        assert!(queries.lock().expect("recorded queries").is_empty());
+    }
+
+    #[tokio::test]
     async fn ambiguous_and_excessive_filters_fail_before_execution() {
         let queries = Arc::new(Mutex::new(Vec::new()));
         let query_executor = RecordingQueryExecutor(queries.clone());

@@ -358,9 +358,9 @@ pub fn parse_json_filter(value: &JsonValue) -> Result<Expr, String> {
             "$eq" => Expr::eq(field, non_null_value(operator, operand)?),
             "$ne" => Expr::ne(field, non_null_value(operator, operand)?),
             "$gt" => Expr::gt(field, non_null_value(operator, operand)?),
-            "$gte" => Expr::gte(field, json_value(operand)?),
+            "$gte" => Expr::gte(field, non_null_value(operator, operand)?),
             "$lt" => Expr::lt(field, non_null_value(operator, operand)?),
-            "$lte" => Expr::lte(field, json_value(operand)?),
+            "$lte" => Expr::lte(field, non_null_value(operator, operand)?),
             "$contains" => Expr::contain(
                 field,
                 operand.as_str().ok_or("$contains requires a string")?,
@@ -392,7 +392,11 @@ pub fn parse_json_filter(value: &JsonValue) -> Result<Expr, String> {
                     .as_array()
                     .filter(|values| values.len() == 2)
                     .ok_or("$between requires exactly two values")?;
-                Expr::between(field, json_value(&values[0])?, json_value(&values[1])?)
+                Expr::between(
+                    field,
+                    non_null_value(operator, &values[0])?,
+                    non_null_value(operator, &values[1])?,
+                )
             }
             "$isKnown" => {
                 require_true(operator, operand)?;
@@ -667,6 +671,14 @@ mod tests {
         assert!(parse_json_filter(&json!({"id":{"$wat":1}})).is_err());
         assert!(parse_json_filter(&json!({"customer.email":{"$eq":"masked"}})).is_err());
         assert!(parse_json_filter(&json!({"id":{"$in":[]}})).is_err());
+        for filter in [
+            json!({"id":{"$gte":null}}),
+            json!({"id":{"$lte":null}}),
+            json!({"id":{"$between":[null, 10]}}),
+            json!({"id":{"$between":[1, null]}}),
+        ] {
+            assert!(parse_json_filter(&filter).is_err(), "accepted {filter}");
+        }
         let values: Vec<_> = (0..101).collect();
         assert!(parse_json_filter(&json!({"id":{"$in":values}})).is_err());
         let mut query: TfpSelectQuery = serde_json::from_value(json!({
