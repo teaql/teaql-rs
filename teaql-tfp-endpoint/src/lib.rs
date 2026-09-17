@@ -516,7 +516,7 @@ where
         let response_bound = governed_query_result_limit(&outer_query);
         let request = QueryRequest {
             query: core_query,
-            trace_chain: vec![trace],
+            trace_chain: vec![trace.clone()],
             comment: Some(client_comment.clone()),
             capture_debug_query: false,
             capture_execution_metadata: true,
@@ -540,6 +540,7 @@ where
             .collect::<Result<_, _>>()
             .map_err(TfpEndpointError::ExecutionError)?;
 
+        let result_count = rows_json.len();
         response_obj.insert("data".to_string(), JsonValue::Array(rows_json));
         let facet_values = self
             .execute_facets(trusted, &outer_query, &client_comment, facets)
@@ -547,9 +548,7 @@ where
         response_obj.insert("facets".to_string(), JsonValue::Object(facet_values));
         response_obj.insert("resultCode".to_string(), JsonValue::Number(0.into()));
         response_obj.insert("status".to_string(), JsonValue::String("YES".to_string()));
-        let trace_json = result
-            .metadata
-            .trace_chain
+        let trace_json = std::slice::from_ref(&trace)
             .iter()
             .map(|node| {
                 serde_json::json!({
@@ -562,7 +561,7 @@ where
             "execution".to_string(),
             serde_json::json!({
                 "backend": result.metadata.backend,
-                "resultCount": result.metadata.result_count,
+                "resultCount": result_count,
                 "trace": trace_json,
                 "sqlShape": result.metadata.parameterized_query,
             }),
@@ -1439,7 +1438,13 @@ mod tests {
         async fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
             assert!(request.capture_execution_metadata);
             assert!(!request.capture_debug_query);
-            let mut execution = metadata(DataServiceOperation::Query, Some(0), None);
+            let mut execution = metadata(DataServiceOperation::Query, Some(999), None);
+            execution.trace_chain = vec![teaql_core::TraceNode {
+                kind: teaql_core::TraceKind::Purpose,
+                entity_type: "ForgedEntity".into(),
+                entity_id: None,
+                comment: "forged-provider-trace".into(),
+            }];
             execution.parameterized_query = Some(
                 "SELECT * FROM orders WHERE id = ? AND active = ? AND happened_at = ? AND email = ?"
                     .into(),
@@ -1456,7 +1461,7 @@ mod tests {
             );
             Ok(QueryResult {
                 metadata: execution,
-                rows: Vec::new(),
+                rows: vec![teaql_core::CompactRow::from_map(Record::new())],
             })
         }
     }
@@ -2669,6 +2674,20 @@ mod tests {
         ] {
             assert!(!shape.contains(secret));
         }
+        assert_eq!(response["execution"]["resultCount"], 1);
+        let trace = response["execution"]["trace"]
+            .as_array()
+            .expect("server-approved trace");
+        assert_eq!(trace.len(), 1);
+        assert_eq!(trace[0]["entity"], "CustomerOrder");
+        assert!(
+            trace[0]["comment"]
+                .as_str()
+                .expect("approved trace comment")
+                .contains("approved-purpose=approved-order-search")
+        );
+        assert!(!response.to_string().contains("forged-provider-trace"));
+        assert!(!response.to_string().contains("ForgedEntity"));
     }
 
     #[tokio::test]
