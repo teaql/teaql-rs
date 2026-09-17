@@ -96,6 +96,7 @@ pub const MAX_SELECT_ITEMS: usize = 256;
 pub const MAX_ORDER_ITEMS: usize = 32;
 pub const MAX_GROUP_BY_ITEMS: usize = 64;
 pub const MAX_AGGREGATE_ITEMS: usize = 64;
+pub const MAX_MUTATION_PAYLOAD_FIELDS: usize = 256;
 pub const MAX_GOVERNANCE_EVIDENCE_BYTES: usize = 1024;
 
 impl TfpSelectQuery {
@@ -595,6 +596,14 @@ impl TfpMutationQuery {
             .payload
             .as_object()
             .ok_or("Mutation payload must be an object")?;
+        if matches!(self.action.as_str(), "Create" | "Update")
+            && payload.len() > MAX_MUTATION_PAYLOAD_FIELDS
+        {
+            return Err(format!(
+                "Invalid mutation request: payload may contain at most \
+                 {MAX_MUTATION_PAYLOAD_FIELDS} fields"
+            ));
+        }
         if matches!(self.action.as_str(), "Delete" | "Recover") && !payload.is_empty() {
             return Err(format!(
                 "Invalid mutation request: {} requires an empty payload",
@@ -1299,6 +1308,38 @@ mod tests {
         assert_eq!(
             missing_reason.to_core().unwrap_err(),
             "Mutation audit reason is required"
+        );
+    }
+
+    #[test]
+    fn mutation_payload_width_accepts_exact_boundary_and_rejects_one_more() {
+        let exact_payload = (0..MAX_MUTATION_PAYLOAD_FIELDS)
+            .map(|index| (format!("field_{index}"), json!(index)))
+            .collect::<serde_json::Map<_, _>>();
+        let exact = TfpMutationQuery {
+            entity: "CustomerOrder".into(),
+            action: "Create".into(),
+            payload: JsonValue::Object(exact_payload.clone()),
+            id: None,
+            expected_version: None,
+            comment: Some("create exact-width order".into()),
+        };
+        exact
+            .to_core()
+            .expect("exact mutation payload boundary remains valid");
+
+        let mut excessive_payload = exact_payload;
+        excessive_payload.insert("one_too_many".into(), json!(true));
+        let excessive = TfpMutationQuery {
+            payload: JsonValue::Object(excessive_payload),
+            ..exact
+        };
+        assert_eq!(
+            excessive.to_core().unwrap_err(),
+            format!(
+                "Invalid mutation request: payload may contain at most \
+                 {MAX_MUTATION_PAYLOAD_FIELDS} fields"
+            )
         );
     }
 

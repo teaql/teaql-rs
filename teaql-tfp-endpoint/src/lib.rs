@@ -3029,6 +3029,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn excessive_mutation_payload_width_fails_before_execution() {
+        let mutations = Arc::new(RecordingMutationExecutor::new(1));
+        let endpoint = TfpEndpoint::new(Arc::new(StubExecutor), mutations.clone());
+        let payload = (0..=models::MAX_MUTATION_PAYLOAD_FIELDS)
+            .map(|index| (format!("field_{index}"), json!(index)))
+            .collect::<serde_json::Map<_, _>>();
+
+        let error = endpoint
+            .handle_mutation(
+                &trusted(),
+                json!({
+                    "entity":"CustomerOrder", "action":"Create",
+                    "payload":payload, "comment":"reject oversized mutation payload"
+                }),
+            )
+            .await
+            .expect_err("oversized mutation payload must fail closed");
+        assert_eq!(error.code(), "TFP_INVALID_REQUEST");
+        assert!(mutations.ordinary.lock().expect("ordinary").is_empty());
+        assert!(mutations.guarded.lock().expect("guarded").is_empty());
+    }
+
+    #[tokio::test]
     async fn mutation_lifecycle_requires_id_and_correct_optimistic_version_sign() {
         let endpoint = TfpEndpoint::new(Arc::new(StubExecutor), Arc::new(StubExecutor));
         for payload in [
