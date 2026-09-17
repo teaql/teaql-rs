@@ -6,7 +6,9 @@ use teaql_core::{DataType, EntityDescriptor, InsertCommand, PropertyDescriptor};
 use teaql_data_service::SchemaProvider;
 use teaql_provider_sqlite::{SqliteDialect, SqliteMutationExecutor};
 use teaql_sql::{SqlDataServiceExecutor, SqlDialect};
-use teaql_tfp_endpoint::{TfpEndpoint, TfpEndpointError, TrustedQueryContext, WireEntityMetadata};
+use teaql_tfp_endpoint::{
+    TfpEndpoint, TfpEndpointError, TrustedEntityVisibility, TrustedQueryContext, WireEntityMetadata,
+};
 
 #[derive(Clone)]
 struct Schema(Arc<EntityDescriptor>);
@@ -49,7 +51,12 @@ fn trusted_tenant_one() -> TrustedQueryContext {
     TrustedQueryContext {
         tenant_field: "commerce_platform_id".into(),
         tenant_id: teaql_core::Value::I64(1),
-        active_version_fields: BTreeMap::from([("CustomerOrder".into(), "version".into())]),
+        entity_visibility: BTreeMap::from([(
+            "CustomerOrder".into(),
+            TrustedEntityVisibility::Versioned {
+                field: "version".into(),
+            },
+        )]),
         authenticated_user: "tenant-one-operator".into(),
         approved_purpose: "tenant-boundary-regression".into(),
         allowed_entities: BTreeSet::from(["CustomerOrder".into()]),

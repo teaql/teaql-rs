@@ -10,7 +10,9 @@ use teaql_data_service::{
     GuardedMutationExecutor, GuardedMutationRequest, MutationExecutor, MutationRequest,
     MutationResult, QueryExecutor, QueryRequest, QueryResult,
 };
-use teaql_tfp_endpoint::{TfpEndpoint, TfpEndpointError, TrustedQueryContext};
+use teaql_tfp_endpoint::{
+    TfpEndpoint, TfpEndpointError, TrustedEntityVisibility, TrustedQueryContext,
+};
 
 #[derive(Clone, Default)]
 struct StubExecutor;
@@ -162,9 +164,14 @@ fn trusted() -> TrustedQueryContext {
     TrustedQueryContext {
         tenant_field: "tenant_id".into(),
         tenant_id: Value::I64(1),
-        active_version_fields: BTreeMap::from([
-            ("CustomerOrder".into(), "version".into()),
-            ("OrderStatus".into(), "version".into()),
+        entity_visibility: BTreeMap::from([
+            (
+                "CustomerOrder".into(),
+                TrustedEntityVisibility::Versioned {
+                    field: "version".into(),
+                },
+            ),
+            ("OrderStatus".into(), TrustedEntityVisibility::Unversioned),
         ]),
         authenticated_user: "conformance-agent".into(),
         approved_purpose: "tfp-conformance".into(),
