@@ -151,7 +151,7 @@ async fn mutate(
 fn error(value: TfpEndpointError) -> (StatusCode, Json<JsonValue>) {
     (
         StatusCode::BAD_REQUEST,
-        Json(json!({"code": value.code(), "message": value.to_string()})),
+        Json(json!({"code": value.code(), "message": value.public_message()})),
     )
 }
 fn trusted() -> TrustedQueryContext {

@@ -306,7 +306,7 @@ pub enum TfpEndpointError {
     ParseError(#[from] serde_json::Error),
     #[error("Failed to translate to core query: {0}")]
     TranslationError(String),
-    #[error("Data service error: {0}")]
+    #[error("Data service execution failed")]
     ExecutionError(String),
     #[error("Mutation target is unavailable")]
     MutationTargetUnavailable,
@@ -367,6 +367,36 @@ impl TfpEndpointError {
             Self::MutationTargetUnavailable => "TFP_MUTATION_TARGET_UNAVAILABLE",
             Self::WireInput(_) => "WIRE_UNKNOWN_FIELD",
             Self::WireCollision(_) => "WIRE_FIELD_COLLISION",
+        }
+    }
+
+    /// Returns a stable message suitable for untrusted transport clients.
+    ///
+    /// This deliberately excludes provider diagnostics, SQL, schema names, and
+    /// data values. Transport adapters should use this method instead of
+    /// serializing [`std::fmt::Display`] or [`std::fmt::Debug`] output.
+    pub fn public_message(&self) -> &'static str {
+        match self.code() {
+            "TFP_INVALID_REQUEST" => "Invalid TFP request",
+            "TFP_AUDIT_REASON_REQUIRED" => "Mutation audit reason is required",
+            "TFP_FORBIDDEN_ENTITY" => "Entity is not allowed",
+            "TFP_FORBIDDEN_FIELD" => "Field is not allowed",
+            "TFP_POLICY_VIOLATION" => "Request violates federation policy",
+            "TFP_EXECUTION_FAILED" => "Data service execution failed",
+            "TFP_MUTATION_TARGET_UNAVAILABLE" => "Mutation target is unavailable",
+            "WIRE_UNKNOWN_FIELD" => "Unknown wire field",
+            "WIRE_FIELD_COLLISION" => "Conflicting wire input",
+            _ => "TFP request failed",
+        }
+    }
+
+    /// Returns sensitive provider detail for controlled internal diagnostics.
+    ///
+    /// Callers must never serialize this value into an untrusted response.
+    pub fn internal_diagnostic(&self) -> Option<&str> {
+        match self {
+            Self::ExecutionError(detail) => Some(detail),
+            _ => None,
         }
     }
 }
@@ -2532,7 +2562,8 @@ mod tests {
         assert_eq!(error.code(), "TFP_EXECUTION_FAILED");
         assert!(
             error
-                .to_string()
+                .internal_diagnostic()
+                .expect("execution detail remains available internally")
                 .contains("TFP query executor returned 3 rows")
         );
 
@@ -2569,7 +2600,28 @@ mod tests {
                 .await
                 .expect_err("an over-returning facet executor must fail closed");
             assert_eq!(error.code(), "TFP_EXECUTION_FAILED");
-            assert!(error.to_string().contains(phase));
+            assert!(
+                error
+                    .internal_diagnostic()
+                    .expect("execution detail remains available internally")
+                    .contains(phase)
+            );
+        }
+    }
+
+    #[test]
+    fn provider_execution_details_are_redacted_from_public_errors() {
+        let sensitive = "UNIQUE constraint failed: school_data.tenant_id=42; \
+                         SQL=UPDATE school_data SET tenant_id=42";
+        let error = TfpEndpointError::ExecutionError(sensitive.into());
+
+        assert_eq!(error.code(), "TFP_EXECUTION_FAILED");
+        assert_eq!(error.to_string(), "Data service execution failed");
+        assert_eq!(error.public_message(), "Data service execution failed");
+        assert_eq!(error.internal_diagnostic(), Some(sensitive));
+        for secret in ["UNIQUE", "school_data", "tenant_id", "42", "UPDATE"] {
+            assert!(!error.to_string().contains(secret));
+            assert!(!error.public_message().contains(secret));
         }
     }
 
@@ -3042,7 +3094,12 @@ mod tests {
                 .await
                 .expect_err("invalid Create affected-row count must fail closed");
             assert_eq!(error.code(), "TFP_EXECUTION_FAILED");
-            assert!(error.to_string().contains("expected exactly one"));
+            assert!(
+                error
+                    .internal_diagnostic()
+                    .expect("execution detail remains available internally")
+                    .contains("expected exactly one")
+            );
         }
 
         let endpoint = TfpEndpoint::new(
