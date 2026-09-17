@@ -92,6 +92,7 @@ pub struct TfpAggregateItem {
 const MAX_LOGICAL_FILTER_CHILDREN: usize = 100;
 const MAX_FILTER_DEPTH: usize = 16;
 const MAX_FILTER_PREDICATES: usize = 256;
+pub const MAX_GOVERNANCE_EVIDENCE_BYTES: usize = 1024;
 
 impl TfpSelectQuery {
     pub(crate) fn validate_request_shape(&self) -> Result<(), String> {
@@ -274,11 +275,28 @@ fn resolve_query_evidence<'a>(
             "A TFP query cannot provide both {canonical_name} and {legacy_name}"
         ));
     }
-    canonical_value
+    let value = canonical_value
         .or(legacy_value)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("A TFP query requires non-blank {canonical_name} or {legacy_name}"))
+        .ok_or_else(|| {
+            format!("A TFP query requires non-blank {canonical_name} or {legacy_name}")
+        })?;
+    validate_governance_evidence(value)
+        .map_err(|reason| format!("A TFP query {canonical_name} {reason}"))?;
+    Ok(value)
+}
+
+fn validate_governance_evidence(value: &str) -> Result<(), String> {
+    if value.len() > MAX_GOVERNANCE_EVIDENCE_BYTES {
+        return Err(format!(
+            "must be at most {MAX_GOVERNANCE_EVIDENCE_BYTES} UTF-8 bytes"
+        ));
+    }
+    if value.chars().any(char::is_control) {
+        return Err("must not contain control characters".into());
+    }
+    Ok(())
 }
 
 fn validate_filter_tree(
@@ -606,7 +624,20 @@ impl TfpMutationQuery {
             }
             _ => {}
         }
+        self.resolved_comment()?;
         Ok(())
+    }
+
+    fn resolved_comment(&self) -> Result<&str, String> {
+        let comment = self
+            .comment
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or("Mutation audit reason is required")?;
+        validate_governance_evidence(comment)
+            .map_err(|reason| format!("Invalid mutation request: comment {reason}"))?;
+        Ok(comment)
     }
 
     pub fn map_writable_fields(
@@ -634,12 +665,7 @@ impl TfpMutationQuery {
 
     pub fn to_core(&self) -> Result<MutationRequest, String> {
         self.validate_request_shape()?;
-        let comment = self
-            .comment
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or("Mutation audit reason is required")?;
+        let comment = self.resolved_comment()?;
         let trace = vec![TraceNode {
             kind: teaql_core::TraceKind::AuditReason,
             entity_type: self.entity.clone(),
@@ -868,6 +894,55 @@ mod tests {
         ] {
             let query: TfpSelectQuery = serde_json::from_value(payload).unwrap();
             query.to_core().expect("one supported evidence spelling");
+        }
+    }
+
+    #[test]
+    fn governance_evidence_is_utf8_bounded_and_rejects_control_characters() {
+        let exact = "🧱".repeat(MAX_GOVERNANCE_EVIDENCE_BYTES / 4);
+        assert_eq!(exact.len(), MAX_GOVERNANCE_EVIDENCE_BYTES);
+        let query: TfpSelectQuery = serde_json::from_value(json!({
+            "entity":"CustomerOrder", "limitValue":10,
+            "commentText":exact, "purposeText":"验证支付审批"
+        }))
+        .expect("bounded Unicode evidence");
+        query.to_core().expect("exact byte boundary remains valid");
+
+        for (field, value) in [
+            (
+                "commentText",
+                format!("{}x", "a".repeat(MAX_GOVERNANCE_EVIDENCE_BYTES)),
+            ),
+            ("purposeText", "render\nforged-log-line".into()),
+        ] {
+            let mut payload = json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "commentText":"load orders", "purposeText":"render orders"
+            });
+            payload[field] = JsonValue::String(value);
+            let query: TfpSelectQuery = serde_json::from_value(payload).unwrap();
+            assert!(query.to_core().is_err(), "accepted invalid {field}");
+        }
+
+        let exact_mutation = TfpMutationQuery {
+            entity: "CustomerOrder".into(),
+            action: "Create".into(),
+            payload: json!({"order_number":"O-1"}),
+            id: None,
+            expected_version: None,
+            comment: Some("x".repeat(MAX_GOVERNANCE_EVIDENCE_BYTES)),
+        };
+        exact_mutation
+            .to_core()
+            .expect("exact mutation evidence boundary remains valid");
+
+        for comment in [
+            "x".repeat(MAX_GOVERNANCE_EVIDENCE_BYTES + 1),
+            "audit\rforged".into(),
+        ] {
+            let mut mutation = exact_mutation.clone();
+            mutation.comment = Some(comment);
+            assert!(mutation.to_core().is_err());
         }
     }
 

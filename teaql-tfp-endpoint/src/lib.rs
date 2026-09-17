@@ -1161,15 +1161,6 @@ fn validate_mutation_policy(
         ));
     }
     mutation.validate_request_shape()?;
-    if mutation
-        .comment
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .is_none()
-    {
-        return Err("Mutation audit reason is required".into());
-    }
     if mutation.payload.get(&trusted.tenant_field).is_some() {
         return Err("Tenant field is server-owned and not allowed".into());
     }
@@ -2112,6 +2103,15 @@ mod tests {
             }),
             json!({
                 "entity":"CustomerOrder", "limitValue":10,
+                "commentText":"x".repeat(models::MAX_GOVERNANCE_EVIDENCE_BYTES + 1),
+                "purposeText":"render orders"
+            }),
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "commentText":"load orders", "purposeText":"render\nforged-log-line"
+            }),
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
                 "facets":[{
                     "facetName":"statusFacet", "relationName":"status",
                     "query":{
@@ -2125,6 +2125,22 @@ mod tests {
                 }],
                 "commentText":"load orders", "purposeText":"render orders"
             }),
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "facets":[{
+                    "facetName":"statusFacet", "relationName":"status",
+                    "query":{
+                        "entity":"OrderStatus", "limitValue":10,
+                        "selectItems":["id"],
+                        "aggregateItems":[{
+                            "function":"Count", "field":"id", "alias":"orderCount"
+                        }],
+                        "commentText":"load status values",
+                        "purposeText":"x".repeat(models::MAX_GOVERNANCE_EVIDENCE_BYTES + 1)
+                    }
+                }],
+                "commentText":"load orders", "purposeText":"render orders"
+            }),
         ] {
             let error = endpoint
                 .handle_query(&trusted(), payload)
@@ -2134,6 +2150,19 @@ mod tests {
         }
 
         assert!(queries.lock().expect("recorded queries").is_empty());
+
+        let exact = "🧱".repeat(models::MAX_GOVERNANCE_EVIDENCE_BYTES / 4);
+        endpoint
+            .handle_query(
+                &trusted(),
+                json!({
+                    "entity":"CustomerOrder", "limitValue":10,
+                    "commentText":exact, "purposeText":"验证支付审批"
+                }),
+            )
+            .await
+            .expect("exact evidence byte boundary remains executable");
+        assert_eq!(queries.lock().expect("recorded queries").len(), 1);
     }
 
     #[tokio::test]
@@ -2842,6 +2871,34 @@ mod tests {
         ] {
             assert!(endpoint.handle_mutation(&trusted(), payload).await.is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn invalid_mutation_evidence_fails_before_execution() {
+        let mutations = Arc::new(RecordingMutationExecutor::new(1));
+        let endpoint = TfpEndpoint::new(Arc::new(StubExecutor), mutations.clone());
+        for (comment, expected_code) in [
+            (" ".to_owned(), "TFP_AUDIT_REASON_REQUIRED"),
+            (
+                "x".repeat(models::MAX_GOVERNANCE_EVIDENCE_BYTES + 1),
+                "TFP_INVALID_REQUEST",
+            ),
+            ("audit\rforged-log-line".to_owned(), "TFP_INVALID_REQUEST"),
+        ] {
+            let error = endpoint
+                .handle_mutation(
+                    &trusted(),
+                    json!({
+                        "entity":"CustomerOrder", "action":"Create",
+                        "payload":{"orderNumber":"O-1"}, "comment":comment
+                    }),
+                )
+                .await
+                .expect_err("invalid mutation evidence must fail closed");
+            assert_eq!(error.code(), expected_code);
+        }
+        assert!(mutations.ordinary.lock().expect("ordinary").is_empty());
+        assert!(mutations.guarded.lock().expect("guarded").is_empty());
     }
 
     #[tokio::test]
