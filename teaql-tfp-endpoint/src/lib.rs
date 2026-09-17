@@ -1008,14 +1008,17 @@ fn prepare_facets(trusted: &TrustedQueryContext, query: &mut TfpSelectQuery) -> 
         }
         validate_policy(trusted, &facet.query)?;
         let nested_fields = effective_field_mappings(trusted, &facet.query.entity, false)?;
-        if facet.query.aggregate_items.is_empty()
-            || facet
-                .query
-                .aggregate_items
-                .iter()
-                .any(|item| !item.function.eq_ignore_ascii_case("count"))
-        {
-            return Err("A TFP facet requires one or more Count aggregates".into());
+        if !facet.query.group_by_items.is_empty() {
+            return Err(
+                "A TFP facet does not accept groupByItems; relation grouping is derived".into(),
+            );
+        }
+        if facet.query.aggregate_items.len() != 1 {
+            return Err("A TFP facet requires exactly one Count(id) aggregate".into());
+        }
+        let aggregate = &facet.query.aggregate_items[0];
+        if !aggregate.function.eq_ignore_ascii_case("count") || aggregate.field != "id" {
+            return Err("A TFP facet requires exactly one Count(id) aggregate".into());
         }
         if facet
             .query
@@ -1782,6 +1785,53 @@ mod tests {
                 .expect_err("unbounded query must fail closed");
             assert_eq!(error.code(), "TFP_INVALID_REQUEST");
         }
+    }
+
+    #[tokio::test]
+    async fn ignored_facet_aggregate_shapes_fail_before_execution() {
+        let queries = Arc::new(Mutex::new(Vec::new()));
+        let query_executor = RecordingQueryExecutor(queries.clone());
+        let endpoint = TfpEndpoint::new(Arc::new(query_executor), Arc::new(StubExecutor));
+
+        for facet_query in [
+            json!({
+                "entity":"OrderStatus", "limitValue":10,
+                "aggregateItems":[
+                    {"function":"Count", "field":"id", "alias":"orderCount"},
+                    {"function":"Count", "field":"id", "alias":"duplicateCount"}
+                ],
+                "commentText":"load status facet", "purposeText":"reject duplicate counts"
+            }),
+            json!({
+                "entity":"OrderStatus", "limitValue":10,
+                "aggregateItems":[{"function":"Count", "field":"code", "alias":"orderCount"}],
+                "commentText":"load status facet", "purposeText":"reject ignored count field"
+            }),
+            json!({
+                "entity":"OrderStatus", "limitValue":10,
+                "groupByItems":["code"],
+                "aggregateItems":[{"function":"Count", "field":"id", "alias":"orderCount"}],
+                "commentText":"load status facet", "purposeText":"reject ignored grouping"
+            }),
+        ] {
+            let error = endpoint
+                .handle_query(
+                    &trusted(),
+                    json!({
+                        "entity":"CustomerOrder", "limitValue":10,
+                        "facets":[{
+                            "facetName":"statusFacet", "relationName":"status",
+                            "query":facet_query
+                        }],
+                        "commentText":"load orders", "purposeText":"render orders"
+                    }),
+                )
+                .await
+                .expect_err("unsupported facet semantics must fail closed");
+            assert_eq!(error.code(), "TFP_INVALID_REQUEST");
+        }
+
+        assert!(queries.lock().expect("recorded queries").is_empty());
     }
 
     #[tokio::test]
