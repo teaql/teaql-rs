@@ -355,12 +355,12 @@ pub fn parse_json_filter(value: &JsonValue) -> Result<Expr, String> {
         }
         let (operator, operand) = predicates.iter().next().unwrap();
         let expression = match operator.as_str() {
-            "$eq" => Expr::eq(field, non_null_value(operator, operand)?),
-            "$ne" => Expr::ne(field, non_null_value(operator, operand)?),
-            "$gt" => Expr::gt(field, non_null_value(operator, operand)?),
-            "$gte" => Expr::gte(field, non_null_value(operator, operand)?),
-            "$lt" => Expr::lt(field, non_null_value(operator, operand)?),
-            "$lte" => Expr::lte(field, non_null_value(operator, operand)?),
+            "$eq" => Expr::eq(field, non_null_scalar_value(operator, operand)?),
+            "$ne" => Expr::ne(field, non_null_scalar_value(operator, operand)?),
+            "$gt" => Expr::gt(field, non_null_scalar_value(operator, operand)?),
+            "$gte" => Expr::gte(field, non_null_scalar_value(operator, operand)?),
+            "$lt" => Expr::lt(field, non_null_scalar_value(operator, operand)?),
+            "$lte" => Expr::lte(field, non_null_scalar_value(operator, operand)?),
             "$contains" => Expr::contain(
                 field,
                 operand.as_str().ok_or("$contains requires a string")?,
@@ -394,8 +394,8 @@ pub fn parse_json_filter(value: &JsonValue) -> Result<Expr, String> {
                     .ok_or("$between requires exactly two values")?;
                 Expr::between(
                     field,
-                    non_null_value(operator, &values[0])?,
-                    non_null_value(operator, &values[1])?,
+                    non_null_scalar_value(operator, &values[0])?,
+                    non_null_scalar_value(operator, &values[1])?,
                 )
             }
             "$isKnown" => {
@@ -413,12 +413,17 @@ pub fn parse_json_filter(value: &JsonValue) -> Result<Expr, String> {
     Ok(combine_and(expressions).unwrap())
 }
 
-fn non_null_value(operator: &str, operand: &JsonValue) -> Result<Value, String> {
+fn non_null_scalar_value(operator: &str, operand: &JsonValue) -> Result<Value, String> {
     match json_value(operand)? {
         Value::Null => Err(format!(
             "{operator} does not accept null; use $isKnown or $isUnknown"
         )),
-        value => Ok(value),
+        value @ (Value::Bool(_)
+        | Value::I64(_)
+        | Value::U64(_)
+        | Value::F64(_)
+        | Value::Text(_)) => Ok(value),
+        _ => Err(format!("{operator} requires a non-null scalar")),
     }
 }
 
@@ -429,7 +434,10 @@ fn bounded_list(operator: &str, operand: &JsonValue) -> Result<Vec<Value>, Strin
     if values.is_empty() || values.len() > 100 {
         return Err(format!("{operator} size must be between 1 and 100"));
     }
-    values.iter().map(json_value).collect()
+    values
+        .iter()
+        .map(|value| non_null_scalar_value(operator, value))
+        .collect()
 }
 
 fn require_true(operator: &str, operand: &JsonValue) -> Result<(), String> {
@@ -680,10 +688,17 @@ mod tests {
             json!({"id":{"$ne":{"id":null}}}),
             json!({"id":{"$gte":{"id":null}}}),
             json!({"id":{"$between":[{"id":null}, 10]}}),
+            json!({"id":{"$eq":[1, 2]}}),
+            json!({"id":{"$gte":[1]}}),
+            json!({"id":{"$between":[[1], 10]}}),
+            json!({"id":{"$in":[1, null]}}),
+            json!({"id":{"$in":[[1, 2]]}}),
+            json!({"id":{"$notIn":[{"id":null}]}}),
         ] {
             assert!(parse_json_filter(&filter).is_err(), "accepted {filter}");
         }
         assert!(parse_json_filter(&json!({"id":{"$eq":{"id":42}}})).is_ok());
+        assert!(parse_json_filter(&json!({"id":{"$in":[{"id":42}, 7]}})).is_ok());
         let values: Vec<_> = (0..101).collect();
         assert!(parse_json_filter(&json!({"id":{"$in":values}})).is_err());
         let mut query: TfpSelectQuery = serde_json::from_value(json!({

@@ -1854,7 +1854,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn null_and_normalized_null_operands_fail_before_execution() {
+    async fn invalid_scalar_operand_shapes_fail_before_execution() {
         let queries = Arc::new(Mutex::new(Vec::new()));
         let query_executor = RecordingQueryExecutor(queries.clone());
         let endpoint = TfpEndpoint::new(Arc::new(query_executor), Arc::new(StubExecutor));
@@ -1868,6 +1868,12 @@ mod tests {
             json!({"id":{"$ne":{"id":null}}}),
             json!({"id":{"$gte":{"id":null}}}),
             json!({"id":{"$between":[{"id":null}, 10]}}),
+            json!({"id":{"$eq":[1, 2]}}),
+            json!({"id":{"$gte":[1]}}),
+            json!({"id":{"$between":[[1], 10]}}),
+            json!({"id":{"$in":[1, null]}}),
+            json!({"id":{"$in":[[1, 2]]}}),
+            json!({"id":{"$notIn":[{"id":null}]}}),
         ] {
             let error = endpoint
                 .handle_query(
