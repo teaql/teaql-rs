@@ -81,6 +81,13 @@ The framework-independent `teaql-tfp-endpoint` crate is part of that public
 boundary. It carries the trusted TFP request policy, wire metadata, alias
 normalization, and collision/unknown-field diagnostics; it is not an internal
 detail of the optional Axum integration.
+For the frozen `5.0.1` release, run the retained
+`release-fixtures/tfp-wire-profile` consumer locally before merging the
+hardening PR. Once `published-tfp-wire-replay.yml` is on the default branch,
+dispatch it with each exact later version. The replay rejects path, Git,
+mixed-version, checksum-free, dirty, and wrong-VCS-source resolution before
+executing the wire-alias, canonical Checker path, submitted-source path,
+collision, and unknown-field assertions.
 
 ## Cloud Integration
 

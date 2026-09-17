@@ -26,6 +26,8 @@ jobs:
         run: ./scripts/test-publish-contract.sh
       - name: Check published Order replay version pinning
         run: ./scripts/test-pin-rust-order-replay-version.sh
+      - name: Check published TFP replay version pinning
+        run: ./scripts/test-pin-rust-tfp-replay-version.sh
       - name: Clippy Lints
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Build
