@@ -1,6 +1,8 @@
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
-use teaql_data_service::{MutationExecutor, QueryExecutor, QueryRequest};
+use teaql_data_service::{
+    GuardedMutationExecutor, GuardedMutationRequest, QueryExecutor, QueryRequest,
+};
 use teaql_runtime::{
     NoopRuntimeTelemetry, RuntimeAttributeValue, RuntimeOperation, RuntimeTelemetry,
     extract_runtime_context, start_runtime_operation,
@@ -165,6 +167,8 @@ pub enum TfpEndpointError {
     TranslationError(String),
     #[error("Data service error: {0}")]
     ExecutionError(String),
+    #[error("Mutation target is unavailable")]
+    MutationTargetUnavailable,
     #[error("Invalid wire input: {0}")]
     WireInput(String),
     #[error("Conflicting wire input: {0}")]
@@ -205,6 +209,7 @@ impl TfpEndpointError {
             }
             Self::TranslationError(_) => "TFP_POLICY_VIOLATION",
             Self::ExecutionError(_) => "TFP_EXECUTION_FAILED",
+            Self::MutationTargetUnavailable => "TFP_MUTATION_TARGET_UNAVAILABLE",
             Self::WireInput(_) => "WIRE_UNKNOWN_FIELD",
             Self::WireCollision(_) => "WIRE_FIELD_COLLISION",
         }
@@ -218,7 +223,7 @@ impl TfpEndpointError {
 pub struct TfpEndpoint<Q, M>
 where
     Q: QueryExecutor + Send + Sync,
-    M: MutationExecutor + Send + Sync,
+    M: GuardedMutationExecutor + Send + Sync,
 {
     query_executor: Arc<Q>,
     mutation_executor: Arc<M>,
@@ -228,7 +233,7 @@ where
 impl<Q, M> TfpEndpoint<Q, M>
 where
     Q: QueryExecutor + Send + Sync,
-    M: MutationExecutor + Send + Sync,
+    M: GuardedMutationExecutor + Send + Sync,
 {
     pub fn new(query_executor: Arc<Q>, mutation_executor: Arc<M>) -> Self {
         Self {
@@ -573,7 +578,7 @@ where
         tfp_mutation
             .map_writable_fields(mappings)
             .map_err(TfpEndpointError::TranslationError)?;
-        if matches!(tfp_mutation.action.as_str(), "Create" | "Update") {
+        if tfp_mutation.action == "Create" {
             let tenant_json = value_as_json(&trusted.tenant_id);
             tfp_mutation
                 .payload
@@ -586,11 +591,21 @@ where
             .to_core()
             .map_err(TfpEndpointError::TranslationError)?;
 
-        let result = self
-            .mutation_executor
-            .mutate(core_mutation)
-            .await
-            .map_err(|e| TfpEndpointError::ExecutionError(e.to_string()))?;
+        let is_create = tfp_mutation.action == "Create";
+        let result = if is_create {
+            self.mutation_executor.mutate(core_mutation).await
+        } else {
+            let tenant_guard =
+                teaql_core::Expr::eq(&trusted.tenant_field, trusted.tenant_id.clone());
+            self.mutation_executor
+                .mutate_guarded(GuardedMutationRequest::new(core_mutation, tenant_guard))
+                .await
+        }
+        .map_err(|error| TfpEndpointError::ExecutionError(error.to_string()))?;
+
+        if !is_create && result.affected_rows != 1 {
+            return Err(TfpEndpointError::MutationTargetUnavailable);
+        }
 
         let mut response_obj = serde_json::Map::new();
         response_obj.insert(
@@ -856,7 +871,8 @@ mod tests {
     use teaql_core::Record;
     use teaql_data_service::{
         DataServiceCapabilities, DataServiceExecutor, DataServiceOperation, ExecutionMetadata,
-        MutationRequest, MutationResult, QueryResult,
+        GuardedMutationExecutor, GuardedMutationRequest, MutationExecutor, MutationRequest,
+        MutationResult, QueryResult,
     };
     use teaql_runtime::{RuntimeOperation, RuntimeTelemetryScope};
 
@@ -915,6 +931,79 @@ mod tests {
                 persisted_snapshot: None,
                 metadata: metadata(DataServiceOperation::Insert, None, Some(1)),
             })
+        }
+    }
+
+    impl GuardedMutationExecutor for StubExecutor {
+        async fn mutate_guarded(
+            &self,
+            request: GuardedMutationRequest,
+        ) -> Result<MutationResult, Self::Error> {
+            self.mutate(request.mutation).await
+        }
+    }
+
+    #[derive(Clone)]
+    struct RecordingMutationExecutor {
+        ordinary: Arc<Mutex<Vec<MutationRequest>>>,
+        guarded: Arc<Mutex<Vec<GuardedMutationRequest>>>,
+        affected_rows: u64,
+    }
+
+    impl RecordingMutationExecutor {
+        fn new(affected_rows: u64) -> Self {
+            Self {
+                ordinary: Arc::new(Mutex::new(Vec::new())),
+                guarded: Arc::new(Mutex::new(Vec::new())),
+                affected_rows,
+            }
+        }
+
+        fn result(&self, operation: DataServiceOperation) -> MutationResult {
+            MutationResult {
+                affected_rows: self.affected_rows,
+                generated_values: Record::new().into(),
+                persisted_snapshot: None,
+                metadata: metadata(operation, None, Some(self.affected_rows)),
+            }
+        }
+    }
+
+    impl DataServiceExecutor for RecordingMutationExecutor {
+        type Error = StubError;
+
+        fn capabilities(&self) -> DataServiceCapabilities {
+            DataServiceCapabilities::default()
+        }
+    }
+
+    impl MutationExecutor for RecordingMutationExecutor {
+        async fn mutate(&self, request: MutationRequest) -> Result<MutationResult, Self::Error> {
+            self.ordinary
+                .lock()
+                .expect("ordinary mutations")
+                .push(request);
+            Ok(self.result(DataServiceOperation::Insert))
+        }
+    }
+
+    impl GuardedMutationExecutor for RecordingMutationExecutor {
+        async fn mutate_guarded(
+            &self,
+            request: GuardedMutationRequest,
+        ) -> Result<MutationResult, Self::Error> {
+            let operation = match &request.mutation {
+                MutationRequest::Update(_) => DataServiceOperation::Update,
+                MutationRequest::Delete(_) => DataServiceOperation::Delete,
+                MutationRequest::Recover(_) => DataServiceOperation::Recover,
+                MutationRequest::Insert(_) => DataServiceOperation::Insert,
+                MutationRequest::Batch(_) => DataServiceOperation::Batch,
+            };
+            self.guarded
+                .lock()
+                .expect("guarded mutations")
+                .push(request);
+            Ok(self.result(operation))
         }
     }
 
@@ -1224,6 +1313,107 @@ mod tests {
         ] {
             assert!(endpoint.handle_mutation(&trusted(), payload).await.is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn non_create_mutations_use_one_atomic_trusted_tenant_guard() {
+        let mutations = Arc::new(RecordingMutationExecutor::new(1));
+        let endpoint = TfpEndpoint::new(Arc::new(StubExecutor), mutations.clone());
+
+        for payload in [
+            json!({
+                "entity":"CustomerOrder", "action":"Update", "id":42,
+                "expectedVersion":3, "payload":{"orderNumber":"O-42"},
+                "comment":"update order"
+            }),
+            json!({
+                "entity":"CustomerOrder", "action":"Delete", "id":42,
+                "expectedVersion":4, "payload":{}, "comment":"delete order"
+            }),
+            json!({
+                "entity":"CustomerOrder", "action":"Recover", "id":42,
+                "expectedVersion":-5, "payload":{}, "comment":"recover order"
+            }),
+        ] {
+            endpoint
+                .handle_mutation(&trusted(), payload)
+                .await
+                .expect("guarded mutation");
+        }
+
+        assert!(
+            mutations
+                .ordinary
+                .lock()
+                .expect("ordinary mutations")
+                .is_empty()
+        );
+        let guarded = mutations.guarded.lock().expect("guarded mutations");
+        assert_eq!(guarded.len(), 3);
+        let expected = teaql_core::Expr::eq("commerce_platform_id", 1_i64);
+        assert!(guarded.iter().all(|request| request.guard == expected));
+        let MutationRequest::Update(update) = &guarded[0].mutation else {
+            panic!("first request should be update");
+        };
+        assert_eq!(update.values.get("order_number"), Some(&"O-42".into()));
+        assert!(update.values.get("commerce_platform_id").is_none());
+    }
+
+    #[tokio::test]
+    async fn create_injects_trusted_tenant_and_uses_ordinary_insert() {
+        let mutations = Arc::new(RecordingMutationExecutor::new(1));
+        let endpoint = TfpEndpoint::new(Arc::new(StubExecutor), mutations.clone());
+
+        endpoint
+            .handle_mutation(
+                &trusted(),
+                json!({
+                    "entity":"CustomerOrder", "action":"Create",
+                    "payload":{"orderNumber":"O-1"}, "comment":"create order"
+                }),
+            )
+            .await
+            .expect("create mutation");
+
+        assert!(
+            mutations
+                .guarded
+                .lock()
+                .expect("guarded mutations")
+                .is_empty()
+        );
+        let ordinary = mutations.ordinary.lock().expect("ordinary mutations");
+        let MutationRequest::Insert(insert) = &ordinary[0] else {
+            panic!("create should use insert");
+        };
+        assert_eq!(insert.values.get("order_number"), Some(&"O-1".into()));
+        assert_eq!(
+            insert.values.get("commerce_platform_id"),
+            Some(&teaql_core::Value::I64(1))
+        );
+    }
+
+    #[tokio::test]
+    async fn zero_row_guarded_mutation_does_not_disclose_target_ownership() {
+        let mutations = Arc::new(RecordingMutationExecutor::new(0));
+        let endpoint = TfpEndpoint::new(Arc::new(StubExecutor), mutations);
+
+        let error = endpoint
+            .handle_mutation(
+                &trusted(),
+                json!({
+                    "entity":"CustomerOrder", "action":"Update", "id":42,
+                    "expectedVersion":3, "payload":{"orderNumber":"O-42"},
+                    "comment":"update order"
+                }),
+            )
+            .await
+            .expect_err("unavailable target must fail closed");
+
+        assert!(matches!(error, TfpEndpointError::MutationTargetUnavailable));
+        assert_eq!(error.code(), "TFP_MUTATION_TARGET_UNAVAILABLE");
+        assert!(!error.to_string().contains("tenant"));
+        assert!(!error.to_string().contains("42"));
     }
 
     #[test]

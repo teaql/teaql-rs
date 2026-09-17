@@ -7,7 +7,8 @@ use std::{
 use teaql_core::{Record, Value};
 use teaql_data_service::{
     DataServiceCapabilities, DataServiceExecutor, DataServiceOperation, ExecutionMetadata,
-    MutationExecutor, MutationRequest, MutationResult, QueryExecutor, QueryRequest, QueryResult,
+    GuardedMutationExecutor, GuardedMutationRequest, MutationExecutor, MutationRequest,
+    MutationResult, QueryExecutor, QueryRequest, QueryResult,
 };
 use teaql_tfp_endpoint::{TfpEndpoint, TfpEndpointError, TrustedQueryContext};
 
@@ -83,6 +84,15 @@ impl MutationExecutor for StubExecutor {
             persisted_snapshot: None,
             metadata: metadata(operation, None, Some(1), None),
         })
+    }
+}
+
+impl GuardedMutationExecutor for StubExecutor {
+    async fn mutate_guarded(
+        &self,
+        request: GuardedMutationRequest,
+    ) -> Result<MutationResult, Self::Error> {
+        self.mutate(request.mutation).await
     }
 }
 fn metadata(

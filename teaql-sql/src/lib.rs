@@ -74,6 +74,14 @@ mod tests {
             .property(PropertyDescriptor::new("name", DataType::Text).column_name("name"))
     }
 
+    fn tenant_entity() -> EntityDescriptor {
+        entity().property(
+            PropertyDescriptor::new("tenant_id", DataType::U64)
+                .column_name("tenant_id")
+                .not_null(),
+        )
+    }
+
     #[test]
     fn quotes_identifiers_only_when_needed() {
         assert_eq!(
@@ -492,6 +500,66 @@ mod tests {
         assert_eq!(
             recover.sql,
             "UPDATE \"orders\" SET \"version\" = $1 WHERE \"id\" = $2 AND \"version\" = $3"
+        );
+    }
+
+    #[test]
+    fn guarded_mutations_compile_tenant_predicate_in_the_same_statement() {
+        let guard = Expr::eq("tenant_id", 7_u64);
+        let update = TestDialect
+            .compile_guarded_update(
+                &tenant_entity(),
+                &UpdateCommand::new("Order", 1_u64)
+                    .expected_version(3)
+                    .value("name", "B"),
+                &guard,
+            )
+            .unwrap();
+        assert_eq!(
+            update.sql,
+            "UPDATE \"orders\" SET \"name\" = $1, \"version\" = $2 WHERE \"id\" = $3 AND \"version\" = $4 AND (\"tenant_id\" = $5)"
+        );
+        assert_eq!(
+            update.params,
+            vec![
+                Value::from("B"),
+                Value::I64(4),
+                Value::U64(1),
+                Value::I64(3),
+                Value::U64(7),
+            ]
+        );
+
+        let delete = TestDialect
+            .compile_guarded_delete(
+                &tenant_entity(),
+                &DeleteCommand::new("Order", 1_u64).expected_version(3),
+                &guard,
+            )
+            .unwrap();
+        assert_eq!(
+            delete.sql,
+            "UPDATE \"orders\" SET \"version\" = $1 WHERE \"id\" = $2 AND \"version\" = $3 AND (\"tenant_id\" = $4)"
+        );
+        assert_eq!(
+            delete.params,
+            vec![Value::I64(-4), Value::U64(1), Value::I64(3), Value::U64(7)]
+        );
+
+        let recover = TestDialect
+            .compile_guarded_recover(
+                &tenant_entity(),
+                &RecoverCommand::new("Order", 1_u64, -4),
+                &guard,
+            )
+            .unwrap();
+        assert_eq!(
+            recover.sql,
+            "UPDATE \"orders\" SET \"version\" = $1 WHERE \"id\" = $2 AND \"version\" = $3 AND (\"tenant_id\" = $4)"
+        );
+        assert_eq!(
+            recover.params,
+            vec![Value::I64(5), Value::U64(1), Value::I64(-4), Value::U64(7)]
         );
     }
 
