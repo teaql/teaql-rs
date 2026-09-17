@@ -160,6 +160,12 @@ impl TfpSelectQuery {
 
     pub fn to_core(&self) -> Result<SelectQuery, String> {
         self.validate_request_shape()?;
+        if !self.facets.is_empty() {
+            return Err(
+                "Facet execution requires TfpEndpoint and cannot use direct query translation"
+                    .into(),
+            );
+        }
         let mut filters = Vec::new();
         if let Some(filter) = &self.filter_condition {
             filters.push(parse_json_filter(filter)?);
@@ -719,6 +725,36 @@ mod tests {
         .to_core()
         .expect("positive limit");
         assert_eq!(bounded.slice.and_then(|slice| slice.limit), Some(25));
+    }
+
+    #[test]
+    fn direct_translation_rejects_facets_instead_of_discarding_them() {
+        let query: TfpSelectQuery = serde_json::from_value(json!({
+            "entity":"CustomerOrder",
+            "limitValue":10,
+            "commentText":"load orders",
+            "purposeText":"render orders",
+            "facets":[{
+                "facetName":"statusFacet",
+                "relationName":"status",
+                "query":{
+                    "entity":"OrderStatus",
+                    "limitValue":10,
+                    "commentText":"load statuses",
+                    "purposeText":"render order filters",
+                    "selectItems":["id", "name"],
+                    "aggregateItems":[{
+                        "function":"count", "field":"id", "alias":"recordCount"
+                    }]
+                }
+            }]
+        }))
+        .expect("canonical facet query");
+
+        assert_eq!(
+            query.to_core().unwrap_err(),
+            "Facet execution requires TfpEndpoint and cannot use direct query translation"
+        );
     }
 
     #[test]
