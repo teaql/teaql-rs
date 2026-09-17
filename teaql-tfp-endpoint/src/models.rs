@@ -92,14 +92,43 @@ pub struct TfpAggregateItem {
 const MAX_LOGICAL_FILTER_CHILDREN: usize = 100;
 const MAX_FILTER_DEPTH: usize = 16;
 const MAX_FILTER_PREDICATES: usize = 256;
+pub const MAX_SELECT_ITEMS: usize = 256;
+pub const MAX_ORDER_ITEMS: usize = 32;
+pub const MAX_GROUP_BY_ITEMS: usize = 64;
+pub const MAX_AGGREGATE_ITEMS: usize = 64;
 pub const MAX_GOVERNANCE_EVIDENCE_BYTES: usize = 1024;
 
 impl TfpSelectQuery {
     pub(crate) fn validate_request_shape(&self) -> Result<(), String> {
         self.validate_filter_shape()?;
+        self.validate_query_item_counts()?;
         self.validate_limit_shape()?;
         self.resolved_comment()?;
         self.resolved_purpose()?;
+        Ok(())
+    }
+
+    pub(crate) fn validate_query_item_counts(&self) -> Result<(), String> {
+        for (name, actual, maximum) in [
+            ("selectItems", self.select_items.len(), MAX_SELECT_ITEMS),
+            ("orderItems", self.order_items.len(), MAX_ORDER_ITEMS),
+            (
+                "groupByItems",
+                self.group_by_items.len(),
+                MAX_GROUP_BY_ITEMS,
+            ),
+            (
+                "aggregateItems",
+                self.aggregate_items.len(),
+                MAX_AGGREGATE_ITEMS,
+            ),
+        ] {
+            if actual > maximum {
+                return Err(format!(
+                    "A TFP query may contain at most {maximum} {name} entries"
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -820,6 +849,77 @@ mod tests {
         .to_core()
         .expect("positive limit");
         assert_eq!(bounded.slice.and_then(|slice| slice.limit), Some(25));
+    }
+
+    #[test]
+    fn canonical_query_item_counts_accept_exact_boundaries_and_reject_one_more() {
+        let base = TfpSelectQuery {
+            entity: "CustomerOrder".into(),
+            filter_condition: None,
+            filters: Vec::new(),
+            limit_value: Some(10),
+            offset_value: None,
+            order_items: Vec::new(),
+            select_items: Vec::new(),
+            group_by_items: Vec::new(),
+            aggregate_items: Vec::new(),
+            facets: Vec::new(),
+            comment_text: Some("load bounded query shape".into()),
+            generated_comment: None,
+            purpose_text: Some("verify canonical item budgets".into()),
+            generated_purpose: None,
+        };
+
+        let mut select = base.clone();
+        select.select_items = (0..MAX_SELECT_ITEMS)
+            .map(|index| format!("field_{index}"))
+            .collect();
+        select.clone().to_core().expect("exact select boundary");
+        select.select_items.push("one_too_many".into());
+        assert!(select.to_core().unwrap_err().contains("selectItems"));
+
+        let mut order = base.clone();
+        order.order_items = (0..MAX_ORDER_ITEMS)
+            .map(|index| TfpOrderBy {
+                field: format!("field_{index}"),
+                expr: None,
+                direction: "asc".into(),
+            })
+            .collect();
+        order.clone().to_core().expect("exact order boundary");
+        order.order_items.push(TfpOrderBy {
+            field: "one_too_many".into(),
+            expr: None,
+            direction: "asc".into(),
+        });
+        assert!(order.to_core().unwrap_err().contains("orderItems"));
+
+        let mut group = base.clone();
+        group.group_by_items = (0..MAX_GROUP_BY_ITEMS)
+            .map(|index| format!("field_{index}"))
+            .collect();
+        group.clone().to_core().expect("exact group boundary");
+        group.group_by_items.push("one_too_many".into());
+        assert!(group.to_core().unwrap_err().contains("groupByItems"));
+
+        let mut aggregate = base;
+        aggregate.aggregate_items = (0..MAX_AGGREGATE_ITEMS)
+            .map(|index| TfpAggregateItem {
+                function: "count".into(),
+                field: "id".into(),
+                alias: format!("count_{index}"),
+            })
+            .collect();
+        aggregate
+            .clone()
+            .to_core()
+            .expect("exact aggregate boundary");
+        aggregate.aggregate_items.push(TfpAggregateItem {
+            function: "count".into(),
+            field: "id".into(),
+            alias: "one_too_many".into(),
+        });
+        assert!(aggregate.to_core().unwrap_err().contains("aggregateItems"));
     }
 
     #[test]

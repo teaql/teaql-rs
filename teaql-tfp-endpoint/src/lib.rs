@@ -993,6 +993,7 @@ fn validate_policy(trusted: &TrustedQueryContext, query: &TfpSelectQuery) -> Res
             query.entity
         ));
     }
+    query.validate_query_item_counts()?;
     query.validate_limit_shape()?;
     if query.limit_value.unwrap_or(0) > trusted.max_page_size {
         return Err("Page size exceeds federation policy".into());
@@ -2065,6 +2066,53 @@ mod tests {
                 .expect("rejected queries")
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn excessive_query_item_counts_fail_before_outer_or_facet_execution() {
+        let queries = Arc::new(Mutex::new(Vec::new()));
+        let endpoint = TfpEndpoint::new(
+            Arc::new(RecordingQueryExecutor(queries.clone())),
+            Arc::new(StubExecutor),
+        );
+        let excessive_select = vec!["id"; models::MAX_SELECT_ITEMS + 1];
+        let excessive_aggregates = (0..=models::MAX_AGGREGATE_ITEMS)
+            .map(|index| {
+                json!({
+                    "function":"Count", "field":"id", "alias":format!("count_{index}")
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for payload in [
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "selectItems":excessive_select,
+                "commentText":"load oversized projection",
+                "purposeText":"reject outer query shape amplification"
+            }),
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "facets":[{
+                    "facetName":"statusFacet", "relationName":"status",
+                    "query":{
+                        "entity":"OrderStatus", "limitValue":10,
+                        "selectItems":["id"],
+                        "aggregateItems":excessive_aggregates,
+                        "commentText":"load oversized status aggregates",
+                        "purposeText":"reject nested query shape amplification"
+                    }
+                }],
+                "commentText":"load orders", "purposeText":"render orders"
+            }),
+        ] {
+            let error = endpoint
+                .handle_query(&trusted(), payload)
+                .await
+                .expect_err("oversized canonical query shape must fail closed");
+            assert_eq!(error.code(), "TFP_INVALID_REQUEST");
+        }
+        assert!(queries.lock().expect("recorded queries").is_empty());
     }
 
     #[tokio::test]
