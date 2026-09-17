@@ -518,7 +518,7 @@ where
             query: core_query,
             trace_chain: vec![trace],
             comment: Some(client_comment.clone()),
-            capture_debug_query: true,
+            capture_debug_query: false,
             capture_execution_metadata: true,
         };
 
@@ -564,7 +564,7 @@ where
                 "backend": result.metadata.backend,
                 "resultCount": result.metadata.result_count,
                 "trace": trace_json,
-                "sqlShape": result.metadata.debug_query.as_deref().map(redact_sql_literals),
+                "sqlShape": result.metadata.parameterized_query,
             }),
         );
 
@@ -900,30 +900,6 @@ fn json_key(value: &JsonValue) -> String {
     }
 }
 
-fn redact_sql_literals(sql: &str) -> String {
-    let mut output = String::with_capacity(sql.len());
-    let mut chars = sql.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch != '\'' {
-            output.push(ch);
-            continue;
-        }
-        output.push('\'');
-        while let Some(value) = chars.next() {
-            if value == '\'' {
-                if chars.peek() == Some(&'\'') {
-                    chars.next();
-                    continue;
-                }
-                break;
-            }
-        }
-        output.push('?');
-        output.push('\'');
-    }
-    output
-}
-
 fn reject_privileged_input(payload: &JsonValue) -> Result<(), String> {
     const FORBIDDEN: &[&str] = &[
         "tenant",
@@ -1213,6 +1189,9 @@ mod tests {
     struct OverReturningExecutor(OverReturningStage);
 
     #[derive(Clone, Default)]
+    struct ParameterizedShapeExecutor;
+
+    #[derive(Clone, Default)]
     struct GeneratedValuesMutationExecutor;
 
     #[derive(Debug)]
@@ -1444,6 +1423,40 @@ mod tests {
             Ok(QueryResult {
                 metadata: metadata(DataServiceOperation::Query, Some(rows.len()), None),
                 rows,
+            })
+        }
+    }
+
+    impl DataServiceExecutor for ParameterizedShapeExecutor {
+        type Error = StubError;
+
+        fn capabilities(&self) -> DataServiceCapabilities {
+            DataServiceCapabilities::default()
+        }
+    }
+
+    impl QueryExecutor for ParameterizedShapeExecutor {
+        async fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
+            assert!(request.capture_execution_metadata);
+            assert!(!request.capture_debug_query);
+            let mut execution = metadata(DataServiceOperation::Query, Some(0), None);
+            execution.parameterized_query = Some(
+                "SELECT * FROM orders WHERE id = ? AND active = ? AND happened_at = ? AND email = ?"
+                    .into(),
+            );
+            execution.params = vec![
+                teaql_core::Value::I64(987_654_321),
+                teaql_core::Value::Bool(true),
+                teaql_core::Value::Timestamp(teaql_core::time::Timestamp(1_787_110_200_123)),
+                teaql_core::Value::Text("private-address@example.com".into()),
+            ];
+            execution.debug_query = Some(
+                "SELECT * FROM orders WHERE id = 987654321 AND active = TRUE AND happened_at = 1787110200123 AND email = 'private-address@example.com'"
+                    .into(),
+            );
+            Ok(QueryResult {
+                metadata: execution,
+                rows: Vec::new(),
             })
         }
     }
@@ -2625,14 +2638,37 @@ mod tests {
         );
     }
 
-    #[test]
-    fn sql_shape_redacts_string_literals() {
-        let shape = redact_sql_literals(
-            "select * from t where email = 'private-address' and name = 'private-name'",
+    #[tokio::test]
+    async fn sql_shape_uses_parameterized_metadata_without_requesting_debug_values() {
+        let endpoint =
+            TfpEndpoint::new(Arc::new(ParameterizedShapeExecutor), Arc::new(StubExecutor));
+        let response = endpoint
+            .handle_query(
+                &trusted(),
+                json!({
+                    "entity":"CustomerOrder",
+                    "limitValue":10,
+                    "commentText":"load bounded orders",
+                    "purposeText":"verify safe SQL shape"
+                }),
+            )
+            .await
+            .expect("parameterized SQL shape response");
+        let shape = response["execution"]["sqlShape"]
+            .as_str()
+            .expect("parameterized query shape");
+        assert_eq!(
+            shape,
+            "SELECT * FROM orders WHERE id = ? AND active = ? AND happened_at = ? AND email = ?"
         );
-        assert!(!shape.contains('@'));
-        assert!(!shape.contains("Brien"));
-        assert_eq!(shape, "select * from t where email = '?' and name = '?'");
+        for secret in [
+            "987654321",
+            "TRUE",
+            "1787110200123",
+            "private-address@example.com",
+        ] {
+            assert!(!shape.contains(secret));
+        }
     }
 
     #[tokio::test]
