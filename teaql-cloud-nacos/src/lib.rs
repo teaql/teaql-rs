@@ -32,6 +32,7 @@
 //! cloud.register(&instance).await?;
 //! ```
 
+mod auth;
 mod cloud;
 mod config;
 
