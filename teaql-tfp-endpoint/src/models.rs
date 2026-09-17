@@ -94,6 +94,19 @@ const MAX_FILTER_DEPTH: usize = 16;
 const MAX_FILTER_PREDICATES: usize = 256;
 
 impl TfpSelectQuery {
+    pub(crate) fn validate_request_shape(&self) -> Result<(), String> {
+        self.validate_filter_shape()?;
+        self.validate_limit_shape()?;
+        Ok(())
+    }
+
+    pub(crate) fn validate_limit_shape(&self) -> Result<(), String> {
+        if !self.limit_value.is_some_and(|limit| limit > 0) {
+            return Err("A TFP query requires an explicit positive limit".into());
+        }
+        Ok(())
+    }
+
     pub fn validate_filter_shape(&self) -> Result<(), String> {
         let mut predicates = 0;
         if let Some(filter) = &self.filter_condition {
@@ -146,7 +159,7 @@ impl TfpSelectQuery {
     }
 
     pub fn to_core(&self) -> Result<SelectQuery, String> {
-        self.validate_filter_shape()?;
+        self.validate_request_shape()?;
         let mut filters = Vec::new();
         if let Some(filter) = &self.filter_condition {
             filters.push(parse_json_filter(filter)?);
@@ -660,6 +673,52 @@ mod tests {
         assert_eq!(core.order_by[0].field, "order_number");
         assert!(core.continuous_page_fetch.is_none());
         assert!(core.id_set_pagination.is_none());
+    }
+
+    #[test]
+    fn direct_translation_requires_an_explicit_positive_limit() {
+        for limit_value in [None, Some(0)] {
+            let query = TfpSelectQuery {
+                entity: "CustomerOrder".into(),
+                filter_condition: None,
+                filters: Vec::new(),
+                limit_value,
+                offset_value: None,
+                order_items: Vec::new(),
+                select_items: Vec::new(),
+                group_by_items: Vec::new(),
+                aggregate_items: Vec::new(),
+                facets: Vec::new(),
+                comment_text: Some("bounded query".into()),
+                generated_comment: None,
+                purpose_text: Some("verify direct translation".into()),
+                generated_purpose: None,
+            };
+            assert_eq!(
+                query.to_core().unwrap_err(),
+                "A TFP query requires an explicit positive limit"
+            );
+        }
+
+        let bounded = TfpSelectQuery {
+            entity: "CustomerOrder".into(),
+            filter_condition: None,
+            filters: Vec::new(),
+            limit_value: Some(25),
+            offset_value: None,
+            order_items: Vec::new(),
+            select_items: Vec::new(),
+            group_by_items: Vec::new(),
+            aggregate_items: Vec::new(),
+            facets: Vec::new(),
+            comment_text: Some("bounded query".into()),
+            generated_comment: None,
+            purpose_text: Some("verify direct translation".into()),
+            generated_purpose: None,
+        }
+        .to_core()
+        .expect("positive limit");
+        assert_eq!(bounded.slice.and_then(|slice| slice.limit), Some(25));
     }
 
     #[test]

@@ -928,9 +928,7 @@ fn validate_policy(trusted: &TrustedQueryContext, query: &TfpSelectQuery) -> Res
             query.entity
         ));
     }
-    if !query.limit_value.is_some_and(|limit| limit > 0) {
-        return Err("A TFP query requires an explicit positive limit".into());
-    }
+    query.validate_limit_shape()?;
     if query.limit_value.unwrap_or(0) > trusted.max_page_size {
         return Err("Page size exceeds federation policy".into());
     }
