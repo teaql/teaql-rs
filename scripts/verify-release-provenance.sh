@@ -3,6 +3,23 @@
 # one source commit, and a valid signed tag on that exact commit.
 set -euo pipefail
 
+crates=(
+    teaql-macros
+    teaql-core
+    teaql-data-service
+    teaql-sql
+    teaql-runtime
+    teaql-provider-postgres
+    teaql-provider-sqlite
+    teaql-provider-mysql
+    teaql-web-integration-axum
+)
+
+if [[ "${1:-}" == "--list-crates" ]]; then
+    printf '%s\n' "${crates[@]}"
+    exit 0
+fi
+
 version="${1:-}"
 if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     printf 'Usage: %s <published-semver>\n' "$0" >&2
@@ -21,10 +38,6 @@ tag="v$version"
 archive_dir="$(mktemp -d)"
 trap 'rm -r -- "$archive_dir"' EXIT
 user_agent='teaql-release-provenance/1.0 (info@teaql.io)'
-crates=(
-    teaql-macros teaql-core teaql-data-service teaql-sql teaql-runtime
-    teaql-provider-sqlite teaql-provider-postgres teaql-provider-mysql
-)
 source_commit=''
 
 for crate_name in "${crates[@]}"; do
@@ -67,8 +80,8 @@ git -C "$repo_dir" cat-file -e "$source_commit^{commit}" || {
 }
 
 if ! git -C "$repo_dir" rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-    printf 'RED release provenance: eight archives match crates.io and source %s, but signed tag %s is absent\n' \
-        "$source_commit" "$tag" >&2
+    printf 'RED release provenance: %s archives match crates.io and source %s, but signed tag %s is absent\n' \
+        "${#crates[@]}" "$source_commit" "$tag" >&2
     exit 1
 fi
 tag_commit="$(git -C "$repo_dir" rev-list -n 1 "$tag")"
