@@ -70,12 +70,17 @@ This is a provenance gate, not a functional database-conformance test.
 
 For a new release, first push the signed `v<version>` tag on the exact
 `origin/main` commit, then run `./publish.sh <version> --check-only`. A green
-preflight permits `./publish.sh <version>` to publish the retained nine-crate
+preflight permits `./publish.sh <version>` to publish the retained ten-crate
 boundary in dependency order with Cargo verification enabled. The publisher is
 resume-safe only when an existing archive has the expected checksum and clean
 VCS source; it finishes by running the provenance gate above. It intentionally
 refuses dirty trees, unsigned or unpushed tags, non-main source, and manifest
 version drift.
+
+The framework-independent `teaql-tfp-endpoint` crate is part of that public
+boundary. It carries the trusted TFP request policy, wire metadata, alias
+normalization, and collision/unknown-field diagnostics; it is not an internal
+detail of the optional Axum integration.
 
 ## Cloud Integration
 

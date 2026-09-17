@@ -13,6 +13,7 @@ fi
 
 required_fragments=(
     'verify-release-provenance.sh" --list-crates'
+    'expected 10'
     'status --porcelain --untracked-files=normal'
     'tag -v "$tag"'
     'ls-remote origin "refs/tags/$tag^{}"'
