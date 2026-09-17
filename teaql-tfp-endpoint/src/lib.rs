@@ -323,6 +323,7 @@ impl TfpEndpointError {
                     || message.starts_with("Filter predicate count")
                     || message.starts_with("Logical filter")
                     || message.starts_with("Predicate for ")
+                    || message.starts_with("Query field is duplicated after mapping")
                     || message.starts_with("Facet ")
                     || message.starts_with("A TFP query ")
                     || message.starts_with("A TFP facet")
@@ -2027,6 +2028,41 @@ mod tests {
             .await
             .expect_err("filter aliases must not overwrite a predicate");
         assert_eq!(error.code(), "TFP_INVALID_REQUEST");
+        assert!(queries.lock().expect("recorded queries").is_empty());
+    }
+
+    #[tokio::test]
+    async fn duplicate_mapped_query_fields_fail_before_execution() {
+        let queries = Arc::new(Mutex::new(Vec::new()));
+        let endpoint = TfpEndpoint::new(
+            Arc::new(RecordingQueryExecutor(queries.clone())),
+            Arc::new(StubExecutor),
+        );
+
+        for shape in [
+            json!({"selectItems":["order_number", "orderNumber"]}),
+            json!({"groupByItems":["order_number", "orderNumber"]}),
+            json!({"orderItems":[
+                {"field":"order_number", "direction":"asc"},
+                {"field":"orderNumber", "direction":"desc"}
+            ]}),
+        ] {
+            let mut payload = json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "commentText":"attempt duplicate mapped fields",
+                "purposeText":"prove query semantics remain unambiguous"
+            });
+            payload
+                .as_object_mut()
+                .expect("query object")
+                .extend(shape.as_object().expect("shape object").clone());
+            let error = endpoint
+                .handle_query(&trusted_with_generated_wire_metadata(), payload)
+                .await
+                .expect_err("duplicate mapped fields must fail closed");
+            assert_eq!(error.code(), "TFP_INVALID_REQUEST");
+        }
+
         assert!(queries.lock().expect("recorded queries").is_empty());
     }
 

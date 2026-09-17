@@ -149,23 +149,44 @@ impl TfpSelectQuery {
         for filter in &mut self.filters {
             map_filter_fields(filter, fields)?;
         }
+        let mut mapped_order_fields = std::collections::BTreeSet::new();
         for order in &mut self.order_items {
-            order.field = fields
+            let mapped = fields
                 .get(&order.field)
                 .ok_or_else(|| format!("Unknown field: {}", order.field))?
                 .clone();
+            if !mapped_order_fields.insert(mapped.clone()) {
+                return Err(format!(
+                    "Query field is duplicated after mapping in orderItems: {mapped}"
+                ));
+            }
+            order.field = mapped;
         }
+        let mut mapped_select_fields = std::collections::BTreeSet::new();
         for field in &mut self.select_items {
-            *field = fields
+            let mapped = fields
                 .get(field)
                 .ok_or_else(|| format!("Unknown field: {field}"))?
                 .clone();
+            if !mapped_select_fields.insert(mapped.clone()) {
+                return Err(format!(
+                    "Query field is duplicated after mapping in selectItems: {mapped}"
+                ));
+            }
+            *field = mapped;
         }
+        let mut mapped_group_fields = std::collections::BTreeSet::new();
         for field in &mut self.group_by_items {
-            *field = fields
+            let mapped = fields
                 .get(field)
                 .ok_or_else(|| format!("Unknown field: {field}"))?
                 .clone();
+            if !mapped_group_fields.insert(mapped.clone()) {
+                return Err(format!(
+                    "Query field is duplicated after mapping in groupByItems: {mapped}"
+                ));
+            }
+            *field = mapped;
         }
         for aggregate in &mut self.aggregate_items {
             if aggregate.field != "*" {
@@ -928,6 +949,56 @@ mod tests {
                 .unwrap_err(),
             "Filter field aliases collide after mapping: order_number"
         );
+    }
+
+    #[test]
+    fn query_mapping_rejects_duplicate_mapped_projection_group_and_order_fields() {
+        let mappings = BTreeMap::from([
+            ("id".into(), "id".into()),
+            ("order_number".into(), "order_number".into()),
+            ("orderNumber".into(), "order_number".into()),
+        ]);
+        for (payload, expected_error) in [
+            (
+                json!({
+                    "entity":"CustomerOrder",
+                    "selectItems":["order_number", "orderNumber"]
+                }),
+                "Query field is duplicated after mapping in selectItems: order_number",
+            ),
+            (
+                json!({
+                    "entity":"CustomerOrder",
+                    "groupByItems":["order_number", "orderNumber"]
+                }),
+                "Query field is duplicated after mapping in groupByItems: order_number",
+            ),
+            (
+                json!({
+                    "entity":"CustomerOrder",
+                    "orderItems":[
+                        {"field":"order_number", "direction":"asc"},
+                        {"field":"orderNumber", "direction":"desc"}
+                    ]
+                }),
+                "Query field is duplicated after mapping in orderItems: order_number",
+            ),
+        ] {
+            let mut query: TfpSelectQuery = serde_json::from_value(payload).unwrap();
+            assert_eq!(query.map_fields(&mappings).unwrap_err(), expected_error);
+        }
+
+        let mut aggregates: TfpSelectQuery = serde_json::from_value(json!({
+            "entity":"CustomerOrder",
+            "aggregateItems":[
+                {"function":"sum", "field":"id", "alias":"idSum"},
+                {"function":"max", "field":"id", "alias":"idMax"}
+            ]
+        }))
+        .unwrap();
+        aggregates
+            .map_fields(&mappings)
+            .expect("same-field aggregates have distinct semantics");
     }
 
     #[test]
