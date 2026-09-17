@@ -7,9 +7,12 @@ use std::{
 use teaql_core::{Record, Value};
 use teaql_data_service::{
     DataServiceCapabilities, DataServiceExecutor, DataServiceOperation, ExecutionMetadata,
-    MutationExecutor, MutationRequest, MutationResult, QueryExecutor, QueryRequest, QueryResult,
+    GuardedMutationExecutor, GuardedMutationRequest, MutationExecutor, MutationRequest,
+    MutationResult, QueryExecutor, QueryRequest, QueryResult,
 };
-use teaql_tfp_endpoint::{TfpEndpoint, TfpEndpointError, TrustedQueryContext};
+use teaql_tfp_endpoint::{
+    TfpEndpoint, TfpEndpointError, TrustedEntityVisibility, TrustedQueryContext,
+};
 
 #[derive(Clone, Default)]
 struct StubExecutor;
@@ -85,6 +88,15 @@ impl MutationExecutor for StubExecutor {
         })
     }
 }
+
+impl GuardedMutationExecutor for StubExecutor {
+    async fn mutate_guarded(
+        &self,
+        request: GuardedMutationRequest,
+    ) -> Result<MutationResult, Self::Error> {
+        self.mutate(request.mutation).await
+    }
+}
 fn metadata(
     operation: DataServiceOperation,
     result_count: Option<usize>,
@@ -138,9 +150,24 @@ async fn mutate(
 }
 fn error(value: TfpEndpointError) -> (StatusCode, Json<JsonValue>) {
     (
-        StatusCode::BAD_REQUEST,
-        Json(json!({"code": value.code(), "message": value.to_string()})),
+        status_for_error(&value),
+        Json(json!({"code": value.code(), "message": value.public_message()})),
     )
+}
+
+fn status_for_error(value: &TfpEndpointError) -> StatusCode {
+    match value.code() {
+        "TFP_INVALID_REQUEST"
+        | "TFP_AUDIT_REASON_REQUIRED"
+        | "WIRE_UNKNOWN_FIELD"
+        | "WIRE_FIELD_COLLISION" => StatusCode::BAD_REQUEST,
+        "TFP_FORBIDDEN_ENTITY" | "TFP_FORBIDDEN_FIELD" | "TFP_POLICY_VIOLATION" => {
+            StatusCode::FORBIDDEN
+        }
+        "TFP_MUTATION_TARGET_UNAVAILABLE" => StatusCode::CONFLICT,
+        "TFP_EXECUTION_FAILED" => StatusCode::INTERNAL_SERVER_ERROR,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
 }
 fn trusted() -> TrustedQueryContext {
     let fields = BTreeMap::from([
@@ -152,6 +179,15 @@ fn trusted() -> TrustedQueryContext {
     TrustedQueryContext {
         tenant_field: "tenant_id".into(),
         tenant_id: Value::I64(1),
+        entity_visibility: BTreeMap::from([
+            (
+                "CustomerOrder".into(),
+                TrustedEntityVisibility::Versioned {
+                    field: "version".into(),
+                },
+            ),
+            ("OrderStatus".into(), TrustedEntityVisibility::Unversioned),
+        ]),
         authenticated_user: "conformance-agent".into(),
         approved_purpose: "tfp-conformance".into(),
         allowed_entities: BTreeSet::from(["CustomerOrder".into(), "OrderStatus".into()]),
@@ -181,6 +217,7 @@ fn trusted() -> TrustedQueryContext {
         )]),
         wire_metadata: BTreeMap::new(),
         max_page_size: 100,
+        max_offset: 10_000,
     }
 }
 
@@ -205,4 +242,80 @@ async fn main() {
     axum::serve(listener, app)
         .await
         .expect("serve TFP conformance server");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_current_tfp_error_codes_to_http_status_classes() {
+        let parse_error = serde_json::from_str::<JsonValue>("{")
+            .expect_err("invalid JSON should construct a parse error");
+        let cases = [
+            (
+                TfpEndpointError::ParseError(parse_error),
+                "TFP_INVALID_REQUEST",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                TfpEndpointError::TranslationError("audit reason is required".into()),
+                "TFP_AUDIT_REASON_REQUIRED",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                TfpEndpointError::TranslationError("Entity is not allowed: Secret".into()),
+                "TFP_FORBIDDEN_ENTITY",
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                TfpEndpointError::TranslationError("Field is not allowed: secret".into()),
+                "TFP_FORBIDDEN_FIELD",
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                TfpEndpointError::TranslationError("tenant policy denied request".into()),
+                "TFP_POLICY_VIOLATION",
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                TfpEndpointError::ExecutionError("sensitive provider detail".into()),
+                "TFP_EXECUTION_FAILED",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                TfpEndpointError::MutationTargetUnavailable,
+                "TFP_MUTATION_TARGET_UNAVAILABLE",
+                StatusCode::CONFLICT,
+            ),
+            (
+                TfpEndpointError::WireInput("unknownField".into()),
+                "WIRE_UNKNOWN_FIELD",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                TfpEndpointError::WireCollision("field alias collision".into()),
+                "WIRE_FIELD_COLLISION",
+                StatusCode::BAD_REQUEST,
+            ),
+        ];
+
+        for (error, code, expected_status) in cases {
+            assert_eq!(error.code(), code);
+            assert_eq!(status_for_error(&error), expected_status, "code={code}");
+        }
+    }
+
+    #[test]
+    fn execution_error_response_is_generic_and_server_classified() {
+        let (status, Json(body)) = error(TfpEndpointError::ExecutionError(
+            "UNIQUE constraint failed: tenant_id=42".into(),
+        ));
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["code"], "TFP_EXECUTION_FAILED");
+        assert_eq!(body["message"], "Data service execution failed");
+        assert!(!body.to_string().contains("tenant_id"));
+        assert!(!body.to_string().contains("42"));
+    }
 }

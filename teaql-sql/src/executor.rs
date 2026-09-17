@@ -9,7 +9,8 @@ use teaql_core::{
 };
 use teaql_data_service::{
     DataServiceCapabilities, DataServiceExecutor, DataServiceOperation, ExecutionMetadata,
-    MutationExecutor, MutationRequest, MutationResult, QueryExecutor, QueryRequest, QueryResult,
+    GuardedMutationExecutor, GuardedMutationRequest, MutationExecutor, MutationRequest,
+    MutationResult, QueryExecutor, QueryRequest, QueryResult,
 };
 
 use crate::{CompiledQuery, SqlCompileError, SqlDialect};
@@ -1259,6 +1260,141 @@ impl<
     }
 }
 
+fn guarded_mutation_entity_name(request: &MutationRequest) -> Result<&str, SqlCompileError> {
+    match request {
+        MutationRequest::Update(command) => Ok(&command.entity),
+        MutationRequest::Delete(command) => Ok(&command.entity),
+        MutationRequest::Recover(command) => Ok(&command.entity),
+        MutationRequest::Insert(_) | MutationRequest::Batch(_) => {
+            Err(SqlCompileError::InvalidFunctionArguments(
+                "guarded mutation supports update, delete, and recover only".to_owned(),
+            ))
+        }
+    }
+}
+
+async fn execute_guarded_mutation<D, T>(
+    dialect: &D,
+    transport: &T,
+    entity: &EntityDescriptor,
+    select_plan_cache: &RwLock<Vec<(SelectQuery, String)>>,
+    request: GuardedMutationRequest,
+) -> Result<MutationResult, SqlExecutorError<T::Error>>
+where
+    D: SqlDialect + Sync,
+    T: SqlTransport + Sync,
+{
+    let GuardedMutationRequest { mutation, guard } = request;
+    let (entity_name, operation, persisted_id) = match &mutation {
+        MutationRequest::Update(command) => (
+            &command.entity,
+            DataServiceOperation::Update,
+            Some(command.id.clone()),
+        ),
+        MutationRequest::Delete(command) => (
+            &command.entity,
+            DataServiceOperation::Delete,
+            command.soft_delete.then(|| command.id.clone()),
+        ),
+        MutationRequest::Recover(command) => (
+            &command.entity,
+            DataServiceOperation::Recover,
+            Some(command.id.clone()),
+        ),
+        MutationRequest::Insert(_) | MutationRequest::Batch(_) => unreachable!(),
+    };
+    let compiled = match &mutation {
+        MutationRequest::Update(command) => dialect.compile_guarded_update(entity, command, &guard),
+        MutationRequest::Delete(command) => dialect.compile_guarded_delete(entity, command, &guard),
+        MutationRequest::Recover(command) => {
+            dialect.compile_guarded_recover(entity, command, &guard)
+        }
+        MutationRequest::Insert(_) | MutationRequest::Batch(_) => unreachable!(),
+    }
+    .map_err(SqlExecutorError::Compile)?;
+
+    let start = SystemTime::now();
+    let affected_rows = transport
+        .execute_sql(&compiled)
+        .await
+        .map_err(SqlExecutorError::Transport)?;
+    let end = SystemTime::now();
+
+    let persisted_snapshot = if affected_rows == 1 {
+        if let Some(id) = persisted_id {
+            let query = SelectQuery::new(entity_name.clone())
+                .filter(Expr::and([Expr::eq("id", id), guard.clone()]));
+            let compiled_readback =
+                compile_select_with_cache(dialect, select_plan_cache, entity, &query)
+                    .map_err(SqlExecutorError::Compile)?;
+            let mut rows = transport
+                .fetch_all_compact_sql(&compiled_readback)
+                .await
+                .map_err(SqlExecutorError::Transport)?;
+            if rows.len() != 1 {
+                return Err(SqlExecutorError::PersistedRecord(format!(
+                    "persisted {entity_name} record could not be read back"
+                )));
+            }
+            rows.pop().map(|row| EntitySnapshot::from(row.into_map()))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let metadata = ExecutionMetadata {
+        backend: format!("{:?}", dialect.kind()).to_ascii_lowercase(),
+        operation,
+        started_at: start,
+        ended_at: end,
+        affected_rows: Some(affected_rows),
+        result_count: None,
+        trace_chain: mutation.trace_chain().to_vec(),
+        comment: mutation.comment().map(str::to_owned),
+        backend_request_id: None,
+        parameterized_query: Some(compiled.sql.clone()),
+        params: compiled.params.clone(),
+        debug_query: Some(compiled.debug_sql(dialect.kind())),
+    };
+
+    Ok(MutationResult {
+        affected_rows,
+        generated_values: GeneratedValues::default(),
+        persisted_snapshot,
+        metadata,
+    })
+}
+
+impl<
+    D: SqlDialect + Send + Sync,
+    T: SqlTransport + Send + Sync,
+    S: teaql_data_service::SchemaProvider + Send + Sync,
+> GuardedMutationExecutor for SqlDataServiceExecutor<D, T, S>
+{
+    fn mutate_guarded(
+        &self,
+        request: GuardedMutationRequest,
+    ) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send {
+        async move {
+            let entity_name = guarded_mutation_entity_name(&request.mutation)
+                .map_err(SqlExecutorError::Compile)?;
+            let entity = self.entity_descriptor(entity_name).ok_or_else(|| {
+                SqlExecutorError::Compile(SqlCompileError::UnknownEntity(entity_name.to_owned()))
+            })?;
+            execute_guarded_mutation(
+                &self.dialect,
+                &self.transport,
+                &entity,
+                &self.select_plan_cache,
+                request,
+            )
+            .await
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct SqlDataServiceTransaction<'a, D, Tx: SqlTransport + SqlTransaction, S> {
     pub dialect: &'a D,
@@ -1321,6 +1457,35 @@ impl<
             batch_mutation: true,
             returning: false,
             small_parent_relation_probes: self.dialect.prefers_small_parent_relation_probes(),
+        }
+    }
+}
+
+impl<
+    'a,
+    D: SqlDialect + Send + Sync,
+    Tx: SqlTransport + SqlTransaction<Error = <Tx as SqlTransport>::Error> + Send + Sync,
+    S: teaql_data_service::SchemaProvider + Send + Sync,
+> GuardedMutationExecutor for SqlDataServiceTransaction<'a, D, Tx, S>
+{
+    fn mutate_guarded(
+        &self,
+        request: GuardedMutationRequest,
+    ) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send {
+        async move {
+            let entity_name = guarded_mutation_entity_name(&request.mutation)
+                .map_err(SqlExecutorError::Compile)?;
+            let entity = self.entity_descriptor(entity_name).ok_or_else(|| {
+                SqlExecutorError::Compile(SqlCompileError::UnknownEntity(entity_name.to_owned()))
+            })?;
+            execute_guarded_mutation(
+                self.dialect,
+                &self.transport,
+                &entity,
+                &self.select_plan_cache,
+                request,
+            )
+            .await
         }
     }
 }

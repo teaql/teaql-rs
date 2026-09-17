@@ -580,6 +580,24 @@ pub trait SqlDialect {
         entity: &EntityDescriptor,
         command: &teaql_core::UpdateCommand,
     ) -> Result<CompiledQuery, SqlCompileError> {
+        self.compile_update_with_guard(entity, command, None)
+    }
+
+    fn compile_guarded_update(
+        &self,
+        entity: &EntityDescriptor,
+        command: &teaql_core::UpdateCommand,
+        guard: &Expr,
+    ) -> Result<CompiledQuery, SqlCompileError> {
+        self.compile_update_with_guard(entity, command, Some(guard))
+    }
+
+    fn compile_update_with_guard(
+        &self,
+        entity: &EntityDescriptor,
+        command: &teaql_core::UpdateCommand,
+        guard: Option<&Expr>,
+    ) -> Result<CompiledQuery, SqlCompileError> {
         let id_property = entity
             .id_property()
             .ok_or_else(|| SqlCompileError::MissingIdProperty(entity.name.clone()))?;
@@ -640,6 +658,10 @@ pub trait SqlDialect {
                 self.quote_ident(&version_property.column_name),
                 self.placeholder(params.len())
             ));
+        }
+
+        if let Some(guard) = guard {
+            predicates.push(self.compile_expr(entity, guard, &mut params)?);
         }
 
         Ok(CompiledQuery {
@@ -813,6 +835,24 @@ pub trait SqlDialect {
         entity: &EntityDescriptor,
         command: &DeleteCommand,
     ) -> Result<CompiledQuery, SqlCompileError> {
+        self.compile_delete_with_guard(entity, command, None)
+    }
+
+    fn compile_guarded_delete(
+        &self,
+        entity: &EntityDescriptor,
+        command: &DeleteCommand,
+        guard: &Expr,
+    ) -> Result<CompiledQuery, SqlCompileError> {
+        self.compile_delete_with_guard(entity, command, Some(guard))
+    }
+
+    fn compile_delete_with_guard(
+        &self,
+        entity: &EntityDescriptor,
+        command: &DeleteCommand,
+        guard: Option<&Expr>,
+    ) -> Result<CompiledQuery, SqlCompileError> {
         let id_property = entity
             .id_property()
             .ok_or_else(|| SqlCompileError::MissingIdProperty(entity.name.clone()))?;
@@ -841,6 +881,10 @@ pub trait SqlDialect {
                     self.quote_ident(&version_property.column_name),
                     self.placeholder(params.len())
                 ));
+            }
+
+            if let Some(guard) = guard {
+                predicates.push(self.compile_expr(entity, guard, &mut params)?);
             }
 
             return Ok(CompiledQuery {
@@ -875,6 +919,10 @@ pub trait SqlDialect {
             ));
         }
 
+        if let Some(guard) = guard {
+            predicates.push(self.compile_expr(entity, guard, &mut params)?);
+        }
+
         Ok(CompiledQuery {
             sql: format!(
                 "DELETE FROM {} WHERE {}",
@@ -891,6 +939,24 @@ pub trait SqlDialect {
         entity: &EntityDescriptor,
         command: &RecoverCommand,
     ) -> Result<CompiledQuery, SqlCompileError> {
+        self.compile_recover_with_guard(entity, command, None)
+    }
+
+    fn compile_guarded_recover(
+        &self,
+        entity: &EntityDescriptor,
+        command: &RecoverCommand,
+        guard: &Expr,
+    ) -> Result<CompiledQuery, SqlCompileError> {
+        self.compile_recover_with_guard(entity, command, Some(guard))
+    }
+
+    fn compile_recover_with_guard(
+        &self,
+        entity: &EntityDescriptor,
+        command: &RecoverCommand,
+        guard: Option<&Expr>,
+    ) -> Result<CompiledQuery, SqlCompileError> {
         if command.expected_version >= 0 {
             return Err(SqlCompileError::InvalidRecoverVersion(
                 command.expected_version,
@@ -903,22 +969,35 @@ pub trait SqlDialect {
         let version_property = entity
             .version_property()
             .ok_or_else(|| SqlCompileError::MissingVersionProperty(entity.name.clone()))?;
-        let params = vec![
+        let mut params = vec![
             Value::I64(-command.expected_version + 1),
             command.id.clone(),
             Value::I64(command.expected_version),
         ];
 
+        let mut predicates = vec![
+            format!(
+                "{} = {}",
+                self.quote_ident(&id_property.column_name),
+                self.placeholder(2)
+            ),
+            format!(
+                "{} = {}",
+                self.quote_ident(&version_property.column_name),
+                self.placeholder(3)
+            ),
+        ];
+        if let Some(guard) = guard {
+            predicates.push(self.compile_expr(entity, guard, &mut params)?);
+        }
+
         Ok(CompiledQuery {
             sql: format!(
-                "UPDATE {} SET {} = {} WHERE {} = {} AND {} = {}",
+                "UPDATE {} SET {} = {} WHERE {}",
                 self.quote_ident(&entity.table_name),
                 self.quote_ident(&version_property.column_name),
                 self.placeholder(1),
-                self.quote_ident(&id_property.column_name),
-                self.placeholder(2),
-                self.quote_ident(&version_property.column_name),
-                self.placeholder(3),
+                predicates.join(" AND "),
             ),
             params,
             comment: None,

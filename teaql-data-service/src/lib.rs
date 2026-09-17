@@ -2,8 +2,8 @@
 
 use std::time::SystemTime;
 use teaql_core::{
-    CompactRow, DeleteCommand, EntitySnapshot, GeneratedValues, InsertCommand, RecoverCommand,
-    SelectQuery, TraceNode, UpdateCommand,
+    CompactRow, DeleteCommand, EntitySnapshot, Expr, GeneratedValues, InsertCommand,
+    RecoverCommand, SelectQuery, TraceNode, UpdateCommand,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -164,6 +164,35 @@ pub trait MutationExecutor: DataServiceExecutor {
     fn mutate(
         &self,
         request: MutationRequest,
+    ) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send;
+}
+
+/// A mutation whose target must also satisfy a trusted, datastore-enforced guard.
+///
+/// The guard is deliberately kept outside [`MutationRequest`]: ordinary domain
+/// mutations do not own authorization policy, while boundary adapters such as a
+/// federated endpoint must be able to require one atomic mutation predicate.
+#[derive(Debug, Clone)]
+pub struct GuardedMutationRequest {
+    pub mutation: MutationRequest,
+    pub guard: Expr,
+}
+
+impl GuardedMutationRequest {
+    pub fn new(mutation: MutationRequest, guard: Expr) -> Self {
+        Self { mutation, guard }
+    }
+}
+
+/// Executes a mutation only when its target also satisfies a trusted guard.
+///
+/// Implementations must apply the guard atomically in the same datastore
+/// statement as the mutation. A separate read-before-write check does not
+/// satisfy this contract.
+pub trait GuardedMutationExecutor: MutationExecutor {
+    fn mutate_guarded(
+        &self,
+        request: GuardedMutationRequest,
     ) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send;
 }
 
