@@ -5,6 +5,7 @@ use nacos_sdk::api::config::{
     ConfigChangeListener, ConfigResponse, ConfigService, ConfigServiceBuilder,
 };
 use nacos_sdk::api::naming::{NamingService, NamingServiceBuilder};
+use nacos_sdk::api::plugin::AuthPlugin;
 use nacos_sdk::api::props::ClientProps;
 
 use teaql_cloud_core::{
@@ -13,6 +14,7 @@ use teaql_cloud_core::{
     SubscriptionHandle, WatchHandle,
 };
 
+use crate::auth::NacosHttpAuthPlugin;
 use crate::config::{NacosConfig, from_nacos_instance, group_name, to_nacos_instance};
 
 /// Unified Nacos cloud client.
@@ -31,15 +33,38 @@ impl NacosCloud {
     /// This establishes gRPC connections for both naming and config services.
     pub async fn connect(nacos_config: NacosConfig) -> Result<Self, CloudError> {
         let client_props = build_client_props(&nacos_config);
+        let auth_plugin = nacos_config
+            .auth
+            .as_ref()
+            .map(|auth| Arc::new(NacosHttpAuthPlugin::new(&auth.username, &auth.password)));
 
-        let naming = NamingServiceBuilder::new(client_props.clone())
+        let mut naming_builder = NamingServiceBuilder::new(client_props.clone());
+        if let Some(auth_plugin) = &auth_plugin {
+            naming_builder =
+                naming_builder.with_auth_plugin(auth_plugin.clone() as Arc<dyn AuthPlugin>);
+        }
+        let naming = naming_builder
             .build()
             .await
             .map_err(|e| CloudError::Network {
                 source: Box::new(e),
             })?;
+        if let Some(auth_plugin) = &auth_plugin
+            && !auth_plugin.is_authenticated()
+        {
+            return Err(CloudError::Config(format!(
+                "Nacos authentication failed before client startup: {}",
+                auth_plugin
+                    .last_error()
+                    .unwrap_or_else(|| "no diagnostic available".to_string())
+            )));
+        }
 
-        let config_svc = ConfigServiceBuilder::new(client_props)
+        let mut config_builder = ConfigServiceBuilder::new(client_props);
+        if let Some(auth_plugin) = auth_plugin {
+            config_builder = config_builder.with_auth_plugin(auth_plugin as Arc<dyn AuthPlugin>);
+        }
+        let config_svc = config_builder
             .build()
             .await
             .map_err(|e| CloudError::Network {
@@ -70,18 +95,10 @@ impl NacosCloud {
 }
 
 fn build_client_props(config: &NacosConfig) -> ClientProps {
-    let mut props = ClientProps::new()
+    ClientProps::new()
         .server_addr(&config.server_addr)
         .namespace(&config.namespace)
-        .app_name(&config.app_name);
-
-    if let Some(auth) = &config.auth {
-        props = props
-            .auth_username(&auth.username)
-            .auth_password(&auth.password);
-    }
-
-    props
+        .app_name(&config.app_name)
 }
 
 // --- ServiceRegistry ---

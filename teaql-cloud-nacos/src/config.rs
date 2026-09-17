@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::Deserialize;
 
 /// Nacos connection configuration.
@@ -27,10 +29,20 @@ pub struct NacosConfig {
 }
 
 /// Nacos authentication credentials.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct NacosAuth {
     pub username: String,
     pub password: String,
+}
+
+impl fmt::Debug for NacosAuth {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NacosAuth")
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .finish()
+    }
 }
 
 fn default_app_name() -> String {
@@ -164,6 +176,10 @@ mod tests {
         let auth = config.auth.unwrap();
         assert_eq!(auth.username, "admin");
         assert_eq!(auth.password, "secret");
+        let debug = format!("{auth:?}");
+        assert!(debug.contains("admin"));
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("secret"));
     }
 
     #[test]
