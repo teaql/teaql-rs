@@ -9,6 +9,11 @@ Controls where and how logs are written.
 * `TEAQL_DOMAIN`: Acts as a fallback for the log file name. If `TEAQL_LOG_ENDPOINT` is not set, logs will default to `${TEAQL_DOMAIN}.log`.
 * `TEAQL_LOG_FORMAT`: Determines the log output format (`human`, `json`, `debug`).
 * `TEAQL_LOG_MAX_SIZE` / `TEAQL_LOG_MAX_FILES`: Configures rolling file strategies (e.g., `50MB`, `7`).
+* `TEAQL_AUDIT_DEBUG_ENDPOINT`: Optional sensitive audit destination. Raw old/new
+  field values are written only when this dedicated endpoint is explicitly set
+  **and** `TEAQL_AUDIT_LOG=_full_with_payload`. The ordinary
+  `TEAQL_LOG_ENDPOINT` always contains entity identity, operation, field names,
+  and trace metadata without mutation values.
 
 ## 2. Level Control (Module Level)
 Controls the verbosity of three core modules. The standard prefix is `TEAQL_{MODULE}_LOG`.
@@ -21,7 +26,10 @@ Allowed values:
 ### Core Modules:
 * **`TEAQL_AUDIT_LOG`**
   * **Scope**: Entity lifecycle and mutations (Create, Update, Delete).
-  * **Default**: `_full` (production compliance standard).
+  * **Default**: `_full` (production compliance metadata without field values).
+  * **Sensitive payload**: `_full_with_payload` enables raw values only in the
+    separately configured `TEAQL_AUDIT_DEBUG_ENDPOINT`; it never adds them to
+    the ordinary endpoint.
 * **`TEAQL_SQL_LOG`**
   * **Scope**: Underlying database SQL execution.
   * **Default**: `_summary` or `_silent` (to prevent flooding production logs).
