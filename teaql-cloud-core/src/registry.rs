@@ -11,7 +11,7 @@ use crate::{CloudError, ServiceInstance};
 /// Different backends implement heartbeat differently:
 /// - Nacos v2: gRPC persistent connection IS the heartbeat, `heartbeat()` is a no-op
 /// - etcd: Lease KeepAlive
-/// - Consul: TTL Check + PUT
+/// - Consul: Agent-managed HTTP health check
 /// - K8s: No heartbeat needed (kubelet manages)
 #[async_trait]
 pub trait ServiceRegistry: Send + Sync {

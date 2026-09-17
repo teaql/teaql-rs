@@ -22,7 +22,7 @@
 //! The traits defined here are implemented by backend-specific crates:
 //!
 //! - `teaql-cloud-nacos` — Nacos v2 gRPC
-//! - `teaql-cloud-consul` — Consul (future)
+//! - `teaql-cloud-consul` — Consul HTTP agent API
 //! - `teaql-cloud-etcd` — etcd (future)
 //! - `teaql-cloud-k8s` — Kubernetes (future)
 

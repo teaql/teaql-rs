@@ -94,7 +94,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `teaql-cloud-core` | Backend-agnostic traits (ServiceRegistry, ServiceDiscovery, ConfigSource, HealthIndicator, MetricsCollector) |
 | `teaql-cloud-actuator` | Spring Boot Actuator-compatible endpoints (health, info, metrics) |
 | `teaql-cloud-nacos` | Nacos v2 gRPC implementation |
-| `teaql-cloud-starter` | One-line bootstrap — connects Nacos, registers service, starts HTTP, graceful shutdown |
+| `teaql-cloud-consul` | Consul HTTP service registration, health, and metrics implementation |
+| `teaql-cloud-starter` | One-line bootstrap — connects Nacos or Consul, registers service, starts HTTP, graceful shutdown |
 
 See [design document](docs/2026-07-20-cloud-integration-design.md) for details.
 

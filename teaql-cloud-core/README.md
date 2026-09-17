@@ -33,4 +33,5 @@ This crate provides the **abstraction layer** for embedding Rust services into J
 | Crate | Backend |
 |-------|---------|
 | `teaql-cloud-nacos` | Nacos v2 gRPC |
-| (future) | Consul, etcd, Kubernetes |
+| `teaql-cloud-consul` | Consul HTTP agent API |
+| (future) | etcd, Kubernetes |
