@@ -546,6 +546,24 @@ mod tests {
             vec![Value::I64(-4), Value::U64(1), Value::I64(3), Value::U64(7)]
         );
 
+        let hard_delete = TestDialect
+            .compile_guarded_delete(
+                &tenant_entity(),
+                &DeleteCommand::new("Order", 1_u64)
+                    .expected_version(3)
+                    .hard_delete(),
+                &guard,
+            )
+            .unwrap();
+        assert_eq!(
+            hard_delete.sql,
+            "DELETE FROM \"orders\" WHERE \"id\" = $1 AND \"version\" = $2 AND (\"tenant_id\" = $3)"
+        );
+        assert_eq!(
+            hard_delete.params,
+            vec![Value::U64(1), Value::I64(3), Value::U64(7)]
+        );
+
         let recover = TestDialect
             .compile_guarded_recover(
                 &tenant_entity(),

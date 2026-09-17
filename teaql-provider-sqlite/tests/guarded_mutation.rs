@@ -53,7 +53,11 @@ fn tenant_guard_is_atomic_for_update_delete_and_recover() {
                 )",
             )
             .expect("create table");
-        for (id, tenant, name) in [(1_i64, 1_i64, "tenant-one"), (2, 2, "tenant-two")] {
+        for (id, tenant, name) in [
+            (1_i64, 1_i64, "tenant-one"),
+            (2, 2, "tenant-two"),
+            (3, 2, "tenant-two-hard-delete"),
+        ] {
             let insert = InsertCommand::new("Order")
                 .value("id", id)
                 .value("version", 1_i64)
@@ -134,6 +138,32 @@ fn tenant_guard_is_atomic_for_update_delete_and_recover() {
             .expect("same-tenant recover");
         assert_eq!(own_recover.affected_rows, 1);
 
+        let cross_tenant_hard_delete = executor
+            .mutate_guarded(GuardedMutationRequest::new(
+                MutationRequest::Delete(
+                    DeleteCommand::new("Order", 3_i64)
+                        .expected_version(1)
+                        .hard_delete(),
+                ),
+                tenant_one(),
+            ))
+            .await
+            .expect("guarded hard delete");
+        assert_eq!(cross_tenant_hard_delete.affected_rows, 0);
+
+        let own_hard_delete = executor
+            .mutate_guarded(GuardedMutationRequest::new(
+                MutationRequest::Delete(
+                    DeleteCommand::new("Order", 3_i64)
+                        .expected_version(1)
+                        .hard_delete(),
+                ),
+                tenant_two(),
+            ))
+            .await
+            .expect("same-tenant hard delete");
+        assert_eq!(own_hard_delete.affected_rows, 1);
+
         let transaction = executor.begin().await.expect("begin transaction");
         let transactional_cross_tenant_update = transaction
             .mutate_guarded(GuardedMutationRequest::new(
@@ -163,5 +193,11 @@ fn tenant_guard_is_atomic_for_update_delete_and_recover() {
             .query_row("SELECT name FROM orders WHERE id = 1", [], |row| row.get(0))
             .expect("tenant one row");
         assert_eq!(tenant_one_name, "updated");
+        let hard_deleted_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM orders WHERE id = 3", [], |row| {
+                row.get(0)
+            })
+            .expect("hard-delete count");
+        assert_eq!(hard_deleted_count, 0);
     });
 }
