@@ -93,6 +93,17 @@ pub struct SqlLogEntry {
     pub result_summary: String,
 }
 
+impl SqlLogEntry {
+    /// Number of bound parameters without exposing their values.
+    ///
+    /// Safe/default log entries retain one `Value::Null` slot per parameter;
+    /// sensitive diagnostic entries retain the original values. The count is
+    /// therefore stable across both views of the same execution.
+    pub fn parameter_count(&self) -> usize {
+        self.params.len()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnifiedLogEntry {
     pub timestamp: SystemTime,
@@ -221,7 +232,13 @@ impl UserContext {
         // telemetry. Values and copy-paste SQL are only sent to an explicitly
         // configured diagnostic sink, never retained in this buffer.
         let mut safe_entry = sensitive_entry.clone();
-        safe_entry.params.clear();
+        // Preserve only the non-sensitive shape. Clearing the vector used to
+        // make a parameterized query indistinguishable from a literal-only
+        // query, while retaining the values would leak customer data.
+        safe_entry
+            .params
+            .iter_mut()
+            .for_each(|value| *value = Value::Null);
         safe_entry.debug_sql.clear();
         safe_entry.pretty_sql.clear();
         self.append_sql_log(metadata.started_at, trace_path, safe_entry, sensitive_entry);
