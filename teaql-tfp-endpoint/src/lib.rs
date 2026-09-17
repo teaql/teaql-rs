@@ -168,6 +168,22 @@ fn escape_pointer(value: &str) -> String {
     value.replace('~', "~0").replace('/', "~1")
 }
 
+fn approved_query_trace(
+    trusted: &TrustedQueryContext,
+    entity: &str,
+    requested_purpose: &str,
+) -> teaql_core::TraceNode {
+    teaql_core::TraceNode {
+        kind: teaql_core::TraceKind::Purpose,
+        entity_type: entity.to_owned(),
+        entity_id: None,
+        comment: format!(
+            "approved-purpose={}; authenticated-user={}; requested-purpose={}",
+            trusted.approved_purpose, trusted.authenticated_user, requested_purpose,
+        ),
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum TfpEndpointError {
     #[error("Failed to parse JSON payload: {0}")]
@@ -364,22 +380,14 @@ where
             Some(filter) => teaql_core::Expr::And(vec![trusted_scope, filter]),
             None => trusted_scope,
         });
-        let trace = teaql_core::TraceNode {
-            kind: teaql_core::TraceKind::Purpose,
-            entity_type: tfp_query.entity.clone(),
-            entity_id: None,
-            comment: format!(
-                "approved-purpose={}; authenticated-user={}; requested-purpose={}",
-                trusted.approved_purpose, trusted.authenticated_user, requested_purpose,
-            ),
-        };
+        let trace = approved_query_trace(trusted, &tfp_query.entity, &requested_purpose);
         core_query.trace_chain.push(trace.clone());
 
         let outer_query = core_query.clone();
         let request = QueryRequest {
             query: core_query,
             trace_chain: vec![trace],
-            comment: Some(client_comment),
+            comment: Some(client_comment.clone()),
             capture_debug_query: true,
             capture_execution_metadata: true,
         };
@@ -400,7 +408,9 @@ where
             .collect();
 
         response_obj.insert("data".to_string(), JsonValue::Array(rows_json));
-        let facet_values = self.execute_facets(trusted, &outer_query, facets).await?;
+        let facet_values = self
+            .execute_facets(trusted, &outer_query, &client_comment, facets)
+            .await?;
         response_obj.insert("facets".to_string(), JsonValue::Object(facet_values));
         response_obj.insert("resultCode".to_string(), JsonValue::Number(0.into()));
         response_obj.insert("status".to_string(), JsonValue::String("YES".to_string()));
@@ -432,6 +442,7 @@ where
         &self,
         trusted: &TrustedQueryContext,
         outer_query: &teaql_core::SelectQuery,
+        outer_comment: &str,
         facets: Vec<TfpFacetRequest>,
     ) -> Result<serde_json::Map<String, JsonValue>, TfpEndpointError> {
         let mut output = serde_json::Map::new();
@@ -448,12 +459,16 @@ where
                 "id",
                 "__tfpFacetCount",
             )];
+            let membership_trace = outer_query.trace_chain.clone();
             let membership_result = self
                 .query_executor
                 .query(QueryRequest {
                     query: membership,
-                    trace_chain: vec![],
-                    comment: Some(format!("TFP facet membership: {}", facet.facet_name)),
+                    trace_chain: membership_trace,
+                    comment: Some(format!(
+                        "{outer_comment}; derived-facet-membership={}",
+                        facet.facet_name
+                    )),
                     capture_debug_query: false,
                     capture_execution_metadata: true,
                 })
@@ -481,6 +496,22 @@ where
             let mut nested = *facet.query;
             nested.aggregate_items.clear();
             nested.group_by_items.clear();
+            let nested_comment = nested
+                .generated_comment
+                .clone()
+                .or(nested.comment_text.clone())
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    TfpEndpointError::TranslationError("Facet query comment is required".into())
+                })?;
+            let nested_purpose = nested
+                .generated_purpose
+                .clone()
+                .or(nested.purpose_text.clone())
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    TfpEndpointError::TranslationError("Facet query purpose is required".into())
+                })?;
             let mut nested_query = nested
                 .to_core()
                 .map_err(TfpEndpointError::TranslationError)?;
@@ -491,12 +522,14 @@ where
                 Some(filter) => teaql_core::Expr::And(vec![trusted_scope, filter]),
                 None => trusted_scope,
             });
+            let nested_trace = approved_query_trace(trusted, &nested.entity, &nested_purpose);
+            nested_query.trace_chain.push(nested_trace.clone());
             let nested_result = self
                 .query_executor
                 .query(QueryRequest {
                     query: nested_query,
-                    trace_chain: vec![],
-                    comment: Some(format!("TFP facet values: {}", facet.facet_name)),
+                    trace_chain: vec![nested_trace],
+                    comment: Some(nested_comment),
                     capture_debug_query: false,
                     capture_execution_metadata: true,
                 })
@@ -827,15 +860,17 @@ fn prepare_facets(trusted: &TrustedQueryContext, query: &mut TfpSelectQuery) -> 
         }
         if facet
             .query
-            .comment_text
+            .generated_comment
             .as_deref()
+            .or(facet.query.comment_text.as_deref())
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .is_none()
             || facet
                 .query
-                .purpose_text
+                .generated_purpose
                 .as_deref()
+                .or(facet.query.purpose_text.as_deref())
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .is_none()
@@ -1373,6 +1408,42 @@ mod tests {
         assert_eq!(queries[0].query.slice.as_ref().unwrap().limit, Some(10));
         assert_eq!(queries[1].query.slice.as_ref().unwrap().limit, Some(100));
         assert_eq!(queries[2].query.slice.as_ref().unwrap().limit, Some(20));
+        assert_eq!(queries[0].comment.as_deref(), Some("load bounded orders"));
+        assert_eq!(queries[0].trace_chain.len(), 1);
+        assert!(
+            queries[0].trace_chain[0]
+                .comment
+                .contains("requested-purpose=render bounded order list")
+        );
+        assert_eq!(queries[1].trace_chain, queries[0].trace_chain);
+        assert_eq!(
+            queries[1].comment.as_deref(),
+            Some("load bounded orders; derived-facet-membership=statusFacet")
+        );
+        assert_eq!(
+            queries[2].comment.as_deref(),
+            Some("load bounded status facet")
+        );
+        assert_eq!(queries[2].trace_chain.len(), 1);
+        assert!(
+            queries[2].trace_chain[0]
+                .comment
+                .contains("approved-purpose=approved-order-search")
+        );
+        assert!(
+            queries[2].trace_chain[0]
+                .comment
+                .contains("authenticated-user=operator-42")
+        );
+        assert!(
+            queries[2].trace_chain[0]
+                .comment
+                .contains("requested-purpose=render bounded order filters")
+        );
+        assert_eq!(
+            queries[2].query.trace_chain, queries[2].trace_chain,
+            "core query and executor request must retain the same purpose evidence"
+        );
     }
 
     #[tokio::test]
