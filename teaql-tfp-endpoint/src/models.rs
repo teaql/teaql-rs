@@ -601,6 +601,11 @@ impl TfpMutationQuery {
             let mapped = fields
                 .get(&field)
                 .ok_or_else(|| format!("Field is not writable by federation policy: {field}"))?;
+            if object.contains_key(mapped) {
+                return Err(format!(
+                    "Mutation field aliases collide after mapping: {mapped}"
+                ));
+            }
             object.insert(mapped.clone(), value);
         }
         Ok(())
@@ -1049,6 +1054,42 @@ mod tests {
             missing_reason.to_core().unwrap_err(),
             "Mutation audit reason is required"
         );
+    }
+
+    #[test]
+    fn mutation_mapping_rejects_alias_collisions_before_value_overwrite() {
+        let mut mutation = TfpMutationQuery {
+            entity: "CustomerOrder".into(),
+            action: "Update".into(),
+            payload: json!({
+                "order_number":"SAFE-42",
+                "orderNumber":"OTHER-42"
+            }),
+            id: Some(json!(42)),
+            expected_version: Some(3),
+            comment: Some("update order".into()),
+        };
+        assert_eq!(
+            mutation
+                .map_writable_fields(&BTreeMap::from([
+                    ("order_number".into(), "order_number".into()),
+                    ("orderNumber".into(), "order_number".into()),
+                ]))
+                .unwrap_err(),
+            "Mutation field aliases collide after mapping: order_number"
+        );
+
+        let mut single_alias = TfpMutationQuery {
+            payload: json!({"orderNumber":"SAFE-42"}),
+            ..mutation
+        };
+        single_alias
+            .map_writable_fields(&BTreeMap::from([(
+                "orderNumber".into(),
+                "order_number".into(),
+            )]))
+            .expect("one configured alias");
+        assert_eq!(single_alias.payload, json!({"order_number":"SAFE-42"}));
     }
 
     #[test]

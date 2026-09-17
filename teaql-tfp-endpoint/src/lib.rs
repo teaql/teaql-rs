@@ -334,6 +334,7 @@ impl TfpEndpointError {
                     || message.starts_with("Unsupported order direction")
                     || message.starts_with("Unsupported aggregate function")
                     || message.starts_with("Mutation payload must be an object")
+                    || message.starts_with("Mutation field aliases collide")
                     || message.starts_with("Object values are forbidden")
                     || message.contains("does not accept null") =>
             {
@@ -2553,6 +2554,49 @@ mod tests {
             .await
             .expect_err("ambiguous response mapping must fail closed");
         assert_eq!(error.code(), "TFP_POLICY_VIOLATION");
+        assert!(
+            mutations
+                .ordinary
+                .lock()
+                .expect("ordinary mutations")
+                .is_empty()
+        );
+        assert!(
+            mutations
+                .guarded
+                .lock()
+                .expect("guarded mutations")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn mutation_alias_collision_fails_before_execution() {
+        let mutations = Arc::new(RecordingMutationExecutor::new(1));
+        let endpoint = TfpEndpoint::new(Arc::new(StubExecutor), mutations.clone());
+        let mut context = trusted();
+        context
+            .writable_field_mappings
+            .get_mut("CustomerOrder")
+            .expect("order writable policy")
+            .insert("order_number".into(), "order_number".into());
+
+        let error = endpoint
+            .handle_mutation(
+                &context,
+                json!({
+                    "entity":"CustomerOrder", "action":"Update", "id":42,
+                    "expectedVersion":3,
+                    "payload":{
+                        "order_number":"SAFE-42",
+                        "orderNumber":"OTHER-42"
+                    },
+                    "comment":"update order"
+                }),
+            )
+            .await
+            .expect_err("mutation aliases must not overwrite a value");
+        assert_eq!(error.code(), "TFP_INVALID_REQUEST");
         assert!(
             mutations
                 .ordinary
