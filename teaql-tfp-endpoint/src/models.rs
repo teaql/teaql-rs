@@ -448,7 +448,7 @@ pub struct TfpMutationQuery {
 }
 
 impl TfpMutationQuery {
-    pub(crate) fn validate_action_payload(&self) -> Result<(), String> {
+    pub(crate) fn validate_request_shape(&self) -> Result<(), String> {
         let payload = self
             .payload
             .as_object()
@@ -458,6 +458,46 @@ impl TfpMutationQuery {
                 "Invalid mutation request: {} requires an empty payload",
                 self.action
             ));
+        }
+
+        let has_id = self.id.as_ref().is_some_and(|id| !id.is_null());
+        match self.action.as_str() {
+            "Create" => {
+                if has_id {
+                    return Err("Invalid mutation request: Create must not carry id".into());
+                }
+                if self.expected_version.is_some() {
+                    return Err(
+                        "Invalid mutation request: Create must not carry expectedVersion".into(),
+                    );
+                }
+            }
+            "Update" | "Delete" => {
+                if !has_id {
+                    return Err(format!(
+                        "Invalid mutation request: {} requires id",
+                        self.action
+                    ));
+                }
+                if !self.expected_version.is_some_and(|version| version > 0) {
+                    return Err(format!(
+                        "Invalid mutation request: {} requires a positive expectedVersion",
+                        self.action
+                    ));
+                }
+            }
+            "Recover" => {
+                if !has_id {
+                    return Err("Invalid mutation request: Recover requires id".into());
+                }
+                if !self.expected_version.is_some_and(|version| version < 0) {
+                    return Err(
+                        "Invalid mutation request: Recover requires a negative expectedVersion"
+                            .into(),
+                    );
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -481,7 +521,7 @@ impl TfpMutationQuery {
     }
 
     pub fn to_core(&self) -> Result<MutationRequest, String> {
-        self.validate_action_payload()?;
+        self.validate_request_shape()?;
         let comment = self
             .comment
             .as_deref()
@@ -782,6 +822,55 @@ mod tests {
                 mutation.to_core().unwrap_err(),
                 format!("Invalid mutation request: {action} requires an empty payload")
             );
+        }
+    }
+
+    #[test]
+    fn lifecycle_metadata_is_enforced_in_direct_translation() {
+        let cases = [
+            (
+                "Create",
+                Some(json!(42)),
+                None,
+                "Invalid mutation request: Create must not carry id",
+            ),
+            (
+                "Create",
+                None,
+                Some(1),
+                "Invalid mutation request: Create must not carry expectedVersion",
+            ),
+            (
+                "Update",
+                None,
+                Some(1),
+                "Invalid mutation request: Update requires id",
+            ),
+            (
+                "Delete",
+                Some(json!(42)),
+                Some(-1),
+                "Invalid mutation request: Delete requires a positive expectedVersion",
+            ),
+            (
+                "Recover",
+                Some(json!(42)),
+                Some(1),
+                "Invalid mutation request: Recover requires a negative expectedVersion",
+            ),
+        ];
+
+        for (action, id, expected_version, expected_error) in cases {
+            let mutation = TfpMutationQuery {
+                entity: "CustomerOrder".into(),
+                action: action.into(),
+                payload: json!({}),
+                id,
+                expected_version,
+                comment: Some(format!("{action} order")),
+            };
+
+            assert_eq!(mutation.to_core().unwrap_err(), expected_error);
         }
     }
 }

@@ -1097,7 +1097,7 @@ fn validate_mutation_policy(
             mutation.action
         ));
     }
-    mutation.validate_action_payload()?;
+    mutation.validate_request_shape()?;
     if mutation
         .comment
         .as_deref()
@@ -1109,37 +1109,6 @@ fn validate_mutation_policy(
     }
     if mutation.payload.get(&trusted.tenant_field).is_some() {
         return Err("Tenant field is server-owned and not allowed".into());
-    }
-    let has_id = mutation.id.as_ref().is_some_and(|id| !id.is_null());
-    match mutation.action.as_str() {
-        "Create" if mutation.expected_version.is_some() => {
-            return Err("Invalid mutation request: Create must not carry expectedVersion".into());
-        }
-        "Update" | "Delete" => {
-            if !has_id {
-                return Err(format!(
-                    "Invalid mutation request: {} requires id",
-                    mutation.action
-                ));
-            }
-            if !mutation.expected_version.is_some_and(|version| version > 0) {
-                return Err(format!(
-                    "Invalid mutation request: {} requires a positive expectedVersion",
-                    mutation.action
-                ));
-            }
-        }
-        "Recover" => {
-            if !has_id {
-                return Err("Invalid mutation request: Recover requires id".into());
-            }
-            if !mutation.expected_version.is_some_and(|version| version < 0) {
-                return Err(
-                    "Invalid mutation request: Recover requires a negative expectedVersion".into(),
-                );
-            }
-        }
-        _ => {}
     }
     Ok(())
 }
@@ -2157,9 +2126,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lifecycle_mutations_reject_non_empty_payload_before_execution() {
+    async fn ignored_mutation_inputs_are_rejected_before_execution() {
         let mutations = Arc::new(RecordingMutationExecutor::new(1));
         let endpoint = TfpEndpoint::new(Arc::new(StubExecutor), mutations.clone());
+
+        let error = endpoint
+            .handle_mutation(
+                &trusted(),
+                json!({
+                    "entity":"CustomerOrder", "action":"Create", "id":42,
+                    "payload":{"orderNumber":"O-42"}, "comment":"create order"
+                }),
+            )
+            .await
+            .expect_err("a top-level Create id must not be silently ignored");
+        assert_eq!(error.code(), "TFP_INVALID_REQUEST");
+        assert!(
+            error
+                .to_string()
+                .contains("Invalid mutation request: Create must not carry id")
+        );
 
         for payload in [
             json!({
