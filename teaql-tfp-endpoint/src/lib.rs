@@ -829,7 +829,13 @@ where
         }
         .map_err(|error| TfpEndpointError::ExecutionError(error.to_string()))?;
 
-        if !is_create && result.affected_rows != 1 {
+        if result.affected_rows != 1 {
+            if is_create {
+                return Err(TfpEndpointError::ExecutionError(format!(
+                    "TFP Create executor affected {} rows; expected exactly one",
+                    result.affected_rows
+                )));
+            }
             return Err(TfpEndpointError::MutationTargetUnavailable);
         }
 
@@ -1190,6 +1196,9 @@ mod tests {
     #[derive(Clone, Default)]
     struct ParameterizedShapeExecutor;
 
+    #[derive(Clone, Copy)]
+    struct AffectedRowsMutationExecutor(u64);
+
     #[derive(Clone, Default)]
     struct GeneratedValuesMutationExecutor;
 
@@ -1463,6 +1472,34 @@ mod tests {
                 metadata: execution,
                 rows: vec![teaql_core::CompactRow::from_map(Record::new())],
             })
+        }
+    }
+
+    impl DataServiceExecutor for AffectedRowsMutationExecutor {
+        type Error = StubError;
+
+        fn capabilities(&self) -> DataServiceCapabilities {
+            DataServiceCapabilities::default()
+        }
+    }
+
+    impl MutationExecutor for AffectedRowsMutationExecutor {
+        async fn mutate(&self, _request: MutationRequest) -> Result<MutationResult, Self::Error> {
+            Ok(MutationResult {
+                affected_rows: self.0,
+                generated_values: Record::from([("id".into(), teaql_core::Value::I64(42))]).into(),
+                persisted_snapshot: None,
+                metadata: metadata(DataServiceOperation::Insert, None, Some(self.0)),
+            })
+        }
+    }
+
+    impl GuardedMutationExecutor for AffectedRowsMutationExecutor {
+        async fn mutate_guarded(
+            &self,
+            request: GuardedMutationRequest,
+        ) -> Result<MutationResult, Self::Error> {
+            self.mutate(request.mutation).await
         }
     }
 
@@ -2985,6 +3022,45 @@ mod tests {
             insert.values.get("commerce_platform_id"),
             Some(&teaql_core::Value::I64(1))
         );
+    }
+
+    #[tokio::test]
+    async fn create_requires_exactly_one_affected_row() {
+        for affected_rows in [0, 2] {
+            let endpoint = TfpEndpoint::new(
+                Arc::new(StubExecutor),
+                Arc::new(AffectedRowsMutationExecutor(affected_rows)),
+            );
+            let error = endpoint
+                .handle_mutation(
+                    &trusted(),
+                    json!({
+                        "entity":"CustomerOrder", "action":"Create",
+                        "payload":{"orderNumber":"O-1"}, "comment":"create order"
+                    }),
+                )
+                .await
+                .expect_err("invalid Create affected-row count must fail closed");
+            assert_eq!(error.code(), "TFP_EXECUTION_FAILED");
+            assert!(error.to_string().contains("expected exactly one"));
+        }
+
+        let endpoint = TfpEndpoint::new(
+            Arc::new(StubExecutor),
+            Arc::new(AffectedRowsMutationExecutor(1)),
+        );
+        let response = endpoint
+            .handle_mutation(
+                &trusted(),
+                json!({
+                    "entity":"CustomerOrder", "action":"Create",
+                    "payload":{"orderNumber":"O-1"}, "comment":"create order"
+                }),
+            )
+            .await
+            .expect("one affected row is a valid Create result");
+        assert_eq!(response["affectedRows"], 1);
+        assert_eq!(response["data"][0]["id"], 42);
     }
 
     #[tokio::test]
