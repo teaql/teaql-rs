@@ -31,6 +31,8 @@ pub struct TrustedQueryContext {
     /// Generated serializer-independent field metadata, keyed by entity name.
     pub wire_metadata: std::collections::BTreeMap<String, WireEntityMetadata>,
     pub max_page_size: usize,
+    /// Maximum client-requested row offset, independent from page size.
+    pub max_offset: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -995,6 +997,9 @@ fn validate_policy(trusted: &TrustedQueryContext, query: &TfpSelectQuery) -> Res
     if query.limit_value.unwrap_or(0) > trusted.max_page_size {
         return Err("Page size exceeds federation policy".into());
     }
+    if query.offset_value.unwrap_or(0) > trusted.max_offset {
+        return Err("Offset exceeds federation policy".into());
+    }
     query.resolved_comment()?;
     query.resolved_purpose()?;
     let allowed = effective_field_mappings(trusted, &query.entity, false)?;
@@ -1752,6 +1757,7 @@ mod tests {
             )]),
             wire_metadata: BTreeMap::new(),
             max_page_size: 100,
+            max_offset: 10_000,
         }
     }
 
@@ -1985,6 +1991,79 @@ mod tests {
         assert_eq!(
             queries[2].query.trace_chain, queries[2].trace_chain,
             "core query and executor request must retain the same purpose evidence"
+        );
+    }
+
+    #[tokio::test]
+    async fn trusted_offset_ceiling_applies_to_outer_and_facet_queries() {
+        let queries = Arc::new(Mutex::new(Vec::new()));
+        let endpoint = TfpEndpoint::new(
+            Arc::new(RecordingQueryExecutor(queries.clone())),
+            Arc::new(StubExecutor),
+        );
+
+        for offset in [0, 10_000] {
+            endpoint
+                .handle_query(
+                    &trusted(),
+                    json!({
+                        "entity":"CustomerOrder", "limitValue":10, "offsetValue":offset,
+                        "commentText":"load bounded orders",
+                        "purposeText":"verify trusted offset ceiling"
+                    }),
+                )
+                .await
+                .expect("offset at or below the trusted ceiling");
+        }
+        {
+            let accepted = queries.lock().expect("recorded queries");
+            assert_eq!(accepted.len(), 2);
+            assert_eq!(accepted[0].query.slice.map(|slice| slice.offset), Some(0));
+            assert_eq!(
+                accepted[1].query.slice.map(|slice| slice.offset),
+                Some(10_000)
+            );
+        }
+
+        let rejected_queries = Arc::new(Mutex::new(Vec::new()));
+        let rejected_endpoint = TfpEndpoint::new(
+            Arc::new(RecordingQueryExecutor(rejected_queries.clone())),
+            Arc::new(StubExecutor),
+        );
+        for payload in [
+            json!({
+                "entity":"CustomerOrder", "limitValue":10, "offsetValue":10_001,
+                "commentText":"load deep orders",
+                "purposeText":"reject excessive outer offset"
+            }),
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "facets":[{
+                    "facetName":"statusFacet", "relationName":"status",
+                    "query":{
+                        "entity":"OrderStatus", "limitValue":10, "offsetValue":10_001,
+                        "selectItems":["id"],
+                        "aggregateItems":[{
+                            "function":"Count", "field":"id", "alias":"orderCount"
+                        }],
+                        "commentText":"load deep status facet",
+                        "purposeText":"reject excessive facet offset"
+                    }
+                }],
+                "commentText":"load orders", "purposeText":"render orders"
+            }),
+        ] {
+            let error = rejected_endpoint
+                .handle_query(&trusted(), payload)
+                .await
+                .expect_err("offset above trusted ceiling must fail closed");
+            assert_eq!(error.code(), "TFP_POLICY_VIOLATION");
+        }
+        assert!(
+            rejected_queries
+                .lock()
+                .expect("rejected queries")
+                .is_empty()
         );
     }
 

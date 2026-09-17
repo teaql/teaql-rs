@@ -71,6 +71,7 @@ fn trusted_tenant_one() -> TrustedQueryContext {
         )]),
         wire_metadata: BTreeMap::from([("CustomerOrder".into(), wire_metadata)]),
         max_page_size: 100,
+        max_offset: 10_000,
     }
 }
 

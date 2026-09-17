@@ -217,6 +217,7 @@ fn trusted() -> TrustedQueryContext {
         )]),
         wire_metadata: BTreeMap::new(),
         max_page_size: 100,
+        max_offset: 10_000,
     }
 }
 
