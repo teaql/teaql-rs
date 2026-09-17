@@ -330,6 +330,10 @@ impl TfpEndpointError {
                     || message.starts_with("Duplicate aggregate alias")
                     || message.starts_with("Aggregate alias")
                     || message.starts_with("Order expressions")
+                    || message.starts_with("Unsupported order direction")
+                    || message.starts_with("Unsupported aggregate function")
+                    || message.starts_with("Mutation payload must be an object")
+                    || message.starts_with("Object values are forbidden")
                     || message.contains("does not accept null") =>
             {
                 "TFP_INVALID_REQUEST"
@@ -1851,6 +1855,66 @@ mod tests {
             .await
             .expect_err("unsupported operator must fail closed");
         assert_eq!(error.code(), "TFP_INVALID_REQUEST");
+    }
+
+    #[tokio::test]
+    async fn malformed_canonical_shapes_are_invalid_before_execution() {
+        let queries = Arc::new(Mutex::new(Vec::new()));
+        let query_executor = RecordingQueryExecutor(queries.clone());
+        let mutations = Arc::new(RecordingMutationExecutor::new(1));
+        let endpoint = TfpEndpoint::new(Arc::new(query_executor), mutations.clone());
+
+        for payload in [
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "orderItems":[{"field":"id", "direction":"sideways"}],
+                "commentText":"exercise invalid direction", "purposeText":"verify request code"
+            }),
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "aggregateItems":[{"function":"Median", "field":"id", "alias":"medianId"}],
+                "commentText":"exercise invalid aggregate", "purposeText":"verify request code"
+            }),
+            json!({
+                "entity":"CustomerOrder", "limitValue":10,
+                "filterCondition":{"id":{"$eq":{"id":42, "extra":true}}},
+                "commentText":"exercise invalid reference", "purposeText":"verify request code"
+            }),
+        ] {
+            let error = endpoint
+                .handle_query(&trusted(), payload)
+                .await
+                .expect_err("malformed query shape must fail closed");
+            assert_eq!(error.code(), "TFP_INVALID_REQUEST");
+        }
+
+        let error = endpoint
+            .handle_mutation(
+                &trusted(),
+                json!({
+                    "entity":"CustomerOrder", "action":"Create",
+                    "payload":[], "comment":"exercise invalid payload"
+                }),
+            )
+            .await
+            .expect_err("non-object mutation payload must fail closed");
+        assert_eq!(error.code(), "TFP_INVALID_REQUEST");
+
+        assert!(queries.lock().expect("recorded queries").is_empty());
+        assert!(
+            mutations
+                .ordinary
+                .lock()
+                .expect("ordinary mutations")
+                .is_empty()
+        );
+        assert!(
+            mutations
+                .guarded
+                .lock()
+                .expect("guarded mutations")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
