@@ -63,6 +63,11 @@ pub trait Entity: TeaqlEntity + Sized {
     /// This is runtime metadata, not mutation intent.
     fn set_checker_loaded_fields(&mut self, _fields: BTreeSet<String>) {}
 
+    /// Restore the caller's exact mutation boundary while materializing the
+    /// typed Checker view. This metadata is used only during validation and
+    /// must not widen the eventual database update.
+    fn set_checker_dirty_fields(&mut self, _fields: BTreeSet<String>, _values: &MutationValues) {}
+
     /// Returns the set of field names that have been modified since the entity was loaded.
     /// Returns `None` if dirty tracking is not available (backwards compatible default).
     /// This is the Rust equivalent of Java's `entity.getUpdatedProperties()`.
