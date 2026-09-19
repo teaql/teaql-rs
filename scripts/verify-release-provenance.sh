@@ -9,10 +9,10 @@ crates=(
     teaql-data-service
     teaql-sql
     teaql-runtime
-    teaql-tfp-endpoint
     teaql-provider-postgres
     teaql-provider-sqlite
     teaql-provider-mysql
+    teaql-tfp-endpoint
     teaql-web-integration-axum
 )
 
