@@ -10,6 +10,9 @@ use rusqlite::{
     Connection, OptionalExtension, Row, functions::FunctionFlags, params, params_from_iter,
 };
 use rust_decimal::Decimal;
+use teaql_core::business_id::{
+    BusinessIdAllocation, BusinessIdAllocator, BusinessIdError, BusinessIdErrorCode, BusinessIdPlan,
+};
 use teaql_core::{CompactRow, DataType, EntityDescriptor, PropertyDescriptor, Value};
 use teaql_runtime::{
     InternalIdGenerator, RawAuditEvent, RuntimeError, SchemaProvider, UserContext,
@@ -21,6 +24,7 @@ use teaql_sql::{
 };
 
 pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";
+pub const DEFAULT_BUSINESS_ID_SPACE_TABLE: &str = "teaql_business_id_space";
 pub const DEFAULT_PREPARED_STATEMENT_CACHE_CAPACITY: usize = 64;
 pub const DEFAULT_COLUMN_LAYOUT_CACHE_CAPACITY: usize = 64;
 
@@ -1175,6 +1179,156 @@ impl InternalIdGenerator for SqliteIdSpaceGenerator {
         SqliteIdSpaceGenerator::ensure_floor(self, entity, floor)
             .map_err(|err| RuntimeError::IdGeneration(err.to_string()))
     }
+}
+
+/// Persistent business-ID allocation for SQLite.
+///
+/// Schema installation is deliberately explicit. Use a dedicated connection for this allocator
+/// so its short `BEGIN IMMEDIATE` allocation transaction is independent of an aggregate save.
+#[derive(Clone)]
+pub struct SqliteBusinessIdAllocator {
+    executor: SqliteMutationExecutor,
+    table_name: String,
+}
+
+impl SqliteBusinessIdAllocator {
+    pub fn new(connection: Connection) -> Self {
+        Self::from_executor(SqliteMutationExecutor::from_connection(connection))
+    }
+
+    pub fn from_executor(executor: SqliteMutationExecutor) -> Self {
+        Self {
+            executor,
+            table_name: DEFAULT_BUSINESS_ID_SPACE_TABLE.to_owned(),
+        }
+    }
+
+    pub fn with_table_name(mut self, table_name: impl Into<String>) -> Self {
+        self.table_name = table_name.into();
+        self
+    }
+
+    pub fn ensure_schema(&self, _context: &UserContext) -> Result<(), BusinessIdError> {
+        let table = quote_ident(&self.table_name);
+        let connection = self.executor.lock().map_err(business_id_sqlite_error)?;
+        connection
+            .execute(
+                &format!(
+                    "CREATE TABLE IF NOT EXISTS {table} (scope_key VARCHAR(512) PRIMARY KEY, current_level INTEGER NOT NULL, version INTEGER NOT NULL)"
+                ),
+                [],
+            )
+            .map_err(|error| business_id_sqlite_error(error.into()))?;
+        Ok(())
+    }
+}
+
+impl BusinessIdAllocator for SqliteBusinessIdAllocator {
+    fn allocate(&self, plan: &BusinessIdPlan) -> Result<BusinessIdAllocation, BusinessIdError> {
+        let table = quote_ident(&self.table_name);
+        let scope_key = plan.scope.canonical_key();
+        for attempt in 1..=100 {
+            let result = (|| {
+                let connection = self.executor.lock().map_err(business_id_sqlite_error)?;
+                connection
+                    .execute("BEGIN IMMEDIATE", [])
+                    .map_err(|error| business_id_sqlite_error(error.into()))?;
+                let operation = (|| {
+                    let current = connection
+                        .query_row(
+                            &format!(
+                                "SELECT current_level, version FROM {table} WHERE scope_key = ?"
+                            ),
+                            [&scope_key],
+                            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                        )
+                        .optional()
+                        .map_err(|error| business_id_sqlite_error(error.into()))?;
+                    let sequence = match current {
+                        Some((current_level, version)) => {
+                            let next = current_level.checked_add(1).ok_or_else(|| {
+                                BusinessIdError::new(
+                                    BusinessIdErrorCode::Exhausted,
+                                    format!("business ID sequence overflow for scope {scope_key}"),
+                                )
+                            })?;
+                            let changed = connection
+                                .execute(
+                                    &format!(
+                                        "UPDATE {table} SET current_level = ?, version = version + 1 WHERE scope_key = ? AND version = ?"
+                                    ),
+                                    params![next, scope_key, version],
+                                )
+                                .map_err(|error| business_id_sqlite_error(error.into()))?;
+                            if changed != 1 {
+                                return Ok(None);
+                            }
+                            u64::try_from(next).map_err(|_| {
+                                BusinessIdError::new(
+                                    BusinessIdErrorCode::Allocation,
+                                    "negative business ID sequence stored by SQLite",
+                                )
+                            })?
+                        }
+                        None => {
+                            connection
+                                .execute(
+                                    &format!(
+                                        "INSERT INTO {table} (scope_key, current_level, version) VALUES (?, 1, 1)"
+                                    ),
+                                    [&scope_key],
+                                )
+                                .map_err(|error| business_id_sqlite_error(error.into()))?;
+                            1
+                        }
+                    };
+                    if sequence > plan.max_sequence {
+                        return Err(BusinessIdError::new(
+                            BusinessIdErrorCode::Exhausted,
+                            format!("business ID sequence exhausted for scope {scope_key}"),
+                        ));
+                    }
+                    Ok(Some(sequence))
+                })();
+                match operation {
+                    Ok(value) => {
+                        connection
+                            .execute("COMMIT", [])
+                            .map_err(|error| business_id_sqlite_error(error.into()))?;
+                        Ok(value)
+                    }
+                    Err(error) => {
+                        let _ = connection.execute("ROLLBACK", []);
+                        Err(error)
+                    }
+                }
+            })();
+            match result {
+                Ok(Some(sequence)) => {
+                    return Ok(BusinessIdAllocation {
+                        scope: plan.scope.clone(),
+                        sequence,
+                    });
+                }
+                Ok(None) => {}
+                Err(error)
+                    if error.message.contains("locked") || error.message.contains("busy") => {}
+                Err(error) => return Err(error),
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            if attempt == 100 {
+                break;
+            }
+        }
+        Err(BusinessIdError::new(
+            BusinessIdErrorCode::Allocation,
+            format!("unable to allocate business ID scope {scope_key} after 100 attempts"),
+        ))
+    }
+}
+
+fn business_id_sqlite_error(error: MutationExecutorError) -> BusinessIdError {
+    BusinessIdError::new(BusinessIdErrorCode::Allocation, error.to_string())
 }
 
 fn quote_ident(ident: &str) -> String {
