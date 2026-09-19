@@ -7,13 +7,15 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 
 use crate::EntityRuntimeState;
+use crate::business_id::BusinessIdSchemaService;
 use crate::{
-    BusinessIdService, CheckObjectStatus, CheckResult, CheckResults, CheckerRegistry, ContextError,
-    EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry, EntityGraphBuilder,
-    EntityRegistry, GraphNode, InMemoryEntityGraphDecoderRegistry, InternalIdGenerator, Language,
-    MetadataStore, ObjectLocation, RawAuditEvent, RawAuditEventSink, RequestPolicy, RuntimeError,
-    local_id_generator,
+    BusinessIdSchemaContributor, BusinessIdService, CheckObjectStatus, CheckResult, CheckResults,
+    CheckerRegistry, ContextError, EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry,
+    EntityGraphBuilder, EntityRegistry, GraphNode, InMemoryEntityGraphDecoderRegistry,
+    InternalIdGenerator, Language, MetadataStore, ObjectLocation, RawAuditEvent, RawAuditEventSink,
+    RequestPolicy, RuntimeError, local_id_generator,
 };
+use teaql_core::business_id::BusinessIdAllocator;
 use teaql_core::{EntityDescriptor, Value};
 
 mod locking;
@@ -639,6 +641,11 @@ impl UserContext {
             .ok_or_else(|| RuntimeError::Schema("missing schema provider".to_owned()))?;
         let invocation = SchemaInvocation { _context_owned: () };
         provider.ensure_schema(self, &invocation).await?;
+        if let Some(business_ids) = self.get_resource::<BusinessIdSchemaService>() {
+            business_ids
+                .ensure_schema(self)
+                .map_err(|error| RuntimeError::Schema(error.to_string()))?;
+        }
         GENERATED_SCHEMA_BOOTSTRAP_MODE
             .scope((), async {
                 for bootstrap in &self.generated_schema_bootstraps {
@@ -759,6 +766,19 @@ impl UserContext {
 
     pub fn set_business_id_service(&mut self, service: BusinessIdService) {
         self.insert_resource(service);
+    }
+
+    /// Installs one provider-backed allocator as both the generated Fix service
+    /// and an explicit `ensure_schema` infrastructure contributor.
+    pub fn set_business_id_infrastructure<A>(&mut self, allocator: A)
+    where
+        A: BusinessIdAllocator + BusinessIdSchemaContributor + 'static,
+    {
+        let allocator = Arc::new(allocator);
+        let allocation_service: Arc<dyn BusinessIdAllocator> = allocator.clone();
+        let schema_contributor: Arc<dyn BusinessIdSchemaContributor> = allocator;
+        self.insert_resource(BusinessIdService::from_shared(allocation_service));
+        self.insert_resource(BusinessIdSchemaService::from_shared(schema_contributor));
     }
 
     pub fn business_ids(&self) -> Result<&BusinessIdService, ContextError> {

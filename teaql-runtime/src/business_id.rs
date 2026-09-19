@@ -10,6 +10,29 @@ use teaql_core::business_id::{
 
 use crate::UserContext;
 
+/// Provider-owned Business ID schema contribution.
+///
+/// Installing an allocator is passive. The runtime invokes this hook only from
+/// [`UserContext::ensure_schema`], so constructing a context never performs DDL.
+pub trait BusinessIdSchemaContributor: Send + Sync {
+    fn ensure_schema(&self, context: &UserContext) -> Result<(), BusinessIdError>;
+}
+
+#[derive(Clone)]
+pub(crate) struct BusinessIdSchemaService {
+    contributor: Arc<dyn BusinessIdSchemaContributor>,
+}
+
+impl BusinessIdSchemaService {
+    pub(crate) fn from_shared(contributor: Arc<dyn BusinessIdSchemaContributor>) -> Self {
+        Self { contributor }
+    }
+
+    pub(crate) fn ensure_schema(&self, context: &UserContext) -> Result<(), BusinessIdError> {
+        self.contributor.ensure_schema(context)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BusinessDate(pub NaiveDate);
 
@@ -82,6 +105,47 @@ impl BusinessIdProfile for DailySequenceBusinessIdProfile {
         };
         Ok(BusinessIdValue(value))
     }
+
+    fn validate(
+        &self,
+        definition: &BusinessIdDefinition,
+        value: &str,
+    ) -> Result<BusinessIdValue, BusinessIdError> {
+        if definition.profile != DEFAULT_BUSINESS_ID_PROFILE
+            || definition.prefix.trim().is_empty()
+            || definition.namespace.trim().is_empty()
+            || definition.separator.is_empty()
+        {
+            return Err(BusinessIdError::new(
+                BusinessIdErrorCode::InvalidDefinition,
+                "invalid daily-sequence Business ID definition",
+            ));
+        }
+        let parts = value.split(&definition.separator).collect::<Vec<_>>();
+        let valid = if definition.split_by_date {
+            parts.len() == 3
+                && parts[0] == definition.prefix
+                && parts[1].len() == 8
+                && parts[1].bytes().all(|value| value.is_ascii_digit())
+                && chrono::NaiveDate::parse_from_str(parts[1], "%Y%m%d").is_ok()
+                && valid_sequence(parts[2], definition.preserve_digits)
+        } else {
+            parts.len() == 2
+                && parts[0] == definition.prefix
+                && valid_sequence(parts[1], definition.preserve_digits)
+        };
+        if !valid {
+            return Err(BusinessIdError::new(
+                BusinessIdErrorCode::InvalidFormat,
+                format!("invalid daily-sequence Business ID: {value}"),
+            ));
+        }
+        Ok(BusinessIdValue(value.to_owned()))
+    }
+}
+
+fn valid_sequence(value: &str, preserve_digits: u8) -> bool {
+    value.len() == usize::from(preserve_digits) && value.bytes().all(|value| value.is_ascii_digit())
 }
 
 #[derive(Debug, Default)]
@@ -153,7 +217,7 @@ impl BusinessIdService {
         slot: &mut S,
     ) -> Result<BusinessIdValue, BusinessIdError> {
         if let Some(current) = slot.current_business_id().filter(|value| !value.is_empty()) {
-            return Ok(BusinessIdValue(current.to_owned()));
+            return self.profile.validate(definition, current);
         }
         if !slot.is_new_aggregate() {
             return Err(BusinessIdError::new(

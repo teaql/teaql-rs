@@ -1327,6 +1327,12 @@ impl BusinessIdAllocator for SqliteBusinessIdAllocator {
     }
 }
 
+impl teaql_runtime::BusinessIdSchemaContributor for SqliteBusinessIdAllocator {
+    fn ensure_schema(&self, context: &UserContext) -> Result<(), BusinessIdError> {
+        SqliteBusinessIdAllocator::ensure_schema(self, context)
+    }
+}
+
 fn business_id_sqlite_error(error: MutationExecutorError) -> BusinessIdError {
     BusinessIdError::new(BusinessIdErrorCode::Allocation, error.to_string())
 }
