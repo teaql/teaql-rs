@@ -178,6 +178,39 @@ fn memory_business_id_is_typed_scoped_and_retry_stable() {
         )
         .expect_err("persisted blank business ID must not be repaired silently");
     assert!(format!("{error}").contains("Immutable"));
+
+    let mut invalid_explicit = OrderX::new();
+    invalid_explicit.order_number = Some(OrderNumber("CO-not-a-date-00000001".to_owned()));
+    let error = context
+        .business_ids()
+        .expect("Business ID service in Context")
+        .ensure(
+            &context,
+            &definition(),
+            "tenant-a",
+            "commerce_order",
+            &mut invalid_explicit,
+        )
+        .expect_err("explicit Business ID must pass profile validation");
+    assert!(format!("{error}").contains("InvalidFormat"));
+
+    let mut valid_explicit = OrderX::new();
+    valid_explicit.order_number = Some(OrderNumber("CO-20260920-12345678".to_owned()));
+    assert_eq!(
+        context
+            .business_ids()
+            .expect("Business ID service in Context")
+            .ensure(
+                &context,
+                &definition(),
+                "tenant-a",
+                "commerce_order",
+                &mut valid_explicit,
+            )
+            .expect("valid explicit Business ID")
+            .0,
+        "CO-20260920-12345678"
+    );
 }
 
 #[tokio::test]

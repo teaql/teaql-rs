@@ -9,6 +9,7 @@ pub const DEFAULT_BUSINESS_ID_DIGITS: u8 = 8;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BusinessIdErrorCode {
     InvalidDefinition,
+    InvalidFormat,
     Immutable,
     Exhausted,
     Allocation,
@@ -147,6 +148,12 @@ pub trait BusinessIdProfile: Send + Sync {
         &self,
         plan: &BusinessIdPlan,
         allocation: &BusinessIdAllocation,
+    ) -> Result<BusinessIdValue, BusinessIdError>;
+
+    fn validate(
+        &self,
+        definition: &BusinessIdDefinition,
+        value: &str,
     ) -> Result<BusinessIdValue, BusinessIdError>;
 }
 
