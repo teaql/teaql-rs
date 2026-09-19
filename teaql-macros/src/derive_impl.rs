@@ -466,6 +466,24 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         Default::default()
     };
 
+    let checker_dirty_state_impl = match (&runtime_state_field_ident, &id_field_ident) {
+        (Some(state_ident), Some(id_ident)) => quote! {
+            fn set_checker_dirty_fields(
+                &mut self,
+                fields: ::std::collections::BTreeSet<String>,
+                values: &::teaql_core::MutationValues,
+            ) {
+                let key = ::teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
+                for field in fields {
+                    if let Some(value) = values.get(&field) {
+                        self.#state_ident.set(key.clone(), field, value.clone());
+                    }
+                }
+            }
+        },
+        _ => Default::default(),
+    };
+
     let from_compact_body = quote! {
             #(#record_value_slots)*
             for (key, value) in record.iter() {
@@ -549,6 +567,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             }
 
             #checker_load_state_impl
+            #checker_dirty_state_impl
 
             fn on_loaded(&mut self, context: &dyn std::any::Any) {
                 #on_loaded_impl

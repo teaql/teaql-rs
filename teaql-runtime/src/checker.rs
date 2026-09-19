@@ -553,11 +553,27 @@ where
             ),
             _ => None,
         };
+        let dirty_fields = match original_values.remove("_dirty_fields") {
+            Some(Value::List(fields)) => Some(
+                fields
+                    .into_iter()
+                    .filter_map(|field| match field {
+                        Value::Text(field) => Some(field),
+                        _ => None,
+                    })
+                    .collect::<std::collections::BTreeSet<_>>(),
+            ),
+            _ => None,
+        };
+        let checker_values: teaql_core::MutationValues = original_values.clone().into();
         let owned_record = original_values.clone().into();
         match T::from_compact_row(teaql_core::CompactRow::from_map(owned_record)) {
             Ok(mut entity) => {
                 if let Some(loaded_fields) = loaded_fields {
                     entity.set_checker_loaded_fields(loaded_fields);
+                }
+                if let Some(dirty_fields) = dirty_fields {
+                    entity.set_checker_dirty_fields(dirty_fields, &checker_values);
                 }
                 let before_check = entity.clone().into_values();
                 self.checker

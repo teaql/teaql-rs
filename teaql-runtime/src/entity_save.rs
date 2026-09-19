@@ -811,8 +811,15 @@ fn preflight_graph(
             GraphOperation::Remove | GraphOperation::Reference => unreachable!(),
         };
         crate::mark_entity_status(&mut node.values, status);
+        if let Some(fields) = &node.dirty_fields {
+            node.values.insert(
+                "_dirty_fields".to_owned(),
+                Value::List(fields.iter().cloned().map(Value::Text).collect()),
+            );
+        }
         let result = context.check_and_fix_values_at(&node.entity, &mut node.values, location);
         crate::clear_entity_status(&mut node.values);
+        node.values.remove("_dirty_fields");
         result?;
 
         if let Some(root) = root
@@ -1164,4 +1171,82 @@ where
     let saved = saver.save_graph_dyn(context, node).await?;
     T::from_compact_row(teaql_core::CompactRow::from_map(saved.values.into()))
         .map_err(|e| RuntimeError::Graph(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    use teaql_core::{Entity, Record, TeaqlEntity, Value};
+    use teaql_macros::{TeaqlEntity as DeriveTeaqlEntity, teaql_entity};
+
+    use super::*;
+    use crate::{
+        CheckObjectStatus, CheckResults, InMemoryCheckerRegistry, InMemoryMetadataStore,
+        TypedChecker, TypedEntityChecker,
+    };
+
+    #[teaql_entity]
+    #[derive(Clone, Debug, PartialEq, DeriveTeaqlEntity)]
+    #[teaql(entity = "DirtyTrackedOrder", table = "dirty_tracked_order")]
+    struct DirtyTrackedOrder {
+        #[teaql(id)]
+        id: u64,
+        #[teaql(version)]
+        version: i64,
+        code: String,
+    }
+
+    struct DirtyFieldProbe(Arc<AtomicBool>);
+
+    impl TypedChecker<DirtyTrackedOrder> for DirtyFieldProbe {
+        fn check_and_fix_typed(
+            &self,
+            _context: &UserContext,
+            entity: &mut DirtyTrackedOrder,
+            status: CheckObjectStatus,
+            _location: &ObjectLocation,
+            _results: &mut CheckResults,
+        ) {
+            let saw_code = status.is_update()
+                && entity
+                    .dirty_fields()
+                    .is_some_and(|fields| fields.contains("code"));
+            self.0.store(saw_code, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn graph_preflight_preserves_dirty_fields_for_typed_checker() {
+        let observed = Arc::new(AtomicBool::new(false));
+        let context = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new().with_entity(DirtyTrackedOrder::entity_descriptor()),
+            )
+            .with_checker_registry(InMemoryCheckerRegistry::new().with_checker(
+                TypedEntityChecker::<DirtyTrackedOrder, _>::new(DirtyFieldProbe(observed.clone())),
+            ));
+        let row = Record::from([
+            ("id".to_owned(), Value::U64(7)),
+            ("version".to_owned(), Value::I64(3)),
+            ("code".to_owned(), Value::Text("ORD-OLD".to_owned())),
+        ]);
+        let entity = DirtyTrackedOrder::from_compact_row(teaql_core::CompactRow::from_map(row))
+            .expect("materialize tracked entity");
+        entity.__teaql_runtime_state().set(
+            crate::EntityKey::new("DirtyTrackedOrder", 7_u64),
+            "code",
+            Value::Text("ORD-NEW".to_owned()),
+        );
+
+        let mut node = graph_node_from_entity(&context, entity).expect("build graph node");
+        preflight_graph(&context, &mut node, &ObjectLocation::root(), None)
+            .expect("preflight succeeds");
+
+        assert!(observed.load(Ordering::SeqCst));
+        assert!(!node.values.contains_key("_dirty_fields"));
+    }
 }
