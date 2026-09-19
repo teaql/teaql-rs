@@ -63,14 +63,18 @@ fn definition() -> BusinessIdDefinition {
 
 #[test]
 fn memory_business_id_is_typed_scoped_and_retry_stable() {
-    let service = BusinessIdService::new(InMemoryBusinessIdAllocator::default());
     let mut context = UserContext::default();
+    context.set_business_id_service(BusinessIdService::new(
+        InMemoryBusinessIdAllocator::default(),
+    ));
     context.insert_resource(BusinessDate(
         NaiveDate::from_ymd_opt(2026, 9, 20).expect("valid fixture date"),
     ));
 
     let mut first = OrderX::new();
-    let initial = service
+    let initial = context
+        .business_ids()
+        .expect("Business ID service in Context")
         .ensure(
             &context,
             &definition(),
@@ -84,7 +88,9 @@ fn memory_business_id_is_typed_scoped_and_retry_stable() {
     assert_eq!(first.mutation_ledger.len(), 1);
 
     // A failed provider save retries the same aggregate and must not burn another sequence.
-    let retry = service
+    let retry = context
+        .business_ids()
+        .expect("Business ID service in Context")
         .ensure(
             &context,
             &definition(),
@@ -98,7 +104,9 @@ fn memory_business_id_is_typed_scoped_and_retry_stable() {
 
     let mut second = OrderX::new();
     assert_eq!(
-        service
+        context
+            .business_ids()
+            .expect("Business ID service in Context")
             .ensure(
                 &context,
                 &definition(),
@@ -113,7 +121,9 @@ fn memory_business_id_is_typed_scoped_and_retry_stable() {
 
     let mut other_tenant = OrderX::new();
     assert_eq!(
-        service
+        context
+            .business_ids()
+            .expect("Business ID service in Context")
             .ensure(
                 &context,
                 &definition(),
@@ -127,12 +137,20 @@ fn memory_business_id_is_typed_scoped_and_retry_stable() {
     );
 
     let mut next_day_context = UserContext::default();
+    next_day_context.set_business_id_service(
+        context
+            .business_ids()
+            .expect("Business ID service in Context")
+            .clone(),
+    );
     next_day_context.insert_resource(BusinessDate(
         NaiveDate::from_ymd_opt(2026, 9, 21).expect("valid next-day fixture date"),
     ));
     let mut next_day = OrderX::new();
     assert_eq!(
-        service
+        next_day_context
+            .business_ids()
+            .expect("Business ID service in Context")
             .ensure(
                 &next_day_context,
                 &definition(),
@@ -146,7 +164,9 @@ fn memory_business_id_is_typed_scoped_and_retry_stable() {
     );
 
     let mut persisted = OrderX::default();
-    let error = service
+    let error = context
+        .business_ids()
+        .expect("Business ID service in Context")
         .ensure(
             &context,
             &definition(),

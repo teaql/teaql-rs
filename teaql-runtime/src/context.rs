@@ -8,7 +8,7 @@ use std::time::SystemTime;
 
 use crate::EntityRuntimeState;
 use crate::{
-    CheckObjectStatus, CheckResult, CheckResults, CheckerRegistry, ContextError,
+    BusinessIdService, CheckObjectStatus, CheckResult, CheckResults, CheckerRegistry, ContextError,
     EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry, EntityGraphBuilder,
     EntityRegistry, GraphNode, InMemoryEntityGraphDecoderRegistry, InternalIdGenerator, Language,
     MetadataStore, ObjectLocation, RawAuditEvent, RawAuditEventSink, RequestPolicy, RuntimeError,
@@ -750,6 +750,19 @@ impl UserContext {
     {
         self.typed_resources
             .insert(TypeId::of::<T>(), Box::new(resource));
+    }
+
+    pub fn with_business_id_service(mut self, service: BusinessIdService) -> Self {
+        self.insert_resource(service);
+        self
+    }
+
+    pub fn set_business_id_service(&mut self, service: BusinessIdService) {
+        self.insert_resource(service);
+    }
+
+    pub fn business_ids(&self) -> Result<&BusinessIdService, ContextError> {
+        self.require_resource::<BusinessIdService>()
     }
 
     pub fn get_resource<T>(&self) -> Option<&T>

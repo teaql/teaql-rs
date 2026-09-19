@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use chrono::{NaiveDate, Utc};
 use teaql_core::business_id::{
@@ -123,16 +123,21 @@ impl BusinessIdAllocator for InMemoryBusinessIdAllocator {
     }
 }
 
-pub struct BusinessIdService<A> {
-    allocator: A,
+#[derive(Clone)]
+pub struct BusinessIdService {
+    allocator: Arc<dyn BusinessIdAllocator>,
     profile: DailySequenceBusinessIdProfile,
 }
 
-impl<A> BusinessIdService<A>
-where
-    A: BusinessIdAllocator,
-{
-    pub fn new(allocator: A) -> Self {
+impl BusinessIdService {
+    pub fn new(allocator: impl BusinessIdAllocator + 'static) -> Self {
+        Self {
+            allocator: Arc::new(allocator),
+            profile: DailySequenceBusinessIdProfile,
+        }
+    }
+
+    pub fn from_shared(allocator: Arc<dyn BusinessIdAllocator>) -> Self {
         Self {
             allocator,
             profile: DailySequenceBusinessIdProfile,
