@@ -7,6 +7,7 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+chrono = { workspace = true }
 teaql-core = { workspace = true }
 teaql-macros = { workspace = true }
 # teaql-provider-postgres = { workspace = true }

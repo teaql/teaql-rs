@@ -1,5 +1,6 @@
 extern crate self as teaql_core;
 
+pub mod business_id;
 pub mod dynamic_search;
 mod entity;
 mod entity_graph;

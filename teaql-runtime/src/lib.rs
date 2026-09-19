@@ -1,4 +1,5 @@
 extern crate self as teaql_runtime;
+mod business_id;
 mod checker;
 mod context;
 mod data_service;
@@ -23,6 +24,9 @@ mod telemetry;
 #[cfg(feature = "opentelemetry")]
 mod telemetry_opentelemetry;
 
+pub use business_id::{
+    BusinessDate, BusinessIdService, DailySequenceBusinessIdProfile, InMemoryBusinessIdAllocator,
+};
 pub use context::{
     ContextEntityRef, ContextRootError, ContinuousPageCursor, ContinuousPageCursorStore, DataStore,
     FixEvidence, FixEvidenceSource, GeneratedSchemaBootstrap, GeneratedSchemaBootstrapFuture,

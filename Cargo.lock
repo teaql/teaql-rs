@@ -3096,6 +3096,7 @@ dependencies = [
 name = "teaql-examples"
 version = "5.0.1"
 dependencies = [
+ "chrono",
  "rusqlite",
  "teaql-core",
  "teaql-macros",
