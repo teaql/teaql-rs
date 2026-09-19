@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.2] - 2026-09-20
+
+Release tracking: [Rust #202](https://github.com/teaql/teaql-rs/issues/202).
+
+### Added
+
+- Add portable Business ID contracts, a daily-sequence profile, in-memory and
+  SQL-backed allocators, and an explicit `UserContext.business_ids()` runtime
+  capability for generated aggregate creation.
+
+### Fixed
+
+- Preserve graph dirty-field metadata while materializing typed Checker views,
+  so immutable-field and other mutation-boundary rules observe the caller's
+  exact intent without widening the database update.
+
+### Verification
+
+- Runtime unit, provider, example, and security gates pass.
+- A generated SQLite consumer assigns a typed Business ID during Checker/Fix,
+  locates it through the generated typed lookup, and rejects later mutation.
+
 ## [5.0.1] - 2026-09-17
 
 Release tracking: [Rust #147](https://github.com/teaql/teaql-rs/issues/147).

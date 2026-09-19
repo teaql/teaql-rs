@@ -12,8 +12,8 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 runtime_example_conformance_service_core = { package = "runtime-example-conformance-service-core", path = "lib" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-teaql-core = "5.0.1"
-teaql-runtime = "5.0.1"
+teaql-core = "5.0.2"
+teaql-runtime = "5.0.2"
 chrono = "0.4"
 
 [workspace]
