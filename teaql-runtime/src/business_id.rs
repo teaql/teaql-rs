@@ -10,6 +10,29 @@ use teaql_core::business_id::{
 
 use crate::UserContext;
 
+/// Provider-owned Business ID schema contribution.
+///
+/// Installing an allocator is passive. The runtime invokes this hook only from
+/// [`UserContext::ensure_schema`], so constructing a context never performs DDL.
+pub trait BusinessIdSchemaContributor: Send + Sync {
+    fn ensure_schema(&self, context: &UserContext) -> Result<(), BusinessIdError>;
+}
+
+#[derive(Clone)]
+pub(crate) struct BusinessIdSchemaService {
+    contributor: Arc<dyn BusinessIdSchemaContributor>,
+}
+
+impl BusinessIdSchemaService {
+    pub(crate) fn from_shared(contributor: Arc<dyn BusinessIdSchemaContributor>) -> Self {
+        Self { contributor }
+    }
+
+    pub(crate) fn ensure_schema(&self, context: &UserContext) -> Result<(), BusinessIdError> {
+        self.contributor.ensure_schema(context)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BusinessDate(pub NaiveDate);
 

@@ -8,7 +8,9 @@ use teaql_core::business_id::{
     BusinessIdAllocator, BusinessIdDefinition, BusinessIdGenerationRequest, BusinessIdProfile,
     BusinessIdSlot, BusinessIdValue,
 };
-use teaql_provider_sqlite::SqliteBusinessIdAllocator;
+use teaql_provider_sqlite::{
+    SqliteBusinessIdAllocator, SqliteMutationExecutor, SqliteProviderExt as _,
+};
 use teaql_runtime::{
     BusinessDate, BusinessIdService, DailySequenceBusinessIdProfile, InMemoryBusinessIdAllocator,
     UserContext,
@@ -178,13 +180,22 @@ fn memory_business_id_is_typed_scoped_and_retry_stable() {
     assert!(format!("{error}").contains("Immutable"));
 }
 
-#[test]
-fn sqlite_allocator_is_explicit_concurrent_and_restart_safe() {
+#[tokio::test]
+async fn sqlite_allocator_is_explicit_concurrent_and_restart_safe() {
     let path = unique_database_path();
-    let first = SqliteBusinessIdAllocator::new(Connection::open(&path).expect("open first DB"));
-    first
-        .ensure_schema(&UserContext::default())
-        .expect("explicitly install allocator table");
+    let executor =
+        SqliteMutationExecutor::from_connection(Connection::open(&path).expect("open first DB"));
+    let first = SqliteBusinessIdAllocator::from_executor(executor.clone());
+    let mut context = UserContext::default();
+    context.use_sqlite_provider(executor);
+    context.set_business_id_infrastructure(first);
+    assert!(context.business_ids().is_ok());
+    assert!(!business_id_table_exists(&path));
+    context
+        .ensure_schema()
+        .await
+        .expect("explicit context schema lifecycle installs allocator table");
+    assert!(business_id_table_exists(&path));
 
     let plan = DailySequenceBusinessIdProfile
         .plan(&BusinessIdGenerationRequest {
@@ -236,6 +247,18 @@ fn sqlite_allocator_is_explicit_concurrent_and_restart_safe() {
         "CO-20260920-00000051"
     );
     std::fs::remove_file(path).expect("remove fixture DB");
+}
+
+fn business_id_table_exists(path: &PathBuf) -> bool {
+    let connection = Connection::open(path).expect("inspect fixture DB");
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='teaql_business_id_space'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("inspect Business ID table")
+        == 1
 }
 
 fn unique_database_path() -> PathBuf {

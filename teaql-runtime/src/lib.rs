@@ -25,7 +25,8 @@ mod telemetry;
 mod telemetry_opentelemetry;
 
 pub use business_id::{
-    BusinessDate, BusinessIdService, DailySequenceBusinessIdProfile, InMemoryBusinessIdAllocator,
+    BusinessDate, BusinessIdSchemaContributor, BusinessIdService, DailySequenceBusinessIdProfile,
+    InMemoryBusinessIdAllocator,
 };
 pub use context::{
     ContextEntityRef, ContextRootError, ContinuousPageCursor, ContinuousPageCursorStore, DataStore,
