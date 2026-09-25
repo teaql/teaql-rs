@@ -17,6 +17,7 @@ use crate::{
 };
 use teaql_core::business_id::BusinessIdAllocator;
 use teaql_core::{EntityDescriptor, Value};
+use teaql_core::{IdentifiableEntity, TeaqlEntity, VersionedEntity};
 
 mod locking;
 mod logging;
@@ -757,6 +758,52 @@ impl UserContext {
     {
         self.typed_resources
             .insert(TypeId::of::<T>(), Box::new(resource));
+    }
+
+    /// Installs a framework-neutral serialization service for Web and other boundaries.
+    pub fn set_round_trip_reference_service(&mut self, service: crate::RoundTripReferenceService) {
+        self.insert_resource(service);
+    }
+
+    pub fn with_round_trip_reference_service(
+        mut self,
+        service: crate::RoundTripReferenceService,
+    ) -> Self {
+        self.set_round_trip_reference_service(service);
+        self
+    }
+
+    pub fn round_trip_references(
+        &self,
+    ) -> Result<&crate::RoundTripReferenceService, crate::RoundTripReferenceError> {
+        self.get_resource::<crate::RoundTripReferenceService>()
+            .ok_or_else(|| {
+                crate::RoundTripReferenceError::new(
+                    crate::RoundTripReferenceErrorCode::ProviderNotConfigured,
+                    "RoundTripReferenceService is not configured",
+                )
+            })
+    }
+
+    pub fn reference_for<E>(
+        &self,
+        entity: &E,
+    ) -> Result<crate::RoundTripReference, crate::RoundTripReferenceError>
+    where
+        E: TeaqlEntity + IdentifiableEntity + VersionedEntity,
+    {
+        self.round_trip_references()?.serialize(self, entity)
+    }
+
+    pub fn resolve_reference_for<E>(
+        &self,
+        reference: &str,
+    ) -> Result<crate::ResolvedRoundTripReference, crate::RoundTripReferenceError>
+    where
+        E: TeaqlEntity,
+    {
+        self.round_trip_references()?
+            .deserialize(self, reference, E::ENTITY_NAME)
     }
 
     pub fn with_business_id_service(mut self, service: BusinessIdService) -> Self {

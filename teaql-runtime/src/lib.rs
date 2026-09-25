@@ -20,6 +20,7 @@ pub mod log_formatter;
 #[allow(dead_code)]
 mod memory;
 mod registry;
+mod round_trip_reference;
 mod telemetry;
 #[cfg(feature = "opentelemetry")]
 mod telemetry_opentelemetry;
@@ -73,6 +74,15 @@ pub use registry::{
     EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry, EntityRegistry,
     InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityGraphDecoderRegistry,
     InMemoryEntityRegistry, InMemoryMetadataStore, MetadataStore, RequestPolicy, RuntimeModule,
+};
+pub use round_trip_reference::{
+    AeadRoundTripReferenceProvider, ContextReferenceBindingProvider,
+    DerivedRoundTripReferenceKeyProvider, InternalEntityIdentity, RAW_ID_ACKNOWLEDGEMENT,
+    RAW_ID_ENV, RawRoundTripReferenceProvider, ResolvedRoundTripReference, RoundTripReference,
+    RoundTripReferenceError, RoundTripReferenceErrorCode, RoundTripReferenceKey,
+    RoundTripReferenceKeyProvider, RoundTripReferenceMasterKeyRing, RoundTripReferenceMode,
+    RoundTripReferenceProvider, RoundTripReferenceService, StaticRoundTripReferenceMasterKeyRing,
+    configured_round_trip_reference_service, round_trip_reference_mode,
 };
 pub use telemetry::{
     FailOpenRuntimeTelemetryPropagationContext, FailOpenRuntimeTelemetryScope,
