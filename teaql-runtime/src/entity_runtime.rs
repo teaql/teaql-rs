@@ -1201,6 +1201,106 @@ mod composition_api_tests {
     }
 
     #[test]
+    fn deterministic_randomized_composition_is_atomic_and_seed_replayable() {
+        const SEED: u64 = 0x434f_4d50_4f53_4552;
+        const TRIALS: usize = 512;
+        const MUTATIONS_PER_TRIAL: usize = 32;
+
+        let mut random = SEED;
+        for trial in 0..TRIALS {
+            let target_state = EntityRuntimeState::default();
+            let source_state = EntityRuntimeState::default();
+            let key = EntityKey::new_static("Child", (trial % 17 + 1) as u64);
+            let other_type_key = EntityKey::new_static("OtherChild", key.id.clone());
+            let target_version = (trial % 11 + 1) as i64;
+            let source_version = if trial % 3 == 0 {
+                target_version + 1
+            } else {
+                target_version
+            };
+            target_state.set_original_version(key.clone(), target_version);
+            source_state.set_original_version(key.clone(), source_version);
+            source_state.set_original_version(other_type_key.clone(), source_version + 20);
+
+            for mutation in 0..MUTATIONS_PER_TRIAL {
+                random = random
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                let field = match random % 3 {
+                    0 => "amount",
+                    1 => "status",
+                    _ => "description",
+                };
+                let source_value = Value::U64(random >> 16);
+                source_state.set(key.clone(), field, source_value);
+                if mutation % 5 == 0 {
+                    target_state.set(key.clone(), field, Value::U64(mutation as u64));
+                }
+                if mutation % 7 == 0 {
+                    source_state.set(
+                        other_type_key.clone(),
+                        field,
+                        Value::U64(random.rotate_left(17)),
+                    );
+                }
+            }
+
+            let target_before = target_state.current_change_set();
+            let source_before = source_state.current_change_set();
+            let result = TestEntity(Some(target_state.clone()))
+                .include_pending_mutations_from(&TestEntity(Some(source_state.clone())));
+
+            if source_version != target_version {
+                assert_eq!(
+                    result,
+                    Err(LedgerCompositionError::ConflictingOriginalVersion {
+                        entity: "Child".to_owned(),
+                        id: (trial % 17 + 1).to_string(),
+                        target: target_version,
+                        source: source_version,
+                    }),
+                    "seed={SEED:#x} trial={trial}"
+                );
+                assert_eq!(
+                    target_state.current_change_set(),
+                    target_before,
+                    "failed composition must not partially copy mutations; seed={SEED:#x} trial={trial}"
+                );
+                assert_eq!(
+                    target_state.get_original_version(&key),
+                    Some(target_version)
+                );
+                assert_eq!(target_state.get_original_version(&other_type_key), None);
+            } else {
+                result.unwrap();
+                for (source_key, values) in source_before.changes() {
+                    for (field, value) in values {
+                        assert_eq!(
+                            target_state.get(source_key, field),
+                            Some(value.clone()),
+                            "seed={SEED:#x} trial={trial} key={source_key:?} field={field}"
+                        );
+                    }
+                }
+                assert_eq!(
+                    target_state.get_original_version(&key),
+                    Some(target_version)
+                );
+                assert_eq!(
+                    target_state.get_original_version(&other_type_key),
+                    Some(source_version + 20)
+                );
+            }
+
+            assert_eq!(
+                source_state.current_change_set(),
+                source_before,
+                "composition must leave the retryable source ledger intact; seed={SEED:#x} trial={trial}"
+            );
+        }
+    }
+
+    #[test]
     fn generated_void_attachment_retains_version_conflict_for_save_preflight() {
         let target_state = EntityRuntimeState::default();
         let source_state = EntityRuntimeState::default();
