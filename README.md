@@ -89,6 +89,39 @@ mixed-version, checksum-free, dirty, and wrong-VCS-source resolution before
 executing the wire-alias, canonical Checker path, submitted-source path,
 collision, and unknown-field assertions.
 
+## Security Foundations
+
+TeaQL Rust is a server-side security reference runtime. Ordinary Query and
+Mutation logging is default-on and value-free: it retains declared intent,
+trace, parameterized SQL, timing, and outcome. Copy/paste SQL or bound values
+require an explicit sensitive diagnostic level. The framework-independent TFP
+endpoint applies trusted request policy, bounded query rules, tenant scope,
+writable-field policy, and optimistic version at the provider boundary.
+
+Boundary-facing entity references are issued through `UserContext`, not by
+serializing raw internal IDs:
+
+```rust
+use std::{sync::Arc, time::Duration};
+use teaql_runtime::{AeadEntityReferenceCodec, UserContext};
+
+let codec = AeadEntityReferenceCodec::new(2, [(2, active_key_bytes)])?;
+let context = UserContext::new().with_entity_reference_codec(Arc::new(codec));
+let token = context.encode_entity_reference(
+    "OrderItem", 42, 7, "edit-order", Duration::from_secs(900),
+)?;
+let claims = context.decode_entity_reference(&token, "OrderItem", "edit-order")?;
+```
+
+The portable AES-256-GCM envelope supports key rotation, expiry, entity-type
+binding, and purpose binding. Verification is deliberately non-disclosing:
+invalid, expired, substituted, and tampered tokens all return
+`ENTITY_REFERENCE_INVALID`; an absent provider returns
+`ENTITY_REFERENCE_CODEC_REQUIRED`. The exact development-only `tqr0.` escape
+hatch and the shared Java/Rust/Go/.NET golden vector are defined in the
+canonical [opaque entity reference contract](https://github.com/teaql/teaql-conformance/blob/main/design/opaque-entity-references.md).
+Opaque references do not replace authorization or optimistic locking.
+
 ## Cloud Integration
 
 TeaQL provides cloud-native crates for embedding Rust services into Java (Spring Cloud) microservice architectures:
