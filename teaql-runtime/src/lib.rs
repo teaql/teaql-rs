@@ -21,6 +21,7 @@ pub mod log_formatter;
 #[allow(dead_code)]
 mod memory;
 mod registry;
+mod round_trip_reference;
 mod telemetry;
 #[cfg(feature = "opentelemetry")]
 mod telemetry_opentelemetry;
@@ -41,6 +42,7 @@ pub use data_service::{
     AggregationCacheBackend, EntityDataService, GraphTransactionBoundary, InMemoryAggregationCache,
     RelationLoadPlan,
 };
+#[allow(deprecated)]
 pub use entity_reference::{
     AeadEntityReferenceCodec, ENTITY_REFERENCE_AAD, EntityReferenceClaims, EntityReferenceCodec,
     EntityReferenceTokenError, UNSAFE_RAW_ENTITY_REFERENCES_ACKNOWLEDGEMENT,
@@ -79,6 +81,14 @@ pub use registry::{
     EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry, EntityRegistry,
     InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityGraphDecoderRegistry,
     InMemoryEntityRegistry, InMemoryMetadataStore, MetadataStore, RequestPolicy, RuntimeModule,
+};
+pub use round_trip_reference::{
+    ContextBoundReferenceRuntime, DeploymentProfile, ExternalEntityReference,
+    ReferenceAuthorizationPolicy, ReferenceDocumentScope, ReferenceIdentity, ReferenceKey,
+    ReferenceKeyProvider, ReferenceMode, ReferenceStartupNotice, ReferenceWireCodec,
+    ResolvedEntityReference, RoundTripReferenceError, StaticReferenceKeyProvider,
+    TrustedReferencePrincipal, UNSAFE_EXPOSE_RAW_ENTITY_IDS_ACKNOWLEDGEMENT,
+    UNSAFE_EXPOSE_RAW_ENTITY_IDS_ENVIRONMENT,
 };
 pub use telemetry::{
     FailOpenRuntimeTelemetryPropagationContext, FailOpenRuntimeTelemetryScope,

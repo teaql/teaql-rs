@@ -98,29 +98,66 @@ require an explicit sensitive diagnostic level. The framework-independent TFP
 endpoint applies trusted request policy, bounded query rules, tenant scope,
 writable-field policy, and optimistic version at the provider boundary.
 
-Boundary-facing entity references are issued through `UserContext`, not by
-serializing raw internal IDs:
+Boundary-facing entity references are issued and consumed through
+`UserContext`, not by serializing raw internal IDs or by treating decryption as
+authorization:
 
 ```rust
 use std::{sync::Arc, time::Duration};
-use teaql_runtime::{AeadEntityReferenceCodec, UserContext};
+use teaql_runtime::{
+    ContextBoundReferenceRuntime, DeploymentProfile, ReferenceDocumentScope,
+    ReferenceIdentity, ReferenceKey, StaticReferenceKeyProvider,
+    TrustedReferencePrincipal, UserContext,
+};
 
-let codec = AeadEntityReferenceCodec::new(2, [(2, active_key_bytes)])?;
-let context = UserContext::new().with_entity_reference_codec(Arc::new(codec));
-let token = context.encode_entity_reference(
-    "OrderItem", 42, 7, "edit-order", Duration::from_secs(900),
+let keys = Arc::new(StaticReferenceKeyProvider::new(
+    "k3",
+    [ReferenceKey::new("k3", active_master_key_bytes)?],
+)?);
+let runtime = Arc::new(ContextBoundReferenceRuntime::from_process_environment(
+    DeploymentProfile::Production,
+    "order-service",
+    "production",
+    keys,
+    current_authorization_policy,
+)?);
+let context = UserContext::new()
+    .with_round_trip_reference_runtime(runtime)
+    .with_trusted_reference_principal(TrustedReferencePrincipal::new(
+        "oidc", "alice", "Platform", 1,
+    )?);
+let document = ReferenceDocumentScope::new(
+    "order-edit-1001", "edit-order", "Order", 1001, 7,
 )?;
-let claims = context.decode_entity_reference(&token, "OrderItem", "edit-order")?;
+let reference = context.reference_for(
+    ReferenceIdentity::new("OrderItem", 42, 3)?,
+    &document,
+    Duration::from_secs(900),
+)?;
+let wire_value = context.serialize_reference(&reference)?;
+let returned = context.deserialize_reference(&wire_value)?;
+let resolved = context.resolve_reference(&returned, "OrderItem", &document)?;
 ```
 
-The portable AES-256-GCM envelope supports key rotation, expiry, entity-type
-binding, and purpose binding. Verification is deliberately non-disclosing:
-invalid, expired, substituted, and tampered tokens all return
-`ENTITY_REFERENCE_INVALID`; an absent provider returns
-`ENTITY_REFERENCE_CODEC_REQUIRED`. The exact development-only `tqr0.` escape
-hatch and the shared Java/Rust/Go/.NET golden vector are defined in the
-canonical [opaque entity reference contract](https://github.com/teaql/teaql-conformance/blob/main/design/opaque-entity-references.md).
-Opaque references do not replace authorization or optimistic locking.
+The `tqr1` AES-256-GCM envelope uses HKDF-SHA-256 and random 96-bit nonces. It
+binds a reference to service, environment, Domain Root, stable Actor identity,
+document/purpose, Aggregate identity/revision, entity type/identity/version,
+and lifetime. The key-provider SPI supports one current encryption key plus
+decode-only previous keys. Current authorization is checked both when a
+reference is issued and when it returns.
+
+Local debugging can expose the original ID/version only when the process starts
+in a development or test profile with the exact acknowledgement below:
+
+```text
+TEAQL_UNSAFE_EXPOSE_RAW_ENTITY_IDS=I_UNDERSTAND_THIS_EXPOSES_INTERNAL_ENTITY_IDS_FOR_LOCAL_DEBUGGING_ONLY
+```
+
+Near matches leave governed mode enabled. The same setting in production fails
+startup. Raw mode emits an ERROR-level downgrade notice and does not bypass
+authorization, type/version checks, projection, Checker/Fix, audit, or Mutation
+Ledger rules. See `cargo run -p teaql-examples --bin round_trip_references` and
+the canonical [context-bound round-trip reference design](https://github.com/teaql/teaql-conformance/blob/main/design/context-bound-round-trip-references.md).
 
 ## Cloud Integration
 

@@ -10,11 +10,16 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, TimeDelta, Utc};
 
 pub const ENTITY_REFERENCE_AAD: &str = "teaql.entity-reference.v1";
-pub const UNSAFE_RAW_ENTITY_REFERENCES_ENVIRONMENT: &str = "TEAQL_UNSAFE_RAW_ENTITY_REFERENCES";
+#[deprecated(
+    note = "use UNSAFE_EXPOSE_RAW_ENTITY_IDS_ENVIRONMENT with ContextBoundReferenceRuntime"
+)]
+pub const UNSAFE_RAW_ENTITY_REFERENCES_ENVIRONMENT: &str = "TEAQL_UNSAFE_EXPOSE_RAW_ENTITY_IDS";
+#[deprecated(
+    note = "use UNSAFE_EXPOSE_RAW_ENTITY_IDS_ACKNOWLEDGEMENT with ContextBoundReferenceRuntime"
+)]
 pub const UNSAFE_RAW_ENTITY_REFERENCES_ACKNOWLEDGEMENT: &str =
-    "I_UNDERSTAND_RAW_ENTITY_IDS_ARE_VISIBLE_FOR_LOCAL_DEVELOPMENT_ONLY";
+    "I_UNDERSTAND_THIS_EXPOSES_INTERNAL_ENTITY_IDS_FOR_LOCAL_DEBUGGING_ONLY";
 const ENCRYPTED_PREFIX: &str = "tqr1.";
-const RAW_PREFIX: &str = "tqr0.";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntityReferenceClaims {
@@ -216,65 +221,6 @@ impl EntityReferenceCodec for AeadEntityReferenceCodec {
         }
         Ok(claims)
     }
-}
-
-pub(crate) fn raw_references_enabled() -> bool {
-    std::env::var(UNSAFE_RAW_ENTITY_REFERENCES_ENVIRONMENT).as_deref()
-        == Ok(UNSAFE_RAW_ENTITY_REFERENCES_ACKNOWLEDGEMENT)
-}
-
-pub(crate) fn encode_raw(
-    entity_type: &str,
-    id: u64,
-    version: i64,
-    purpose: &str,
-    lifetime: Duration,
-) -> Result<String, EntityReferenceTokenError> {
-    if entity_type.trim().is_empty() || id == 0 || lifetime.is_zero() {
-        return Err(EntityReferenceTokenError::invalid());
-    }
-    let now = Utc::now();
-    let delta = TimeDelta::from_std(lifetime).map_err(|_| EntityReferenceTokenError::invalid())?;
-    let claims = EntityReferenceClaims {
-        entity_type: entity_type.to_owned(),
-        id,
-        version,
-        issued_at: now,
-        expires_at: now + delta,
-        purpose: purpose.to_owned(),
-        key_version: 0,
-    };
-    Ok(format!(
-        "{RAW_PREFIX}{}",
-        URL_SAFE_NO_PAD.encode(encode_claims(&claims)?)
-    ))
-}
-
-pub(crate) fn decode_raw(
-    token: &str,
-    expected_entity_type: &str,
-    purpose: &str,
-) -> Result<EntityReferenceClaims, EntityReferenceTokenError> {
-    let encoded = token
-        .strip_prefix(RAW_PREFIX)
-        .ok_or_else(EntityReferenceTokenError::invalid)?;
-    let bytes = URL_SAFE_NO_PAD
-        .decode(encoded)
-        .map_err(|_| EntityReferenceTokenError::invalid())?;
-    let claims = decode_claims(&bytes)?;
-    let now = Utc::now();
-    if claims.expires_at <= now
-        || claims.issued_at > now + TimeDelta::minutes(1)
-        || claims.entity_type != expected_entity_type
-        || claims.purpose != purpose
-    {
-        return Err(EntityReferenceTokenError::invalid());
-    }
-    Ok(claims)
-}
-
-pub(crate) fn is_raw_reference_token(token: &str) -> bool {
-    token.starts_with(RAW_PREFIX)
 }
 
 fn encode_claims(claims: &EntityReferenceClaims) -> Result<Vec<u8>, EntityReferenceTokenError> {

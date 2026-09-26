@@ -44,6 +44,10 @@ syn = { version = "2", features = ["full", "extra-traits"] }
 smallvec = { version = "1", features = ["serde"] }
 aes-gcm = "0.10"
 base64 = "0.22"
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = "0.10"
+subtle = "2"
 
 teaql-core = { path = "teaql-core", version = "5.0.2" }
 teaql-macros = { path = "teaql-macros", version = "5.0.2" }
