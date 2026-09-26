@@ -3,6 +3,7 @@ mod business_id;
 mod checker;
 mod context;
 mod data_service;
+mod entity_reference;
 mod entity_runtime;
 pub mod entity_save;
 mod entity_status;
@@ -39,6 +40,11 @@ pub use context::{
 pub use data_service::{
     AggregationCacheBackend, EntityDataService, GraphTransactionBoundary, InMemoryAggregationCache,
     RelationLoadPlan,
+};
+pub use entity_reference::{
+    AeadEntityReferenceCodec, ENTITY_REFERENCE_AAD, EntityReferenceClaims, EntityReferenceCodec,
+    EntityReferenceTokenError, UNSAFE_RAW_ENTITY_REFERENCES_ACKNOWLEDGEMENT,
+    UNSAFE_RAW_ENTITY_REFERENCES_ENVIRONMENT,
 };
 pub use entity_runtime::{
     ChangeSetStack, EntityChangeSet, EntityGraphBuilder, EntityKey, EntityRuntimeState,

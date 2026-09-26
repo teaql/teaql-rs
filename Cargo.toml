@@ -42,6 +42,8 @@ proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full", "extra-traits"] }
 smallvec = { version = "1", features = ["serde"] }
+aes-gcm = "0.10"
+base64 = "0.22"
 
 teaql-core = { path = "teaql-core", version = "5.0.2" }
 teaql-macros = { path = "teaql-macros", version = "5.0.2" }
