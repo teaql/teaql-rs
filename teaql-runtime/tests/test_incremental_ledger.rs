@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use teaql_core::Value;
 use teaql_runtime::InternalIdGenerator;
 use teaql_runtime::{EntityKey, EntityRuntimeState};
@@ -186,4 +186,121 @@ fn successful_commit_cleanup_removes_all_replayable_root_state() {
     root.set(next.clone(), "name", Value::Text("Ada".to_owned()));
     assert_eq!(root.current_change_set().changes().len(), 1);
     assert!(root.current_change_set().changes().contains_key(&next));
+}
+
+#[test]
+fn deterministic_randomized_ledger_sequences_preserve_identity_and_cleanup_invariants() {
+    const SEED: u64 = 0x5445_4151_4c52_554e;
+    const STEPS: usize = 2_048;
+
+    let root = EntityRuntimeState::default();
+    let mut random = SEED;
+    let mut fields = BTreeMap::<(String, u64, String), Value>::new();
+    let mut new_keys = BTreeSet::<(String, u64)>::new();
+    let mut deleted_keys = BTreeSet::<(String, u64)>::new();
+    let mut versions = BTreeMap::<(String, u64), i64>::new();
+
+    for step in 0..STEPS {
+        random = random
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let entity = if (random >> 63) == 0 {
+            "Order"
+        } else {
+            "Invoice"
+        };
+        let id = ((random >> 17) % 32) + 1;
+        let operation = ((random >> 8) % 6) as u8;
+        let model_key = (entity.to_owned(), id);
+        let runtime_key = EntityKey::new(entity, id);
+
+        match operation {
+            0 | 1 => {
+                let field = if operation == 0 { "amount" } else { "status" };
+                let value = Value::U64(random & 0xffff);
+                root.set(runtime_key.clone(), field, value.clone());
+                fields.insert((entity.to_owned(), id, field.to_owned()), value);
+            }
+            2 => {
+                root.mark_as_new(runtime_key.clone());
+                new_keys.insert(model_key.clone());
+            }
+            3 => {
+                root.mark_as_delete(runtime_key.clone());
+                fields.retain(|(stored_entity, stored_id, _), _| {
+                    stored_entity != entity || *stored_id != id
+                });
+                deleted_keys.insert(model_key.clone());
+            }
+            4 => {
+                let version = ((random >> 32) % 20) as i64;
+                root.set_original_version(runtime_key.clone(), version);
+                versions.insert(model_key.clone(), version);
+            }
+            5 => {
+                root.clear_committed();
+                fields.clear();
+                new_keys.clear();
+                deleted_keys.clear();
+                versions.clear();
+            }
+            _ => unreachable!(),
+        }
+
+        let actual_fields = root
+            .current_change_set()
+            .changes()
+            .iter()
+            .flat_map(|(key, values)| {
+                values.iter().map(|(field, value)| {
+                    (
+                        (
+                            key.entity.to_string(),
+                            key.id.try_u64().unwrap(),
+                            field.clone(),
+                        ),
+                        value.clone(),
+                    )
+                })
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            actual_fields, fields,
+            "seed={SEED:#x} step={step} changed fields"
+        );
+        assert_eq!(
+            root.new_keys()
+                .iter()
+                .map(|key| (key.entity.to_string(), key.id.try_u64().unwrap()))
+                .collect::<BTreeSet<_>>(),
+            new_keys,
+            "seed={SEED:#x} step={step} new keys"
+        );
+        assert_eq!(
+            root.deleted_keys()
+                .iter()
+                .map(|key| (key.entity.to_string(), key.id.try_u64().unwrap()))
+                .collect::<BTreeSet<_>>(),
+            deleted_keys,
+            "seed={SEED:#x} step={step} deleted keys"
+        );
+        for ((stored_entity, stored_id), expected) in &versions {
+            let key = EntityKey::new(stored_entity.clone(), *stored_id);
+            assert_eq!(
+                root.get_original_version(&key),
+                Some(*expected),
+                "seed={SEED:#x} step={step} version={stored_entity}#{stored_id}"
+            );
+        }
+
+        let same_numeric_id_other_type = EntityKey::new(
+            if entity == "Order" {
+                "Invoice"
+            } else {
+                "Order"
+            },
+            id,
+        );
+        assert_ne!(runtime_key, same_numeric_id_other_type);
+    }
 }
