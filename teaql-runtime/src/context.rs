@@ -8,6 +8,11 @@ use std::time::SystemTime;
 
 use crate::EntityRuntimeState;
 use crate::business_id::BusinessIdSchemaService;
+use crate::entity_reference::{
+    EntityReferenceClaims, EntityReferenceCodec, EntityReferenceCodecResource,
+    EntityReferenceTokenError, decode_raw, encode_raw, is_raw_reference_token,
+    raw_references_enabled,
+};
 use crate::{
     BusinessIdSchemaContributor, BusinessIdService, CheckObjectStatus, CheckResult, CheckResults,
     CheckerRegistry, ContextError, EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry,
@@ -757,6 +762,47 @@ impl UserContext {
     {
         self.typed_resources
             .insert(TypeId::of::<T>(), Box::new(resource));
+    }
+
+    pub fn with_entity_reference_codec(mut self, codec: Arc<dyn EntityReferenceCodec>) -> Self {
+        self.set_entity_reference_codec(codec);
+        self
+    }
+
+    pub fn set_entity_reference_codec(&mut self, codec: Arc<dyn EntityReferenceCodec>) {
+        self.insert_resource(EntityReferenceCodecResource(codec));
+    }
+
+    pub fn encode_entity_reference(
+        &self,
+        entity_type: &str,
+        id: u64,
+        version: i64,
+        purpose: &str,
+        lifetime: std::time::Duration,
+    ) -> Result<String, EntityReferenceTokenError> {
+        if let Some(codec) = self.get_resource::<EntityReferenceCodecResource>() {
+            return codec.0.encode(entity_type, id, version, purpose, lifetime);
+        }
+        if raw_references_enabled() {
+            return encode_raw(entity_type, id, version, purpose, lifetime);
+        }
+        Err(EntityReferenceTokenError::codec_required())
+    }
+
+    pub fn decode_entity_reference(
+        &self,
+        token: &str,
+        expected_entity_type: &str,
+        purpose: &str,
+    ) -> Result<EntityReferenceClaims, EntityReferenceTokenError> {
+        if let Some(codec) = self.get_resource::<EntityReferenceCodecResource>() {
+            return codec.0.decode(token, expected_entity_type, purpose);
+        }
+        if raw_references_enabled() && is_raw_reference_token(token) {
+            return decode_raw(token, expected_entity_type, purpose);
+        }
+        Err(EntityReferenceTokenError::codec_required())
     }
 
     pub fn with_business_id_service(mut self, service: BusinessIdService) -> Self {

@@ -21,6 +21,8 @@ teaql-data-service = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 opentelemetry = { version = "0.32.0", optional = true }
+aes-gcm = { workspace = true }
+base64 = { workspace = true }
 
 [features]
 opentelemetry = ["dep:opentelemetry"]

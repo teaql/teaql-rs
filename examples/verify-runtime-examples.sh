@@ -9,9 +9,14 @@ run_example() {
   local name="$1"
   local manifest="$2"
   local marker="$3"
+  local bin="${4:-}"
   local log="$run_dir/$name.log"
 
-  cargo run --quiet --manifest-path "$manifest" >"$log" 2>&1
+  local command=(cargo run --quiet --manifest-path "$manifest")
+  if [[ -n "$bin" ]]; then
+    command+=(--bin "$bin")
+  fi
+  "${command[@]}" >"$log" 2>&1
   if ! grep -Fq "$marker" "$log"; then
     printf 'FAIL %s completed without its acceptance marker\n' "$name" >&2
     sed -n '1,240p' "$log" >&2
@@ -22,6 +27,9 @@ run_example() {
 
 run_example "conformance" "$repo_dir/examples/conformance/Cargo.toml" \
   "PASS Rust minimum runtime conformance: 8/8"
+run_example "security-foundations" "$repo_dir/examples/Cargo.toml" \
+  "PASS Rust security foundations: opaque reference is portable and purpose-bound" \
+  "security_foundations"
 run_example "school-management" "$repo_dir/examples/school-management/Cargo.toml" \
   "PASS Rust School bootstrap, ID-set pagination, portable Query, native SQLite Facet, independent ledger isolation, and sparse ledger Checker parity"
 
@@ -94,4 +102,4 @@ for attempt in 1 2; do
 done
 printf 'PASS order-management forward-FK Save (old loaded relation invalidated, new FK hydrated; two runs, same database)\n'
 
-printf 'PASS Rust runtime examples: 6/6\n'
+printf 'PASS Rust runtime examples: 7/7\n'
