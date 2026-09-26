@@ -10,8 +10,13 @@ use crate::EntityRuntimeState;
 use crate::business_id::BusinessIdSchemaService;
 use crate::entity_reference::{
     EntityReferenceClaims, EntityReferenceCodec, EntityReferenceCodecResource,
-    EntityReferenceTokenError, decode_raw, encode_raw, is_raw_reference_token,
-    raw_references_enabled,
+    EntityReferenceTokenError,
+};
+use crate::round_trip_reference::{
+    ContextBoundReferenceRuntime, ContextBoundReferenceRuntimeResource, ExternalEntityReference,
+    ReferenceDocumentScope, ReferenceIdentity, ReferenceMode, ReferenceStartupNotice,
+    ReferenceWireCodec, ResolvedEntityReference, RoundTripReferenceError,
+    TrustedReferencePrincipal, TrustedReferencePrincipalResource,
 };
 use crate::{
     BusinessIdSchemaContributor, BusinessIdService, CheckObjectStatus, CheckResult, CheckResults,
@@ -784,9 +789,6 @@ impl UserContext {
         if let Some(codec) = self.get_resource::<EntityReferenceCodecResource>() {
             return codec.0.encode(entity_type, id, version, purpose, lifetime);
         }
-        if raw_references_enabled() {
-            return encode_raw(entity_type, id, version, purpose, lifetime);
-        }
         Err(EntityReferenceTokenError::codec_required())
     }
 
@@ -799,10 +801,108 @@ impl UserContext {
         if let Some(codec) = self.get_resource::<EntityReferenceCodecResource>() {
             return codec.0.decode(token, expected_entity_type, purpose);
         }
-        if raw_references_enabled() && is_raw_reference_token(token) {
-            return decode_raw(token, expected_entity_type, purpose);
-        }
         Err(EntityReferenceTokenError::codec_required())
+    }
+
+    pub fn with_round_trip_reference_runtime(
+        mut self,
+        runtime: Arc<ContextBoundReferenceRuntime>,
+    ) -> Self {
+        self.set_round_trip_reference_runtime(runtime);
+        self
+    }
+
+    pub fn set_round_trip_reference_runtime(&mut self, runtime: Arc<ContextBoundReferenceRuntime>) {
+        self.insert_resource(ContextBoundReferenceRuntimeResource(runtime));
+    }
+
+    pub fn with_trusted_reference_principal(
+        mut self,
+        principal: TrustedReferencePrincipal,
+    ) -> Self {
+        self.set_trusted_reference_principal(principal);
+        self
+    }
+
+    pub fn set_trusted_reference_principal(&mut self, principal: TrustedReferencePrincipal) {
+        self.insert_resource(TrustedReferencePrincipalResource(principal));
+    }
+
+    pub fn reference_mode(&self) -> Result<ReferenceMode, RoundTripReferenceError> {
+        Ok(self.round_trip_reference_runtime()?.mode())
+    }
+
+    pub fn reference_startup_notice(
+        &self,
+    ) -> Result<Option<ReferenceStartupNotice>, RoundTripReferenceError> {
+        Ok(self.round_trip_reference_runtime()?.startup_notice())
+    }
+
+    pub fn reference_for(
+        &self,
+        identity: ReferenceIdentity,
+        document_scope: &ReferenceDocumentScope,
+        lifetime: std::time::Duration,
+    ) -> Result<ExternalEntityReference, RoundTripReferenceError> {
+        self.round_trip_reference_runtime()?.issue(
+            self.trusted_reference_principal()?,
+            document_scope,
+            identity,
+            lifetime,
+        )
+    }
+
+    pub fn resolve_reference(
+        &self,
+        reference: &ExternalEntityReference,
+        expected_entity_type: &str,
+        document_scope: &ReferenceDocumentScope,
+    ) -> Result<ResolvedEntityReference, RoundTripReferenceError> {
+        self.round_trip_reference_runtime()?.consume(
+            self.trusted_reference_principal()?,
+            document_scope,
+            reference,
+            expected_entity_type,
+        )
+    }
+
+    pub fn serialize_reference(
+        &self,
+        reference: &ExternalEntityReference,
+    ) -> Result<serde_json::Value, RoundTripReferenceError> {
+        // Requiring the installed runtime prevents a caller from serializing
+        // a raw reference under a governed process assembly.
+        let mode = self.reference_mode()?;
+        match (mode, reference) {
+            (ReferenceMode::Governed, ExternalEntityReference::Governed(_))
+            | (ReferenceMode::Raw, ExternalEntityReference::Raw { .. }) => {
+                Ok(ReferenceWireCodec::serialize(reference))
+            }
+            _ => Err(RoundTripReferenceError::invalid()),
+        }
+    }
+
+    pub fn deserialize_reference(
+        &self,
+        value: &serde_json::Value,
+    ) -> Result<ExternalEntityReference, RoundTripReferenceError> {
+        ReferenceWireCodec::deserialize(value, self.reference_mode()?)
+    }
+
+    fn round_trip_reference_runtime(
+        &self,
+    ) -> Result<&ContextBoundReferenceRuntime, RoundTripReferenceError> {
+        self.get_resource::<ContextBoundReferenceRuntimeResource>()
+            .map(|resource| resource.0.as_ref())
+            .ok_or_else(RoundTripReferenceError::configuration)
+    }
+
+    fn trusted_reference_principal(
+        &self,
+    ) -> Result<&TrustedReferencePrincipal, RoundTripReferenceError> {
+        self.get_resource::<TrustedReferencePrincipalResource>()
+            .map(|resource| &resource.0)
+            .ok_or_else(RoundTripReferenceError::authorization_required)
     }
 
     pub fn with_business_id_service(mut self, service: BusinessIdService) -> Self {
