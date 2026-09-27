@@ -3,8 +3,10 @@ use std::fmt::{Display, Formatter};
 
 use chrono::NaiveDate;
 
-pub const DEFAULT_BUSINESS_ID_PROFILE: &str = "daily-sequence";
-pub const DEFAULT_BUSINESS_ID_DIGITS: u8 = 8;
+pub const DEFAULT_BUSINESS_ID_PROFILE: &str = "daily-permuted-v1";
+pub const LEGACY_DAILY_SEQUENCE_PROFILE: &str = "daily-sequence";
+pub const DEFAULT_BUSINESS_ID_DIGITS: u8 = 6;
+pub const BUSINESS_ID_V1_DOMAIN_SIZE: u64 = 2_176_782_336;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BusinessIdErrorCode {
@@ -13,6 +15,8 @@ pub enum BusinessIdErrorCode {
     Immutable,
     Exhausted,
     Allocation,
+    KeyNotFound,
+    Encoding,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +71,15 @@ impl BusinessIdDefinition {
     }
 
     pub fn max_sequence(&self) -> Result<u64, BusinessIdError> {
+        if self.profile == DEFAULT_BUSINESS_ID_PROFILE {
+            if self.preserve_digits != DEFAULT_BUSINESS_ID_DIGITS {
+                return Err(BusinessIdError::new(
+                    BusinessIdErrorCode::InvalidDefinition,
+                    "daily-permuted-v1 requires exactly 6 preserve_digits",
+                ));
+            }
+            return Ok(BUSINESS_ID_V1_DOMAIN_SIZE - 1);
+        }
         if self.preserve_digits == 0 || self.preserve_digits > 19 {
             return Err(BusinessIdError::new(
                 BusinessIdErrorCode::InvalidDefinition,
@@ -83,21 +96,39 @@ impl BusinessIdDefinition {
                 )
             })
     }
+
+    pub fn legacy_daily_sequence(
+        field_name: impl Into<String>,
+        prefix: impl Into<String>,
+        namespace: impl Into<String>,
+    ) -> Self {
+        Self {
+            field_name: field_name.into(),
+            profile: LEGACY_DAILY_SEQUENCE_PROFILE.to_owned(),
+            prefix: prefix.into(),
+            namespace: namespace.into(),
+            split_by_date: true,
+            preserve_digits: 8,
+            separator: "-".to_owned(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BusinessIdScope {
-    pub tenant: String,
+    pub domain_root_key: String,
+    pub aggregate_type: String,
     pub namespace: String,
-    pub date_partition: Option<String>,
+    pub period_key: String,
 }
 
 impl BusinessIdScope {
     pub fn canonical_key(&self) -> String {
         [
-            escape(&self.tenant),
+            escape(&self.domain_root_key),
+            escape(&self.aggregate_type),
             escape(&self.namespace),
-            escape(self.date_partition.as_deref().unwrap_or("")),
+            escape(&self.period_key),
         ]
         .join("|")
     }
@@ -110,7 +141,7 @@ fn escape(value: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BusinessIdGenerationRequest<'a> {
     pub definition: &'a BusinessIdDefinition,
-    pub tenant: &'a str,
+    pub domain_root_key: &'a str,
     pub aggregate_type: &'a str,
     pub business_date: NaiveDate,
 }
@@ -122,7 +153,20 @@ pub struct BusinessIdPlan {
     pub date_text: Option<String>,
     pub preserve_digits: u8,
     pub separator: String,
+    pub initial_sequence: u64,
     pub max_sequence: u64,
+}
+
+impl BusinessIdPlan {
+    pub fn validate_allocation_range(&self) -> Result<(), BusinessIdError> {
+        if self.initial_sequence > self.max_sequence {
+            return Err(BusinessIdError::new(
+                BusinessIdErrorCode::InvalidDefinition,
+                "business ID allocation range requires initial_sequence <= max_sequence",
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

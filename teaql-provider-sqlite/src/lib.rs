@@ -1225,6 +1225,7 @@ impl SqliteBusinessIdAllocator {
 
 impl BusinessIdAllocator for SqliteBusinessIdAllocator {
     fn allocate(&self, plan: &BusinessIdPlan) -> Result<BusinessIdAllocation, BusinessIdError> {
+        plan.validate_allocation_range()?;
         let table = quote_ident(&self.table_name);
         let scope_key = plan.scope.canonical_key();
         for attempt in 1..=100 {
@@ -1271,15 +1272,22 @@ impl BusinessIdAllocator for SqliteBusinessIdAllocator {
                             })?
                         }
                         None => {
+                            let initial_sequence =
+                                i64::try_from(plan.initial_sequence).map_err(|_| {
+                                    BusinessIdError::new(
+                                        BusinessIdErrorCode::InvalidDefinition,
+                                        "business ID initial sequence exceeds SQLite INTEGER",
+                                    )
+                                })?;
                             connection
                                 .execute(
                                     &format!(
-                                        "INSERT INTO {table} (scope_key, current_level, version) VALUES (?, 1, 1)"
+                                        "INSERT INTO {table} (scope_key, current_level, version) VALUES (?, ?, 1)"
                                     ),
-                                    [&scope_key],
+                                    params![scope_key, initial_sequence],
                                 )
                                 .map_err(|error| business_id_sqlite_error(error.into()))?;
-                            1
+                            plan.initial_sequence
                         }
                     };
                     if sequence > plan.max_sequence {

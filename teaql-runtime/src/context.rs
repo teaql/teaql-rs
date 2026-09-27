@@ -914,6 +914,15 @@ impl UserContext {
         self.insert_resource(service);
     }
 
+    pub fn set_business_id_key_provider<K>(&mut self, key_provider: K) -> Result<(), ContextError>
+    where
+        K: crate::BusinessIdKeyProvider + 'static,
+    {
+        let service = self.business_ids()?.clone().with_key_provider(key_provider);
+        self.insert_resource(service);
+        Ok(())
+    }
+
     /// Installs one provider-backed allocator as both the generated Fix service
     /// and an explicit `ensure_schema` infrastructure contributor.
     pub fn set_business_id_infrastructure<A>(&mut self, allocator: A)
