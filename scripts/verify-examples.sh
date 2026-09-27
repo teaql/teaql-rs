@@ -16,6 +16,7 @@ cargo test -p teaql-examples --all-targets
 cargo run --quiet --manifest-path examples/conformance/Cargo.toml
 cargo run --quiet --manifest-path examples/school-management/Cargo.toml
 SCHOOL_MANAGEMENT_SERVICE_CORE_DATABASE_URL="$verification_dir/env-helper.db" \
+  TEAQL_ALLOW_SENSITIVE_PLAINTEXT_LOGS=I_UNDERSTAND_SENSITIVE_DATA_MAY_BE_WRITTEN_TO_DISK \
   TEAQL_LOG_ENDPOINT="$verification_dir/env-helper-safe.log" \
   TEAQL_SQL_DEBUG_ENDPOINT="$verification_dir/env-helper-sensitive.log" \
   TEAQL_AUDIT_DEBUG_ENDPOINT="$verification_dir/env-helper-audit-sensitive.log" \
@@ -33,6 +34,24 @@ if grep -Fq 'Debug SQL:' "$verification_dir/env-helper-audit-sensitive.log"; the
   exit 1
 fi
 echo 'PASS: explicit SQL and audit debug sinks separated from ordinary log'
+env -u TEAQL_ALLOW_SENSITIVE_PLAINTEXT_LOGS \
+  SCHOOL_MANAGEMENT_SERVICE_CORE_DATABASE_URL="$verification_dir/privacy.db" \
+  TEAQL_LOG_ENDPOINT="$verification_dir/privacy-safe.log" \
+  TEAQL_SQL_DEBUG_ENDPOINT="$verification_dir/privacy-debug.log" \
+  TEAQL_AUDIT_DEBUG_ENDPOINT="$verification_dir/privacy-audit.log" \
+  TEAQL_AUDIT_LOG=_full_with_payload \
+  cargo run --quiet --manifest-path examples/school-management/Cargo.toml --bin env_runtime_save_probe
+test -s "$verification_dir/privacy-safe.log"
+for log_file in "$verification_dir/privacy-safe.log" "$verification_dir/privacy-debug.log" "$verification_dir/privacy-audit.log"; do
+  # Sensitive-only endpoints are disabled entirely without acknowledgement.
+  # If a file is nevertheless created, it must not contain private payloads.
+  if [[ ! -e "$log_file" ]]; then continue; fi
+  if grep -E -q 'Env Helper School|PRIVATE-FAILURE-CANARY' "$log_file"; then
+    echo 'default runtime file endpoint leaked a CRUD privacy marker' >&2
+    exit 1
+  fi
+done
+echo 'PASS: default file endpoints redact real SQLite CRUD and failure payloads'
 TEAQL_EXAMPLE_DATABASE="$verification_dir/order.db" \
   cargo run --quiet --manifest-path examples/order-management/rust-app-console/Cargo.toml
 for graph_pass in 1 2; do

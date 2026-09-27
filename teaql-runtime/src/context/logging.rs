@@ -231,7 +231,7 @@ impl UserContext {
         // The ordinary context buffer and default operator log are safe
         // telemetry. Values and copy-paste SQL are only sent to an explicitly
         // configured diagnostic sink, never retained in this buffer.
-        let mut safe_entry = sensitive_entry.clone();
+        let mut safe_entry = crate::log_privacy::sql_entry(&sensitive_entry, false);
         // Preserve only the non-sensitive shape. Clearing the vector used to
         // make a parameterized query indistinguishable from a literal-only
         // query, while retaining the values would leak customer data.
@@ -241,7 +241,12 @@ impl UserContext {
             .for_each(|value| *value = Value::Null);
         safe_entry.debug_sql.clear();
         safe_entry.pretty_sql.clear();
-        self.append_sql_log(metadata.started_at, trace_path, safe_entry, sensitive_entry);
+        self.append_sql_log(
+            metadata.started_at,
+            safe_entry.trace_path.clone(),
+            safe_entry,
+            sensitive_entry,
+        );
     }
 
     fn append_sql_log(

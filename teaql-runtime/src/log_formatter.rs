@@ -439,6 +439,13 @@ impl LogManager {
     }
 
     pub fn write_sql_log(trace_chain: &[TraceNode], entry: &SqlLogEntry) {
+        let mut source = entry.clone();
+        source.trace_path = trace_chain.to_vec();
+        let mut safe = crate::log_privacy::sql_entry(&source, false);
+        safe.debug_sql.clear();
+        safe.pretty_sql.clear();
+        let entry = &safe;
+        let trace_chain = &safe.trace_path;
         if !Self::config().should_log_sql(&entry.sql) {
             return;
         }
@@ -452,6 +459,14 @@ impl LogManager {
     }
 
     pub(crate) fn write_sensitive_sql_log(trace_chain: &[TraceNode], entry: &SqlLogEntry) {
+        if !crate::log_privacy::plaintext_enabled() {
+            return;
+        }
+        let mut source = entry.clone();
+        source.trace_path = trace_chain.to_vec();
+        let projected = crate::log_privacy::sql_entry(&source, true);
+        let entry = &projected;
+        let trace_chain = &projected.trace_path;
         if !Self::config().should_log_sql(&entry.sql)
             || matches!(Self::get_log_endpoint(), Some("off"))
         {
@@ -487,16 +502,20 @@ impl LogManager {
             if endpoint == "off" {
                 return;
             }
-            let content = LogFormatterFactory::get_formatter().format_audit_log(event);
+            let safe = crate::log_privacy::audit_event(event, false);
+            let content = LogFormatterFactory::get_formatter().format_audit_log(&safe);
             Self::write_to_file(&content);
         }
-        if !Self::config().should_log_sensitive_audit(&event.entity) {
+        if !Self::config().should_log_sensitive_audit(&event.entity)
+            || !crate::log_privacy::plaintext_enabled()
+        {
             return;
         }
         let Some(endpoint) = Self::get_audit_debug_endpoint() else {
             return;
         };
-        let content = LogFormatterFactory::get_formatter().format_sensitive_audit_log(event);
+        let projected = crate::log_privacy::audit_event(event, true);
+        let content = LogFormatterFactory::get_formatter().format_sensitive_audit_log(&projected);
         let content = truncate_sensitive_audit_log(&content, 64 * 1024);
         match endpoint {
             "stdout" => println!("{content}"),
