@@ -141,9 +141,7 @@ pub(crate) fn sql_entry(entry: &SqlLogEntry, allow: bool) -> SqlLogEntry {
         result.sql = SQL_REDACTED.into();
     }
     scrub(&mut result.sql, &secrets);
-    for value in &mut result.params {
-        *value = Value::Null;
-    }
+    result.params.fill(Value::Null);
     result.debug_sql = SQL_REDACTED.into();
     result.pretty_sql = SQL_REDACTED.into();
     for text in [
