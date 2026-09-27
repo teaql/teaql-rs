@@ -16,6 +16,7 @@ mod id;
 pub mod inmemory_engine;
 mod language;
 pub mod log_formatter;
+mod log_privacy;
 // Deterministic test oracle; the published runtime uses provider executors.
 #[cfg(test)]
 #[allow(dead_code)]

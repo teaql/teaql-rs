@@ -339,6 +339,23 @@ impl RawAuditEvent {
         audit_value_max_len: Option<usize>,
     ) -> SafeAuditEvent {
         let mut safe_fields = Vec::new();
+        let allow = crate::log_privacy::plaintext_enabled();
+        let mut secrets = Vec::new();
+        for change in &self.changes {
+            if crate::log_privacy::credential_name(&change.field)
+                || (!allow && audit_mask_fields.contains(&change.field))
+                || change
+                    .old_value
+                    .iter()
+                    .chain(change.new_value.iter())
+                    .any(crate::log_privacy::has_credentials)
+            {
+                for value in change.old_value.iter().chain(change.new_value.iter()) {
+                    crate::log_privacy::collect_strings(value, &mut secrets);
+                }
+            }
+        }
+        secrets.sort_by_key(|value| std::cmp::Reverse(value.len()));
         for change in &self.changes {
             if change.field.starts_with('_') {
                 continue;
@@ -347,45 +364,37 @@ impl RawAuditEvent {
             // Usually we care about the new value in SafeAuditEvent. Or maybe we want to represent the change.
             // Based on design doc, we stringify the value and apply masks.
             let raw_val_str = change.new_value.as_ref().map(|v| format!("{:?}", v));
-            let safe_field = build_safe_audit_field(
+            let mut safe_field = build_safe_audit_field(
                 &change.field,
                 raw_val_str.as_deref(),
                 audit_mask_fields,
                 audit_value_max_len,
             );
+            if change
+                .old_value
+                .iter()
+                .chain(change.new_value.iter())
+                .any(crate::log_privacy::has_credentials)
+            {
+                safe_field.value = Some("[REDACTED]".into());
+                safe_field.masked = true;
+                safe_field.output_length = Some("[REDACTED]".len());
+                safe_field.truncated = false;
+            } else if let Some(value) = &mut safe_field.value {
+                crate::log_privacy::scrub(value, &secrets);
+                safe_field.output_length = Some(value.chars().count());
+            }
             safe_fields.push(safe_field);
         }
-
+        let mut trace_chain = self.trace_chain.clone();
+        crate::log_privacy::scrub_trace(&mut trace_chain, &secrets);
         SafeAuditEvent {
             kind: self.kind,
             entity: self.entity.clone(),
             fields: safe_fields,
-            trace_chain: self.trace_chain.clone(),
+            trace_chain,
         }
     }
-}
-
-pub fn mask_audit_value(value: &str) -> String {
-    let chars: Vec<char> = value.chars().collect();
-    let len = chars.len();
-
-    if len == 0 {
-        return String::new();
-    }
-
-    if chars.iter().all(|c| c.is_ascii_digit()) {
-        return "*".repeat(len);
-    }
-
-    if len < 8 {
-        return "*".repeat(len);
-    }
-
-    let prefix: String = chars[0..2].iter().collect();
-    let suffix: String = chars[len - 2..len].iter().collect();
-    let middle = "*".repeat(len - 4);
-
-    format!("{}{}{}", prefix, middle, suffix)
 }
 
 pub fn limit_audit_value(value: &str, max_len: usize) -> (String, bool) {
@@ -430,10 +439,13 @@ pub fn build_safe_audit_field(
         },
         Some(raw) => {
             let raw_length = raw.chars().count();
-            let should_mask = audit_mask_fields.iter().any(|f| f == field_name);
+            let credential = crate::log_privacy::credential_name(field_name);
+            let should_mask = credential
+                || (audit_mask_fields.iter().any(|f| f == field_name)
+                    && !crate::log_privacy::plaintext_enabled());
 
             let mut value = match should_mask {
-                true => mask_audit_value(raw),
+                true => "[REDACTED]".to_owned(),
                 false => raw.to_string(),
             };
 
