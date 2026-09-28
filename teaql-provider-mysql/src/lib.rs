@@ -868,8 +868,140 @@ pub(crate) async fn ensure_mysql_schema_for(
 mod streaming_tests {
     use super::*;
     use futures_util::StreamExt;
-    use teaql_core::RelationDescriptor;
+    use teaql_core::{RelationDescriptor, SelectQuery};
+    use teaql_data_service::{MutationRequest, QueryRequest};
     use teaql_sql::{SqlTransport, StreamingSqlTransport};
+
+    #[tokio::test]
+    async fn live_query_and_mutation_logs_mask_field_values_when_configured() {
+        let Ok(url) = std::env::var("TEAQL_TEST_MYSQL_URL") else {
+            assert!(
+                !std::env::var("TEAQL_REQUIRE_LIVE_DB")
+                    .is_ok_and(|flag| flag.eq_ignore_ascii_case("true")),
+                "TEAQL_TEST_MYSQL_URL is required for live provider tests"
+            );
+            return;
+        };
+        let pool = mysql_async::Pool::new(url.as_str());
+        let transport = MysqlMutationExecutor::new(pool.clone());
+        let table = format!(
+            "teaql_mask_probe_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let ddl = |sql: &str| CompiledQuery {
+            log_context: Default::default(),
+            sql: sql.to_owned(),
+            params: vec![],
+            comment: None,
+        };
+        transport
+            .execute_sql(&ddl(&format!(
+                "CREATE TABLE {table}(id BIGINT PRIMARY KEY, version BIGINT NOT NULL, display_name TEXT, status TEXT)"
+            )))
+            .await
+            .unwrap();
+
+        let entity = EntityDescriptor::new("MaskProbe")
+            .table_name(&table)
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(
+                PropertyDescriptor::new("version", DataType::I64)
+                    .version()
+                    .not_null(),
+            )
+            .property(PropertyDescriptor::new("display_name", DataType::Text))
+            .property(PropertyDescriptor::new("status", DataType::Text))
+            .audit_mask_fields(vec!["display_name".into()]);
+        let metadata = teaql_runtime::InMemoryMetadataStore::new().with_entity(entity);
+        let executor = teaql_sql::SqlDataServiceExecutor::new(
+            MysqlDialect,
+            transport.clone(),
+            metadata.clone(),
+        );
+        let mut context = UserContext::new().with_metadata(metadata);
+        context.register_executor(executor);
+
+        context
+            .execute_in_transaction::<teaql_sql::SqlDataServiceExecutor<
+                MysqlDialect,
+                MysqlMutationExecutor,
+                teaql_runtime::InMemoryMetadataStore,
+            >, _, _>(|scope| {
+                Box::pin(async move {
+                    let insert = InsertCommand::new("MaskProbe")
+                        .value("id", 1_u64)
+                        .value("version", 1_i64)
+                        .value("display_name", "Riverside")
+                        .value("status", "ACTIVE");
+                    scope.mutate(MutationRequest::Insert(insert)).await?;
+                    let query = SelectQuery::new("MaskProbe")
+                        .filter(teaql_core::Expr::and([
+                            teaql_core::Expr::eq("display_name", "Riverside"),
+                            teaql_core::Expr::eq("status", "ACTIVE"),
+                        ]))
+                        .limit(10)
+                        .comment("what: verify live masked readback");
+                    let mut trace = query.trace_chain.clone();
+                    trace.push(teaql_core::TraceNode::typed(
+                        teaql_core::TraceKind::Purpose,
+                        "MaskProbe",
+                        None,
+                        "why: prove provider log privacy",
+                    ));
+                    let result = scope
+                        .query(QueryRequest {
+                            query,
+                            trace_chain: trace,
+                            comment: Some("what: verify live masked readback".into()),
+                            capture_debug_query: true,
+                            capture_execution_metadata: true,
+                        })
+                        .await?;
+                    assert_eq!(result.rows.len(), 1);
+                    assert_eq!(
+                        result.rows[0].get("display_name"),
+                        Some(&Value::from("Riverside"))
+                    );
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap();
+
+        let logs = context.sql_logs();
+        for operation in [
+            teaql_runtime::SqlLogOperation::Insert,
+            teaql_runtime::SqlLogOperation::Select,
+        ] {
+            let log = logs
+                .iter()
+                .find(|log| log.operation == operation)
+                .expect("live SQL log");
+            assert!(
+                log.debug_sql.contains("Ri*****de"),
+                "{operation:?} must mask the field"
+            );
+            assert!(
+                log.debug_sql.contains("ACTIVE"),
+                "{operation:?} must retain plain fields"
+            );
+            assert!(!format!("{log:?}").contains("Riverside"));
+        }
+        assert!(
+            logs.iter()
+                .any(|log| log.purpose.as_deref() == Some("why: prove provider log privacy"))
+        );
+        assert!(!format!("{logs:?}").contains("Riverside"));
+        transport
+            .execute_sql(&ddl(&format!("DROP TABLE {table}")))
+            .await
+            .unwrap();
+        pool.disconnect().await.unwrap();
+    }
 
     fn schema_entity(name: &str, table: &str) -> EntityDescriptor {
         EntityDescriptor::new(name)
