@@ -52,6 +52,8 @@ pub(crate) fn field_policy(entity: &EntityDescriptor, field: &str) -> Policy {
     };
     if is_credential_log_name(&property.name) || is_credential_log_name(&property.column_name) {
         Policy::Credential
+    } else if !entity.audit_mask_fields_declared {
+        Policy::Unknown
     } else if entity
         .audit_mask_fields
         .iter()

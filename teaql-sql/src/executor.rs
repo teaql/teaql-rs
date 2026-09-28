@@ -734,6 +734,7 @@ mod tests {
         EntityDescriptor::new("Order")
             .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
             .property(PropertyDescriptor::new("name", DataType::Text))
+            .audit_mask_fields(vec![])
     }
 
     fn query_request(capture_debug_query: bool) -> QueryRequest {

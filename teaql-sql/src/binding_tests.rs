@@ -31,6 +31,37 @@ fn entity() -> EntityDescriptor {
         .property(PropertyDescriptor::new("password", DataType::Text))
         .audit_mask_fields(vec!["display_name".into()])
 }
+
+#[test]
+fn legacy_descriptor_without_field_policy_fails_closed() {
+    let legacy = EntityDescriptor::new("Customer")
+        .property(PropertyDescriptor::new("display_name", DataType::Text))
+        .property(PropertyDescriptor::new("password", DataType::Text));
+    let query = SelectQuery::new("Customer").filter(Expr::and([
+        Expr::eq("display_name", "CUSTOMER-CANARY"),
+        Expr::eq("password", "PASSWORD-CANARY"),
+    ]));
+    let compiled = Dialect.compile_select(&legacy, &query).unwrap();
+    assert_eq!(
+        compiled.log_context.parameter_policies,
+        [Unknown, Credential]
+    );
+    assert_eq!(compiled.params[0], Value::from("CUSTOMER-CANARY"));
+}
+
+#[test]
+fn explicitly_empty_field_policy_keeps_ordinary_parameters_replayable() {
+    let declared = EntityDescriptor::new("Customer")
+        .property(PropertyDescriptor::new("display_name", DataType::Text))
+        .property(PropertyDescriptor::new("password", DataType::Text))
+        .audit_mask_fields(vec![]);
+    let query = SelectQuery::new("Customer").filter(Expr::and([
+        Expr::eq("display_name", "CUSTOMER-CANARY"),
+        Expr::eq("password", "PASSWORD-CANARY"),
+    ]));
+    let compiled = Dialect.compile_select(&declared, &query).unwrap();
+    assert_eq!(compiled.log_context.parameter_policies, [Plain, Credential]);
+}
 fn policies(query: &SelectQuery) -> Vec<Policy> {
     let compiled = Dialect.compile_select(&entity(), query).unwrap();
     assert_eq!(
@@ -90,7 +121,7 @@ fn subquery_scope_uses_its_own_entity_descriptor() {
         ),
         Expr::eq("display_name", "private-parent"),
     ]));
-    assert_eq!(policies(&query), [Plain, Masked]);
+    assert_eq!(policies(&query), [Unknown, Masked]);
 }
 
 #[test]

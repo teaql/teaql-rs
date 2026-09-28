@@ -80,6 +80,7 @@ mod tests {
                     .not_null(),
             )
             .property(PropertyDescriptor::new("name", DataType::Text).column_name("name"))
+            .audit_mask_fields(vec![])
     }
 
     fn tenant_entity() -> EntityDescriptor {
