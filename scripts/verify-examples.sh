@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 verification_dir="$(mktemp -d)"
-trap 'rm -rf -- "$verification_dir"' EXIT
+trap 'status=$?; if (( status == 0 )); then rm -rf -- "$verification_dir"; else echo "FAILED: example evidence retained at $verification_dir" >&2; fi' EXIT
 expected=(business-id-runtime conformance order-management school-management tests)
 mapfile -t actual < <(find "$repo/examples" -mindepth 1 -maxdepth 1 -type d ! -name src -printf '%f\n' | sort)
 if [[ "${actual[*]}" != "${expected[*]}" ]]; then
@@ -22,14 +22,17 @@ SCHOOL_MANAGEMENT_SERVICE_CORE_DATABASE_URL="$verification_dir/env-helper.db" \
   TEAQL_AUDIT_DEBUG_ENDPOINT="$verification_dir/env-helper-audit-sensitive.log" \
   TEAQL_AUDIT_LOG=_full_with_payload \
   cargo run --quiet --manifest-path examples/school-management/Cargo.toml --bin env_runtime_save_probe
-grep -E -q 'Parameterized SQL:' "$verification_dir/env-helper-safe.log"
-if grep -E -q 'Debug SQL:|Env Helper School' "$verification_dir/env-helper-safe.log"; then
-  echo 'ordinary SQL log leaked copy-paste SQL or a bound School name' >&2
+grep -F -q 'SQL: -- TeaQL SAFE' "$verification_dir/env-helper-safe.log"
+grep -F -q "'En*************ol'" "$verification_dir/env-helper-safe.log"
+grep -F -q "'1 Runtime Road'" "$verification_dir/env-helper-safe.log"
+if grep -E -q 'Parameterized SQL:|SQL omitted:|Env Helper School|PRIVATE-FAILURE-CANARY' "$verification_dir/env-helper-safe.log"; then
+  echo 'ordinary SQL log lost safe expansion or leaked a rejected mutation payload' >&2
   exit 1
 fi
-grep -E -q 'Debug SQL:.*Env Helper School' "$verification_dir/env-helper-sensitive.log"
+grep -F -q 'DEBUG PLAINTEXT; EXPLICIT OPT-IN' "$verification_dir/env-helper-sensitive.log"
+grep -F -q "'Env Helper School'" "$verification_dir/env-helper-sensitive.log"
 grep -E -q '\[AUDIT\].*Env Helper School' "$verification_dir/env-helper-audit-sensitive.log"
-if grep -Fq 'Debug SQL:' "$verification_dir/env-helper-audit-sensitive.log"; then
+if grep -Fq 'SqlLogEntry' "$verification_dir/env-helper-audit-sensitive.log"; then
   echo 'sensitive audit sink received SQL diagnostics' >&2
   exit 1
 fi
@@ -51,7 +54,9 @@ for log_file in "$verification_dir/privacy-safe.log" "$verification_dir/privacy-
     exit 1
   fi
 done
-echo 'PASS: default file endpoints redact real SQLite CRUD and failure payloads'
+test ! -s "$verification_dir/privacy-debug.log"
+test ! -s "$verification_dir/privacy-audit.log"
+echo 'PASS: default SQL preserves ordinary fields; sensitive names, rejected payloads and unapproved debug sinks stay private'
 TEAQL_EXAMPLE_DATABASE="$verification_dir/order.db" \
   cargo run --quiet --manifest-path examples/order-management/rust-app-console/Cargo.toml
 for graph_pass in 1 2; do

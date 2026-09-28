@@ -352,11 +352,12 @@ pub trait SqlDialect {
         entity: &EntityDescriptor,
         query: &SelectQuery,
     ) -> Result<CompiledQuery, SqlCompileError> {
-        let mut params = Vec::new();
+        let mut params = crate::SqlBindings::new();
         let sql = self.compile_select_sql(entity, query, &mut params)?;
         Ok(CompiledQuery {
+            log_context: params.log_context(self.kind()),
             sql,
-            params,
+            params: params.into_values(),
             comment: query.comment.clone(),
         })
     }
@@ -365,8 +366,15 @@ pub trait SqlDialect {
         &self,
         entity: &EntityDescriptor,
         query: &SelectQuery,
-        params: &mut Vec<Value>,
+        params: &mut crate::SqlBindings,
     ) -> Result<String, SqlCompileError> {
+        if query.raw_sql.is_some()
+            || !query.raw_sql_search_criteria.is_empty()
+            || !query.raw_projections.is_empty()
+            || !query.dynamic_properties.is_empty()
+        {
+            params.mark_untrusted_sql();
+        }
         if let Some(raw_sql) = &query.raw_sql {
             return Ok(raw_sql.clone());
         }
@@ -409,7 +417,11 @@ pub trait SqlDialect {
                 if property.data_type == teaql_core::DataType::Text
                     || property.data_type == teaql_core::DataType::LargeText
                 {
-                    params.push(teaql_core::Value::from(like_value.clone()));
+                    params.push_field(
+                        entity,
+                        &property.name,
+                        teaql_core::Value::from(like_value.clone()),
+                    );
                     or_parts.push(format!(
                         "{} LIKE {}",
                         self.quote_ident(&property.column_name),
@@ -488,7 +500,7 @@ pub trait SqlDialect {
     ) -> Result<CompiledQuery, SqlCompileError> {
         let mut columns = Vec::new();
         let mut placeholders = Vec::new();
-        let mut params = Vec::new();
+        let mut params = crate::SqlBindings::new();
 
         for property in &entity.properties {
             if let Some(value) = command.values.get(&property.name) {
@@ -497,7 +509,7 @@ pub trait SqlDialect {
                 if let Value::Null = v {
                     v = Value::TypedNull(property.data_type);
                 }
-                params.push(v);
+                params.push_field(entity, &property.name, v);
                 placeholders.push(self.placeholder(params.len()));
             }
         }
@@ -507,13 +519,14 @@ pub trait SqlDialect {
         }
 
         Ok(CompiledQuery {
+            log_context: params.log_context(self.kind()),
             sql: format!(
                 "INSERT INTO {} ({}) VALUES ({})",
                 self.quote_ident(&entity.table_name),
                 columns.join(", "),
                 placeholders.join(", ")
             ),
-            params,
+            params: params.into_values(),
             comment: None,
         })
     }
@@ -544,7 +557,7 @@ pub trait SqlDialect {
             .iter()
             .map(|p| self.quote_ident(&p.column_name))
             .collect();
-        let mut params = Vec::new();
+        let mut params = crate::SqlBindings::new();
         let mut values_clauses = Vec::new();
 
         for record in &command.batch_values {
@@ -557,20 +570,21 @@ pub trait SqlDialect {
                 if let Value::Null = value {
                     value = Value::TypedNull(property.data_type);
                 }
-                params.push(value);
+                params.push_field(entity, &property.name, value);
                 row_placeholders.push(self.placeholder(params.len()));
             }
             values_clauses.push(format!("({})", row_placeholders.join(", ")));
         }
 
         Ok(CompiledQuery {
+            log_context: params.log_context(self.kind()),
             sql: format!(
                 "INSERT INTO {} ({}) VALUES {}",
                 self.quote_ident(&entity.table_name),
                 column_names.join(", "),
                 values_clauses.join(", ")
             ),
-            params,
+            params: params.into_values(),
             comment: None,
         })
     }
@@ -602,7 +616,7 @@ pub trait SqlDialect {
             .id_property()
             .ok_or_else(|| SqlCompileError::MissingIdProperty(entity.name.clone()))?;
         let mut assignments = Vec::new();
-        let mut params = Vec::new();
+        let mut params = crate::SqlBindings::new();
 
         for property in &entity.properties {
             if property.is_id {
@@ -616,7 +630,7 @@ pub trait SqlDialect {
                 if let Value::Null = v {
                     v = Value::TypedNull(property.data_type);
                 }
-                params.push(v);
+                params.push_field(entity, &property.name, v);
                 assignments.push(format!(
                     "{} = {}",
                     self.quote_ident(&property.column_name),
@@ -629,7 +643,11 @@ pub trait SqlDialect {
             let version_property = entity
                 .version_property()
                 .ok_or_else(|| SqlCompileError::MissingVersionProperty(entity.name.clone()))?;
-            params.push(Value::I64(expected_version + 1));
+            params.push_field(
+                entity,
+                &version_property.name,
+                Value::I64(expected_version + 1),
+            );
             assignments.push(format!(
                 "{} = {}",
                 self.quote_ident(&version_property.column_name),
@@ -641,7 +659,7 @@ pub trait SqlDialect {
             return Err(SqlCompileError::EmptyMutation("update".to_owned()));
         }
 
-        params.push(command.id.clone());
+        params.push_field(entity, &id_property.name, command.id.clone());
         let mut predicates = vec![format!(
             "{} = {}",
             self.quote_ident(&id_property.column_name),
@@ -652,7 +670,7 @@ pub trait SqlDialect {
             let version_property = entity
                 .version_property()
                 .ok_or_else(|| SqlCompileError::MissingVersionProperty(entity.name.clone()))?;
-            params.push(Value::I64(expected_version));
+            params.push_field(entity, &version_property.name, Value::I64(expected_version));
             predicates.push(format!(
                 "{} = {}",
                 self.quote_ident(&version_property.column_name),
@@ -665,13 +683,14 @@ pub trait SqlDialect {
         }
 
         Ok(CompiledQuery {
+            log_context: params.log_context(self.kind()),
             sql: format!(
                 "UPDATE {} SET {} WHERE {}",
                 self.quote_ident(&entity.table_name),
                 assignments.join(", "),
                 predicates.join(" AND ")
             ),
-            params,
+            params: params.into_values(),
             comment: None,
         })
     }
@@ -689,7 +708,7 @@ pub trait SqlDialect {
             .id_property()
             .ok_or_else(|| SqlCompileError::MissingIdProperty(entity.name.clone()))?;
 
-        let mut params = Vec::new();
+        let mut params = crate::SqlBindings::new();
         let mut set_clauses = Vec::new();
 
         // Build CASE statement for each updated field
@@ -714,10 +733,10 @@ pub trait SqlDialect {
                     val = Value::TypedNull(property.data_type);
                 }
 
-                params.push(id.clone());
+                params.push_field(entity, &id_property.name, id.clone());
                 let id_ph = self.placeholder(params.len());
 
-                params.push(val);
+                params.push_field(entity, &property.name, val);
                 let val_ph = self.placeholder(params.len());
 
                 case_parts.push(format!("WHEN {} THEN {}", id_ph, val_ph));
@@ -747,10 +766,14 @@ pub trait SqlDialect {
                     has_versions = true;
                     let id = &command.batch_ids[i];
 
-                    params.push(id.clone());
+                    params.push_field(entity, &id_property.name, id.clone());
                     let id_ph = self.placeholder(params.len());
 
-                    params.push(teaql_core::Value::I64(*exp_ver + 1));
+                    params.push_field(
+                        entity,
+                        &version_property.name,
+                        teaql_core::Value::I64(*exp_ver + 1),
+                    );
                     let val_ph = self.placeholder(params.len());
 
                     case_parts.push(format!("WHEN {} THEN {}", id_ph, val_ph));
@@ -776,7 +799,7 @@ pub trait SqlDialect {
 
         let mut in_placeholders = Vec::new();
         for id in &command.batch_ids {
-            params.push(id.clone());
+            params.push_field(entity, &id_property.name, id.clone());
             in_placeholders.push(self.placeholder(params.len()));
         }
         let mut predicates = vec![format!(
@@ -797,10 +820,14 @@ pub trait SqlDialect {
                 if let Some(exp_ver) = exp_ver_opt {
                     let id = &command.batch_ids[i];
 
-                    params.push(id.clone());
+                    params.push_field(entity, &id_property.name, id.clone());
                     let id_ph = self.placeholder(params.len());
 
-                    params.push(teaql_core::Value::I64(*exp_ver));
+                    params.push_field(
+                        entity,
+                        &version_property.name,
+                        teaql_core::Value::I64(*exp_ver),
+                    );
                     let val_ph = self.placeholder(params.len());
 
                     case_parts.push(format!("WHEN {} THEN {}", id_ph, val_ph));
@@ -819,13 +846,14 @@ pub trait SqlDialect {
         }
 
         Ok(CompiledQuery {
+            log_context: params.log_context(self.kind()),
             sql: format!(
                 "UPDATE {} SET {} WHERE {}",
                 self.quote_ident(&entity.table_name),
                 set_clauses.join(", "),
                 predicates.join(" AND ")
             ),
-            params,
+            params: params.into_values(),
             comment: None,
         })
     }
@@ -856,18 +884,22 @@ pub trait SqlDialect {
         let id_property = entity
             .id_property()
             .ok_or_else(|| SqlCompileError::MissingIdProperty(entity.name.clone()))?;
-        let mut params = Vec::new();
+        let mut params = crate::SqlBindings::new();
 
         if command.soft_delete {
             let version_property = entity
                 .version_property()
                 .ok_or_else(|| SqlCompileError::MissingVersionProperty(entity.name.clone()))?;
-            params.push(match command.expected_version {
-                Some(version) => Value::I64(-(version + 1)),
-                None => Value::I64(-1),
-            });
+            params.push_field(
+                entity,
+                &version_property.name,
+                match command.expected_version {
+                    Some(version) => Value::I64(-(version + 1)),
+                    None => Value::I64(-1),
+                },
+            );
 
-            params.push(command.id.clone());
+            params.push_field(entity, &id_property.name, command.id.clone());
             let mut predicates = vec![format!(
                 "{} = {}",
                 self.quote_ident(&id_property.column_name),
@@ -875,7 +907,7 @@ pub trait SqlDialect {
             )];
 
             if let Some(expected_version) = command.expected_version {
-                params.push(Value::I64(expected_version));
+                params.push_field(entity, &version_property.name, Value::I64(expected_version));
                 predicates.push(format!(
                     "{} = {}",
                     self.quote_ident(&version_property.column_name),
@@ -888,6 +920,7 @@ pub trait SqlDialect {
             }
 
             return Ok(CompiledQuery {
+                log_context: params.log_context(self.kind()),
                 sql: format!(
                     "UPDATE {} SET {} = {} WHERE {}",
                     self.quote_ident(&entity.table_name),
@@ -895,12 +928,12 @@ pub trait SqlDialect {
                     self.placeholder(1),
                     predicates.join(" AND ")
                 ),
-                params,
+                params: params.into_values(),
                 comment: None,
             });
         }
 
-        params.push(command.id.clone());
+        params.push_field(entity, &id_property.name, command.id.clone());
         let mut predicates = vec![format!(
             "{} = {}",
             self.quote_ident(&id_property.column_name),
@@ -911,7 +944,7 @@ pub trait SqlDialect {
             let version_property = entity
                 .version_property()
                 .ok_or_else(|| SqlCompileError::MissingVersionProperty(entity.name.clone()))?;
-            params.push(Value::I64(expected_version));
+            params.push_field(entity, &version_property.name, Value::I64(expected_version));
             predicates.push(format!(
                 "{} = {}",
                 self.quote_ident(&version_property.column_name),
@@ -924,12 +957,13 @@ pub trait SqlDialect {
         }
 
         Ok(CompiledQuery {
+            log_context: params.log_context(self.kind()),
             sql: format!(
                 "DELETE FROM {} WHERE {}",
                 self.quote_ident(&entity.table_name),
                 predicates.join(" AND ")
             ),
-            params,
+            params: params.into_values(),
             comment: None,
         })
     }
@@ -969,11 +1003,18 @@ pub trait SqlDialect {
         let version_property = entity
             .version_property()
             .ok_or_else(|| SqlCompileError::MissingVersionProperty(entity.name.clone()))?;
-        let mut params = vec![
+        let mut params = crate::SqlBindings::new();
+        params.push_field(
+            entity,
+            &version_property.name,
             Value::I64(-command.expected_version + 1),
-            command.id.clone(),
+        );
+        params.push_field(entity, &id_property.name, command.id.clone());
+        params.push_field(
+            entity,
+            &version_property.name,
             Value::I64(command.expected_version),
-        ];
+        );
 
         let mut predicates = vec![
             format!(
@@ -992,6 +1033,7 @@ pub trait SqlDialect {
         }
 
         Ok(CompiledQuery {
+            log_context: params.log_context(self.kind()),
             sql: format!(
                 "UPDATE {} SET {} = {} WHERE {}",
                 self.quote_ident(&entity.table_name),
@@ -999,7 +1041,7 @@ pub trait SqlDialect {
                 self.placeholder(1),
                 predicates.join(" AND "),
             ),
-            params,
+            params: params.into_values(),
             comment: None,
         })
     }
@@ -1019,7 +1061,7 @@ pub trait SqlDialect {
         &self,
         entity: &EntityDescriptor,
         order_by: &OrderBy,
-        params: &mut Vec<Value>,
+        params: &mut crate::SqlBindings,
     ) -> Result<String, SqlCompileError> {
         let field = self.resolve_order_field(entity, order_by, params)?;
         let direction = match order_by.direction {
@@ -1033,7 +1075,7 @@ pub trait SqlDialect {
         &self,
         entity: &EntityDescriptor,
         query: &SelectQuery,
-        params: &mut Vec<Value>,
+        params: &mut crate::SqlBindings,
     ) -> Result<String, SqlCompileError> {
         let property_projection = |property: &PropertyDescriptor| self.column_with_alias(property);
 
@@ -1086,7 +1128,7 @@ pub trait SqlDialect {
         &self,
         entity: &EntityDescriptor,
         query: &SelectQuery,
-        params: &mut Vec<Value>,
+        params: &mut crate::SqlBindings,
     ) -> Result<String, SqlCompileError> {
         let mut parts = Vec::new();
         // Aggregate queries must not inherit the entity's ordinary/default projection.
@@ -1160,9 +1202,14 @@ pub trait SqlDialect {
         &self,
         entity: &EntityDescriptor,
         expr: &Expr,
-        params: &mut Vec<Value>,
+        params: &mut crate::SqlBindings,
     ) -> Result<String, SqlCompileError> {
-        match expr {
+        let previous_scope = params.scope;
+        params.scope = crate::bindings::combine(
+            previous_scope,
+            crate::bindings::expression_policy(entity, expr),
+        );
+        let result = (|| match expr {
             Expr::Column(name) => self.column_sql(entity, name),
             Expr::Value(value) => {
                 params.push(value.clone());
@@ -1221,7 +1268,9 @@ pub trait SqlDialect {
                 let expr = self.compile_expr(entity, expr, params)?;
                 Ok(format!("(NOT {expr})"))
             }
-        }
+        })();
+        params.scope = previous_scope;
+        result
     }
 
     fn compile_function(
@@ -1229,7 +1278,7 @@ pub trait SqlDialect {
         entity: &EntityDescriptor,
         function: ExprFunction,
         args: &[Expr],
-        params: &mut Vec<Value>,
+        params: &mut crate::SqlBindings,
     ) -> Result<String, SqlCompileError> {
         match function {
             ExprFunction::Soundex => {
@@ -1275,7 +1324,7 @@ pub trait SqlDialect {
         entity: &EntityDescriptor,
         function: &str,
         args: &[Expr],
-        params: &mut Vec<Value>,
+        params: &mut crate::SqlBindings,
     ) -> Result<String, SqlCompileError> {
         let [arg] = args else {
             return Err(SqlCompileError::InvalidFunctionArguments(format!(
@@ -1293,7 +1342,7 @@ pub trait SqlDialect {
         &self,
         entity: &EntityDescriptor,
         args: &[Expr],
-        params: &mut Vec<Value>,
+        params: &mut crate::SqlBindings,
     ) -> Result<String, SqlCompileError> {
         let [arg] = args else {
             return Err(SqlCompileError::InvalidFunctionArguments(
@@ -1313,7 +1362,7 @@ pub trait SqlDialect {
         op: BinaryOp,
         sub_entity: &EntityDescriptor,
         query: &SelectQuery,
-        params: &mut Vec<Value>,
+        params: &mut crate::SqlBindings,
     ) -> Result<String, SqlCompileError> {
         let lhs = self.compile_expr(entity, left, params)?;
         let operator = match op {
@@ -1321,7 +1370,10 @@ pub trait SqlDialect {
             BinaryOp::NotIn | BinaryOp::NotInLarge => "NOT IN",
             _ => return Err(SqlCompileError::InvalidSubQueryOperator(format!("{op:?}"))),
         };
-        let subquery = self.compile_select_sql(sub_entity, query, params)?;
+        let outer_scope = params.scope.take();
+        let subquery = self.compile_select_sql(sub_entity, query, params);
+        params.scope = outer_scope;
+        let subquery = subquery?;
         Ok(format!("({lhs} {operator} ({subquery}))"))
     }
 
@@ -1330,7 +1382,7 @@ pub trait SqlDialect {
         entity: &EntityDescriptor,
         parts: &[Expr],
         joiner: &str,
-        params: &mut Vec<Value>,
+        params: &mut crate::SqlBindings,
     ) -> Result<String, SqlCompileError> {
         let compiled = parts
             .iter()
@@ -1345,7 +1397,7 @@ pub trait SqlDialect {
         left: &Expr,
         op: BinaryOp,
         right: &Expr,
-        params: &mut Vec<Value>,
+        params: &mut crate::SqlBindings,
     ) -> Result<String, SqlCompileError> {
         let lhs = self.compile_expr(entity, left, params)?;
         let operator = match op {
@@ -1376,7 +1428,7 @@ pub trait SqlDialect {
         &self,
         entity: &EntityDescriptor,
         query: &SelectQuery,
-        params: &mut Vec<Value>,
+        params: &mut crate::SqlBindings,
     ) -> Result<String, SqlCompileError> {
         match query.aggregates.is_empty() {
             true => self.select_projection(entity, query, params),
@@ -1388,7 +1440,7 @@ pub trait SqlDialect {
         &self,
         entity: &EntityDescriptor,
         order_by: &OrderBy,
-        params: &mut Vec<Value>,
+        params: &mut crate::SqlBindings,
     ) -> Result<String, SqlCompileError> {
         match &order_by.expr {
             Some(expr) => self.compile_expr(entity, expr, params),

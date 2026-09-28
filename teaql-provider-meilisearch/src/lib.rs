@@ -127,6 +127,8 @@ impl QueryExecutor for MeilisearchProvider {
         Ok(QueryResult {
             rows,
             metadata: ExecutionMetadata {
+                statements: Vec::new(),
+                sql_log: Default::default(),
                 debug_query: Some(format!("POST {} with {:?}", url, payload)),
                 backend: "meilisearch".to_owned(),
                 operation: DataServiceOperation::Query,
@@ -187,6 +189,8 @@ impl MutationExecutor for MeilisearchProvider {
                     generated_values: GeneratedValues::new(),
                     persisted_snapshot: None,
                     metadata: ExecutionMetadata {
+                        statements: Vec::new(),
+                        sql_log: Default::default(),
                         debug_query: Some(format!("POST {} to Meilisearch", entity)),
                         backend: "meilisearch".to_owned(),
                         operation: DataServiceOperation::Update,
@@ -209,6 +213,8 @@ impl MutationExecutor for MeilisearchProvider {
                     generated_values: GeneratedValues::new(),
                     persisted_snapshot: None,
                     metadata: ExecutionMetadata {
+                        statements: Vec::new(),
+                        sql_log: Default::default(),
                         debug_query: Some("Skipped non-insert mutation".to_owned()),
                         backend: "meilisearch".to_owned(),
                         operation: DataServiceOperation::Update,

@@ -699,6 +699,8 @@ mod tests {
                     .map(teaql_core::CompactRow::from_map)
                     .collect(),
                 metadata: ExecutionMetadata {
+                    statements: Vec::new(),
+                    sql_log: Default::default(),
                     debug_query: None,
                     backend: "stub".to_owned(),
                     operation: DataServiceOperation::Query,
@@ -723,6 +725,8 @@ mod tests {
                 generated_values: GeneratedValues::new(),
                 persisted_snapshot: None,
                 metadata: ExecutionMetadata {
+                    statements: Vec::new(),
+                    sql_log: Default::default(),
                     debug_query: None,
                     backend: "stub".to_owned(),
                     operation: DataServiceOperation::Update,
@@ -759,6 +763,8 @@ mod tests {
                     .map(teaql_core::CompactRow::from_map)
                     .collect(),
                 metadata: ExecutionMetadata {
+                    statements: Vec::new(),
+                    sql_log: Default::default(),
                     debug_query: None,
                     backend: "capture".to_owned(),
                     operation: DataServiceOperation::Query,
@@ -805,6 +811,8 @@ mod tests {
                     .map(teaql_core::CompactRow::from_map)
                     .collect(),
                 metadata: ExecutionMetadata {
+                    statements: Vec::new(),
+                    sql_log: Default::default(),
                     debug_query: None,
                     backend: "queue".to_owned(),
                     operation: DataServiceOperation::Query,
@@ -829,6 +837,8 @@ mod tests {
                 generated_values: GeneratedValues::new(),
                 persisted_snapshot: None,
                 metadata: ExecutionMetadata {
+                    statements: Vec::new(),
+                    sql_log: Default::default(),
                     debug_query: None,
                     backend: "queue".to_owned(),
                     operation: DataServiceOperation::Update,
@@ -864,6 +874,8 @@ mod tests {
                     .map(teaql_core::CompactRow::from_map)
                     .collect(),
                 metadata: ExecutionMetadata {
+                    statements: Vec::new(),
+                    sql_log: Default::default(),
                     debug_query: None,
                     backend: "id-set-queue".to_owned(),
                     operation: DataServiceOperation::Query,
@@ -919,6 +931,8 @@ mod tests {
                     .map(teaql_core::CompactRow::from_map)
                     .collect(),
                 metadata: ExecutionMetadata {
+                    statements: Vec::new(),
+                    sql_log: Default::default(),
                     debug_query: None,
                     backend: "concurrent-id-set".to_owned(),
                     operation: DataServiceOperation::Query,

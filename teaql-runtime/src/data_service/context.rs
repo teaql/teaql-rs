@@ -56,6 +56,7 @@ impl UserContext {
             entity,
             data_service: self.data_service_internal::<E>()?,
             trace_context: Vec::new(),
+            query_log_intent: None,
         })
     }
 

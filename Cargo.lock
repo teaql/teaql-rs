@@ -3208,8 +3208,10 @@ name = "teaql-examples"
 version = "5.0.3"
 dependencies = [
  "chrono",
+ "futures-util",
  "rusqlite",
  "teaql-core",
+ "teaql-data-service",
  "teaql-macros",
  "teaql-provider-sqlite",
  "teaql-runtime",

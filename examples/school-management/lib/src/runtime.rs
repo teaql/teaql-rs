@@ -243,156 +243,232 @@ pub fn checker_registry() -> teaql_runtime::InMemoryCheckerRegistry {
         ))
 }
 
+fn is_generated_bootstrap_retryable_conflict(error: &teaql_runtime::RuntimeError) -> bool {
+    if matches!(
+        error,
+        teaql_runtime::RuntimeError::OptimisticLockConflict { .. }
+    ) {
+        return true;
+    }
+    let teaql_runtime::RuntimeError::Graph(message) = error else {
+        return false;
+    };
+    (message.contains("UNIQUE constraint failed:") && message.contains("_data.id"))
+        || (message.contains("duplicate key value violates unique constraint")
+            && message.contains("_data_pkey"))
+        || (message.contains("Duplicate entry") && message.contains("PRIMARY"))
+}
+
 fn ensure_generated_bootstrap<'a>(
     context: &'a teaql_runtime::UserContext,
 ) -> teaql_runtime::GeneratedSchemaBootstrapFuture<'a> {
     Box::pin(async move {
-        use teaql_core::Entity as _;
-        let root_rows = crate::Q::platforms()
-            .select_self_fields()
-            .with_id_is(1_u64)
-            .comment("what: locate generated Domain Root")
-            .purpose("why: idempotent runtime bootstrap")
-            .execute_for_list(context)
-            .await
-            .map_err(|e| teaql_runtime::RuntimeError::Graph(e.to_string()))?;
-        let domain_root = if let Some(entity) = root_rows.data.into_iter().next() {
-            entity
-        } else {
-            let mut entity = Platform::runtime_new(context.entity_runtime_state());
-            entity.update_id(1_u64);
-            context.initialize_generated_bootstrap_entity(
-                &mut entity,
-                Platform::ENTITY_NAME,
-                1_u64,
-            )?;
-            entity.update_name("Campus Learning Platform");
-            entity.update_base_url("https://campus.example.com");
-            teaql_runtime::AuditedSaveExt::save(
-                entity.audit_as("create generated Domain Root Platform"),
-                context,
-            )
-            .await?
-        };
-        context.set_generated_bootstrap_active_root(Platform::ENTITY_NAME, domain_root.id())?;
-        let rows_constant_school_type_1001 = crate::Q::school_types()
-            .select_self_fields()
-            .with_id_is(1001_u64)
-            .comment("what: locate generated constant")
-            .purpose("why: idempotent runtime bootstrap")
-            .execute_for_list(context)
-            .await
-            .map_err(|e| teaql_runtime::RuntimeError::Graph(e.to_string()))?;
-        if let Some(mut constant_school_type_1001) =
-            rows_constant_school_type_1001.data.into_iter().next()
-        {
-            let mut changed = false;
-            if constant_school_type_1001.platform_id() != 1_u64 {
-                constant_school_type_1001.update_platform_id(1_u64);
-                changed = true;
+        for attempt in 0..5 {
+            match ensure_generated_bootstrap_once(context).await {
+                Ok(()) => return Ok(()),
+                Err(error) if attempt < 4 && is_generated_bootstrap_retryable_conflict(&error) => {
+                    tokio::task::yield_now().await
+                }
+                Err(error) => return Err(error),
             }
-            if constant_school_type_1001.name() != "Primary" {
-                constant_school_type_1001.update_name("Primary");
-                changed = true;
-            }
-            if constant_school_type_1001.code() != "PRIMARY" {
-                constant_school_type_1001.update_code("PRIMARY");
-                changed = true;
-            }
-            if constant_school_type_1001.display_order()
-                != rust_decimal::Decimal::from_str_exact("1").unwrap()
-            {
-                constant_school_type_1001
-                    .update_display_order(rust_decimal::Decimal::from_str_exact("1").unwrap());
-                changed = true;
-            }
-            if changed {
-                let _ = teaql_runtime::AuditedSaveExt::save(
-                    constant_school_type_1001.audit_as("reconcile model constant SchoolType(1001)"),
-                    context,
-                )
-                .await?;
-            }
-        } else {
-            let mut constant_school_type_1001 =
-                SchoolType::runtime_new(context.entity_runtime_state());
-            constant_school_type_1001.update_id(1001_u64);
-            context.initialize_generated_bootstrap_entity(
-                &mut constant_school_type_1001,
-                SchoolType::ENTITY_NAME,
-                1001_u64,
-            )?;
+        }
+        unreachable!("bootstrap attempts always return or fail")
+    })
+}
+
+async fn ensure_generated_bootstrap_once(
+    context: &teaql_runtime::UserContext,
+) -> Result<(), teaql_runtime::RuntimeError> {
+    use teaql_core::Entity as _;
+    let root_rows = crate::Q::platforms()
+        .select_self_fields()
+        .with_id_is(1_u64)
+        .comment("what: locate generated Domain Root")
+        .purpose("why: idempotent runtime bootstrap")
+        .execute_for_list(context)
+        .await
+        .map_err(|e| teaql_runtime::RuntimeError::Graph(e.to_string()))?;
+    let domain_root = if let Some(entity) = root_rows.data.into_iter().next() {
+        entity
+    } else {
+        let mut entity = Platform::runtime_new(context.entity_runtime_state());
+        entity.update_id(1_u64);
+        context.initialize_generated_bootstrap_entity(&mut entity, Platform::ENTITY_NAME, 1_u64)?;
+        entity.update_name("Campus Learning Platform");
+        entity.update_base_url("https://campus.example.com");
+        teaql_runtime::AuditedSaveExt::save(
+            entity.audit_as("create generated Domain Root Platform"),
+            context,
+        )
+        .await?
+    };
+    context.set_generated_bootstrap_active_root(Platform::ENTITY_NAME, domain_root.id())?;
+    let rows_constant_school_type_1001 = crate::Q::school_types()
+        .select_self_fields()
+        .with_id_is(1001_u64)
+        .comment("what: locate generated constant")
+        .purpose("why: idempotent runtime bootstrap")
+        .execute_for_list(context)
+        .await
+        .map_err(|e| teaql_runtime::RuntimeError::Graph(e.to_string()))?;
+    if let Some(mut constant_school_type_1001) =
+        rows_constant_school_type_1001.data.into_iter().next()
+    {
+        let mut changed = false;
+        if constant_school_type_1001.platform_id() != 1_u64 {
             constant_school_type_1001.update_platform_id(1_u64);
+            changed = true;
+        }
+        if constant_school_type_1001.name() != "Primary" {
             constant_school_type_1001.update_name("Primary");
+            changed = true;
+        }
+        if constant_school_type_1001.code() != "PRIMARY" {
             constant_school_type_1001.update_code("PRIMARY");
+            changed = true;
+        }
+        if constant_school_type_1001.display_order()
+            != rust_decimal::Decimal::from_str_exact("1").unwrap()
+        {
             constant_school_type_1001
                 .update_display_order(rust_decimal::Decimal::from_str_exact("1").unwrap());
+            changed = true;
+        }
+        if changed {
             let _ = teaql_runtime::AuditedSaveExt::save(
-                constant_school_type_1001.audit_as("create model constant SchoolType(1001)"),
+                constant_school_type_1001.audit_as("reconcile model constant SchoolType(1001)"),
                 context,
             )
             .await?;
         }
-        let rows_constant_school_type_1002 = crate::Q::school_types()
-            .select_self_fields()
-            .with_id_is(1002_u64)
-            .comment("what: locate generated constant")
-            .purpose("why: idempotent runtime bootstrap")
-            .execute_for_list(context)
-            .await
-            .map_err(|e| teaql_runtime::RuntimeError::Graph(e.to_string()))?;
-        if let Some(mut constant_school_type_1002) =
-            rows_constant_school_type_1002.data.into_iter().next()
-        {
-            let mut changed = false;
-            if constant_school_type_1002.platform_id() != 1_u64 {
-                constant_school_type_1002.update_platform_id(1_u64);
-                changed = true;
-            }
-            if constant_school_type_1002.name() != "Secondary" {
-                constant_school_type_1002.update_name("Secondary");
-                changed = true;
-            }
-            if constant_school_type_1002.code() != "SECONDARY" {
-                constant_school_type_1002.update_code("SECONDARY");
-                changed = true;
-            }
-            if constant_school_type_1002.display_order()
-                != rust_decimal::Decimal::from_str_exact("2").unwrap()
-            {
-                constant_school_type_1002
-                    .update_display_order(rust_decimal::Decimal::from_str_exact("2").unwrap());
-                changed = true;
-            }
-            if changed {
-                let _ = teaql_runtime::AuditedSaveExt::save(
-                    constant_school_type_1002.audit_as("reconcile model constant SchoolType(1002)"),
-                    context,
-                )
-                .await?;
-            }
-        } else {
-            let mut constant_school_type_1002 =
-                SchoolType::runtime_new(context.entity_runtime_state());
-            constant_school_type_1002.update_id(1002_u64);
-            context.initialize_generated_bootstrap_entity(
-                &mut constant_school_type_1002,
-                SchoolType::ENTITY_NAME,
-                1002_u64,
-            )?;
+    } else {
+        let mut constant_school_type_1001 = SchoolType::runtime_new(context.entity_runtime_state());
+        constant_school_type_1001.update_id(1001_u64);
+        context.initialize_generated_bootstrap_entity(
+            &mut constant_school_type_1001,
+            SchoolType::ENTITY_NAME,
+            1001_u64,
+        )?;
+        constant_school_type_1001.update_platform_id(1_u64);
+        constant_school_type_1001.update_name("Primary");
+        constant_school_type_1001.update_code("PRIMARY");
+        constant_school_type_1001
+            .update_display_order(rust_decimal::Decimal::from_str_exact("1").unwrap());
+        let _ = teaql_runtime::AuditedSaveExt::save(
+            constant_school_type_1001.audit_as("create model constant SchoolType(1001)"),
+            context,
+        )
+        .await?;
+    }
+    let rows_constant_school_type_1002 = crate::Q::school_types()
+        .select_self_fields()
+        .with_id_is(1002_u64)
+        .comment("what: locate generated constant")
+        .purpose("why: idempotent runtime bootstrap")
+        .execute_for_list(context)
+        .await
+        .map_err(|e| teaql_runtime::RuntimeError::Graph(e.to_string()))?;
+    if let Some(mut constant_school_type_1002) =
+        rows_constant_school_type_1002.data.into_iter().next()
+    {
+        let mut changed = false;
+        if constant_school_type_1002.platform_id() != 1_u64 {
             constant_school_type_1002.update_platform_id(1_u64);
+            changed = true;
+        }
+        if constant_school_type_1002.name() != "Secondary" {
             constant_school_type_1002.update_name("Secondary");
+            changed = true;
+        }
+        if constant_school_type_1002.code() != "SECONDARY" {
             constant_school_type_1002.update_code("SECONDARY");
+            changed = true;
+        }
+        if constant_school_type_1002.display_order()
+            != rust_decimal::Decimal::from_str_exact("2").unwrap()
+        {
             constant_school_type_1002
                 .update_display_order(rust_decimal::Decimal::from_str_exact("2").unwrap());
+            changed = true;
+        }
+        if changed {
             let _ = teaql_runtime::AuditedSaveExt::save(
-                constant_school_type_1002.audit_as("create model constant SchoolType(1002)"),
+                constant_school_type_1002.audit_as("reconcile model constant SchoolType(1002)"),
                 context,
             )
             .await?;
         }
-        Ok(())
-    })
+    } else {
+        let mut constant_school_type_1002 = SchoolType::runtime_new(context.entity_runtime_state());
+        constant_school_type_1002.update_id(1002_u64);
+        context.initialize_generated_bootstrap_entity(
+            &mut constant_school_type_1002,
+            SchoolType::ENTITY_NAME,
+            1002_u64,
+        )?;
+        constant_school_type_1002.update_platform_id(1_u64);
+        constant_school_type_1002.update_name("Secondary");
+        constant_school_type_1002.update_code("SECONDARY");
+        constant_school_type_1002
+            .update_display_order(rust_decimal::Decimal::from_str_exact("2").unwrap());
+        let _ = teaql_runtime::AuditedSaveExt::save(
+            constant_school_type_1002.audit_as("create model constant SchoolType(1002)"),
+            context,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Canonical KSML field to selected JSON wire name, consumed by HTTP/TFP adapters.
+pub fn generated_wire_field_mappings(
+) -> std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>> {
+    std::collections::BTreeMap::from([
+        (
+            "Platform".to_owned(),
+            std::collections::BTreeMap::from([
+                ("id".to_owned(), "id".to_owned()),
+                ("name".to_owned(), "name".to_owned()),
+                ("base_url".to_owned(), "baseUrl".to_owned()),
+                ("create_time".to_owned(), "createTime".to_owned()),
+                ("update_time".to_owned(), "updateTime".to_owned()),
+                ("version".to_owned(), "version".to_owned()),
+            ]),
+        ),
+        (
+            "SchoolType".to_owned(),
+            std::collections::BTreeMap::from([
+                ("platform".to_owned(), "platform".to_owned()),
+                ("id".to_owned(), "id".to_owned()),
+                ("name".to_owned(), "name".to_owned()),
+                ("code".to_owned(), "code".to_owned()),
+                ("display_order".to_owned(), "displayOrder".to_owned()),
+                ("version".to_owned(), "version".to_owned()),
+            ]),
+        ),
+        (
+            "School".to_owned(),
+            std::collections::BTreeMap::from([
+                ("id".to_owned(), "id".to_owned()),
+                ("platform".to_owned(), "platform".to_owned()),
+                ("school_type".to_owned(), "schoolType".to_owned()),
+                ("name".to_owned(), "name".to_owned()),
+                ("address".to_owned(), "address".to_owned()),
+                ("established_date".to_owned(), "establishedDate".to_owned()),
+                ("student_capacity".to_owned(), "studentCapacity".to_owned()),
+                ("active".to_owned(), "active".to_owned()),
+                ("create_time".to_owned(), "createTime".to_owned()),
+                ("update_time".to_owned(), "updateTime".to_owned()),
+                ("version".to_owned(), "version".to_owned()),
+            ]),
+        ),
+    ])
+}
+
+/// Accepted legacy aliases; empty until explicitly declared by the model.
+pub fn generated_wire_field_aliases(
+) -> std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>> {
+    std::collections::BTreeMap::new()
 }
 
 pub fn module() -> teaql_runtime::RuntimeModule {

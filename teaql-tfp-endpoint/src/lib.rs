@@ -1661,6 +1661,8 @@ mod tests {
         affected_rows: Option<u64>,
     ) -> ExecutionMetadata {
         ExecutionMetadata {
+            statements: Vec::new(),
+            sql_log: Default::default(),
             backend: "stub".into(),
             operation,
             started_at: std::time::SystemTime::now(),

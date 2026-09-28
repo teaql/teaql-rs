@@ -75,6 +75,7 @@ impl SqlLogOptions {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SqlLogEntry {
+    pub log_context: teaql_data_service::SqlLogContext,
     pub operation: SqlLogOperation,
     pub comment: Option<String>,
     pub purpose: Option<String>,
@@ -96,9 +97,9 @@ pub struct SqlLogEntry {
 impl SqlLogEntry {
     /// Number of bound parameters without exposing their values.
     ///
-    /// Safe/default log entries retain one `Value::Null` slot per parameter;
-    /// sensitive diagnostic entries retain the original values. The count is
-    /// therefore stable across both views of the same execution.
+    /// Safe/default entries retain projected values (null, visible, or masked)
+    /// in the original positions. The count is stable across log views; raw
+    /// executor bindings are never mutated by projection.
     pub fn parameter_count(&self) -> usize {
         self.params.len()
     }
@@ -182,6 +183,12 @@ impl UserContext {
     }
 
     pub(crate) fn record_metadata_log(&self, metadata: &teaql_data_service::ExecutionMetadata) {
+        if !metadata.statements.is_empty() {
+            for statement in &metadata.statements {
+                self.record_metadata_log(statement);
+            }
+            return;
+        }
         let operation = match metadata.operation {
             teaql_data_service::DataServiceOperation::Query => SqlLogOperation::Select,
             teaql_data_service::DataServiceOperation::Insert => SqlLogOperation::Insert,
@@ -207,6 +214,13 @@ impl UserContext {
             .unwrap_or_default();
         let debug_sql = metadata.debug_query.as_deref().unwrap_or_default();
         let sensitive_entry = SqlLogEntry {
+            log_context: {
+                let mut context = metadata.sql_log.clone();
+                if context.database_kind.is_none() {
+                    context.database_kind = Some(metadata.backend.clone());
+                }
+                context
+            },
             operation,
             comment: trace_value(&metadata.trace_chain, teaql_core::TraceKind::Comment)
                 .or_else(|| metadata.comment.clone()),
@@ -228,19 +242,8 @@ impl UserContext {
             affected_rows: metadata.affected_rows,
             result_summary,
         };
-        // The ordinary context buffer and default operator log are safe
-        // telemetry. Values and copy-paste SQL are only sent to an explicitly
-        // configured diagnostic sink, never retained in this buffer.
-        let mut safe_entry = crate::log_privacy::sql_entry(&sensitive_entry, false);
-        // Preserve only the non-sensitive shape. Clearing the vector used to
-        // make a parameterized query indistinguishable from a literal-only
-        // query, while retaining the values would leak customer data.
-        safe_entry
-            .params
-            .iter_mut()
-            .for_each(|value| *value = Value::Null);
-        safe_entry.debug_sql.clear();
-        safe_entry.pretty_sql.clear();
+        // Retain the safe expanded representation, never raw diagnostic SQL.
+        let safe_entry = crate::log_privacy::sql_entry(&sensitive_entry, false);
         self.append_sql_log(
             metadata.started_at,
             safe_entry.trace_path.clone(),

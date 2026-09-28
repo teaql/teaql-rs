@@ -1,4 +1,7 @@
 //! Log projections only: original execution inputs and business events stay intact.
+#[cfg(test)]
+#[path = "masking_contract_tests.rs"]
+mod masking_contract_tests;
 use crate::{RawAuditEvent, SqlLogEntry};
 use teaql_core::{Record, TraceNode, Value};
 
@@ -21,28 +24,7 @@ pub(crate) fn plaintext_enabled() -> bool {
 }
 
 pub(crate) fn credential_name(name: &str) -> bool {
-    let name: String = name
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .map(|c| c.to_ascii_lowercase())
-        .collect();
-    [
-        "password",
-        "passwd",
-        "passphrase",
-        "privatekey",
-        "secret",
-        "accesstoken",
-        "refreshtoken",
-        "idtoken",
-        "apikey",
-        "authorization",
-        "credential",
-        "sessiontoken",
-        "magiclinktoken",
-    ]
-    .iter()
-    .any(|word| name.contains(word))
+    teaql_data_service::is_credential_log_name(name)
 }
 
 pub(crate) fn has_credentials(value: &Value) -> bool {
@@ -114,47 +96,269 @@ pub(crate) fn scrub(text: &mut String, secrets: &[String]) {
 pub(crate) fn scrub_trace(trace: &mut [TraceNode], secrets: &[String]) {
     for node in trace {
         scrub(&mut node.comment, secrets);
+        scrub(&mut node.entity_type, secrets);
+    }
+}
+
+fn mask_business_value(value: &Value) -> Value {
+    match value {
+        Value::Null | Value::TypedNull(_) => value.clone(),
+        Value::List(values) => Value::List(values.iter().map(mask_business_value).collect()),
+        Value::Object(_) | Value::Json(_) => Value::Text(REDACTED.into()),
+        _ => {
+            let mut text = Vec::new();
+            collect_strings(value, &mut text);
+            Value::Text(crate::event::mask_audit_value(&text.join("")))
+        }
     }
 }
 
 pub(crate) fn sql_entry(entry: &SqlLogEntry, allow: bool) -> SqlLogEntry {
+    let allow = allow && entry.log_context.mode.as_deref() != Some("safe");
+    let was_debug = entry.log_context.mode.as_deref() == Some("debug_plaintext")
+        || entry
+            .debug_sql
+            .starts_with("-- TeaQL DEBUG PLAINTEXT; EXPLICIT OPT-IN");
+    let alternative = if was_debug {
+        entry
+            .log_context
+            .projection_state
+            .get::<SafeSqlProjection>()
+            .filter(|state| state.fingerprint == sql_fingerprint(entry))
+            .map(|state| &state.safe)
+    } else {
+        None
+    };
+    if !allow && let Some(safe) = alternative {
+        return safe.clone();
+    }
+    let mut result = sql_entry_inner(entry, allow, was_debug && !allow);
+    if allow {
+        let safe = alternative
+            .cloned()
+            .unwrap_or_else(|| sql_entry_inner(entry, false, was_debug));
+        let fingerprint = sql_fingerprint(&result);
+        result.log_context.projection_state =
+            teaql_data_service::SqlProjectionState::new(SafeSqlProjection { fingerprint, safe });
+    }
+    result
+}
+
+// No source bindings or raw source entry are retained. The safe alternative has
+// no state of its own, so there is no ownership cycle or recursive object graph.
+struct SafeSqlProjection {
+    fingerprint: [u8; 32],
+    safe: SqlLogEntry,
+}
+
+fn sql_fingerprint(entry: &SqlLogEntry) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    // Debug preserves native value types/decimal text; opaque state is excluded.
+    Sha256::digest(format!("{entry:?}").as_bytes()).into()
+}
+
+fn sql_entry_inner(entry: &SqlLogEntry, allow: bool, hide_intent: bool) -> SqlLogEntry {
+    use teaql_data_service::SqlParameterLogPolicy as Policy;
+    use teaql_sql::{DatabaseKind, render_sql_value, render_sql_with};
     let mut result = entry.clone();
+    result.log_context.projection_state = Default::default();
+    let kind = match entry.log_context.database_kind.as_deref() {
+        Some("postgresql") => Some(DatabaseKind::PostgreSql),
+        Some("sqlite") => Some(DatabaseKind::Sqlite),
+        Some("mysql") => Some(DatabaseKind::MySql),
+        _ => None,
+    };
+    let policies = &entry.log_context.parameter_policies;
+    let invalid_policies = !policies.is_empty() && policies.len() != entry.params.len();
+    let invalid_masks = !entry.log_context.masked_parameters.is_empty()
+        && entry.log_context.masked_parameters.len() != entry.params.len();
+    // Text is only used to increase protection. It can never mark a value plain.
     let credentials = credential_name(&entry.sql)
-        || credential_name(&entry.debug_sql)
-        || entry.params.iter().any(has_credentials);
-    if allow && !credentials {
-        return result;
-    }
+        && (!entry.log_context.generated_sql || policies.is_empty() || invalid_policies);
     let mut secrets = Vec::new();
-    entry
-        .params
-        .iter()
-        .for_each(|v| collect_strings(v, &mut secrets));
-    secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
-    // There is no parameter-to-field provenance here. Arbitrary literal SQL
-    // cannot be safely interpreted by a cross-dialect log formatter.
-    if entry.sql.contains(['\'', '"', '`', '$'])
-        || entry.sql.contains("--")
-        || entry.sql.contains("/*")
-        || entry.sql.chars().any(|c| c.is_ascii_digit())
-    {
-        result.sql = SQL_REDACTED.into();
+    let mut masked = Vec::with_capacity(entry.params.len());
+    for (index, value) in entry.params.iter().enumerate() {
+        let policy = if invalid_policies || invalid_masks {
+            Policy::Unknown
+        } else {
+            policies.get(index).copied().unwrap_or_default()
+        };
+        let already_masked = !invalid_masks
+            && entry.log_context.mode.is_some()
+            && entry.log_context.masked_parameters.get(index) == Some(&true);
+        let force = credentials || has_credentials(value) || policy == Policy::Credential;
+        // Unknown provenance is never a plaintext permission, even with opt-in.
+        let protect = force || policy == Policy::Unknown || (policy == Policy::Masked && !allow);
+        masked.push(protect || already_masked);
+        if protect && !already_masked {
+            collect_strings(value, &mut secrets);
+            result.params[index] = match value {
+                Value::Null | Value::TypedNull(_) => value.clone(),
+                _ if policy == Policy::Masked && !force => mask_business_value(value),
+                _ => Value::Text(REDACTED.into()),
+            };
+        }
     }
-    scrub(&mut result.sql, &secrets);
-    result.params.fill(Value::Null);
-    result.debug_sql = SQL_REDACTED.into();
-    result.pretty_sql = SQL_REDACTED.into();
+    entry
+        .log_context
+        .intent_redactions
+        .extend_secrets(allow, &mut secrets);
+    secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
     for text in [
         &mut result.comment,
         &mut result.purpose,
         &mut result.audit_reason,
+        &mut result.result_type,
     ]
     .into_iter()
     .flatten()
     {
         scrub(text, &secrets);
     }
+    scrub(&mut result.result_summary, &secrets);
     scrub_trace(&mut result.trace_path, &secrets);
+    result.log_context.intent_redactions.clear();
+    result.log_context.masked_parameters = masked;
+    result.log_context.mode = Some(if allow { "debug_plaintext" } else { "safe" }.into());
+    let rendered = (|| {
+        if entry.log_context.omission_reason.is_some() {
+            return Err("previously omitted SQL");
+        }
+        let kind = kind.ok_or("unknown database dialect")?;
+        if invalid_policies {
+            return Err("parameter policy count mismatch");
+        }
+        if invalid_masks {
+            return Err("parameter mask count mismatch");
+        }
+        if !entry.log_context.generated_sql {
+            let template =
+                render_sql_with(&entry.sql, kind, entry.params.len(), |_| Ok(String::new()))?;
+            if template.contains(['\'', '"', '`'])
+                || template.contains("--")
+                || template.contains("/*")
+                || template.chars().any(|c| c.is_ascii_digit())
+            {
+                return Err("untrusted SQL literals or comments");
+            }
+        }
+        render_sql_with(&entry.sql, kind, result.params.len(), |index| {
+            let mut literal = render_sql_value(&result.params[index], kind)?;
+            if result.log_context.masked_parameters[index] {
+                literal.push_str(" /* masked */");
+            }
+            Ok(literal)
+        })
+    })();
+    let has_masked = result.log_context.masked_parameters.iter().any(|v| *v);
+    let mode = if allow {
+        "DEBUG PLAINTEXT; EXPLICIT OPT-IN"
+    } else {
+        "SAFE"
+    };
+    match rendered {
+        Ok(sql) => {
+            result.log_context.omission_reason = None;
+            result.debug_sql = format!(
+                "-- TeaQL {mode}{}\n{sql}",
+                if has_masked {
+                    "; MASKED; NOT REPLAYABLE"
+                } else {
+                    ""
+                }
+            );
+        }
+        Err(reason) => {
+            // A failed render revokes even previously plain values. Scrub the
+            // accompanying intent/trace too, not just the SQL and bind array.
+            entry
+                .params
+                .iter()
+                .for_each(|value| collect_strings(value, &mut secrets));
+            secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
+            for text in [
+                &mut result.comment,
+                &mut result.purpose,
+                &mut result.audit_reason,
+                &mut result.result_type,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                scrub(text, &secrets);
+            }
+            scrub(&mut result.result_summary, &secrets);
+            scrub_trace(&mut result.trace_path, &secrets);
+            let reason = match entry.log_context.omission_reason.as_deref() {
+                None => reason,
+                Some(
+                    reason @ ("parameter policy count mismatch"
+                    | "parameter mask count mismatch"
+                    | "unknown database dialect"
+                    | "untrusted SQL literals or comments"
+                    | "unsupported escape string"
+                    | "unterminated quoted SQL"
+                    | "ambiguous MySQL backslash quoting"
+                    | "unsupported executable SQL comment"
+                    | "unterminated SQL comment"
+                    | "unsupported MySQL hash comment"
+                    | "missing binding"
+                    | "invalid binding index"
+                    | "unsupported dollar expression"
+                    | "unterminated dollar quote"
+                    | "unsupported numbered positional binding"
+                    | "unsupported named binding"
+                    | "unused binding"
+                    | "non-finite SQL number"
+                    | "ambiguous MySQL backslash literal"),
+                ) => reason,
+                Some(_) => "previously omitted SQL",
+            };
+            result.log_context.omission_reason = Some(reason.into());
+            result.sql = SQL_REDACTED.into();
+            // With an unknown template no binding is demonstrably safe either.
+            result.params.fill(Value::Null);
+            result.debug_sql =
+                format!("-- TeaQL {mode}; MASKED; NOT REPLAYABLE\n[SQL omitted: {reason}]");
+        }
+    }
+    result.pretty_sql = result.debug_sql.clone();
+    if hide_intent {
+        for text in [
+            &mut result.comment,
+            &mut result.purpose,
+            &mut result.audit_reason,
+            &mut result.result_type,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            *text = REDACTED.into();
+        }
+        result.result_summary = REDACTED.into();
+        for node in &mut result.trace_path {
+            node.comment = REDACTED.into();
+            node.entity_type = REDACTED.into();
+        }
+    }
+    // Counts are execution facts, not binding values. Preserve a recognized
+    // count-only summary even when a sensitive binding happens to equal "1".
+    let count_summary = entry
+        .result_count
+        .map(|n| (n as u64, "returned"))
+        .or_else(|| entry.affected_rows.map(|n| (n, "affected")));
+    if let Some((count, verb)) = count_summary {
+        if [
+            format!("{count} row {verb}"),
+            format!("{count} rows {verb}"),
+        ]
+        .contains(&entry.result_summary)
+        {
+            result.result_summary.clone_from(&entry.result_summary);
+        } else if hide_intent {
+            result.result_summary = format!("{count} rows {verb}");
+        }
+    }
     result
 }
 
@@ -281,6 +485,23 @@ mod tests {
             let safe = std::fs::read_to_string(normal).unwrap();
             assert!(!safe.contains("PRIVATE-CUSTOMER"));
             assert!(!safe.contains("TOKEN-CANARY"));
+            assert!(!safe.contains("RETAINED-WRITE-CANARY"));
+            assert!(safe.contains("read authoritative snapshot"));
+            assert!(safe.contains(&format!(
+                "name = '{}' /* masked */",
+                crate::event::mask_audit_value("PRIVATE-CUSTOMER")
+            )));
+            assert!(!safe.contains("name = ?"));
+            assert!(!safe.contains("Parameterized SQL:"));
+            assert!(safe.contains("NOT REPLAYABLE"));
+            let sql_diagnostic = std::fs::read_to_string(&sql).unwrap_or_default();
+            if ack == Some(ACK) {
+                assert!(sql_diagnostic.contains("DEBUG PLAINTEXT; EXPLICIT OPT-IN"));
+                assert!(sql_diagnostic.contains("name = 'PRIVATE-CUSTOMER'"));
+                assert!(!sql_diagnostic.contains("TOKEN-CANARY"));
+            } else {
+                assert!(sql_diagnostic.is_empty());
+            }
             let diagnostic = format!(
                 "{}{}",
                 std::fs::read_to_string(audit).unwrap_or_default(),
@@ -311,6 +532,11 @@ mod tests {
         LogManager::write_audit_log(&event);
         let now = std::time::SystemTime::now();
         let entry = SqlLogEntry {
+            log_context: teaql_data_service::SqlLogContext {
+                database_kind: Some("sqlite".into()),
+                parameter_policies: vec![teaql_data_service::SqlParameterLogPolicy::Masked],
+                ..Default::default()
+            },
             operation: crate::SqlLogOperation::Update,
             comment: Some("edit PRIVATE-CUSTOMER".into()),
             purpose: Some("debug fixture".into()),
@@ -337,5 +563,28 @@ mod tests {
         credential.debug_sql = "UPDATE customer SET password = 'TOKEN-CANARY'".into();
         LogManager::write_sql_log(&[], &credential);
         LogManager::write_sensitive_sql_log(&[], &credential);
+        // A retained debug record has no pending raw provenance. The normal
+        // file sink must still downgrade a clone safely, independent of env.
+        let mut readback = entry.clone();
+        readback.log_context.intent_redactions =
+            teaql_data_service::SqlIntentRedactions::from_bindings(
+                &entry.log_context,
+                &[Value::from("RETAINED-WRITE-CANARY")],
+                &entry.sql,
+            );
+        readback.log_context.parameter_policies =
+            vec![teaql_data_service::SqlParameterLogPolicy::Plain];
+        readback.sql = "SELECT name FROM customer WHERE id = ?".into();
+        readback.params = vec![Value::U64(1)];
+        readback.comment = Some("read authoritative snapshot RETAINED-WRITE-CANARY".into());
+        let retained = sql_entry(&readback, true).clone();
+        assert!(
+            retained
+                .comment
+                .as_ref()
+                .unwrap()
+                .contains("RETAINED-WRITE-CANARY")
+        );
+        LogManager::write_sql_log(&retained.trace_path, &retained);
     }
 }

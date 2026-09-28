@@ -1,6 +1,15 @@
 #![allow(clippy::manual_async_fn)]
 #![allow(async_fn_in_trait)]
 
+#[cfg(test)]
+#[path = "execution_tests.rs"]
+mod diagnostic_tests;
+#[cfg(test)]
+#[path = "mutation_execution_tests.rs"]
+mod mutation_diagnostic_tests;
+#[path = "mutation_execution.rs"]
+mod mutation_execution;
+
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
@@ -97,8 +106,15 @@ pub struct SqlDataServiceExecutor<D, T, S> {
     pub transport: T,
     pub schema_provider: S,
     descriptor_cache: Arc<RwLock<HashMap<String, Arc<teaql_core::EntityDescriptor>>>>,
-    select_plan_cache: Arc<RwLock<Vec<(SelectQuery, String)>>>,
+    select_plan_cache: Arc<RwLock<Vec<CachedSelectPlan>>>,
 }
+
+type CachedSelectPlan = (
+    EntityDescriptor,
+    SelectQuery,
+    String,
+    teaql_data_service::SqlLogContext,
+);
 
 impl<D, T, S> SqlDataServiceExecutor<D, T, S> {
     pub fn new(dialect: D, transport: T, schema_provider: S) -> Self {
@@ -128,16 +144,18 @@ where
 
 fn compile_select_with_cache<D: SqlDialect>(
     dialect: &D,
-    plan_cache: &RwLock<Vec<(SelectQuery, String)>>,
+    plan_cache: &RwLock<Vec<CachedSelectPlan>>,
     entity: &EntityDescriptor,
     query: &SelectQuery,
 ) -> Result<CompiledQuery, SqlCompileError> {
     if let Ok(cache) = plan_cache.read()
-        && let Some((_, sql)) = cache
-            .iter()
-            .find(|(candidate, _)| select_plan_matches(candidate, query))
+        && let Some((_, _, sql, log_context)) =
+            cache.iter().find(|(descriptor, candidate, _, _)| {
+                descriptor == entity && select_plan_matches(candidate, query)
+            })
     {
         return Ok(CompiledQuery {
+            log_context: log_context.clone(),
             sql: sql.clone(),
             params: collect_select_params(entity, query, dialect.large_in_uses_array_param()),
             comment: query.comment.clone(),
@@ -150,11 +168,15 @@ fn compile_select_with_cache<D: SqlDialect>(
         if cache.len() >= 256 {
             cache.remove(0);
         }
-        if !cache
-            .iter()
-            .any(|(candidate, _)| select_plan_matches(candidate, query))
-        {
-            cache.push((key, compiled.sql.clone()));
+        if !cache.iter().any(|(descriptor, candidate, _, _)| {
+            descriptor == entity && select_plan_matches(candidate, query)
+        }) {
+            cache.push((
+                entity.clone(),
+                key,
+                compiled.sql.clone(),
+                compiled.log_context.clone(),
+            ));
         }
     }
     Ok(compiled)
@@ -601,7 +623,7 @@ mod tests {
             left: &Expr,
             op: teaql_core::BinaryOp,
             right: &Expr,
-            params: &mut Vec<Value>,
+            params: &mut crate::SqlBindings,
         ) -> Result<String, SqlCompileError> {
             if matches!(
                 op,
@@ -742,6 +764,93 @@ mod tests {
         assert!(result.metadata.debug_query.is_none());
     }
 
+    #[test]
+    fn cached_query_keeps_binding_policies_and_checks_descriptor_identity() {
+        struct CountingDialect(Arc<AtomicUsize>);
+        impl SqlDialect for CountingDialect {
+            fn kind(&self) -> crate::DatabaseKind {
+                crate::DatabaseKind::PostgreSql
+            }
+            fn quote_ident(&self, ident: &str) -> String {
+                TestDialect.quote_ident(ident)
+            }
+            fn placeholder(&self, index: usize) -> String {
+                TestDialect.placeholder(index)
+            }
+            fn compile_select(
+                &self,
+                entity: &EntityDescriptor,
+                query: &SelectQuery,
+            ) -> Result<CompiledQuery, SqlCompileError> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                TestDialect.compile_select(entity, query)
+            }
+        }
+        use teaql_data_service::SqlParameterLogPolicy::{Masked, Plain};
+        let counter = Arc::new(AtomicUsize::new(0));
+        let dialect = CountingDialect(counter.clone());
+        let cache = RwLock::new(Vec::new());
+        let private = test_entity().audit_mask_fields(vec!["name".into()]);
+        for value in ["first", "second"] {
+            let compiled = compile_select_with_cache(
+                &dialect,
+                &cache,
+                &private,
+                &SelectQuery::new("Order").filter(Expr::eq("name", value)),
+            )
+            .unwrap();
+            assert_eq!(compiled.params, vec![Value::from(value)]);
+            assert_eq!(compiled.log_context.parameter_policies, [Masked]);
+            assert!(compiled.log_context.generated_sql);
+        }
+        assert_eq!(
+            counter.load(Ordering::Relaxed),
+            1,
+            "second call must actually hit cache"
+        );
+        let public = compile_select_with_cache(
+            &dialect,
+            &cache,
+            &test_entity(),
+            &SelectQuery::new("Order").filter(Expr::eq("name", "public")),
+        )
+        .unwrap();
+        assert_eq!(public.log_context.parameter_policies, [Plain]);
+        assert_eq!(counter.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn batch_metadata_keeps_each_statement_and_its_numbered_bindings() {
+        let executor = SqlDataServiceExecutor::new(
+            TestDialect,
+            EmptyTransport,
+            CountingSchemaProvider {
+                lookups: Arc::new(AtomicUsize::new(0)),
+            },
+        );
+        let result = executor
+            .mutate(MutationRequest::Batch(vec![
+                MutationRequest::Insert(
+                    teaql_core::InsertCommand::new("Order").value("name", "first"),
+                ),
+                MutationRequest::Insert(
+                    teaql_core::InsertCommand::new("Order").value("name", "second"),
+                ),
+            ]))
+            .await
+            .unwrap();
+        assert_eq!(result.metadata.statements.len(), 2);
+        for (child, value) in result.metadata.statements.iter().zip(["first", "second"]) {
+            assert_eq!(child.params, [Value::from(value)]);
+            assert!(child.parameterized_query.as_ref().unwrap().contains("$1"));
+            assert_eq!(
+                child.sql_log.parameter_policies,
+                [teaql_data_service::SqlParameterLogPolicy::Plain]
+            );
+            assert!(child.debug_query.is_none());
+        }
+    }
+
     #[tokio::test]
     async fn skips_execution_metadata_when_caller_will_discard_it() {
         let executor = SqlDataServiceExecutor::new(
@@ -761,6 +870,46 @@ mod tests {
         assert!(result.metadata.parameterized_query.is_none());
         assert!(result.metadata.params.is_empty());
         assert!(result.metadata.trace_chain.is_empty());
+    }
+
+    #[tokio::test]
+    async fn sql_executor_never_eagerly_expands_private_values_even_when_diagnostics_requested() {
+        let executor = SqlDataServiceExecutor::new(
+            TestDialect,
+            EmptyTransport,
+            CountingSchemaProvider {
+                lookups: Arc::new(AtomicUsize::new(0)),
+            },
+        );
+        let mut request = query_request(true);
+        request.query = request
+            .query
+            .filter(Expr::eq("name", "PRIVATE-BINDING-CANARY"));
+        let result = executor.query(request).await.unwrap();
+        assert!(result.metadata.debug_query.is_none());
+        assert!(
+            !result
+                .metadata
+                .parameterized_query
+                .as_ref()
+                .unwrap()
+                .contains("PRIVATE-BINDING-CANARY")
+        );
+        assert_eq!(
+            result.metadata.params,
+            vec![Value::from("PRIVATE-BINDING-CANARY")]
+        );
+        let inserted = executor
+            .mutate(MutationRequest::Insert(
+                teaql_core::InsertCommand::new("Order").value("name", "PRIVATE-BINDING-CANARY"),
+            ))
+            .await
+            .unwrap();
+        assert!(inserted.metadata.debug_query.is_none());
+        assert_eq!(
+            inserted.metadata.params,
+            vec![Value::from("PRIVATE-BINDING-CANARY")]
+        );
     }
 
     #[tokio::test]
@@ -1050,10 +1199,33 @@ impl<
     S: teaql_data_service::SchemaProvider + Send + Sync,
 > QueryExecutor for SqlDataServiceExecutor<D, T, S>
 {
+    fn query_log_intent(&self, query: &SelectQuery) -> teaql_data_service::SqlIntentRedactions {
+        self.entity_descriptor(&query.entity)
+            .and_then(|entity| self.compile_select_cached(&entity, query).ok())
+            .map(|compiled| {
+                teaql_data_service::SqlIntentRedactions::from_bindings(
+                    &compiled.log_context,
+                    &compiled.params,
+                    &compiled.sql,
+                )
+            })
+            .unwrap_or_else(|| {
+                teaql_data_service::SqlIntentRedactions::from_unclassified_query(query)
+            })
+    }
+
     fn query(
         &self,
         request: QueryRequest,
     ) -> impl std::future::Future<Output = Result<QueryResult, Self::Error>> + Send {
+        self.query_observed(request, None)
+    }
+
+    fn query_observed<'a>(
+        &'a self,
+        request: QueryRequest,
+        observer: Option<teaql_data_service::ExecutionObserver<'a>>,
+    ) -> impl std::future::Future<Output = Result<QueryResult, Self::Error>> + Send + 'a {
         async move {
             let entity_desc = self
                 .entity_descriptor(&request.query.entity)
@@ -1102,38 +1274,56 @@ impl<
             let compiled = self
                 .compile_select_cached(&entity_desc, &request.query)
                 .map_err(SqlExecutorError::Compile)?;
-            let start = request.capture_execution_metadata.then(SystemTime::now);
-            let rows = self
-                .transport
-                .fetch_all_compact_sql(&compiled)
+            execute_compiled_query(&self.dialect, &self.transport, compiled, request, observer)
                 .await
-                .map_err(SqlExecutorError::Transport)?;
-            let end = request.capture_execution_metadata.then(SystemTime::now);
-            let debug_query = request
-                .capture_debug_query
-                .then(|| compiled.debug_sql(self.dialect.kind()));
-            let metadata = if request.capture_execution_metadata {
-                let CompiledQuery { sql, params, .. } = compiled;
-                ExecutionMetadata {
-                    backend: format!("{:?}", self.dialect.kind()).to_ascii_lowercase(),
-                    operation: DataServiceOperation::Query,
-                    started_at: start.expect("captured query start"),
-                    ended_at: end.expect("captured query end"),
-                    affected_rows: None,
-                    result_count: Some(rows.len()),
-                    trace_chain: request.trace_chain,
-                    comment: request.comment,
-                    backend_request_id: None,
-                    parameterized_query: Some(sql),
-                    params,
-                    debug_query,
-                }
-            } else {
-                ExecutionMetadata::unrecorded_query(rows.len())
-            };
-
-            Ok(QueryResult { rows, metadata })
         }
+    }
+}
+
+async fn execute_compiled_query<D: SqlDialect + Sync, T: SqlTransport>(
+    dialect: &D,
+    transport: &T,
+    compiled: CompiledQuery,
+    request: QueryRequest,
+    observer: Option<teaql_data_service::ExecutionObserver<'_>>,
+) -> Result<QueryResult, SqlExecutorError<T::Error>> {
+    let metadata = request
+        .capture_execution_metadata
+        .then(|| query_diagnostic_metadata(dialect, &compiled, &request));
+    let mut diagnostic = crate::diagnostic_execution::StatementDiagnostic::new(metadata, observer);
+    let result = transport.fetch_all_compact_sql(&compiled).await;
+    let rows = result.map_err(|error| {
+        diagnostic.fail();
+        SqlExecutorError::Transport(error)
+    })?;
+    let mut metadata = diagnostic
+        .success()
+        .unwrap_or_else(|| ExecutionMetadata::unrecorded_query(rows.len()));
+    metadata.result_count = Some(rows.len());
+    Ok(QueryResult { rows, metadata })
+}
+
+fn query_diagnostic_metadata<D: SqlDialect>(
+    dialect: &D,
+    compiled: &CompiledQuery,
+    request: &QueryRequest,
+) -> ExecutionMetadata {
+    let now = SystemTime::now();
+    ExecutionMetadata {
+        statements: Vec::new(),
+        sql_log: compiled.log_context.clone(),
+        backend: format!("{:?}", dialect.kind()).to_ascii_lowercase(),
+        operation: DataServiceOperation::Query,
+        started_at: now,
+        ended_at: now,
+        affected_rows: None,
+        result_count: None,
+        trace_chain: request.trace_chain.clone(),
+        comment: request.comment.clone(),
+        backend_request_id: None,
+        parameterized_query: Some(compiled.sql.clone()),
+        params: compiled.params.clone(),
+        debug_query: None,
     }
 }
 
@@ -1147,115 +1337,26 @@ impl<
         &self,
         request: MutationRequest,
     ) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send {
+        self.mutate_observed(request, None)
+    }
+
+    fn mutate_observed<'scope>(
+        &'scope self,
+        request: MutationRequest,
+        observer: Option<teaql_data_service::ExecutionObserver<'scope>>,
+    ) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send + 'scope
+    {
         async move {
-            let entity_name = match &request {
-                MutationRequest::Insert(cmd) => &cmd.entity,
-                MutationRequest::Update(cmd) => &cmd.entity,
-                MutationRequest::Delete(cmd) => &cmd.entity,
-                MutationRequest::Recover(cmd) => &cmd.entity,
-                MutationRequest::Batch(mutations) => {
-                    let mut total_affected = 0;
-                    let mut parameterized_queries = Vec::new();
-                    let mut params = Vec::new();
-                    let mut debug_queries = Vec::new();
-                    let start = SystemTime::now();
-                    for req in mutations {
-                        let res = Box::pin(self.mutate(req.clone())).await?;
-                        total_affected += res.affected_rows;
-                        if let Some(query) = res.metadata.parameterized_query {
-                            parameterized_queries.push(query);
-                        }
-                        params.extend(res.metadata.params);
-                        if let Some(query) = res.metadata.debug_query {
-                            debug_queries.push(query);
-                        }
-                    }
-                    let end = SystemTime::now();
-                    return Ok(MutationResult {
-                        affected_rows: total_affected,
-                        generated_values: GeneratedValues::default(),
-                        persisted_snapshot: None,
-                        metadata: ExecutionMetadata {
-                            backend: format!("{:?}", self.dialect.kind()).to_ascii_lowercase(),
-                            operation: DataServiceOperation::Batch,
-                            started_at: start,
-                            ended_at: end,
-                            affected_rows: Some(total_affected),
-                            result_count: None,
-                            trace_chain: Vec::new(),
-                            comment: None,
-                            backend_request_id: None,
-                            parameterized_query: (!parameterized_queries.is_empty())
-                                .then(|| parameterized_queries.join("; ")),
-                            params,
-                            debug_query: (!debug_queries.is_empty())
-                                .then(|| debug_queries.join("; ")),
-                        },
-                    });
-                }
-            };
-
-            let entity_desc = self.entity_descriptor(entity_name).ok_or_else(|| {
-                SqlExecutorError::Compile(SqlCompileError::UnknownEntity(entity_name.clone()))
-            })?;
-
-            let compiled = match &request {
-                MutationRequest::Insert(cmd) => self
-                    .dialect
-                    .compile_insert(&entity_desc, cmd)
-                    .map_err(SqlExecutorError::Compile)?,
-                MutationRequest::Update(cmd) => self
-                    .dialect
-                    .compile_update(&entity_desc, cmd)
-                    .map_err(SqlExecutorError::Compile)?,
-                MutationRequest::Delete(cmd) => self
-                    .dialect
-                    .compile_delete(&entity_desc, cmd)
-                    .map_err(SqlExecutorError::Compile)?,
-                MutationRequest::Recover(cmd) => self
-                    .dialect
-                    .compile_recover(&entity_desc, cmd)
-                    .map_err(SqlExecutorError::Compile)?,
-                MutationRequest::Batch(_) => unreachable!(),
-            };
-
-            let start = SystemTime::now();
-            let affected_rows = self
-                .transport
-                .execute_sql(&compiled)
-                .await
-                .map_err(SqlExecutorError::Transport)?;
-            let end = SystemTime::now();
-
-            let operation = match &request {
-                MutationRequest::Insert(_) => DataServiceOperation::Insert,
-                MutationRequest::Update(_) => DataServiceOperation::Update,
-                MutationRequest::Delete(_) => DataServiceOperation::Delete,
-                MutationRequest::Recover(_) => DataServiceOperation::Recover,
-                MutationRequest::Batch(_) => DataServiceOperation::Batch,
-            };
-
-            let metadata = ExecutionMetadata {
-                backend: format!("{:?}", self.dialect.kind()).to_ascii_lowercase(),
-                operation,
-                started_at: start,
-                ended_at: end,
-                affected_rows: Some(affected_rows),
-                result_count: None,
-                trace_chain: request.trace_chain().to_vec(),
-                comment: request.comment().map(|s| s.to_owned()),
-                backend_request_id: None,
-                parameterized_query: Some(compiled.sql.clone()),
-                params: compiled.params.clone(),
-                debug_query: Some(compiled.debug_sql(self.dialect.kind())),
-            };
-
-            Ok(MutationResult {
-                affected_rows,
-                generated_values: GeneratedValues::default(),
-                persisted_snapshot: None,
-                metadata,
-            })
+            mutation_execution::execute(
+                &self.dialect,
+                &self.transport,
+                &|name| self.entity_descriptor(name),
+                &self.select_plan_cache,
+                request,
+                false,
+                observer,
+            )
+            .await
         }
     }
 }
@@ -1277,7 +1378,7 @@ async fn execute_guarded_mutation<D, T>(
     dialect: &D,
     transport: &T,
     entity: &EntityDescriptor,
-    select_plan_cache: &RwLock<Vec<(SelectQuery, String)>>,
+    select_plan_cache: &RwLock<Vec<CachedSelectPlan>>,
     request: GuardedMutationRequest,
 ) -> Result<MutationResult, SqlExecutorError<T::Error>>
 where
@@ -1345,6 +1446,8 @@ where
     };
 
     let metadata = ExecutionMetadata {
+        statements: Vec::new(),
+        sql_log: compiled.log_context.clone(),
         backend: format!("{:?}", dialect.kind()).to_ascii_lowercase(),
         operation,
         started_at: start,
@@ -1356,7 +1459,7 @@ where
         backend_request_id: None,
         parameterized_query: Some(compiled.sql.clone()),
         params: compiled.params.clone(),
-        debug_query: Some(compiled.debug_sql(dialect.kind())),
+        debug_query: None,
     };
 
     Ok(MutationResult {
@@ -1377,18 +1480,27 @@ impl<
         &self,
         request: GuardedMutationRequest,
     ) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send {
+        self.mutate_guarded_observed(request, None)
+    }
+    fn mutate_guarded_observed<'scope>(
+        &'scope self,
+        request: GuardedMutationRequest,
+        observer: Option<teaql_data_service::ExecutionObserver<'scope>>,
+    ) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send + 'scope
+    {
         async move {
             let entity_name = guarded_mutation_entity_name(&request.mutation)
                 .map_err(SqlExecutorError::Compile)?;
             let entity = self.entity_descriptor(entity_name).ok_or_else(|| {
                 SqlExecutorError::Compile(SqlCompileError::UnknownEntity(entity_name.to_owned()))
             })?;
-            execute_guarded_mutation(
+            mutation_execution::guarded(
                 &self.dialect,
                 &self.transport,
                 &entity,
                 &self.select_plan_cache,
                 request,
+                observer,
             )
             .await
         }
@@ -1401,7 +1513,7 @@ pub struct SqlDataServiceTransaction<'a, D, Tx: SqlTransport + SqlTransaction, S
     pub transport: Tx,
     pub schema_provider: &'a S,
     descriptor_cache: Arc<RwLock<HashMap<String, Arc<teaql_core::EntityDescriptor>>>>,
-    select_plan_cache: Arc<RwLock<Vec<(SelectQuery, String)>>>,
+    select_plan_cache: Arc<RwLock<Vec<CachedSelectPlan>>>,
 }
 
 impl<'a, D, Tx: SqlTransport + SqlTransaction, S> SqlDataServiceTransaction<'a, D, Tx, S>
@@ -1472,18 +1584,27 @@ impl<
         &self,
         request: GuardedMutationRequest,
     ) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send {
+        self.mutate_guarded_observed(request, None)
+    }
+    fn mutate_guarded_observed<'scope>(
+        &'scope self,
+        request: GuardedMutationRequest,
+        observer: Option<teaql_data_service::ExecutionObserver<'scope>>,
+    ) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send + 'scope
+    {
         async move {
             let entity_name = guarded_mutation_entity_name(&request.mutation)
                 .map_err(SqlExecutorError::Compile)?;
             let entity = self.entity_descriptor(entity_name).ok_or_else(|| {
                 SqlExecutorError::Compile(SqlCompileError::UnknownEntity(entity_name.to_owned()))
             })?;
-            execute_guarded_mutation(
+            mutation_execution::guarded(
                 self.dialect,
                 &self.transport,
                 &entity,
                 &self.select_plan_cache,
                 request,
+                observer,
             )
             .await
         }
@@ -1497,10 +1618,33 @@ impl<
     S: teaql_data_service::SchemaProvider + Send + Sync,
 > QueryExecutor for SqlDataServiceTransaction<'a, D, Tx, S>
 {
+    fn query_log_intent(&self, query: &SelectQuery) -> teaql_data_service::SqlIntentRedactions {
+        self.entity_descriptor(&query.entity)
+            .and_then(|entity| self.compile_select_cached(&entity, query).ok())
+            .map(|compiled| {
+                teaql_data_service::SqlIntentRedactions::from_bindings(
+                    &compiled.log_context,
+                    &compiled.params,
+                    &compiled.sql,
+                )
+            })
+            .unwrap_or_else(|| {
+                teaql_data_service::SqlIntentRedactions::from_unclassified_query(query)
+            })
+    }
+
     fn query(
         &self,
         request: QueryRequest,
     ) -> impl std::future::Future<Output = Result<QueryResult, Self::Error>> + Send {
+        self.query_observed(request, None)
+    }
+
+    fn query_observed<'b>(
+        &'b self,
+        request: QueryRequest,
+        observer: Option<teaql_data_service::ExecutionObserver<'b>>,
+    ) -> impl std::future::Future<Output = Result<QueryResult, Self::Error>> + Send + 'b {
         async move {
             let entity_desc = self
                 .entity_descriptor(&request.query.entity)
@@ -1513,32 +1657,7 @@ impl<
             let compiled = self
                 .compile_select_cached(&entity_desc, &request.query)
                 .map_err(SqlExecutorError::Compile)?;
-            let start = SystemTime::now();
-            let rows = self
-                .transport
-                .fetch_all_compact_sql(&compiled)
-                .await
-                .map_err(SqlExecutorError::Transport)?;
-            let end = SystemTime::now();
-
-            let metadata = ExecutionMetadata {
-                backend: format!("{:?}", self.dialect.kind()).to_ascii_lowercase(),
-                operation: DataServiceOperation::Query,
-                started_at: start,
-                ended_at: end,
-                affected_rows: None,
-                result_count: Some(rows.len()),
-                trace_chain: request.trace_chain,
-                comment: request.comment,
-                backend_request_id: None,
-                parameterized_query: Some(compiled.sql.clone()),
-                params: compiled.params.clone(),
-                debug_query: request
-                    .capture_debug_query
-                    .then(|| compiled.debug_sql(self.dialect.kind())),
-            };
-
-            Ok(QueryResult { rows, metadata })
+            execute_compiled_query(self.dialect, &self.transport, compiled, request, observer).await
         }
     }
 }
@@ -1550,6 +1669,35 @@ impl<
     S: teaql_data_service::SchemaProvider + Send + Sync,
 > teaql_data_service::StreamQueryExecutor for SqlDataServiceTransaction<'a, D, Tx, S>
 {
+    fn query_stream_observed<'b>(
+        &'b self,
+        mut request: QueryRequest,
+        chunk_size: usize,
+        observer: teaql_data_service::ExecutionObserver<'b>,
+    ) -> teaql_data_service::QueryStream<'b, Self::Error> {
+        if !request.capture_execution_metadata {
+            return self.query_stream(request, chunk_size);
+        }
+        let compiled = self
+            .entity_descriptor(&request.query.entity)
+            .ok_or_else(|| SqlCompileError::UnknownEntity(request.query.entity.clone()))
+            .and_then(|entity| self.compile_select_cached(&entity, &request.query));
+        let compiled = match compiled {
+            Ok(compiled) => compiled,
+            Err(error) => {
+                return Box::pin(futures_util::stream::once(async move {
+                    Err(SqlExecutorError::Compile(error))
+                }));
+            }
+        };
+        let metadata = query_diagnostic_metadata(self.dialect, &compiled, &request);
+        // This adapter buffers the query before chunk delivery. Its one terminal
+        // diagnostic counts delivered chunks, not the full buffer returned by SQL.
+        request.capture_execution_metadata = false;
+        let source = self.query_stream(request, chunk_size);
+        crate::diagnostic_stream::DiagnosticStream::wrap(source, metadata, observer)
+    }
+
     fn query_stream(
         &self,
         request: QueryRequest,
@@ -1594,146 +1742,26 @@ impl<
         &self,
         request: MutationRequest,
     ) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send {
+        self.mutate_observed(request, None)
+    }
+
+    fn mutate_observed<'scope>(
+        &'scope self,
+        request: MutationRequest,
+        observer: Option<teaql_data_service::ExecutionObserver<'scope>>,
+    ) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send + 'scope
+    {
         async move {
-            let entity_name = match &request {
-                MutationRequest::Insert(cmd) => &cmd.entity,
-                MutationRequest::Update(cmd) => &cmd.entity,
-                MutationRequest::Delete(cmd) => &cmd.entity,
-                MutationRequest::Recover(cmd) => &cmd.entity,
-                MutationRequest::Batch(mutations) => {
-                    let mut total_affected = 0;
-                    let mut parameterized_queries = Vec::new();
-                    let mut params = Vec::new();
-                    let mut debug_queries = Vec::new();
-                    let start = SystemTime::now();
-                    for req in mutations {
-                        let res = Box::pin(self.mutate(req.clone())).await?;
-                        total_affected += res.affected_rows;
-                        if let Some(query) = res.metadata.parameterized_query {
-                            parameterized_queries.push(query);
-                        }
-                        params.extend(res.metadata.params);
-                        if let Some(query) = res.metadata.debug_query {
-                            debug_queries.push(query);
-                        }
-                    }
-                    let end = SystemTime::now();
-                    return Ok(MutationResult {
-                        affected_rows: total_affected,
-                        generated_values: GeneratedValues::default(),
-                        persisted_snapshot: None,
-                        metadata: ExecutionMetadata {
-                            backend: format!("{:?}", self.dialect.kind()).to_ascii_lowercase(),
-                            operation: DataServiceOperation::Batch,
-                            started_at: start,
-                            ended_at: end,
-                            affected_rows: Some(total_affected),
-                            result_count: None,
-                            trace_chain: Vec::new(),
-                            comment: None,
-                            backend_request_id: None,
-                            parameterized_query: (!parameterized_queries.is_empty())
-                                .then(|| parameterized_queries.join("; ")),
-                            params,
-                            debug_query: (!debug_queries.is_empty())
-                                .then(|| debug_queries.join("; ")),
-                        },
-                    });
-                }
-            };
-
-            let entity_desc = self.entity_descriptor(entity_name).ok_or_else(|| {
-                SqlExecutorError::Compile(SqlCompileError::UnknownEntity(entity_name.clone()))
-            })?;
-
-            let compiled = match &request {
-                MutationRequest::Insert(cmd) => self
-                    .dialect
-                    .compile_insert(&entity_desc, cmd)
-                    .map_err(SqlExecutorError::Compile)?,
-                MutationRequest::Update(cmd) => self
-                    .dialect
-                    .compile_update(&entity_desc, cmd)
-                    .map_err(SqlExecutorError::Compile)?,
-                MutationRequest::Delete(cmd) => self
-                    .dialect
-                    .compile_delete(&entity_desc, cmd)
-                    .map_err(SqlExecutorError::Compile)?,
-                MutationRequest::Recover(cmd) => self
-                    .dialect
-                    .compile_recover(&entity_desc, cmd)
-                    .map_err(SqlExecutorError::Compile)?,
-                MutationRequest::Batch(_) => unreachable!("batch handled above"),
-            };
-
-            let start = SystemTime::now();
-            let affected_rows = self
-                .transport
-                .execute_sql(&compiled)
-                .await
-                .map_err(SqlExecutorError::Transport)?;
-            let end = SystemTime::now();
-
-            let operation = match &request {
-                MutationRequest::Insert(_) => DataServiceOperation::Insert,
-                MutationRequest::Update(_) => DataServiceOperation::Update,
-                MutationRequest::Delete(_) => DataServiceOperation::Delete,
-                MutationRequest::Recover(_) => DataServiceOperation::Recover,
-                MutationRequest::Batch(_) => DataServiceOperation::Batch,
-            };
-
-            let persisted_id = match &request {
-                MutationRequest::Insert(cmd) => cmd.values.get("id").cloned(),
-                MutationRequest::Update(cmd) => Some(cmd.id.clone()),
-                MutationRequest::Delete(cmd) if cmd.soft_delete => Some(cmd.id.clone()),
-                MutationRequest::Recover(cmd) => Some(cmd.id.clone()),
-                MutationRequest::Delete(_) | MutationRequest::Batch(_) => None,
-            };
-            let persisted_snapshot = if affected_rows == 1 {
-                if let Some(id) = persisted_id {
-                    let query = SelectQuery::new(entity_name.clone()).filter(Expr::eq("id", id));
-                    let compiled_readback = self
-                        .compile_select_cached(&entity_desc, &query)
-                        .map_err(SqlExecutorError::Compile)?;
-                    let mut rows = self
-                        .transport
-                        .fetch_all_compact_sql(&compiled_readback)
-                        .await
-                        .map_err(SqlExecutorError::Transport)?;
-                    if rows.len() != 1 {
-                        return Err(SqlExecutorError::PersistedRecord(format!(
-                            "persisted {entity_name} record could not be read back"
-                        )));
-                    }
-                    rows.pop().map(|row| EntitySnapshot::from(row.into_map()))
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            let metadata = ExecutionMetadata {
-                backend: format!("{:?}", self.dialect.kind()).to_ascii_lowercase(),
-                operation,
-                started_at: start,
-                ended_at: end,
-                affected_rows: Some(affected_rows),
-                result_count: None,
-                trace_chain: request.trace_chain().to_vec(),
-                comment: request.comment().map(|s| s.to_owned()),
-                backend_request_id: None,
-                parameterized_query: Some(compiled.sql.clone()),
-                params: compiled.params.clone(),
-                debug_query: Some(compiled.debug_sql(self.dialect.kind())),
-            };
-
-            Ok(MutationResult {
-                affected_rows,
-                generated_values: GeneratedValues::default(),
-                persisted_snapshot,
-                metadata,
-            })
+            mutation_execution::execute(
+                self.dialect,
+                &self.transport,
+                &|name| self.entity_descriptor(name),
+                &self.select_plan_cache,
+                request,
+                true,
+                observer,
+            )
+            .await
         }
     }
 }
@@ -1801,6 +1829,38 @@ impl<
     S: teaql_data_service::SchemaProvider + Send + Sync,
 > teaql_data_service::StreamQueryExecutor for SqlDataServiceExecutor<D, T, S>
 {
+    fn query_stream_observed<'a>(
+        &'a self,
+        request: QueryRequest,
+        chunk_size: usize,
+        observer: teaql_data_service::ExecutionObserver<'a>,
+    ) -> teaql_data_service::QueryStream<'a, Self::Error> {
+        use futures_util::StreamExt;
+        if !request.capture_execution_metadata {
+            return self.query_stream(request, chunk_size);
+        }
+        let compiled = self
+            .entity_descriptor(&request.query.entity)
+            .ok_or_else(|| SqlCompileError::UnknownEntity(request.query.entity.clone()))
+            .and_then(|entity| self.compile_select_cached(&entity, &request.query));
+        let compiled = match compiled {
+            Ok(compiled) => compiled,
+            // No SQL was compiled/executed, so do not invent an SQL diagnostic.
+            Err(error) => {
+                return Box::pin(futures_util::stream::once(async move {
+                    Err(SqlExecutorError::Compile(error))
+                }));
+            }
+        };
+        let metadata = query_diagnostic_metadata(&self.dialect, &compiled, &request);
+        let source = Box::pin(
+            self.transport
+                .stream_sql(compiled, chunk_size)
+                .map(|item| item.map_err(SqlExecutorError::Transport)),
+        );
+        crate::diagnostic_stream::DiagnosticStream::wrap(source, metadata, observer)
+    }
+
     fn query_stream(
         &self,
         request: teaql_data_service::QueryRequest,

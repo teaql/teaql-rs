@@ -176,24 +176,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // This independently loaded graph still has version 2 while the database
     // has version 3. Failure must not persist its private value or log it.
     nested.update_name("PRIVATE-FAILURE-CANARY");
-    assert!(nested.audit_as("reject stale privacy update").save(&context).await.is_err());
+    assert!(nested
+        .audit_as("reject stale privacy update")
+        .save(&context)
+        .await
+        .is_err());
     let unchanged = Q::schools()
         .with_id_is(final_saved.id())
         .select_self_fields()
         .comment("what: read after rejected stale update")
         .purpose("why: prove failure preserves the database value")
-        .execute_for_one(&context).await?.expect("original row remains");
+        .execute_for_one(&context)
+        .await?
+        .expect("original row remains");
     assert_eq!(unchanged.name(), "Env Helper School Renamed");
     final_reread.mark_for_deletion();
-    final_reread.audit_as("delete privacy fixture").save(&context).await?;
+    final_reread
+        .audit_as("delete privacy fixture")
+        .save(&context)
+        .await?;
     assert!(Q::schools()
         .with_id_is(final_saved.id())
         .comment("what: read deleted privacy fixture")
         .purpose("why: verify deletion reached SQLite")
-        .execute_for_one(&context).await?.is_none());
+        .execute_for_one(&context)
+        .await?
+        .is_none());
     // In-memory runtime log buffers are log destinations too.
     let logs = format!("{:?}", context.sql_logs());
+    // The source model marks name as sensitive; address remains ordinary.
+    // Both successful and rejected writes must use the same field policy.
     assert!(!logs.contains("Env Helper School"));
+    assert!(logs.contains("En*************ol"));
+    assert!(logs.contains("1 Runtime Road"));
+    assert!(context
+        .sql_logs()
+        .iter()
+        .all(|entry| entry.log_context.omission_reason.is_none()));
     assert!(!logs.contains("PRIVATE-FAILURE-CANARY"));
     println!("CRUD_FAILURE_LOG_PRIVACY_PASS");
     println!("SQL_LOG_SWITCH_SQLITE_PASS query=off mutation=off");

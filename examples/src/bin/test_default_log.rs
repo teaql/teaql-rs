@@ -10,13 +10,19 @@ async fn main() {
     // The framework will auto-generate test_default_log.log
 
     let entry = SqlLogEntry {
+        log_context: teaql_data_service::SqlLogContext {
+            database_kind: Some("postgresql".into()),
+            parameter_policies: vec![teaql_data_service::SqlParameterLogPolicy::Plain],
+            generated_sql: true,
+            ..Default::default()
+        },
         operation: SqlLogOperation::Select,
         comment: Some("what: load an order".to_string()),
         purpose: Some("why: verify default SQL logging".to_string()),
         audit_reason: None,
         trace_path: vec![],
         sql: "SELECT * FROM orders WHERE id = $1".to_string(),
-        params: vec![],
+        params: vec![teaql_core::Value::I64(1)],
         debug_sql: "SELECT * FROM orders WHERE id = 1".to_string(),
         pretty_sql: "SELECT * FROM orders WHERE id = 1".to_string(),
         started_at: SystemTime::now(),

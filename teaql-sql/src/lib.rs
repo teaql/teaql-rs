@@ -1,5 +1,13 @@
+mod bindings;
 mod dialect;
+pub use bindings::SqlBindings;
+#[cfg(test)]
+mod binding_tests;
+mod diagnostic_execution;
+mod diagnostic_stream;
 mod executor;
+#[cfg(test)]
+mod log_rendering_tests;
 mod types;
 
 pub use dialect::{
@@ -11,7 +19,7 @@ pub use executor::{
     SqlDataServiceExecutor, SqlDataServiceTransaction, SqlExecutorError, SqlTransaction,
     SqlTransactionTransport, SqlTransport, StreamingSqlTransport,
 };
-pub use types::{CompiledQuery, DatabaseKind, SqlCompileError};
+pub use types::{CompiledQuery, DatabaseKind, SqlCompileError, render_sql_value, render_sql_with};
 
 #[cfg(test)]
 mod tests {
@@ -42,7 +50,7 @@ mod tests {
             &self,
             entity: &teaql_core::EntityDescriptor,
             args: &[teaql_core::Expr],
-            params: &mut Vec<teaql_core::Value>,
+            params: &mut crate::SqlBindings,
         ) -> Result<String, crate::SqlCompileError> {
             let [arg] = args else {
                 return Err(crate::SqlCompileError::InvalidFunctionArguments(
@@ -255,6 +263,12 @@ mod tests {
         assert_eq!(
             query,
             CompiledQuery {
+                log_context: teaql_data_service::SqlLogContext {
+                    database_kind: Some("postgresql".into()),
+                    parameter_policies: vec![teaql_data_service::SqlParameterLogPolicy::Plain],
+                    generated_sql: true,
+                    ..Default::default()
+                },
                 sql: "SELECT \"id\", \"name\" FROM \"orders\" WHERE (\"name\" = $1) ORDER BY \"id\" DESC LIMIT 10 OFFSET 5".to_owned(),
                 params: vec![Value::from("A")],
                 comment: None,
@@ -393,6 +407,12 @@ mod tests {
         assert_eq!(
             query,
             CompiledQuery {
+                log_context: teaql_data_service::SqlLogContext {
+                    database_kind: Some("postgresql".into()),
+                    parameter_policies: vec![teaql_data_service::SqlParameterLogPolicy::Plain],
+                    generated_sql: true,
+                    ..Default::default()
+                },
                 sql: format!(
                     "SELECT {ORDER_DEFAULT_PROJECTION} FROM \"orders\" WHERE (SOUNDEX(\"name\") = SOUNDEX($1))"
                 ),
@@ -769,6 +789,7 @@ mod tests {
     #[test]
     fn renders_postgres_debug_sql_with_inlined_params() {
         let query = CompiledQuery {
+            log_context: Default::default(),
             sql: "SELECT * FROM \"orders\" WHERE ((\"name\" = $1) AND (\"id\" = ANY($2)) AND ('$3' = '$3'))".to_owned(),
             params: vec![
                 Value::from("Bob's Shop"),
@@ -786,6 +807,7 @@ mod tests {
     #[test]
     fn renders_sqlite_debug_sql_with_inlined_params() {
         let query = CompiledQuery {
+            log_context: Default::default(),
             sql: "UPDATE \"orders\" SET \"name\" = ? WHERE ((\"id\" = ?) AND ('?' = '?'))"
                 .to_owned(),
             params: vec![Value::from("Alice's Shop"), Value::from(7_u64)],
@@ -801,6 +823,7 @@ mod tests {
     #[test]
     fn debug_sql_renders_copy_paste_statement_with_shared_semantics() {
         let query = CompiledQuery {
+            log_context: Default::default(),
             sql: "SELECT * FROM school WHERE name = $1 AND active = $2 AND phone IS $3 AND repeated = $1 AND note = '$2'".to_owned(),
             params: vec![Value::from("O'Brien School"), Value::Bool(true), Value::Null],
             comment: None,
@@ -815,6 +838,7 @@ mod tests {
     #[test]
     fn sqlite_debug_sql_preserves_comments_and_temporal_storage_literals() {
         let query = CompiledQuery {
+            log_context: Default::default(),
             sql: "-- line ? $1\nSELECT '?', \"identifier?\", ?, ? /* block ? */".to_owned(),
             params: vec![
                 Value::Date("2024-02-29".parse().unwrap()),
@@ -836,6 +860,7 @@ mod tests {
             Value::Timestamp(teaql_core::time::Timestamp(-315_521_754_322)),
         ];
         let postgres = CompiledQuery {
+            log_context: Default::default(),
             sql: "-- ignored $1\nSELECT $1, $2 /* ignored $2 */".to_owned(),
             params: params.clone(),
             comment: None,
@@ -845,6 +870,7 @@ mod tests {
             "-- ignored $1\nSELECT DATE '2024-02-29', TIMESTAMPTZ '1960-01-02 03:04:05.678Z' /* ignored $2 */"
         );
         let mysql = CompiledQuery {
+            log_context: Default::default(),
             sql: "SELECT ?, ? /* ignored ? */".to_owned(),
             params,
             comment: None,

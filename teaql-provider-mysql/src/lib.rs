@@ -929,7 +929,7 @@ mod streaming_tests {
             return;
         };
         let executor = MysqlMutationExecutor::new(mysql_async::Pool::new(url.as_str()));
-        let query = CompiledQuery { sql: "SELECT id FROM (SELECT 1 id UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5) fixture ORDER BY id".to_owned(), params: vec![], comment: None };
+        let query = CompiledQuery { log_context: Default::default(), sql: "SELECT id FROM (SELECT 1 id UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5) fixture ORDER BY id".to_owned(), params: vec![], comment: None };
         let mut stream = executor.stream_sql(query, 2);
         let mut sizes = Vec::new();
         while let Some(chunk) = stream.next().await {
@@ -946,6 +946,7 @@ mod streaming_tests {
         let executor = MysqlMutationExecutor::new(mysql_async::Pool::new(url.as_str()));
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE IF EXISTS teaql_boolean_runtime_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -954,6 +955,7 @@ mod streaming_tests {
             .unwrap();
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "CREATE TABLE teaql_boolean_runtime_fixture(id BIGINT, required_flag BOOLEAN NOT NULL, optional_flag BOOLEAN)".to_owned(),
                 params: vec![],
                 comment: None,
@@ -967,6 +969,7 @@ mod streaming_tests {
         ] {
             executor
                 .execute_sql(&CompiledQuery {
+                    log_context: Default::default(),
                     sql: "INSERT INTO teaql_boolean_runtime_fixture VALUES (?, ?, ?)".to_owned(),
                     params: vec![Value::I64(id), required_flag, optional_flag],
                     comment: None,
@@ -976,6 +979,7 @@ mod streaming_tests {
         }
         let rows = executor
             .fetch_all_compact_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "SELECT required_flag, optional_flag FROM teaql_boolean_runtime_fixture ORDER BY id".to_owned(),
                 params: vec![],
                 comment: None,
@@ -989,6 +993,7 @@ mod streaming_tests {
         assert_eq!(rows[2].get("optional_flag"), Some(&Value::Null));
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE teaql_boolean_runtime_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1005,6 +1010,7 @@ mod streaming_tests {
         let executor = MysqlMutationExecutor::new(mysql_async::Pool::new(url.as_str()));
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE IF EXISTS teaql_schema_type_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1013,6 +1019,7 @@ mod streaming_tests {
             .unwrap();
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "CREATE TABLE teaql_schema_type_fixture (id BIGINT PRIMARY KEY, version BIGINT NOT NULL, name BIGINT)".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1035,6 +1042,7 @@ mod streaming_tests {
         assert!(message.contains("actual=bigint"), "{message}");
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE teaql_schema_type_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1055,6 +1063,7 @@ mod streaming_tests {
         for table in [fresh_table, incompatible_table] {
             executor
                 .execute_sql(&CompiledQuery {
+                    log_context: Default::default(),
                     sql: format!("DROP TABLE IF EXISTS {table}"),
                     params: vec![],
                     comment: None,
@@ -1064,6 +1073,7 @@ mod streaming_tests {
         }
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: format!(
                     "CREATE TABLE {incompatible_table}(
                        id BIGINT PRIMARY KEY, version BIGINT NOT NULL, name BIGINT)"
@@ -1098,6 +1108,7 @@ mod streaming_tests {
         drop(conn);
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: format!("DROP TABLE {incompatible_table}"),
                 params: vec![],
                 comment: None,
@@ -1120,6 +1131,7 @@ mod streaming_tests {
         for table in [child_table, parent_table, fresh_table] {
             executor
                 .execute_sql(&CompiledQuery {
+                    log_context: Default::default(),
                     sql: format!("DROP TABLE IF EXISTS {table}"),
                     params: vec![],
                     comment: None,
@@ -1134,6 +1146,7 @@ mod streaming_tests {
         ] {
             executor
                 .execute_sql(&CompiledQuery {
+                    log_context: Default::default(),
                     sql,
                     params: vec![],
                     comment: None,
@@ -1180,6 +1193,7 @@ mod streaming_tests {
         drop(conn);
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: format!("INSERT INTO {parent_table}(id) VALUES (999)"),
                 params: vec![],
                 comment: None,
@@ -1197,6 +1211,7 @@ mod streaming_tests {
         for table in [child_table, parent_table, fresh_table] {
             executor
                 .execute_sql(&CompiledQuery {
+                    log_context: Default::default(),
                     sql: format!("DROP TABLE {table}"),
                     params: vec![],
                     comment: None,
@@ -1215,6 +1230,7 @@ mod streaming_tests {
         let executor = MysqlMutationExecutor::new(mysql_async::Pool::new(url.as_str()));
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE IF EXISTS teaql_schema_shape_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1223,6 +1239,7 @@ mod streaming_tests {
             .unwrap();
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "CREATE TABLE teaql_schema_shape_fixture (id BIGINT PRIMARY KEY, version BIGINT NOT NULL, name VARCHAR(255), amount DECIMAL(38,10))".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1252,6 +1269,7 @@ mod streaming_tests {
 
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE teaql_schema_shape_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1260,6 +1278,7 @@ mod streaming_tests {
             .unwrap();
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "CREATE TABLE teaql_schema_shape_fixture (id BIGINT PRIMARY KEY, version BIGINT NOT NULL, name VARCHAR(32), amount DECIMAL(18,2))".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1285,6 +1304,7 @@ mod streaming_tests {
         assert!(message.contains("actual_scale=Some(2)"), "{message}");
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE teaql_schema_shape_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1301,6 +1321,7 @@ mod streaming_tests {
         let executor = MysqlMutationExecutor::new(mysql_async::Pool::new(url.as_str()));
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE IF EXISTS teaql_schema_nullability_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1309,6 +1330,7 @@ mod streaming_tests {
             .unwrap();
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "CREATE TABLE teaql_schema_nullability_fixture (id BIGINT PRIMARY KEY, version BIGINT NOT NULL, name VARCHAR(255))".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1339,6 +1361,7 @@ mod streaming_tests {
         assert!(message.contains("actual_nullable=true"), "{message}");
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE teaql_schema_nullability_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1355,6 +1378,7 @@ mod streaming_tests {
         let executor = MysqlMutationExecutor::new(mysql_async::Pool::new(url.as_str()));
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE IF EXISTS teaql_required_evolution_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1363,6 +1387,7 @@ mod streaming_tests {
             .unwrap();
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "CREATE TABLE teaql_required_evolution_fixture (id BIGINT PRIMARY KEY, version BIGINT NOT NULL, name VARCHAR(255))".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1371,6 +1396,7 @@ mod streaming_tests {
             .unwrap();
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "INSERT INTO teaql_required_evolution_fixture(id, version, name) VALUES (1, 1, 'existing')".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1396,6 +1422,7 @@ mod streaming_tests {
         assert!(message.contains("migrate/backfill explicitly"), "{message}");
         let rows = executor
             .fetch_all_compact_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "SELECT COUNT(*) AS column_count FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='teaql_required_evolution_fixture' AND column_name='code'".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1405,6 +1432,7 @@ mod streaming_tests {
         assert_eq!(rows[0].get("column_count"), Some(&Value::I64(0)));
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE teaql_required_evolution_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1413,6 +1441,7 @@ mod streaming_tests {
             .unwrap();
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "CREATE TABLE teaql_required_evolution_fixture (id BIGINT PRIMARY KEY, version BIGINT NOT NULL, name VARCHAR(255))".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1433,6 +1462,7 @@ mod streaming_tests {
             .expect("normal installed indexes must remain idempotent");
         let rows = executor
             .fetch_all_compact_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "SELECT CAST(is_nullable AS CHAR) AS is_nullable, column_default IS NULL AS has_no_default FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='teaql_required_evolution_fixture' AND column_name='code'".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1446,6 +1476,7 @@ mod streaming_tests {
         assert_eq!(rows[0].get("has_no_default"), Some(&Value::I64(1)));
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE teaql_required_evolution_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1463,6 +1494,7 @@ mod streaming_tests {
         let executor = MysqlMutationExecutor::new(pool.clone());
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE IF EXISTS teaql_concurrent_schema_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1471,6 +1503,7 @@ mod streaming_tests {
             .unwrap();
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "CREATE TABLE teaql_concurrent_schema_fixture (id BIGINT PRIMARY KEY, version BIGINT NOT NULL)".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1499,6 +1532,7 @@ mod streaming_tests {
         }
         let rows = executor
             .fetch_all_compact_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "SELECT COUNT(*) AS column_count FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='teaql_concurrent_schema_fixture' AND column_name='code'".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1508,6 +1542,7 @@ mod streaming_tests {
         assert_eq!(rows[0].get("column_count"), Some(&Value::I64(1)));
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE teaql_concurrent_schema_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1526,6 +1561,7 @@ mod streaming_tests {
         let executor = MysqlMutationExecutor::new(pool.clone());
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE IF EXISTS teaql_mysql_fk_child_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1534,6 +1570,7 @@ mod streaming_tests {
             .unwrap();
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE IF EXISTS teaql_mysql_fk_parent_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1570,6 +1607,7 @@ mod streaming_tests {
 
         let rows = executor
             .fetch_all_compact_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "SELECT COUNT(*) AS constraint_count
                         FROM information_schema.KEY_COLUMN_USAGE
                        WHERE CONSTRAINT_SCHEMA=DATABASE()
@@ -1587,6 +1625,7 @@ mod streaming_tests {
 
         let violation = executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "INSERT INTO teaql_mysql_fk_child_fixture(id, parent_id) VALUES (1, 999)"
                     .to_owned(),
                 params: vec![],
@@ -1597,6 +1636,7 @@ mod streaming_tests {
 
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE teaql_mysql_fk_child_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1605,6 +1645,7 @@ mod streaming_tests {
             .unwrap();
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE teaql_mysql_fk_parent_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1628,6 +1669,7 @@ mod streaming_tests {
         for table in [child_table, target, wrong, fresh_table] {
             executor
                 .execute_sql(&CompiledQuery {
+                    log_context: Default::default(),
                     sql: format!("DROP TABLE IF EXISTS {table}"),
                     params: vec![],
                     comment: None,
@@ -1649,6 +1691,7 @@ mod streaming_tests {
         ] {
             executor
                 .execute_sql(&CompiledQuery {
+                    log_context: Default::default(),
                     sql,
                     params: vec![],
                     comment: None,
@@ -1695,6 +1738,7 @@ mod streaming_tests {
         for table in [child_table, target, wrong] {
             executor
                 .execute_sql(&CompiledQuery {
+                    log_context: Default::default(),
                     sql: format!("DROP TABLE {table}"),
                     params: vec![],
                     comment: None,
@@ -1717,6 +1761,7 @@ mod streaming_tests {
         for table in [child_table, parent_table] {
             executor
                 .execute_sql(&CompiledQuery {
+                    log_context: Default::default(),
                     sql: format!("DROP TABLE IF EXISTS {table}"),
                     params: vec![],
                     comment: None,
@@ -1739,6 +1784,7 @@ mod streaming_tests {
         ] {
             executor
                 .execute_sql(&CompiledQuery {
+                    log_context: Default::default(),
                     sql,
                     params: vec![],
                     comment: None,
@@ -1766,6 +1812,7 @@ mod streaming_tests {
         assert!(message.contains("installed_key_count=2"), "{message}");
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: format!(
                     "ALTER TABLE {child_table} DROP FOREIGN KEY teaql_mysql_fk_composite_old"
                 ),
@@ -1785,6 +1832,7 @@ mod streaming_tests {
         for table in [child_table, parent_table] {
             executor
                 .execute_sql(&CompiledQuery {
+                    log_context: Default::default(),
                     sql: format!("DROP TABLE {table}"),
                     params: vec![],
                     comment: None,
@@ -1808,6 +1856,7 @@ mod streaming_tests {
         ] {
             executor
                 .execute_sql(&CompiledQuery {
+                    log_context: Default::default(),
                     sql: format!("DROP TABLE IF EXISTS {}", mysql_quote_ident(table)),
                     params: vec![],
                     comment: None,
@@ -1841,6 +1890,7 @@ mod streaming_tests {
             .unwrap();
         let rows = executor
             .fetch_all_compact_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "SELECT COUNT(*) AS constraint_count
                         FROM information_schema.KEY_COLUMN_USAGE
                        WHERE CONSTRAINT_SCHEMA=DATABASE()
@@ -1859,6 +1909,7 @@ mod streaming_tests {
         ] {
             executor
                 .execute_sql(&CompiledQuery {
+                    log_context: Default::default(),
                     sql: format!("DROP TABLE {}", mysql_quote_ident(table)),
                     params: vec![],
                     comment: None,
@@ -1877,6 +1928,7 @@ mod streaming_tests {
         let executor = MysqlMutationExecutor::new(mysql_async::Pool::new(url.as_str()));
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE IF EXISTS teaql_first_index_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1890,6 +1942,7 @@ mod streaming_tests {
             .unwrap();
         let rows = executor
             .fetch_all_compact_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "SELECT COUNT(DISTINCT index_name) AS index_count FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'teaql_first_index_fixture' AND index_name = 'PK_TEAQL_FIRST_INDEX_FIXTURE_ID_VERSION'".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1899,6 +1952,7 @@ mod streaming_tests {
         assert_eq!(rows[0].get("index_count"), Some(&Value::I64(1)));
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE teaql_first_index_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1918,6 +1972,7 @@ mod streaming_tests {
         let fresh_table = "teaql_index_shape_preflight_fresh";
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: format!("DROP TABLE IF EXISTS {fresh_table}"),
                 params: vec![],
                 comment: None,
@@ -1926,6 +1981,7 @@ mod streaming_tests {
             .unwrap();
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: format!("DROP TABLE IF EXISTS {table}"),
                 params: vec![],
                 comment: None,
@@ -1934,6 +1990,7 @@ mod streaming_tests {
             .unwrap();
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: format!(
                     "CREATE TABLE {table} (id BIGINT UNSIGNED NOT NULL PRIMARY KEY, version BIGINT NOT NULL, name VARCHAR(255))"
                 ),
@@ -1944,6 +2001,7 @@ mod streaming_tests {
             .unwrap();
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: format!(
                     "CREATE INDEX PK_TEAQL_INDEX_SHAPE_FIXTURE_ID_VERSION ON {table} (version, id)"
                 ),
@@ -1988,6 +2046,7 @@ mod streaming_tests {
         ] {
             executor
                 .execute_sql(&CompiledQuery {
+                    log_context: Default::default(),
                     sql: format!("DROP INDEX PK_TEAQL_INDEX_SHAPE_FIXTURE_ID_VERSION ON {table}"),
                     params: vec![],
                     comment: None,
@@ -1996,6 +2055,7 @@ mod streaming_tests {
                 .unwrap();
             executor
                 .execute_sql(&CompiledQuery {
+                    log_context: Default::default(),
                     sql: definition.clone(),
                     params: vec![],
                     comment: None,
@@ -2015,6 +2075,7 @@ mod streaming_tests {
         }
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: format!("DROP TABLE {table}"),
                 params: vec![],
                 comment: None,
@@ -2034,6 +2095,7 @@ mod streaming_tests {
         let table = "teaql_long_declared_index_fixture_aaaaaaaaaaaaaaaaaaaaa";
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: format!("DROP TABLE IF EXISTS {table}"),
                 params: vec![],
                 comment: None,
@@ -2051,6 +2113,7 @@ mod streaming_tests {
             .expect("the bounded declared index must remain stable");
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: format!("DROP TABLE {table}"),
                 params: vec![],
                 comment: None,
@@ -2110,6 +2173,7 @@ mod streaming_tests {
         );
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: format!(
                     "CREATE TABLE {} (type_name VARCHAR(100) PRIMARY KEY, current_level BIGINT UNSIGNED NOT NULL)",
                     mysql_quote_ident(&table)
@@ -2142,6 +2206,7 @@ mod streaming_tests {
         assert!(!message.contains("mysql://"), "{message}");
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: format!("DROP TABLE {}", mysql_quote_ident(&table)),
                 params: vec![],
                 comment: None,
@@ -2158,6 +2223,7 @@ mod streaming_tests {
         let executor = MysqlMutationExecutor::new(mysql_async::Pool::new(url.as_str()));
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE IF EXISTS teaql_temporal_runtime_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -2166,6 +2232,7 @@ mod streaming_tests {
             .unwrap();
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql:
                     "CREATE TABLE teaql_temporal_runtime_fixture(id INTEGER, d DATE, t DATETIME(3))"
                         .to_owned(),
@@ -2175,6 +2242,7 @@ mod streaming_tests {
             .await
             .unwrap();
         let prepared = CompiledQuery {
+            log_context: Default::default(),
             sql: "INSERT INTO teaql_temporal_runtime_fixture VALUES (?, ?, ?)".to_owned(),
             params: vec![
                 Value::I64(1),
@@ -2186,6 +2254,7 @@ mod streaming_tests {
         executor.execute_sql(&prepared).await.unwrap();
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: prepared
                     .debug_sql(DatabaseKind::MySql)
                     .replace("VALUES (1,", "VALUES (2,"),
@@ -2196,6 +2265,7 @@ mod streaming_tests {
             .unwrap();
         let rows = executor
             .fetch_all_compact_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "SELECT d, t FROM teaql_temporal_runtime_fixture ORDER BY id".to_owned(),
                 params: vec![],
                 comment: None,
@@ -2205,6 +2275,7 @@ mod streaming_tests {
         assert_eq!(rows[0], rows[1]);
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE teaql_temporal_runtime_fixture".to_owned(),
                 params: vec![],
                 comment: None,

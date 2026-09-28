@@ -215,6 +215,19 @@ pub trait MetadataStore: Send + Sync {
     fn entity(&self, name: &str) -> Option<&EntityDescriptor>;
     fn all_entities(&self) -> Vec<&EntityDescriptor>;
     fn record_metadata_log(&self, _metadata: &teaql_data_service::ExecutionMetadata) {}
+    #[doc(hidden)]
+    fn query_diagnostic_observer(&self) -> Option<teaql_data_service::ExecutionObserver<'_>> {
+        self.capture_execution_metadata().then(|| {
+            std::sync::Arc::new(move |metadata| self.record_metadata_log(&metadata))
+                as teaql_data_service::ExecutionObserver<'_>
+        })
+    }
+    #[doc(hidden)]
+    fn mutation_diagnostic_observer(&self) -> Option<teaql_data_service::ExecutionObserver<'_>> {
+        Some(std::sync::Arc::new(move |metadata| {
+            self.record_metadata_log(&metadata)
+        }))
+    }
     fn capture_query_debug(&self) -> bool {
         true
     }

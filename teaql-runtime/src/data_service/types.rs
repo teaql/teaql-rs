@@ -16,6 +16,9 @@ pub struct EntityDataService<'a, E> {
     pub(super) entity: String,
     pub(super) data_service: ContextDataService<'a, E>,
     pub(super) trace_context: Vec<teaql_core::TraceNode>,
+    // Present only on a private query-tree scope. Never attached to UserContext,
+    // the public reusable repository, an entity ledger or a wire request.
+    pub(super) query_log_intent: Option<std::sync::Mutex<teaql_data_service::SqlIntentRedactions>>,
 }
 
 impl<'a, E> EntityDataService<'a, E> {
@@ -36,12 +39,79 @@ impl<'a, E> EntityDataService<'a, E> {
                 executor,
             },
             trace_context: Vec::new(),
+            query_log_intent: None,
         }
     }
 
     pub fn with_trace_context(mut self, trace_context: Vec<teaql_core::TraceNode>) -> Self {
         self.trace_context = trace_context;
         self
+    }
+
+    pub(super) fn query_intent_snapshot(&self) -> Option<teaql_data_service::SqlIntentRedactions> {
+        self.query_log_intent.as_ref().map(|intent| {
+            intent
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        })
+    }
+
+    pub(super) fn record_query_metadata(&self, metadata: &teaql_data_service::ExecutionMetadata) {
+        let Some(intent) = &self.query_log_intent else {
+            self.data_service
+                .metadata
+                .context
+                .record_metadata_log(metadata);
+            return;
+        };
+        let mut metadata = metadata.clone();
+        // A provider can return several independently bound statements.
+        // Accumulate each statement's normalized provenance for descendants;
+        // never interpret one statement's positional policies against another.
+        fn inherit(
+            metadata: &mut teaql_data_service::ExecutionMetadata,
+            inherited: &mut teaql_data_service::SqlIntentRedactions,
+        ) {
+            if !metadata.statements.is_empty() {
+                for statement in &mut metadata.statements {
+                    inherit(statement, inherited);
+                }
+                return;
+            }
+            metadata.sql_log.intent_redactions.extend(inherited);
+            *inherited = teaql_data_service::SqlIntentRedactions::from_bindings(
+                &metadata.sql_log,
+                &metadata.params,
+                metadata.parameterized_query.as_deref().unwrap_or_default(),
+            );
+        }
+        {
+            let mut inherited = intent
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            inherit(&mut metadata, &mut inherited);
+        }
+        // No scope lock survives callbacks; the runtime projects before all sinks.
+        self.data_service
+            .metadata
+            .context
+            .record_metadata_log(&metadata);
+    }
+
+    pub(super) fn query_diagnostic_observer(
+        &self,
+    ) -> Option<teaql_data_service::ExecutionObserver<'_>>
+    where
+        E: Sync,
+    {
+        self.data_service
+            .metadata
+            .capture_execution_metadata()
+            .then(|| {
+                std::sync::Arc::new(move |metadata| self.record_query_metadata(&metadata))
+                    as teaql_data_service::ExecutionObserver<'_>
+            })
     }
 }
 
@@ -77,6 +147,13 @@ impl MetadataStore for UserContextMetadata<'_> {
 
     fn record_metadata_log(&self, metadata: &teaql_data_service::ExecutionMetadata) {
         self.context.record_metadata_log(metadata);
+    }
+
+    fn mutation_diagnostic_observer(&self) -> Option<teaql_data_service::ExecutionObserver<'_>> {
+        self.context.sql_log_options().mutation.then(|| {
+            std::sync::Arc::new(move |metadata| self.context.record_metadata_log(&metadata))
+                as teaql_data_service::ExecutionObserver<'_>
+        })
     }
 
     fn capture_query_debug(&self) -> bool {

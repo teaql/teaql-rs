@@ -99,26 +99,29 @@ impl LogFormatter for HumanReaderFormatter {
 
         let elapsed_us = (entry.elapsed.as_secs_f64() * 1_000_000.0).round() as u64;
         let intent = format!(
-            "comment={:?} purpose={:?} auditReason={:?}",
-            entry.comment, entry.purpose, entry.audit_reason
+            "outcome={} comment={:?} purpose={:?} auditReason={:?}",
+            entry
+                .log_context
+                .execution_outcome
+                .map(|outcome| outcome.as_str())
+                .unwrap_or("unknown"),
+            entry.comment,
+            entry.purpose,
+            entry.audit_reason
         );
-        let mut output = format!(
-            "[{}]-[{:>5}µs]-[DEBUG]-SqlLogEntry{} - [{}] {}\n          Parameterized SQL: {}",
+        format!(
+            "[{}]-[{:>5}µs]-[DEBUG]-SqlLogEntry{} - [{}] {}\n          SQL: {}",
             ts,
             elapsed_us,
             trace_display,
             entry.result_summary,
             intent,
-            entry.sql.replace('\n', " ")
-        );
-        if !entry.debug_sql.is_empty() {
-            output.push_str(&format!(
-                " params={:?}\n          Debug SQL: {}",
-                entry.params,
-                entry.debug_sql.replace('\n', " ")
-            ));
-        }
-        output
+            if entry.debug_sql.is_empty() {
+                "[SQL omitted: missing safe projection; NOT REPLAYABLE]"
+            } else {
+                &entry.debug_sql
+            }
+        )
     }
 
     fn format_audit_log(&self, event: &RawAuditEvent) -> String {
@@ -441,9 +444,7 @@ impl LogManager {
     pub fn write_sql_log(trace_chain: &[TraceNode], entry: &SqlLogEntry) {
         let mut source = entry.clone();
         source.trace_path = trace_chain.to_vec();
-        let mut safe = crate::log_privacy::sql_entry(&source, false);
-        safe.debug_sql.clear();
-        safe.pretty_sql.clear();
+        let safe = crate::log_privacy::sql_entry(&source, false);
         let entry = &safe;
         let trace_chain = &safe.trace_path;
         if !Self::config().should_log_sql(&entry.sql) {

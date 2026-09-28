@@ -110,7 +110,11 @@ where
     where
         E::Tx<'context>: QueryExecutor,
     {
-        let result = QueryExecutor::query(self.transaction(), request)
+        let observer = self.context.sql_log_options().select.then(|| {
+            std::sync::Arc::new(|metadata| self.context.record_metadata_log(&metadata))
+                as teaql_data_service::ExecutionObserver<'_>
+        });
+        let result = QueryExecutor::query_observed(self.transaction(), request, observer)
             .await
             .map_err(|error| RuntimeError::Transaction(error.to_string()))?;
         self.context.record_metadata_log(&result.metadata);
@@ -122,7 +126,11 @@ where
     where
         E::Tx<'context>: MutationExecutor,
     {
-        let result = MutationExecutor::mutate(self.transaction(), request)
+        let observer = self.context.sql_log_options().mutation.then(|| {
+            std::sync::Arc::new(|metadata| self.context.record_metadata_log(&metadata))
+                as teaql_data_service::ExecutionObserver<'_>
+        });
+        let result = MutationExecutor::mutate_observed(self.transaction(), request, observer)
             .await
             .map_err(|error| RuntimeError::Transaction(error.to_string()))?;
         self.context.record_metadata_log(&result.metadata);

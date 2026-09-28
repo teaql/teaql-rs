@@ -11,45 +11,52 @@ use teaql_macros::{teaql_entity, TeaqlEntity};
 /// Read the method signatures in this file before proceeding.
 #[teaql_entity]
 #[derive(Clone, Debug, PartialEq, TeaqlEntity)]
-#[teaql(entity = "School", table = "school_data", data_service = "sqlite")]
+#[teaql(
+    entity = "School",
+    table = "school_data",
+    data_service = "sqlite",
+    audit_mask_fields = "name"
+)]
 pub struct School {
     #[teaql(id)]
     id: u64,
 
-    // @source school-model.xml:40
+    // @source school-model.xml:41
+    #[teaql(max_length = 100)]
     name: String,
 
-    // @source school-model.xml:40
+    // @source school-model.xml:41
+    #[teaql(max_length = 100)]
     address: String,
 
-    // @source school-model.xml:40
+    // @source school-model.xml:41
     established_date: chrono::NaiveDate,
 
-    // @source school-model.xml:40
+    // @source school-model.xml:41
     student_capacity: i64,
 
-    // @source school-model.xml:40
+    // @source school-model.xml:41
     active: bool,
 
-    // @source school-model.xml:40
+    // @source school-model.xml:41
     create_time: teaql_core::time::Timestamp,
 
-    // @source school-model.xml:40
+    // @source school-model.xml:41
     update_time: teaql_core::time::Timestamp,
     #[teaql(version)]
     version: i64,
-    // @source school-model.xml:40
+    // @source school-model.xml:41
     #[teaql(column = "platform")]
     platform_id: u64,
 
-    // @source school-model.xml:40
+    // @source school-model.xml:41
     #[teaql(column = "school_type")]
     school_type_id: u64,
-    // @source school-model.xml:40
+    // @source school-model.xml:41
     #[teaql(relation(target = "Platform", local_key = "platform_id", foreign_key = "id"))]
     platform: Option<Box<crate::Platform>>,
 
-    // @source school-model.xml:40
+    // @source school-model.xml:41
     #[teaql(relation(
         target = "SchoolType",
         local_key = "school_type_id",
@@ -384,6 +391,7 @@ impl School {
             teaql_core::eval::EvalResult::Value(self.version())
         }
     }
+
     pub fn platform_id(&self) -> u64 {
         self.changed_platform_id()
             .and_then(|value| value.try_u64())

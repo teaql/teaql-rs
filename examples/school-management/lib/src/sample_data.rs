@@ -1,5 +1,4 @@
 use crate::request_support::AuditedSave as _;
-use crate::request_support::TeaqlUserContextExt as _;
 use crate::TeaqlRuntime;
 use crate::Q;
 use std::collections::BTreeMap;
@@ -156,7 +155,7 @@ pub async fn generate_sample_data<C>(
     plan: SampleDataPlan,
 ) -> Result<SampleDataReport, SampleDataError>
 where
-    C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
+    C: TeaqlRuntime + ?Sized,
 {
     log::info!(
         "Starting sample data generation. Scale: {:?}, Seed: {}",
@@ -169,19 +168,7 @@ where
 
     load_constant_school_types(context, &mut state).await?;
 
-    context
-        .user_context()
-        .transaction_data(|| async {
-            Box::pin(generate_schools(context, &mut state))
-                .await
-                .map_err(|e| {
-                    teaql_runtime::DataServiceError::Runtime(teaql_runtime::RuntimeError::Graph(
-                        e.to_string(),
-                    ))
-                })
-        })
-        .await
-        .map_err(SampleDataError::from_display)?;
+    generate_schools(context, &mut state).await?;
 
     let report = state.into_report();
     log::info!(
@@ -197,7 +184,7 @@ async fn load_root_platforms<C>(
     state: &mut SampleDataState,
 ) -> Result<(), SampleDataError>
 where
-    C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
+    C: TeaqlRuntime + ?Sized,
 {
     let list = Q::platforms()
         .comment("what: inspect existing entities before sample-data initialization")
@@ -216,7 +203,7 @@ async fn load_constant_school_types<C>(
     state: &mut SampleDataState,
 ) -> Result<(), SampleDataError>
 where
-    C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
+    C: TeaqlRuntime + ?Sized,
 {
     let list = Q::school_types()
         .comment("what: inspect existing entities before sample-data initialization")
@@ -235,7 +222,7 @@ async fn generate_schools<C>(
     state: &mut SampleDataState,
 ) -> Result<(), SampleDataError>
 where
-    C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
+    C: TeaqlRuntime + ?Sized,
 {
     if state.ids("Platform").is_empty() {
         state.record_skipped(

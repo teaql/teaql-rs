@@ -26,5 +26,16 @@ constant reconciliation is exercised by the SQLite provider unit tests.
 
 From the repository root, `examples/verify-runtime-examples.sh` runs this and
 the minimum conformance example against current path-patched runtime sources.
-Its four acceptance groups must all pass before a local runtime change is
-called example-verified.
+Its acceptance groups must all pass before a local runtime change is
+called example-verified. The current repository-wide gate is `scripts/verify-examples.sh`.
+
+SQL privacy is field-aware: this model marks `School.name` with
+`_audit_mask_fields="name"`, while ordinary `address` bindings remain visible in
+expanded SQL. The generated library must propagate that declaration; do not
+hand-patch an entity to make the test pass. The retained
+`examples/tests/sql_log_masking.rs` fixture separately marks a business field
+for the shared mask algorithm, protects a password, and verifies actual SQLite
+CRUD, cache reuse and independent batch statements without changing stored values.
+An explicit debug sink always labels its opt-in; unknown bindings and credentials
+remain hidden. A stale-write sensitive name must not appear in ordinary logs or
+unapproved debug sinks; the explicit plaintext debug sink remains opt-in.

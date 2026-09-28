@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 chrono = { workspace = true }
 teaql-core = { workspace = true }
+teaql-data-service = { workspace = true }
 teaql-macros = { workspace = true }
 # teaql-provider-postgres = { workspace = true }
 teaql-provider-sqlite = { workspace = true }
@@ -16,3 +17,6 @@ teaql-runtime = { workspace = true }
 teaql-sql = { workspace = true }
 rusqlite = { workspace = true }
 tokio = { workspace = true }
+
+[dev-dependencies]
+futures-util = "0.3"
