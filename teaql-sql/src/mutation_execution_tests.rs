@@ -162,6 +162,68 @@ fn batch() -> MutationRequest {
 }
 
 #[tokio::test]
+async fn mutation_target_id_is_sql_intent_provenance_without_changing_plain_binding() {
+    let requests = [
+        insert(1001),
+        MutationRequest::Update(
+            UpdateCommand::new("Customer", 1001_u64)
+                .expected_version(1)
+                .value("name", "Riverside"),
+        ),
+        MutationRequest::Delete(
+            teaql_core::DeleteCommand::new("Customer", 1001_u64).expected_version(1),
+        ),
+        MutationRequest::Recover(teaql_core::RecoverCommand::new("Customer", 1001_u64, -3)),
+    ];
+    for failure in [false, true] {
+        for mut request in requests.clone() {
+            let trace = match &mut request {
+                MutationRequest::Insert(cmd) => &mut cmd.trace_chain,
+                MutationRequest::Update(cmd) => &mut cmd.trace_chain,
+                MutationRequest::Delete(cmd) => &mut cmd.trace_chain,
+                MutationRequest::Recover(cmd) => &mut cmd.trace_chain,
+                MutationRequest::Batch(_) => unreachable!(),
+            };
+            trace.push(TraceNode::typed(
+                TraceKind::AuditReason,
+                "Customer",
+                Some(1001),
+                "what: mutate customer 1001",
+            ));
+            let (executor, entries, observer) = fixture(
+                if failure {
+                    Mode::FailWrite(1)
+                } else {
+                    Mode::Success
+                },
+                false,
+            );
+            let result = executor.mutate_observed(request, Some(observer)).await;
+            let write = if failure {
+                assert!(result.is_err());
+                entries.lock().unwrap()[0].clone()
+            } else {
+                assert!(entries.lock().unwrap().is_empty());
+                result.unwrap().metadata
+            };
+            assert!(write.params.contains(&Value::U64(1001)));
+            assert!(
+                write
+                    .trace_chain
+                    .iter()
+                    .any(|node| node.comment.contains("1001"))
+            );
+            let mut hidden = Vec::new();
+            write
+                .sql_log
+                .intent_redactions
+                .extend_secrets(false, &mut hidden);
+            assert!(hidden.contains(&"1001".to_owned()));
+        }
+    }
+}
+
+#[tokio::test]
 async fn cached_query_intent_compilation_uses_current_values_without_transport_io() {
     let (executor, entries, _) = fixture(Mode::FailRead, false);
     for name in ["Riverside", "Lakeside"] {

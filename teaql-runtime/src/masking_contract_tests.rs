@@ -77,6 +77,51 @@ fn entry(value: &str) -> SqlLogEntry {
 }
 
 #[test]
+fn target_id_scrubs_sql_free_text_without_changing_plain_binding_or_row_count() {
+    use teaql_data_service::SqlParameterLogPolicy as Policy;
+    let mut source = entry("unused");
+    source.log_context.generated_sql = true;
+    source.log_context.parameter_policies = vec![Policy::Plain];
+    source
+        .log_context
+        .intent_redactions
+        .capture_target_id(&Value::U64(1));
+    source.sql = "UPDATE customer SET version = version + 1 WHERE id = ?".into();
+    source.params = vec![Value::U64(1)];
+    source.comment = Some("what: update customer 1".into());
+    source.audit_reason = Some("what: update customer 1".into());
+    source.trace_path.push(teaql_core::TraceNode::typed(
+        teaql_core::TraceKind::AuditReason,
+        "Customer",
+        Some(1),
+        "what: update customer 1",
+    ));
+    source.result_summary = "1 rows affected".into();
+    for allow in [false, true] {
+        let safe = sql_entry(&source, allow);
+        assert_eq!(
+            safe.audit_reason.as_deref(),
+            Some("what: update customer [REDACTED]")
+        );
+        assert_eq!(
+            safe.comment.as_deref(),
+            Some("what: update customer [REDACTED]")
+        );
+        assert_eq!(
+            safe.trace_path[0].comment,
+            "what: update customer [REDACTED]"
+        );
+        assert_eq!(safe.result_summary, "1 rows affected");
+        assert_eq!(safe.params, vec![Value::U64(1)]);
+        assert!(safe.log_context.intent_redactions.is_empty());
+    }
+    assert_eq!(
+        source.audit_reason.as_deref(),
+        Some("what: update customer 1")
+    );
+}
+
+#[test]
 fn retained_debug_readback_downgrades_after_clone() {
     use teaql_data_service::{SqlIntentRedactions, SqlLogContext, SqlParameterLogPolicy as Policy};
     let write = SqlLogContext {

@@ -11,6 +11,7 @@ struct ObservedTransport<'a, T> {
     comment: Option<String>,
     observer: Option<ExecutionObserver<'static>>,
     intent_redactions: std::sync::Mutex<SqlIntentRedactions>,
+    target_id: Option<teaql_core::Value>,
 }
 impl<T> ObservedTransport<'_, T> {
     fn metadata(
@@ -26,6 +27,9 @@ impl<T> ObservedTransport<'_, T> {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone();
+        }
+        if let Some(id) = &self.target_id {
+            sql_log.intent_redactions.capture_target_id(id);
         }
         ExecutionMetadata {
             statements: vec![],
@@ -220,6 +224,13 @@ where
         MutationRequest::Batch(_) => unreachable!(),
     };
     let compiled = compiled.map_err(SqlExecutorError::Compile)?;
+    let target_id = match &request {
+        MutationRequest::Insert(cmd) => cmd.values.get("id").cloned(),
+        MutationRequest::Update(cmd) => Some(cmd.id.clone()),
+        MutationRequest::Delete(cmd) => Some(cmd.id.clone()),
+        MutationRequest::Recover(cmd) => Some(cmd.id.clone()),
+        MutationRequest::Batch(_) => None,
+    };
     let observed = ObservedTransport {
         inner: transport,
         backend: format!("{:?}", dialect.kind()).to_ascii_lowercase(),
@@ -228,6 +239,7 @@ where
         comment: request.comment().map(str::to_owned),
         observer,
         intent_redactions: Default::default(),
+        target_id,
     };
     let mut metadata = observed.metadata(&compiled, operation);
     let affected_rows = observed
@@ -289,6 +301,12 @@ pub(super) async fn guarded<D: SqlDialect + Sync, T: SqlTransport>(
         comment: request.mutation.comment().map(str::to_owned),
         observer: journal.recorder(),
         intent_redactions: Default::default(),
+        target_id: match &request.mutation {
+            MutationRequest::Update(cmd) => Some(cmd.id.clone()),
+            MutationRequest::Delete(cmd) => Some(cmd.id.clone()),
+            MutationRequest::Recover(cmd) => Some(cmd.id.clone()),
+            _ => None,
+        },
     };
     let mut result = execute_guarded_mutation(dialect, &observed, entity, cache, request).await;
     if let Ok(result) = &mut result {

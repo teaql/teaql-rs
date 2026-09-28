@@ -158,6 +158,25 @@ impl SqlIntentRedactions {
         }
     }
 
+    /// Add an ordinary mutation ID only to diagnostic free-text redactions.
+    /// It does not change the ID's SQL binding policy or execution value.
+    pub fn capture_target_id(&mut self, id: &teaql_core::Value) {
+        let source = SqlLogContext {
+            generated_sql: true,
+            parameter_policies: vec![SqlParameterLogPolicy::Masked],
+            ..Default::default()
+        };
+        for (text, _) in Self::from_bindings(&source, std::slice::from_ref(id), "").0 {
+            if !self
+                .0
+                .iter()
+                .any(|(existing, forced)| existing == &text && *forced)
+            {
+                self.0.push((text, true));
+            }
+        }
+    }
+
     pub fn from_bindings(source: &SqlLogContext, params: &[teaql_core::Value], sql: &str) -> Self {
         let invalid = source.parameter_policies.len() != params.len();
         let statement_credential =
