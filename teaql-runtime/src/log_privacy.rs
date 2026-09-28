@@ -443,21 +443,28 @@ mod tests {
     }
 
     #[test]
-    fn audit_trace_scrubs_target_id_without_changing_raw_event() {
-        let mut event =
-            RawAuditEvent::updated("Order", Record::from([("id".into(), Value::I64(1001))]));
-        event.trace_chain.push(teaql_core::TraceNode::typed(
-            teaql_core::TraceKind::AuditReason,
-            "Order",
-            Some(1001),
-            "rename order 1001",
-        ));
-        let safe = event.build_safe_event(&[], None);
-        assert_eq!(safe.trace_chain[0].comment, "rename order [REDACTED]");
-        let standard = audit_event(&event, false);
-        assert_eq!(standard.trace_chain[0].comment, "rename order [REDACTED]");
-        assert_eq!(event.trace_chain[0].comment, "rename order 1001");
-        assert_eq!(event.values.get("id"), Some(&Value::I64(1001)));
+    fn audit_trace_scrubs_target_id_for_all_mutation_kinds() {
+        let id = Value::I64(1001);
+        let events = [
+            RawAuditEvent::created("Order", Record::from([("id".into(), id.clone())])),
+            RawAuditEvent::updated("Order", Record::from([("id".into(), id.clone())])),
+            RawAuditEvent::deleted("Order", id.clone(), Some(1)),
+            RawAuditEvent::recovered("Order", id.clone(), 1),
+        ];
+        for mut event in events {
+            event.trace_chain.push(teaql_core::TraceNode::typed(
+                teaql_core::TraceKind::AuditReason,
+                "Order",
+                Some(1001),
+                "change order 1001",
+            ));
+            let safe = event.build_safe_event(&[], None);
+            assert_eq!(safe.trace_chain[0].comment, "change order [REDACTED]");
+            let standard = audit_event(&event, false);
+            assert_eq!(standard.trace_chain[0].comment, "change order [REDACTED]");
+            assert_eq!(event.trace_chain[0].comment, "change order 1001");
+            assert_eq!(event.values.get("id"), Some(&id));
+        }
     }
 
     #[test]
