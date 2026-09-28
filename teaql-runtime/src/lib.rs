@@ -4060,6 +4060,25 @@ mod tests {
         assert_eq!(row.get("version"), Some(&Value::I64(4)));
     }
 
+    #[test]
+    fn optimistic_conflict_does_not_print_outside_diagnostic_sink() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::memory_data_service_supports_mutations_and_optimistic_locking",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("running 1 test"));
+        for bytes in [&output.stdout, &output.stderr] {
+            assert!(
+                !String::from_utf8_lossy(bytes).contains("OptimisticLockConflict in memory.rs")
+            );
+        }
+    }
+
     #[tokio::test]
     async fn user_context_reports_missing_schema_provider() {
         let err = UserContext::new().ensure_schema().await.unwrap_err();

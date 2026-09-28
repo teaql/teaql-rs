@@ -307,6 +307,7 @@ mod tests {
             .output()
             .unwrap();
         assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("running 1 test"));
         for output_bytes in [&output.stdout, &output.stderr] {
             let rendered = String::from_utf8_lossy(output_bytes);
             assert!(!rendered.contains(QUERY_CANARY));
