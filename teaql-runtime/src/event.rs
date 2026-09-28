@@ -392,7 +392,12 @@ impl RawAuditEvent {
             safe_fields.push(safe_field);
         }
         let mut trace_chain = self.trace_chain.clone();
-        crate::log_privacy::scrub_trace(&mut trace_chain, &secrets);
+        let mut intent_values = secrets;
+        if let Some(id) = self.values.get("id") {
+            crate::log_privacy::collect_strings(id, &mut intent_values);
+        }
+        intent_values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+        crate::log_privacy::scrub_trace(&mut trace_chain, &intent_values);
         SafeAuditEvent {
             kind: self.kind,
             entity: self.entity.clone(),

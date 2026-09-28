@@ -396,6 +396,9 @@ pub(crate) fn audit_event(event: &RawAuditEvent, allow: bool) -> RawAuditEvent {
             redact(&change.field, v, allow, &mut secrets);
         }
     }
+    if let Some(id) = event.values.get("id") {
+        collect_strings(id, &mut secrets);
+    }
     secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
     scrub_trace(&mut result.trace_chain, &secrets);
     if let Some(identity) = &mut result.bootstrap_audit {
@@ -437,6 +440,26 @@ mod tests {
         assert!(format!("{debug:?}").contains("PRIVATE-CUSTOMER"));
         assert!(!format!("{debug:?}").contains("TOKEN-CANARY"));
         assert!(format!("{event:?}").contains("TOKEN-CANARY"));
+    }
+
+    #[test]
+    fn audit_trace_scrubs_target_id_without_changing_raw_event() {
+        let mut event = RawAuditEvent::updated(
+            "Order",
+            Record::from([("id".into(), Value::I64(1001))]),
+        );
+        event.trace_chain.push(teaql_core::TraceNode::typed(
+            teaql_core::TraceKind::AuditReason,
+            "Order",
+            Some(1001),
+            "rename order 1001",
+        ));
+        let safe = event.build_safe_event(&[], None);
+        assert_eq!(safe.trace_chain[0].comment, "rename order [REDACTED]");
+        let standard = audit_event(&event, false);
+        assert_eq!(standard.trace_chain[0].comment, "rename order [REDACTED]");
+        assert_eq!(event.trace_chain[0].comment, "rename order 1001");
+        assert_eq!(event.values.get("id"), Some(&Value::I64(1001)));
     }
 
     #[test]
