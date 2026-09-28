@@ -277,8 +277,11 @@ mod tests {
         );
 
         let _error = DriverCanaryError;
-        start_runtime_operation(&telemetry, RuntimeOperation::new("provider", "sqlite.query"))
-            .failure(std::any::type_name::<DriverCanaryError>());
+        start_runtime_operation(
+            &telemetry,
+            RuntimeOperation::new("provider", "sqlite.query"),
+        )
+        .failure(std::any::type_name::<DriverCanaryError>());
         provider.force_flush().expect("flush spans");
 
         let spans = exporter.get_finished_spans().expect("finished spans");
