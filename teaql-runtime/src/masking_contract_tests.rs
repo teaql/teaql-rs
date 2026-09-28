@@ -6,7 +6,7 @@ use teaql_core::Value;
 
 #[test]
 fn mask_golden() {
-    for line in include_str!("../../test-vectors/masking-v1.tsv")
+    for line in include_str!("../test-vectors/masking-v1.tsv")
         .lines()
         .skip(1)
     {
