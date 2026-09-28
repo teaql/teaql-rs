@@ -444,10 +444,8 @@ mod tests {
 
     #[test]
     fn audit_trace_scrubs_target_id_without_changing_raw_event() {
-        let mut event = RawAuditEvent::updated(
-            "Order",
-            Record::from([("id".into(), Value::I64(1001))]),
-        );
+        let mut event =
+            RawAuditEvent::updated("Order", Record::from([("id".into(), Value::I64(1001))]));
         event.trace_chain.push(teaql_core::TraceNode::typed(
             teaql_core::TraceKind::AuditReason,
             "Order",
