@@ -1,5 +1,5 @@
 use std::any::{Any, TypeId};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 
 use std::pin::Pin;
@@ -174,6 +174,10 @@ pub struct UserContext {
     pub(crate) entity_data_service_behavior_registry:
         Option<Box<dyn EntityDataServiceBehaviorRegistry>>,
     pub(crate) request_policy: Option<Box<dyn RequestPolicy>>,
+    pub(crate) mutation_policy_registry: Arc<dyn crate::MutationPolicyRegistry>,
+    pub(crate) mutation_policy_approval_provider: Arc<dyn crate::MutationPolicyApprovalProvider>,
+    pub(crate) mutation_governance_sink: Arc<dyn crate::MutationGovernanceSink>,
+    pub(crate) emitted_mutation_governance_warnings: Mutex<BTreeSet<String>>,
     pub(crate) checker_registry: Option<Box<dyn CheckerRegistry>>,
     pub(crate) event_sink: Option<Box<dyn RawAuditEventSink>>,
     pub(crate) custom_event_sink: Option<Box<dyn crate::SafeAuditEventSink>>,
@@ -224,6 +228,10 @@ impl Default for UserContext {
             entity_graph_decoders: InMemoryEntityGraphDecoderRegistry::default(),
             entity_data_service_behavior_registry: None,
             request_policy: None,
+            mutation_policy_registry: Arc::new(crate::EmptyMutationPolicyRegistry),
+            mutation_policy_approval_provider: Arc::new(crate::NoMutationPolicyApprovalProvider),
+            mutation_governance_sink: Arc::new(crate::DefaultMutationGovernanceSink),
+            emitted_mutation_governance_warnings: Mutex::new(BTreeSet::new()),
             checker_registry: None,
             event_sink: None,
             custom_event_sink: None,
@@ -1171,6 +1179,7 @@ impl UserContext {
     }
 
     pub fn send_event(&self, mut event: RawAuditEvent) -> Result<(), RuntimeError> {
+        event.mutation_governance = crate::current_mutation_governance();
         if self.is_generated_schema_bootstrap()
             && matches!(
                 event.kind,

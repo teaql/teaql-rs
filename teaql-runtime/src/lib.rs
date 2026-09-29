@@ -17,6 +17,7 @@ pub mod inmemory_engine;
 mod language;
 pub mod log_formatter;
 mod log_privacy;
+mod mutation_policy;
 // Deterministic test oracle; the published runtime uses provider executors.
 #[cfg(test)]
 #[allow(dead_code)]
@@ -80,6 +81,18 @@ pub use inmemory_engine::{ExprEvaluator, InMemoryQueryEngine};
 pub use language::{
     BuiltinTranslator, Language, Locale, MessageTranslator, translate_check_result,
     translate_location,
+};
+pub use mutation_policy::{
+    DefaultMutationGovernanceSink, EmptyMutationPolicyRegistry,
+    MISSING_MUTATION_POLICY_APPROVAL_WARNING, MISSING_MUTATION_POLICY_WARNING, MutationDecision,
+    MutationGovernanceEvent, MutationGovernanceSink, MutationGovernanceSnapshot, MutationOperation,
+    MutationOperationKind, MutationOperationSummary, MutationPlan, MutationPolicy,
+    MutationPolicyApproval, MutationPolicyApprovalProvider, MutationPolicyApprovalStatus,
+    MutationPolicyIdentity, MutationPolicyRegistry, MutationPolicySource, MutationVerdict,
+    NoMutationPolicyApprovalProvider,
+};
+pub(crate) use mutation_policy::{
+    current_mutation_governance, graph_policy_plan, ledger_policy_plan, with_mutation_governance,
 };
 pub use registry::{
     EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry, EntityRegistry,

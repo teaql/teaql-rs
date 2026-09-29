@@ -53,6 +53,7 @@ pub struct RawAuditEvent {
     /// Annotation trace chain from the graph save scope chain.
     pub trace_chain: Vec<teaql_core::TraceNode>,
     pub bootstrap_audit: Option<BootstrapAuditIdentity>,
+    pub mutation_governance: Option<crate::MutationGovernanceSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +83,7 @@ impl RawAuditEvent {
             changes,
             trace_chain: Vec::new(),
             bootstrap_audit: None,
+            mutation_governance: None,
         }
     }
 
@@ -98,6 +100,7 @@ impl RawAuditEvent {
             changes,
             trace_chain: Vec::new(),
             bootstrap_audit: None,
+            mutation_governance: None,
         }
     }
 
@@ -120,6 +123,7 @@ impl RawAuditEvent {
             changes,
             trace_chain: Vec::new(),
             bootstrap_audit: None,
+            mutation_governance: None,
         }
     }
 
@@ -138,6 +142,7 @@ impl RawAuditEvent {
             changes: Vec::new(),
             trace_chain: Vec::new(),
             bootstrap_audit: None,
+            mutation_governance: None,
         }
     }
 
@@ -178,6 +183,7 @@ impl RawAuditEvent {
             changes: Vec::new(),
             trace_chain: Vec::new(),
             bootstrap_audit: None,
+            mutation_governance: None,
         }
     }
 
@@ -227,6 +233,7 @@ impl RawAuditEvent {
             changes,
             trace_chain: Vec::new(),
             bootstrap_audit: None,
+            mutation_governance: None,
         }
     }
 
@@ -255,6 +262,7 @@ impl RawAuditEvent {
             changes,
             trace_chain: Vec::new(),
             bootstrap_audit: None,
+            mutation_governance: None,
         }
     }
 
@@ -283,6 +291,7 @@ impl RawAuditEvent {
             changes,
             trace_chain: Vec::new(),
             bootstrap_audit: None,
+            mutation_governance: None,
         }
     }
 
@@ -313,6 +322,7 @@ impl RawAuditEvent {
             changes,
             trace_chain: Vec::new(),
             bootstrap_audit: None,
+            mutation_governance: None,
         }
     }
 
@@ -403,6 +413,7 @@ impl RawAuditEvent {
             entity: self.entity.clone(),
             fields: safe_fields,
             trace_chain,
+            mutation_governance: self.mutation_governance.clone(),
         }
     }
 }
@@ -549,6 +560,7 @@ pub struct SafeAuditEvent {
     pub entity: String,
     pub fields: Vec<SafeAuditField>,
     pub trace_chain: Vec<teaql_core::TraceNode>,
+    pub mutation_governance: Option<crate::MutationGovernanceSnapshot>,
 }
 
 pub trait SafeAuditEventSink: Send + Sync {

@@ -88,13 +88,23 @@ where
             let executor = context
                 .require_resource::<E>()
                 .map_err(|e| RuntimeError::Graph(e.to_string()))?;
+            // Build and review the complete immutable plan before opening the
+            // transaction. A denied policy therefore cannot begin a provider
+            // transaction or perform a partial graph mutation.
+            let plan = crate::EntityDataService::for_executor(context, &entity, executor)
+                .plan_graph(node)
+                .await
+                .map_err(data_service_error_into_runtime)?;
+            let policy_plan = crate::graph_policy_plan(context, &plan)?;
+            let governance = context.review_mutation_plan(&policy_plan)?;
             let tx = teaql_data_service::TransactionExecutor::begin(executor)
                 .await
                 .map_err(|e| RuntimeError::Graph(e.to_string()))?;
-            let result = {
+            let result = crate::with_mutation_governance(governance, async {
                 let eds = crate::EntityDataService::for_executor(context, entity, &tx);
-                eds.save_graph_internal(node).await
-            };
+                eds.execute_graph_plan_internal(plan).await
+            })
+            .await;
             match result {
                 Ok(saved) => {
                     teaql_data_service::Transaction::commit(tx)
@@ -137,10 +147,12 @@ where
                 .unwrap_or(Value::I64(0));
             let root_key = crate::EntityKey::new(entity.clone(), current_id);
             reject_cancelled_new_root(&root, &root_key)?;
+            let policy_plan = crate::ledger_policy_plan(context, &node, &root);
+            let governance = context.review_mutation_plan(&policy_plan)?;
             let tx = teaql_data_service::TransactionExecutor::begin(executor)
                 .await
                 .map_err(|e| RuntimeError::Graph(e.to_string()))?;
-            let result = async {
+            let result = crate::with_mutation_governance(governance, async {
                 let eds = crate::EntityDataService::for_executor(context, &entity, &tx);
                 let locations = ledger_object_locations(&node);
                 let generated_ids = eds
@@ -174,7 +186,7 @@ where
                         )))
                     })?;
                 Ok(())
-            }
+            })
             .await;
             match result {
                 Ok(()) => {
@@ -266,7 +278,11 @@ mod save_relation_state_tests {
 #[cfg(test)]
 mod transactional_ledger_readback_tests {
     use super::{DynGraphSaver, GraphSaverFor};
-    use crate::{EntityKey, EntityRuntimeState, GraphNode, InMemoryMetadataStore, UserContext};
+    use crate::{
+        EntityKey, EntityRuntimeState, GraphNode, InMemoryMetadataStore, MutationDecision,
+        MutationPlan, MutationPolicy, MutationPolicyIdentity, MutationPolicySource, RawAuditEvent,
+        RawAuditEventSink, RuntimeError, UserContext,
+    };
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use teaql_core::{DataType, EntityDescriptor, PropertyDescriptor, Value};
@@ -287,6 +303,34 @@ mod transactional_ledger_readback_tests {
     struct Ambient(Arc<Mutex<State>>);
 
     struct Tx(Arc<Mutex<State>>);
+
+    #[derive(Clone)]
+    struct CaptureEvents(Arc<Mutex<Vec<RawAuditEvent>>>);
+
+    impl RawAuditEventSink for CaptureEvents {
+        fn on_event(
+            &self,
+            _context: &UserContext,
+            event: &RawAuditEvent,
+        ) -> Result<(), RuntimeError> {
+            self.0.lock().unwrap().push(event.clone());
+            Ok(())
+        }
+    }
+
+    struct DenyTaskPolicy;
+
+    impl MutationPolicy for DenyTaskPolicy {
+        fn identity(&self) -> MutationPolicyIdentity {
+            MutationPolicyIdentity::new("task-policy", "1", "sha256:deny-task")
+        }
+
+        fn review(&self, _context: &UserContext, plan: &MutationPlan) -> MutationDecision {
+            assert_eq!(plan.request_key, "Task.saveGraph");
+            assert_eq!(plan.operations.len(), 1);
+            MutationDecision::deny("TASK-DENIED", "task mutation denied", ["Task.name"])
+        }
+    }
 
     fn row_result(state: &State) -> QueryResult {
         QueryResult {
@@ -406,6 +450,7 @@ mod transactional_ledger_readback_tests {
 
     #[tokio::test]
     async fn ledger_save_returns_transaction_snapshot_before_concurrent_commit_race() {
+        let events = Arc::new(Mutex::new(Vec::new()));
         let state = Arc::new(Mutex::new(State {
             row: BTreeMap::from([
                 ("id".to_owned(), Value::I64(1)),
@@ -420,7 +465,8 @@ mod transactional_ledger_readback_tests {
             .property(PropertyDescriptor::new("version", DataType::I64).version())
             .property(PropertyDescriptor::new("name", DataType::Text));
         let context = UserContext::default()
-            .with_metadata(InMemoryMetadataStore::new().with_entity(descriptor));
+            .with_metadata(InMemoryMetadataStore::new().with_entity(descriptor))
+            .with_event_sink(CaptureEvents(events.clone()));
         let root = EntityRuntimeState::default();
         let key = EntityKey::new_static("Task", 1_i64);
         root.set_original_version(key.clone(), 1);
@@ -445,6 +491,15 @@ mod transactional_ledger_readback_tests {
         assert_eq!(state.row.get("version"), Some(&Value::I64(3)));
         assert_eq!(state.calls.last(), Some(&"commit"));
         assert!(!state.calls.contains(&"ambient-query"));
+        let events = events.lock().unwrap();
+        assert!(!events.is_empty());
+        let governance = events[0]
+            .mutation_governance
+            .as_ref()
+            .expect("audit event must retain the mutation governance snapshot");
+        assert_eq!(governance.request_key, "Task.saveGraph");
+        assert_eq!(governance.source, MutationPolicySource::GeneratedDefault);
+        assert_eq!(governance.operations.len(), 1);
     }
 
     #[tokio::test]
@@ -553,6 +608,46 @@ mod transactional_ledger_readback_tests {
         let calls = &state.lock().unwrap().calls;
         assert!(!calls.contains(&"transaction-mutate"));
         assert!(!calls.contains(&"commit"));
+    }
+
+    #[tokio::test]
+    async fn mutation_policy_denial_happens_before_transaction_begin() {
+        let state = Arc::new(Mutex::new(State {
+            row: BTreeMap::from([
+                ("id".to_owned(), Value::I64(1)),
+                ("version".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::Text("before".to_owned())),
+            ]),
+            calls: Vec::new(),
+            fail_readback: false,
+        }));
+        let descriptor = EntityDescriptor::new("Task")
+            .property(PropertyDescriptor::new("id", DataType::I64).id())
+            .property(PropertyDescriptor::new("version", DataType::I64).version())
+            .property(PropertyDescriptor::new("name", DataType::Text));
+        let policy: Arc<dyn MutationPolicy> = Arc::new(DenyTaskPolicy);
+        let mut context = UserContext::default()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(descriptor))
+            .with_mutation_policy_registry(move |request_key: &str| {
+                (request_key == "Task.saveGraph").then(|| policy.clone())
+            });
+        context.insert_resource(Ambient(state.clone()));
+        let root = EntityRuntimeState::default();
+        let key = EntityKey::new_static("Task", 1_i64);
+        root.set_original_version(key.clone(), 1);
+        root.set(key, "name", Value::Text("denied".to_owned()));
+        let node = GraphNode::new("Task")
+            .value("id", Value::I64(1))
+            .value("version", Value::I64(1))
+            .value("name", Value::Text("before".to_owned()));
+
+        let error = GraphSaverFor::<Ambient>::new()
+            .save_ledger_dyn(&context, node, root)
+            .await
+            .expect_err("the customer policy must reject the mutation");
+
+        assert!(error.to_string().contains("TASK-DENIED"));
+        assert!(state.lock().unwrap().calls.is_empty());
     }
 }
 
@@ -1048,10 +1143,14 @@ where
             let data_service =
                 crate::EntityDataService::for_executor(context, &entity_name, executor);
             let locations = ledger_object_locations(&node);
-            let generated_ids = data_service
-                .execute_ledger_plan_internal(root.clone(), &locations)
-                .await
-                .map_err(data_service_error_into_runtime)?;
+            let policy_plan = crate::ledger_policy_plan(context, &node, &root);
+            let governance = context.review_mutation_plan(&policy_plan)?;
+            let generated_ids = crate::with_mutation_governance(
+                governance,
+                data_service.execute_ledger_plan_internal(root.clone(), &locations),
+            )
+            .await
+            .map_err(data_service_error_into_runtime)?;
 
             if let Some(new_id) = generated_ids.get(&root_key) {
                 node.values.insert(id_property.name.clone(), new_id.clone());

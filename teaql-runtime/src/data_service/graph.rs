@@ -49,7 +49,15 @@ where
             ))));
         }
         let plan = self.plan_graph(node).await?;
-        self.execute_graph_plan_internal(plan).await
+        let policy_plan = crate::graph_policy_plan(self.data_service.metadata.context, &plan)
+            .map_err(DataServiceError::Runtime)?;
+        let governance = self
+            .data_service
+            .metadata
+            .context
+            .review_mutation_plan(&policy_plan)
+            .map_err(DataServiceError::Runtime)?;
+        crate::with_mutation_governance(governance, self.execute_graph_plan_internal(plan)).await
     }
 
     pub(crate) async fn save_entity_graph_from_internal(

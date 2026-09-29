@@ -30,6 +30,21 @@ TEAQL_NESTED_PROBE_DATABASE="sqlite:file:/tmp/teaql-order-nested-example.sqlite"
 
 The repository's `examples/verify-runtime-examples.sh` allocates a temporary database path and runs this probe **twice against the same file without cleanup** alongside the other Rust examples. It uses the explicit `LedgerEntity::include_pending_mutations_from` API on current local source. Published runtime packages do not yet contain this method; the model-aware Assist guidance is a version-gated local generator candidate until the corresponding runtime ABI is released.
 
+## Customer-owned mutation policy
+
+`mutation_policy_probe` installs an application-owned policy through
+`UserContext`, supplies an approval that exactly matches policy ID, version and
+fingerprint, permits one customer graph and rejects another. The rejected save
+must fail before transaction begin and leave no row behind. Run it twice
+against the same SQLite database to prove repeatability:
+
+```bash
+TEAQL_EXAMPLE_DATABASE=/tmp/teaql-order-mutation-policy.sqlite \
+  cargo run --bin mutation_policy_probe
+TEAQL_EXAMPLE_DATABASE=/tmp/teaql-order-mutation-policy.sqlite \
+  cargo run --bin mutation_policy_probe
+```
+
 ### Materialized-list hard limit
 
 `execute_for_list` protects the service by applying a default hard limit of 10,000 rows. A requested page size above that ceiling fails explicitly. Trusted application code can call `hard_limit(...)` to override the outer-query ceiling. **Caution:** most applications should not override it; do so only for a reviewed, exceptional requirement. This setting does not describe streaming execution.
