@@ -29,12 +29,16 @@ pub struct SchoolType {
     id: u64,
 
     // @source school-model.xml:24
+    #[teaql(max_length = 100)]
     name: String,
 
     // @source school-model.xml:24
+    #[teaql(max_length = 100)]
     code: String,
 
     // @source school-model.xml:24
+    #[teaql(numeric_precision = 19)]
+    #[teaql(numeric_scale = 7)]
     display_order: rust_decimal::Decimal,
     #[teaql(version)]
     version: i64,
@@ -240,6 +244,7 @@ impl SchoolType {
             teaql_core::eval::EvalResult::Value(self.version())
         }
     }
+
     pub fn platform_id(&self) -> u64 {
         self.changed_platform_id()
             .and_then(|value| value.try_u64())

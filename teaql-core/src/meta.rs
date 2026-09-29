@@ -133,6 +133,8 @@ pub struct EntityDescriptor {
     pub properties: Vec<PropertyDescriptor>,
     pub relations: Vec<RelationDescriptor>,
     pub audit_mask_fields: Vec<String>,
+    /// False for legacy metadata that never declared a complete field log policy.
+    pub audit_mask_fields_declared: bool,
     pub audit_value_max_len: Option<usize>,
 }
 
@@ -146,6 +148,7 @@ impl EntityDescriptor {
             properties: Vec::new(),
             relations: Vec::new(),
             audit_mask_fields: Vec::new(),
+            audit_mask_fields_declared: false,
             audit_value_max_len: None,
         }
     }
@@ -172,6 +175,7 @@ impl EntityDescriptor {
 
     pub fn audit_mask_fields(mut self, fields: Vec<String>) -> Self {
         self.audit_mask_fields = fields;
+        self.audit_mask_fields_declared = true;
         self
     }
 
@@ -271,6 +275,7 @@ mod tests {
         assert_eq!(entity.table_name, "users");
         assert_eq!(entity.data_service, Some("auth_db".to_string()));
         assert_eq!(entity.audit_mask_fields, vec!["password".to_string()]);
+        assert!(entity.audit_mask_fields_declared);
         assert_eq!(entity.audit_value_max_len, Some(255));
 
         // Lookups

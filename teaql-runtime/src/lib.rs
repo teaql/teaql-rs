@@ -699,6 +699,8 @@ mod tests {
                     .map(teaql_core::CompactRow::from_map)
                     .collect(),
                 metadata: ExecutionMetadata {
+                    statements: Vec::new(),
+                    sql_log: Default::default(),
                     debug_query: None,
                     backend: "stub".to_owned(),
                     operation: DataServiceOperation::Query,
@@ -723,6 +725,8 @@ mod tests {
                 generated_values: GeneratedValues::new(),
                 persisted_snapshot: None,
                 metadata: ExecutionMetadata {
+                    statements: Vec::new(),
+                    sql_log: Default::default(),
                     debug_query: None,
                     backend: "stub".to_owned(),
                     operation: DataServiceOperation::Update,
@@ -759,6 +763,8 @@ mod tests {
                     .map(teaql_core::CompactRow::from_map)
                     .collect(),
                 metadata: ExecutionMetadata {
+                    statements: Vec::new(),
+                    sql_log: Default::default(),
                     debug_query: None,
                     backend: "capture".to_owned(),
                     operation: DataServiceOperation::Query,
@@ -805,6 +811,8 @@ mod tests {
                     .map(teaql_core::CompactRow::from_map)
                     .collect(),
                 metadata: ExecutionMetadata {
+                    statements: Vec::new(),
+                    sql_log: Default::default(),
                     debug_query: None,
                     backend: "queue".to_owned(),
                     operation: DataServiceOperation::Query,
@@ -829,6 +837,8 @@ mod tests {
                 generated_values: GeneratedValues::new(),
                 persisted_snapshot: None,
                 metadata: ExecutionMetadata {
+                    statements: Vec::new(),
+                    sql_log: Default::default(),
                     debug_query: None,
                     backend: "queue".to_owned(),
                     operation: DataServiceOperation::Update,
@@ -864,6 +874,8 @@ mod tests {
                     .map(teaql_core::CompactRow::from_map)
                     .collect(),
                 metadata: ExecutionMetadata {
+                    statements: Vec::new(),
+                    sql_log: Default::default(),
                     debug_query: None,
                     backend: "id-set-queue".to_owned(),
                     operation: DataServiceOperation::Query,
@@ -919,6 +931,8 @@ mod tests {
                     .map(teaql_core::CompactRow::from_map)
                     .collect(),
                 metadata: ExecutionMetadata {
+                    statements: Vec::new(),
+                    sql_log: Default::default(),
                     debug_query: None,
                     backend: "concurrent-id-set".to_owned(),
                     operation: DataServiceOperation::Query,
@@ -4044,6 +4058,25 @@ mod tests {
             .pop()
             .unwrap();
         assert_eq!(row.get("version"), Some(&Value::I64(4)));
+    }
+
+    #[test]
+    fn optimistic_conflict_does_not_print_outside_diagnostic_sink() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::memory_data_service_supports_mutations_and_optimistic_locking",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("running 1 test"));
+        for bytes in [&output.stdout, &output.stderr] {
+            assert!(
+                !String::from_utf8_lossy(bytes).contains("OptimisticLockConflict in memory.rs")
+            );
+        }
     }
 
     #[tokio::test]

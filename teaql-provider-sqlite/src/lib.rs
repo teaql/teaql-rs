@@ -1881,6 +1881,7 @@ mod tests {
             .unwrap();
         let executor = SqliteMutationExecutor::from_connection(connection);
         let query = CompiledQuery {
+            log_context: Default::default(),
             sql: "SELECT id FROM stream_fixture ORDER BY id".to_owned(),
             params: vec![],
             comment: None,
@@ -1939,6 +1940,7 @@ mod tests {
             )
             .unwrap();
         let query = CompiledQuery {
+            log_context: Default::default(),
             sql: "INSERT INTO temporal_fixture VALUES (?, ?, ?)".to_owned(),
             params: vec![
                 Value::I64(1),
@@ -3132,6 +3134,7 @@ mod tests {
             .unwrap();
         let executor = SqliteMutationExecutor::from_connection(connection);
         let mut first = CompiledQuery {
+            log_context: Default::default(),
             sql: "SELECT id, enabled FROM sample WHERE id = ?".to_owned(),
             params: vec![Value::I64(1)],
             comment: Some("first purpose".to_owned()),
@@ -3435,6 +3438,7 @@ mod tests {
         let entity = <FeatureFlagRow as teaql_core::TeaqlEntity>::entity_descriptor();
         executor
             .execute(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "CREATE TABLE feature_flags (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, enabled INTEGER NOT NULL, optional_enabled INTEGER)"
                     .to_owned(),
                 params: Vec::new(),
@@ -3455,6 +3459,7 @@ mod tests {
         executor.execute(&insert).unwrap();
         executor
             .execute(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "INSERT INTO feature_flags (id, version, enabled, optional_enabled) VALUES (?, ?, ?, ?)"
                     .to_owned(),
                 params: vec![
@@ -3518,6 +3523,7 @@ mod tests {
 
         executor
             .execute(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "CREATE TABLE payloads (text_payload TEXT, json_payload JSON)".to_owned(),
                 params: Vec::new(),
                 comment: None,
@@ -3525,6 +3531,7 @@ mod tests {
             .unwrap();
         executor
             .execute(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "INSERT INTO payloads (text_payload, json_payload) VALUES (?, ?)".to_owned(),
                 params: vec![
                     Value::Text("{\"active\":true}".to_owned()),
@@ -3536,6 +3543,7 @@ mod tests {
 
         let rows = executor
             .fetch_all_compact(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "SELECT text_payload, json_payload FROM payloads".to_owned(),
                 params: Vec::new(),
                 comment: None,
@@ -3571,6 +3579,7 @@ mod tests {
         generator.ensure_table().unwrap();
         executor
             .execute(&CompiledQuery {
+                log_context: Default::default(),
                 sql: format!("INSERT INTO {table}(type_name, current_level) VALUES (?, ?)"),
                 params: vec![Value::Text("order".to_owned()), Value::I64(i64::MAX)],
                 comment: None,
@@ -3628,6 +3637,7 @@ mod tests {
         // Create table and insert 25 rows
         executor
             .execute(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER, name VARCHAR(255))"
                     .to_owned(),
                 params: Vec::new(),
@@ -3691,6 +3701,7 @@ mod tests {
 
         executor
             .execute(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER, name VARCHAR(255))"
                     .to_owned(),
                 params: Vec::new(),
@@ -3722,6 +3733,7 @@ mod tests {
 
         executor
             .execute(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "CREATE TABLE orders (id INTEGER PRIMARY KEY, version INTEGER, name VARCHAR(255))"
                     .to_owned(),
                 params: Vec::new(),

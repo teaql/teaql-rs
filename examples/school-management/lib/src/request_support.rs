@@ -86,8 +86,7 @@ where
         + teaql_data_service::MutationExecutor
         + teaql_data_service::StreamQueryExecutor
         + Send
-        + Sync
-        + 'static,
+        + Sync,
 {
     type Error = E::Error;
 
@@ -135,8 +134,7 @@ where
         + teaql_data_service::MutationExecutor
         + teaql_data_service::StreamQueryExecutor
         + Send
-        + Sync
-        + 'static,
+        + Sync,
 {
     async fn fetch_enhanced_entities<T>(
         &self,
@@ -213,30 +211,84 @@ pub(crate) fn authorize_query(mut query: SelectQuery) -> Result<PurposedSelectQu
     Ok(PurposedSelectQuery::new(query, purpose))
 }
 
-pub trait TeaqlRuntime {
+pub trait TeaqlRuntime: Sync {
     fn user_context(&self) -> &UserContext;
 
-    fn fetch_facet_smart_list(
-        &self,
-        entity: &str,
-        query: &PurposedSelectQuery,
-        relation_aggregates: &[RuntimeRelationAggregate],
+    fn save_audited_entity<'a, T>(
+        &'a self,
+        audited: teaql_core::Audited<T>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, RuntimeError>> + Send + 'a>>
+    where
+        T: teaql_runtime::LedgerEntity + Send + 'static;
+
+    fn fetch_entity_smart_list<'a, T>(
+        &'a self,
+        entity: &'static str,
+        query: PurposedSelectQuery,
+        relation_aggregates: Vec<RuntimeRelationAggregate>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<SmartList<T>, RuntimeError>> + Send + 'a>,
+    >
+    where
+        T: teaql_core::Entity + Send + 'a;
+
+    fn fetch_compact_smart_list<'a>(
+        &'a self,
+        entity: &'static str,
+        query: &'a PurposedSelectQuery,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<SmartList<CompactRow>, RuntimeError>>
+                + Send
+                + 'a,
+        >,
+    >;
+
+    fn fetch_compact_rows<'a>(
+        &'a self,
+        entity: &'static str,
+        query: &'a PurposedSelectQuery,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<CompactRow>, RuntimeError>> + Send + 'a>,
+    >;
+
+    fn fetch_entity_stream<'a, T>(
+        &'a self,
+        entity: &'static str,
+        query: PurposedSelectQuery,
+    ) -> TeaqlEntityStream<'a, T, RuntimeError>
+    where
+        T: teaql_core::Entity + Send + 'a;
+
+    fn fetch_facet_smart_list<'a>(
+        &'a self,
+        entity: &'a str,
+        query: &'a PurposedSelectQuery,
+        relation_aggregates: &'a [RuntimeRelationAggregate],
         trace_context: Vec<teaql_core::TraceNode>,
-    ) -> impl std::future::Future<Output = Result<SmartList<CompactRow>, RuntimeError>> + Send;
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<SmartList<CompactRow>, RuntimeError>>
+                + Send
+                + 'a,
+        >,
+    >;
 }
 
 /// Internal trait for repository access. Application code should not use this trait directly.
 #[doc(hidden)]
 pub trait AuditedSave<'a, C>
 where
-    C: TeaqlRepositoryProvider + ?Sized + 'a,
+    C: TeaqlRuntime + ?Sized + 'a,
 {
     type Error;
     type Entity;
     fn save(
         self,
         context: &'a C,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Entity, Self::Error>> + '_>>;
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Self::Entity, Self::Error>> + Send + '_>,
+    >;
 }
 
 pub trait TeaqlRepositoryProvider: TeaqlRuntime {
@@ -257,72 +309,120 @@ pub trait TeaqlRepositoryProvider: TeaqlRuntime {
     fn school_repository(&self) -> Result<Self::SchoolRepository<'_>, ContextError>;
 }
 
-#[allow(async_fn_in_trait)]
-pub trait TeaqlUserContextExt {
-    async fn transaction_data<F, Fut>(&self, f: F) -> Result<(), DataServiceError<<crate::runtime::DataServiceExecutor as teaql_data_service::DataServiceExecutor>::Error>>
-    where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = Result<(), DataServiceError<<crate::runtime::DataServiceExecutor as teaql_data_service::DataServiceExecutor>::Error>>>;
-}
-
-impl TeaqlUserContextExt for teaql_runtime::UserContext {
-    async fn transaction_data<F, Fut>(&self, f: F) -> Result<(), DataServiceError<<crate::runtime::DataServiceExecutor as teaql_data_service::DataServiceExecutor>::Error>>
-    where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = Result<(), DataServiceError<<crate::runtime::DataServiceExecutor as teaql_data_service::DataServiceExecutor>::Error>>>,
-    {
-        let executor = self
-            .require_resource::<crate::runtime::DataServiceExecutor>()
-            .map_err(|err| {
-                DataServiceError::Runtime(RuntimeError::Graph(format!(
-                    "cannot start transaction without executor: {err}"
-                )))
-            })?;
-        let root = self.entity_runtime_state();
-
-        let tx = teaql_data_service::TransactionExecutor::begin(&*executor)
-            .await
-            .map_err(DataServiceError::Executor)?;
-        root.push_change_set();
-
-        let result = f().await;
-        match result {
-            Ok(()) => {
-                root.pop_change_set();
-                teaql_data_service::Transaction::commit(tx)
-                    .await
-                    .map_err(DataServiceError::Executor)?;
-                Ok(())
-            }
-            Err(err) => {
-                root.pop_change_set();
-                teaql_data_service::Transaction::rollback(tx)
-                    .await
-                    .map_err(DataServiceError::Executor)?;
-                Err(err)
-            }
-        }
-    }
-}
-
 impl TeaqlRuntime for teaql_runtime::UserContext {
     fn user_context(&self) -> &UserContext {
         self
     }
 
-    async fn fetch_facet_smart_list(
-        &self,
-        entity: &str,
-        query: &PurposedSelectQuery,
-        relation_aggregates: &[RuntimeRelationAggregate],
+    fn save_audited_entity<'a, T>(
+        &'a self,
+        audited: teaql_core::Audited<T>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, RuntimeError>> + Send + 'a>>
+    where
+        T: teaql_runtime::LedgerEntity + Send + 'static,
+    {
+        Box::pin(teaql_runtime::save_audited_ledger_entity(audited, self))
+    }
+
+    fn fetch_entity_smart_list<'a, T>(
+        &'a self,
+        entity: &'static str,
+        query: PurposedSelectQuery,
+        relation_aggregates: Vec<RuntimeRelationAggregate>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<SmartList<T>, RuntimeError>> + Send + 'a>,
+    >
+    where
+        T: teaql_core::Entity + Send + 'a,
+    {
+        Box::pin(async move {
+            self.entity_data_service::<crate::runtime::DataServiceExecutor>(entity)
+                .map_err(|error| RuntimeError::Graph(error.to_string()))?
+                .fetch_enhanced_entities_with_relation_aggregates_owned(query, &relation_aggregates)
+                .await
+                .map_err(|error| RuntimeError::Graph(error.to_string()))
+        })
+    }
+
+    fn fetch_compact_smart_list<'a>(
+        &'a self,
+        entity: &'static str,
+        query: &'a PurposedSelectQuery,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<SmartList<CompactRow>, RuntimeError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            self.entity_data_service::<crate::runtime::DataServiceExecutor>(entity)
+                .map_err(|error| RuntimeError::Graph(error.to_string()))?
+                .fetch_smart_list(query)
+                .await
+                .map_err(|error| RuntimeError::Graph(error.to_string()))
+        })
+    }
+
+    fn fetch_compact_rows<'a>(
+        &'a self,
+        entity: &'static str,
+        query: &'a PurposedSelectQuery,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<CompactRow>, RuntimeError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            self.entity_data_service::<crate::runtime::DataServiceExecutor>(entity)
+                .map_err(|error| RuntimeError::Graph(error.to_string()))?
+                .fetch_all(query)
+                .await
+                .map_err(|error| RuntimeError::Graph(error.to_string()))
+        })
+    }
+
+    fn fetch_entity_stream<'a, T>(
+        &'a self,
+        entity: &'static str,
+        query: PurposedSelectQuery,
+    ) -> TeaqlEntityStream<'a, T, RuntimeError>
+    where
+        T: teaql_core::Entity + Send + 'a,
+    {
+        Box::pin(async_stream::try_stream! {
+            use futures_util::StreamExt;
+            let repository = self.entity_data_service::<crate::runtime::DataServiceExecutor>(entity)
+                .map_err(|error| RuntimeError::Graph(error.to_string()))?;
+            let mut chunks = repository.fetch_stream(&query).await
+                .map_err(|error| RuntimeError::Graph(error.to_string()))?;
+            while let Some(chunk) = chunks.next().await {
+                for row in chunk.map_err(|error| RuntimeError::Graph(error.to_string()))?.rows {
+                    yield T::from_compact_row(row).map_err(|error| RuntimeError::Graph(error.to_string()))?;
+                }
+            }
+        })
+    }
+
+    fn fetch_facet_smart_list<'a>(
+        &'a self,
+        entity: &'a str,
+        query: &'a PurposedSelectQuery,
+        relation_aggregates: &'a [RuntimeRelationAggregate],
         trace_context: Vec<teaql_core::TraceNode>,
-    ) -> Result<SmartList<CompactRow>, RuntimeError> {
-        self.entity_data_service::<crate::runtime::DataServiceExecutor>(entity)
-            .map_err(|err| RuntimeError::Graph(err.to_string()))?
-            .with_trace_context(trace_context)
-            .fetch_smart_list_with_relation_aggregates(query, relation_aggregates)
-            .await
-            .map_err(|err| RuntimeError::Graph(err.to_string()))
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<SmartList<CompactRow>, RuntimeError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            self.entity_data_service::<crate::runtime::DataServiceExecutor>(entity)
+                .map_err(|err| RuntimeError::Graph(err.to_string()))?
+                .with_trace_context(trace_context)
+                .fetch_smart_list_with_relation_aggregates(query, relation_aggregates)
+                .await
+                .map_err(|err| RuntimeError::Graph(err.to_string()))
+        })
     }
 }
 
@@ -352,6 +452,132 @@ impl TeaqlRepositoryProvider for teaql_runtime::UserContext {
 
     fn school_repository(&self) -> Result<Self::SchoolRepository<'_>, ContextError> {
         self.entity_data_service::<crate::runtime::DataServiceExecutor>("School")
+    }
+}
+
+impl<'transaction> TeaqlRuntime
+    for teaql_runtime::TransactionScope<'transaction, crate::runtime::DataServiceExecutor>
+where
+    for<'scope> <crate::runtime::DataServiceExecutor as teaql_data_service::TransactionExecutor>::Tx<'scope>:
+        teaql_data_service::QueryExecutor
+            + teaql_data_service::MutationExecutor
+            + teaql_data_service::StreamQueryExecutor
+            + Send
+            + Sync,
+{
+    fn user_context(&self) -> &UserContext {
+        self.context()
+    }
+
+    fn save_audited_entity<'a, T>(
+        &'a self,
+        audited: teaql_core::Audited<T>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, RuntimeError>> + Send + 'a>>
+    where
+        T: teaql_runtime::LedgerEntity + Send + 'static,
+    {
+        Box::pin(self.save_audited(audited))
+    }
+
+    fn fetch_entity_smart_list<'a, T>(
+        &'a self,
+        entity: &'static str,
+        query: PurposedSelectQuery,
+        relation_aggregates: Vec<RuntimeRelationAggregate>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<SmartList<T>, RuntimeError>> + Send + 'a>,
+    >
+    where
+        T: teaql_core::Entity + Send + 'a,
+    {
+        Box::pin(async move {
+            self.entity_data_service(entity)
+                .map_err(|error| RuntimeError::Graph(error.to_string()))?
+                .fetch_enhanced_entities_with_relation_aggregates_owned(query, &relation_aggregates)
+                .await
+                .map_err(|error| RuntimeError::Graph(error.to_string()))
+        })
+    }
+
+    fn fetch_compact_smart_list<'a>(
+        &'a self,
+        entity: &'static str,
+        query: &'a PurposedSelectQuery,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<SmartList<CompactRow>, RuntimeError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            self.entity_data_service(entity)
+                .map_err(|error| RuntimeError::Graph(error.to_string()))?
+                .fetch_smart_list(query)
+                .await
+                .map_err(|error| RuntimeError::Graph(error.to_string()))
+        })
+    }
+
+    fn fetch_compact_rows<'a>(
+        &'a self,
+        entity: &'static str,
+        query: &'a PurposedSelectQuery,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<CompactRow>, RuntimeError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            self.entity_data_service(entity)
+                .map_err(|error| RuntimeError::Graph(error.to_string()))?
+                .fetch_all(query)
+                .await
+                .map_err(|error| RuntimeError::Graph(error.to_string()))
+        })
+    }
+
+    fn fetch_entity_stream<'a, T>(
+        &'a self,
+        entity: &'static str,
+        query: PurposedSelectQuery,
+    ) -> TeaqlEntityStream<'a, T, RuntimeError>
+    where
+        T: teaql_core::Entity + Send + 'a,
+    {
+        Box::pin(async_stream::try_stream! {
+            use futures_util::StreamExt;
+            let repository = self.entity_data_service(entity)
+                .map_err(|error| RuntimeError::Graph(error.to_string()))?;
+            let mut chunks = repository.fetch_stream(&query).await
+                .map_err(|error| RuntimeError::Graph(error.to_string()))?;
+            while let Some(chunk) = chunks.next().await {
+                for row in chunk.map_err(|error| RuntimeError::Graph(error.to_string()))?.rows {
+                    yield T::from_compact_row(row).map_err(|error| RuntimeError::Graph(error.to_string()))?;
+                }
+            }
+        })
+    }
+
+    fn fetch_facet_smart_list<'a>(
+        &'a self,
+        entity: &'a str,
+        query: &'a PurposedSelectQuery,
+        relation_aggregates: &'a [RuntimeRelationAggregate],
+        trace_context: Vec<teaql_core::TraceNode>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<SmartList<CompactRow>, RuntimeError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            self.entity_data_service(entity)
+                .map_err(|err| RuntimeError::Graph(err.to_string()))?
+                .with_trace_context(trace_context)
+                .fetch_smart_list_with_relation_aggregates(query, relation_aggregates)
+                .await
+                .map_err(|err| RuntimeError::Graph(err.to_string()))
+        })
     }
 }
 

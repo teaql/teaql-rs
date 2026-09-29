@@ -1259,6 +1259,8 @@ mod sql_log_option_tests {
         context.disable_sql_log();
         let now = SystemTime::now();
         context.record_metadata_log(&teaql_data_service::ExecutionMetadata {
+            statements: Vec::new(),
+            sql_log: Default::default(),
             backend: "sql".to_owned(),
             operation: teaql_data_service::DataServiceOperation::Query,
             started_at: now,
@@ -1276,12 +1278,14 @@ mod sql_log_option_tests {
     }
 
     #[test]
-    fn default_sql_telemetry_never_retains_bound_values_or_copy_paste_sql() {
+    fn default_sql_telemetry_retains_expanded_masked_sql_not_raw_values() {
         let mut context = UserContext::default();
         let buffer = UnifiedLogBuffer::default();
         context.insert_resource(buffer.clone());
         let now = SystemTime::now();
         context.record_metadata_log(&teaql_data_service::ExecutionMetadata {
+            statements: Vec::new(),
+            sql_log: Default::default(),
             backend: "sqlite".to_owned(),
             operation: teaql_data_service::DataServiceOperation::Query,
             started_at: now,
@@ -1301,9 +1305,13 @@ mod sql_log_option_tests {
         assert_eq!(entry.sql, "SELECT id FROM account WHERE secret = ?");
         assert_eq!(entry.result_count, Some(1));
         assert_eq!(entry.parameter_count(), 1);
-        assert_eq!(entry.params, vec![Value::Null]);
-        assert!(entry.debug_sql.is_empty());
-        assert!(entry.pretty_sql.is_empty());
+        assert_eq!(entry.params, vec![Value::from("[REDACTED]")]);
+        assert!(
+            entry
+                .debug_sql
+                .contains("secret = '[REDACTED]' /* masked */")
+        );
+        assert_eq!(entry.pretty_sql, entry.debug_sql);
         let buffered = buffer.entries.lock().unwrap();
         let LogPayload::Sql(buffered_sql) = &buffered[0].payload else {
             panic!("expected SQL log");
@@ -1316,17 +1324,9 @@ mod sql_log_option_tests {
         );
         assert!(!ordinary_text.contains("private-value-0123"));
         assert!(!ordinary_text.contains("Debug SQL:"));
-        let mut diagnostic_entry = entry.clone();
-        diagnostic_entry.params = vec![Value::from("private-value-0123")];
-        diagnostic_entry.debug_sql =
-            "SELECT id FROM account WHERE secret = 'private-value-0123'".to_owned();
-        let diagnostic_text = crate::log_formatter::LogFormatter::format_sql_log(
-            &crate::log_formatter::HumanReaderFormatter,
-            &diagnostic_entry.trace_path,
-            &diagnostic_entry,
-        );
-        assert!(diagnostic_text.contains("Debug SQL:"));
-        assert!(diagnostic_text.contains("private-value-0123"));
+        assert!(!ordinary_text.contains("secret = ?"));
+        assert!(ordinary_text.contains("/* masked */"));
+        assert!(ordinary_text.contains("NOT REPLAYABLE"));
     }
 
     #[test]
@@ -1366,6 +1366,8 @@ mod sql_log_option_tests {
             ),
         ];
         context.record_metadata_log(&teaql_data_service::ExecutionMetadata {
+            statements: Vec::new(),
+            sql_log: Default::default(),
             backend: "sqlite".to_owned(),
             operation: teaql_data_service::DataServiceOperation::Query,
             started_at: now,
@@ -1405,8 +1407,8 @@ mod sql_log_option_tests {
         assert_eq!(query.trace_path[6].entity_type, "select");
         assert_eq!(query.sql, "SELECT name FROM school_data WHERE id = ?");
         assert_eq!(query.parameter_count(), 1);
-        assert_eq!(query.params, vec![Value::Null]);
-        assert!(query.debug_sql.is_empty());
+        assert_eq!(query.params, vec![Value::from("[REDACTED]")]);
+        assert!(query.debug_sql.contains("id = '[REDACTED]' /* masked */"));
         assert_eq!(query.result_count, Some(2));
 
         let mutation_trace = vec![teaql_core::TraceNode::typed(
@@ -1416,6 +1418,8 @@ mod sql_log_option_tests {
             "correct school name",
         )];
         context.record_metadata_log(&teaql_data_service::ExecutionMetadata {
+            statements: Vec::new(),
+            sql_log: Default::default(),
             backend: "sqlite".to_owned(),
             operation: teaql_data_service::DataServiceOperation::Update,
             started_at: now,
@@ -1431,7 +1435,10 @@ mod sql_log_option_tests {
         });
         let mutation = context.sql_logs().pop().expect("mutation log");
         assert_eq!(mutation.parameter_count(), 2);
-        assert_eq!(mutation.params, vec![Value::Null, Value::Null]);
+        assert_eq!(
+            mutation.params,
+            vec![Value::from("[REDACTED]"), Value::from("[REDACTED]")]
+        );
         assert_eq!(mutation.comment, None);
         assert_eq!(mutation.purpose, None);
         assert_eq!(
@@ -1452,7 +1459,12 @@ mod sql_log_option_tests {
             ]
         );
         assert_eq!(mutation.affected_rows, Some(1));
-        assert!(mutation.debug_sql.is_empty());
+        assert!(
+            mutation
+                .debug_sql
+                .contains("name = '[REDACTED]' /* masked */ WHERE id = '[REDACTED]' /* masked */")
+        );
+        assert!(!mutation.debug_sql.contains("Academy"));
     }
 }
 

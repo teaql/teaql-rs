@@ -88,28 +88,24 @@ impl QueryExecutor for MeilisearchProvider {
             "limit": 100
         });
 
-        println!(
-            "[MeilisearchProvider] Sending HTTP SEARCH to {} with payload: {}",
-            url,
-            serde_json::to_string_pretty(&payload).unwrap_or_default()
-        );
-
         let res = self
             .request_builder(reqwest::Method::POST, &url)
             .json(&payload)
             .send()
             .await
-            .map_err(|e| MeilisearchError(e.to_string()))?;
+            .map_err(|_| MeilisearchError("Search request failed (transport)".to_owned()))?;
 
         if !res.status().is_success() {
-            let err = res.text().await.unwrap_or_default();
-            return Err(MeilisearchError(format!("Search failed: {}", err)));
+            return Err(MeilisearchError(format!(
+                "Search failed: HTTP {}",
+                res.status().as_u16()
+            )));
         }
 
         let json: serde_json::Value = res
             .json()
             .await
-            .map_err(|e| MeilisearchError(e.to_string()))?;
+            .map_err(|_| MeilisearchError("Search response was not valid JSON".to_owned()))?;
 
         let mut rows = Vec::new();
         if let Some(hits) = json.get("hits").and_then(|h| h.as_array()) {
@@ -127,7 +123,9 @@ impl QueryExecutor for MeilisearchProvider {
         Ok(QueryResult {
             rows,
             metadata: ExecutionMetadata {
-                debug_query: Some(format!("POST {} with {:?}", url, payload)),
+                statements: Vec::new(),
+                sql_log: Default::default(),
+                debug_query: Some("Meilisearch search request (payload omitted)".to_owned()),
                 backend: "meilisearch".to_owned(),
                 operation: DataServiceOperation::Query,
                 started_at,
@@ -164,22 +162,20 @@ impl MutationExecutor for MeilisearchProvider {
                 }
                 let payload = serde_json::Value::Array(vec![serde_json::Value::Object(map)]);
 
-                println!(
-                    "[MeilisearchProvider] Sending HTTP POST to {} with payload: {}",
-                    url,
-                    serde_json::to_string_pretty(&payload).unwrap_or_default()
-                );
-
                 let res = self
                     .request_builder(reqwest::Method::POST, &url)
                     .json(&payload)
                     .send()
                     .await
-                    .map_err(|e| MeilisearchError(e.to_string()))?;
+                    .map_err(|_| {
+                        MeilisearchError("Insert request failed (transport)".to_owned())
+                    })?;
 
                 if !res.status().is_success() {
-                    let err = res.text().await.unwrap_or_default();
-                    return Err(MeilisearchError(format!("Insert failed: {}", err)));
+                    return Err(MeilisearchError(format!(
+                        "Insert failed: HTTP {}",
+                        res.status().as_u16()
+                    )));
                 }
 
                 Ok(MutationResult {
@@ -187,6 +183,8 @@ impl MutationExecutor for MeilisearchProvider {
                     generated_values: GeneratedValues::new(),
                     persisted_snapshot: None,
                     metadata: ExecutionMetadata {
+                        statements: Vec::new(),
+                        sql_log: Default::default(),
                         debug_query: Some(format!("POST {} to Meilisearch", entity)),
                         backend: "meilisearch".to_owned(),
                         operation: DataServiceOperation::Update,
@@ -209,6 +207,8 @@ impl MutationExecutor for MeilisearchProvider {
                     generated_values: GeneratedValues::new(),
                     persisted_snapshot: None,
                     metadata: ExecutionMetadata {
+                        statements: Vec::new(),
+                        sql_log: Default::default(),
                         debug_query: Some("Skipped non-insert mutation".to_owned()),
                         backend: "meilisearch".to_owned(),
                         operation: DataServiceOperation::Update,
@@ -231,6 +231,132 @@ impl MutationExecutor for MeilisearchProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    const QUERY_CANARY: &str = "query-secret-canary-7c87";
+    const INSERT_CANARY: &str = "document-secret-canary-1b54";
+
+    fn serve_once(
+        status: u16,
+        response_body: &'static str,
+    ) -> (String, std::thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut expected_len = None;
+            loop {
+                let mut chunk = [0_u8; 4096];
+                let count = stream.read(&mut chunk).unwrap();
+                if count == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..count]);
+                if let Some(header_end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n")
+                {
+                    let body_start = header_end + 4;
+                    let body_len = *expected_len.get_or_insert_with(|| {
+                        String::from_utf8_lossy(&request[..header_end])
+                            .lines()
+                            .find_map(|line| {
+                                line.to_ascii_lowercase()
+                                    .strip_prefix("content-length: ")
+                                    .and_then(|len| len.parse::<usize>().ok())
+                            })
+                            .unwrap_or(0)
+                    });
+                    if request.len() >= body_start + body_len {
+                        break;
+                    }
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                response_body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        (url, handle)
+    }
+
+    fn query_request() -> QueryRequest {
+        QueryRequest {
+            query: teaql_core::SelectQuery::new("customer").search_with_text(QUERY_CANARY),
+            trace_chain: Vec::new(),
+            comment: None,
+            capture_debug_query: true,
+            capture_execution_metadata: true,
+        }
+    }
+
+    #[test]
+    fn meilisearch_payload_does_not_escape_to_process_output() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::meilisearch_payload_canary_child",
+                "--nocapture",
+            ])
+            .env("TEAQL_MEILI_CANARY_CHILD", "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("running 1 test"));
+        for output_bytes in [&output.stdout, &output.stderr] {
+            let rendered = String::from_utf8_lossy(output_bytes);
+            assert!(!rendered.contains(QUERY_CANARY));
+            assert!(!rendered.contains(INSERT_CANARY));
+        }
+    }
+
+    #[tokio::test]
+    async fn meilisearch_payload_canary_child() {
+        if std::env::var_os("TEAQL_MEILI_CANARY_CHILD").is_none() {
+            return;
+        }
+
+        let (url, request) = serve_once(200, r#"{"hits":[]}"#);
+        let result = MeilisearchProvider::new(url, None)
+            .query(query_request())
+            .await
+            .unwrap();
+        assert!(request.join().unwrap().contains(QUERY_CANARY));
+        assert!(!result.metadata.debug_query.unwrap().contains(QUERY_CANARY));
+
+        let (url, request) = serve_once(200, r#"{"taskUid":1}"#);
+        let result = MeilisearchProvider::new(url, None)
+            .mutate(MutationRequest::Insert(
+                teaql_core::InsertCommand::new("customer").value("password_hash", INSERT_CANARY),
+            ))
+            .await
+            .unwrap();
+        assert!(request.join().unwrap().contains(INSERT_CANARY));
+        assert!(!result.metadata.debug_query.unwrap().contains(INSERT_CANARY));
+
+        let (url, request) = serve_once(400, r#"{"error":"query-secret-canary-7c87"}"#);
+        let error = MeilisearchProvider::new(url, None)
+            .query(query_request())
+            .await
+            .unwrap_err();
+        assert!(request.join().unwrap().contains(QUERY_CANARY));
+        assert!(!error.to_string().contains(QUERY_CANARY));
+
+        let (url, request) = serve_once(400, r#"{"error":"document-secret-canary-1b54"}"#);
+        let error = MeilisearchProvider::new(url, None)
+            .mutate(MutationRequest::Insert(
+                teaql_core::InsertCommand::new("customer").value("password_hash", INSERT_CANARY),
+            ))
+            .await
+            .unwrap_err();
+        assert!(request.join().unwrap().contains(INSERT_CANARY));
+        assert!(!error.to_string().contains(INSERT_CANARY));
+    }
 
     #[test]
     fn test_recursive_json_to_value_conversion_for_meilisearch() {

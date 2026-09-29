@@ -1,5 +1,11 @@
 #![allow(async_fn_in_trait)]
 
+mod sql_log;
+pub use sql_log::{
+    SqlExecutionOutcome, SqlIntentRedactions, SqlLogContext, SqlParameterLogPolicy,
+    SqlProjectionState, is_credential_log_name,
+};
+
 use std::time::SystemTime;
 use teaql_core::{
     CompactRow, DeleteCommand, EntitySnapshot, Expr, GeneratedValues, InsertCommand,
@@ -25,8 +31,9 @@ pub struct QueryRequest {
     pub query: SelectQuery,
     pub trace_chain: Vec<TraceNode>,
     pub comment: Option<String>,
-    /// Build a copy-paste representation with bind values interpolated.
-    /// Runtimes should disable this when query logging is disabled.
+    /// Request a diagnostic SQL representation. SQL executors retain bindings;
+    /// the runtime must project their privacy policies before interpolation.
+    /// This flag does not authorize plaintext rendering in an executor.
     pub capture_debug_query: bool,
     /// Retain timings, parameterized text, bind values, trace and comment in the result.
     /// Disable only when the caller will discard execution metadata.
@@ -91,6 +98,9 @@ pub enum DataServiceOperation {
 
 #[derive(Debug, Clone)]
 pub struct ExecutionMetadata {
+    /// Batch statements keep independent binding positions and policies.
+    pub statements: Vec<ExecutionMetadata>,
+    pub sql_log: SqlLogContext,
     pub backend: String,
     pub operation: DataServiceOperation,
     pub started_at: SystemTime,
@@ -111,6 +121,8 @@ pub struct ExecutionMetadata {
 impl ExecutionMetadata {
     pub fn unrecorded_query(result_count: usize) -> Self {
         Self {
+            statements: Vec::new(),
+            sql_log: SqlLogContext::default(),
             backend: String::new(),
             operation: DataServiceOperation::Query,
             started_at: SystemTime::UNIX_EPOCH,
@@ -134,10 +146,30 @@ pub trait DataServiceExecutor {
 }
 
 pub trait QueryExecutor: DataServiceExecutor {
+    /// Provider diagnostic SPI for a cached/rewritten query whose original
+    /// statement will not execute. Must not perform I/O or emit a SQL log.
+    /// Providers can derive precise policies from compilation. The default
+    /// treats query literals as unknown, including in explicit debug mode.
+    #[doc(hidden)]
+    fn query_log_intent(&self, query: &SelectQuery) -> SqlIntentRedactions {
+        SqlIntentRedactions::from_unclassified_query(query)
+    }
+
     fn query(
         &self,
         request: QueryRequest,
     ) -> impl std::future::Future<Output = Result<QueryResult, Self::Error>> + Send;
+
+    /// Runtime diagnostic SPI. Success metadata remains in QueryResult; the
+    /// observer receives only failures/cancellation that cannot return a result.
+    #[doc(hidden)]
+    fn query_observed<'a>(
+        &'a self,
+        request: QueryRequest,
+        _observer: Option<ExecutionObserver<'a>>,
+    ) -> impl std::future::Future<Output = Result<QueryResult, Self::Error>> + Send + 'a {
+        self.query(request)
+    }
 }
 
 /// Result of a single streaming chunk.
@@ -151,6 +183,10 @@ pub struct StreamChunk {
 pub type QueryStream<'a, E> =
     std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<StreamChunk, E>> + 'a>>;
 
+/// Provider SPI: runtime-owned diagnostic projection, never part of a serialized request.
+#[doc(hidden)]
+pub type ExecutionObserver<'a> = std::sync::Arc<dyn Fn(ExecutionMetadata) + Send + Sync + 'a>;
+
 /// Streaming query executor. Returns rows in chunks rather than all at once.
 pub trait StreamQueryExecutor: DataServiceExecutor {
     fn query_stream(
@@ -158,6 +194,18 @@ pub trait StreamQueryExecutor: DataServiceExecutor {
         request: QueryRequest,
         chunk_size: usize,
     ) -> QueryStream<'_, Self::Error>;
+
+    /// Optional provider diagnostic hook. The default preserves third-party executors;
+    /// it cannot invent SQL or claim diagnostics for an executor that supplies none.
+    #[doc(hidden)]
+    fn query_stream_observed<'a>(
+        &'a self,
+        request: QueryRequest,
+        chunk_size: usize,
+        _observer: ExecutionObserver<'a>,
+    ) -> QueryStream<'a, Self::Error> {
+        self.query_stream(request, chunk_size)
+    }
 }
 
 pub trait MutationExecutor: DataServiceExecutor {
@@ -165,6 +213,16 @@ pub trait MutationExecutor: DataServiceExecutor {
         &self,
         request: MutationRequest,
     ) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send;
+
+    /// Runtime-only diagnostic SPI for results lost to failure or cancellation.
+    #[doc(hidden)]
+    fn mutate_observed<'a>(
+        &'a self,
+        request: MutationRequest,
+        _observer: Option<ExecutionObserver<'a>>,
+    ) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send + 'a {
+        self.mutate(request)
+    }
 }
 
 /// A mutation whose target must also satisfy a trusted, datastore-enforced guard.
@@ -194,6 +252,15 @@ pub trait GuardedMutationExecutor: MutationExecutor {
         &self,
         request: GuardedMutationRequest,
     ) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send;
+
+    #[doc(hidden)]
+    fn mutate_guarded_observed<'a>(
+        &'a self,
+        request: GuardedMutationRequest,
+        _observer: Option<ExecutionObserver<'a>>,
+    ) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send + 'a {
+        self.mutate_guarded(request)
+    }
 }
 
 pub trait TransactionExecutor: DataServiceExecutor {

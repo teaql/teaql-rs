@@ -1014,10 +1014,6 @@ where
             if let Some(Value::I64(expected_version)) = node.values.get(&version_property.name)
                 && expected_version != existing_version
             {
-                println!(
-                    "OptimisticLockConflict in validate_reference_node! entity={}, expected={}, existing={}",
-                    node.entity, expected_version, existing_version
-                );
                 return Err(DataServiceError::Runtime(
                     RuntimeError::OptimisticLockConflict {
                         entity: node.entity,

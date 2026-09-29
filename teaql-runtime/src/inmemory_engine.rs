@@ -50,6 +50,8 @@ impl InMemoryQueryEngine {
         QueryResult {
             rows,
             metadata: ExecutionMetadata {
+                statements: Vec::new(),
+                sql_log: Default::default(),
                 debug_query: None,
                 backend: "memory".to_owned(),
                 operation: DataServiceOperation::Query,
@@ -136,6 +138,8 @@ impl InMemoryQueryEngine {
         QueryResult {
             rows: result_rows,
             metadata: ExecutionMetadata {
+                statements: Vec::new(),
+                sql_log: Default::default(),
                 debug_query: None,
                 backend: "memory".to_owned(),
                 operation: DataServiceOperation::Query,
@@ -196,6 +200,8 @@ impl InMemoryQueryEngine {
         QueryResult {
             rows: result_rows,
             metadata: ExecutionMetadata {
+                statements: Vec::new(),
+                sql_log: Default::default(),
                 debug_query: None,
                 backend: "memory".to_owned(),
                 operation: DataServiceOperation::Query,

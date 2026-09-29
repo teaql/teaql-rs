@@ -31,9 +31,11 @@ pub struct Platform {
     id: u64,
 
     // @source school-model.xml:13
+    #[teaql(max_length = 100)]
     name: String,
 
     // @source school-model.xml:13
+    #[teaql(max_length = 100)]
     base_url: String,
 
     // @source school-model.xml:13
@@ -264,6 +266,7 @@ impl Platform {
             teaql_core::eval::EvalResult::Value(self.version())
         }
     }
+
     /// Returns the relation view installed by the query that loaded this entity.
     /// This method never performs an implicit database query.
     pub fn school_type_list(

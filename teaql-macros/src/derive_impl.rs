@@ -115,7 +115,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         .unwrap_or_default();
 
     let audit_mask_fields = attrs.audit_mask_fields;
-    let audit_mask_fields_token = if !audit_mask_fields.is_empty() {
+    let audit_mask_fields_token = if attrs.audit_mask_fields_declared {
         {
             let fields = audit_mask_fields.iter().map(|f| quote! { #f.to_owned() });
             quote! {

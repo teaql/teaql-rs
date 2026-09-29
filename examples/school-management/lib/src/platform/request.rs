@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use serde_json::Value as JsonValue;
 use teaql_core::{Aggregate, AggregateFunction, EntityDescriptor, Expr, SelectQuery, SmartList};
-use teaql_runtime::{DataServiceError, RuntimeError};
+use teaql_runtime::RuntimeError;
 
 use crate::request_support::*;
 
@@ -98,37 +98,28 @@ impl<R> PlatformRequest<R> {
     pub(crate) async fn _execute_for_list<'a, C>(
         self,
         context: &'a C,
-    ) -> Result<SmartList<R>, TeaqlDataServiceError<C::PlatformRepository<'a>>>
+    ) -> Result<SmartList<R>, RuntimeError>
     where
-        C: TeaqlRepositoryProvider + ?Sized,
-        R: teaql_core::Entity,
+        C: TeaqlRuntime + ?Sized,
+        R: teaql_core::Entity + Send + 'a,
     {
-        let repository = context
-            .platform_repository()
-            .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
         let query_options = self.query_options.clone();
         let relation_aggregates = runtime_relation_aggregates(&query_options);
         let query = authorize_query(apply_runtime_metadata(
             self.query,
             &query_options,
             &self.child_enhancements,
-        ))
-        .map_err(DataServiceError::Runtime)?;
+        ))?;
         let (mut rows, facets) = if query_options.facets.is_empty() {
-            let rows = repository
-                .fetch_enhanced_entities_with_relation_aggregates_owned::<R>(
-                    query,
-                    &relation_aggregates,
-                )
+            let rows = context
+                .fetch_entity_smart_list::<R>("Platform", query, relation_aggregates)
                 .await?;
             (rows, std::collections::BTreeMap::new())
         } else {
-            let rows = repository
-                .fetch_enhanced_entities_with_relation_aggregates::<R>(&query, &relation_aggregates)
+            let rows = context
+                .fetch_entity_smart_list::<R>("Platform", query.clone(), relation_aggregates)
                 .await?;
-            let facets = execute_facets(context, query.as_query(), &query_options)
-                .await
-                .map_err(DataServiceError::Runtime)?;
+            let facets = execute_facets(context, query.as_query(), &query_options).await?;
             (rows, facets)
         };
         attach_facets(&mut rows, facets);
@@ -138,60 +129,41 @@ impl<R> PlatformRequest<R> {
     pub(crate) async fn _execute_for_rows<'a, C>(
         self,
         context: &'a C,
-    ) -> Result<SmartList<teaql_core::CompactRow>, TeaqlDataServiceError<C::PlatformRepository<'a>>>
+    ) -> Result<SmartList<teaql_core::CompactRow>, RuntimeError>
     where
-        C: TeaqlRepositoryProvider + ?Sized,
+        C: TeaqlRuntime + ?Sized,
     {
-        let repository = context
-            .platform_repository()
-            .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
         let query = authorize_query(apply_runtime_metadata(
             self.query,
             &self.query_options,
             &self.child_enhancements,
-        ))
-        .map_err(DataServiceError::Runtime)?;
-        repository.fetch_smart_list(&query).await
+        ))?;
+        context.fetch_compact_smart_list("Platform", &query).await
     }
 
     pub(crate) async fn _execute_for_stream<'a, C>(
         self,
         context: &'a C,
-    ) -> Result<
-        TeaqlEntityStream<'a, R, TeaqlDataServiceError<C::PlatformRepository<'a>>>,
-        TeaqlDataServiceError<C::PlatformRepository<'a>>,
-    >
+    ) -> Result<TeaqlEntityStream<'a, R, RuntimeError>, RuntimeError>
     where
-        C: TeaqlRepositoryProvider + ?Sized,
-        R: teaql_core::Entity + 'a,
+        C: TeaqlRuntime + ?Sized,
+        R: teaql_core::Entity + Send + 'a,
     {
-        Ok(Box::pin(async_stream::try_stream! {
-            use futures_util::StreamExt;
-            let repository = context
-                .platform_repository()
-                .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
-            let query_options = self.query_options.clone();
-            let query = authorize_query(apply_runtime_metadata(
-                self.query,
-                &query_options,
-                &self.child_enhancements,
-            )).map_err(DataServiceError::Runtime)?;
-            let mut chunks = repository.fetch_stream(&query).await?;
-            while let Some(chunk) = chunks.next().await {
-                for row in chunk?.rows {
-                    yield R::from_compact_row(row).map_err(DataServiceError::Entity)?;
-                }
-            }
-        }))
+        let query = authorize_query(apply_runtime_metadata(
+            self.query,
+            &self.query_options,
+            &self.child_enhancements,
+        ))?;
+        Ok(context.fetch_entity_stream("Platform", query))
     }
 
     pub(crate) async fn _execute_for_first<'a, C>(
         self,
         context: &'a C,
-    ) -> Result<Option<R>, TeaqlDataServiceError<C::PlatformRepository<'a>>>
+    ) -> Result<Option<R>, RuntimeError>
     where
-        C: TeaqlRepositoryProvider + ?Sized,
-        R: teaql_core::Entity,
+        C: TeaqlRuntime + ?Sized,
+        R: teaql_core::Entity + Send + 'a,
     {
         let rows = self.limit(1)._execute_for_list(context).await?;
         Ok(rows.into_iter().next())
@@ -200,10 +172,10 @@ impl<R> PlatformRequest<R> {
     pub(crate) async fn _execute_for_one<'a, C>(
         self,
         context: &'a C,
-    ) -> Result<Option<R>, TeaqlDataServiceError<C::PlatformRepository<'a>>>
+    ) -> Result<Option<R>, RuntimeError>
     where
-        C: TeaqlRepositoryProvider + ?Sized,
-        R: teaql_core::Entity,
+        C: TeaqlRuntime + ?Sized,
+        R: teaql_core::Entity + Send + 'a,
     {
         self._execute_for_first(context).await
     }
@@ -213,10 +185,10 @@ impl<R> PlatformRequest<R> {
         context: &'a C,
         offset: u64,
         limit: u64,
-    ) -> Result<SmartList<R>, TeaqlDataServiceError<C::PlatformRepository<'a>>>
+    ) -> Result<SmartList<R>, RuntimeError>
     where
-        C: TeaqlRepositoryProvider + ?Sized,
-        R: teaql_core::Entity,
+        C: TeaqlRuntime + ?Sized,
+        R: teaql_core::Entity + Send + 'a,
     {
         if self.query.id_set_pagination.is_some() {
             let mut rows = self
@@ -238,16 +210,10 @@ impl<R> PlatformRequest<R> {
         Ok(rows)
     }
 
-    pub(crate) async fn _execute_for_count<'a, C>(
-        self,
-        context: &'a C,
-    ) -> Result<u64, TeaqlDataServiceError<C::PlatformRepository<'a>>>
+    pub(crate) async fn _execute_for_count<'a, C>(self, context: &'a C) -> Result<u64, RuntimeError>
     where
-        C: TeaqlRepositoryProvider + ?Sized,
+        C: TeaqlRuntime + ?Sized,
     {
-        let repository = context
-            .platform_repository()
-            .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
         let query_options = self.query_options.clone();
         let mut query =
             apply_runtime_metadata(self.query, &query_options, &self.child_enhancements);
@@ -257,32 +223,31 @@ impl<R> PlatformRequest<R> {
         query.slice = None;
         query.relations.clear();
         query = query.count(COUNT_ALIAS);
-        let query = authorize_query(query).map_err(DataServiceError::Runtime)?;
-        let rows = repository.fetch_all(&query).await?;
+        let query = authorize_query(query)?;
+        let rows = context.fetch_compact_rows("Platform", &query).await?;
         rows.first()
             .and_then(|row| row.get(COUNT_ALIAS))
             .and_then(teaql_core::Value::try_u64)
             .ok_or_else(|| {
-                DataServiceError::Runtime(RuntimeError::Graph(format!(
+                RuntimeError::Graph(format!(
                     "count result for Platform is missing or not numeric"
-                )))
+                ))
             })
     }
 
     pub(crate) async fn _execute_for_exists<'a, C>(
         self,
         context: &'a C,
-    ) -> Result<bool, TeaqlDataServiceError<C::PlatformRepository<'a>>>
+    ) -> Result<bool, RuntimeError>
     where
-        C: TeaqlRepositoryProvider + ?Sized,
+        C: TeaqlRuntime + ?Sized,
     {
-        let repository = context
-            .platform_repository()
-            .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
-        let mut query = self.query.limit(1);
+        let mut query =
+            apply_runtime_metadata(self.query, &self.query_options, &self.child_enhancements)
+                .limit(1);
         query.relations.clear();
-        let query = authorize_query(query).map_err(DataServiceError::Runtime)?;
-        let rows = repository.fetch_all(&query).await?;
+        let query = authorize_query(query)?;
+        let rows = context.fetch_compact_rows("Platform", &query).await?;
         Ok(!rows.is_empty())
     }
 
@@ -2731,20 +2696,17 @@ impl<R> From<PlatformRequest<R>> for QuerySelection {
 
 impl<'a, C> crate::request_support::AuditedSave<'a, C> for teaql_core::Audited<crate::Platform>
 where
-    C: crate::request_support::TeaqlRepositoryProvider + ?Sized + 'a,
+    C: crate::TeaqlRuntime + ?Sized + 'a,
 {
-    type Error = crate::TeaqlDataServiceError<C::PlatformRepository<'a>>;
+    type Error = teaql_runtime::RuntimeError;
     type Entity = crate::Platform;
     fn save(
         self,
         context: &'a C,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Entity, Self::Error>> + '_>>
-    {
-        Box::pin(async move {
-            teaql_runtime::save_audited_ledger_entity(self, context.user_context())
-                .await
-                .map_err(DataServiceError::Runtime)
-        })
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Self::Entity, Self::Error>> + Send + '_>,
+    > {
+        Box::pin(async move { context.save_audited_entity(self).await })
     }
 }
 
@@ -2798,12 +2760,10 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<PlatformRequest<R>> {
         context: &'a C,
         offset: u64,
         limit: u64,
-    ) -> Result<
-        teaql_core::SmartList<R>,
-        crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>,
-    >
+    ) -> Result<teaql_core::SmartList<R>, teaql_runtime::RuntimeError>
     where
-        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
+        C: crate::TeaqlRuntime + ?Sized,
+        R: teaql_core::Entity + Send + 'a,
     {
         self.into_inner_with_trace()
             ._execute_for_page(context, offset, limit)
@@ -2813,9 +2773,9 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<PlatformRequest<R>> {
     pub async fn execute_for_exists<'a, C>(
         self,
         context: &'a C,
-    ) -> Result<bool, crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>>
+    ) -> Result<bool, teaql_runtime::RuntimeError>
     where
-        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
+        C: crate::TeaqlRuntime + ?Sized,
     {
         self.into_inner_with_trace()
             ._execute_for_exists(context)
@@ -2825,12 +2785,10 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<PlatformRequest<R>> {
     pub async fn execute_for_list<'a, C>(
         self,
         context: &'a C,
-    ) -> Result<
-        teaql_core::SmartList<R>,
-        crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>,
-    >
+    ) -> Result<teaql_core::SmartList<R>, teaql_runtime::RuntimeError>
     where
-        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
+        C: crate::TeaqlRuntime + ?Sized,
+        R: teaql_core::Entity + Send + 'a,
     {
         self.into_inner_with_trace()
             ._execute_for_list(context)
@@ -2840,12 +2798,9 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<PlatformRequest<R>> {
     pub async fn execute_for_rows<'a, C>(
         self,
         context: &'a C,
-    ) -> Result<
-        teaql_core::SmartList<teaql_core::CompactRow>,
-        crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>,
-    >
+    ) -> Result<teaql_core::SmartList<teaql_core::CompactRow>, teaql_runtime::RuntimeError>
     where
-        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
+        C: crate::TeaqlRuntime + ?Sized,
     {
         self.into_inner_with_trace()
             ._execute_for_rows(context)
@@ -2858,16 +2813,12 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<PlatformRequest<R>> {
         self,
         context: &'a C,
     ) -> Result<
-        crate::request_support::TeaqlEntityStream<
-            'a,
-            R,
-            crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>,
-        >,
-        crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>,
+        crate::request_support::TeaqlEntityStream<'a, R, teaql_runtime::RuntimeError>,
+        teaql_runtime::RuntimeError,
     >
     where
-        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
-        R: teaql_core::Entity + 'a,
+        C: crate::TeaqlRuntime + ?Sized,
+        R: teaql_core::Entity + Send + 'a,
     {
         self.into_inner_with_trace()
             ._execute_for_stream(context)
@@ -2877,9 +2828,10 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<PlatformRequest<R>> {
     pub async fn execute_for_first<'a, C>(
         self,
         context: &'a C,
-    ) -> Result<Option<R>, crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>>
+    ) -> Result<Option<R>, teaql_runtime::RuntimeError>
     where
-        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
+        C: crate::TeaqlRuntime + ?Sized,
+        R: teaql_core::Entity + Send + 'a,
     {
         self.into_inner_with_trace()
             ._execute_for_first(context)
@@ -2889,9 +2841,10 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<PlatformRequest<R>> {
     pub async fn execute_for_one<'a, C>(
         self,
         context: &'a C,
-    ) -> Result<Option<R>, crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>>
+    ) -> Result<Option<R>, teaql_runtime::RuntimeError>
     where
-        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
+        C: crate::TeaqlRuntime + ?Sized,
+        R: teaql_core::Entity + Send + 'a,
     {
         self.into_inner_with_trace()._execute_for_one(context).await
     }
@@ -2899,9 +2852,9 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<PlatformRequest<R>> {
     pub async fn execute_for_count<'a, C>(
         self,
         context: &'a C,
-    ) -> Result<u64, crate::request_support::TeaqlDataServiceError<C::PlatformRepository<'a>>>
+    ) -> Result<u64, teaql_runtime::RuntimeError>
     where
-        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
+        C: crate::TeaqlRuntime + ?Sized,
     {
         self.into_inner_with_trace()
             ._execute_for_count(context)

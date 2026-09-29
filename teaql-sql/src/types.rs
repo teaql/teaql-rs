@@ -9,6 +9,7 @@ pub enum DatabaseKind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompiledQuery {
+    pub log_context: teaql_data_service::SqlLogContext,
     pub sql: String,
     pub params: Vec<Value>,
     pub comment: Option<String>,
@@ -34,176 +35,179 @@ impl CompiledQuery {
     }
 
     pub fn debug_sql(&self, kind: DatabaseKind) -> String {
-        let sql = self.sql_with_comment();
-        match kind {
-            DatabaseKind::PostgreSql => replace_postgres_placeholders(&sql, &self.params),
-            DatabaseKind::Sqlite => {
-                replace_positional_placeholders(&sql, &self.params, DatabaseKind::Sqlite)
-            }
-            DatabaseKind::MySql => {
-                replace_positional_placeholders(&sql, &self.params, DatabaseKind::MySql)
-            }
-        }
+        render_sql_with(&self.sql_with_comment(), kind, self.params.len(), |index| {
+            render_sql_value(&self.params[index], kind)
+        })
+        .unwrap_or_else(|reason| format!("[SQL omitted: {reason}; NOT REPLAYABLE]"))
     }
 }
 
-fn replace_postgres_placeholders(sql: &str, params: &[Value]) -> String {
+/// Render already-projected bindings. The callback must never receive template
+/// text or derive policy from a parameter name; policy belongs to the compiler.
+/// Strict accounting prevents an incomplete rendering from looking replayable.
+pub fn render_sql_with(
+    sql: &str,
+    kind: DatabaseKind,
+    parameter_count: usize,
+    mut literal: impl FnMut(usize) -> Result<String, &'static str>,
+) -> Result<String, &'static str> {
+    let bytes = sql.as_bytes();
     let mut output = String::with_capacity(sql.len());
-    let mut chars = sql.chars().peekable();
-    let mut state = SqlScanState::Sql;
-    while let Some(ch) = chars.next() {
-        match state {
-            SqlScanState::Sql => match (ch, chars.peek().copied()) {
-                ('\'', _) => {
-                    output.push(ch);
-                    state = SqlScanState::SingleQuote;
+    let mut used = vec![false; parameter_count];
+    let mut positional = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        let start = i;
+        match bytes[i] {
+            b'\'' | b'"' | b'`' | b'[' => {
+                let open = bytes[i];
+                if open == b'[' && kind != DatabaseKind::Sqlite {
+                    output.push('[');
+                    i += 1;
+                    continue;
                 }
-                ('"', _) => {
-                    output.push(ch);
-                    state = SqlScanState::DoubleQuote;
+                if open == b'\''
+                    && kind == DatabaseKind::PostgreSql
+                    && i > 0
+                    && matches!(bytes[i - 1], b'e' | b'E')
+                {
+                    return Err("unsupported escape string");
                 }
-                ('-', Some('-')) => {
-                    output.push_str("--");
-                    chars.next();
-                    state = SqlScanState::LineComment;
-                }
-                ('/', Some('*')) => {
-                    output.push_str("/*");
-                    chars.next();
-                    state = SqlScanState::BlockComment;
-                }
-                ('$', Some(next)) if next.is_ascii_digit() => {
-                    let mut index = String::new();
-                    while let Some(next) = chars.peek().copied().filter(char::is_ascii_digit) {
-                        index.push(next);
-                        chars.next();
+                let close = if open == b'[' { b']' } else { open };
+                i += 1;
+                loop {
+                    if i >= bytes.len() {
+                        return Err("unterminated quoted SQL");
                     }
-                    if let Ok(index) = index.parse::<usize>()
-                        && let Some(value) = index.checked_sub(1).and_then(|idx| params.get(idx))
+                    if bytes[i] == b'\\' && kind == DatabaseKind::MySql {
+                        return Err("ambiguous MySQL backslash quoting");
+                    }
+                    if bytes[i] == close {
+                        i += 1;
+                        if i < bytes.len() && bytes[i] == close && open != b'[' {
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+                output.push_str(&sql[start..i]);
+            }
+            b'-' if bytes.get(i + 1) == Some(&b'-') => {
+                i += 2;
+                while i < bytes.len() && !matches!(bytes[i], b'\n' | b'\r') {
+                    i += 1;
+                }
+                output.push_str(&sql[start..i]);
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                if kind == DatabaseKind::MySql && matches!(bytes.get(i + 2), Some(b'!' | b'+')) {
+                    return Err("unsupported executable SQL comment");
+                }
+                i += 2;
+                let mut depth = 1;
+                while i < bytes.len() && depth > 0 {
+                    if bytes[i..].starts_with(b"/*") {
+                        depth += 1;
+                        i += 2;
+                    } else if bytes[i..].starts_with(b"*/") {
+                        depth -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                if depth != 0 {
+                    return Err("unterminated SQL comment");
+                }
+                output.push_str(&sql[start..i]);
+            }
+            b'#' if kind == DatabaseKind::MySql => return Err("unsupported MySQL hash comment"),
+            b'$' if kind == DatabaseKind::PostgreSql => {
+                i += 1;
+                if bytes.get(i).is_some_and(u8::is_ascii_digit) {
+                    while bytes.get(i).is_some_and(u8::is_ascii_digit) {
+                        i += 1;
+                    }
+                    let index = sql[start + 1..i]
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|v| v.checked_sub(1))
+                        .ok_or("invalid binding index")?;
+                    if index >= parameter_count {
+                        return Err("missing binding");
+                    }
+                    output.push_str(&literal(index)?);
+                    used[index] = true;
+                } else {
+                    // PostgreSQL dollar-quoted bodies may contain fake bindings.
+                    while bytes
+                        .get(i)
+                        .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
                     {
-                        output.push_str(&sql_literal(value, DatabaseKind::PostgreSql));
-                    } else {
-                        output.push('$');
-                        output.push_str(&index);
+                        i += 1;
                     }
-                }
-                _ => output.push(ch),
-            },
-            SqlScanState::SingleQuote => {
-                output.push(ch);
-                if ch == '\'' {
-                    if matches!(chars.peek(), Some('\'')) {
-                        output.push(chars.next().expect("peeked escaped quote"));
-                    } else {
-                        state = SqlScanState::Sql;
+                    if bytes.get(i) != Some(&b'$') {
+                        return Err("unsupported dollar expression");
                     }
+                    i += 1;
+                    let delimiter = &sql[start..i];
+                    let end = sql[i..]
+                        .find(delimiter)
+                        .ok_or("unterminated dollar quote")?;
+                    i += end + delimiter.len();
+                    output.push_str(&sql[start..i]);
                 }
             }
-            SqlScanState::DoubleQuote => {
-                output.push(ch);
-                if ch == '"' {
-                    if matches!(chars.peek(), Some('"')) {
-                        output.push(chars.next().expect("peeked escaped identifier"));
-                    } else {
-                        state = SqlScanState::Sql;
-                    }
+            b'?' if kind != DatabaseKind::PostgreSql => {
+                if bytes.get(i + 1).is_some_and(u8::is_ascii_digit) {
+                    return Err("unsupported numbered positional binding");
                 }
+                if positional >= parameter_count {
+                    return Err("missing binding");
+                }
+                output.push_str(&literal(positional)?);
+                used[positional] = true;
+                positional += 1;
+                i += 1;
             }
-            SqlScanState::LineComment => {
-                output.push(ch);
-                if matches!(ch, '\r' | '\n') {
-                    state = SqlScanState::Sql;
-                }
+            b':' | b'@' | b'$' if kind == DatabaseKind::Sqlite => {
+                return Err("unsupported named binding");
             }
-            SqlScanState::BlockComment => {
+            _ => {
+                let ch = sql[i..].chars().next().expect("valid character boundary");
                 output.push(ch);
-                if ch == '*' && matches!(chars.peek(), Some('/')) {
-                    output.push(chars.next().expect("peeked comment end"));
-                    state = SqlScanState::Sql;
-                }
+                i += ch.len_utf8();
             }
         }
     }
-    output
+    if used.iter().any(|used| !used) {
+        return Err("unused binding");
+    }
+    Ok(output)
 }
 
-fn replace_positional_placeholders(sql: &str, params: &[Value], kind: DatabaseKind) -> String {
-    let mut output = String::with_capacity(sql.len());
-    let mut params = params.iter();
-    let mut state = SqlScanState::Sql;
-    let mut chars = sql.chars().peekable();
-    while let Some(ch) = chars.next() {
-        match state {
-            SqlScanState::Sql => match (ch, chars.peek().copied()) {
-                ('\'', _) => {
-                    output.push(ch);
-                    state = SqlScanState::SingleQuote;
-                }
-                ('"', _) => {
-                    output.push(ch);
-                    state = SqlScanState::DoubleQuote;
-                }
-                ('-', Some('-')) => {
-                    output.push(ch);
-                    output.push(chars.next().expect("peeked line comment"));
-                    state = SqlScanState::LineComment;
-                }
-                ('/', Some('*')) => {
-                    output.push(ch);
-                    output.push(chars.next().expect("peeked block comment"));
-                    state = SqlScanState::BlockComment;
-                }
-                ('?', _) => match params.next() {
-                    Some(value) => output.push_str(&sql_literal(value, kind)),
-                    None => output.push(ch),
-                },
-                _ => output.push(ch),
-            },
-            SqlScanState::SingleQuote => {
-                output.push(ch);
-                if ch == '\'' {
-                    if matches!(chars.peek(), Some('\'')) {
-                        output.push(chars.next().expect("peeked escaped quote"));
-                    } else {
-                        state = SqlScanState::Sql;
-                    }
-                }
-            }
-            SqlScanState::DoubleQuote => {
-                output.push(ch);
-                if ch == '"' {
-                    if matches!(chars.peek(), Some('"')) {
-                        output.push(chars.next().expect("peeked escaped identifier quote"));
-                    } else {
-                        state = SqlScanState::Sql;
-                    }
-                }
-            }
-            SqlScanState::LineComment => {
-                output.push(ch);
-                if matches!(ch, '\r' | '\n') {
-                    state = SqlScanState::Sql;
-                }
-            }
-            SqlScanState::BlockComment => {
-                output.push(ch);
-                if ch == '*' && matches!(chars.peek(), Some('/')) {
-                    output.push(chars.next().expect("peeked block comment end"));
-                    state = SqlScanState::Sql;
-                }
-            }
+/// Format a safe value using the same dialect literal rules as debug SQL.
+pub fn render_sql_value(value: &Value, kind: DatabaseKind) -> Result<String, &'static str> {
+    fn finite(value: &Value) -> bool {
+        match value {
+            Value::F64(v) => v.is_finite(),
+            Value::List(values) => values.iter().all(finite),
+            _ => true,
         }
     }
-    output
-}
-
-#[derive(Clone, Copy)]
-enum SqlScanState {
-    Sql,
-    SingleQuote,
-    DoubleQuote,
-    LineComment,
-    BlockComment,
+    if !finite(value) {
+        return Err("non-finite SQL number");
+    }
+    // Do not assume MySQL NO_BACKSLASH_ESCAPES. Fail closed instead of
+    // displaying an executable-looking but semantically different literal.
+    let literal = sql_literal(value, kind);
+    if kind == DatabaseKind::MySql && literal.contains('\\') {
+        return Err("ambiguous MySQL backslash literal");
+    }
+    Ok(literal)
 }
 
 fn sql_bool_literal(value: bool) -> &'static str {

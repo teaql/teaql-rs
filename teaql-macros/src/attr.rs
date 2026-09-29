@@ -6,6 +6,7 @@ pub struct ContainerAttrs {
     pub table_name: String,
     pub data_service: Option<String>,
     pub audit_mask_fields: Vec<String>,
+    pub audit_mask_fields_declared: bool,
     pub audit_value_max_len: Option<usize>,
     pub reverse_relations: Vec<ParsedContainerRelation>,
 }
@@ -25,6 +26,7 @@ pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> Co
         table_name: default_table_name(default_name),
         data_service: None,
         audit_mask_fields: Vec::new(),
+        audit_mask_fields_declared: false,
         audit_value_max_len: None,
         reverse_relations: Vec::new(),
     };
@@ -46,6 +48,7 @@ pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> Co
             } else if meta.path.is_ident("audit_mask_fields") {
                 let value = meta.value()?;
                 let fields_str = parse_string_expr(&value.parse::<Expr>()?);
+                attrs_out.audit_mask_fields_declared = true;
                 attrs_out.audit_mask_fields = fields_str
                     .split(',')
                     .map(|s| s.trim().to_owned())
@@ -240,5 +243,22 @@ fn parse_u32_expr(expr: &Expr) -> Option<u32> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_container_attrs;
+
+    #[test]
+    fn empty_mask_attribute_is_distinct_from_absent_attribute() {
+        let absent: syn::Attribute = syn::parse_quote!(#[teaql(entity = "Customer")]);
+        let empty: syn::Attribute =
+            syn::parse_quote!(#[teaql(entity = "Customer", audit_mask_fields = "")]);
+        let absent = parse_container_attrs(&[absent], "Customer");
+        let empty = parse_container_attrs(&[empty], "Customer");
+        assert!(!absent.audit_mask_fields_declared);
+        assert!(empty.audit_mask_fields_declared);
+        assert!(empty.audit_mask_fields.is_empty());
     }
 }

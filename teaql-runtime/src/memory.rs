@@ -290,13 +290,6 @@ where
 
         if let Some(expected) = command.expected_version {
             if row.get(version_property) != Some(&Value::I64(expected)) {
-                println!(
-                    "OptimisticLockConflict in memory.rs update! entity={}, id={:?}, expected={}, existing={:?}",
-                    command.entity,
-                    command.id,
-                    expected,
-                    row.get(version_property)
-                );
                 return Err(DataServiceError::Runtime(
                     RuntimeError::OptimisticLockConflict {
                         entity: command.entity.clone(),

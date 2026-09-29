@@ -250,6 +250,54 @@ mod tests {
     static GLOBAL_OTEL_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     #[tokio::test(flavor = "current_thread")]
+    async fn failure_telemetry_exports_type_without_driver_message() {
+        struct DriverCanaryError;
+        impl std::fmt::Display for DriverCanaryError {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("SQL failed for password=OTEL-FAILURE-CANARY")
+            }
+        }
+
+        let _global_otel_guard = GLOBAL_OTEL_TEST_LOCK.lock().await;
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        global::set_tracer_provider(provider.clone());
+        let log_exporter = InMemoryLogExporter::default();
+        let logger_provider = SdkLoggerProvider::builder()
+            .with_simple_exporter(log_exporter.clone())
+            .build();
+        let telemetry: Arc<dyn RuntimeTelemetry> = Arc::new(
+            OpenTelemetryRuntimeTelemetry::new(
+                global::tracer("io.teaql.runtime"),
+                global::meter("io.teaql.runtime"),
+            )
+            .with_logger(logger_provider.logger("io.teaql.runtime")),
+        );
+
+        let _error = DriverCanaryError;
+        start_runtime_operation(
+            &telemetry,
+            RuntimeOperation::new("provider", "sqlite.query"),
+        )
+        .failure(std::any::type_name::<DriverCanaryError>());
+        provider.force_flush().expect("flush spans");
+
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        let logs = log_exporter.get_emitted_logs().expect("emitted logs");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(logs.len(), 1);
+        assert!(spans[0].attributes.iter().any(|attribute| {
+            attribute.key.as_str() == "teaql.error.category"
+                && attribute.value.to_string() == "internal"
+        }));
+        let exported = format!("{:?} {:?}", spans[0], logs[0]);
+        assert!(!exported.contains("OTEL-FAILURE-CANARY"));
+        assert!(!exported.contains("password="));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn preserves_nested_context_across_async_polling() {
         let _global_otel_guard = GLOBAL_OTEL_TEST_LOCK.lock().await;
         let exporter = InMemorySpanExporter::default();

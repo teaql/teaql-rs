@@ -55,6 +55,41 @@ fn unknown_complete_clauses_warn_without_values() {
             .all(|w| w.code == "DYNAMIC_SEARCH_UNKNOWN_FIELD")
     );
 }
+
+#[test]
+fn default_warning_log_omits_untrusted_path() {
+    const FIELD_PATH: &str = "CLIENT_SECRET_FIELD_PATH_91";
+    const VALUE: &str = "SECRET_VALUE_99";
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "default_warning_log_canary_child", "--nocapture"])
+        .env("TEAQL_DYNAMIC_WARNING_CHILD", "1")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("running 1 test"));
+    for bytes in [&output.stdout, &output.stderr] {
+        let log = String::from_utf8_lossy(bytes);
+        assert!(!log.contains(FIELD_PATH));
+        assert!(!log.contains(VALUE));
+    }
+    assert!(String::from_utf8_lossy(&output.stderr).contains("<omitted>"));
+}
+
+#[test]
+fn default_warning_log_canary_child() {
+    if std::env::var_os("TEAQL_DYNAMIC_WARNING_CHILD").is_none() {
+        return;
+    }
+    let result = normalize_dynamic_search(
+        r#"{"filter":{"CLIENT_SECRET_FIELD_PATH_91":"SECRET_VALUE_99"}}"#,
+        "School",
+        &models(),
+        100,
+        None,
+    )
+    .unwrap();
+    assert_eq!(result.warnings[0].field_path, "CLIENT_SECRET_FIELD_PATH_91");
+}
 #[test]
 fn invalid_input_remains_fatal() {
     for source in [

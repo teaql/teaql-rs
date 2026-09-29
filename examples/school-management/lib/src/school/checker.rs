@@ -165,6 +165,7 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
+
         if status.is_update() && !entity.is_loaded("platform_id") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -174,6 +175,7 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
+
         if status.is_update() && !entity.is_loaded("school_type_id") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -183,6 +185,7 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
+
         if status.is_update() && !entity.is_loaded("name") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -192,6 +195,7 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
+
         if status.is_update() && !entity.is_loaded("address") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -201,6 +205,7 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
+
         if status.is_update() && !entity.is_loaded("established_date") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -210,6 +215,7 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
+
         if status.is_update() && !entity.is_loaded("student_capacity") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -219,6 +225,7 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
+
         if status.is_update() && !entity.is_loaded("active") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -228,6 +235,7 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
+
         if status.is_update() && !entity.is_loaded("create_time") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -237,6 +245,7 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
+
         if status.is_update() && !entity.is_loaded("update_time") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -246,6 +255,7 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
+
         if status.is_update() && !entity.is_loaded("version") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -255,6 +265,7 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
+
         self.logic
             .check_and_fix_school(context, entity, status, location, results);
     }

@@ -927,7 +927,16 @@ where
             capture_execution_metadata: capture_metadata,
         };
 
-        let chunks = self.data_service.executor.query_stream(request, chunk_size);
+        let chunks = if capture_metadata {
+            let context = self.data_service.metadata.context;
+            self.data_service.executor.query_stream_observed(
+                request,
+                chunk_size,
+                std::sync::Arc::new(move |metadata| context.record_metadata_log(&metadata)),
+            )
+        } else {
+            self.data_service.executor.query_stream(request, chunk_size)
+        };
         use futures_util::StreamExt;
         Ok(Box::pin(
             chunks.map(|item| item.map_err(DataServiceError::Executor)),
@@ -938,6 +947,11 @@ where
         &self,
         query: &SelectQuery,
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
+        if self.query_log_intent.is_none()
+            && self.data_service.metadata.capture_execution_metadata()
+        {
+            return Box::pin(self.query_scoped_service().fetch_prepared_all(query)).await;
+        }
         let query = query
             .clone()
             .prepare_for_list()
@@ -1015,13 +1029,10 @@ where
         let res = self
             .data_service
             .executor
-            .query(request)
+            .query_observed(request, self.query_diagnostic_observer())
             .await
             .map_err(DataServiceError::Executor)?;
-        self.data_service
-            .metadata
-            .context
-            .record_metadata_log(&res.metadata);
+        self.record_query_metadata(&res.metadata);
         Ok(res.rows)
     }
 
@@ -1055,13 +1066,10 @@ where
         let res = self
             .data_service
             .executor
-            .query(request)
+            .query_observed(request, self.query_diagnostic_observer())
             .await
             .map_err(DataServiceError::Executor)?;
-        self.data_service
-            .metadata
-            .context
-            .record_metadata_log(&res.metadata);
+        self.record_query_metadata(&res.metadata);
         Ok(res.rows)
     }
 
@@ -1089,13 +1097,10 @@ where
         let result = self
             .data_service
             .executor
-            .query(request)
+            .query_observed(request, self.query_diagnostic_observer())
             .await
             .map_err(DataServiceError::Executor)?;
-        self.data_service
-            .metadata
-            .context
-            .record_metadata_log(&result.metadata);
+        self.record_query_metadata(&result.metadata);
         Ok(result.rows)
     }
 
@@ -1117,6 +1122,16 @@ where
         let result = scope
             .run(async {
                 if let Some(rows) = cache.get(&key, options.cache_expired_millis) {
+                    if let Some(intent) = &self.query_log_intent {
+                        // Reconstruct from the current query/compiler without a
+                        // DB call. Never retain raw intent in a shared row cache,
+                        // and never synthesize a SQL-success log for a cache hit.
+                        let source = self.data_service.executor.query_log_intent(query);
+                        intent
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .extend(&source);
+                    }
                     return Ok((rows, "hit"));
                 }
                 let request = teaql_data_service::QueryRequest {
@@ -1136,7 +1151,11 @@ where
                         .attribute("teaql.provider.operation", "query"),
                 );
                 let provider_result = provider_scope
-                    .run(self.data_service.executor.query(request))
+                    .run(
+                        self.data_service
+                            .executor
+                            .query_observed(request, self.query_diagnostic_observer()),
+                    )
                     .await;
                 let res = match provider_result {
                     Ok(value) => {
@@ -1148,10 +1167,7 @@ where
                         return Err(DataServiceError::Executor(error));
                     }
                 };
-                self.data_service
-                    .metadata
-                    .context
-                    .record_metadata_log(&res.metadata);
+                self.record_query_metadata(&res.metadata);
                 let rows = res.rows;
                 cache.put(key, rows.clone());
                 Ok((rows, "miss"))
@@ -1177,6 +1193,15 @@ where
         query: &SelectQuery,
         relation_aggregates: &[RelationAggregate],
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
+        if self.query_log_intent.is_none()
+            && self.data_service.metadata.capture_execution_metadata()
+        {
+            return Box::pin(
+                self.query_scoped_service()
+                    .fetch_all_with_relation_aggregates_internal(query, relation_aggregates),
+            )
+            .await;
+        }
         let query = self
             .prepare_select_query(query)
             .map_err(DataServiceError::Runtime)?;
@@ -1295,6 +1320,17 @@ where
         T: Entity + 'b,
     {
         Box::pin(async move {
+            if self.query_log_intent.is_none()
+                && self.data_service.metadata.capture_execution_metadata()
+            {
+                return self
+                    .query_scoped_service()
+                    .fetch_enhanced_entities_with_relation_aggregates_prepared(
+                        query,
+                        relation_aggregates,
+                    )
+                    .await;
+            }
             let (mut query, id_set_total_count) = self.prepare_id_set_page(query).await?;
             if relation_aggregates.is_empty()
                 && query.continuous_page_fetch.is_none()
@@ -1770,6 +1806,18 @@ where
                 executor: self.data_service.executor,
             },
             trace_context: Vec::new(),
+            // Snapshot ancestry: descendants may add their own bindings without
+            // changing their parent or an unrelated sibling relation.
+            query_log_intent: self.query_intent_snapshot().map(std::sync::Mutex::new),
         }
+    }
+
+    fn query_scoped_service(&self) -> EntityDataService<'a, E> {
+        let mut scoped = self.scoped_data_service_internal(self.entity.clone());
+        scoped.trace_context = self.trace_context.clone();
+        scoped.query_log_intent = Some(std::sync::Mutex::new(
+            self.query_intent_snapshot().unwrap_or_default(),
+        ));
+        scoped
     }
 }

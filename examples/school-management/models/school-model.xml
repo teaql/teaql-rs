@@ -27,6 +27,7 @@
   </school_type>
 
   <school _name="School"
+          _audit_mask_fields="name"
           _module="Academics"
           _module_key="academics"
           platform="platform()"

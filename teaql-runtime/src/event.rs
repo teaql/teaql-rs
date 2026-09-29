@@ -363,7 +363,12 @@ impl RawAuditEvent {
             // For audit, if it's masked or we just want the new/old values, we should represent it stringified.
             // Usually we care about the new value in SafeAuditEvent. Or maybe we want to represent the change.
             // Based on design doc, we stringify the value and apply masks.
-            let raw_val_str = change.new_value.as_ref().map(|v| format!("{:?}", v));
+            let raw_val_str = change.new_value.as_ref().map(|v| match v {
+                Value::Text(text) => text.clone(),
+                Value::I64(number) => number.to_string(),
+                Value::U64(number) => number.to_string(),
+                _ => format!("{:?}", v),
+            });
             let mut safe_field = build_safe_audit_field(
                 &change.field,
                 raw_val_str.as_deref(),
@@ -387,7 +392,12 @@ impl RawAuditEvent {
             safe_fields.push(safe_field);
         }
         let mut trace_chain = self.trace_chain.clone();
-        crate::log_privacy::scrub_trace(&mut trace_chain, &secrets);
+        let mut intent_values = secrets;
+        if let Some(id) = self.values.get("id") {
+            crate::log_privacy::collect_strings(id, &mut intent_values);
+        }
+        intent_values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+        crate::log_privacy::scrub_trace(&mut trace_chain, &intent_values);
         SafeAuditEvent {
             kind: self.kind,
             entity: self.entity.clone(),
@@ -444,9 +454,10 @@ pub fn build_safe_audit_field(
                 || (audit_mask_fields.iter().any(|f| f == field_name)
                     && !crate::log_privacy::plaintext_enabled());
 
-            let mut value = match should_mask {
-                true => "[REDACTED]".to_owned(),
-                false => raw.to_string(),
+            let mut value = match (credential, should_mask) {
+                (true, _) => "[REDACTED]".to_owned(),
+                (false, true) => mask_audit_value(raw),
+                (false, false) => raw.to_string(),
             };
 
             let mut truncated = false;
@@ -470,6 +481,21 @@ pub fn build_safe_audit_field(
             }
         }
     }
+}
+
+/// Mask policy-marked business values, not authentication credentials.
+/// Length means Unicode scalar values; numeric IDs use ASCII digits only.
+pub(crate) fn mask_audit_value(value: &str) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    if chars.len() < 8 || chars.iter().all(char::is_ascii_digit) {
+        return "*".repeat(chars.len());
+    }
+    format!(
+        "{}{}{}",
+        chars[..2].iter().collect::<String>(),
+        "*".repeat(chars.len() - 4),
+        chars[chars.len() - 2..].iter().collect::<String>()
+    )
 }
 
 pub trait RawAuditEventSink: Send + Sync {

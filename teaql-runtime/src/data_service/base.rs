@@ -49,7 +49,7 @@ where
         };
         let res = self
             .executor
-            .query(request)
+            .query_observed(request, self.metadata.query_diagnostic_observer())
             .await
             .map_err(DataServiceError::Executor)?;
         Ok(res.rows)
@@ -68,7 +68,7 @@ where
         };
         let res = self
             .executor
-            .query(request)
+            .query_observed(request, self.metadata.query_diagnostic_observer())
             .await
             .map_err(DataServiceError::Executor)?;
         self.metadata.record_metadata_log(&res.metadata);
@@ -91,7 +91,7 @@ where
         };
         let result = self
             .executor
-            .query(request)
+            .query_observed(request, self.metadata.query_diagnostic_observer())
             .await
             .map_err(DataServiceError::Executor)?;
         self.metadata.record_metadata_log(&result.metadata);
@@ -124,7 +124,7 @@ where
         let request = MutationRequest::Insert(command);
         let res = self
             .executor
-            .mutate(request)
+            .mutate_observed(request, self.metadata.mutation_diagnostic_observer())
             .await
             .map_err(DataServiceError::Executor)?;
         self.metadata.record_metadata_log(&res.metadata);
@@ -140,7 +140,7 @@ where
         let request = MutationRequest::Update(sql_command);
         let res = self
             .executor
-            .mutate(request)
+            .mutate_observed(request, self.metadata.mutation_diagnostic_observer())
             .await
             .map_err(DataServiceError::Executor)?;
         self.metadata.record_metadata_log(&res.metadata);
@@ -167,7 +167,7 @@ where
         let request = MutationRequest::Delete(sql_command);
         let res = self
             .executor
-            .mutate(request)
+            .mutate_observed(request, self.metadata.mutation_diagnostic_observer())
             .await
             .map_err(DataServiceError::Executor)?;
         self.metadata.record_metadata_log(&res.metadata);
@@ -201,7 +201,10 @@ where
                 sql_statement_trace(insert_cmd.trace_chain, &insert_cmd.entity);
             let res = self
                 .executor
-                .mutate(MutationRequest::Insert(insert_cmd))
+                .mutate_observed(
+                    MutationRequest::Insert(insert_cmd),
+                    self.metadata.mutation_diagnostic_observer(),
+                )
                 .await
                 .map_err(DataServiceError::Executor)?;
             self.metadata.record_metadata_log(&res.metadata);
@@ -240,7 +243,10 @@ where
             let expected_version = update_cmd.expected_version;
             let res = self
                 .executor
-                .mutate(MutationRequest::Update(update_cmd))
+                .mutate_observed(
+                    MutationRequest::Update(update_cmd),
+                    self.metadata.mutation_diagnostic_observer(),
+                )
                 .await
                 .map_err(DataServiceError::Executor)?;
             self.metadata.record_metadata_log(&res.metadata);
@@ -278,7 +284,7 @@ where
         let request = MutationRequest::Recover(sql_command);
         let res = self
             .executor
-            .mutate(request)
+            .mutate_observed(request, self.metadata.mutation_diagnostic_observer())
             .await
             .map_err(DataServiceError::Executor)?;
         self.metadata.record_metadata_log(&res.metadata);
