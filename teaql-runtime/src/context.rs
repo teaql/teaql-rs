@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 
 use crate::EntityRuntimeState;
-use crate::business_id::BusinessIdSchemaService;
+use crate::business_id::{
+    BusinessClock, BusinessDate, BusinessIdSchemaService, SystemBusinessClock,
+};
 use crate::entity_reference::{
     EntityReferenceClaims, EntityReferenceCodec, EntityReferenceCodecResource,
     EntityReferenceTokenError,
@@ -176,6 +178,7 @@ pub struct UserContext {
     pub(crate) event_sink: Option<Box<dyn RawAuditEventSink>>,
     pub(crate) custom_event_sink: Option<Box<dyn crate::SafeAuditEventSink>>,
     pub(crate) internal_id_generator: Option<Box<dyn InternalIdGenerator>>,
+    business_clock: Box<dyn BusinessClock>,
     schema_provider: Option<Box<dyn SchemaProvider>>,
     generated_schema_bootstraps: Vec<GeneratedSchemaBootstrap>,
     language: Language,
@@ -225,6 +228,7 @@ impl Default for UserContext {
             event_sink: None,
             custom_event_sink: None,
             internal_id_generator: None,
+            business_clock: Box::new(SystemBusinessClock),
             schema_provider: None,
             language: Language::default(),
             i18n_catalog: crate::I18nCatalog::builtin().clone(),
@@ -633,6 +637,26 @@ impl UserContext {
 
     pub fn set_internal_id_generator(&mut self, generator: impl InternalIdGenerator + 'static) {
         self.internal_id_generator = Some(Box::new(generator));
+    }
+
+    pub fn with_business_clock(mut self, clock: impl BusinessClock + 'static) -> Self {
+        self.business_clock = Box::new(clock);
+        self
+    }
+
+    pub fn set_business_clock(&mut self, clock: impl BusinessClock + 'static) {
+        self.business_clock = Box::new(clock);
+    }
+
+    pub fn business_time(&self) -> chrono::DateTime<chrono::Utc> {
+        self.business_clock.business_time()
+    }
+
+    pub fn business_date(&self) -> chrono::NaiveDate {
+        self.get_resource::<BusinessDate>()
+            .copied()
+            .map(|date| date.0)
+            .unwrap_or_else(|| self.business_clock.business_date())
     }
 
     pub fn with_schema_provider(mut self, provider: impl SchemaProvider + 'static) -> Self {
