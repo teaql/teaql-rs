@@ -96,6 +96,21 @@ for attempt in 1 2; do
 done
 printf 'PASS order-management nested graph probe (two runs, same database, no cleanup between)\n'
 
+mutation_policy_database="$run_dir/mutation_policy_probe.sqlite"
+for attempt in 1 2; do
+  mutation_policy_log="$run_dir/mutation_policy_probe_$attempt.log"
+  TEAQL_EXAMPLE_DATABASE="$mutation_policy_database" \
+    cargo run --quiet --manifest-path "$repo_dir/examples/order-management/rust-app-console/Cargo.toml" \
+    --bin mutation_policy_probe >"$mutation_policy_log" 2>&1
+  if ! grep -Fq 'MUTATION_POLICY_PASS' "$mutation_policy_log" \
+      || ! grep -Fq 'persisted_denied=0' "$mutation_policy_log"; then
+    printf 'FAIL order-management mutation policy probe run %s missing acceptance markers\n' "$attempt" >&2
+    sed -n '1,240p' "$mutation_policy_log" >&2
+    exit 1
+  fi
+done
+printf 'PASS order-management mutation policy (approved identity, denial leaves zero rows; two runs, same database)\n'
+
 for attempt in 1 2; do
   relation_log="$run_dir/save_loaded_relation_$attempt.log"
   if ! TEAQL_SAVE_LOAD_STATE_DATABASE="$nested_database" \
@@ -134,4 +149,4 @@ for attempt in 1 2; do
 done
 printf 'PASS order-management forward-FK Save (old loaded relation invalidated, new FK hydrated; two runs, same database)\n'
 
-printf 'PASS Rust runtime examples: 10/10\n'
+printf 'PASS Rust runtime examples: 11/11\n'

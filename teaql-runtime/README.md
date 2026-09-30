@@ -10,6 +10,7 @@ Database execution is supplied by provider crates.
 
 - `UserContext` for metadata, typed resources, request locals, and runtime options
 - request policy hooks for platform-level security, observability, and resource limits
+- whole-graph mutation policy review, exact policy approval, warnings, and audit evidence
 - repository registry and behavior registry
 - in-memory query engine plus an internal data-service test harness
 - checker registry and translated validation results
@@ -44,6 +45,26 @@ such as default relation loading or entity-specific command enrichment.
 
 The runtime applies entity behavior first and request policy last, so platform
 policy remains the final enforcement point before repository execution.
+
+## Customer-Owned Mutation Policy
+
+`MutationPolicy` is the application-owned boundary for an audited graph save.
+After Checker/Fix and graph planning produce the complete immutable
+`MutationPlan`, the runtime reviews it before the first provider mutation. A
+denial on the context-owned save path happens before transaction begin. An
+allowed save attaches one `MutationGovernanceSnapshot` to every audit event.
+
+Applications install a typed `MutationPolicyRegistry`, an optional exact
+`MutationPolicyApprovalProvider`, and an optional warning sink through trusted
+`UserContext` assembly. Remote payloads cannot choose these implementations.
+No customer policy remains backward compatible but emits
+`MUTATION-POLICY-001`; an unapproved or identity-mismatched customer policy
+emits `MUTATION-POLICY-002`. Approval matches policy ID, version, and
+fingerprint.
+
+See the maintained `examples/order-management` mutation-policy probe for an
+approved save, a denied save with zero persisted rows, and a repeated run
+against the same SQLite database.
 
 ## Example
 
