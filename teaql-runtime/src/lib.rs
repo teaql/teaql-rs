@@ -119,11 +119,11 @@ mod tests {
         EntityDataServiceBehavior, EntityKey, EntityRuntimeState, EntityValues, GraphMutationKind,
         GraphNode, I18nCatalog, InMemoryAggregationCache, InMemoryCheckerRegistry,
         InMemoryEntityDataServiceBehaviorRegistry, InMemoryEntityRegistry, InMemoryMetadataStore,
-        InternalIdGenerator, Language, MetadataStore, ObjectLocation, RawAuditEvent,
-        RawAuditEventKind, RawAuditEventSink, RemoteLockProvider, RequestPolicy, RuntimeError,
-        RuntimeModule, RuntimeOperation, RuntimeTelemetry, RuntimeTelemetryScope, SafeAuditEvent,
-        SafeAuditEventSink, SqlLogOperation, SqlLogOptions, TypedChecker, TypedEntityChecker,
-        UserContext, translate_check_result,
+        InternalIdGenerator, Language, MetadataStore, ObjectLocation, PurposedSelectQuery,
+        RawAuditEvent, RawAuditEventKind, RawAuditEventSink, RemoteLockProvider, RequestPolicy,
+        RuntimeError, RuntimeModule, RuntimeOperation, RuntimeTelemetry, RuntimeTelemetryScope,
+        SafeAuditEvent, SafeAuditEventSink, SqlLogOperation, SqlLogOptions, TypedChecker,
+        TypedEntityChecker, UserContext, translate_check_result,
     };
     use crate::data_service::RuntimeDataService;
     use crate::memory::MemoryDataService;
@@ -136,7 +136,7 @@ mod tests {
     use teaql_data_service::{
         DataServiceCapabilities, DataServiceExecutor, DataServiceOperation, ExecutionMetadata,
         MutationExecutor, MutationRequest, MutationResult, QueryExecutor, QueryRequest,
-        QueryResult,
+        QueryResult, QueryStream, StreamQueryExecutor,
     };
     use teaql_macros::TeaqlEntity as DeriveTeaqlEntity;
     use teaql_sql::{
@@ -718,6 +718,16 @@ mod tests {
         }
     }
 
+    impl StreamQueryExecutor for StubExecutor {
+        fn query_stream(
+            &self,
+            _request: QueryRequest,
+            _chunk_size: usize,
+        ) -> QueryStream<'_, Self::Error> {
+            Box::pin(futures_util::stream::empty())
+        }
+    }
+
     impl MutationExecutor for StubExecutor {
         async fn mutate(&self, _request: MutationRequest) -> Result<MutationResult, Self::Error> {
             Ok(MutationResult {
@@ -985,6 +995,7 @@ mod tests {
 
     struct ContextAwareOrderBehavior;
     struct TenantRequestPolicy;
+    struct DenySelectRequestPolicy;
     struct OrderChecker;
     struct TypedOrderChecker;
     #[derive(Clone)]
@@ -1066,6 +1077,26 @@ mod tests {
                     .insert("version".to_owned(), Value::I64(tenant_id as i64));
             }
             Ok(())
+        }
+    }
+
+    impl RequestPolicy for DenySelectRequestPolicy {
+        fn enforce_select(
+            &self,
+            _context: &UserContext,
+            _query: &mut SelectQuery,
+        ) -> Result<(), RuntimeError> {
+            Err(RuntimeError::Policy("QUERY_POLICY_PROBE".to_owned()))
+        }
+    }
+
+    fn assert_query_policy_probe<T>(result: Result<T, DataServiceError<StubError>>) {
+        match result {
+            Err(DataServiceError::Runtime(RuntimeError::Policy(message))) => {
+                assert_eq!(message, "QUERY_POLICY_PROBE");
+            }
+            Err(other) => panic!("expected query policy rejection, got {other}"),
+            Ok(_) => panic!("query reached a provider without RequestPolicy enforcement"),
         }
     }
 
@@ -1448,6 +1479,62 @@ mod tests {
         let insert = repo.insert_command().value("id", 1_u64).value("name", "n");
         let command = repo.prepare_insert_command(&insert).unwrap();
         assert_eq!(command.values.get("version"), Some(&Value::I64(9)));
+    }
+
+    #[tokio::test]
+    async fn public_query_families_cannot_bypass_request_policy() {
+        let mut context = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(entity())
+                    .with_entity(line_entity())
+                    .with_entity(product_entity()),
+            )
+            .with_entity_registry(InMemoryEntityRegistry::new().with_entity("Order"))
+            .with_request_policy(DenySelectRequestPolicy);
+        context.insert_resource(PostgresDialect);
+        context.insert_resource(StubExecutor::default());
+
+        let repo = context
+            .entity_data_service::<StubExecutor>("Order")
+            .unwrap();
+        let query = PurposedSelectQuery::new(repo.select(), "verify query policy coverage");
+        let relation_aggregate =
+            RelationAggregate::new("lines", "lineCount", SelectQuery::new("OrderLine"), true);
+
+        assert_query_policy_probe(repo.fetch_all(&query).await);
+        assert_query_policy_probe(repo.fetch_all_owned(query.clone()).await);
+        assert_query_policy_probe(repo.fetch_stream(&query).await);
+        assert_query_policy_probe(repo.fetch_smart_list(&query).await);
+        assert_query_policy_probe(
+            repo.fetch_smart_list_with_relation_aggregates(
+                &query,
+                std::slice::from_ref(&relation_aggregate),
+            )
+            .await,
+        );
+        assert_query_policy_probe(repo.fetch_entities::<Order>(&query).await);
+        assert_query_policy_probe(repo.fetch_enhanced_entities::<Order>(&query).await);
+        assert_query_policy_probe(
+            repo.fetch_enhanced_entities_with_relation_aggregates::<Order>(
+                &query,
+                std::slice::from_ref(&relation_aggregate),
+            )
+            .await,
+        );
+        assert_query_policy_probe(
+            repo.fetch_enhanced_entities_with_relation_aggregates_owned::<Order>(
+                query.clone(),
+                std::slice::from_ref(&relation_aggregate),
+            )
+            .await,
+        );
+
+        let aggregate_query = PurposedSelectQuery::new(
+            repo.select().aggregate(Aggregate::count("orderCount")),
+            "verify aggregate query policy coverage",
+        );
+        assert_query_policy_probe(repo.fetch_all(&aggregate_query).await);
     }
 
     #[tokio::test]
