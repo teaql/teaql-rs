@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use chrono::{NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use teaql_core::business_id::{
@@ -12,6 +12,42 @@ use teaql_core::business_id::{
 };
 
 use crate::UserContext;
+
+/// Supplies time to domain behavior through the current [`UserContext`].
+/// Operational duration, timeout and log clocks intentionally remain separate.
+pub trait BusinessClock: Send + Sync {
+    fn business_time(&self) -> DateTime<Utc>;
+
+    fn business_date(&self) -> NaiveDate {
+        self.business_time().date_naive()
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SystemBusinessClock;
+
+impl BusinessClock for SystemBusinessClock {
+    fn business_time(&self) -> DateTime<Utc> {
+        Utc::now()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FixedBusinessClock {
+    value: DateTime<Utc>,
+}
+
+impl FixedBusinessClock {
+    pub fn new(value: DateTime<Utc>) -> Self {
+        Self { value }
+    }
+}
+
+impl BusinessClock for FixedBusinessClock {
+    fn business_time(&self) -> DateTime<Utc> {
+        self.value
+    }
+}
 
 /// Provider-owned Business ID schema contribution.
 ///
@@ -511,11 +547,7 @@ impl BusinessIdService {
                 ),
             ));
         }
-        let business_date = context
-            .get_resource::<BusinessDate>()
-            .copied()
-            .unwrap_or_else(BusinessDate::today)
-            .0;
+        let business_date = context.business_date();
         let request = BusinessIdGenerationRequest {
             definition,
             domain_root_key,
