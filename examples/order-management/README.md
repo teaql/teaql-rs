@@ -45,6 +45,29 @@ TEAQL_EXAMPLE_DATABASE=/tmp/teaql-order-mutation-policy.sqlite \
   cargo run --bin mutation_policy_probe
 ```
 
+## Context-bound document round trip on SQLite
+
+`context_bound_document_sqlite` is the database-backed continuation of the runtime's
+in-memory Order/Items proof. It uses only the generated application surface for domain
+work: generated `Q` loads a bounded Order graph, generated `E` reads the selected fields
+without collapsing `NotLoaded` into null, and generated mutation methods plus audited
+Save persist changes. The provider transaction atomically advances the Order version and
+updates or explicitly removes its OrderLines.
+
+The executable also proves actor-bound encrypted document tokens, a context recreated over
+the same SQLite file, current authorization, aggregate and child optimistic versions, an
+injected child-write failure that rolls back the earlier parent write, retry, and refreshed
+document issuance:
+
+```bash
+TEAQL_CONTEXT_DOCUMENT_DATABASE="sqlite:file:/tmp/teaql-context-document.sqlite" \
+  cargo run --bin context_bound_document_sqlite
+```
+
+Success ends with `CONTEXT_BOUND_SQLITE_QE_PASS`. Raw SQL is used only by the acceptance
+harness to install and remove a failure-injection trigger; application reads and writes use
+the generated Q, E, and mutation APIs.
+
 ### Materialized-list hard limit
 
 `execute_for_list` protects the service by applying a default hard limit of 10,000 rows. A requested page size above that ceiling fails explicitly. Trusted application code can call `hard_limit(...)` to override the outer-query ceiling. **Caution:** most applications should not override it; do so only for a reviewed, exceptional requirement. This setting does not describe streaming execution.

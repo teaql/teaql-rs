@@ -68,6 +68,30 @@ impl UserContext {
             .execute(operation)
             .await
     }
+
+    /// Execute transaction work whose callback must remain `Send` across await points.
+    ///
+    /// Async service SPIs commonly require a `Send` future. Callers in that boundary should
+    /// choose this method explicitly. The ordinary [`Self::execute_in_transaction`] remains
+    /// available for provider cursors and other deliberately thread-local transaction work.
+    pub async fn execute_in_send_transaction<'context, E, T, F>(
+        &'context self,
+        operation: F,
+    ) -> Result<T, RuntimeError>
+    where
+        E: TransactionExecutor + Send + Sync + 'static,
+        for<'transaction> E::Tx<'transaction>: Send + Sync,
+        F: for<'scope> FnOnce(
+            &'scope TransactionScope<'context, E>,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<T, RuntimeError>> + Send + 'scope>,
+        >,
+    {
+        self.start_transaction::<E>()
+            .await?
+            .execute_send(operation)
+            .await
+    }
 }
 
 impl<'context, E> TransactionScope<'context, E>
@@ -166,7 +190,7 @@ where
     }
 
     /// Run a callback and complete this transaction deterministically.
-    pub async fn execute<T, F>(mut self, operation: F) -> Result<T, RuntimeError>
+    pub async fn execute<T, F>(self, operation: F) -> Result<T, RuntimeError>
     where
         E::Tx<'context>: Send + Sync,
         F: for<'scope> FnOnce(
@@ -174,7 +198,29 @@ where
         )
             -> Pin<Box<dyn Future<Output = Result<T, RuntimeError>> + 'scope>>,
     {
-        match operation(&self).await {
+        let result = operation(&self).await;
+        self.complete(result).await
+    }
+
+    /// Run a `Send` callback and complete this transaction deterministically.
+    pub async fn execute_send<T, F>(self, operation: F) -> Result<T, RuntimeError>
+    where
+        E::Tx<'context>: Send + Sync,
+        F: for<'scope> FnOnce(
+            &'scope TransactionScope<'context, E>,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<T, RuntimeError>> + Send + 'scope>,
+        >,
+    {
+        let result = operation(&self).await;
+        self.complete(result).await
+    }
+
+    async fn complete<T>(mut self, result: Result<T, RuntimeError>) -> Result<T, RuntimeError>
+    where
+        E::Tx<'context>: Send + Sync,
+    {
+        match result {
             Ok(value) => {
                 let transaction = self
                     .transaction
