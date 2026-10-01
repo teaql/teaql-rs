@@ -335,7 +335,7 @@ impl ContextBoundDocumentService for GeneratedOrderDocumentService {
         } else {
             order.update_total_amount(total_amount);
             context
-                .execute_in_transaction::<DataServiceExecutor, _, _>(|scope| {
+                .execute_in_send_transaction::<DataServiceExecutor, _, _>(|scope| {
                     Box::pin(async move {
                         let saved_order = scope
                             .save_audited(order.audit_as(format!(
