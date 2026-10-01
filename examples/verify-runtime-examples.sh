@@ -43,7 +43,7 @@ context_document_log="$run_dir/context_bound_document.log"
 TEAQL_CONTEXT_DOCUMENT_DATABASE="$context_document_database" \
   cargo run --quiet \
     --manifest-path "$repo_dir/examples/order-management/rust-app-console/Cargo.toml" \
-    --bin context_bound_document_sqlite >"$context_document_log" 2>&1
+    --example context_bound_document_sqlite >"$context_document_log" 2>&1
 if ! grep -Eq '^CONTEXT_BOUND_SQLITE_QE_PASS order_id=[0-9]+ update_version=2 delete_version=3 remaining_line_id=[0-9]+$' "$context_document_log"; then
   printf 'FAIL generated Q/E SQLite context-bound document missing acceptance evidence\n' >&2
   sed -n '1,240p' "$context_document_log" >&2
