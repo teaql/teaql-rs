@@ -8,7 +8,7 @@ struct ObservedTransport<'a, T> {
     backend: String,
     operation: DataServiceOperation,
     trace: Vec<teaql_core::TraceNode>,
-    comment: Option<String>,
+    comment: String,
     observer: Option<ExecutionObserver<'static>>,
     intent_redactions: std::sync::Mutex<SqlIntentRedactions>,
     target_id: Option<teaql_core::Value>,
@@ -40,8 +40,43 @@ impl<T> ObservedTransport<'_, T> {
             ended_at: now,
             affected_rows: None,
             result_count: None,
-            trace_chain: self.trace.clone(),
-            comment: self.comment.clone(),
+            trace_chain: if operation == DataServiceOperation::Query {
+                // Readback is derived work, not a fresh caller operation.
+                let root = self
+                    .trace
+                    .first()
+                    .map(|node| node.entity_type.as_str())
+                    .unwrap_or("unknown");
+                let mut trace = vec![
+                    teaql_core::TraceNode::typed(
+                        teaql_core::TraceKind::Comment,
+                        root,
+                        None,
+                        &self.comment,
+                    ),
+                    teaql_core::TraceNode::typed(
+                        teaql_core::TraceKind::Purpose,
+                        root,
+                        None,
+                        "verify the persisted mutation result",
+                    ),
+                ];
+                trace.extend(
+                    self.trace
+                        .iter()
+                        .filter(|node| {
+                            !matches!(
+                                node.kind,
+                                teaql_core::TraceKind::Comment | teaql_core::TraceKind::Purpose
+                            )
+                        })
+                        .cloned(),
+                );
+                trace
+            } else {
+                self.trace.clone()
+            },
+            comment: Some(self.comment.clone()),
             backend_request_id: None,
             parameterized_query: Some(compiled.sql.clone()),
             params: compiled.params.clone(),
@@ -235,8 +270,8 @@ where
         inner: transport,
         backend: format!("{:?}", dialect.kind()).to_ascii_lowercase(),
         operation,
-        trace: request.trace_chain().to_vec(),
-        comment: Some(request.comment().to_owned()),
+        trace: request.execution_trace_chain(),
+        comment: request.comment().to_owned(),
         observer,
         intent_redactions: Default::default(),
         target_id,
@@ -297,8 +332,8 @@ pub(super) async fn guarded<D: SqlDialect + Sync, T: SqlTransport>(
         inner: transport,
         backend: format!("{:?}", dialect.kind()).to_ascii_lowercase(),
         operation,
-        trace: request.mutation.trace_chain().to_vec(),
-        comment: Some(request.mutation.comment().to_owned()),
+        trace: request.mutation.execution_trace_chain(),
+        comment: request.mutation.comment().to_owned(),
         observer: journal.recorder(),
         intent_redactions: Default::default(),
         target_id: match &request.mutation.command {

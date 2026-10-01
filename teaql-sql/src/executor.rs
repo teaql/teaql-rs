@@ -1347,7 +1347,7 @@ fn query_diagnostic_metadata<D: SqlDialect>(
         ended_at: now,
         affected_rows: None,
         result_count: None,
-        trace_chain: request.trace_chain.clone(),
+        trace_chain: request.execution_trace_chain(),
         comment: Some(request.intent.comment().to_owned()),
         backend_request_id: None,
         parameterized_query: Some(compiled.sql.clone()),

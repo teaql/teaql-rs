@@ -156,7 +156,7 @@ fn insert(id: u64) -> MutationRequest {
         "audited test",
     ));
     teaql_data_service::MutationCommand::Insert(command)
-        .request("audited provider conformance test")
+        .request("audited test")
         .unwrap()
 }
 fn batch() -> MutationRequest {
@@ -202,6 +202,12 @@ async fn mutation_target_id_is_sql_intent_provenance_without_changing_plain_bind
                 Some(1001),
                 "what: mutate customer 1001",
             ));
+            // This canary belongs to the request's owned intent, not just a
+            // diagnostic frame that the executor must not treat as authority.
+            request = MutationRequest::with_intent(
+                request.command,
+                teaql_core::MutationIntent::new("what: mutate customer 1001").unwrap(),
+            );
             let (executor, entries, observer) = fixture(
                 if failure {
                     Mode::FailWrite(1)

@@ -194,7 +194,7 @@ impl UserContext {
             teaql_data_service::DataServiceOperation::Insert => SqlLogOperation::Insert,
             teaql_data_service::DataServiceOperation::Update => SqlLogOperation::Update,
             teaql_data_service::DataServiceOperation::Delete => SqlLogOperation::Delete,
-            teaql_data_service::DataServiceOperation::Recover => SqlLogOperation::Update,
+            teaql_data_service::DataServiceOperation::Recover => SqlLogOperation::Recover,
             teaql_data_service::DataServiceOperation::Batch => SqlLogOperation::Update,
             teaql_data_service::DataServiceOperation::Schema => SqlLogOperation::Update,
         };

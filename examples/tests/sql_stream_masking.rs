@@ -383,7 +383,7 @@ fn insert_customer(id: u64) -> MutationRequest {
         "test audited write",
     ));
     teaql_data_service::MutationCommand::Insert(command)
-        .request("verify safe provider diagnostics")
+        .request("test audited write")
         .unwrap()
 }
 
@@ -494,6 +494,14 @@ async fn sqlite_trigger_missing_readback_keeps_both_sql_successes() {
                     command.trace_chain[0].comment =
                         "test audited write Riverside PASSWORD-CANARY".into();
                 }
+                // Intent belongs to the request, not a mutable diagnostic frame.
+                // Keep the original masking canaries and assertions at the owner.
+                request = MutationRequest::with_intent(
+                    request.command,
+                    teaql_core::MutationIntent::new(
+                        "test audited write Riverside PASSWORD-CANARY",
+                    )?,
+                );
                 scope.mutate(request).await?;
                 Ok(())
             })

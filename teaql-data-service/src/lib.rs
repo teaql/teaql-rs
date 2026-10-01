@@ -64,6 +64,38 @@ impl QueryRequest {
     pub fn purpose(&self) -> &str {
         self.intent.purpose()
     }
+
+    /// Materialize owned intent without trusting diagnostic frames for its value.
+    /// Derived requests retain the originating scope name and relation route.
+    pub fn execution_trace_chain(&self) -> Vec<TraceNode> {
+        use teaql_core::TraceKind;
+        let root = self
+            .trace_chain
+            .iter()
+            .find(|node| {
+                matches!(
+                    node.kind,
+                    TraceKind::Operation
+                        | TraceKind::Request
+                        | TraceKind::Comment
+                        | TraceKind::Purpose
+                        | TraceKind::AuditReason
+                ) && !node.entity_type.trim().is_empty()
+            })
+            .map(|node| node.entity_type.as_str())
+            .unwrap_or(&self.query.entity);
+        let mut trace = vec![
+            TraceNode::typed(TraceKind::Comment, root, None, self.comment()),
+            TraceNode::typed(TraceKind::Purpose, root, None, self.purpose()),
+        ];
+        trace.extend(
+            self.trace_chain
+                .iter()
+                .filter(|node| !matches!(node.kind, TraceKind::Comment | TraceKind::Purpose))
+                .cloned(),
+        );
+        trace
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +158,44 @@ impl MutationRequest {
 
     pub fn comment(&self) -> &str {
         self.intent.comment()
+    }
+
+    /// Statement-local lineage. Existing graph ancestors/local reasons survive;
+    /// a native command without graph frames still gets its owned root reason.
+    /// Batches carry independent statement traces on their children.
+    pub fn execution_trace_chain(&self) -> Vec<TraceNode> {
+        use teaql_core::TraceKind;
+        let (entity, id) = match &self.command {
+            MutationCommand::Insert(command) => (
+                &command.entity,
+                command
+                    .values
+                    .get("id")
+                    .and_then(teaql_core::Value::try_u64),
+            ),
+            MutationCommand::Update(command) => (&command.entity, command.id.try_u64()),
+            MutationCommand::Delete(command) => (&command.entity, command.id.try_u64()),
+            MutationCommand::Recover(command) => (&command.entity, command.id.try_u64()),
+            MutationCommand::Batch(_) => return Vec::new(),
+        };
+        let mut trace = self.trace_chain().to_vec();
+        if let Some(root) = trace
+            .iter_mut()
+            .find(|node| node.kind == TraceKind::AuditReason)
+        {
+            root.comment = self.comment().to_owned();
+        } else {
+            trace.insert(
+                0,
+                TraceNode::typed(
+                    TraceKind::AuditReason,
+                    entity,
+                    id.filter(|id| *id > 0),
+                    self.comment(),
+                ),
+            );
+        }
+        trace
     }
 }
 

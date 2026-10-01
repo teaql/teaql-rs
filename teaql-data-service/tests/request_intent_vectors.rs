@@ -1,5 +1,7 @@
 //! Language-neutral request envelope cases from teaql-conformance #99.
-use teaql_core::{InsertCommand, MutationIntent, SelectQuery, TraceKind, TraceNode};
+use teaql_core::{
+    InsertCommand, MutationIntent, QueryIntent, SelectQuery, TraceKind, TraceNode, UpdateCommand,
+};
 use teaql_data_service::{MutationCommand, MutationRequest, QueryRequest};
 
 fn trace(input: &serde_json::Value) -> Vec<TraceNode> {
@@ -98,4 +100,68 @@ fn shared_request_intent_vectors() {
             result.expect(id);
         }
     }
+}
+
+#[test]
+fn query_execution_projects_owned_intent_and_retains_inherited_relation_route() {
+    let source = vec![
+        TraceNode::typed(TraceKind::Comment, "Order", None, "stale source comment"),
+        TraceNode::typed(TraceKind::Purpose, "Order", None, "stale source purpose"),
+        TraceNode::typed(TraceKind::Relation, "items", None, "Order.items"),
+    ];
+    let mut query = SelectQuery::new("OrderItem");
+    query.trace_chain = source.clone();
+    let mut request = QueryRequest::new(
+        query,
+        QueryIntent::new("load order", "render order").unwrap(),
+    );
+    request.query.comment = Some("changed builder".into());
+    let trace = request.execution_trace_chain();
+    assert_eq!(
+        trace,
+        vec![
+            TraceNode::typed(TraceKind::Comment, "Order", None, "load order"),
+            TraceNode::typed(TraceKind::Purpose, "Order", None, "render order"),
+            source[2].clone(),
+        ]
+    );
+    assert_eq!(
+        request.trace_chain, source,
+        "projection must not mutate caller trace"
+    );
+}
+
+#[test]
+fn native_mutation_execution_materializes_its_owned_root_reason_and_identity() {
+    let request = MutationCommand::Insert(InsertCommand::new("Order").value("id", 100_u64))
+        .request("submit order")
+        .unwrap();
+    assert!(request.trace_chain().is_empty());
+    assert_eq!(
+        request.execution_trace_chain(),
+        vec![TraceNode::typed(
+            TraceKind::AuditReason,
+            "Order",
+            Some(100),
+            "submit order"
+        ),]
+    );
+    assert!(request.trace_chain().is_empty());
+}
+
+#[test]
+fn mutation_execution_keeps_complete_parent_child_lineage_without_duplicate_roots() {
+    let root = TraceNode::typed(TraceKind::AuditReason, "Order", Some(100), "submit order");
+    let child = TraceNode::typed(
+        TraceKind::AuditReason,
+        "Payment",
+        Some(301),
+        "authorize payment",
+    );
+    let mut command = UpdateCommand::new("Payment", 301_u64);
+    command.trace_chain = vec![root.clone(), child.clone()];
+    let request = MutationCommand::Update(command)
+        .request("submit order")
+        .unwrap();
+    assert_eq!(request.execution_trace_chain(), vec![root, child]);
 }
