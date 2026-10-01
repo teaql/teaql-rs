@@ -21,31 +21,32 @@ use teaql_macros::{teaql_entity, TeaqlEntity};
 #[teaql(
     entity = "SchoolType",
     table = "school_type_data",
-    data_service = "sqlite"
+    data_service = "sqlite",
+    audit_mask_fields = ""
 )]
 pub struct SchoolType {
-    // @source school-model.xml:24
+    // @source main.xml:24
     #[teaql(id)]
     id: u64,
 
-    // @source school-model.xml:24
+    // @source main.xml:24
     #[teaql(max_length = 100)]
     name: String,
 
-    // @source school-model.xml:24
+    // @source main.xml:24
     #[teaql(max_length = 100)]
     code: String,
 
-    // @source school-model.xml:24
+    // @source main.xml:24
     #[teaql(numeric_precision = 19)]
     #[teaql(numeric_scale = 7)]
     display_order: rust_decimal::Decimal,
     #[teaql(version)]
     version: i64,
-    // @source school-model.xml:24
+    // @source main.xml:24
     #[teaql(column = "platform")]
     platform_id: u64,
-    // @source school-model.xml:24
+    // @source main.xml:24
     #[teaql(relation(target = "Platform", local_key = "platform_id", foreign_key = "id"))]
     platform: Option<Box<crate::Platform>>,
     #[teaql(dynamic)]

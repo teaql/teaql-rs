@@ -59,6 +59,28 @@ project can turn a compact domain model into a typed Rust service crate with
 entity structs, `Q::merchants()`-style query builders, behavior/checker hooks,
 and audited graph-save entrypoints.
 
+### Required request intent on the development branch
+
+Query and Mutation Requests own a non-blank `comment`; Query also owns a
+non-blank `purpose`. Generated queries supply these through
+`.comment("what").purpose("why")`, and generated writes transfer
+`.audit_as("reason")` into the Mutation Request. Callers do not supply a second
+audit-reason field. Missing intent fails before provider access even when SQL
+logging is disabled. Context and trace frames cannot fill a missing comment.
+
+Low-level adapters use validated `QueryIntent` and `MutationIntent` values.
+Mutation payloads are now `MutationCommand`; construct their envelope with
+`MutationCommand::Insert(command).request("reason")?` rather than the old
+`MutationRequest::Insert(command)` variant. Batches require their own root
+comment. Derived relation and Facet queries inherit root intent; mutation
+readback inherits its originating reason and has an explicit runtime purpose.
+
+This branch is not a published artifact. The changed Rust Facet template and
+the runtime must be verified together before adoption. The retained request
+tests are `teaql-data-service/tests/request_intent_vectors.rs` and
+`teaql-runtime/tests/trace_chain_requests.rs`; run the complete local example
+gate with `./examples/verify-runtime-examples.sh`.
+
 TeaQL is not trying to be a general replacement for Diesel, SeaORM, or direct
 `sqlx` use:
 

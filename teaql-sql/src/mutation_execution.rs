@@ -145,12 +145,12 @@ where
     T: SqlTransport,
     F: Fn(&str) -> Option<Arc<EntityDescriptor>> + Sync,
 {
-    let entity_name = match &request {
-        MutationRequest::Insert(cmd) => &cmd.entity,
-        MutationRequest::Update(cmd) => &cmd.entity,
-        MutationRequest::Delete(cmd) => &cmd.entity,
-        MutationRequest::Recover(cmd) => &cmd.entity,
-        MutationRequest::Batch(mutations) => {
+    let entity_name = match &request.command {
+        teaql_data_service::MutationCommand::Insert(cmd) => &cmd.entity,
+        teaql_data_service::MutationCommand::Update(cmd) => &cmd.entity,
+        teaql_data_service::MutationCommand::Delete(cmd) => &cmd.entity,
+        teaql_data_service::MutationCommand::Recover(cmd) => &cmd.entity,
+        teaql_data_service::MutationCommand::Batch(mutations) => {
             let start = SystemTime::now();
             let mut statements = Vec::new();
             let mut total = 0;
@@ -200,43 +200,43 @@ where
     let entity = lookup(entity_name).ok_or_else(|| {
         SqlExecutorError::Compile(SqlCompileError::UnknownEntity(entity_name.clone()))
     })?;
-    let (compiled, operation, persisted_id) = match &request {
-        MutationRequest::Insert(cmd) => (
+    let (compiled, operation, persisted_id) = match &request.command {
+        teaql_data_service::MutationCommand::Insert(cmd) => (
             dialect.compile_insert(&entity, cmd),
             DataServiceOperation::Insert,
             cmd.values.get("id").cloned(),
         ),
-        MutationRequest::Update(cmd) => (
+        teaql_data_service::MutationCommand::Update(cmd) => (
             dialect.compile_update(&entity, cmd),
             DataServiceOperation::Update,
             Some(cmd.id.clone()),
         ),
-        MutationRequest::Delete(cmd) => (
+        teaql_data_service::MutationCommand::Delete(cmd) => (
             dialect.compile_delete(&entity, cmd),
             DataServiceOperation::Delete,
             cmd.soft_delete.then(|| cmd.id.clone()),
         ),
-        MutationRequest::Recover(cmd) => (
+        teaql_data_service::MutationCommand::Recover(cmd) => (
             dialect.compile_recover(&entity, cmd),
             DataServiceOperation::Recover,
             Some(cmd.id.clone()),
         ),
-        MutationRequest::Batch(_) => unreachable!(),
+        teaql_data_service::MutationCommand::Batch(_) => unreachable!(),
     };
     let compiled = compiled.map_err(SqlExecutorError::Compile)?;
-    let target_id = match &request {
-        MutationRequest::Insert(cmd) => cmd.values.get("id").cloned(),
-        MutationRequest::Update(cmd) => Some(cmd.id.clone()),
-        MutationRequest::Delete(cmd) => Some(cmd.id.clone()),
-        MutationRequest::Recover(cmd) => Some(cmd.id.clone()),
-        MutationRequest::Batch(_) => None,
+    let target_id = match &request.command {
+        teaql_data_service::MutationCommand::Insert(cmd) => cmd.values.get("id").cloned(),
+        teaql_data_service::MutationCommand::Update(cmd) => Some(cmd.id.clone()),
+        teaql_data_service::MutationCommand::Delete(cmd) => Some(cmd.id.clone()),
+        teaql_data_service::MutationCommand::Recover(cmd) => Some(cmd.id.clone()),
+        teaql_data_service::MutationCommand::Batch(_) => None,
     };
     let observed = ObservedTransport {
         inner: transport,
         backend: format!("{:?}", dialect.kind()).to_ascii_lowercase(),
         operation,
         trace: request.trace_chain().to_vec(),
-        comment: request.comment().map(str::to_owned),
+        comment: Some(request.comment().to_owned()),
         observer,
         intent_redactions: Default::default(),
         target_id,
@@ -286,10 +286,10 @@ pub(super) async fn guarded<D: SqlDialect + Sync, T: SqlTransport>(
     request: GuardedMutationRequest,
     observer: Option<ExecutionObserver<'_>>,
 ) -> Result<MutationResult, SqlExecutorError<T::Error>> {
-    let operation = match &request.mutation {
-        MutationRequest::Update(_) => DataServiceOperation::Update,
-        MutationRequest::Delete(_) => DataServiceOperation::Delete,
-        MutationRequest::Recover(_) => DataServiceOperation::Recover,
+    let operation = match &request.mutation.command {
+        teaql_data_service::MutationCommand::Update(_) => DataServiceOperation::Update,
+        teaql_data_service::MutationCommand::Delete(_) => DataServiceOperation::Delete,
+        teaql_data_service::MutationCommand::Recover(_) => DataServiceOperation::Recover,
         _ => unreachable!("validated guarded request"),
     };
     let mut journal = FailureJournal::new(observer);
@@ -298,13 +298,13 @@ pub(super) async fn guarded<D: SqlDialect + Sync, T: SqlTransport>(
         backend: format!("{:?}", dialect.kind()).to_ascii_lowercase(),
         operation,
         trace: request.mutation.trace_chain().to_vec(),
-        comment: request.mutation.comment().map(str::to_owned),
+        comment: Some(request.mutation.comment().to_owned()),
         observer: journal.recorder(),
         intent_redactions: Default::default(),
-        target_id: match &request.mutation {
-            MutationRequest::Update(cmd) => Some(cmd.id.clone()),
-            MutationRequest::Delete(cmd) => Some(cmd.id.clone()),
-            MutationRequest::Recover(cmd) => Some(cmd.id.clone()),
+        target_id: match &request.mutation.command {
+            teaql_data_service::MutationCommand::Update(cmd) => Some(cmd.id.clone()),
+            teaql_data_service::MutationCommand::Delete(cmd) => Some(cmd.id.clone()),
+            teaql_data_service::MutationCommand::Recover(cmd) => Some(cmd.id.clone()),
             _ => None,
         },
     };

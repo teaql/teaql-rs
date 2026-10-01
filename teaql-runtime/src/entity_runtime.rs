@@ -383,6 +383,8 @@ struct EntityMutationLedger {
     change_sets: ChangeSetStack,
     /// Annotation comment for observability during graph save.
     comment: Option<String>,
+    /// Local entity reasons are distinct from the root request reason.
+    entity_comments: std::collections::BTreeMap<EntityKey, String>,
     /// Entity keys that have been marked for deletion.
     /// When the entity is saved, the graph save pipeline will treat these as Remove operations.
     deleted_keys: std::collections::BTreeSet<EntityKey>,
@@ -390,8 +392,10 @@ struct EntityMutationLedger {
     new_keys: std::collections::BTreeSet<EntityKey>,
     /// The original loaded snapshot, used to avoid redundant fetching during save.
     original_snapshot: Option<OriginalSnapshot>,
-    /// Trace chains associated with each entity key.
-    trace_chains: std::collections::BTreeMap<EntityKey, Vec<teaql_core::TraceNode>>,
+    /// Immutable parent tokens are materialized only at a consumer boundary.
+    trace_chains: std::collections::BTreeMap<EntityKey, Arc<crate::TraceScopeToken>>,
+    /// Loaded snapshots needed to locate composed/deleted children without I/O.
+    original_snapshots: std::collections::BTreeMap<EntityKey, OriginalSnapshot>,
     /// Original versions of entities to perform optimistic concurrency control.
     original_versions: OriginalVersions,
     /// A generated, void-returning graph attachment could not safely merge two snapshots.
@@ -520,8 +524,18 @@ impl EntityRuntimeState {
     }
 
     fn context(&self) -> &Arc<Mutex<EntityMutationLedger>> {
-        self.inner
-            .get_or_init(|| Arc::new(Mutex::new(EntityMutationLedger::default())))
+        self.inner.get_or_init(|| {
+            let mut ledger = EntityMutationLedger::default();
+            if let Some(snapshot) = &self.loaded_snapshot
+                && let Some(id) = snapshot.row.get("id")
+            {
+                ledger.original_snapshots.insert(
+                    EntityKey::new(snapshot.entity.as_ref(), id.clone()),
+                    OriginalSnapshot::Compact(snapshot.row.clone()),
+                );
+            }
+            Arc::new(Mutex::new(ledger))
+        })
     }
 
     fn read_context<R>(&self, default: R, read: impl FnOnce(&EntityMutationLedger) -> R) -> R {
@@ -656,14 +670,17 @@ impl EntityRuntimeState {
                 target.original_versions.insert(key, version);
             }
             for (key, traces) in snapshot.trace_chains {
-                target.trace_chains.entry(key).or_default().extend(traces);
+                // Each stored chain is complete, not a segment to concatenate.
+                target.trace_chains.entry(key).or_insert(traces);
+            }
+            target.entity_comments.extend(snapshot.entity_comments);
+            for (key, snapshot) in snapshot.original_snapshots {
+                target.original_snapshots.entry(key).or_insert(snapshot);
             }
             if target.original_snapshot.is_none() {
                 target.original_snapshot = snapshot.original_snapshot;
             }
-            if target.comment.is_none() {
-                target.comment = snapshot.comment;
-            }
+            // Composition never supplies the receiving request's root reason.
             target.is_new |= snapshot.is_new;
             Ok(())
         })
@@ -838,7 +855,9 @@ impl EntityRuntimeState {
                 context.original_versions.clear();
                 context.trace_chains.clear();
                 context.original_snapshot = None;
+                context.original_snapshots.clear();
                 context.comment = None;
+                context.entity_comments.clear();
                 context.is_new = false;
             });
         }
@@ -867,6 +886,19 @@ impl EntityRuntimeState {
     /// Get the annotation comment, if any.
     pub fn get_comment(&self) -> Option<String> {
         self.read_context(None, |context| context.comment.clone())
+    }
+
+    /// Record only this entity's local reason, even in a shared graph ledger.
+    #[doc(hidden)]
+    pub fn set_entity_comment(&self, key: EntityKey, comment: impl Into<String>) {
+        self.write_context(|context| {
+            context.entity_comments.insert(key, comment.into());
+        });
+    }
+
+    #[doc(hidden)]
+    pub fn get_entity_comment(&self, key: &EntityKey) -> Option<String> {
+        self.read_context(None, |context| context.entity_comments.get(key).cloned())
     }
 
     /// Mark this entity root as a newly created entity in memory.
@@ -965,7 +997,36 @@ impl EntityRuntimeState {
 
     pub fn get_trace_chain(&self, key: &EntityKey) -> Vec<teaql_core::TraceNode> {
         self.read_context(Vec::new(), |context| {
-            context.trace_chains.get(key).cloned().unwrap_or_default()
+            context
+                .trace_chains
+                .get(key)
+                .map(|scope| scope.recover_trace_chain())
+                .unwrap_or_default()
+        })
+    }
+
+    pub(crate) fn replace_trace_scopes(
+        &self,
+        scopes: std::collections::BTreeMap<EntityKey, Arc<crate::TraceScopeToken>>,
+    ) {
+        self.write_context(|context| context.trace_chains = scopes);
+    }
+
+    pub(crate) fn original_values_for(&self, key: &EntityKey) -> Option<EntitySnapshot> {
+        self.read_context(None, |context| {
+            context
+                .original_snapshots
+                .get(key)
+                .map(|snapshot| match snapshot {
+                    OriginalSnapshot::Materialized(values) => values.clone(),
+                    OriginalSnapshot::Compact(row) => EntitySnapshot::from(row.clone().into_map()),
+                })
+        })
+        .or_else(|| {
+            let snapshot = self.loaded_snapshot.as_ref()?;
+            (snapshot.entity.as_ref() == key.entity.as_ref()
+                && snapshot.row.get("id")?.try_u64() == key.id.try_u64())
+            .then(|| EntitySnapshot::from(snapshot.row.clone().into_map()))
         })
     }
 

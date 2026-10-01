@@ -16,7 +16,13 @@ run_example() {
   if [[ -n "$bin" ]]; then
     command+=(--bin "$bin")
   fi
-  "${command[@]}" >"$log" 2>&1
+  local exit_code=0
+  "${command[@]}" >"$log" 2>&1 || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]]; then
+    printf 'FAIL %s exited %s\n' "$name" "$exit_code" >&2
+    sed -n '1,240p' "$log" >&2
+    return "$exit_code"
+  fi
   if ! grep -Fq "$marker" "$log"; then
     printf 'FAIL %s completed without its acceptance marker\n' "$name" >&2
     sed -n '1,240p' "$log" >&2
@@ -105,7 +111,8 @@ for attempt in 1 2; do
   if ! grep -Fq 'NEGATIVE:' "$nested_log" || ! grep -Fq 'order_line_list' "$nested_log" \
       || ! grep -Fq 'POSITIVE:' "$nested_log" || ! grep -Fq 'MIXED:' "$nested_log" \
       || ! grep -Fq 'STALE:' "$nested_log" || ! grep -Fq 'HIDDEN_CONFLICT:' "$nested_log" \
-      || ! grep -Fq 'CANCELLED:' "$nested_log"; then
+      || ! grep -Fq 'CANCELLED:' "$nested_log" \
+      || ! grep -Fq 'TRACE_LINEAGE:' "$nested_log"; then
     printf 'FAIL order-management nested graph probe run %s missing acceptance markers\n' "$attempt" >&2
     sed -n '1,240p' "$nested_log" >&2
     exit 1

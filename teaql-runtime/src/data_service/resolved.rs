@@ -272,6 +272,9 @@ where
         &self,
         mut query: SelectQuery,
     ) -> Result<SelectQuery, RuntimeError> {
+        let intent = self.request_intent_for(&query)?;
+        query.comment = Some(intent.comment().to_owned());
+        query.purpose = Some(intent.purpose().to_owned());
         let mut full_trace = self.trace_context.clone();
         full_trace.extend(query.trace_chain);
         query.trace_chain = full_trace;
@@ -908,12 +911,6 @@ where
             .map(|c| c.chunk_size)
             .unwrap_or(1000);
 
-        let final_comment = self
-            .data_service
-            .resolve_final_comment(&query.trace_chain, query.comment.clone());
-        let mut query = query.clone();
-        query.comment = final_comment;
-
         let capture_metadata = self.data_service.metadata.capture_execution_metadata();
         let request = teaql_data_service::QueryRequest {
             query: query.clone(),
@@ -922,7 +919,9 @@ where
             } else {
                 Default::default()
             },
-            comment: capture_metadata.then(|| query.comment.clone()).flatten(),
+            intent: self
+                .request_intent_for(&query)
+                .map_err(DataServiceError::Runtime)?,
             capture_debug_query: self.data_service.metadata.capture_query_debug(),
             capture_execution_metadata: capture_metadata,
         };
@@ -947,10 +946,13 @@ where
         &self,
         query: &SelectQuery,
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
-        if self.query_log_intent.is_none()
-            && self.data_service.metadata.capture_execution_metadata()
-        {
-            return Box::pin(self.query_scoped_service().fetch_prepared_all(query)).await;
+        if self.request_intent.is_none() {
+            return Box::pin(
+                self.query_scoped_service(query)
+                    .map_err(DataServiceError::Runtime)?
+                    .fetch_prepared_all(query),
+            )
+            .await;
         }
         let query = query
             .clone()
@@ -987,11 +989,6 @@ where
         &self,
         query: &SelectQuery,
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
-        let final_comment = self
-            .data_service
-            .resolve_final_comment(&query.trace_chain, query.comment.clone());
-        let mut query = query.clone();
-        query.comment = final_comment;
         if let Some(options) = query.aggregation_cache.filter(|options| options.enabled) {
             if let Some(cache) = self
                 .data_service
@@ -1022,7 +1019,9 @@ where
             } else {
                 Default::default()
             },
-            comment: capture_metadata.then(|| query.comment.clone()).flatten(),
+            intent: self
+                .request_intent_for(&query)
+                .map_err(DataServiceError::Runtime)?,
             capture_debug_query: self.data_service.metadata.capture_query_debug(),
             capture_execution_metadata: capture_metadata,
         };
@@ -1046,9 +1045,6 @@ where
         {
             return self.fetch_prepared_query(&query).await;
         }
-        query.comment = self
-            .data_service
-            .resolve_final_comment(&query.trace_chain, query.comment.take());
         let capture_metadata = self.data_service.metadata.capture_execution_metadata();
         let trace_chain = if capture_metadata {
             std::mem::take(&mut query.trace_chain)
@@ -1058,7 +1054,9 @@ where
         };
         let request = teaql_data_service::QueryRequest {
             trace_chain,
-            comment: capture_metadata.then(|| query.comment.clone()).flatten(),
+            intent: self
+                .request_intent_for(&query)
+                .map_err(DataServiceError::Runtime)?,
             capture_debug_query: self.data_service.metadata.capture_query_debug(),
             capture_execution_metadata: capture_metadata,
             query,
@@ -1077,9 +1075,6 @@ where
         &self,
         mut query: SelectQuery,
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
-        query.comment = self
-            .data_service
-            .resolve_final_comment(&query.trace_chain, query.comment.take());
         let capture_metadata = self.data_service.metadata.capture_execution_metadata();
         let trace_chain = if capture_metadata {
             std::mem::take(&mut query.trace_chain)
@@ -1089,7 +1084,9 @@ where
         };
         let request = teaql_data_service::QueryRequest {
             trace_chain,
-            comment: capture_metadata.then(|| query.comment.clone()).flatten(),
+            intent: self
+                .request_intent_for(&query)
+                .map_err(DataServiceError::Runtime)?,
             capture_debug_query: self.data_service.metadata.capture_query_debug(),
             capture_execution_metadata: capture_metadata,
             query,
@@ -1137,7 +1134,9 @@ where
                 let request = teaql_data_service::QueryRequest {
                     query: query.clone(),
                     trace_chain: query.trace_chain.clone(),
-                    comment: query.comment.clone(),
+                    intent: self
+                        .request_intent_for(query)
+                        .map_err(DataServiceError::Runtime)?,
                     capture_debug_query: self.data_service.metadata.capture_query_debug(),
                     capture_execution_metadata: self
                         .data_service
@@ -1193,11 +1192,10 @@ where
         query: &SelectQuery,
         relation_aggregates: &[RelationAggregate],
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
-        if self.query_log_intent.is_none()
-            && self.data_service.metadata.capture_execution_metadata()
-        {
+        if self.request_intent.is_none() {
             return Box::pin(
-                self.query_scoped_service()
+                self.query_scoped_service(query)
+                    .map_err(DataServiceError::Runtime)?
                     .fetch_all_with_relation_aggregates_internal(query, relation_aggregates),
             )
             .await;
@@ -1320,11 +1318,10 @@ where
         T: Entity + 'b,
     {
         Box::pin(async move {
-            if self.query_log_intent.is_none()
-                && self.data_service.metadata.capture_execution_metadata()
-            {
+            if self.request_intent.is_none() {
                 return self
-                    .query_scoped_service()
+                    .query_scoped_service(&query)
+                    .map_err(DataServiceError::Runtime)?
                     .fetch_enhanced_entities_with_relation_aggregates_prepared(
                         query,
                         relation_aggregates,
@@ -1804,20 +1801,26 @@ where
                     context: self.data_service.metadata.context,
                 },
                 executor: self.data_service.executor,
+                mutation_intent: self.data_service.mutation_intent.clone(),
             },
             trace_context: Vec::new(),
+            request_intent: self.request_intent.clone(),
             // Snapshot ancestry: descendants may add their own bindings without
             // changing their parent or an unrelated sibling relation.
             query_log_intent: self.query_intent_snapshot().map(std::sync::Mutex::new),
         }
     }
 
-    fn query_scoped_service(&self) -> EntityDataService<'a, E> {
+    fn query_scoped_service(
+        &self,
+        query: &SelectQuery,
+    ) -> Result<EntityDataService<'a, E>, RuntimeError> {
         let mut scoped = self.scoped_data_service_internal(self.entity.clone());
         scoped.trace_context = self.trace_context.clone();
+        scoped.request_intent = Some(self.request_intent_for(query)?);
         scoped.query_log_intent = Some(std::sync::Mutex::new(
             self.query_intent_snapshot().unwrap_or_default(),
         ));
-        scoped
+        Ok(scoped)
     }
 }

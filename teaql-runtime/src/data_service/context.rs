@@ -34,6 +34,7 @@ impl UserContext {
         Ok(ContextDataService {
             metadata: UserContextMetadata { context: self },
             executor,
+            mutation_intent: None,
         })
     }
 
@@ -56,6 +57,7 @@ impl UserContext {
             entity,
             data_service: self.data_service_internal::<E>()?,
             trace_context: Vec::new(),
+            request_intent: None,
             query_log_intent: None,
         })
     }
@@ -85,6 +87,11 @@ impl<'a, E> ContextDataService<'a, E>
 where
     E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
 {
+    pub(crate) fn with_mutation_intent(mut self, intent: teaql_core::MutationIntent) -> Self {
+        self.mutation_intent = Some(intent);
+        self
+    }
+
     async fn observe<T, F, N>(
         &self,
         family: &str,
@@ -135,15 +142,15 @@ where
     }
 
     fn data_service(&self) -> RuntimeDataService<'_, UserContextMetadata<'_>, E> {
-        RuntimeDataService::new(&self.metadata, self.executor)
+        let mut service = RuntimeDataService::new(&self.metadata, self.executor);
+        service.mutation_intent = self.mutation_intent.clone();
+        service
     }
 
     pub(crate) async fn fetch_all(
         &self,
-        mut query: SelectQuery,
+        query: SelectQuery,
     ) -> Result<Vec<CompactRow>, DataServiceError<E::Error>> {
-        let final_comment = self.resolve_final_comment(&query.trace_chain, query.comment.clone());
-        query.comment = final_comment;
         self.observe(
             "query",
             || format!("{}.list", query.entity),

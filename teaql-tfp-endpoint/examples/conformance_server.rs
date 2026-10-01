@@ -39,7 +39,12 @@ impl QueryExecutor for StubExecutor {
             row.insert("__tfpFacetCount".into(), Value::I64(1));
             return Ok(QueryResult {
                 rows: vec![teaql_core::CompactRow::from_map(row)],
-                metadata: metadata(DataServiceOperation::Query, Some(1), None, request.comment),
+                metadata: metadata(
+                    DataServiceOperation::Query,
+                    Some(1),
+                    None,
+                    Some(request.intent.comment().to_owned()),
+                ),
             });
         }
         if request.query.entity == "OrderStatus" {
@@ -55,7 +60,12 @@ impl QueryExecutor for StubExecutor {
                 .collect();
             return Ok(QueryResult {
                 rows,
-                metadata: metadata(DataServiceOperation::Query, Some(2), None, request.comment),
+                metadata: metadata(
+                    DataServiceOperation::Query,
+                    Some(2),
+                    None,
+                    Some(request.intent.comment().to_owned()),
+                ),
             });
         }
         let mut row = Record::new();
@@ -65,18 +75,23 @@ impl QueryExecutor for StubExecutor {
         row.insert("reviewed".into(), Value::Bool(true));
         Ok(QueryResult {
             rows: vec![teaql_core::CompactRow::from_map(row)],
-            metadata: metadata(DataServiceOperation::Query, Some(1), None, request.comment),
+            metadata: metadata(
+                DataServiceOperation::Query,
+                Some(1),
+                None,
+                Some(request.intent.comment().to_owned()),
+            ),
         })
     }
 }
 impl MutationExecutor for StubExecutor {
     async fn mutate(&self, request: MutationRequest) -> Result<MutationResult, Self::Error> {
-        let operation = match request {
-            MutationRequest::Insert(_) => DataServiceOperation::Insert,
-            MutationRequest::Update(_) => DataServiceOperation::Update,
-            MutationRequest::Delete(_) => DataServiceOperation::Delete,
-            MutationRequest::Recover(_) => DataServiceOperation::Recover,
-            MutationRequest::Batch(_) => DataServiceOperation::Update,
+        let operation = match request.command {
+            teaql_data_service::MutationCommand::Insert(_) => DataServiceOperation::Insert,
+            teaql_data_service::MutationCommand::Update(_) => DataServiceOperation::Update,
+            teaql_data_service::MutationCommand::Delete(_) => DataServiceOperation::Delete,
+            teaql_data_service::MutationCommand::Recover(_) => DataServiceOperation::Recover,
+            teaql_data_service::MutationCommand::Batch(_) => DataServiceOperation::Update,
         };
         let mut generated = Record::new();
         generated.insert("id".into(), Value::I64(42));

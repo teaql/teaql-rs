@@ -2540,20 +2540,28 @@ mod tests {
         futures_executor::block_on(context.execute_in_transaction::<Executor, _, _>(|scope| {
             Box::pin(async move {
                 scope
-                    .mutate(teaql_data_service::MutationRequest::Insert(
-                        teaql_core::InsertCommand::new("Order")
-                            .value("id", 1_u64)
-                            .value("version", 1_i64)
-                            .value("name", "first"),
-                    ))
+                    .mutate(
+                        teaql_data_service::MutationCommand::Insert(
+                            teaql_core::InsertCommand::new("Order")
+                                .value("id", 1_u64)
+                                .value("version", 1_i64)
+                                .value("name", "first"),
+                        )
+                        .request("audited provider conformance test")
+                        .unwrap(),
+                    )
                     .await?;
                 scope
-                    .mutate(teaql_data_service::MutationRequest::Insert(
-                        teaql_core::InsertCommand::new("Order")
-                            .value("id", 2_u64)
-                            .value("version", 1_i64)
-                            .value("name", "second"),
-                    ))
+                    .mutate(
+                        teaql_data_service::MutationCommand::Insert(
+                            teaql_core::InsertCommand::new("Order")
+                                .value("id", 2_u64)
+                                .value("version", 1_i64)
+                                .value("name", "second"),
+                        )
+                        .request("audited provider conformance test")
+                        .unwrap(),
+                    )
                     .await?;
                 Ok(())
             })
@@ -2564,20 +2572,28 @@ mod tests {
             futures_executor::block_on(context.execute_in_transaction::<Executor, _, _>(|scope| {
                 Box::pin(async move {
                     scope
-                        .mutate(teaql_data_service::MutationRequest::Insert(
-                            teaql_core::InsertCommand::new("Order")
-                                .value("id", 3_u64)
-                                .value("version", 1_i64)
-                                .value("name", "must roll back"),
-                        ))
+                        .mutate(
+                            teaql_data_service::MutationCommand::Insert(
+                                teaql_core::InsertCommand::new("Order")
+                                    .value("id", 3_u64)
+                                    .value("version", 1_i64)
+                                    .value("name", "must roll back"),
+                            )
+                            .request("audited provider conformance test")
+                            .unwrap(),
+                        )
                         .await?;
                     scope
-                        .mutate(teaql_data_service::MutationRequest::Insert(
-                            teaql_core::InsertCommand::new("Order")
-                                .value("id", 1_u64)
-                                .value("version", 1_i64)
-                                .value("name", "duplicate"),
-                        ))
+                        .mutate(
+                            teaql_data_service::MutationCommand::Insert(
+                                teaql_core::InsertCommand::new("Order")
+                                    .value("id", 1_u64)
+                                    .value("version", 1_i64)
+                                    .value("name", "duplicate"),
+                            )
+                            .request("audited provider conformance test")
+                            .unwrap(),
+                        )
                         .await?;
                     Ok(())
                 })
@@ -3344,7 +3360,11 @@ mod tests {
                     teaql_data_service::QueryRequest {
                         query,
                         trace_chain: Vec::new(),
-                        comment: Some("TOPN plan equivalence".to_owned()),
+                        intent: teaql_core::QueryIntent::new(
+                            "TOPN plan equivalence".to_owned(),
+                            "verify provider query behavior",
+                        )
+                        .unwrap(),
                         capture_debug_query: false,
                         capture_execution_metadata: false,
                     },

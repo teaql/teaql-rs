@@ -88,7 +88,7 @@ impl QueryExecutor for LinuxDataServiceExecutor {
         result.metadata.started_at = started_at;
         result.metadata.ended_at = SystemTime::now();
         result.metadata.trace_chain = request.trace_chain;
-        result.metadata.comment = request.comment;
+        result.metadata.comment = Some(request.intent.comment().to_owned());
         Ok(result)
     }
 }
@@ -181,7 +181,11 @@ mod tests {
                 .page(1, 1)
                 .projects(["name"]),
             trace_chain: vec![trace.clone()],
-            comment: Some("Load the second matching fixture".to_owned()),
+            intent: teaql_core::QueryIntent::new(
+                "Load the second matching fixture".to_owned(),
+                "verify provider query behavior",
+            )
+            .unwrap(),
             capture_debug_query: true,
             capture_execution_metadata: true,
         };
@@ -212,7 +216,11 @@ mod tests {
                 .filter(Expr::gt("score", 10_i64))
                 .aggregate(Aggregate::count("matching")),
             trace_chain: Vec::new(),
-            comment: None,
+            intent: teaql_core::QueryIntent::new(
+                "verify bounded provider query",
+                "verify provider query behavior",
+            )
+            .unwrap(),
             capture_debug_query: true,
             capture_execution_metadata: true,
         };

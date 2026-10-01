@@ -21,7 +21,7 @@ fn entity() -> EntityDescriptor {
 
 #[tokio::test]
 async fn sqlite_compiler_to_context_logs_preserves_field_masking_across_crud_and_batch() {
-    use teaql_data_service::{MutationRequest, QueryRequest};
+    use teaql_data_service::QueryRequest;
     type Executor = teaql_sql::SqlDataServiceExecutor<
         SqliteDialect,
         SqliteMutationExecutor,
@@ -49,7 +49,11 @@ async fn sqlite_compiler_to_context_logs_preserves_field_masking_across_crud_and
         ));
         QueryRequest {
             trace_chain: query.trace_chain.clone(),
-            comment: query.comment.clone(),
+            intent: teaql_core::QueryIntent::new(
+                "what: inspect masked CRUD fixture",
+                "why: verify execution values differ from log projection",
+            )
+            .unwrap(),
             query,
             capture_debug_query: true,
             capture_execution_metadata: true,
@@ -72,9 +76,19 @@ async fn sqlite_compiler_to_context_logs_preserves_field_masking_across_crud_and
                         Some(id),
                         "create masking fixture",
                     ));
-                    inserts.push(MutationRequest::Insert(command));
+                    inserts.push(
+                        teaql_data_service::MutationCommand::Insert(command)
+                            .request("create masking fixture")
+                            .unwrap(),
+                    );
                 }
-                scope.mutate(MutationRequest::Batch(inserts)).await?;
+                scope
+                    .mutate(
+                        teaql_data_service::MutationCommand::Batch(inserts)
+                            .request("create masking fixture")
+                            .unwrap(),
+                    )
+                    .await?;
                 for _ in 0..2 {
                     let rows = scope
                         .query(request(
@@ -89,21 +103,33 @@ async fn sqlite_compiler_to_context_logs_preserves_field_masking_across_crud_and
                     );
                 }
                 scope
-                    .mutate(MutationRequest::Update(
-                        UpdateCommand::new("Order", 1_u64)
-                            .expected_version(1)
-                            .value("name", "Lakeside"),
-                    ))
+                    .mutate(
+                        teaql_data_service::MutationCommand::Update(
+                            UpdateCommand::new("Order", 1_u64)
+                                .expected_version(1)
+                                .value("name", "Lakeside"),
+                        )
+                        .request("create masking fixture")
+                        .unwrap(),
+                    )
                     .await?;
                 scope
-                    .mutate(MutationRequest::Delete(
-                        DeleteCommand::new("Order", 1_u64).expected_version(2),
-                    ))
+                    .mutate(
+                        teaql_data_service::MutationCommand::Delete(
+                            DeleteCommand::new("Order", 1_u64).expected_version(2),
+                        )
+                        .request("create masking fixture")
+                        .unwrap(),
+                    )
                     .await?;
                 scope
-                    .mutate(MutationRequest::Recover(teaql_core::RecoverCommand::new(
-                        "Order", 1_u64, -3,
-                    )))
+                    .mutate(
+                        teaql_data_service::MutationCommand::Recover(
+                            teaql_core::RecoverCommand::new("Order", 1_u64, -3),
+                        )
+                        .request("create masking fixture")
+                        .unwrap(),
+                    )
                     .await?;
                 let rows = scope
                     .query(request(

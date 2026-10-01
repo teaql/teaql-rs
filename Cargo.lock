@@ -3200,6 +3200,7 @@ name = "teaql-data-service"
 version = "5.0.5"
 dependencies = [
  "futures-core",
+ "serde_json",
  "teaql-core",
 ]
 

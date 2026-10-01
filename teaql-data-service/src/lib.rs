@@ -9,7 +9,8 @@ pub use sql_log::{
 use std::time::SystemTime;
 use teaql_core::{
     CompactRow, DeleteCommand, EntitySnapshot, Expr, GeneratedValues, InsertCommand,
-    RecoverCommand, SelectQuery, TraceNode, UpdateCommand,
+    MutationIntent, QueryIntent, RecoverCommand, RequestIntentError, SelectQuery, TraceNode,
+    UpdateCommand,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -30,7 +31,8 @@ pub struct DataServiceCapabilities {
 pub struct QueryRequest {
     pub query: SelectQuery,
     pub trace_chain: Vec<TraceNode>,
-    pub comment: Option<String>,
+    /// Required, validated intent, independent of trace frames and logging flags.
+    pub intent: QueryIntent,
     /// Request a diagnostic SQL representation. SQL executors retain bindings;
     /// the runtime must project their privacy policies before interpolation.
     /// This flag does not authorize plaintext rendering in an executor.
@@ -40,6 +42,30 @@ pub struct QueryRequest {
     pub capture_execution_metadata: bool,
 }
 
+impl QueryRequest {
+    pub fn new(query: SelectQuery, intent: QueryIntent) -> Self {
+        Self {
+            trace_chain: query.trace_chain.clone(),
+            query,
+            intent,
+            capture_debug_query: false,
+            capture_execution_metadata: true,
+        }
+    }
+
+    pub fn from_query(query: SelectQuery) -> Result<Self, RequestIntentError> {
+        let intent =
+            QueryIntent::from_optional(query.comment.as_deref(), query.purpose.as_deref())?;
+        Ok(Self::new(query, intent))
+    }
+    pub fn comment(&self) -> &str {
+        self.intent.comment()
+    }
+    pub fn purpose(&self) -> &str {
+        self.intent.purpose()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct QueryResult {
     pub rows: Vec<CompactRow>,
@@ -47,7 +73,7 @@ pub struct QueryResult {
 }
 
 #[derive(Debug, Clone)]
-pub enum MutationRequest {
+pub enum MutationCommand {
     Insert(InsertCommand),
     Update(UpdateCommand),
     Delete(DeleteCommand),
@@ -55,25 +81,51 @@ pub enum MutationRequest {
     Batch(Vec<MutationRequest>),
 }
 
+impl MutationCommand {
+    pub fn request(
+        self,
+        comment: impl Into<String>,
+    ) -> Result<MutationRequest, RequestIntentError> {
+        MutationRequest::new(self, comment)
+    }
+}
+
+/// A complete mutation envelope. Commands cannot reach an executor without an
+/// explicit validated root comment, including a batch of annotated children.
+#[derive(Debug, Clone)]
+pub struct MutationRequest {
+    pub command: MutationCommand,
+    intent: MutationIntent,
+}
+
 impl MutationRequest {
+    pub fn new(
+        command: MutationCommand,
+        comment: impl Into<String>,
+    ) -> Result<Self, RequestIntentError> {
+        Ok(Self::with_intent(command, MutationIntent::new(comment)?))
+    }
+
+    pub fn with_intent(command: MutationCommand, intent: MutationIntent) -> Self {
+        Self { command, intent }
+    }
+
+    pub fn intent(&self) -> &MutationIntent {
+        &self.intent
+    }
+
     pub fn trace_chain(&self) -> &[teaql_core::TraceNode] {
-        match self {
-            MutationRequest::Insert(cmd) => &cmd.trace_chain,
-            MutationRequest::Update(cmd) => &cmd.trace_chain,
-            MutationRequest::Delete(cmd) => &cmd.trace_chain,
-            MutationRequest::Recover(cmd) => &cmd.trace_chain,
-            MutationRequest::Batch(_) => &[], // Batch traces are per-item
+        match &self.command {
+            MutationCommand::Insert(cmd) => &cmd.trace_chain,
+            MutationCommand::Update(cmd) => &cmd.trace_chain,
+            MutationCommand::Delete(cmd) => &cmd.trace_chain,
+            MutationCommand::Recover(cmd) => &cmd.trace_chain,
+            MutationCommand::Batch(_) => &[], // Batch traces are per-item
         }
     }
 
-    pub fn comment(&self) -> Option<&str> {
-        match self {
-            MutationRequest::Insert(cmd) => cmd.trace_chain.last().map(|n| n.comment.as_str()),
-            MutationRequest::Update(cmd) => cmd.trace_chain.last().map(|n| n.comment.as_str()),
-            MutationRequest::Delete(cmd) => cmd.trace_chain.last().map(|n| n.comment.as_str()),
-            MutationRequest::Recover(cmd) => cmd.trace_chain.last().map(|n| n.comment.as_str()),
-            MutationRequest::Batch(_) => None,
-        }
+    pub fn comment(&self) -> &str {
+        self.intent.comment()
     }
 }
 
@@ -313,81 +365,64 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_mutation_request_trace_and_comment_accessors() {
-        let trace1 = TraceNode {
-            kind: teaql_core::TraceKind::Entity,
-            entity_type: "User".to_string(),
-            entity_id: Some(1),
-            comment: "Create User".to_string(),
-        };
-        let trace2 = TraceNode {
-            kind: teaql_core::TraceKind::Entity,
-            entity_type: "Profile".to_string(),
-            entity_id: None,
-            comment: "Create Profile".to_string(),
-        };
-        let trace_chain = vec![trace1.clone(), trace2.clone()];
+    fn mutation_comment_is_owned_and_never_derived_from_trace_tail() {
+        let trace = TraceNode::typed(teaql_core::TraceKind::Entity, "User", Some(1), "");
+        let commands = [
+            MutationCommand::Insert(InsertCommand {
+                entity: "User".into(),
+                values: Default::default(),
+                trace_chain: vec![trace.clone()],
+            }),
+            MutationCommand::Update(UpdateCommand::new("User", 1_u64)),
+            MutationCommand::Delete(DeleteCommand::new("User", 1_u64)),
+            MutationCommand::Recover(RecoverCommand::new("User", 1_u64, -1)),
+        ];
+        for command in commands {
+            let request = command.request("review user changes").unwrap();
+            assert_eq!(request.comment(), "review user changes");
+        }
+    }
 
-        // Test Insert
-        let insert_cmd = InsertCommand {
-            entity: "User".to_string(),
-            values: teaql_core::MutationValues::new(),
-            trace_chain: trace_chain.clone(),
-        };
-        let req_insert = MutationRequest::Insert(insert_cmd);
-        assert_eq!(req_insert.trace_chain().len(), 2);
-        assert_eq!(req_insert.trace_chain()[1], trace2);
-        assert_eq!(req_insert.comment(), Some("Create Profile"));
+    #[test]
+    fn annotated_children_do_not_supply_a_batch_root_comment() {
+        let child = MutationCommand::Insert(InsertCommand::new("User"))
+            .request("create user")
+            .unwrap();
+        for comment in ["", " \t\n", "\u{2003}"] {
+            let error = MutationCommand::Batch(vec![child.clone()])
+                .request(comment)
+                .unwrap_err();
+            assert_eq!(error.code(), "REQUEST_COMMENT_REQUIRED");
+        }
+        let batch = MutationCommand::Batch(vec![child])
+            .request("import reviewed users")
+            .unwrap();
+        assert_eq!(batch.comment(), "import reviewed users");
+    }
 
-        // Test Update
-        let update_cmd = UpdateCommand {
-            entity: "User".to_string(),
-            id: teaql_core::Value::I64(1),
-            values: teaql_core::MutationValues::new(),
-            expected_version: None,
-            old_values: None,
-            trace_chain: trace_chain.clone(),
-        };
-        let req_update = MutationRequest::Update(update_cmd);
-        assert_eq!(req_update.trace_chain().len(), 2);
-        assert_eq!(req_update.comment(), Some("Create Profile"));
-
-        // Test Delete
-        let delete_cmd = DeleteCommand {
-            entity: "User".to_string(),
-            id: teaql_core::Value::I64(1),
-            expected_version: None,
-            soft_delete: true,
-            trace_chain: trace_chain.clone(),
-        };
-        let req_delete = MutationRequest::Delete(delete_cmd);
-        assert_eq!(req_delete.trace_chain().len(), 2);
-        assert_eq!(req_delete.comment(), Some("Create Profile"));
-
-        // Test Recover
-        let recover_cmd = RecoverCommand {
-            entity: "User".to_string(),
-            id: teaql_core::Value::I64(1),
-            expected_version: 1,
-            trace_chain: trace_chain.clone(),
-        };
-        let req_recover = MutationRequest::Recover(recover_cmd);
-        assert_eq!(req_recover.trace_chain().len(), 2);
-        assert_eq!(req_recover.comment(), Some("Create Profile"));
-
-        // Test Batch
-        let req_batch = MutationRequest::Batch(vec![req_insert, req_update]);
-        assert_eq!(req_batch.trace_chain().len(), 0);
-        assert_eq!(req_batch.comment(), None);
-
-        // Test empty trace chain
-        let insert_empty = InsertCommand {
-            entity: "User".to_string(),
-            values: teaql_core::MutationValues::new(),
-            trace_chain: vec![],
-        };
-        let req_empty = MutationRequest::Insert(insert_empty);
-        assert_eq!(req_empty.trace_chain().len(), 0);
-        assert_eq!(req_empty.comment(), None);
+    #[test]
+    fn trace_comment_cannot_supply_missing_request_comment_or_purpose() {
+        let mut query = SelectQuery::new("User");
+        query.trace_chain.push(TraceNode::typed(
+            teaql_core::TraceKind::Purpose,
+            "User",
+            None,
+            "fabricated purpose",
+        ));
+        assert_eq!(
+            QueryRequest::from_query(query.clone()).unwrap_err().code(),
+            "REQUEST_COMMENT_REQUIRED"
+        );
+        query.comment = Some("load user".into());
+        assert_eq!(
+            QueryRequest::from_query(query.clone()).unwrap_err().code(),
+            "QUERY_PURPOSE_REQUIRED"
+        );
+        query.purpose = Some("render user".into());
+        let mut request = QueryRequest::from_query(query).unwrap();
+        request.capture_execution_metadata = false;
+        request.capture_debug_query = false;
+        assert_eq!(request.comment(), "load user");
+        assert_eq!(request.purpose(), "render user");
     }
 }

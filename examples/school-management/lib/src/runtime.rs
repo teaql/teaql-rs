@@ -32,6 +32,7 @@ pub enum ServiceRuntimeError {
         source: std::env::VarError,
     },
     ConnectionError(String),
+    Configuration(String),
     Rusqlite(rusqlite::Error),
     Runtime(teaql_runtime::RuntimeError),
 }
@@ -43,6 +44,7 @@ impl std::fmt::Display for ServiceRuntimeError {
                 write!(f, "missing environment variable {name}: {source}")
             }
             ServiceRuntimeError::ConnectionError(err) => write!(f, "connection error: {err}"),
+            ServiceRuntimeError::Configuration(err) => write!(f, "configuration error: {err}"),
             ServiceRuntimeError::Rusqlite(err) => write!(f, "rusqlite error: {err}"),
             ServiceRuntimeError::Runtime(err) => write!(f, "runtime error: {err}"),
         }
@@ -54,6 +56,7 @@ impl std::error::Error for ServiceRuntimeError {
         match self {
             ServiceRuntimeError::MissingEnv { source, .. } => Some(source),
             ServiceRuntimeError::ConnectionError(_) => None,
+            ServiceRuntimeError::Configuration(_) => None,
             ServiceRuntimeError::Rusqlite(err) => Some(err),
             ServiceRuntimeError::Runtime(err) => Some(err),
         }

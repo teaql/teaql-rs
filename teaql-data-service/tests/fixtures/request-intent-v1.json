@@ -1,0 +1,259 @@
+{
+  "contract": "teaql.request-intent.v1",
+  "cases": [
+    {
+      "id": "Q01-missing",
+      "kind": "query",
+      "input": {
+        "purpose": "render orders"
+      },
+      "error": {
+        "code": "REQUEST_COMMENT_REQUIRED",
+        "field": "comment"
+      }
+    },
+    {
+      "id": "Q02-null",
+      "kind": "query",
+      "input": {
+        "comment": null,
+        "purpose": "render orders"
+      },
+      "error": {
+        "code": "REQUEST_COMMENT_REQUIRED",
+        "field": "comment"
+      }
+    },
+    {
+      "id": "Q03-empty",
+      "kind": "query",
+      "input": {
+        "comment": "",
+        "purpose": "render orders"
+      },
+      "error": {
+        "code": "REQUEST_COMMENT_REQUIRED",
+        "field": "comment"
+      }
+    },
+    {
+      "id": "Q04-ascii-blank",
+      "kind": "query",
+      "input": {
+        "comment": " \t\r\n",
+        "purpose": "render orders"
+      },
+      "error": {
+        "code": "REQUEST_COMMENT_REQUIRED",
+        "field": "comment"
+      }
+    },
+    {
+      "id": "Q05-unicode-blank",
+      "kind": "query",
+      "input": {
+        "comment": " ",
+        "purpose": "render orders"
+      },
+      "error": {
+        "code": "REQUEST_COMMENT_REQUIRED",
+        "field": "comment"
+      }
+    },
+    {
+      "id": "Q06-purpose-missing",
+      "kind": "query",
+      "input": {
+        "comment": "load orders"
+      },
+      "error": {
+        "code": "QUERY_PURPOSE_REQUIRED",
+        "field": "purpose"
+      }
+    },
+    {
+      "id": "Q07-purpose-blank",
+      "kind": "query",
+      "input": {
+        "comment": "load orders",
+        "purpose": " "
+      },
+      "error": {
+        "code": "QUERY_PURPOSE_REQUIRED",
+        "field": "purpose"
+      }
+    },
+    {
+      "id": "Q08-preserve",
+      "kind": "query",
+      "input": {
+        "comment": " load orders ",
+        "purpose": "render orders"
+      },
+      "expected": {
+        "comment": " load orders ",
+        "purpose": "render orders"
+      }
+    },
+    {
+      "id": "Q09-trace-only",
+      "kind": "query",
+      "input": {
+        "trace": [
+          {
+            "kind": "Comment",
+            "detail": "load orders"
+          },
+          {
+            "kind": "Purpose",
+            "detail": "render orders"
+          }
+        ]
+      },
+      "error": {
+        "code": "REQUEST_COMMENT_REQUIRED",
+        "field": "comment"
+      }
+    },
+    {
+      "id": "Q10-logs-disabled",
+      "kind": "query",
+      "input": {
+        "purpose": "render orders",
+        "logging": false
+      },
+      "error": {
+        "code": "REQUEST_COMMENT_REQUIRED",
+        "field": "comment"
+      }
+    },
+    {
+      "id": "M01-missing",
+      "kind": "mutation",
+      "input": {},
+      "error": {
+        "code": "REQUEST_COMMENT_REQUIRED",
+        "field": "comment"
+      }
+    },
+    {
+      "id": "M02-null",
+      "kind": "mutation",
+      "input": {
+        "comment": null
+      },
+      "error": {
+        "code": "REQUEST_COMMENT_REQUIRED",
+        "field": "comment"
+      }
+    },
+    {
+      "id": "M03-empty",
+      "kind": "mutation",
+      "input": {
+        "comment": ""
+      },
+      "error": {
+        "code": "REQUEST_COMMENT_REQUIRED",
+        "field": "comment"
+      }
+    },
+    {
+      "id": "M04-ascii-blank",
+      "kind": "mutation",
+      "input": {
+        "comment": " \t\r\n"
+      },
+      "error": {
+        "code": "REQUEST_COMMENT_REQUIRED",
+        "field": "comment"
+      }
+    },
+    {
+      "id": "M05-unicode-blank",
+      "kind": "mutation",
+      "input": {
+        "comment": " "
+      },
+      "error": {
+        "code": "REQUEST_COMMENT_REQUIRED",
+        "field": "comment"
+      }
+    },
+    {
+      "id": "M06-preserve",
+      "kind": "mutation",
+      "input": {
+        "comment": " submit order "
+      },
+      "expected": {
+        "comment": " submit order "
+      }
+    },
+    {
+      "id": "M07-trace-only",
+      "kind": "mutation",
+      "input": {
+        "trace": [
+          {
+            "kind": "AuditReason",
+            "detail": "submit order"
+          }
+        ]
+      },
+      "error": {
+        "code": "REQUEST_COMMENT_REQUIRED",
+        "field": "comment"
+      }
+    },
+    {
+      "id": "M08-batch-child-only",
+      "kind": "mutation",
+      "input": {
+        "children": [
+          {
+            "comment": "create item"
+          },
+          {
+            "comment": "delete item"
+          }
+        ]
+      },
+      "error": {
+        "code": "REQUEST_COMMENT_REQUIRED",
+        "field": "comment"
+      }
+    },
+    {
+      "id": "M09-blank-route-tail",
+      "kind": "mutation",
+      "input": {
+        "comment": "submit order",
+        "trace": [
+          {
+            "kind": "AuditReason",
+            "detail": "authorize payment"
+          },
+          {
+            "kind": "Entity",
+            "detail": ""
+          }
+        ]
+      },
+      "expected": {
+        "comment": "submit order"
+      }
+    },
+    {
+      "id": "M10-logs-disabled",
+      "kind": "mutation",
+      "input": {
+        "logging": false
+      },
+      "error": {
+        "code": "REQUEST_COMMENT_REQUIRED",
+        "field": "comment"
+      }
+    }
+  ]
+}

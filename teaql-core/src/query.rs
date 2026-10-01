@@ -453,6 +453,8 @@ pub struct SelectQuery {
     pub relations: Vec<RelationLoad>,
     pub aggregation_cache: Option<AggregationCacheOptions>,
     pub comment: Option<String>,
+    /// Explicit request purpose; trace nodes are diagnostic lineage, not intent.
+    pub purpose: Option<String>,
     pub trace_chain: Vec<crate::TraceNode>,
     pub raw_sql: Option<String>,
     pub raw_sql_search_criteria: Vec<String>,
@@ -486,6 +488,7 @@ impl SelectQuery {
             relations: Vec::new(),
             aggregation_cache: None,
             comment: None,
+            purpose: None,
             trace_chain: Vec::new(),
             raw_sql: None,
             raw_sql_search_criteria: Vec::new(),
@@ -699,6 +702,11 @@ impl SelectQuery {
             entity_id: None,
             comment: comment_str,
         });
+        self
+    }
+
+    pub fn purpose(mut self, purpose: impl Into<String>) -> Self {
+        self.purpose = Some(purpose.into());
         self
     }
 

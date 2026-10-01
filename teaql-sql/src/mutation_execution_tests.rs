@@ -155,34 +155,46 @@ fn insert(id: u64) -> MutationRequest {
         Some(id),
         "audited test",
     ));
-    MutationRequest::Insert(command)
+    teaql_data_service::MutationCommand::Insert(command)
+        .request("audited provider conformance test")
+        .unwrap()
 }
 fn batch() -> MutationRequest {
-    MutationRequest::Batch(vec![insert(1), insert(2), insert(3)])
+    teaql_data_service::MutationCommand::Batch(vec![insert(1), insert(2), insert(3)])
+        .request("audited provider conformance test")
+        .unwrap()
 }
 
 #[tokio::test]
 async fn mutation_target_id_is_sql_intent_provenance_without_changing_plain_binding() {
     let requests = [
         insert(1001),
-        MutationRequest::Update(
+        teaql_data_service::MutationCommand::Update(
             UpdateCommand::new("Customer", 1001_u64)
                 .expected_version(1)
                 .value("name", "Riverside"),
-        ),
-        MutationRequest::Delete(
+        )
+        .request("audited provider conformance test")
+        .unwrap(),
+        teaql_data_service::MutationCommand::Delete(
             teaql_core::DeleteCommand::new("Customer", 1001_u64).expected_version(1),
-        ),
-        MutationRequest::Recover(teaql_core::RecoverCommand::new("Customer", 1001_u64, -3)),
+        )
+        .request("audited provider conformance test")
+        .unwrap(),
+        teaql_data_service::MutationCommand::Recover(teaql_core::RecoverCommand::new(
+            "Customer", 1001_u64, -3,
+        ))
+        .request("audited provider conformance test")
+        .unwrap(),
     ];
     for failure in [false, true] {
         for mut request in requests.clone() {
-            let trace = match &mut request {
-                MutationRequest::Insert(cmd) => &mut cmd.trace_chain,
-                MutationRequest::Update(cmd) => &mut cmd.trace_chain,
-                MutationRequest::Delete(cmd) => &mut cmd.trace_chain,
-                MutationRequest::Recover(cmd) => &mut cmd.trace_chain,
-                MutationRequest::Batch(_) => unreachable!(),
+            let trace = match &mut request.command {
+                teaql_data_service::MutationCommand::Insert(cmd) => &mut cmd.trace_chain,
+                teaql_data_service::MutationCommand::Update(cmd) => &mut cmd.trace_chain,
+                teaql_data_service::MutationCommand::Delete(cmd) => &mut cmd.trace_chain,
+                teaql_data_service::MutationCommand::Recover(cmd) => &mut cmd.trace_chain,
+                teaql_data_service::MutationCommand::Batch(_) => unreachable!(),
             };
             trace.push(TraceNode::typed(
                 TraceKind::AuditReason,
@@ -401,11 +413,15 @@ async fn successful_batch_does_not_notify_fallback_observer() {
 #[tokio::test]
 async fn later_compile_failure_does_not_invent_an_executed_statement() {
     let (executor, entries, observer) = fixture(Mode::Success, false);
-    let missing = MutationRequest::Insert(InsertCommand::new("Missing"));
+    let missing = teaql_data_service::MutationCommand::Insert(InsertCommand::new("Missing"))
+        .request("audited provider conformance test")
+        .unwrap();
     assert!(matches!(
         executor
             .mutate_observed(
-                MutationRequest::Batch(vec![insert(1), missing]),
+                teaql_data_service::MutationCommand::Batch(vec![insert(1), missing])
+                    .request("audited provider conformance test")
+                    .unwrap(),
                 Some(observer)
             )
             .await
@@ -420,11 +436,13 @@ async fn later_compile_failure_does_not_invent_an_executed_statement() {
 async fn guarded_readback_failure_retains_guard_on_both_statements() {
     let (executor, entries, observer) = fixture(Mode::FailRead, false);
     let request = GuardedMutationRequest::new(
-        MutationRequest::Update(
+        teaql_data_service::MutationCommand::Update(
             UpdateCommand::new("Customer", 1_u64)
                 .expected_version(1)
                 .value("name", "Riverside"),
-        ),
+        )
+        .request("audited provider conformance test")
+        .unwrap(),
         Expr::eq("status", "ACTIVE"),
     );
     let error = executor
@@ -468,11 +486,13 @@ async fn guarded_transaction_write_failure_has_one_outcome() {
     let (executor, entries, observer) = fixture(Mode::FailWrite(1), false);
     let tx = executor.begin().await.unwrap();
     let request = GuardedMutationRequest::new(
-        MutationRequest::Update(
+        teaql_data_service::MutationCommand::Update(
             UpdateCommand::new("Customer", 1_u64)
                 .expected_version(1)
                 .value("name", "Riverside"),
-        ),
+        )
+        .request("audited provider conformance test")
+        .unwrap(),
         Expr::eq("status", "ACTIVE"),
     );
     assert!(
@@ -493,10 +513,14 @@ async fn guarded_transaction_write_failure_has_one_outcome() {
 #[tokio::test]
 async fn nested_batch_failure_does_not_duplicate_prior_statement() {
     let (executor, entries, observer) = fixture(Mode::FailWrite(2), false);
-    let request = MutationRequest::Batch(vec![
+    let request = teaql_data_service::MutationCommand::Batch(vec![
         insert(1),
-        MutationRequest::Batch(vec![insert(2), insert(3)]),
-    ]);
+        teaql_data_service::MutationCommand::Batch(vec![insert(2), insert(3)])
+            .request("audited provider conformance test")
+            .unwrap(),
+    ])
+    .request("audited provider conformance test")
+    .unwrap();
     assert!(
         executor
             .mutate_observed(request, Some(observer))
@@ -514,21 +538,29 @@ async fn all_mutation_kinds_keep_failure_kind_and_unknown_affected_count() {
     for (request, operation) in [
         (insert(1), DataServiceOperation::Insert),
         (
-            MutationRequest::Update(
+            teaql_data_service::MutationCommand::Update(
                 UpdateCommand::new("Customer", 1_u64)
                     .expected_version(1)
                     .value("name", "Riverside"),
-            ),
+            )
+            .request("audited provider conformance test")
+            .unwrap(),
             DataServiceOperation::Update,
         ),
         (
-            MutationRequest::Delete(
+            teaql_data_service::MutationCommand::Delete(
                 teaql_core::DeleteCommand::new("Customer", 1_u64).expected_version(1),
-            ),
+            )
+            .request("audited provider conformance test")
+            .unwrap(),
             DataServiceOperation::Delete,
         ),
         (
-            MutationRequest::Recover(teaql_core::RecoverCommand::new("Customer", 1_u64, -1)),
+            teaql_data_service::MutationCommand::Recover(teaql_core::RecoverCommand::new(
+                "Customer", 1_u64, -1,
+            ))
+            .request("audited provider conformance test")
+            .unwrap(),
             DataServiceOperation::Recover,
         ),
     ] {

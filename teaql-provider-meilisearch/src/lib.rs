@@ -151,8 +151,8 @@ impl MutationExecutor for MeilisearchProvider {
     async fn mutate(&self, request: MutationRequest) -> Result<MutationResult, Self::Error> {
         let started_at = std::time::SystemTime::now();
 
-        match request {
-            MutationRequest::Insert(cmd) => {
+        match request.command {
+            teaql_data_service::MutationCommand::Insert(cmd) => {
                 let entity = cmd.entity.clone();
                 let url = format!("{}/indexes/{}/documents?primaryKey=id", self.host, entity);
 
@@ -289,7 +289,11 @@ mod tests {
         QueryRequest {
             query: teaql_core::SelectQuery::new("customer").search_with_text(QUERY_CANARY),
             trace_chain: Vec::new(),
-            comment: None,
+            intent: teaql_core::QueryIntent::new(
+                "verify bounded provider query",
+                "verify provider query behavior",
+            )
+            .unwrap(),
             capture_debug_query: true,
             capture_execution_metadata: true,
         }
@@ -331,9 +335,14 @@ mod tests {
 
         let (url, request) = serve_once(200, r#"{"taskUid":1}"#);
         let result = MeilisearchProvider::new(url, None)
-            .mutate(MutationRequest::Insert(
-                teaql_core::InsertCommand::new("customer").value("password_hash", INSERT_CANARY),
-            ))
+            .mutate(
+                teaql_data_service::MutationCommand::Insert(
+                    teaql_core::InsertCommand::new("customer")
+                        .value("password_hash", INSERT_CANARY),
+                )
+                .request("audited provider conformance test")
+                .unwrap(),
+            )
             .await
             .unwrap();
         assert!(request.join().unwrap().contains(INSERT_CANARY));
@@ -349,9 +358,14 @@ mod tests {
 
         let (url, request) = serve_once(400, r#"{"error":"document-secret-canary-1b54"}"#);
         let error = MeilisearchProvider::new(url, None)
-            .mutate(MutationRequest::Insert(
-                teaql_core::InsertCommand::new("customer").value("password_hash", INSERT_CANARY),
-            ))
+            .mutate(
+                teaql_data_service::MutationCommand::Insert(
+                    teaql_core::InsertCommand::new("customer")
+                        .value("password_hash", INSERT_CANARY),
+                )
+                .request("audited provider conformance test")
+                .unwrap(),
+            )
             .await
             .unwrap_err();
         assert!(request.join().unwrap().contains(INSERT_CANARY));

@@ -742,11 +742,13 @@ impl TfpMutationQuery {
                 } else {
                     return Err("Mutation payload must be an object".into());
                 }
-                Ok(MutationRequest::Insert(InsertCommand {
+                Ok(teaql_data_service::MutationCommand::Insert(InsertCommand {
                     entity: self.entity.clone(),
                     values: record.into(),
                     trace_chain: trace,
-                }))
+                })
+                .request(comment)
+                .map_err(|error| error.to_string())?)
             }
             "Update" => {
                 let mut record = Record::new();
@@ -757,28 +759,36 @@ impl TfpMutationQuery {
                 } else {
                     return Err("Mutation payload must be an object".into());
                 }
-                Ok(MutationRequest::Update(UpdateCommand {
+                Ok(teaql_data_service::MutationCommand::Update(UpdateCommand {
                     entity: self.entity.clone(),
                     id: id_val,
                     values: record.into(),
                     expected_version: self.expected_version,
                     old_values: None,
                     trace_chain: trace,
-                }))
+                })
+                .request(comment)
+                .map_err(|error| error.to_string())?)
             }
-            "Delete" => Ok(MutationRequest::Delete(DeleteCommand {
+            "Delete" => Ok(teaql_data_service::MutationCommand::Delete(DeleteCommand {
                 entity: self.entity.clone(),
                 id: id_val,
                 expected_version: self.expected_version,
                 soft_delete: true,
                 trace_chain: trace,
-            })),
-            "Recover" => Ok(MutationRequest::Recover(RecoverCommand {
-                entity: self.entity.clone(),
-                id: id_val,
-                expected_version: self.expected_version.unwrap_or(0),
-                trace_chain: trace,
-            })),
+            })
+            .request(comment)
+            .map_err(|error| error.to_string())?),
+            "Recover" => Ok(
+                teaql_data_service::MutationCommand::Recover(RecoverCommand {
+                    entity: self.entity.clone(),
+                    id: id_val,
+                    expected_version: self.expected_version.unwrap_or(0),
+                    trace_chain: trace,
+                })
+                .request(comment)
+                .map_err(|error| error.to_string())?,
+            ),
             _ => Err("Unknown mutation action".into()),
         }
     }
@@ -1299,7 +1309,7 @@ mod tests {
             comment: Some("Verify Swift audited mutation".into()),
         };
         let request = mutation.to_core().unwrap();
-        let teaql_data_service::MutationRequest::Update(command) = request else {
+        let teaql_data_service::MutationCommand::Update(command) = request.command else {
             panic!("expected update command")
         };
         assert_eq!(command.id, Value::I64(900001));
@@ -1506,7 +1516,7 @@ mod tests {
         }
         .to_core()
         .expect("non-null entity reference id");
-        let MutationRequest::Update(command) = valid_reference else {
+        let teaql_data_service::MutationCommand::Update(command) = valid_reference.command else {
             panic!("expected update command")
         };
         assert_eq!(command.id, Value::I64(42));

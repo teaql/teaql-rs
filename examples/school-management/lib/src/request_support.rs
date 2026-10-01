@@ -589,6 +589,10 @@ pub(crate) async fn execute_facets<C>(
 where
     C: TeaqlRuntime + ?Sized,
 {
+    let intent = teaql_core::QueryIntent::from_optional(
+        outer_query.comment.as_deref(),
+        outer_query.purpose.as_deref(),
+    )?;
     let mut facets = BTreeMap::new();
     for facet in &options.facets {
         let mut selection = facet.query.clone();
@@ -602,21 +606,22 @@ where
             )?;
         }
         let relation_aggregates = runtime_relation_aggregates(&selection.query_options);
-        let query = apply_runtime_metadata(
+        let mut query = apply_runtime_metadata(
             selection.query,
             &selection.query_options,
             &selection.child_enhancements,
         );
+        query.comment = Some(intent.comment().to_owned());
         let entity = query.entity.clone();
         let mut chain = outer_query.trace_chain.clone();
-        chain.push(teaql_core::TraceNode::new(
+        chain.push(teaql_core::TraceNode::typed(
+            teaql_core::TraceKind::Relation,
             query.entity.clone(),
             None,
             facet.facet_name.clone(),
         ));
 
-        let query =
-            PurposedSelectQuery::new(query, format!("Calculate facet {}", facet.facet_name));
+        let query = PurposedSelectQuery::new(query, intent.purpose());
         let facet_rows = context
             .fetch_facet_smart_list(&entity, &query, &relation_aggregates, chain)
             .await?;

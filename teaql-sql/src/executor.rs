@@ -741,7 +741,11 @@ mod tests {
         QueryRequest {
             query: SelectQuery::new("Order"),
             trace_chain: Vec::new(),
-            comment: None,
+            intent: teaql_core::QueryIntent::new(
+                "verify bounded provider query",
+                "verify provider query behavior",
+            )
+            .unwrap(),
             capture_debug_query,
             capture_execution_metadata: true,
         }
@@ -830,14 +834,22 @@ mod tests {
             },
         );
         let result = executor
-            .mutate(MutationRequest::Batch(vec![
-                MutationRequest::Insert(
-                    teaql_core::InsertCommand::new("Order").value("name", "first"),
-                ),
-                MutationRequest::Insert(
-                    teaql_core::InsertCommand::new("Order").value("name", "second"),
-                ),
-            ]))
+            .mutate(
+                teaql_data_service::MutationCommand::Batch(vec![
+                    teaql_data_service::MutationCommand::Insert(
+                        teaql_core::InsertCommand::new("Order").value("name", "first"),
+                    )
+                    .request("audited provider conformance test")
+                    .unwrap(),
+                    teaql_data_service::MutationCommand::Insert(
+                        teaql_core::InsertCommand::new("Order").value("name", "second"),
+                    )
+                    .request("audited provider conformance test")
+                    .unwrap(),
+                ])
+                .request("audited provider conformance test")
+                .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(result.metadata.statements.len(), 2);
@@ -901,9 +913,13 @@ mod tests {
             vec![Value::from("PRIVATE-BINDING-CANARY")]
         );
         let inserted = executor
-            .mutate(MutationRequest::Insert(
-                teaql_core::InsertCommand::new("Order").value("name", "PRIVATE-BINDING-CANARY"),
-            ))
+            .mutate(
+                teaql_data_service::MutationCommand::Insert(
+                    teaql_core::InsertCommand::new("Order").value("name", "PRIVATE-BINDING-CANARY"),
+                )
+                .request("audited provider conformance test")
+                .unwrap(),
+            )
             .await
             .unwrap();
         assert!(inserted.metadata.debug_query.is_none());
@@ -1038,7 +1054,11 @@ mod tests {
         let request = |filter| QueryRequest {
             query: SelectQuery::new("Order").filter(filter),
             trace_chain: Vec::new(),
-            comment: None,
+            intent: teaql_core::QueryIntent::new(
+                "verify bounded provider query",
+                "verify provider query behavior",
+            )
+            .unwrap(),
             capture_debug_query: false,
             capture_execution_metadata: true,
         };
@@ -1089,7 +1109,11 @@ mod tests {
         let request = |values: Vec<Value>| QueryRequest {
             query: SelectQuery::new("Order").filter(Expr::in_list("id", values)),
             trace_chain: Vec::new(),
-            comment: None,
+            intent: teaql_core::QueryIntent::new(
+                "verify bounded provider query",
+                "verify provider query behavior",
+            )
+            .unwrap(),
             capture_debug_query: false,
             capture_execution_metadata: true,
         };
@@ -1128,7 +1152,11 @@ mod tests {
             let request = |query| QueryRequest {
                 query,
                 trace_chain: Vec::new(),
-                comment: None,
+                intent: teaql_core::QueryIntent::new(
+                    "verify bounded provider query",
+                    "verify provider query behavior",
+                )
+                .unwrap(),
                 capture_debug_query: false,
                 capture_execution_metadata: true,
             };
@@ -1320,7 +1348,7 @@ fn query_diagnostic_metadata<D: SqlDialect>(
         affected_rows: None,
         result_count: None,
         trace_chain: request.trace_chain.clone(),
-        comment: request.comment.clone(),
+        comment: Some(request.intent.comment().to_owned()),
         backend_request_id: None,
         parameterized_query: Some(compiled.sql.clone()),
         params: compiled.params.clone(),
@@ -1363,11 +1391,12 @@ impl<
 }
 
 fn guarded_mutation_entity_name(request: &MutationRequest) -> Result<&str, SqlCompileError> {
-    match request {
-        MutationRequest::Update(command) => Ok(&command.entity),
-        MutationRequest::Delete(command) => Ok(&command.entity),
-        MutationRequest::Recover(command) => Ok(&command.entity),
-        MutationRequest::Insert(_) | MutationRequest::Batch(_) => {
+    match &request.command {
+        teaql_data_service::MutationCommand::Update(command) => Ok(&command.entity),
+        teaql_data_service::MutationCommand::Delete(command) => Ok(&command.entity),
+        teaql_data_service::MutationCommand::Recover(command) => Ok(&command.entity),
+        teaql_data_service::MutationCommand::Insert(_)
+        | teaql_data_service::MutationCommand::Batch(_) => {
             Err(SqlCompileError::InvalidFunctionArguments(
                 "guarded mutation supports update, delete, and recover only".to_owned(),
             ))
@@ -1387,31 +1416,37 @@ where
     T: SqlTransport + Sync,
 {
     let GuardedMutationRequest { mutation, guard } = request;
-    let (entity_name, operation, persisted_id) = match &mutation {
-        MutationRequest::Update(command) => (
+    let (entity_name, operation, persisted_id) = match &mutation.command {
+        teaql_data_service::MutationCommand::Update(command) => (
             &command.entity,
             DataServiceOperation::Update,
             Some(command.id.clone()),
         ),
-        MutationRequest::Delete(command) => (
+        teaql_data_service::MutationCommand::Delete(command) => (
             &command.entity,
             DataServiceOperation::Delete,
             command.soft_delete.then(|| command.id.clone()),
         ),
-        MutationRequest::Recover(command) => (
+        teaql_data_service::MutationCommand::Recover(command) => (
             &command.entity,
             DataServiceOperation::Recover,
             Some(command.id.clone()),
         ),
-        MutationRequest::Insert(_) | MutationRequest::Batch(_) => unreachable!(),
+        teaql_data_service::MutationCommand::Insert(_)
+        | teaql_data_service::MutationCommand::Batch(_) => unreachable!(),
     };
-    let compiled = match &mutation {
-        MutationRequest::Update(command) => dialect.compile_guarded_update(entity, command, &guard),
-        MutationRequest::Delete(command) => dialect.compile_guarded_delete(entity, command, &guard),
-        MutationRequest::Recover(command) => {
+    let compiled = match &mutation.command {
+        teaql_data_service::MutationCommand::Update(command) => {
+            dialect.compile_guarded_update(entity, command, &guard)
+        }
+        teaql_data_service::MutationCommand::Delete(command) => {
+            dialect.compile_guarded_delete(entity, command, &guard)
+        }
+        teaql_data_service::MutationCommand::Recover(command) => {
             dialect.compile_guarded_recover(entity, command, &guard)
         }
-        MutationRequest::Insert(_) | MutationRequest::Batch(_) => unreachable!(),
+        teaql_data_service::MutationCommand::Insert(_)
+        | teaql_data_service::MutationCommand::Batch(_) => unreachable!(),
     }
     .map_err(SqlExecutorError::Compile)?;
 
@@ -1456,7 +1491,7 @@ where
         affected_rows: Some(affected_rows),
         result_count: None,
         trace_chain: mutation.trace_chain().to_vec(),
-        comment: mutation.comment().map(str::to_owned),
+        comment: Some(mutation.comment().to_owned()),
         backend_request_id: None,
         parameterized_query: Some(compiled.sql.clone()),
         params: compiled.params.clone(),

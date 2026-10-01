@@ -4,7 +4,7 @@ use teaql_core::{
     CompactRow, DataType, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor,
     RelationAggregate, RelationDescriptor, SelectQuery, TraceKind, TraceNode, Value,
 };
-use teaql_data_service::{MutationRequest, SqlExecutionOutcome};
+use teaql_data_service::SqlExecutionOutcome;
 use teaql_provider_sqlite::{SqliteDialect, SqliteMutationExecutor, SqliteProviderExt as _};
 use teaql_runtime::{InMemoryMetadataStore, PurposedSelectQuery, UserContext};
 
@@ -136,7 +136,13 @@ async fn fixture() -> (UserContext, SqliteMutationExecutor) {
                         Some(1),
                         "seed relation mask fixture",
                     ));
-                    scope.mutate(MutationRequest::Insert(command)).await?;
+                    scope
+                        .mutate(
+                            teaql_data_service::MutationCommand::Insert(command)
+                                .request("verify safe provider diagnostics")
+                                .unwrap(),
+                        )
+                        .await?;
                 }
                 Ok(())
             })

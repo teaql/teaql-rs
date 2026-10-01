@@ -181,6 +181,9 @@ where
         &self,
         node: GraphNode,
     ) -> Result<GraphMutationPlan, DataServiceError<E::Error>> {
+        let intent = teaql_core::MutationIntent::from_optional(node.comment.as_deref())
+            .map_err(RuntimeError::from)
+            .map_err(DataServiceError::Runtime)?;
         if node.entity != self.entity {
             return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
                 "entity data service {} cannot plan graph root {}",
@@ -189,7 +192,8 @@ where
         }
         let mut node = node;
         let mut plan = GraphMutationPlan::default();
-        self.collect_graph_plan(&mut node, &mut plan, None, None, false)
+        self.with_mutation_intent(intent)
+            .collect_graph_plan(&mut node, &mut plan, None, None, false)
             .await?;
         plan.planned_root = Some(node);
         plan.rebuild_batches();
@@ -197,6 +201,23 @@ where
     }
 
     pub(crate) async fn execute_graph_plan_internal(
+        &self,
+        plan: GraphMutationPlan,
+    ) -> Result<GraphNode, DataServiceError<E::Error>> {
+        let intent = teaql_core::MutationIntent::from_optional(
+            plan.planned_root
+                .as_ref()
+                .and_then(|node| node.comment.as_deref()),
+        )
+        .map_err(RuntimeError::from)
+        .map_err(DataServiceError::Runtime)?;
+        let scoped = self.with_mutation_intent(intent);
+        // Do not embed the complete executor state machine in each intent
+        // boundary. Generated bootstrap also runs on small test-thread stacks.
+        Box::pin(scoped.execute_graph_plan_scoped(plan)).await
+    }
+
+    async fn execute_graph_plan_scoped(
         &self,
         plan: GraphMutationPlan,
     ) -> Result<GraphNode, DataServiceError<E::Error>> {
@@ -375,12 +396,13 @@ where
                     return Ok(());
                 }
                 GraphOperation::Remove => {
+                    let scope = node.trace_scope(parent_token, plan.next_item_index);
                     plan.push(
                         node.entity.clone(),
                         GraphMutationKind::Delete,
                         node.values.clone().into(),
                         Vec::new(),
-                        parent_token,
+                        scope,
                         node.original_values.clone(),
                     );
                     return Ok(());
@@ -396,18 +418,9 @@ where
                 .map_err(DataServiceError::Runtime)?;
 
             // Create scope node on the current stack frame if this node has a comment
-            let current_scope = node.comment.as_ref().map(|c| ScopedCommentNode {
+            let current_scope = node.audit_trace_node().map(|track| ScopedCommentNode {
                 parent: parent_scope,
-                track: teaql_core::TraceNode {
-                    kind: teaql_core::TraceKind::AuditReason,
-                    entity_type: node.entity.clone(),
-                    entity_id: node.id().and_then(|v| match v {
-                        Value::U64(n) => Some(*n),
-                        Value::I64(n) => Some(*n as u64),
-                        _ => None,
-                    }),
-                    comment: c.clone(),
-                },
+                track,
             });
             let active_scope = current_scope.as_ref().or(parent_scope);
 
@@ -490,26 +503,7 @@ where
 
             // Build the TraceScopeToken for this node (only if it has a comment).
             // This is an Arc-linked persistent list: zero-copy, O(1) creation.
-            let current_token = node
-                .comment
-                .as_ref()
-                .map(|c| {
-                    Arc::new(TraceScopeToken {
-                        parent: parent_token.clone(),
-                        track: teaql_core::TraceNode {
-                            kind: teaql_core::TraceKind::AuditReason,
-                            entity_type: node.entity.clone(),
-                            entity_id: node.id().and_then(|v| match v {
-                                Value::U64(n) => Some(*n),
-                                Value::I64(n) => Some(*n as u64),
-                                _ => None,
-                            }),
-                            comment: c.clone(),
-                        },
-                        node_index: plan.next_item_index,
-                    })
-                })
-                .or_else(|| parent_token.clone());
+            let current_token = node.trace_scope(parent_token, plan.next_item_index);
 
             plan.push(
                 node.entity.clone(),
@@ -1413,6 +1407,19 @@ where
     }
 
     pub(crate) async fn execute_ledger_plan_internal(
+        &self,
+        root: crate::EntityRuntimeState,
+        locations: &std::collections::BTreeMap<crate::EntityKey, crate::ObjectLocation>,
+    ) -> Result<std::collections::BTreeMap<crate::EntityKey, Value>, DataServiceError<E::Error>>
+    {
+        let intent = teaql_core::MutationIntent::from_optional(root.get_comment().as_deref())
+            .map_err(RuntimeError::from)
+            .map_err(DataServiceError::Runtime)?;
+        let scoped = self.with_mutation_intent(intent);
+        Box::pin(scoped.execute_ledger_plan_scoped(root, locations)).await
+    }
+
+    async fn execute_ledger_plan_scoped(
         &self,
         root: crate::EntityRuntimeState,
         locations: &std::collections::BTreeMap<crate::EntityKey, crate::ObjectLocation>,

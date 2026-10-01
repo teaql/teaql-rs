@@ -549,7 +549,8 @@ where
         let request = QueryRequest {
             query: core_query,
             trace_chain: vec![trace.clone()],
-            comment: Some(client_comment.clone()),
+            intent: teaql_core::QueryIntent::new(client_comment.clone(), requested_purpose.clone())
+                .map_err(|error| TfpEndpointError::TranslationError(error.to_string()))?,
             capture_debug_query: false,
             capture_execution_metadata: true,
         };
@@ -630,10 +631,14 @@ where
                 .query(QueryRequest {
                     query: membership,
                     trace_chain: membership_trace,
-                    comment: Some(format!(
-                        "{outer_comment}; derived-facet-membership={}",
-                        facet.facet_name
-                    )),
+                    intent: teaql_core::QueryIntent::new(
+                        format!(
+                            "{outer_comment}; derived-facet-membership={}",
+                            facet.facet_name
+                        ),
+                        "runtime: load facet membership",
+                    )
+                    .map_err(|error| TfpEndpointError::TranslationError(error.to_string()))?,
                     capture_debug_query: false,
                     capture_execution_metadata: true,
                 })
@@ -715,7 +720,8 @@ where
                 .query(QueryRequest {
                     query: nested_query,
                     trace_chain: vec![nested_trace],
-                    comment: Some(nested_comment),
+                    intent: teaql_core::QueryIntent::new(nested_comment, nested_purpose)
+                        .map_err(|error| TfpEndpointError::TranslationError(error.to_string()))?,
                     capture_debug_query: false,
                     capture_execution_metadata: true,
                 })
@@ -1640,12 +1646,12 @@ mod tests {
             &self,
             request: GuardedMutationRequest,
         ) -> Result<MutationResult, Self::Error> {
-            let operation = match &request.mutation {
-                MutationRequest::Update(_) => DataServiceOperation::Update,
-                MutationRequest::Delete(_) => DataServiceOperation::Delete,
-                MutationRequest::Recover(_) => DataServiceOperation::Recover,
-                MutationRequest::Insert(_) => DataServiceOperation::Insert,
-                MutationRequest::Batch(_) => DataServiceOperation::Batch,
+            let operation = match &request.mutation.command {
+                teaql_data_service::MutationCommand::Update(_) => DataServiceOperation::Update,
+                teaql_data_service::MutationCommand::Delete(_) => DataServiceOperation::Delete,
+                teaql_data_service::MutationCommand::Recover(_) => DataServiceOperation::Recover,
+                teaql_data_service::MutationCommand::Insert(_) => DataServiceOperation::Insert,
+                teaql_data_service::MutationCommand::Batch(_) => DataServiceOperation::Batch,
             };
             self.guarded
                 .lock()
@@ -1960,7 +1966,7 @@ mod tests {
         assert_eq!(queries[0].query.slice.as_ref().unwrap().limit, Some(10));
         assert_eq!(queries[1].query.slice.as_ref().unwrap().limit, Some(100));
         assert_eq!(queries[2].query.slice.as_ref().unwrap().limit, Some(20));
-        assert_eq!(queries[0].comment.as_deref(), Some("load bounded orders"));
+        assert_eq!(Some(queries[0].comment()), Some("load bounded orders"));
         assert_eq!(queries[0].trace_chain.len(), 1);
         assert!(
             queries[0].trace_chain[0]
@@ -1969,11 +1975,11 @@ mod tests {
         );
         assert_eq!(queries[1].trace_chain, queries[0].trace_chain);
         assert_eq!(
-            queries[1].comment.as_deref(),
+            Some(queries[1].comment()),
             Some("load bounded orders; derived-facet-membership=statusFacet")
         );
         assert_eq!(
-            queries[2].comment.as_deref(),
+            Some(queries[2].comment()),
             Some("load bounded status facet")
         );
         assert_eq!(queries[2].trace_chain.len(), 1);
@@ -3282,7 +3288,8 @@ mod tests {
         assert_eq!(guarded.len(), 3);
         let expected = teaql_core::Expr::eq("commerce_platform_id", 1_i64);
         assert!(guarded.iter().all(|request| request.guard == expected));
-        let MutationRequest::Update(update) = &guarded[0].mutation else {
+        let teaql_data_service::MutationCommand::Update(update) = &guarded[0].mutation.command
+        else {
             panic!("first request should be update");
         };
         assert_eq!(update.values.get("order_number"), Some(&"O-42".into()));
@@ -3313,7 +3320,7 @@ mod tests {
                 .is_empty()
         );
         let ordinary = mutations.ordinary.lock().expect("ordinary mutations");
-        let MutationRequest::Insert(insert) = &ordinary[0] else {
+        let teaql_data_service::MutationCommand::Insert(insert) = &ordinary[0].command else {
             panic!("create should use insert");
         };
         assert_eq!(insert.values.get("order_number"), Some(&"O-1".into()));

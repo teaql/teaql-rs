@@ -11,6 +11,7 @@ mod mutation;
 mod naming;
 mod query;
 pub mod request;
+mod request_intent;
 mod safe_expression;
 pub mod serde_utils;
 pub mod time;
@@ -38,6 +39,7 @@ pub use query::{
     RawSqlProjection, Record, RelationAggregate, RelationLoad, SelectQuery, Slice, SortDirection,
     StreamConfig, compact_row_to_json_value, record_to_json_value,
 };
+pub use request_intent::{MutationIntent, QueryIntent, RequestIntentError, RequestKind};
 pub use safe_expression::{SafeExpression, TeaqlEmpty};
 pub use trace::{TraceKind, TraceNode};
 pub use value::{DataType, Decimal, Value};

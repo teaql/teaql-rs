@@ -33,7 +33,27 @@ where
     E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Sync,
 {
     pub(crate) fn new(metadata: &'a M, executor: &'a E) -> Self {
-        Self { metadata, executor }
+        Self {
+            metadata,
+            executor,
+            mutation_intent: None,
+        }
+    }
+
+    pub(crate) fn with_mutation_intent(mut self, intent: teaql_core::MutationIntent) -> Self {
+        self.mutation_intent = Some(intent);
+        self
+    }
+
+    fn required_mutation_intent(
+        &self,
+    ) -> Result<teaql_core::MutationIntent, DataServiceError<E::Error>> {
+        self.mutation_intent.clone().ok_or_else(|| {
+            DataServiceError::Runtime(RuntimeError::from(teaql_core::RequestIntentError {
+                request_kind: teaql_core::RequestKind::Mutation,
+                field: "comment",
+            }))
+        })
     }
 
     pub(crate) async fn fetch_all(
@@ -43,7 +63,12 @@ where
         let request = QueryRequest {
             query: query.clone(),
             trace_chain: query.trace_chain.clone(),
-            comment: query.comment.clone(),
+            intent: teaql_core::QueryIntent::from_optional(
+                query.comment.as_deref(),
+                query.purpose.as_deref(),
+            )
+            .map_err(RuntimeError::from)
+            .map_err(DataServiceError::Runtime)?,
             capture_debug_query: self.metadata.capture_query_debug(),
             capture_execution_metadata: self.metadata.capture_execution_metadata(),
         };
@@ -62,7 +87,12 @@ where
         let request = QueryRequest {
             query: query.clone(),
             trace_chain: query.trace_chain.clone(),
-            comment: query.comment.clone(),
+            intent: teaql_core::QueryIntent::from_optional(
+                query.comment.as_deref(),
+                query.purpose.as_deref(),
+            )
+            .map_err(RuntimeError::from)
+            .map_err(DataServiceError::Runtime)?,
             capture_debug_query: self.metadata.capture_query_debug(),
             capture_execution_metadata: self.metadata.capture_execution_metadata(),
         };
@@ -85,7 +115,12 @@ where
         let request = QueryRequest {
             query: query.clone(),
             trace_chain: query.trace_chain.clone(),
-            comment: query.comment.clone(),
+            intent: teaql_core::QueryIntent::from_optional(
+                query.comment.as_deref(),
+                query.purpose.as_deref(),
+            )
+            .map_err(RuntimeError::from)
+            .map_err(DataServiceError::Runtime)?,
             capture_debug_query: self.metadata.capture_query_debug(),
             capture_execution_metadata: self.metadata.capture_execution_metadata(),
         };
@@ -121,7 +156,10 @@ where
     ) -> Result<u64, DataServiceError<E::Error>> {
         let mut command = command.clone();
         command.trace_chain = sql_statement_trace(command.trace_chain, &command.entity);
-        let request = MutationRequest::Insert(command);
+        let request = MutationRequest::with_intent(
+            teaql_data_service::MutationCommand::Insert(command),
+            self.required_mutation_intent()?,
+        );
         let res = self
             .executor
             .mutate_observed(request, self.metadata.mutation_diagnostic_observer())
@@ -137,7 +175,10 @@ where
     ) -> Result<u64, DataServiceError<E::Error>> {
         let mut sql_command = command.clone();
         sql_command.trace_chain = sql_statement_trace(sql_command.trace_chain, &sql_command.entity);
-        let request = MutationRequest::Update(sql_command);
+        let request = MutationRequest::with_intent(
+            teaql_data_service::MutationCommand::Update(sql_command),
+            self.required_mutation_intent()?,
+        );
         let res = self
             .executor
             .mutate_observed(request, self.metadata.mutation_diagnostic_observer())
@@ -164,7 +205,10 @@ where
     ) -> Result<u64, DataServiceError<E::Error>> {
         let mut sql_command = command.clone();
         sql_command.trace_chain = sql_statement_trace(sql_command.trace_chain, &sql_command.entity);
-        let request = MutationRequest::Delete(sql_command);
+        let request = MutationRequest::with_intent(
+            teaql_data_service::MutationCommand::Delete(sql_command),
+            self.required_mutation_intent()?,
+        );
         let res = self
             .executor
             .mutate_observed(request, self.metadata.mutation_diagnostic_observer())
@@ -202,7 +246,10 @@ where
             let res = self
                 .executor
                 .mutate_observed(
-                    MutationRequest::Insert(insert_cmd),
+                    MutationRequest::with_intent(
+                        teaql_data_service::MutationCommand::Insert(insert_cmd),
+                        self.required_mutation_intent()?,
+                    ),
                     self.metadata.mutation_diagnostic_observer(),
                 )
                 .await
@@ -244,7 +291,10 @@ where
             let res = self
                 .executor
                 .mutate_observed(
-                    MutationRequest::Update(update_cmd),
+                    MutationRequest::with_intent(
+                        teaql_data_service::MutationCommand::Update(update_cmd),
+                        self.required_mutation_intent()?,
+                    ),
                     self.metadata.mutation_diagnostic_observer(),
                 )
                 .await
@@ -281,7 +331,10 @@ where
     ) -> Result<u64, DataServiceError<E::Error>> {
         let mut sql_command = command.clone();
         sql_command.trace_chain = sql_statement_trace(sql_command.trace_chain, &sql_command.entity);
-        let request = MutationRequest::Recover(sql_command);
+        let request = MutationRequest::with_intent(
+            teaql_data_service::MutationCommand::Recover(sql_command),
+            self.required_mutation_intent()?,
+        );
         let res = self
             .executor
             .mutate_observed(request, self.metadata.mutation_diagnostic_observer())

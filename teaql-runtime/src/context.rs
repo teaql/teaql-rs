@@ -1279,6 +1279,13 @@ impl UserContext {
                 occurred_at_millis,
             });
         }
+        match crate::commit_audit::try_enqueue(self, event) {
+            Ok(()) => Ok(()),
+            Err(event) => self.deliver_audit_event(event),
+        }
+    }
+
+    pub(crate) fn deliver_audit_event(&self, event: RawAuditEvent) -> Result<(), RuntimeError> {
         let scope = self.start_runtime_operation(
             crate::RuntimeOperation::new("audit", format!("{}.event", event.entity))
                 .attribute("teaql.entity.type", event.entity.clone()),

@@ -84,6 +84,7 @@ where
         node: GraphNode,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
+            teaql_core::MutationIntent::from_optional(node.comment.as_deref())?;
             let entity = node.entity.clone();
             let executor = context
                 .require_resource::<E>()
@@ -100,16 +101,20 @@ where
             let tx = teaql_data_service::TransactionExecutor::begin(executor)
                 .await
                 .map_err(|e| RuntimeError::Graph(e.to_string()))?;
-            let result = crate::with_mutation_governance(governance, async {
-                let eds = crate::EntityDataService::for_executor(context, entity, &tx);
-                eds.execute_graph_plan_internal(plan).await
-            })
+            let (result, audit_events) = crate::commit_audit::collect(
+                context,
+                crate::with_mutation_governance(governance, async {
+                    let eds = crate::EntityDataService::for_executor(context, entity, &tx);
+                    eds.execute_graph_plan_internal(plan).await
+                }),
+            )
             .await;
             match result {
                 Ok(saved) => {
                     teaql_data_service::Transaction::commit(tx)
                         .await
                         .map_err(|e| RuntimeError::Graph(e.to_string()))?;
+                    crate::commit_audit::deliver(context, audit_events)?;
                     Ok(saved)
                 }
                 Err(error) => {
@@ -132,6 +137,7 @@ where
         root: crate::EntityRuntimeState,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
+            capture_ledger_trace_scopes(&root, &node)?;
             let entity = node.entity.clone();
             let executor = context
                 .require_resource::<E>()
@@ -152,41 +158,50 @@ where
             let tx = teaql_data_service::TransactionExecutor::begin(executor)
                 .await
                 .map_err(|e| RuntimeError::Graph(e.to_string()))?;
-            let result = crate::with_mutation_governance(governance, async {
-                let eds = crate::EntityDataService::for_executor(context, &entity, &tx);
-                let locations = ledger_object_locations(&node);
-                let generated_ids = eds
-                    .execute_ledger_plan_internal(root.clone(), &locations)
-                    .await?;
-                if let Some(new_id) = generated_ids.get(&root_key) {
-                    node.values.insert(id_prop.name.clone(), new_id.clone());
-                }
-                // The database is authoritative for IDs, versions, defaults,
-                // triggers and conversions. Read on the transaction-owned
-                // executor before commit; an ambient post-commit read can race
-                // another writer or fail after the write is irreversible.
-                let persisted_id = node.values.get(&id_prop.name).cloned().ok_or_else(|| {
-                    DataServiceError::Runtime(RuntimeError::Graph(format!(
-                        "saved {entity} missing identity field {}",
-                        id_prop.name
-                    )))
-                })?;
-                node.values = eds
-                    .fetch_graph_current_row_internal(
-                        &entity,
-                        &id_prop.name,
-                        &persisted_id,
-                        Vec::new(),
-                    )
-                    .await?
-                    .map(Into::into)
-                    .ok_or_else(|| {
-                        DataServiceError::Runtime(RuntimeError::Graph(format!(
-                            "persisted {entity} record could not be read back"
-                        )))
-                    })?;
-                Ok(())
-            })
+            let (result, audit_events) = crate::commit_audit::collect(
+                context,
+                crate::with_mutation_governance(governance, async {
+                    let eds = crate::EntityDataService::for_executor(context, &entity, &tx)
+                        .with_mutation_intent(
+                            teaql_core::MutationIntent::from_optional(node.comment.as_deref())
+                                .map_err(RuntimeError::from)
+                                .map_err(DataServiceError::Runtime)?,
+                        );
+                    let locations = ledger_object_locations(&node);
+                    let generated_ids = eds
+                        .execute_ledger_plan_internal(root.clone(), &locations)
+                        .await?;
+                    if let Some(new_id) = generated_ids.get(&root_key) {
+                        node.values.insert(id_prop.name.clone(), new_id.clone());
+                    }
+                    // The database is authoritative for IDs, versions, defaults,
+                    // triggers and conversions. Read on the transaction-owned
+                    // executor before commit; an ambient post-commit read can race
+                    // another writer or fail after the write is irreversible.
+                    let persisted_id =
+                        node.values.get(&id_prop.name).cloned().ok_or_else(|| {
+                            DataServiceError::Runtime(RuntimeError::Graph(format!(
+                                "saved {entity} missing identity field {}",
+                                id_prop.name
+                            )))
+                        })?;
+                    node.values = eds
+                        .fetch_graph_current_row_internal(
+                            &entity,
+                            &id_prop.name,
+                            &persisted_id,
+                            root.get_trace_chain(&root_key),
+                        )
+                        .await?
+                        .map(Into::into)
+                        .ok_or_else(|| {
+                            DataServiceError::Runtime(RuntimeError::Graph(format!(
+                                "persisted {entity} record could not be read back"
+                            )))
+                        })?;
+                    Ok(())
+                }),
+            )
             .await;
             match result {
                 Ok(()) => {
@@ -205,6 +220,7 @@ where
                 }
             }
             root.clear_committed();
+            crate::commit_audit::deliver(context, audit_events)?;
             Ok(node)
         })
     }
@@ -392,14 +408,14 @@ mod transactional_ledger_readback_tests {
         async fn mutate(&self, request: MutationRequest) -> Result<MutationResult, Self::Error> {
             let mut state = self.0.lock().unwrap();
             state.calls.push("transaction-mutate");
-            match request {
-                MutationRequest::Update(command) => {
+            match request.command {
+                teaql_data_service::MutationCommand::Update(command) => {
                     assert_eq!(command.expected_version, Some(1));
                     for (field, value) in command.values {
                         state.row.insert(field, value);
                     }
                 }
-                MutationRequest::Delete(command) => {
+                teaql_data_service::MutationCommand::Delete(command) => {
                     assert_eq!(command.expected_version, Some(1));
                     state.row.insert("version".to_owned(), Value::I64(-2));
                 }
@@ -428,6 +444,10 @@ mod transactional_ledger_readback_tests {
 
         async fn commit(self) -> Result<(), Self::Error> {
             let mut state = self.0.lock().unwrap();
+            if state.calls.contains(&"simulate-commit-failure") {
+                state.calls.push("commit-failed");
+                return Err(std::io::Error::other("simulated commit failure"));
+            }
             state.calls.push("commit");
             // Simulate a concurrent writer becoming visible just after commit.
             state.row.insert("version".to_owned(), Value::I64(3));
@@ -472,6 +492,7 @@ mod transactional_ledger_readback_tests {
         root.set_original_version(key.clone(), 1);
         root.set(key, "name", Value::Text("updated".to_owned()));
         let node = GraphNode::new("Task")
+            .comment("verify transaction-owned ledger readback")
             .value("id", Value::I64(1))
             .value("version", Value::I64(1))
             .value("name", Value::Text("before".to_owned()));
@@ -504,6 +525,7 @@ mod transactional_ledger_readback_tests {
 
     #[tokio::test]
     async fn failed_authoritative_readback_rolls_back_before_reporting_failure() {
+        let events = Arc::new(Mutex::new(Vec::new()));
         let state = Arc::new(Mutex::new(State {
             row: BTreeMap::from([
                 ("id".to_owned(), Value::I64(1)),
@@ -518,13 +540,15 @@ mod transactional_ledger_readback_tests {
             .property(PropertyDescriptor::new("version", DataType::I64).version())
             .property(PropertyDescriptor::new("name", DataType::Text));
         let mut context = UserContext::default()
-            .with_metadata(InMemoryMetadataStore::new().with_entity(descriptor));
+            .with_metadata(InMemoryMetadataStore::new().with_entity(descriptor))
+            .with_event_sink(CaptureEvents(events.clone()));
         context.insert_resource(Ambient(state.clone()));
         let root = EntityRuntimeState::default();
         let key = EntityKey::new_static("Task", 1_i64);
         root.set_original_version(key.clone(), 1);
         root.set(key, "name", Value::Text("updated".to_owned()));
         let node = GraphNode::new("Task")
+            .comment("verify rollback when authoritative readback fails")
             .value("id", Value::I64(1))
             .value("version", Value::I64(1))
             .value("name", Value::Text("before".to_owned()));
@@ -538,6 +562,10 @@ mod transactional_ledger_readback_tests {
         assert_eq!(state.calls.last(), Some(&"rollback"));
         assert!(!state.calls.contains(&"commit"));
         assert_eq!(state.row.get("version"), Some(&Value::I64(1)));
+        assert!(
+            events.lock().unwrap().is_empty(),
+            "a rolled-back write must not emit a committed audit event"
+        );
         assert_eq!(
             root.get_original_version(&EntityKey::new_static("Task", 1_i64)),
             Some(1)
@@ -567,6 +595,7 @@ mod transactional_ledger_readback_tests {
         root.set_original_version(key.clone(), 1);
         root.mark_as_delete(key);
         let node = GraphNode::new("Task")
+            .comment("verify persisted soft-delete return value")
             .value("id", Value::I64(1))
             .value("version", Value::I64(1))
             .value("name", Value::Text("before".to_owned()));
@@ -579,6 +608,91 @@ mod transactional_ledger_readback_tests {
         let state = state.lock().unwrap();
         assert_eq!(state.calls.last(), Some(&"commit"));
         assert!(!state.calls.contains(&"ambient-query"));
+    }
+
+    #[tokio::test]
+    async fn failed_commit_does_not_deliver_audit_or_clear_retryable_ledger() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let state = Arc::new(Mutex::new(State {
+            row: BTreeMap::from([
+                ("id".to_owned(), Value::I64(1)),
+                ("version".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::Text("before".to_owned())),
+            ]),
+            calls: vec!["simulate-commit-failure"],
+            fail_readback: false,
+        }));
+        let descriptor = EntityDescriptor::new("Task")
+            .property(PropertyDescriptor::new("id", DataType::I64).id())
+            .property(PropertyDescriptor::new("version", DataType::I64).version())
+            .property(PropertyDescriptor::new("name", DataType::Text));
+        let mut context = UserContext::default()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(descriptor))
+            .with_event_sink(CaptureEvents(events.clone()));
+        context.insert_resource(Ambient(state.clone()));
+        let root = EntityRuntimeState::default();
+        let key = EntityKey::new_static("Task", 1_i64);
+        root.set_original_version(key.clone(), 1);
+        root.set(key, "name", Value::Text("updated".to_owned()));
+        let node = GraphNode::new("Task")
+            .comment("verify failed commit audit boundary")
+            .value("id", 1_i64)
+            .value("version", 1_i64)
+            .value("name", "before");
+        let error = GraphSaverFor::<Ambient>::new()
+            .save_ledger_dyn(&context, node, root.clone())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("simulated commit failure"));
+        assert!(events.lock().unwrap().is_empty());
+        assert!(!root.current_change_set().changes().is_empty());
+        assert!(state.lock().unwrap().calls.contains(&"commit-failed"));
+    }
+
+    struct FailingAuditSink;
+
+    impl RawAuditEventSink for FailingAuditSink {
+        fn on_event(&self, _: &UserContext, _: &RawAuditEvent) -> Result<(), RuntimeError> {
+            Err(RuntimeError::Event("simulated sink failure".to_owned()))
+        }
+    }
+
+    #[tokio::test]
+    async fn audit_sink_failure_is_reported_as_already_committed_without_replaying_ledger() {
+        let state = Arc::new(Mutex::new(State {
+            row: BTreeMap::from([
+                ("id".to_owned(), Value::I64(1)),
+                ("version".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::Text("before".to_owned())),
+            ]),
+            ..Default::default()
+        }));
+        let descriptor = EntityDescriptor::new("Task")
+            .property(PropertyDescriptor::new("id", DataType::I64).id())
+            .property(PropertyDescriptor::new("version", DataType::I64).version())
+            .property(PropertyDescriptor::new("name", DataType::Text));
+        let mut context = UserContext::default()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(descriptor))
+            .with_event_sink(FailingAuditSink);
+        context.insert_resource(Ambient(state.clone()));
+        let root = EntityRuntimeState::default();
+        let key = EntityKey::new_static("Task", 1_i64);
+        root.set_original_version(key.clone(), 1);
+        root.set(key, "name", Value::Text("updated".to_owned()));
+        let node = GraphNode::new("Task")
+            .comment("verify post-commit audit failure")
+            .value("id", 1_i64)
+            .value("version", 1_i64)
+            .value("name", "before");
+        let error = GraphSaverFor::<Ambient>::new()
+            .save_ledger_dyn(&context, node, root.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, RuntimeError::AuditAfterCommit { .. }));
+        assert!(error.to_string().contains("AUDIT_DELIVERY_AFTER_COMMIT"));
+        assert!(state.lock().unwrap().calls.contains(&"commit"));
+        assert!(!state.lock().unwrap().calls.contains(&"rollback"));
+        assert!(root.current_change_set().changes().is_empty());
     }
 
     #[tokio::test]
@@ -596,6 +710,7 @@ mod transactional_ledger_readback_tests {
         root.mark_as_new(key.clone());
         root.mark_as_delete(key);
         let node = GraphNode::new("Task")
+            .comment("verify cancellation of a newly created root")
             .value("id", Value::I64(7))
             .value("version", Value::I64(0))
             .value("name", Value::Text("cancelled".to_owned()));
@@ -637,6 +752,7 @@ mod transactional_ledger_readback_tests {
         root.set_original_version(key.clone(), 1);
         root.set(key, "name", Value::Text("denied".to_owned()));
         let node = GraphNode::new("Task")
+            .comment("verify customer mutation-policy denial before transaction begin")
             .value("id", Value::I64(1))
             .value("version", Value::I64(1))
             .value("name", Value::Text("before".to_owned()));
@@ -832,6 +948,256 @@ fn merge_relation_mutations_into_root(
     Ok(())
 }
 
+/// Build real graph ancestry once before policy/execution, not on UserContext.
+/// Every pending item receives its own immutable token, including deletions.
+fn capture_ledger_trace_scopes(
+    root: &crate::EntityRuntimeState,
+    node: &GraphNode,
+) -> Result<(), RuntimeError> {
+    let intent = teaql_core::MutationIntent::from_optional(node.comment.as_deref())?;
+    fn visit(
+        node: &GraphNode,
+        parent: Option<Arc<crate::TraceScopeToken>>,
+        scopes: &mut BTreeMap<crate::EntityKey, Arc<crate::TraceScopeToken>>,
+    ) {
+        let scope = node.trace_scope(parent, scopes.len() as u64);
+        if let (Some(id), Some(scope)) = (node.id(), &scope) {
+            let key = crate::EntityKey::new(node.entity.clone(), id.clone());
+            // The graph/location traversal uses one deterministic first route
+            // for an entity reached more than once.
+            scopes.entry(key).or_insert_with(|| scope.clone());
+        }
+        for children in node.relations.values() {
+            for child in children {
+                visit(child, scope.clone(), scopes);
+            }
+        }
+    }
+    let root_scope = node.trace_scope(None, 0).expect("validated root comment");
+    let mut scopes = BTreeMap::new();
+    visit(node, None, &mut scopes);
+
+    // Explicitly composed standalone pending items can be outside a loaded
+    // relation projection. They still belong to this root request, not Context.
+    let mut pending = root
+        .current_change_set()
+        .changes()
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    pending.extend(root.deleted_keys());
+    pending.extend(root.new_keys());
+    for key in pending {
+        scopes.entry(key.clone()).or_insert_with(|| {
+            match root
+                .get_entity_comment(&key)
+                .filter(|text| !text.trim().is_empty())
+            {
+                Some(reason) => Arc::new(crate::TraceScopeToken {
+                    parent: Some(root_scope.clone()),
+                    track: teaql_core::TraceNode::typed(
+                        teaql_core::TraceKind::AuditReason,
+                        key.entity.to_string(),
+                        key.id.try_u64().filter(|id| *id > 0),
+                        reason,
+                    ),
+                    node_index: 0,
+                }),
+                None => root_scope.clone(),
+            }
+        });
+    }
+    root.set_comment(intent.comment());
+    root.replace_trace_scopes(scopes);
+    Ok(())
+}
+
+#[cfg(test)]
+mod trace_scope_capture_tests {
+    use super::*;
+    use crate::{EntityKey, EntityRuntimeState, InMemoryMetadataStore};
+    use teaql_core::{
+        DataType, EntityDescriptor, PropertyDescriptor, RelationDescriptor, TraceKind,
+    };
+
+    fn trace(
+        root: &EntityRuntimeState,
+        entity: &str,
+        id: u64,
+    ) -> Vec<(String, Option<u64>, String)> {
+        root.get_trace_chain(&EntityKey::new(entity, id))
+            .into_iter()
+            .map(|node| {
+                assert_eq!(node.kind, TraceKind::AuditReason);
+                (node.entity_type, node.entity_id, node.comment)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn captures_nested_ledger_ancestry_including_deleted_child_and_same_numeric_id() {
+        let root = EntityRuntimeState::default();
+        let graph = GraphNode::new("Order")
+            .value("id", 100_u64)
+            .comment("submit order")
+            .relation("items", GraphNode::new("OrderItem").value("id", 201_u64))
+            .relation(
+                "items",
+                GraphNode::new("OrderItem")
+                    .value("id", 202_u64)
+                    .remove()
+                    .comment("remove unavailable item"),
+            )
+            .relation(
+                "payment",
+                GraphNode::new("Payment")
+                    .value("id", 100_u64)
+                    .comment("authorize payment")
+                    .relation(
+                        "attempts",
+                        GraphNode::new("PaymentAttempt").value("id", 401_u64),
+                    ),
+            )
+            .relation(
+                "shipment",
+                GraphNode::new("Shipment")
+                    .value("id", 501_u64)
+                    .comment("dispatch shipment"),
+            );
+        root.mark_as_delete(EntityKey::new("OrderItem", 202_u64));
+        capture_ledger_trace_scopes(&root, &graph).unwrap();
+        let order = ("Order".to_owned(), Some(100), "submit order".to_owned());
+        let payment = (
+            "Payment".to_owned(),
+            Some(100),
+            "authorize payment".to_owned(),
+        );
+        assert_eq!(trace(&root, "Order", 100), [order.clone()]);
+        assert_eq!(trace(&root, "OrderItem", 201), [order.clone()]);
+        assert_eq!(
+            trace(&root, "Payment", 100),
+            [order.clone(), payment.clone()]
+        );
+        assert_eq!(
+            trace(&root, "PaymentAttempt", 401),
+            [order.clone(), payment]
+        );
+        assert_eq!(
+            trace(&root, "Shipment", 501),
+            [
+                order.clone(),
+                (
+                    "Shipment".to_owned(),
+                    Some(501),
+                    "dispatch shipment".to_owned()
+                )
+            ]
+        );
+        assert_eq!(
+            trace(&root, "OrderItem", 202),
+            [
+                order,
+                (
+                    "OrderItem".to_owned(),
+                    Some(202),
+                    "remove unavailable item".to_owned()
+                )
+            ]
+        );
+    }
+
+    #[test]
+    fn retry_rebuilds_request_scopes_instead_of_appending_or_reusing_old_root_intent() {
+        let root = EntityRuntimeState::default();
+        let mut graph = GraphNode::new("Order")
+            .value("id", 100_u64)
+            .comment("first attempt")
+            .relation(
+                "payment",
+                GraphNode::new("Payment")
+                    .value("id", 301_u64)
+                    .comment("authorize payment"),
+            );
+        capture_ledger_trace_scopes(&root, &graph).unwrap();
+        graph.set_comment("retry after review");
+        capture_ledger_trace_scopes(&root, &graph).unwrap();
+        assert_eq!(
+            trace(&root, "Payment", 301),
+            [
+                (
+                    "Order".to_owned(),
+                    Some(100),
+                    "retry after review".to_owned()
+                ),
+                (
+                    "Payment".to_owned(),
+                    Some(301),
+                    "authorize payment".to_owned()
+                ),
+            ]
+        );
+        root.clear_committed();
+        assert!(trace(&root, "Payment", 301).is_empty());
+    }
+
+    #[test]
+    fn composed_deleted_child_is_discovered_from_loaded_snapshot_without_field_changes_or_io() {
+        let mut child = EntityRuntimeState::default();
+        let key = EntityKey::new("OrderItem", 202_u64);
+        child.set_original_compact_row(
+            "OrderItem",
+            teaql_core::CompactRow::from_map(BTreeMap::from([
+                ("id".to_owned(), Value::U64(202)),
+                ("version".to_owned(), Value::I64(3)),
+                ("order".to_owned(), Value::U64(100)),
+            ])),
+        );
+        child.set_entity_comment(key.clone(), "remove unavailable item");
+        child.mark_as_delete(key.clone());
+        let root = EntityRuntimeState::default();
+        root.adopt_mutations_from(&child);
+        assert!(root.first_composition_error().is_none());
+        assert!(root.current_change_set().changes().is_empty());
+        let context = UserContext::default().with_metadata(
+            InMemoryMetadataStore::new()
+                .with_entity(
+                    EntityDescriptor::new("Order")
+                        .property(PropertyDescriptor::new("id", DataType::U64).id())
+                        .relation(
+                            RelationDescriptor::new("items", "OrderItem")
+                                .local_key("id")
+                                .foreign_key("order")
+                                .many(),
+                        ),
+                )
+                .with_entity(
+                    EntityDescriptor::new("OrderItem")
+                        .property(PropertyDescriptor::new("id", DataType::U64).id()),
+                ),
+        );
+        let mut graph = GraphNode::new("Order")
+            .value("id", 100_u64)
+            .comment("submit order");
+        let mut visited = BTreeSet::from([EntityKey::new("Order", 100_u64)]);
+        hydrate_ledger_relations(&context, &root, &mut graph, &mut visited).unwrap();
+        let deleted = &graph.relations["items"][0];
+        assert_eq!(deleted.operation, GraphOperation::Remove);
+        assert_eq!(deleted.comment.as_deref(), Some("remove unavailable item"));
+        capture_ledger_trace_scopes(&root, &graph).unwrap();
+        assert_eq!(
+            trace(&root, "OrderItem", 202),
+            [
+                ("Order".to_owned(), Some(100), "submit order".to_owned()),
+                (
+                    "OrderItem".to_owned(),
+                    Some(202),
+                    "remove unavailable item".to_owned()
+                ),
+            ]
+        );
+    }
+}
+
 fn hydrate_ledger_relations(
     context: &UserContext,
     root: &crate::EntityRuntimeState,
@@ -855,19 +1221,30 @@ fn hydrate_ledger_relations(
             })
             .collect::<BTreeSet<_>>();
         let mut discovered = Vec::new();
-        for (key, changes) in root.current_change_set().changes() {
+        let changes = root.current_change_set();
+        let mut pending = changes.changes().keys().cloned().collect::<BTreeSet<_>>();
+        pending.extend(root.deleted_keys());
+        pending.extend(root.new_keys());
+        for key in &pending {
             if key.entity.as_ref() != relation.target_entity || existing_keys.contains(key) {
                 continue;
+            }
+            let original_values = root.original_values_for(key);
+            let mut values: crate::EntityValues = original_values
+                .clone()
+                .map(|values| BTreeMap::from(values).into())
+                .unwrap_or_default();
+            if let Some(changes) = changes.changes().get(key) {
+                values.extend(changes.clone());
             }
             let foreign_value = if relation.foreign_key == "id" {
                 Some(&key.id)
             } else {
-                changes.get(&relation.foreign_key)
+                values.get(&relation.foreign_key)
             };
             if foreign_value != Some(&local_value) || !visited.insert(key.clone()) {
                 continue;
             }
-            let mut values: crate::EntityValues = changes.clone().into();
             values
                 .entry("id".to_owned())
                 .or_insert_with(|| key.id.clone());
@@ -881,7 +1258,12 @@ fn hydrate_ledger_relations(
             let mut child = GraphNode::new(key.entity.to_string());
             child.values = values;
             child.operation = operation;
-            hydrate_ledger_relations(context, root, &mut child, visited)?;
+            child.comment = root.get_entity_comment(key);
+            child.original_values = original_values;
+            child.dirty_fields = Some(root.changed_field_names(key));
+            if operation != GraphOperation::Remove {
+                hydrate_ledger_relations(context, root, &mut child, visited)?;
+            }
             discovered.push(child);
         }
         existing.extend(discovered);
@@ -1130,6 +1512,7 @@ where
         hydrate_ledger_relations(context, &root, &mut node, &mut visited)?;
         preflight_graph(context, &mut node, &ObjectLocation::root(), Some(&root))?;
         merge_relation_mutations_into_root(&root, &node)?;
+        capture_ledger_trace_scopes(&root, &node)?;
         let has_ledger_changes = !root.current_change_set().changes().is_empty()
             || !root.deleted_keys().is_empty()
             || !root.new_keys().is_empty();
@@ -1141,7 +1524,10 @@ where
                 RuntimeError::Graph(format!("entity {entity_name} has no id property"))
             })?;
             let data_service =
-                crate::EntityDataService::for_executor(context, &entity_name, executor);
+                crate::EntityDataService::for_executor(context, &entity_name, executor)
+                    .with_mutation_intent(teaql_core::MutationIntent::from_optional(
+                        node.comment.as_deref(),
+                    )?);
             let locations = ledger_object_locations(&node);
             let policy_plan = crate::ledger_policy_plan(context, &node, &root);
             let governance = context.review_mutation_plan(&policy_plan)?;
@@ -1168,7 +1554,7 @@ where
                     &entity_name,
                     &id_property.name,
                     &persisted_id,
-                    Vec::new(),
+                    root.get_trace_chain(&root_key),
                 )
                 .await
                 .map_err(data_service_error_into_runtime)?
@@ -1249,6 +1635,7 @@ where
         hydrate_ledger_relations(context, &root, &mut node, &mut visited)?;
         preflight_graph(context, &mut node, &ObjectLocation::root(), Some(&root))?;
         merge_relation_mutations_into_root(&root, &node)?;
+        capture_ledger_trace_scopes(&root, &node)?;
         let has_ledger_changes = !root.current_change_set().changes().is_empty()
             || !root.deleted_keys().is_empty()
             || !root.new_keys().is_empty();

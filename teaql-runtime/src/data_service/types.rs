@@ -5,17 +5,21 @@ use crate::{MetadataStore, UserContext};
 pub(crate) struct RuntimeDataService<'a, M, E> {
     pub(super) metadata: &'a M,
     pub(super) executor: &'a E,
+    pub(super) mutation_intent: Option<teaql_core::MutationIntent>,
 }
 
 pub(crate) struct ContextDataService<'a, E> {
     pub(super) metadata: UserContextMetadata<'a>,
     pub(crate) executor: &'a E,
+    pub(super) mutation_intent: Option<teaql_core::MutationIntent>,
 }
 
 pub struct EntityDataService<'a, E> {
     pub(super) entity: String,
     pub(super) data_service: ContextDataService<'a, E>,
     pub(super) trace_context: Vec<teaql_core::TraceNode>,
+    /// Private operation scope; never inferred from caller-supplied trace nodes.
+    pub(super) request_intent: Option<teaql_core::QueryIntent>,
     // Present only on a private query-tree scope. Never attached to UserContext,
     // the public reusable repository, an entity ledger or a wire request.
     pub(super) query_log_intent: Option<std::sync::Mutex<teaql_data_service::SqlIntentRedactions>>,
@@ -37,8 +41,10 @@ impl<'a, E> EntityDataService<'a, E> {
             data_service: ContextDataService {
                 metadata: UserContextMetadata { context },
                 executor,
+                mutation_intent: None,
             },
             trace_context: Vec::new(),
+            request_intent: None,
             query_log_intent: None,
         }
     }
@@ -46,6 +52,36 @@ impl<'a, E> EntityDataService<'a, E> {
     pub fn with_trace_context(mut self, trace_context: Vec<teaql_core::TraceNode>) -> Self {
         self.trace_context = trace_context;
         self
+    }
+
+    pub(crate) fn with_mutation_intent(&self, intent: teaql_core::MutationIntent) -> Self
+    where
+        E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
+    {
+        let mut scoped = self.scoped_data_service_internal(self.entity.clone());
+        scoped.trace_context = self.trace_context.clone();
+        scoped.request_intent = Some(
+            teaql_core::QueryIntent::new(
+                intent.comment(),
+                "runtime: load state for an audited graph mutation",
+            )
+            .expect("validated mutation intent"),
+        );
+        scoped.data_service.mutation_intent = Some(intent);
+        scoped
+    }
+
+    pub(super) fn request_intent_for(
+        &self,
+        query: &SelectQuery,
+    ) -> Result<teaql_core::QueryIntent, crate::RuntimeError> {
+        if let Some(intent) = &self.request_intent {
+            return Ok(intent.clone());
+        }
+        Ok(teaql_core::QueryIntent::from_optional(
+            query.comment.as_deref(),
+            query.purpose.as_deref(),
+        )?)
     }
 
     pub(super) fn query_intent_snapshot(&self) -> Option<teaql_data_service::SqlIntentRedactions> {

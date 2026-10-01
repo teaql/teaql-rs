@@ -127,7 +127,7 @@ impl TraceScopeToken {
         let mut chain = Vec::new();
         let mut current: Option<&TraceScopeToken> = Some(self);
         while let Some(token) = current {
-            if !token.track.comment.is_empty() {
+            if !token.track.comment.trim().is_empty() {
                 chain.push(token.track.clone());
             }
             current = token.parent.as_deref();
@@ -332,6 +332,35 @@ impl GraphNode {
     pub fn set_comment(&mut self, comment: impl Into<String>) {
         self.comment = Some(comment.into());
     }
+
+    pub(crate) fn audit_trace_node(&self) -> Option<TraceNode> {
+        self.comment
+            .as_ref()
+            .filter(|comment| !comment.trim().is_empty())
+            .map(|comment| {
+                TraceNode::typed(
+                    teaql_core::TraceKind::AuditReason,
+                    &self.entity,
+                    self.id().and_then(Value::try_u64).filter(|id| *id > 0),
+                    comment,
+                )
+            })
+    }
+
+    pub(crate) fn trace_scope(
+        &self,
+        parent: Option<Arc<TraceScopeToken>>,
+        node_index: u64,
+    ) -> Option<Arc<TraceScopeToken>> {
+        match self.audit_trace_node() {
+            Some(track) => Some(Arc::new(TraceScopeToken {
+                parent,
+                track,
+                node_index,
+            })),
+            None => parent,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -356,7 +385,7 @@ impl<'a> ScopedCommentNode<'a> {
         let mut current: Option<&ScopedCommentNode<'_>> = Some(self);
 
         while let Some(node) = current {
-            if !node.track.comment.is_empty() {
+            if !node.track.comment.trim().is_empty() {
                 chain.push(node.track.clone());
             }
             current = node.parent;

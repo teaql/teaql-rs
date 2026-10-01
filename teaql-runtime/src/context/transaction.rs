@@ -198,8 +198,12 @@ where
         )
             -> Pin<Box<dyn Future<Output = Result<T, RuntimeError>> + 'scope>>,
     {
-        let result = operation(&self).await;
-        self.complete(result).await
+        let context = self.context;
+        let (result, audits) =
+            crate::commit_audit::collect(context, async { operation(&self).await }).await;
+        let value = self.complete(result).await?;
+        crate::commit_audit::deliver(context, audits)?;
+        Ok(value)
     }
 
     /// Run a `Send` callback and complete this transaction deterministically.
@@ -212,8 +216,12 @@ where
             Box<dyn Future<Output = Result<T, RuntimeError>> + Send + 'scope>,
         >,
     {
-        let result = operation(&self).await;
-        self.complete(result).await
+        let context = self.context;
+        let (result, audits) =
+            crate::commit_audit::collect(context, async { operation(&self).await }).await;
+        let value = self.complete(result).await?;
+        crate::commit_audit::deliver(context, audits)?;
+        Ok(value)
     }
 
     async fn complete<T>(mut self, result: Result<T, RuntimeError>) -> Result<T, RuntimeError>

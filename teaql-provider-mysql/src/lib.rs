@@ -869,7 +869,7 @@ mod streaming_tests {
     use super::*;
     use futures_util::StreamExt;
     use teaql_core::{RelationDescriptor, SelectQuery};
-    use teaql_data_service::{MutationRequest, QueryRequest};
+    use teaql_data_service::QueryRequest;
     use teaql_sql::{SqlTransport, StreamingSqlTransport};
 
     #[tokio::test]
@@ -937,7 +937,13 @@ mod streaming_tests {
                         .value("version", 1_i64)
                         .value("display_name", "Riverside")
                         .value("status", "ACTIVE");
-                    scope.mutate(MutationRequest::Insert(insert)).await?;
+                    scope
+                        .mutate(
+                            teaql_data_service::MutationCommand::Insert(insert)
+                                .request("audited provider conformance test")
+                                .unwrap(),
+                        )
+                        .await?;
                     let query = SelectQuery::new("MaskProbe")
                         .filter(teaql_core::Expr::and([
                             teaql_core::Expr::eq("display_name", "Riverside"),
@@ -956,7 +962,11 @@ mod streaming_tests {
                         .query(QueryRequest {
                             query,
                             trace_chain: trace,
-                            comment: Some("what: verify live masked readback".into()),
+                            intent: teaql_core::QueryIntent::new(
+                                "what: verify live masked readback",
+                                "verify provider query behavior",
+                            )
+                            .unwrap(),
                             capture_debug_query: true,
                             capture_execution_metadata: true,
                         })
