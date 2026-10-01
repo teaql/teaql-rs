@@ -257,12 +257,10 @@ impl ContextBoundDocumentService for GeneratedOrderDocumentService {
             let object = row
                 .as_object()
                 .ok_or_else(DocumentRoundTripError::projection_violation)?;
-            if object.keys().any(|key| {
-                !matches!(
-                    key.as_str(),
-                    "ref" | "productName" | "sku" | "quantity"
-                )
-            }) {
+            if object
+                .keys()
+                .any(|key| !matches!(key.as_str(), "ref" | "productName" | "sku" | "quantity"))
+            {
                 return Err(DocumentRoundTripError::projection_violation());
             }
             let row_key = object
@@ -351,14 +349,10 @@ impl ContextBoundDocumentService for GeneratedOrderDocumentService {
                                 )
                                 .await?;
                             identities.push(
-                                ReferenceIdentity::new(
-                                    "OrderLine",
-                                    saved.id(),
-                                    saved.version(),
-                                )
-                                .map_err(|error| {
-                                    teaql_runtime::RuntimeError::Graph(error.to_string())
-                                })?,
+                                ReferenceIdentity::new("OrderLine", saved.id(), saved.version())
+                                    .map_err(|error| {
+                                        teaql_runtime::RuntimeError::Graph(error.to_string())
+                                    })?,
                             );
                         }
                         for line in removed {
@@ -368,11 +362,9 @@ impl ContextBoundDocumentService for GeneratedOrderDocumentService {
                                     line.audit_as("remove generated projected order item"),
                                 )
                                 .await?;
-                            identities.push(
-                                ReferenceIdentity::new("OrderLine", id, 0).map_err(|error| {
-                                    teaql_runtime::RuntimeError::Graph(error.to_string())
-                                })?,
-                            );
+                            identities.push(ReferenceIdentity::new("OrderLine", id, 0).map_err(
+                                |error| teaql_runtime::RuntimeError::Graph(error.to_string()),
+                            )?);
                         }
                         Ok((saved_order.version(), identities))
                     })
@@ -661,7 +653,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .execute_for_one(&restarted)
         .await?
         .unwrap();
-    assert_eq!(required(E::customer_order(&rolled_back).get_version().eval())?, 1);
+    assert_eq!(
+        required(E::customer_order(&rolled_back).get_version().eval())?,
+        1
+    );
     connection.execute_batch("DROP TRIGGER fail_document_line_update")?;
 
     let accepted = restarted
@@ -675,7 +670,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .execute_for_one(&restarted)
         .await?
         .unwrap();
-    assert_eq!(required(E::order_line(&updated_line).get_quantity().eval())?, 4);
+    assert_eq!(
+        required(E::order_line(&updated_line).get_quantity().eval())?,
+        4
+    );
 
     let mut independently_changed = Q::order_lines()
         .with_id_is(ids.second_line_id)
@@ -722,7 +720,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .execute_for_list(&restarted)
         .await?;
     assert_eq!(remaining.len(), 1);
-    assert_eq!(required(E::order_line(&remaining[0]).get_id().eval())?, ids.second_line_id);
+    assert_eq!(
+        required(E::order_line(&remaining[0]).get_id().eval())?,
+        ids.second_line_id
+    );
 
     assert_eq!(
         restarted
