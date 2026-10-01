@@ -168,6 +168,22 @@ and lifetime. The key-provider SPI supports one current encryption key plus
 decode-only previous keys. Current authorization is checked both when a
 reference is issued and when it returns.
 
+For aggregate editing, the Rust runtime also provides the first bounded
+`tqd1` document-snapshot POC. A generated or application-owned
+`ContextBoundDocumentService` loads and projects the aggregate, while the
+runtime authenticates the document-local row map, loaded/writable surface,
+relation completeness, allowed mutations and optimistic versions. Application
+code enters through `UserContext::open_document` and
+`UserContext::accept_document`; it never receives decoded persistence IDs as a
+general utility. Run the retained proof with:
+
+```bash
+cargo test -p teaql-examples --test context_bound_order_document
+```
+
+This is a single-backend POC, not yet a seven-runtime portability claim or a
+public generated API guarantee.
+
 Local debugging can expose the original ID/version only when the process starts
 in a development or test profile with the exact acknowledgement below:
 

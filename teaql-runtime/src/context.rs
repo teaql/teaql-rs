@@ -10,6 +10,11 @@ use crate::EntityRuntimeState;
 use crate::business_id::{
     BusinessClock, BusinessDate, BusinessIdSchemaService, SystemBusinessClock,
 };
+use crate::document_round_trip::{
+    AcceptedContextualDocument, ContextBoundDocumentService, ContextBoundDocumentServiceResource,
+    ContextualDocument, DocumentAcceptRequest, DocumentOpenRequest, DocumentRoundTripError,
+    DocumentSnapshot, VerifiedDocumentSnapshot,
+};
 use crate::entity_reference::{
     EntityReferenceClaims, EntityReferenceCodec, EntityReferenceCodecResource,
     EntityReferenceTokenError,
@@ -860,6 +865,63 @@ impl UserContext {
         self.insert_resource(TrustedReferencePrincipalResource(principal));
     }
 
+    pub fn with_context_bound_document_service(
+        mut self,
+        service: Arc<dyn ContextBoundDocumentService>,
+    ) -> Self {
+        self.set_context_bound_document_service(service);
+        self
+    }
+
+    pub fn set_context_bound_document_service(
+        &mut self,
+        service: Arc<dyn ContextBoundDocumentService>,
+    ) {
+        self.insert_resource(ContextBoundDocumentServiceResource(service));
+    }
+
+    pub async fn open_document(
+        &self,
+        request: DocumentOpenRequest,
+    ) -> Result<ContextualDocument, DocumentRoundTripError> {
+        self.context_bound_document_service()?
+            .open_document(self, self.trusted_reference_principal()?, request)
+            .await
+    }
+
+    pub async fn accept_document(
+        &self,
+        request: DocumentAcceptRequest,
+    ) -> Result<AcceptedContextualDocument, DocumentRoundTripError> {
+        self.context_bound_document_service()?
+            .accept_document(self, self.trusted_reference_principal()?, request)
+            .await
+    }
+
+    pub fn issue_document_snapshot(
+        &self,
+        snapshot: DocumentSnapshot,
+        lifetime: std::time::Duration,
+    ) -> Result<String, DocumentRoundTripError> {
+        self.round_trip_reference_runtime()?
+            .issue_document_snapshot(self.trusted_reference_principal()?, snapshot, lifetime)
+    }
+
+    pub fn consume_document_snapshot(
+        &self,
+        token: &str,
+        expected_aggregate_type: &str,
+        expected_purpose: &str,
+    ) -> Result<VerifiedDocumentSnapshot, DocumentRoundTripError> {
+        self.round_trip_reference_runtime()?
+            .consume_document_snapshot(
+                self.trusted_reference_principal()?,
+                token,
+                expected_aggregate_type,
+                expected_purpose,
+            )
+    }
+
     pub fn reference_mode(&self) -> Result<ReferenceMode, RoundTripReferenceError> {
         Ok(self.round_trip_reference_runtime()?.mode())
     }
@@ -935,6 +997,14 @@ impl UserContext {
         self.get_resource::<TrustedReferencePrincipalResource>()
             .map(|resource| &resource.0)
             .ok_or_else(RoundTripReferenceError::authorization_required)
+    }
+
+    fn context_bound_document_service(
+        &self,
+    ) -> Result<&dyn ContextBoundDocumentService, DocumentRoundTripError> {
+        self.get_resource::<ContextBoundDocumentServiceResource>()
+            .map(|resource| resource.0.as_ref())
+            .ok_or_else(DocumentRoundTripError::configuration)
     }
 
     pub fn with_business_id_service(mut self, service: BusinessIdService) -> Self {

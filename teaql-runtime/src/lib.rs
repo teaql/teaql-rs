@@ -3,6 +3,7 @@ mod business_id;
 mod checker;
 mod context;
 mod data_service;
+mod document_round_trip;
 mod entity_reference;
 mod entity_runtime;
 pub mod entity_save;
@@ -46,6 +47,12 @@ pub use context::{
 pub use data_service::{
     AggregationCacheBackend, EntityDataService, GraphTransactionBoundary, InMemoryAggregationCache,
     RelationLoadPlan,
+};
+pub use document_round_trip::{
+    AcceptedContextualDocument, ContextBoundDocumentService, ContextualDocument,
+    DocumentAcceptRequest, DocumentEntitySnapshot, DocumentMutationKind, DocumentOpenRequest,
+    DocumentRelationCompleteness, DocumentRelationSnapshot, DocumentRoundTripError,
+    DocumentSnapshot, SubmittedContextualDocument, VerifiedDocumentSnapshot,
 };
 #[allow(deprecated)]
 pub use entity_reference::{

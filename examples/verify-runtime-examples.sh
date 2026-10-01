@@ -34,6 +34,10 @@ run_example "round-trip-reference-governed" "$repo_dir/examples/Cargo.toml" \
   "PASS Rust round-trip reference governed mode" \
   "round_trip_references"
 
+cargo test --quiet --manifest-path "$repo_dir/examples/Cargo.toml" \
+  --test context_bound_order_document
+printf 'PASS context-bound Order document round trip\n'
+
 raw_reference_log="$run_dir/round-trip-reference-raw.log"
 TEAQL_REFERENCE_PROFILE=development \
   TEAQL_UNSAFE_EXPOSE_RAW_ENTITY_IDS=I_UNDERSTAND_THIS_EXPOSES_INTERNAL_ENTITY_IDS_FOR_LOCAL_DEBUGGING_ONLY \
@@ -149,4 +153,4 @@ for attempt in 1 2; do
 done
 printf 'PASS order-management forward-FK Save (old loaded relation invalidated, new FK hydrated; two runs, same database)\n'
 
-printf 'PASS Rust runtime examples: 11/11\n'
+printf 'PASS Rust runtime examples: 12/12\n'

@@ -75,7 +75,7 @@ impl TrustedReferencePrincipal {
         Ok(value)
     }
 
-    fn validate(&self) -> Result<(), RoundTripReferenceError> {
+    pub(crate) fn validate(&self) -> Result<(), RoundTripReferenceError> {
         require_text(&self.authentication_realm)?;
         require_text(&self.subject)?;
         require_text(&self.domain_root_type)?;
@@ -250,7 +250,7 @@ impl ReferenceKey {
         Ok(Self { key_id, master_key })
     }
 
-    fn secret(&self) -> &[u8; 32] {
+    pub(crate) fn secret(&self) -> &[u8; 32] {
         &self.master_key
     }
 }
@@ -469,6 +469,50 @@ impl ContextBoundReferenceRuntime {
 
     pub fn deployment_profile(&self) -> DeploymentProfile {
         self.profile
+    }
+
+    pub(crate) fn service_name(&self) -> &str {
+        &self.service
+    }
+
+    pub(crate) fn environment_name(&self) -> &str {
+        &self.environment
+    }
+
+    pub(crate) fn current_reference_key(&self) -> Result<ReferenceKey, RoundTripReferenceError> {
+        self.keys.current_key()
+    }
+
+    pub(crate) fn reference_key_by_id(
+        &self,
+        key_id: &str,
+    ) -> Result<Option<ReferenceKey>, RoundTripReferenceError> {
+        self.keys.key_by_id(key_id)
+    }
+
+    pub(crate) fn now(&self) -> DateTime<Utc> {
+        (self.clock)()
+    }
+
+    pub(crate) fn next_nonce(&self) -> [u8; 12] {
+        (self.nonce_source)()
+    }
+
+    pub(crate) fn authorize_identity(
+        &self,
+        principal: &TrustedReferencePrincipal,
+        scope: &ReferenceDocumentScope,
+        identity: &ReferenceIdentity,
+    ) -> Result<(), RoundTripReferenceError> {
+        self.authorization.authorize(principal, scope, identity)
+    }
+
+    pub(crate) fn actor_fingerprint_for(
+        &self,
+        key: &ReferenceKey,
+        principal: &TrustedReferencePrincipal,
+    ) -> Result<[u8; 32], RoundTripReferenceError> {
+        actor_fingerprint(key, &self.service, &self.environment, principal)
     }
 
     pub fn startup_notice(&self) -> Option<ReferenceStartupNotice> {
@@ -691,7 +735,7 @@ struct DecodedPayload {
     expires_at: i64,
 }
 
-fn derive_key(
+pub(crate) fn derive_key(
     master: &[u8; 32],
     label: &[u8],
     service: &str,
