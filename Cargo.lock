@@ -3207,9 +3207,11 @@ dependencies = [
 name = "teaql-examples"
 version = "5.0.5"
 dependencies = [
+ "async-trait",
  "chrono",
  "futures-util",
  "rusqlite",
+ "serde_json",
  "teaql-core",
  "teaql-data-service",
  "teaql-macros",

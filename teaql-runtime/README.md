@@ -18,6 +18,33 @@ Database execution is supplied by provider crates.
 - graph save planning and execution
 - typed entity graph extraction
 - SQL debug logging options on `UserContext`
+- context-bound `tqr1` entity references and `tqd1` document snapshots
+
+## Context-Bound Document Round Trips
+
+The runtime separates a stable Business ID from temporary, actor-bound editing
+references. `UserContext::open_document` delegates domain loading and
+projection to a `ContextBoundDocumentService`. The service issues one
+authenticated `tqd1` snapshot containing the aggregate revision, child
+versions, document-local row map, loaded/writable fields, relation
+completeness, and allowed mutation kinds. `UserContext::accept_document`
+verifies that snapshot and delegates mutation reconstruction to the same
+domain service.
+
+The runtime cryptographic boundary always rechecks the current authorization
+policy. Decryption alone never grants access. Tokens are bound to service,
+environment, Domain Root, actor, purpose, aggregate and lifetime, and the key
+provider supports one current key plus decode-only previous keys. The domain
+service remains responsible for loading the complete editing surface,
+rechecking field/action policy, Checker/Fix, mutation-ledger construction and
+atomic save.
+
+The executable Order/Items POC is retained in
+`examples/tests/context_bound_order_document.rs`. It proves actor-specific
+views, non-transferability, projection enforcement, explicit removal,
+invisible-row preservation, aggregate and child version conflicts, retry after
+validation failure, refreshed snapshots, restart continuity, environment
+isolation and current authorization revocation.
 
 ## Source Layout
 
