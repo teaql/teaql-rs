@@ -16,7 +16,7 @@ jobs:
     env:
       TEAQL_ARCHIVE_VERSION: ${{ inputs.runtime_version }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Pin requested exact archive version in disposable checkout
         shell: bash

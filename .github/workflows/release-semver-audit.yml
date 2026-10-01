@@ -26,7 +26,7 @@ jobs:
           - teaql-provider-postgres
           - teaql-provider-mysql
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Compare source API with published 4.3.5
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
@@ -42,7 +42,7 @@ jobs:
       matrix:
         macro-source: [published-4.3.5, current-main]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Isolate generated fixture from example workspace patches
         run: |
           mkdir -p "$RUNNER_TEMP/school"
