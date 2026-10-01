@@ -60,8 +60,9 @@ impl UserContext {
         for<'transaction> E::Tx<'transaction>: Send + Sync,
         F: for<'scope> FnOnce(
             &'scope TransactionScope<'context, E>,
-        )
-            -> Pin<Box<dyn Future<Output = Result<T, RuntimeError>> + 'scope>>,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<T, RuntimeError>> + Send + 'scope>,
+        >,
     {
         self.start_transaction::<E>()
             .await?
@@ -171,8 +172,9 @@ where
         E::Tx<'context>: Send + Sync,
         F: for<'scope> FnOnce(
             &'scope TransactionScope<'context, E>,
-        )
-            -> Pin<Box<dyn Future<Output = Result<T, RuntimeError>> + 'scope>>,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<T, RuntimeError>> + Send + 'scope>,
+        >,
     {
         match operation(&self).await {
             Ok(value) => {

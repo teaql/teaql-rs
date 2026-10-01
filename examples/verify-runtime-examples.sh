@@ -38,6 +38,19 @@ cargo test --quiet --manifest-path "$repo_dir/examples/Cargo.toml" \
   --test context_bound_order_document
 printf 'PASS context-bound Order document round trip\n'
 
+context_document_database="sqlite:file:$run_dir/context_bound_document.sqlite"
+context_document_log="$run_dir/context_bound_document.log"
+TEAQL_CONTEXT_DOCUMENT_DATABASE="$context_document_database" \
+  cargo run --quiet \
+    --manifest-path "$repo_dir/examples/order-management/rust-app-console/Cargo.toml" \
+    --bin context_bound_document_sqlite >"$context_document_log" 2>&1
+if ! grep -Eq '^CONTEXT_BOUND_SQLITE_QE_PASS order_id=[0-9]+ update_version=2 delete_version=3 remaining_line_id=[0-9]+$' "$context_document_log"; then
+  printf 'FAIL generated Q/E SQLite context-bound document missing acceptance evidence\n' >&2
+  sed -n '1,240p' "$context_document_log" >&2
+  exit 1
+fi
+printf 'PASS generated Q/E SQLite context-bound Order document\n'
+
 raw_reference_log="$run_dir/round-trip-reference-raw.log"
 TEAQL_REFERENCE_PROFILE=development \
   TEAQL_UNSAFE_EXPOSE_RAW_ENTITY_IDS=I_UNDERSTAND_THIS_EXPOSES_INTERNAL_ENTITY_IDS_FOR_LOCAL_DEBUGGING_ONLY \
@@ -153,4 +166,4 @@ for attempt in 1 2; do
 done
 printf 'PASS order-management forward-FK Save (old loaded relation invalidated, new FK hydrated; two runs, same database)\n'
 
-printf 'PASS Rust runtime examples: 12/12\n'
+printf 'PASS Rust runtime examples: 13/13\n'
