@@ -394,6 +394,9 @@ struct EntityMutationLedger {
     original_snapshot: Option<OriginalSnapshot>,
     /// Immutable parent tokens are materialized only at a consumer boundary.
     trace_chains: std::collections::BTreeMap<EntityKey, Arc<crate::TraceScopeToken>>,
+    /// Scope ownership before legacy lower-ledger allocation. Never infer an
+    /// owner's identity from the entity name or from an inherited child scope.
+    unassigned_trace_scopes: BTreeMap<EntityKey, Arc<crate::TraceScopeToken>>,
     /// Loaded snapshots needed to locate composed/deleted children without I/O.
     original_snapshots: std::collections::BTreeMap<EntityKey, OriginalSnapshot>,
     /// Original versions of entities to perform optimistic concurrency control.
@@ -673,6 +676,9 @@ impl EntityRuntimeState {
                 // Each stored chain is complete, not a segment to concatenate.
                 target.trace_chains.entry(key).or_insert(traces);
             }
+            for (key, scope) in snapshot.unassigned_trace_scopes {
+                target.unassigned_trace_scopes.entry(key).or_insert(scope);
+            }
             target.entity_comments.extend(snapshot.entity_comments);
             for (key, snapshot) in snapshot.original_snapshots {
                 target.original_snapshots.entry(key).or_insert(snapshot);
@@ -854,6 +860,7 @@ impl EntityRuntimeState {
                 context.new_keys.clear();
                 context.original_versions.clear();
                 context.trace_chains.clear();
+                context.unassigned_trace_scopes.clear();
                 context.original_snapshot = None;
                 context.original_snapshots.clear();
                 context.comment = None;
@@ -1008,8 +1015,95 @@ impl EntityRuntimeState {
     pub(crate) fn replace_trace_scopes(
         &self,
         scopes: std::collections::BTreeMap<EntityKey, Arc<crate::TraceScopeToken>>,
+        unassigned: BTreeMap<EntityKey, Arc<crate::TraceScopeToken>>,
     ) {
-        self.write_context(|context| context.trace_chains = scopes);
+        self.write_context(|context| {
+            context.trace_chains = scopes;
+            context.unassigned_trace_scopes = unassigned;
+        });
+    }
+
+    /// Rebind immutable ancestors after allocation, before command/event
+    /// materialization. Keys and mutation payloads remain retryable; this only
+    /// updates operation-owned trace tokens. Shared ancestors stay shared.
+    pub(crate) fn enrich_allocated_trace_scopes(&self, assigned: &BTreeMap<EntityKey, Value>) {
+        if assigned.is_empty() {
+            return;
+        }
+        type Token = crate::TraceScopeToken;
+        fn rebind(
+            scope: &Arc<Token>,
+            identities: &HashMap<*const Token, u64>,
+            cache: &mut HashMap<*const Token, Arc<Token>>,
+        ) -> Arc<Token> {
+            let mut pending = Vec::new();
+            let mut cursor = Some(scope.clone());
+            while let Some(token) = cursor {
+                if cache.contains_key(&Arc::as_ptr(&token)) {
+                    break;
+                }
+                cursor = token.parent.clone();
+                pending.push(token);
+            }
+            while let Some(token) = pending.pop() {
+                let pointer = Arc::as_ptr(&token);
+                let parent = token.parent.as_ref().map(|parent| {
+                    cache
+                        .get(&Arc::as_ptr(parent))
+                        .expect("parent rebound first")
+                        .clone()
+                });
+                let assigned_id = identities.get(&pointer).copied();
+                let changed_parent = match (&token.parent, &parent) {
+                    (Some(old), Some(new)) => !Arc::ptr_eq(old, new),
+                    _ => false,
+                };
+                let rebound = if changed_parent
+                    || assigned_id.is_some_and(|id| token.track.entity_id != Some(id))
+                {
+                    let mut track = token.track.clone();
+                    if let Some(id) = assigned_id {
+                        track.entity_id = Some(id);
+                    }
+                    Arc::new(Token {
+                        parent,
+                        track,
+                        node_index: token.node_index,
+                    })
+                } else {
+                    token.clone()
+                };
+                cache.insert(pointer, rebound);
+            }
+            cache
+                .get(&Arc::as_ptr(scope))
+                .expect("scope rebound")
+                .clone()
+        }
+
+        self.write_context(|context| {
+            let identities = context
+                .unassigned_trace_scopes
+                .iter()
+                .filter_map(|(key, scope)| {
+                    assigned
+                        .get(key)?
+                        .try_u64()
+                        .filter(|id| *id > 0)
+                        .map(|id| (Arc::as_ptr(scope), id))
+                })
+                .collect::<HashMap<_, _>>();
+            if identities.is_empty() {
+                return;
+            }
+            let mut cache = HashMap::new();
+            for scope in context.trace_chains.values_mut() {
+                *scope = rebind(scope, &identities, &mut cache);
+            }
+            for scope in context.unassigned_trace_scopes.values_mut() {
+                *scope = rebind(scope, &identities, &mut cache);
+            }
+        });
     }
 
     pub(crate) fn original_values_for(&self, key: &EntityKey) -> Option<EntitySnapshot> {
@@ -1568,5 +1662,62 @@ mod lazy_root_tests {
         let absent = root.relation_option::<u64>("Owner", 1, "absent");
         assert_eq!(absent.state(), LoadedRelation::NotLoaded);
         assert!(absent.value().is_none());
+    }
+}
+
+#[cfg(test)]
+mod trace_allocation_sharing_tests {
+    use super::*;
+
+    #[test]
+    fn rebinding_preserves_shared_immutable_ancestors_and_cleanup() {
+        let state = EntityRuntimeState::default();
+        let key = EntityKey::new("Order", 0_u64);
+        let child = EntityKey::new("Payment", 301_u64);
+        let inherited = EntityKey::new("OrderItem", 201_u64);
+        let root_scope = Arc::new(crate::TraceScopeToken {
+            parent: None,
+            track: teaql_core::TraceNode::typed(
+                teaql_core::TraceKind::AuditReason,
+                "Order",
+                None,
+                "submit",
+            ),
+            node_index: 0,
+        });
+        let child_scope = Arc::new(crate::TraceScopeToken {
+            parent: Some(root_scope.clone()),
+            track: teaql_core::TraceNode::typed(
+                teaql_core::TraceKind::AuditReason,
+                "Payment",
+                Some(301),
+                "authorize",
+            ),
+            node_index: 1,
+        });
+        state.replace_trace_scopes(
+            BTreeMap::from([
+                (key.clone(), root_scope.clone()),
+                (child.clone(), child_scope),
+                (inherited.clone(), root_scope.clone()),
+            ]),
+            BTreeMap::from([(key.clone(), root_scope)]),
+        );
+        state.enrich_allocated_trace_scopes(&BTreeMap::from([(key.clone(), Value::U64(100))]));
+        state.read_context((), |ledger| {
+            let root = &ledger.trace_chains[&key];
+            assert_eq!(root.track.entity_id, Some(100));
+            assert!(Arc::ptr_eq(root, &ledger.trace_chains[&inherited]));
+            assert!(Arc::ptr_eq(
+                root,
+                ledger.trace_chains[&child].parent.as_ref().unwrap()
+            ));
+            assert!(Arc::ptr_eq(root, &ledger.unassigned_trace_scopes[&key]));
+        });
+        state.clear_committed();
+        state.read_context((), |ledger| {
+            assert!(ledger.trace_chains.is_empty());
+            assert!(ledger.unassigned_trace_scopes.is_empty());
+        });
     }
 }

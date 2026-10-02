@@ -957,25 +957,34 @@ fn capture_ledger_trace_scopes(
     let intent = teaql_core::MutationIntent::from_optional(node.comment.as_deref())?;
     fn visit(
         node: &GraphNode,
-        parent: Option<Arc<crate::TraceScopeToken>>,
+        scope: Option<Arc<crate::TraceScopeToken>>,
         scopes: &mut BTreeMap<crate::EntityKey, Arc<crate::TraceScopeToken>>,
+        unassigned: &mut BTreeMap<crate::EntityKey, Arc<crate::TraceScopeToken>>,
     ) {
-        let scope = node.trace_scope(parent, scopes.len() as u64);
         if let (Some(id), Some(scope)) = (node.id(), &scope) {
             let key = crate::EntityKey::new(node.entity.clone(), id.clone());
+            if matches!(id, Value::Null | Value::U64(0) | Value::I64(0))
+                && node.audit_trace_node().is_some()
+            {
+                unassigned
+                    .entry(key.clone())
+                    .or_insert_with(|| scope.clone());
+            }
             // The graph/location traversal uses one deterministic first route
             // for an entity reached more than once.
             scopes.entry(key).or_insert_with(|| scope.clone());
         }
         for children in node.relations.values() {
             for child in children {
-                visit(child, scope.clone(), scopes);
+                let child_scope = child.trace_scope(scope.clone(), scopes.len() as u64);
+                visit(child, child_scope, scopes, unassigned);
             }
         }
     }
     let root_scope = node.trace_scope(None, 0).expect("validated root comment");
     let mut scopes = BTreeMap::new();
-    visit(node, None, &mut scopes);
+    let mut unassigned = BTreeMap::new();
+    visit(node, Some(root_scope.clone()), &mut scopes, &mut unassigned);
 
     // Explicitly composed standalone pending items can be outside a loaded
     // relation projection. They still belong to this root request, not Context.
@@ -993,22 +1002,28 @@ fn capture_ledger_trace_scopes(
                 .get_entity_comment(&key)
                 .filter(|text| !text.trim().is_empty())
             {
-                Some(reason) => Arc::new(crate::TraceScopeToken {
-                    parent: Some(root_scope.clone()),
-                    track: teaql_core::TraceNode::typed(
-                        teaql_core::TraceKind::AuditReason,
-                        key.entity.to_string(),
-                        key.id.try_u64().filter(|id| *id > 0),
-                        reason,
-                    ),
-                    node_index: 0,
-                }),
+                Some(reason) => {
+                    let scope = Arc::new(crate::TraceScopeToken {
+                        parent: Some(root_scope.clone()),
+                        track: teaql_core::TraceNode::typed(
+                            teaql_core::TraceKind::AuditReason,
+                            key.entity.to_string(),
+                            key.id.try_u64().filter(|id| *id > 0),
+                            reason,
+                        ),
+                        node_index: 0,
+                    });
+                    if matches!(key.id, Value::Null | Value::U64(0) | Value::I64(0)) {
+                        unassigned.insert(key.clone(), scope.clone());
+                    }
+                    scope
+                }
                 None => root_scope.clone(),
             }
         });
     }
     root.set_comment(intent.comment());
-    root.replace_trace_scopes(scopes);
+    root.replace_trace_scopes(scopes, unassigned);
     Ok(())
 }
 
@@ -1138,6 +1153,123 @@ mod trace_scope_capture_tests {
         );
         root.clear_committed();
         assert!(trace(&root, "Payment", 301).is_empty());
+    }
+
+    #[test]
+    fn allocation_rebinds_owned_ancestors_without_assigning_inherited_siblings() {
+        let root = EntityRuntimeState::default();
+        let mut graph = GraphNode::new("Order")
+            .value("id", 0_u64)
+            .comment("submit late order")
+            .relation("items", GraphNode::new("OrderItem").value("id", 0_u64))
+            .relation(
+                "payment",
+                GraphNode::new("Payment")
+                    .value("id", 0_u64)
+                    .comment("authorize late payment")
+                    .relation(
+                        "attempts",
+                        GraphNode::new("PaymentAttempt").value("id", 401_u64),
+                    ),
+            );
+        // A pending item outside the loaded projection must use this exact
+        // root token, not a second unowned copy of its pre-allocation reason.
+        let standalone = EntityKey::new("Shipment", 501_u64);
+        root.mark_as_new(standalone.clone());
+        root.set_entity_comment(standalone, "dispatch standalone shipment");
+        capture_ledger_trace_scopes(&root, &graph).unwrap();
+        let allocated = BTreeMap::from([
+            (EntityKey::new("Order", 0_u64), Value::U64(100)),
+            (EntityKey::new("OrderItem", 0_u64), Value::U64(201)),
+            (EntityKey::new("Payment", 0_u64), Value::U64(301)),
+        ]);
+        root.enrich_allocated_trace_scopes(&allocated);
+        let order = (
+            "Order".to_owned(),
+            Some(100),
+            "submit late order".to_owned(),
+        );
+        assert_eq!(trace(&root, "OrderItem", 0), [order.clone()]);
+        assert_eq!(
+            trace(&root, "PaymentAttempt", 401),
+            [
+                order.clone(),
+                (
+                    "Payment".to_owned(),
+                    Some(301),
+                    "authorize late payment".to_owned()
+                )
+            ]
+        );
+        assert_eq!(
+            trace(&root, "Shipment", 501),
+            [
+                order,
+                (
+                    "Shipment".to_owned(),
+                    Some(501),
+                    "dispatch standalone shipment".to_owned()
+                )
+            ]
+        );
+
+        // Failed saves retain old ledger keys. Recapture on retry must discard
+        // the previous allocation rather than retaining its ID or root reason.
+        graph.set_comment("retry late order");
+        capture_ledger_trace_scopes(&root, &graph).unwrap();
+        root.enrich_allocated_trace_scopes(&BTreeMap::from([
+            (EntityKey::new("Order", 0_u64), Value::U64(102)),
+            (EntityKey::new("Payment", 0_u64), Value::U64(303)),
+        ]));
+        assert_eq!(
+            trace(&root, "PaymentAttempt", 401),
+            [
+                ("Order".to_owned(), Some(102), "retry late order".to_owned()),
+                (
+                    "Payment".to_owned(),
+                    Some(303),
+                    "authorize late payment".to_owned()
+                )
+            ]
+        );
+        assert_eq!(graph.id(), Some(&Value::U64(0)));
+        root.clear_committed();
+        assert!(trace(&root, "PaymentAttempt", 401).is_empty());
+    }
+
+    #[test]
+    fn allocation_uses_scope_ownership_when_unassigned_same_type_keys_differ() {
+        let root = EntityRuntimeState::default();
+        let graph = GraphNode::new("Order")
+            .value("id", 100_u64)
+            .comment("submit order")
+            .relation(
+                "payments",
+                GraphNode::new("Payment")
+                    .value("id", Value::Null)
+                    .comment("first payment"),
+            )
+            .relation(
+                "payments",
+                GraphNode::new("Payment")
+                    .value("id", 0_u64)
+                    .comment("second payment"),
+            );
+        capture_ledger_trace_scopes(&root, &graph).unwrap();
+        let first = EntityKey::new("Payment", Value::Null);
+        let second = EntityKey::new("Payment", 0_u64);
+        root.enrich_allocated_trace_scopes(&BTreeMap::from([
+            (first.clone(), Value::U64(301)),
+            (second.clone(), Value::U64(302)),
+        ]));
+        assert_eq!(
+            root.get_trace_chain(&first).last().unwrap().entity_id,
+            Some(301)
+        );
+        assert_eq!(
+            root.get_trace_chain(&second).last().unwrap().entity_id,
+            Some(302)
+        );
     }
 
     #[test]

@@ -81,6 +81,14 @@ other batch items, including prior values; execution bindings and caller intent
 are unchanged. This is native request coverage, not completion of the full
 generated Trace Chain graph ([#239](https://github.com/teaql/teaql-rs/issues/239)).
 
+The dedicated [generated Trace Chain example](examples/trace-chain/README.md)
+now checks the six-entity mixed graph, three relation levels, concurrent saves,
+and write/readback failures at actual command, SQL and committed safe-audit
+boundaries. Separate SQLite lower-ledger tests verify IDs allocated during save;
+immutable scope rebinding preserves ancestors and does not rewrite mutation
+payloads or put lineage on Context. Full case and internal-artifact gates remain
+incomplete; these are local source results, not a release claim.
+
 SQLite now holds an operation-owned connection lease for the entire transaction.
 Its low-level `SqlTransactionTransport::Tx` is a non-cloneable
 `SqliteTransaction`, not a cloned `SqliteMutationExecutor`; use the transaction

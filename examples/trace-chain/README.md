@@ -52,9 +52,14 @@ child's typed identity in its lineage rather than inventing a field value.
 
 The concurrency scenario prepares entity IDs before the overlapping saves. It
 does not prove that raw synchronous ID allocation or schema operations are safe
-while another transaction holds the SQLite connection. Lower-ledger late ID
-assignment, complete ledger-specific
-override semantics, and immutable internal-artifact replay remain separate gates.
+while another transaction holds the SQLite connection. Generated creation assigns
+IDs early. The separate native [lower-ledger integration tests](../../teaql-provider-sqlite/tests/ledger_allocated_trace.rs)
+exercise real SQLite allocation during save for a root and a child, checking
+assigned IDs in commands, physical SQL metadata, committed safe audit and root
+readback. They do not change generated creation semantics. Run them with
+`cargo test -p teaql-provider-sqlite --test ledger_allocated_trace`.
+Complete ledger-specific override semantics and immutable internal-artifact
+replay remain separate gates.
 
 ## Regenerate without editing the library
 

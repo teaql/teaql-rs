@@ -1558,6 +1558,20 @@ where
         let ordered_insert_keys = self
             .order_new_ledger_keys(insert_batches.values().flatten().cloned(), &checked_changes)
             .map_err(DataServiceError::Runtime)?;
+        // Allocate the whole graph before recovering any item lineage. A child
+        // can inherit a root/ancestor scope created before its ID was known.
+        for key in &ordered_insert_keys {
+            if crate::data_service::helpers::is_unassigned_id_value(&key.id) {
+                let id = self
+                    .data_service
+                    .metadata
+                    .context
+                    .next_id(&key.entity)
+                    .map_err(DataServiceError::Runtime)?;
+                generated_ids.insert(key.clone(), Value::U64(id));
+            }
+        }
+        root.enrich_allocated_trace_scopes(&generated_ids);
         let mut ordered_insert_batches = Vec::<(String, Vec<crate::EntityKey>)>::new();
         for key in ordered_insert_keys {
             let entity = key.entity.to_string();
@@ -1583,17 +1597,10 @@ where
             for key in &keys {
                 let record = checked_changes.get(key).unwrap();
                 let mut db_record = crate::EntityValues::new();
-                let mut real_id = key.id.clone();
-                if crate::data_service::helpers::is_unassigned_id_value(&real_id) {
-                    let gen_id = self
-                        .data_service
-                        .metadata
-                        .context
-                        .next_id(&entity)
-                        .map_err(DataServiceError::Runtime)?;
-                    real_id = Value::U64(gen_id);
-                    generated_ids.insert(key.clone(), real_id.clone());
-                }
+                let real_id = generated_ids
+                    .get(key)
+                    .cloned()
+                    .unwrap_or_else(|| key.id.clone());
                 db_record.insert("id".to_owned(), real_id);
                 for (field, value) in record {
                     if field == "id" {
