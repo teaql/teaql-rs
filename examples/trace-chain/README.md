@@ -20,9 +20,9 @@ export CARGO_TARGET_DIR=/path/to/shared-cargo-target
 bash examples/trace-chain/verify.sh
 ```
 
-The script first runs eleven native allocation tests twice on independent
-in-memory SQLite fixtures, then runs seven generated scenarios twice on one
-persistent database without cleanup. It retains all four logs and prints their
+The script first runs eleven native allocation tests and six native identity
+graph tests twice, then runs eight generated scenarios twice on one persistent
+database without cleanup. It retains all six logs and prints their
 directory, the database URL, and a relative-path SHA-256 manifest digest for the
 unchanged generated library.
 An existing database may be supplied with `TEAQL_TRACE_CHAIN_DATABASE`; retained
@@ -43,6 +43,7 @@ verification. Keep the lockfile for repeatable dependency resolution.
 | Three relation levels | Generated Q loads PaymentAttempt → Payment → CustomerOrder → Platform; all four physical query metadata records and safe SQL records inherit one comment and purpose and retain the ordered relation route |
 | Same-type batches | Two OrderItems are included in reverse order, inserted together and later updated with the same changed fields; each command, physical SQL record and committed event retains its own local reason and typed ID; generated Q/E verifies both values and version increments |
 | Concurrent saves | Two generated graphs share one Context, meet at a test-only barrier before transaction begin, and yield after acquiring a transaction; each command, SQL metadata item and committed audit event retains its own reasons |
+| Shared read-only reference | One bounded generated Q loads two orders whose E Platform values are pointer-identical. Their mutation ledgers stay independent, each composes only its own new item, and overlapping saves write exactly four items with isolated command/SQL/audit reasons. The shared Platform snapshot, ledger and version stay unchanged; generated Q/E reloads both commits |
 | Provider failure | A test-owned faulty ID allocator causes a real SQLite primary-key conflict after the root INSERT; attempted command and failure SQL metadata retain branch lineage, both writes roll back, and no committed audit event is delivered |
 | Readback failure | A transport probe delegates the real INSERT unchanged to SQLite, then rejects the following readback; successful write metadata and failed readback metadata remain separate, the graph rolls back and no committed audit event is delivered |
 | Generated database IDs | The real SQLite ID-space generator assigns root/item IDs during `new_entity`, before transaction begin; save does not allocate again, and commands, physical SQL, committed audits and reloaded generated Q/E agree on both identities and the foreign key |
@@ -75,6 +76,16 @@ committed safe audit and root readback are checked. The graph can allocate both
 root and child in one save; only declared ID references are rebound, never
 arbitrary numeric values or the source ledger. Forward-only, reverse-only and
 bidirectional metadata are exercised.
+
+The shared-reference scenario uses Rust's actual flat identity graph, not a
+Java-style object setter or entity cloning. Immutable relation snapshots may be
+shared; mutation ownership must not be. Native regressions exercise both the
+macro hydration boundary and same-ID/different-type snapshot versions. A
+temporary negative control replacing fresh ledger ownership with a shared clone
+fails the hydration regression; it is restored before acceptance. The generated
+scenario updates a version-qualified description on each replay, so a second
+run proves actual new writes rather than a no-op. It runs before the deliberately
+broken allocator fixture; each generated invocation is bounded by 180 seconds.
 
 A real SQLite trigger rejects a child after the root INSERT. Both business
 rows and sequence updates roll back, no committed audit is sent, and a retry

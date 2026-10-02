@@ -15,10 +15,10 @@ tokio::task_local! {
     static PENDING_AUDITS: PendingAuditBatch;
 }
 
-pub(crate) fn try_enqueue(
-    context: &UserContext,
-    event: RawAuditEvent,
-) -> Result<(), RawAuditEvent> {
+/// Return an unbuffered fact to the caller for immediate delivery. Not having
+/// this Context's transaction scope is not an audit error, and must not require
+/// boxing every large fact on the ordinary unscoped delivery path.
+pub(crate) fn try_enqueue(context: &UserContext, event: RawAuditEvent) -> Option<RawAuditEvent> {
     let mut event = Some(event);
     let buffered = PENDING_AUDITS
         .try_with(|batch| {
@@ -34,9 +34,9 @@ pub(crate) fn try_enqueue(
         })
         .unwrap_or(false);
     if buffered {
-        Ok(())
+        None
     } else {
-        Err(event.expect("unbuffered audit fact"))
+        Some(event.expect("unbuffered audit fact"))
     }
 }
 
@@ -88,6 +88,30 @@ pub(crate) fn deliver(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unscoped_enqueue_returns_the_original_fact_for_immediate_delivery() {
+        let context = UserContext::default();
+        let event = RawAuditEvent::created("Order", Default::default());
+        assert_eq!(try_enqueue(&context, event.clone()), Some(event));
+    }
+
+    #[tokio::test]
+    async fn other_context_enqueue_returns_the_fact_without_joining_this_queue() {
+        let owner = UserContext::default();
+        let other = UserContext::default();
+        let event = RawAuditEvent::created("Payment", Default::default());
+        let (returned, queued) = collect(&owner, async {
+            assert!(
+                try_enqueue(&owner, RawAuditEvent::created("Order", Default::default())).is_none()
+            );
+            try_enqueue(&other, event.clone())
+        })
+        .await;
+        assert_eq!(returned, Some(event));
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].entity, "Order");
+    }
 
     #[tokio::test]
     async fn scopes_are_isolated_for_concurrent_tasks_reusing_one_context() {

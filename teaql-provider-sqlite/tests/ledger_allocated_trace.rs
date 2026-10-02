@@ -836,43 +836,46 @@ fn database_graph_failure_retains_assigned_trace_but_rolls_back_rows_and_retryab
         );
         assert_eq!(database_id_floor(&transport, "AllocationRoot"), 500);
         assert_eq!(database_id_floor(&transport, "AllocationChild"), 800);
-        let metadata = capture.metadata.lock().unwrap();
-        let statements: Vec<_> = metadata
-            .iter()
-            .flat_map(|record| {
-                if record.statements.is_empty() {
-                    std::slice::from_ref(record)
-                } else {
-                    record.statements.as_slice()
-                }
-            })
-            .filter(|record| record.operation == teaql_data_service::DataServiceOperation::Insert)
-            .collect();
-        assert_eq!(
-            statements.len(),
-            2,
-            "actual successful root and rejected child SQL"
-        );
-        assert_eq!(
-            statements[0].sql_log.execution_outcome,
-            Some(teaql_data_service::SqlExecutionOutcome::Success)
-        );
-        assert_eq!(
-            statements[1].sql_log.execution_outcome,
-            Some(teaql_data_service::SqlExecutionOutcome::Failure)
-        );
-        assert_assigned_chain(
-            &statements[0].trace_chain,
-            &[("AllocationRoot", 501, "first graph attempt")],
-        );
-        assert_assigned_chain(
-            &statements[1].trace_chain,
-            &[
-                ("AllocationRoot", 501, "first graph attempt"),
-                ("AllocationChild", 801, "authorize retryable child"),
-            ],
-        );
-        drop(metadata);
+        {
+            let metadata = capture.metadata.lock().unwrap();
+            let statements: Vec<_> = metadata
+                .iter()
+                .flat_map(|record| {
+                    if record.statements.is_empty() {
+                        std::slice::from_ref(record)
+                    } else {
+                        record.statements.as_slice()
+                    }
+                })
+                .filter(|record| {
+                    record.operation == teaql_data_service::DataServiceOperation::Insert
+                })
+                .collect();
+            assert_eq!(
+                statements.len(),
+                2,
+                "actual successful root and rejected child SQL"
+            );
+            assert_eq!(
+                statements[0].sql_log.execution_outcome,
+                Some(teaql_data_service::SqlExecutionOutcome::Success)
+            );
+            assert_eq!(
+                statements[1].sql_log.execution_outcome,
+                Some(teaql_data_service::SqlExecutionOutcome::Failure)
+            );
+            assert_assigned_chain(
+                &statements[0].trace_chain,
+                &[("AllocationRoot", 501, "first graph attempt")],
+            );
+            assert_assigned_chain(
+                &statements[1].trace_chain,
+                &[
+                    ("AllocationRoot", 501, "first graph attempt"),
+                    ("AllocationChild", 801, "authorize retryable child"),
+                ],
+            );
+        }
         transport
             .connection()
             .lock()

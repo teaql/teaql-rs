@@ -997,7 +997,7 @@ where
                 .get_resource::<Arc<dyn AggregationCacheBackend>>()
             {
                 return self
-                    .fetch_prepared_query_with_cache(&query, options, cache.as_ref())
+                    .fetch_prepared_query_with_cache(query, options, cache.as_ref())
                     .await;
             }
             if let Some(cache) = self
@@ -1007,7 +1007,7 @@ where
                 .get_resource::<InMemoryAggregationCache>()
             {
                 return self
-                    .fetch_prepared_query_with_cache(&query, options, cache)
+                    .fetch_prepared_query_with_cache(query, options, cache)
                     .await;
             }
         }
@@ -1020,7 +1020,7 @@ where
                 Default::default()
             },
             intent: self
-                .request_intent_for(&query)
+                .request_intent_for(query)
                 .map_err(DataServiceError::Runtime)?,
             capture_debug_query: self.data_service.metadata.capture_query_debug(),
             capture_execution_metadata: capture_metadata,

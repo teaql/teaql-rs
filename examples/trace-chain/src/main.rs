@@ -7,6 +7,7 @@ mod failure;
 mod observation;
 mod readback_transport;
 mod scenarios;
+mod shared_reference;
 use observation::{Observation, Observed};
 use teaql_runtime::{
     RawAuditEventKind, RuntimeError, SafeAuditEvent, SafeAuditEventSink, SqlLogOperation,
@@ -511,6 +512,9 @@ async fn main() -> Outcome<()> {
     normative_graph(&context, &capture, &observation).await?;
     batching::same_type_batch(&mut context, &capture, &observation).await?;
     scenarios::concurrent_graphs(&context, &capture, &observation).await?;
+    // The following failure fixture deliberately installs a broken allocator
+    // for this Context's final use; normal allocation probes must precede it.
+    shared_reference::shared_reference_graphs(&context, &capture, &observation).await?;
     failure::failed_graph(&mut context, &capture, &observation).await?;
     failure::failed_readback(database_url.clone(), &capture, &observation).await?;
     database_ids::generated_database_ids(database_url).await

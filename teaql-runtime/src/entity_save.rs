@@ -1087,8 +1087,8 @@ mod trace_scope_capture_tests {
             Some(100),
             "authorize payment".to_owned(),
         );
-        assert_eq!(trace(&root, "Order", 100), [order.clone()]);
-        assert_eq!(trace(&root, "OrderItem", 201), [order.clone()]);
+        assert_eq!(trace(&root, "Order", 100), std::slice::from_ref(&order));
+        assert_eq!(trace(&root, "OrderItem", 201), std::slice::from_ref(&order));
         assert_eq!(
             trace(&root, "Payment", 100),
             [order.clone(), payment.clone()]
@@ -1189,7 +1189,7 @@ mod trace_scope_capture_tests {
             Some(100),
             "submit late order".to_owned(),
         );
-        assert_eq!(trace(&root, "OrderItem", 0), [order.clone()]);
+        assert_eq!(trace(&root, "OrderItem", 0), std::slice::from_ref(&order));
         assert_eq!(
             trace(&root, "PaymentAttempt", 401),
             [

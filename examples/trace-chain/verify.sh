@@ -45,18 +45,37 @@ for allocation_pass in 1 2; do
     fi
   done
   printf 'PASS native database allocation replay %s (11 cases, real SQLite)\n' "$allocation_pass"
+  reference_log="$trace_evidence_dir/native-shared-reference-$allocation_pass.log"
+  reference_status=0
+  timeout 180s cargo test --locked --manifest-path "$example_dir/../../Cargo.toml" \
+    -p teaql-runtime --test flat_identity_graph \
+    >"$reference_log" 2>&1 || reference_status=$?
+  if (( reference_status != 0 )); then
+    sed -n '1,240p' "$reference_log" >&2
+    printf 'FAIL native shared-reference replay %s: exit %s; evidence %s\n' "$allocation_pass" "$reference_status" "$reference_log" >&2
+    exit "$reference_status"
+  fi
+  for reference_case in \
+    macro_hydration_shares_identity_graph_without_reusing_mutation_ownership \
+    shared_read_only_reference_preserves_snapshot_version_and_root_local_intent; do
+    if ! rg -Fq "test $reference_case ... ok" "$reference_log"; then
+      printf 'FAIL missing native reference case %s in %s\n' "$reference_case" "$reference_log" >&2
+      exit 1
+    fi
+  done
+  printf 'PASS native shared-reference replay %s (6 identity-graph cases)\n' "$allocation_pass"
 done
 trace_library_before="$(generated_hash)"
 for trace_pass in 1 2; do
   trace_log="$trace_evidence_dir/run-$trace_pass.log"
   trace_status=0
-  cargo run --quiet --locked --manifest-path "$example_dir/Cargo.toml" >"$trace_log" 2>&1 || trace_status=$?
+  timeout 180s cargo run --quiet --locked --manifest-path "$example_dir/Cargo.toml" >"$trace_log" 2>&1 || trace_status=$?
   if (( trace_status != 0 )); then
     sed -n '1,240p' "$trace_log" >&2
     printf 'FAIL generated Trace Chain replay %s: exit %s; evidence %s\n' "$trace_pass" "$trace_status" "$trace_log" >&2
     exit "$trace_status"
   fi
-  for trace_marker in 'TC-MUT-15 PASSED' 'TC-SQL-07 PASSED' 'TC-MUT-09 PASSED' 'TC-MUT-12 PASSED' 'TC-MUT-13 PASSED' 'TC-MUT-14 PASSED' 'TC-MUT-07 GENERATED DATABASE IDS PASSED'; do
+  for trace_marker in 'TC-MUT-15 PASSED' 'TC-SQL-07 PASSED' 'TC-MUT-09 PASSED' 'TC-MUT-12 PASSED' 'TC-MUT-13 PASSED' 'TC-MUT-14 PASSED' 'TC-MUT-12 SHARED READONLY PASSED' 'TC-MUT-07 GENERATED DATABASE IDS PASSED'; do
     if ! rg -Fq "$trace_marker" "$trace_log"; then
       printf 'FAIL missing marker %s in %s\n' "$trace_marker" "$trace_log" >&2
       exit 1
@@ -69,5 +88,5 @@ if [[ "$trace_library_before" != "$trace_library_after" ]]; then
   printf 'FAIL generated library changed during application verification\n' >&2
   exit 1
 fi
-printf 'PASS generated Trace Chain: normative graph, three relation levels, same-type batches, concurrent saves, provider failure, readback failure; library hash %s; database %s; evidence %s\n' \
+printf 'PASS generated Trace Chain: normative graph, three relation levels, same-type batches, concurrent saves, shared read-only references, provider failure, readback failure; library hash %s; database %s; evidence %s\n' \
   "$trace_library_after" "$TEAQL_TRACE_CHAIN_DATABASE" "$trace_evidence_dir"

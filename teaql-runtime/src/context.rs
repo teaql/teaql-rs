@@ -1280,8 +1280,8 @@ impl UserContext {
             });
         }
         match crate::commit_audit::try_enqueue(self, event) {
-            Ok(()) => Ok(()),
-            Err(event) => self.deliver_audit_event(event),
+            None => Ok(()),
+            Some(event) => self.deliver_audit_event(event),
         }
     }
 
