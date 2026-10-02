@@ -70,7 +70,7 @@ model-aware Assist. Do not inspect generated domain-library source.
 
 Capability: `delete`.
 
-- Load the tenant-scoped current entity and use the generated hard-delete or
-  domain-specific soft-delete API; do not invent a deletion method.
+- Load the policy-scoped current entity, mark it for deletion, then use audited
+  save with the same UserContext. Do not invent a physical-delete API.
 - Require an audit reason and optimistic version. Test missing audit and stale
   version as explicit failures.

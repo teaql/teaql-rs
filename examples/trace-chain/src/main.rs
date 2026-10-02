@@ -9,6 +9,7 @@ mod readback_transport;
 mod scenarios;
 mod shared_reference;
 mod successful_readback;
+mod streaming;
 use observation::{Observation, Observed};
 use teaql_runtime::{
     RawAuditEventKind, RuntimeError, SafeAuditEvent, SafeAuditEventSink, SqlLogOperation,
@@ -517,6 +518,7 @@ async fn main() -> Outcome<()> {
     // for this Context's final use; normal allocation probes must precede it.
     shared_reference::shared_reference_graphs(&context, &capture, &observation).await?;
     successful_readback::successful_graph_readback(&context, &capture, &observation).await?;
+    streaming::scalar_streams(&context, &capture, &observation).await?;
     failure::failed_graph(&mut context, &capture, &observation).await?;
     failure::failed_readback(database_url.clone(), &capture, &observation).await?;
     database_ids::generated_database_ids(database_url).await

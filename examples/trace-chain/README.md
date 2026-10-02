@@ -21,7 +21,7 @@ bash examples/trace-chain/verify.sh
 ```
 
 The script first runs eleven native allocation tests and six native identity
-graph tests twice, then runs eight generated scenarios twice on one persistent
+graph tests twice, then requires ten generated scenario markers twice on one persistent
 database without cleanup. It retains all six logs and prints their
 directory, the database URL, and a relative-path SHA-256 manifest digest for the
 unchanged generated library.
@@ -47,6 +47,7 @@ verification. Keep the lockfile for repeatable dependency resolution.
 | Provider failure | A test-owned faulty ID allocator causes a real SQLite primary-key conflict after the root INSERT; attempted command and failure SQL metadata retain branch lineage, both writes roll back, and no committed audit event is delivered |
 | Readback failure | A transport probe delegates the real INSERT unchanged to SQLite, then rejects the following readback; successful write metadata and failed readback metadata remain separate, the graph rolls back and no committed audit event is delivered |
 | Successful readback | Generated Q/E and one root save create and then update a root/item graph. Each changed row returns its actual write followed by a SELECT, retaining root and branch reasons at physical metadata and the safe SQL sink; four writes and four reads produce only four committed audits |
+| Scalar streaming | Generated Q/E retains owned intent across deferred consumption and overlapping requests. SQLite serializes them on one connection lease: Drop releases the active cursor before safe cancellation logging, and the waiting stream and query then complete. Terminal counts are 1 cancelled / 3 successful; saving one fully loaded streamed row never saves or clears its sibling's mutation |
 | Generated database IDs | The real SQLite ID-space generator assigns root/item IDs during `new_entity`, before transaction begin; save does not allocate again, and commands, physical SQL, committed audits and reloaded generated Q/E agree on both identities and the foreign key |
 | Native transaction allocation | Eleven tests include both in-process allocation checks and database-backed allocation inside a real transaction; declared forward/reverse ID references resolve to the allocated parent, an unrelated numeric zero is unchanged, and failed writes retain typed lineage without committing rows or audit |
 | Generated library | Its file-content manifest digest is unchanged across application verification |
@@ -112,8 +113,18 @@ guard retention, no-match and hard-delete cases, sibling-secret masking and
 concurrent independent native batches. No extra SELECT is issued for tracing.
 The generated library remains unchanged. The verifier requires
 `TC-REQ-10 SUCCESSFUL READBACK PASSED` on both retained starts.
-Paging/streaming, broader entry-point/privacy/provider acceptance and immutable
+Paging, broader entry-point/privacy/provider acceptance and immutable
 artifact consumption remain separate gates; this is not complete Trace Chain.
+
+`src/streaming.rs` uses current `rust-assist-list-page/customer_order` and
+expression/update Assist. It rejects missing/blank comments and unsupported
+relation streaming without SQL, and a never-polled stream produces no SQL fact.
+Generated `ServiceRuntimeExecutor` delegates terminal observations to the native
+executor; the runtime safe sink is called before optional trusted observation.
+This checkpoint does not add graph streaming or parallel SQLite connections.
+Native counts are provider-delivered rows, not application-processed rows;
+chunk size 1 makes the early-close assertion exact. Expected blank-intent panic
+diagnostics are retained and caught only by the negative tests.
 
 ## Regenerate without editing the library
 

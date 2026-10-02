@@ -153,6 +153,20 @@ impl ServiceRuntimeExecutor {
 }
 
 impl teaql_data_service::StreamQueryExecutor for ServiceRuntimeExecutor {
+    fn query_stream_observed<'a>(&'a self, request: teaql_data_service::QueryRequest, chunk_size: usize, observer: teaql_data_service::ExecutionObserver<'a>) -> teaql_data_service::QueryStream<'a, Self::Error> {
+        let trusted_observer = self.query_metadata_observer.clone();
+        teaql_data_service::StreamQueryExecutor::query_stream_observed(
+            &self.inner, request, chunk_size,
+            std::sync::Arc::new(move |metadata| {
+                // Deliver the runtime-owned safe sink before optional trusted SPI.
+                observer(metadata.clone());
+                if let Some(trusted) = &trusted_observer {
+                    trusted(&metadata);
+                }
+            }),
+        )
+    }
+
     fn query_stream(&self, request: teaql_data_service::QueryRequest, chunk_size: usize) -> teaql_data_service::QueryStream<'_, Self::Error> {
         teaql_data_service::StreamQueryExecutor::query_stream(&self.inner, request, chunk_size)
     }

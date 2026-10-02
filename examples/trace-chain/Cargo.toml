@@ -12,6 +12,7 @@ teaql-sql = { path = "../../teaql-sql" }
 teaql-provider-sqlite = { path = "../../teaql-provider-sqlite" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
 serde_json = "1"
+futures-util = "0.3"
 
 [workspace]
 

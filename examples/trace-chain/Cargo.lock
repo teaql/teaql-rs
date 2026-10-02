@@ -946,6 +946,7 @@ dependencies = [
 name = "trace-chain-example"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "serde_json",
  "teaql-data-service",
  "teaql-provider-sqlite",
