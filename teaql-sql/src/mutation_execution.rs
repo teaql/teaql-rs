@@ -2,6 +2,140 @@ use super::*;
 use crate::diagnostic_execution::{FailureJournal, StatementDiagnostic};
 use teaql_data_service::{ExecutionObserver, SqlExecutionOutcome, SqlIntentRedactions};
 
+/// A native batch has intent but no entity identity of its own. Keep its
+/// validated ancestry outside Context and materialize typed nodes only when
+/// the physical item's entity is known. Explicit graph frames remain intact.
+struct BatchIntentScope {
+    parent: Option<Arc<BatchIntentScope>>,
+    intent: teaql_core::MutationIntent,
+}
+
+#[derive(Clone)]
+struct MutationExecutionScope {
+    root_intent: teaql_core::MutationIntent,
+    batch: Option<Arc<BatchIntentScope>>,
+    redactions: Option<Arc<SqlIntentRedactions>>,
+    observer: Option<ExecutionObserver<'static>>,
+}
+
+fn statement_trace(
+    request: &MutationRequest,
+    scope: Option<&Arc<BatchIntentScope>>,
+) -> Vec<teaql_core::TraceNode> {
+    use teaql_core::{TraceKind, TraceNode};
+    let mut trace = request.execution_trace_chain();
+    let Some(scope) = scope else { return trace };
+    let mut scopes = Vec::new();
+    let mut current = Some(scope.as_ref());
+    while let Some(node) = current {
+        scopes.push(node);
+        current = node.parent.as_deref();
+    }
+    scopes.reverse();
+    let source = trace
+        .iter()
+        .find(|node| node.kind == TraceKind::AuditReason)
+        .expect("validated mutation owns an audit reason");
+    let mut prefix = scopes
+        .iter()
+        .map(|scope| {
+            TraceNode::typed(
+                TraceKind::AuditReason,
+                &source.entity_type,
+                None,
+                scope.intent.comment(),
+            )
+        })
+        .collect::<Vec<_>>();
+    // The existing first graph reason and its request intent are one slot, not
+    // a second child reason. Retain its identity when the batch repeats it.
+    let repeated = if source.comment == prefix[0].comment {
+        Some(0)
+    } else if source.comment == prefix.last().unwrap().comment {
+        Some(prefix.len() - 1)
+    } else {
+        None
+    };
+    if let Some(repeated) = repeated {
+        let index = trace
+            .iter()
+            .position(|node| node.kind == TraceKind::AuditReason)
+            .unwrap();
+        prefix[repeated] = trace.remove(index);
+    }
+    prefix.extend(trace);
+    prefix
+}
+
+/// Collect privacy provenance, not SQL or validation results. A statement can
+/// mention a future sibling in its inherited root intent; compile/transport
+/// failure must still occur in the original execution order. Existing field
+/// classification is authoritative, including old values and credential keys.
+fn batch_intent_redactions<F>(request: &MutationRequest, lookup: &F) -> SqlIntentRedactions
+where
+    F: Fn(&str) -> Option<Arc<EntityDescriptor>>,
+{
+    use teaql_data_service::MutationCommand;
+    use teaql_data_service::{SqlLogContext, SqlParameterLogPolicy};
+    fn capture_values<'a>(
+        redactions: &mut SqlIntentRedactions,
+        entity: Option<&EntityDescriptor>,
+        values: impl Iterator<Item = (&'a String, &'a Value)>,
+    ) {
+        let (params, policies): (Vec<_>, Vec<_>) = values
+            .map(|(field, value)| {
+                (
+                    value.clone(),
+                    entity
+                        .map(|entity| crate::bindings::field_policy(entity, field))
+                        .unwrap_or(SqlParameterLogPolicy::Unknown),
+                )
+            })
+            .unzip();
+        redactions.extend(&SqlIntentRedactions::from_bindings(
+            &SqlLogContext {
+                generated_sql: true,
+                parameter_policies: policies,
+                ..Default::default()
+            },
+            &params,
+            "",
+        ));
+    }
+    let mut redactions = SqlIntentRedactions::default();
+    if !matches!(request.command, MutationCommand::Batch(_)) {
+        return redactions;
+    }
+    let mut pending = vec![request];
+    while let Some(request) = pending.pop() {
+        match &request.command {
+            MutationCommand::Batch(children) => pending.extend(children),
+            MutationCommand::Insert(command) => {
+                let entity = lookup(&command.entity);
+                capture_values(&mut redactions, entity.as_deref(), command.values.iter());
+                if let Some(id) = command.values.get("id") {
+                    redactions.capture_target_id(id);
+                }
+            }
+            MutationCommand::Update(command) => {
+                let entity = lookup(&command.entity);
+                capture_values(
+                    &mut redactions,
+                    entity.as_deref(),
+                    command
+                        .values
+                        .iter()
+                        .chain(command.old_values.iter().flat_map(|values| values.iter())),
+                );
+                redactions.capture_target_id(&command.id);
+            }
+            MutationCommand::Delete(command) => redactions.capture_target_id(&command.id),
+            MutationCommand::Recover(command) => redactions.capture_target_id(&command.id),
+        }
+    }
+    redactions
+}
+
 /// No context/global mutable state: one adapter and one fallback journal per call.
 struct ObservedTransport<'a, T> {
     inner: &'a T,
@@ -11,6 +145,7 @@ struct ObservedTransport<'a, T> {
     comment: String,
     observer: Option<ExecutionObserver<'static>>,
     intent_redactions: std::sync::Mutex<SqlIntentRedactions>,
+    inherited_redactions: Option<Arc<SqlIntentRedactions>>,
     target_id: Option<teaql_core::Value>,
 }
 impl<T> ObservedTransport<'_, T> {
@@ -30,6 +165,9 @@ impl<T> ObservedTransport<'_, T> {
         }
         if let Some(id) = &self.target_id {
             sql_log.intent_redactions.capture_target_id(id);
+        }
+        if let Some(inherited) = &self.inherited_redactions {
+            sql_log.intent_redactions.extend(inherited);
         }
         ExecutionMetadata {
             statements: vec![],
@@ -150,16 +288,17 @@ where
     F: Fn(&str) -> Option<Arc<EntityDescriptor>> + Sync,
 {
     let mut journal = FailureJournal::new(observer);
-    let result = execute_tree(
-        dialect,
-        transport,
-        lookup,
-        cache,
-        request,
-        readback,
-        journal.recorder(),
-    )
-    .await;
+    let scope = MutationExecutionScope {
+        root_intent: request.intent().clone(),
+        batch: None,
+        redactions: matches!(
+            request.command,
+            teaql_data_service::MutationCommand::Batch(_)
+        )
+        .then(|| Arc::new(batch_intent_redactions(&request, lookup))),
+        observer: journal.recorder(),
+    };
+    let result = execute_tree(dialect, transport, lookup, cache, request, readback, scope).await;
     if result.is_ok() {
         journal.disarm();
     }
@@ -173,7 +312,7 @@ async fn execute_tree<D, T, F>(
     cache: &RwLock<Vec<CachedSelectPlan>>,
     request: MutationRequest,
     readback: bool,
-    observer: Option<ExecutionObserver<'static>>,
+    mut scope: MutationExecutionScope,
 ) -> Result<MutationResult, SqlExecutorError<T::Error>>
 where
     D: SqlDialect + Sync,
@@ -186,6 +325,13 @@ where
         teaql_data_service::MutationCommand::Delete(cmd) => &cmd.entity,
         teaql_data_service::MutationCommand::Recover(cmd) => &cmd.entity,
         teaql_data_service::MutationCommand::Batch(mutations) => {
+            scope.batch = match scope.batch {
+                Some(parent) if parent.intent.comment() == request.comment() => Some(parent),
+                parent => Some(Arc::new(BatchIntentScope {
+                    parent,
+                    intent: request.intent().clone(),
+                })),
+            };
             let start = SystemTime::now();
             let mut statements = Vec::new();
             let mut total = 0;
@@ -199,7 +345,7 @@ where
                     cache,
                     child.clone(),
                     readback,
-                    observer.clone(),
+                    scope.clone(),
                 ))
                 .await?;
                 total += result.affected_rows;
@@ -223,7 +369,7 @@ where
                     affected_rows: Some(total),
                     result_count: None,
                     trace_chain: vec![],
-                    comment: None,
+                    comment: Some(scope.root_intent.comment().to_owned()),
                     backend_request_id: None,
                     parameterized_query: (!sql.is_empty()).then(|| sql.join("; ")),
                     params,
@@ -270,10 +416,11 @@ where
         inner: transport,
         backend: format!("{:?}", dialect.kind()).to_ascii_lowercase(),
         operation,
-        trace: request.execution_trace_chain(),
-        comment: request.comment().to_owned(),
-        observer,
+        trace: statement_trace(&request, scope.batch.as_ref()),
+        comment: scope.root_intent.comment().to_owned(),
+        observer: scope.observer,
         intent_redactions: Default::default(),
+        inherited_redactions: scope.redactions,
         target_id,
     };
     let mut metadata = observed.metadata(&compiled, operation);
@@ -336,6 +483,7 @@ pub(super) async fn guarded<D: SqlDialect + Sync, T: SqlTransport>(
         comment: request.mutation.comment().to_owned(),
         observer: journal.recorder(),
         intent_redactions: Default::default(),
+        inherited_redactions: None,
         target_id: match &request.mutation.command {
             teaql_data_service::MutationCommand::Update(cmd) => Some(cmd.id.clone()),
             teaql_data_service::MutationCommand::Delete(cmd) => Some(cmd.id.clone()),

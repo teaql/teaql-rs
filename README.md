@@ -75,6 +75,20 @@ Mutation payloads are now `MutationCommand`; construct their envelope with
 comment. Derived relation and Facet queries inherit root intent; mutation
 readback inherits its originating reason and has an explicit runtime purpose.
 
+Native batch SQL and readback inherit the batch's root Comment while retaining
+each item's local trace lineage. Safe logs account for sensitive values in
+other batch items, including prior values; execution bindings and caller intent
+are unchanged. This is native request coverage, not completion of the full
+generated Trace Chain graph ([#239](https://github.com/teaql/teaql-rs/issues/239)).
+
+SQLite now holds an operation-owned connection lease for the entire transaction.
+Its low-level `SqlTransactionTransport::Tx` is a non-cloneable
+`SqliteTransaction`, not a cloned `SqliteMutationExecutor`; use the transaction
+returned by `begin_sql()` for its I/O. Drop/cancellation rolls back before
+releasing the lease. Generated Context Q/E/save calls keep their spelling.
+See the [SQLite provider guide](teaql-provider-sqlite/README.md) for the
+concurrency boundary ([#240](https://github.com/teaql/teaql-rs/issues/240)).
+
 This branch is not a published artifact. The changed Rust Facet template and
 the runtime must be verified together before adoption. The retained request
 tests are `teaql-data-service/tests/request_intent_vectors.rs` and

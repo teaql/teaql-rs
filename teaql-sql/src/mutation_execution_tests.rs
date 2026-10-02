@@ -166,6 +166,94 @@ fn batch() -> MutationRequest {
 }
 
 #[tokio::test]
+async fn native_batch_repeated_root_is_one_slot_with_real_item_identity() {
+    let (executor, entries, _) = fixture(Mode::Success, false);
+    let child = insert(1);
+    let request = teaql_data_service::MutationCommand::Batch(vec![
+        teaql_data_service::MutationCommand::Batch(vec![child])
+            .request("group native items")
+            .unwrap(),
+    ])
+    .request("audited test")
+    .unwrap();
+    let result = executor.mutate(request).await.unwrap();
+    let item = &result.metadata.statements[0].statements[0];
+    let reasons = item
+        .trace_chain
+        .iter()
+        .filter(|node| node.kind == TraceKind::AuditReason)
+        .collect::<Vec<_>>();
+    assert_eq!(item.comment.as_deref(), Some("audited test"));
+    assert_eq!(reasons.len(), 2);
+    assert_eq!(reasons[0].comment, "audited test");
+    assert_eq!(reasons[0].entity_id, Some(1));
+    assert_eq!(reasons[1].comment, "group native items");
+    assert!(entries.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn inherited_batch_provenance_covers_old_values_and_failed_readback_without_changing_binds() {
+    let (executor, entries, observer) = fixture(Mode::FailRead, false);
+    let tx = executor.begin().await.unwrap();
+    let mut sibling = UpdateCommand::new("Customer", 2_u64).value("status", "ACTIVE");
+    sibling.old_values = Some(teaql_core::EntitySnapshot::from(
+        std::collections::BTreeMap::from([
+            ("name".into(), Value::from("OLD-NAME-CANARY")),
+            ("password".into(), Value::from("OLD-CREDENTIAL-CANARY")),
+        ]),
+    ));
+    let request = teaql_data_service::MutationCommand::Batch(vec![
+        insert(1),
+        teaql_data_service::MutationCommand::Update(sibling)
+            .request("update sibling")
+            .unwrap(),
+    ])
+    .request("batch OLD-NAME-CANARY OLD-CREDENTIAL-CANARY ACTIVE")
+    .unwrap();
+    assert!(matches!(tx.mutate_observed(request, Some(observer)).await,
+        Err(SqlExecutorError::Transport(ref error)) if error.to_string() == "original readback error"));
+    let captured = entries.lock().unwrap();
+    assert_eq!(
+        captured.len(),
+        2,
+        "only the first item wrote and attempted readback"
+    );
+    assert_eq!(executor.transport.writes.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        captured[0].params,
+        [Value::U64(1), Value::I64(1), Value::from("Riverside")]
+    );
+    for metadata in captured.iter() {
+        assert_eq!(
+            metadata.comment.as_deref(),
+            Some("batch OLD-NAME-CANARY OLD-CREDENTIAL-CANARY ACTIVE")
+        );
+        let mut hidden = Vec::new();
+        metadata
+            .sql_log
+            .intent_redactions
+            .extend_secrets(false, &mut hidden);
+        assert!(hidden.contains(&"OLD-NAME-CANARY".into()));
+        assert!(hidden.contains(&"OLD-CREDENTIAL-CANARY".into()));
+        assert!(
+            !hidden.contains(&"ACTIVE".into()),
+            "ordinary public text stays available"
+        );
+        let mut debug_hidden = Vec::new();
+        metadata
+            .sql_log
+            .intent_redactions
+            .extend_secrets(true, &mut debug_hidden);
+        assert!(!debug_hidden.contains(&"OLD-NAME-CANARY".into()));
+        assert!(debug_hidden.contains(&"OLD-CREDENTIAL-CANARY".into()));
+        assert!(
+            debug_hidden.contains(&"2".into()),
+            "target identity remains free-text provenance"
+        );
+    }
+}
+
+#[tokio::test]
 async fn mutation_target_id_is_sql_intent_provenance_without_changing_plain_binding() {
     let requests = [
         insert(1001),
