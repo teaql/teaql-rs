@@ -44,6 +44,7 @@ impl teaql_data_service::SchemaProvider for Schema {
 #[derive(Clone, Copy)]
 enum Mode {
     Success,
+    NoMatch,
     FailWrite(usize),
     PendingWrite(usize),
     FailRead,
@@ -79,6 +80,7 @@ impl SqlTransport for Transport {
             );
         }
         match self.mode {
+            Mode::NoMatch => Ok(0),
             Mode::FailWrite(at) if index == at => {
                 Err(std::io::Error::other("original write error"))
             }
@@ -503,6 +505,172 @@ async fn successful_batch_does_not_notify_fallback_observer() {
     assert_eq!(result.affected_rows, 3);
     assert_eq!(result.metadata.statements.len(), 3);
     assert!(entries.lock().unwrap().is_empty());
+}
+
+fn assert_successful_readback_pair(metadata: &ExecutionMetadata, id: u64) {
+    assert_eq!(
+        metadata.statements.len(),
+        2,
+        "write and readback are physical statements"
+    );
+    let write = &metadata.statements[0];
+    let readback = &metadata.statements[1];
+    assert!(write.statements.is_empty());
+    assert!(readback.statements.is_empty());
+    assert_eq!(write.operation, metadata.operation);
+    assert_eq!(
+        write.sql_log.execution_outcome,
+        Some(SqlExecutionOutcome::Success)
+    );
+    assert_eq!(write.affected_rows, Some(1));
+    assert_eq!(readback.operation, DataServiceOperation::Query);
+    assert_eq!(
+        readback.sql_log.execution_outcome,
+        Some(SqlExecutionOutcome::Success)
+    );
+    assert_eq!(readback.result_count, Some(1));
+    assert!(
+        readback
+            .parameterized_query
+            .as_deref()
+            .unwrap()
+            .starts_with("SELECT")
+    );
+    assert!(readback.params.contains(&Value::U64(id)));
+    let write_reasons: Vec<_> = write
+        .trace_chain
+        .iter()
+        .filter(|node| node.kind == TraceKind::AuditReason)
+        .collect();
+    let read_reasons: Vec<_> = readback
+        .trace_chain
+        .iter()
+        .filter(|node| node.kind == TraceKind::AuditReason)
+        .collect();
+    assert_eq!(
+        read_reasons, write_reasons,
+        "derived readback inherits typed lineage"
+    );
+    assert_eq!(readback.comment, write.comment);
+    assert!(
+        readback
+            .trace_chain
+            .iter()
+            .any(|node| node.kind == TraceKind::Purpose
+                && node.comment == "verify the persisted mutation result")
+    );
+    let mut hidden = Vec::new();
+    readback
+        .sql_log
+        .intent_redactions
+        .extend_secrets(false, &mut hidden);
+    assert!(
+        hidden.contains(&"Riverside".to_owned()),
+        "readback retains write-bind privacy"
+    );
+    assert!(
+        write.params.contains(&Value::from("Riverside")),
+        "raw driver binds stay intact"
+    );
+}
+
+#[tokio::test]
+async fn successful_transaction_readback_is_returned_once_after_write() {
+    for observe in [false, true] {
+        let (executor, entries, observer) = fixture(Mode::Success, false);
+        let tx = executor.begin().await.unwrap();
+        let result = tx
+            .mutate_observed(insert(1), observe.then_some(observer))
+            .await
+            .unwrap();
+        assert_successful_readback_pair(&result.metadata, 1);
+        assert_eq!(result.affected_rows, 1);
+        assert!(result.persisted_snapshot.is_some());
+        assert!(
+            entries.lock().unwrap().is_empty(),
+            "success uses result, not fallback notification"
+        );
+    }
+}
+
+#[tokio::test]
+async fn successful_batch_readbacks_keep_item_grouping_and_local_lineage() {
+    let (executor, entries, observer) = fixture(Mode::Success, false);
+    let tx = executor.begin().await.unwrap();
+    let result = tx.mutate_observed(batch(), Some(observer)).await.unwrap();
+    assert_eq!(result.affected_rows, 3, "reads are not counted as writes");
+    assert_eq!(
+        result.metadata.statements.len(),
+        3,
+        "retain the native item grouping"
+    );
+    for (index, metadata) in result.metadata.statements.iter().enumerate() {
+        assert_successful_readback_pair(metadata, index as u64 + 1);
+    }
+    assert!(
+        entries.lock().unwrap().is_empty(),
+        "physical facts are delivered only once"
+    );
+}
+
+#[tokio::test]
+async fn successful_guarded_readback_is_returned_with_guard_and_owned_intent() {
+    for observe in [false, true] {
+        let (executor, entries, observer) = fixture(Mode::Success, false);
+        let request = GuardedMutationRequest::new(
+            teaql_data_service::MutationCommand::Update(
+                UpdateCommand::new("Customer", 1_u64)
+                    .expected_version(1)
+                    .value("name", "Riverside"),
+            )
+            .request("audited provider conformance test")
+            .unwrap(),
+            Expr::eq("status", "ACTIVE"),
+        );
+        let result = executor
+            .mutate_guarded_observed(request, observe.then_some(observer))
+            .await
+            .unwrap();
+        assert_successful_readback_pair(&result.metadata, 1);
+        for metadata in &result.metadata.statements {
+            assert!(
+                metadata
+                    .parameterized_query
+                    .as_ref()
+                    .unwrap()
+                    .contains("status")
+            );
+            assert!(metadata.params.contains(&Value::from("ACTIVE")));
+        }
+        assert!(entries.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn unsuccessful_match_and_hard_delete_do_not_invent_a_readback() {
+    for (mode, request, affected) in [
+        (Mode::NoMatch, insert(1), 0),
+        (
+            Mode::Success,
+            teaql_data_service::MutationCommand::Delete(
+                teaql_core::DeleteCommand::new("Customer", 1_u64).hard_delete(),
+            )
+            .request("physically remove customer")
+            .unwrap(),
+            1,
+        ),
+    ] {
+        let (executor, entries, observer) = fixture(mode, false);
+        let tx = executor.begin().await.unwrap();
+        let result = tx.mutate_observed(request, Some(observer)).await.unwrap();
+        assert_eq!(result.affected_rows, affected);
+        assert!(result.persisted_snapshot.is_none());
+        assert!(
+            result.metadata.statements.is_empty(),
+            "only executed SELECTs become readbacks"
+        );
+        assert!(entries.lock().unwrap().is_empty());
+    }
 }
 #[tokio::test]
 async fn later_compile_failure_does_not_invent_an_executed_statement() {

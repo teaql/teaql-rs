@@ -75,7 +75,7 @@ for trace_pass in 1 2; do
     printf 'FAIL generated Trace Chain replay %s: exit %s; evidence %s\n' "$trace_pass" "$trace_status" "$trace_log" >&2
     exit "$trace_status"
   fi
-  for trace_marker in 'TC-MUT-15 PASSED' 'TC-SQL-07 PASSED' 'TC-MUT-09 PASSED' 'TC-MUT-12 PASSED' 'TC-MUT-13 PASSED' 'TC-MUT-14 PASSED' 'TC-MUT-12 SHARED READONLY PASSED' 'TC-MUT-07 GENERATED DATABASE IDS PASSED'; do
+  for trace_marker in 'TC-MUT-15 PASSED' 'TC-SQL-07 PASSED' 'TC-MUT-09 PASSED' 'TC-MUT-12 PASSED' 'TC-MUT-13 PASSED' 'TC-MUT-14 PASSED' 'TC-MUT-12 SHARED READONLY PASSED' 'TC-MUT-07 GENERATED DATABASE IDS PASSED' 'TC-REQ-10 SUCCESSFUL READBACK PASSED'; do
     if ! rg -Fq "$trace_marker" "$trace_log"; then
       printf 'FAIL missing marker %s in %s\n' "$trace_marker" "$trace_log" >&2
       exit 1

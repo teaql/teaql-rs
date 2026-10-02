@@ -46,6 +46,7 @@ verification. Keep the lockfile for repeatable dependency resolution.
 | Shared read-only reference | One bounded generated Q loads two orders whose E Platform values are pointer-identical. Their mutation ledgers stay independent, each composes only its own new item, and overlapping saves write exactly four items with isolated command/SQL/audit reasons. The shared Platform snapshot, ledger and version stay unchanged; generated Q/E reloads both commits |
 | Provider failure | A test-owned faulty ID allocator causes a real SQLite primary-key conflict after the root INSERT; attempted command and failure SQL metadata retain branch lineage, both writes roll back, and no committed audit event is delivered |
 | Readback failure | A transport probe delegates the real INSERT unchanged to SQLite, then rejects the following readback; successful write metadata and failed readback metadata remain separate, the graph rolls back and no committed audit event is delivered |
+| Successful readback | Generated Q/E and one root save create and then update a root/item graph. Each changed row returns its actual write followed by a SELECT, retaining root and branch reasons at physical metadata and the safe SQL sink; four writes and four reads produce only four committed audits |
 | Generated database IDs | The real SQLite ID-space generator assigns root/item IDs during `new_entity`, before transaction begin; save does not allocate again, and commands, physical SQL, committed audits and reloaded generated Q/E agree on both identities and the foreign key |
 | Native transaction allocation | Eleven tests include both in-process allocation checks and database-backed allocation inside a real transaction; declared forward/reverse ID references resolve to the allocated parent, an unrelated numeric zero is unchanged, and failed writes retain typed lineage without committing rows or audit |
 | Generated library | Its file-content manifest digest is unchanged across application verification |
@@ -102,6 +103,17 @@ prove safe synchronous allocation by another operation while an unrelated save
 owns the connection, or shared ID-space aliases between display and type names.
 Complete ledger-specific override semantics and immutable internal-artifact
 replay remain separate gates.
+
+Successful readback diagnostics are physical children of the existing mutation
+summary. Runtime sinks visit those children once; affected-row totals and
+committed audit delivery still describe mutations only. Native tests cover
+observer-present and observer-absent execution, native batch item grouping,
+guard retention, no-match and hard-delete cases, sibling-secret masking and
+concurrent independent native batches. No extra SELECT is issued for tracing.
+The generated library remains unchanged. The verifier requires
+`TC-REQ-10 SUCCESSFUL READBACK PASSED` on both retained starts.
+Paging/streaming, broader entry-point/privacy/provider acceptance and immutable
+artifact consumption remain separate gates; this is not complete Trace Chain.
 
 ## Regenerate without editing the library
 

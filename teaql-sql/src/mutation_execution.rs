@@ -147,6 +147,7 @@ struct ObservedTransport<'a, T> {
     intent_redactions: std::sync::Mutex<SqlIntentRedactions>,
     inherited_redactions: Option<Arc<SqlIntentRedactions>>,
     target_id: Option<teaql_core::Value>,
+    successful_readbacks: std::sync::Mutex<Vec<ExecutionMetadata>>,
 }
 impl<T> ObservedTransport<'_, T> {
     fn metadata(
@@ -226,6 +227,23 @@ impl<T> ObservedTransport<'_, T> {
             observer(metadata);
         }
     }
+
+    fn retain_successful_readbacks(&self, metadata: &mut ExecutionMetadata) {
+        let readbacks = std::mem::take(
+            &mut *self
+                .successful_readbacks
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()),
+        );
+        if !readbacks.is_empty() {
+            // Keep the logical mutation summary. Physical children carry the
+            // write followed by its actual SELECT; runtime sinks traverse
+            // children without logging the summary again. Native batch item
+            // grouping remains intact.
+            metadata.statements = vec![metadata.clone()];
+            metadata.statements.extend(readbacks);
+        }
+    }
 }
 impl<T: SqlTransport> SqlTransport for ObservedTransport<'_, T> {
     type Error = T::Error;
@@ -233,9 +251,6 @@ impl<T: SqlTransport> SqlTransport for ObservedTransport<'_, T> {
         &self,
         query: &CompiledQuery,
     ) -> Result<Vec<CompactRow>, Self::Error> {
-        if self.observer.is_none() {
-            return self.inner.fetch_all_compact_sql(query).await;
-        }
         let mut diagnostic = StatementDiagnostic::new(
             Some(self.metadata(query, DataServiceOperation::Query)),
             self.observer.clone(),
@@ -246,18 +261,22 @@ impl<T: SqlTransport> SqlTransport for ObservedTransport<'_, T> {
         })?;
         let mut metadata = diagnostic.success().expect("observed readback");
         metadata.result_count = Some(rows.len());
+        self.successful_readbacks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(metadata.clone());
         self.emit(metadata);
         Ok(rows)
     }
     async fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
-        if self.observer.is_none() {
-            return self.inner.execute_sql(query).await;
-        }
         *self
             .intent_redactions
             .lock()
             .unwrap_or_else(|p| p.into_inner()) =
             SqlIntentRedactions::from_bindings(&query.log_context, &query.params, &query.sql);
+        if self.observer.is_none() {
+            return self.inner.execute_sql(query).await;
+        }
         let mut diagnostic = StatementDiagnostic::new(
             Some(self.metadata(query, self.operation)),
             self.observer.clone(),
@@ -422,6 +441,7 @@ where
         intent_redactions: Default::default(),
         inherited_redactions: scope.redactions,
         target_id,
+        successful_readbacks: Default::default(),
     };
     let mut metadata = observed.metadata(&compiled, operation);
     let affected_rows = observed
@@ -452,6 +472,7 @@ where
     } else {
         None
     };
+    observed.retain_successful_readbacks(&mut metadata);
     Ok(MutationResult {
         affected_rows,
         generated_values: GeneratedValues::default(),
@@ -490,10 +511,13 @@ pub(super) async fn guarded<D: SqlDialect + Sync, T: SqlTransport>(
             teaql_data_service::MutationCommand::Recover(cmd) => Some(cmd.id.clone()),
             _ => None,
         },
+        successful_readbacks: Default::default(),
     };
     let mut result = execute_guarded_mutation(dialect, &observed, entity, cache, request).await;
     if let Ok(result) = &mut result {
         result.metadata.sql_log.execution_outcome = Some(SqlExecutionOutcome::Success);
+        result.metadata.trace_chain = observed.trace.clone();
+        observed.retain_successful_readbacks(&mut result.metadata);
         journal.disarm();
     }
     result

@@ -243,8 +243,13 @@ fn native_nested_batch_inherits_root_intent_and_preserves_local_lineage() {
         assert_eq!(result.affected_rows, 2);
         assert_eq!(result.metadata.comment.as_deref(), Some(original.comment()));
         let leaves = leaf_metadata(&result.metadata);
-        assert_eq!(leaves.len(), 2);
-        for (statement, expected) in leaves.iter().zip([
+        assert_eq!(leaves.len(), 4, "two writes and their actual readbacks");
+        let writes: Vec<_> = leaves
+            .iter()
+            .filter(|statement| statement.operation != DataServiceOperation::Query)
+            .collect();
+        assert_eq!(writes.len(), 2);
+        for (pair, expected) in leaves.chunks_exact(2).zip([
             vec![original.comment(), "remove stale probe"],
             vec![
                 original.comment(),
@@ -252,24 +257,35 @@ fn native_nested_batch_inherits_root_intent_and_preserves_local_lineage() {
                 "update live probe",
             ],
         ]) {
-            assert_eq!(statement.comment.as_deref(), Some(original.comment()));
-            let lineage = statement
-                .trace_chain
-                .iter()
-                .filter(|node| node.kind == TraceKind::AuditReason)
-                .map(|node| node.comment.as_str())
-                .collect::<Vec<_>>();
-            assert_eq!(lineage, expected);
+            assert_ne!(pair[0].operation, DataServiceOperation::Query);
+            assert_eq!(pair[1].operation, DataServiceOperation::Query);
+            assert_eq!(pair[1].result_count, Some(1));
+            for statement in pair {
+                assert_eq!(statement.comment.as_deref(), Some(original.comment()));
+                let lineage = statement
+                    .trace_chain
+                    .iter()
+                    .filter(|node| node.kind == TraceKind::AuditReason)
+                    .map(|node| node.comment.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(lineage, expected);
+            }
         }
-        assert!(leaves[1].params.contains(&Value::from("Riverside")));
-        assert!(leaves[1].params.contains(&Value::from("PASSWORD-CANARY")));
+        assert!(writes[1].params.contains(&Value::from("Riverside")));
+        assert!(writes[1].params.contains(&Value::from("PASSWORD-CANARY")));
         let MutationCommand::Batch(children) = &original.command else {
             panic!("retained original is a batch");
         };
         assert_eq!(children[0].comment(), "remove stale probe");
         assert_eq!(children[1].comment(), "update current probes");
         let logs = context.sql_logs();
-        assert_eq!(logs.len(), 2);
+        assert_eq!(logs.len(), 4, "each physical statement logged once");
+        assert_eq!(
+            logs.iter()
+                .filter(|log| log.operation == SqlLogOperation::Select)
+                .count(),
+            2
+        );
         for log in &logs {
             assert!(log.comment.as_deref().unwrap().contains("ACTIVE"));
             assert!(!format!("{log:?}").contains("Riverside"));
@@ -437,7 +453,17 @@ fn independent_native_batches_on_one_context_keep_operation_local_execution_inte
     });
     assert_eq!(results, ["A", "B"]);
     let logs = context.sql_logs();
-    assert_eq!(logs.len(), 4);
+    assert_eq!(
+        logs.len(),
+        8,
+        "four writes and four independently traced readbacks"
+    );
+    assert_eq!(
+        logs.iter()
+            .filter(|log| log.operation == SqlLogOperation::Select)
+            .count(),
+        4
+    );
     assert_eq!(
         logs.iter()
             .filter(|log| log
@@ -446,7 +472,7 @@ fn independent_native_batches_on_one_context_keep_operation_local_execution_inte
                 .unwrap()
                 .starts_with("save native batch A"))
             .count(),
-        2
+        4
     );
     assert_eq!(
         logs.iter()
@@ -456,7 +482,7 @@ fn independent_native_batches_on_one_context_keep_operation_local_execution_inte
                 .unwrap()
                 .starts_with("save native batch B"))
             .count(),
-        2
+        4
     );
     assert!(!format!("{logs:?}").contains("ALPHA-PRIVATE"));
     assert!(!format!("{logs:?}").contains("BETA-PRIVATE"));
