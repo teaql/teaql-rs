@@ -1406,6 +1406,72 @@ where
         Ok(ordered)
     }
 
+    /// Resolve only declared ID references after the whole graph is allocated.
+    /// Do not rewrite arbitrary scalar values equal to a temporary ID, or mutate
+    /// the retryable source ledger. Both forward and reverse descriptors can
+    /// describe the same foreign key; their assignments must agree.
+    fn rebind_allocated_ledger_relations(
+        &self,
+        changes: &mut std::collections::BTreeMap<crate::EntityKey, crate::EntityValues>,
+        assigned: &std::collections::BTreeMap<crate::EntityKey, Value>,
+    ) -> Result<(), RuntimeError> {
+        if assigned.is_empty() {
+            return Ok(());
+        }
+        let mut bindings = std::collections::BTreeMap::<(crate::EntityKey, String), Value>::new();
+        for descriptor in self.data_service.metadata.context.all_entities() {
+            for relation in &descriptor.relations {
+                let (referencing_entity, referencing_field, referenced_entity) =
+                    if relation.many && relation.local_key == "id" {
+                        (
+                            &relation.target_entity,
+                            &relation.foreign_key,
+                            &descriptor.name,
+                        )
+                    } else if !relation.many && relation.foreign_key == "id" {
+                        (
+                            &descriptor.name,
+                            &relation.local_key,
+                            &relation.target_entity,
+                        )
+                    } else {
+                        continue;
+                    };
+                for (key, record) in changes
+                    .iter()
+                    .filter(|(key, _)| key.entity.as_ref() == referencing_entity)
+                {
+                    let Some(value) = record
+                        .get(referencing_field)
+                        .filter(|value| !matches!(value, Value::Null | Value::TypedNull(_)))
+                    else {
+                        continue;
+                    };
+                    let reference = crate::EntityKey::new(referenced_entity.clone(), value.clone());
+                    let Some(allocated) = assigned.get(&reference) else {
+                        continue;
+                    };
+                    let binding = (key.clone(), referencing_field.clone());
+                    if let Some(previous) = bindings.insert(binding, allocated.clone())
+                        && previous != *allocated
+                    {
+                        return Err(RuntimeError::Graph(format!(
+                            "conflicting allocated relation identities for {}.{}",
+                            key.entity, referencing_field
+                        )));
+                    }
+                }
+            }
+        }
+        for ((key, field), id) in bindings {
+            changes
+                .get_mut(&key)
+                .expect("binding owns a change record")
+                .insert(field, id);
+        }
+        Ok(())
+    }
+
     pub(crate) async fn execute_ledger_plan_internal(
         &self,
         root: crate::EntityRuntimeState,
@@ -1572,6 +1638,8 @@ where
             }
         }
         root.enrich_allocated_trace_scopes(&generated_ids);
+        self.rebind_allocated_ledger_relations(&mut checked_changes, &generated_ids)
+            .map_err(DataServiceError::Runtime)?;
         let mut ordered_insert_batches = Vec::<(String, Vec<crate::EntityKey>)>::new();
         for key in ordered_insert_keys {
             let entity = key.entity.to_string();

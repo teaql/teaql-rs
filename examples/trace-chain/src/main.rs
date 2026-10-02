@@ -2,6 +2,7 @@
 //! Expected chains are test assertions only, never inputs to the runtime.
 use std::sync::{Arc, Mutex};
 mod batching;
+mod database_ids;
 mod failure;
 mod observation;
 mod readback_transport;
@@ -511,5 +512,6 @@ async fn main() -> Outcome<()> {
     batching::same_type_batch(&mut context, &capture, &observation).await?;
     scenarios::concurrent_graphs(&context, &capture, &observation).await?;
     failure::failed_graph(&mut context, &capture, &observation).await?;
-    failure::failed_readback(database_url, &capture, &observation).await
+    failure::failed_readback(database_url.clone(), &capture, &observation).await?;
+    database_ids::generated_database_ids(database_url).await
 }

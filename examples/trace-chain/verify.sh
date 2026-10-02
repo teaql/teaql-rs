@@ -13,6 +13,39 @@ fi
 generated_hash() {
   (cd "$example_dir/rust-lib-core" && find . -type f -exec sha256sum {} \; | sort | sha256sum | cut -d ' ' -f 1)
 }
+# Database allocation must be exercised, not inferred from the generated early
+# allocation path. Each retained native run includes real transaction/rollback
+# probes and both directions of declared relation metadata.
+for allocation_pass in 1 2; do
+  allocation_log="$trace_evidence_dir/native-allocation-$allocation_pass.log"
+  allocation_status=0
+  timeout 180s cargo test --locked --manifest-path "$example_dir/../../Cargo.toml" \
+    -p teaql-provider-sqlite --test ledger_allocated_trace -- --nocapture \
+    >"$allocation_log" 2>&1 || allocation_status=$?
+  if (( allocation_status != 0 )); then
+    sed -n '1,240p' "$allocation_log" >&2
+    printf 'FAIL native database allocation replay %s: exit %s; evidence %s\n' "$allocation_pass" "$allocation_status" "$allocation_log" >&2
+    exit "$allocation_status"
+  fi
+  for allocation_case in \
+    root_allocated_during_ledger_planning_reaches_command_sql_and_committed_audit \
+    child_allocated_during_ledger_planning_retains_its_own_and_parent_identity \
+    database_root_allocation_inside_transaction_reaches_all_trace_boundaries \
+    database_child_allocation_preserves_existing_parent_and_local_reason \
+    database_allocated_root_and_child_form_one_persisted_graph \
+    database_allocated_graph_resolves_forward_only_relation_metadata \
+    database_allocated_graph_resolves_both_relation_directions_without_duplicate_audit \
+    database_allocation_rolls_back_and_retry_uses_new_identity_and_intent \
+    database_id_failure_cannot_fall_back_to_an_in_process_identity \
+    database_graph_failure_retains_assigned_trace_but_rolls_back_rows_and_retryable_ids \
+    database_allocated_explicit_transaction_delivers_audit_only_after_commit; do
+    if ! rg -Fq "test $allocation_case ... ok" "$allocation_log"; then
+      printf 'FAIL missing native allocation case %s in %s\n' "$allocation_case" "$allocation_log" >&2
+      exit 1
+    fi
+  done
+  printf 'PASS native database allocation replay %s (11 cases, real SQLite)\n' "$allocation_pass"
+done
 trace_library_before="$(generated_hash)"
 for trace_pass in 1 2; do
   trace_log="$trace_evidence_dir/run-$trace_pass.log"
@@ -23,7 +56,7 @@ for trace_pass in 1 2; do
     printf 'FAIL generated Trace Chain replay %s: exit %s; evidence %s\n' "$trace_pass" "$trace_status" "$trace_log" >&2
     exit "$trace_status"
   fi
-  for trace_marker in 'TC-MUT-15 PASSED' 'TC-SQL-07 PASSED' 'TC-MUT-09 PASSED' 'TC-MUT-12 PASSED' 'TC-MUT-13 PASSED' 'TC-MUT-14 PASSED'; do
+  for trace_marker in 'TC-MUT-15 PASSED' 'TC-SQL-07 PASSED' 'TC-MUT-09 PASSED' 'TC-MUT-12 PASSED' 'TC-MUT-13 PASSED' 'TC-MUT-14 PASSED' 'TC-MUT-07 GENERATED DATABASE IDS PASSED'; do
     if ! rg -Fq "$trace_marker" "$trace_log"; then
       printf 'FAIL missing marker %s in %s\n' "$trace_marker" "$trace_log" >&2
       exit 1

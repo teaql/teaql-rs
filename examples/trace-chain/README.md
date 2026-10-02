@@ -20,9 +20,11 @@ export CARGO_TARGET_DIR=/path/to/shared-cargo-target
 bash examples/trace-chain/verify.sh
 ```
 
-The script runs twice on one persistent SQLite database without cleanup between
-runs. It retains both logs and prints their directory, the database URL, and a
-relative-path SHA-256 manifest digest for the unchanged generated library.
+The script first runs eleven native allocation tests twice on independent
+in-memory SQLite fixtures, then runs seven generated scenarios twice on one
+persistent database without cleanup. It retains all four logs and prints their
+directory, the database URL, and a relative-path SHA-256 manifest digest for the
+unchanged generated library.
 An existing database may be supplied with `TEAQL_TRACE_CHAIN_DATABASE`; retained
 logs may be directed with `TEAQL_TRACE_CHAIN_EVIDENCE_DIR`. The application adds
 fresh graphs on each start and never resets tables.
@@ -43,6 +45,8 @@ verification. Keep the lockfile for repeatable dependency resolution.
 | Concurrent saves | Two generated graphs share one Context, meet at a test-only barrier before transaction begin, and yield after acquiring a transaction; each command, SQL metadata item and committed audit event retains its own reasons |
 | Provider failure | A test-owned faulty ID allocator causes a real SQLite primary-key conflict after the root INSERT; attempted command and failure SQL metadata retain branch lineage, both writes roll back, and no committed audit event is delivered |
 | Readback failure | A transport probe delegates the real INSERT unchanged to SQLite, then rejects the following readback; successful write metadata and failed readback metadata remain separate, the graph rolls back and no committed audit event is delivered |
+| Generated database IDs | The real SQLite ID-space generator assigns root/item IDs during `new_entity`, before transaction begin; save does not allocate again, and commands, physical SQL, committed audits and reloaded generated Q/E agree on both identities and the foreign key |
+| Native transaction allocation | Eleven tests include both in-process allocation checks and database-backed allocation inside a real transaction; declared forward/reverse ID references resolve to the allocated parent, an unrelated numeric zero is unchanged, and failed writes retain typed lineage without committing rows or audit |
 | Generated library | Its file-content manifest digest is unchanged across application verification |
 
 Canonical SQL Trace Path and audit lineage remain distinct. The accepted v1
@@ -64,13 +68,27 @@ The concurrency scenario prepares entity IDs before the overlapping saves. It
 does not prove that raw synchronous ID allocation or schema operations are safe
 while another transaction holds the SQLite connection. Generated creation assigns
 IDs early. The separate native [lower-ledger integration tests](../../teaql-provider-sqlite/tests/ledger_allocated_trace.rs)
-exercise runtime allocation during save with real SQLite persistence for a root
-and a child, checking
-assigned IDs in commands, physical SQL metadata, committed safe audit and root
-readback. They do not change generated creation semantics. Run them with
-`cargo test -p teaql-provider-sqlite --test ledger_allocated_trace`.
-They use the default in-process internal allocator; they do not verify a
-database-backed ID generator allocating inside an active SQLite transaction.
+exercise runtime allocation during save with the actual SQLite ID-space
+generator on the transaction-owned physical connection. Database sequence rows,
+root/child rows, declared foreign keys, command/physical metadata, safe SQL logs,
+committed safe audit and root readback are checked. The graph can allocate both
+root and child in one save; only declared ID references are rebound, never
+arbitrary numeric values or the source ledger. Forward-only, reverse-only and
+bidirectional metadata are exercised.
+
+A real SQLite trigger rejects a child after the root INSERT. Both business
+rows and sequence updates roll back, no committed audit is sent, and a retry
+after sequence-floor advancement uses new IDs and a new root reason. The
+failed SQL log preserves its leaf reason with existing failed-bind redaction.
+An exhausted ID space rejects the save instead of silently using an in-process
+counter. An explicit transaction also verifies audit delivery only after commit.
+The verifier requires each named native test in both runs; a temporary negative
+control with relation rebinding disabled fails the real foreign-key check.
+
+These tests do not change generated creation semantics. The generated scenario
+uses its normal early allocation path and verifies it separately. They do not
+prove safe synchronous allocation by another operation while an unrelated save
+owns the connection, or shared ID-space aliases between display and type names.
 Complete ledger-specific override semantics and immutable internal-artifact
 replay remain separate gates.
 
