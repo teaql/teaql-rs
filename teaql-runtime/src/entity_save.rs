@@ -1196,6 +1196,92 @@ mod trace_scope_capture_tests {
             ]
         );
     }
+
+    #[test]
+    fn mixed_signed_provider_ids_and_unsigned_generated_references_keep_grandchild_ancestry() {
+        // SQLite rows use I64 while generated relationship setters use U64.
+        // Relation matching must use entity identity, not Value variant equality.
+        let mut payment = EntityRuntimeState::default();
+        let payment_key = EntityKey::new("Payment", 301_u64);
+        payment.set_original_compact_row(
+            "Payment",
+            teaql_core::CompactRow::from_map(BTreeMap::from([
+                ("id".to_owned(), Value::I64(301)),
+                ("version".to_owned(), Value::I64(1)),
+                ("order".to_owned(), Value::I64(100)),
+            ])),
+        );
+        payment.set(payment_key.clone(), "reference_code", "authorized");
+        payment.set_entity_comment(payment_key, "authorize payment");
+        let root = EntityRuntimeState::default();
+        root.adopt_mutations_from(&payment);
+        for (id, parent) in [(401_u64, 301_u64), (402_u64, 302_u64)] {
+            let key = EntityKey::new("PaymentAttempt", id);
+            root.mark_as_new(key.clone());
+            root.set(key, "payment", Value::U64(parent));
+        }
+        let context = UserContext::default().with_metadata(
+            InMemoryMetadataStore::new()
+                .with_entity(
+                    EntityDescriptor::new("Order")
+                        .property(PropertyDescriptor::new("id", DataType::U64).id())
+                        .relation(
+                            RelationDescriptor::new("payments", "Payment")
+                                .local_key("id")
+                                .foreign_key("order")
+                                .many(),
+                        ),
+                )
+                .with_entity(
+                    EntityDescriptor::new("Payment")
+                        .property(PropertyDescriptor::new("id", DataType::U64).id())
+                        .relation(
+                            RelationDescriptor::new("attempts", "PaymentAttempt")
+                                .local_key("id")
+                                .foreign_key("payment")
+                                .many(),
+                        ),
+                )
+                .with_entity(
+                    EntityDescriptor::new("PaymentAttempt")
+                        .property(PropertyDescriptor::new("id", DataType::U64).id()),
+                ),
+        );
+        let mut graph = GraphNode::new("Order")
+            .value("id", 100_u64)
+            .comment("submit order");
+        let mut visited = BTreeSet::from([EntityKey::new("Order", 100_u64)]);
+        hydrate_ledger_relations(&context, &root, &mut graph, &mut visited).unwrap();
+        let payments = &graph.relations["payments"];
+        assert_eq!(
+            payments.len(),
+            1,
+            "signed loaded Payment FK matches unsigned Order ID"
+        );
+        let attempts = &payments[0].relations["attempts"];
+        assert_eq!(
+            attempts.len(),
+            1,
+            "only this payment's unsigned FK matches its signed ID"
+        );
+        assert_eq!(attempts[0].values["id"].try_u64(), Some(401));
+        capture_ledger_trace_scopes(&root, &graph).unwrap();
+        assert_eq!(
+            trace(&root, "PaymentAttempt", 401),
+            [
+                ("Order".to_owned(), Some(100), "submit order".to_owned()),
+                (
+                    "Payment".to_owned(),
+                    Some(301),
+                    "authorize payment".to_owned()
+                ),
+            ]
+        );
+        assert_eq!(
+            trace(&root, "PaymentAttempt", 402),
+            [("Order".to_owned(), Some(100), "submit order".to_owned()),]
+        );
+    }
 }
 
 fn hydrate_ledger_relations(
@@ -1242,7 +1328,18 @@ fn hydrate_ledger_relations(
             } else {
                 values.get(&relation.foreign_key)
             };
-            if foreign_value != Some(&local_value) || !visited.insert(key.clone()) {
+            // Provider-loaded IDs can be signed while generated FK setters are
+            // unsigned. Reuse the ledger's typed identity normalization rather
+            // than comparing Value variants; never associate two absent refs.
+            let matches_reference = !matches!(local_value, Value::Null)
+                && foreign_value.is_some_and(|foreign| {
+                    crate::EntityKey::new(relation.target_entity.clone(), foreign.clone())
+                        == crate::EntityKey::new(
+                            relation.target_entity.clone(),
+                            local_value.clone(),
+                        )
+                });
+            if !matches_reference || !visited.insert(key.clone()) {
                 continue;
             }
             values

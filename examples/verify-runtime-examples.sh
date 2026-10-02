@@ -173,4 +173,5 @@ for attempt in 1 2; do
 done
 printf 'PASS order-management forward-FK Save (old loaded relation invalidated, new FK hydrated; two runs, same database)\n'
 
-printf 'PASS Rust runtime examples: 13/13\n'
+bash "$repo_dir/examples/trace-chain/verify.sh"
+printf 'PASS Rust runtime examples: 14/14\n'

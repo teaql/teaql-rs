@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root name="trace-chain-service" org="teaql" data_service="sqlite"
+      teaql_rs_version="5.0.5" _module_key="root">
+  <platform _name="Platform" _module="Trace Chain" _module_key="trace-chain"
+            name="Trace Chain Verification"/>
+  <customer_order _name="Customer Order" _module="Trace Chain" _module_key="trace-chain"
+                  platform="platform()" order_number="TRACE-ORDER-001"
+                  description="Draft order"/>
+  <order_item _name="Order Item" _module="Trace Chain" _module_key="trace-chain"
+              customer_order="customer_order()" name="Available item"/>
+  <payment _name="Payment" _module="Trace Chain" _module_key="trace-chain"
+           customer_order="customer_order()" reference_code="TRACE-PAYMENT-001"/>
+  <payment_attempt _name="Payment Attempt" _module="Trace Chain" _module_key="trace-chain"
+                   payment="payment()" reference_code="TRACE-ATTEMPT-001"/>
+  <shipment _name="Shipment" _module="Trace Chain" _module_key="trace-chain"
+            customer_order="customer_order()" reference_code="TRACE-SHIPMENT-001"/>
+</root>
