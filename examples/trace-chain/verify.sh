@@ -23,7 +23,7 @@ for trace_pass in 1 2; do
     printf 'FAIL generated Trace Chain replay %s: exit %s; evidence %s\n' "$trace_pass" "$trace_status" "$trace_log" >&2
     exit "$trace_status"
   fi
-  for trace_marker in 'TC-MUT-15 PASSED' 'TC-SQL-07 PASSED' 'TC-MUT-12 PASSED' 'TC-MUT-13 PASSED' 'TC-MUT-14 PASSED'; do
+  for trace_marker in 'TC-MUT-15 PASSED' 'TC-SQL-07 PASSED' 'TC-MUT-09 PASSED' 'TC-MUT-12 PASSED' 'TC-MUT-13 PASSED' 'TC-MUT-14 PASSED'; do
     if ! rg -Fq "$trace_marker" "$trace_log"; then
       printf 'FAIL missing marker %s in %s\n' "$trace_marker" "$trace_log" >&2
       exit 1
@@ -36,5 +36,5 @@ if [[ "$trace_library_before" != "$trace_library_after" ]]; then
   printf 'FAIL generated library changed during application verification\n' >&2
   exit 1
 fi
-printf 'PASS generated Trace Chain: normative graph, three relation levels, concurrent saves, provider failure, readback failure; library hash %s; database %s; evidence %s\n' \
+printf 'PASS generated Trace Chain: normative graph, three relation levels, same-type batches, concurrent saves, provider failure, readback failure; library hash %s; database %s; evidence %s\n' \
   "$trace_library_after" "$TEAQL_TRACE_CHAIN_DATABASE" "$trace_evidence_dir"

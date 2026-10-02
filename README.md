@@ -83,8 +83,10 @@ generated Trace Chain graph ([#239](https://github.com/teaql/teaql-rs/issues/239
 
 The dedicated [generated Trace Chain example](examples/trace-chain/README.md)
 now checks the six-entity mixed graph, three relation levels, concurrent saves,
-and write/readback failures at actual command, SQL and committed safe-audit
-boundaries. Separate SQLite lower-ledger tests verify IDs allocated during save;
+same-type insert/update batches and write/readback failures at actual command,
+SQL and committed safe-audit boundaries. Existing runtime telemetry confirms
+the prepared batch path; each batch currently executes separate physical
+statements, not one bulk SQL statement. Separate SQLite lower-ledger tests verify IDs allocated during save;
 immutable scope rebinding preserves ancestors and does not rewrite mutation
 payloads or put lineage on Context. Full case and internal-artifact gates remain
 incomplete; these are local source results, not a release claim.

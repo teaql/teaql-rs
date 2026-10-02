@@ -39,6 +39,7 @@ verification. Keep the lockfile for repeatable dependency resolution.
 | Typed identity | Command and physical metadata IDs are known and matched by entity type plus ID; committed lineage uses the same assigned IDs |
 | Query and Expression | Generated Q loads the committed reverse lists, and E verifies description, list sizes and the remaining item ID |
 | Three relation levels | Generated Q loads PaymentAttempt → Payment → CustomerOrder → Platform; all four physical query metadata records and safe SQL records inherit one comment and purpose and retain the ordered relation route |
+| Same-type batches | Two OrderItems are included in reverse order, inserted together and later updated with the same changed fields; each command, physical SQL record and committed event retains its own local reason and typed ID; generated Q/E verifies both values and version increments |
 | Concurrent saves | Two generated graphs share one Context, meet at a test-only barrier before transaction begin, and yield after acquiring a transaction; each command, SQL metadata item and committed audit event retains its own reasons |
 | Provider failure | A test-owned faulty ID allocator causes a real SQLite primary-key conflict after the root INSERT; attempted command and failure SQL metadata retain branch lineage, both writes roll back, and no committed audit event is delivered |
 | Readback failure | A transport probe delegates the real INSERT unchanged to SQLite, then rejects the following readback; successful write metadata and failed readback metadata remain separate, the graph rolls back and no committed audit event is delivered |
@@ -49,6 +50,15 @@ canonicalization omits Entity IDs when rebuilding a path; command/physical
 metadata identity is checked before that projection. Deleted audit field
 projections need not contain a new ID value; this fixture checks the deleted
 child's typed identity in its lineage rather than inventing a field value.
+
+The batch scenario uses the existing Runtime Telemetry SPI to witness one
+successful `OrderItem.batch_insert` and one `OrderItem.batch_update` operation.
+Each prepared batch currently issues two physical SQL statements with the same
+parameterized shape and separate bindings. This proves the actual grouping
+path and per-item trace indexing; it is not a claim of one multi-row SQL
+statement or driver-native bulk execution. The observer does not supply reasons,
+IDs or trace frames. Application verification includes `TC-MUT-09 PASSED` in
+both retained runs.
 
 The concurrency scenario prepares entity IDs before the overlapping saves. It
 does not prove that raw synchronous ID allocation or schema operations are safe

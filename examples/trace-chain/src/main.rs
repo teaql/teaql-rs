@@ -1,6 +1,7 @@
 //! teaql-rs #239; generated APIs discovered through retained current Assist.
 //! Expected chains are test assertions only, never inputs to the runtime.
 use std::sync::{Arc, Mutex};
+mod batching;
 mod failure;
 mod observation;
 mod readback_transport;
@@ -507,6 +508,7 @@ async fn main() -> Outcome<()> {
     context.register_executor(Observed::new(executor, observation.clone()));
     context.ensure_schema().await?;
     normative_graph(&context, &capture, &observation).await?;
+    batching::same_type_batch(&mut context, &capture, &observation).await?;
     scenarios::concurrent_graphs(&context, &capture, &observation).await?;
     failure::failed_graph(&mut context, &capture, &observation).await?;
     failure::failed_readback(database_url, &capture, &observation).await
