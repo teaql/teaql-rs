@@ -946,11 +946,19 @@ where
         &self,
         query: &SelectQuery,
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
+        self.fetch_prepared_all_with_aggregates(query, &[]).await
+    }
+
+    async fn fetch_prepared_all_with_aggregates(
+        &self,
+        query: &SelectQuery,
+        relation_aggregates: &[RelationAggregate],
+    ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         if self.request_intent.is_none() {
             return Box::pin(
                 self.query_scoped_service(query)
                     .map_err(DataServiceError::Runtime)?
-                    .fetch_prepared_all(query),
+                    .fetch_prepared_all_with_aggregates(query, relation_aggregates),
             )
             .await;
         }
@@ -958,7 +966,8 @@ where
             .clone()
             .prepare_for_list()
             .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
-        if query.continuous_page_fetch.is_none()
+        if relation_aggregates.is_empty()
+            && query.continuous_page_fetch.is_none()
             && query.object_group_bys.is_empty()
             && query.child_enhancements.is_empty()
             && query.relations.is_empty()
@@ -967,6 +976,11 @@ where
         }
         let (execution_query, continuous) = self.prepare_continuous_page(query).await;
         let mut rows = self.fetch_prepared_query(&execution_query).await?;
+        // Aggregate assembly uses decoded scalar membership, never the result
+        // of forward hydration or an alias written by another aggregate.
+        let aggregate_keys = self
+            .relation_aggregate_key_rows(&rows, relation_aggregates)
+            .map_err(DataServiceError::Runtime)?;
         self.enhance_object_group_bys_internal(
             &mut rows,
             &execution_query.object_group_bys,
@@ -981,6 +995,14 @@ where
         .await?;
         self.enhance_query_relations_internal(&mut rows, &execution_query)
             .await?;
+        self.enhance_relation_aggregates_internal(
+            &mut rows,
+            &aggregate_keys,
+            relation_aggregates,
+            execution_query.aggregation_cache,
+            &execution_query.trace_chain,
+        )
+        .await?;
         self.register_continuous_page(&continuous, &rows).await;
         Ok(rows)
     }
@@ -1204,15 +1226,8 @@ where
             .prepare_select_query(query)
             .map_err(DataServiceError::Runtime)?;
 
-        let mut rows = self.fetch_prepared_all(&query).await?;
-        self.enhance_relation_aggregates_internal(
-            &mut rows,
-            relation_aggregates,
-            query.aggregation_cache,
-            &query.trace_chain,
-        )
-        .await?;
-        Ok(rows)
+        self.fetch_prepared_all_with_aggregates(&query, relation_aggregates)
+            .await
     }
 
     pub(crate) async fn fetch_smart_list_internal(
@@ -1390,14 +1405,9 @@ where
                     .map(|list| with_total_count(list, id_set_total_count))
                     .map_err(DataServiceError::Entity);
             }
-            let mut rows = self.fetch_prepared_all(&root_query).await?;
-            self.enhance_relation_aggregates_internal(
-                &mut rows,
-                relation_aggregates,
-                root_query.aggregation_cache,
-                &root_query.trace_chain,
-            )
-            .await?;
+            let mut rows = self
+                .fetch_prepared_all_with_aggregates(&root_query, relation_aggregates)
+                .await?;
             let root = if let Some((query_plans, behavior_plans)) = flat_plans {
                 let root = crate::EntityRuntimeState::default();
                 let mut graph = crate::EntityGraphBuilder::default();

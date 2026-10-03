@@ -21,6 +21,49 @@ impl SchemaProvider for Schema {
 type Executor = SqlDataServiceExecutor<SqliteDialect, SqliteMutationExecutor, Schema>;
 const PRIVATE_NAME: &str = "MEMBERSHIP-PRIVATE-NAME";
 
+// Handwritten native adapters exercise the same typed hydration boundary without
+// reading or changing any generated library.
+macro_rules! graph_entity {
+    ($name:ident, $table:literal) => {
+        struct $name {
+            row: teaql_core::CompactRow,
+            state: teaql_runtime::EntityRuntimeState,
+        }
+        impl teaql_core::TeaqlEntity for $name {
+            const ENTITY_NAME: &'static str = stringify!($name);
+            fn entity_descriptor() -> EntityDescriptor {
+                entity(stringify!($name), $table)
+            }
+        }
+        impl teaql_core::Entity for $name {
+            fn from_compact_row(
+                row: teaql_core::CompactRow,
+            ) -> Result<Self, teaql_core::EntityError> {
+                Ok(Self {
+                    row,
+                    state: Default::default(),
+                })
+            }
+            fn into_values(self) -> teaql_core::MutationValues {
+                self.row.into_map().into()
+            }
+            fn on_loaded(&mut self, context: &dyn std::any::Any) {
+                self.state = context
+                    .downcast_ref::<teaql_runtime::EntityRuntimeState>()
+                    .unwrap()
+                    .clone();
+            }
+        }
+        impl teaql_core::IdentifiableEntity for $name {
+            fn id_value(&self) -> Value {
+                self.row.get("id").unwrap().clone()
+            }
+        }
+    };
+}
+graph_entity!(MembershipParent, "membership_parent");
+graph_entity!(MembershipChild, "membership_child");
+
 fn entity(name: &str, table: &str) -> EntityDescriptor {
     EntityDescriptor::new(name)
         .table_name(table)
@@ -58,6 +101,10 @@ async fn setup(aliased: bool) -> UserContext {
             .with_entity(parent.clone())
             .with_entity(child.clone()),
     );
+    let mut decoders = teaql_runtime::InMemoryEntityGraphDecoderRegistry::default();
+    decoders.register::<MembershipParent>();
+    decoders.register::<MembershipChild>();
+    context.set_entity_graph_decoder_registry(decoders);
     let transport =
         SqliteMutationExecutor::from_connection(rusqlite::Connection::open_in_memory().unwrap());
     context.use_sqlite_provider(transport.clone());
@@ -249,4 +296,167 @@ fn filtered_forward_probe_keeps_membership() {
 #[test]
 fn visible_forward_probe_is_loaded_once() {
     futures_executor::block_on(verify_matrix(false, 32));
+}
+
+async fn verify_aggregate(aliased: bool, filtered: bool, typed: bool) {
+    for logging in [false, true] {
+        let mut context = setup(aliased).await;
+        if !logging {
+            context.disable_sql_log();
+        }
+        let forward = if aliased { "parent_id" } else { "parent" };
+        let query = PurposedSelectQuery::new(
+            SelectQuery::new("MembershipChild")
+                .limit(10)
+                .relation_query(
+                    forward,
+                    SelectQuery::new("MembershipParent").filter(Expr::eq(
+                        "name",
+                        if filtered { "ABSENT" } else { PRIVATE_NAME },
+                    )),
+                )
+                .comment("load children and their parent count"),
+            "verify aggregation after filtered forward hydration",
+        );
+        let aggregates = [teaql_core::RelationAggregate::new(
+            "second_parent",
+            "parent_count",
+            SelectQuery::new("MembershipParent").count("value"),
+            true,
+        )];
+        let repo = context
+            .entity_data_service::<Executor>("MembershipChild")
+            .unwrap();
+        let rows: Vec<_> = if typed {
+            repo.fetch_enhanced_entities_with_relation_aggregates::<MembershipChild>(
+                &query,
+                &aggregates,
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|child| {
+                assert_eq!(
+                    child
+                        .state
+                        .resolve_entity::<MembershipParent>(100)
+                        .is_none(),
+                    filtered
+                );
+                child.row
+            })
+            .collect()
+        } else {
+            repo.fetch_smart_list_with_relation_aggregates(&query, &aggregates)
+                .await
+                .unwrap()
+                .into_iter()
+                .collect()
+        };
+        assert_eq!(rows.len(), 2);
+        for row in rows.iter() {
+            assert_eq!(
+                row.get("parent_count").and_then(Value::try_i64),
+                Some(1),
+                "aggregate membership must use the original scalar FK"
+            );
+            if filtered && !typed {
+                assert_eq!(row.get(forward), Some(&Value::Null));
+            }
+        }
+        let logs = context.sql_logs();
+        assert_eq!(logs.len(), if logging { 3 } else { 0 });
+        if logging {
+            let paths = logs
+                .iter()
+                .map(|log| {
+                    log.trace_path
+                        .iter()
+                        .filter(|node| node.kind == teaql_core::TraceKind::Relation)
+                        .map(|node| node.entity_type.as_str())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                paths,
+                if typed {
+                    vec![vec![], vec!["second_parent"], vec![forward]]
+                } else {
+                    vec![vec![], vec![forward], vec!["second_parent"]]
+                }
+            );
+            assert!(
+                logs.iter()
+                    .all(|log| log.trace_path.first().unwrap().entity_type == "MembershipChild")
+            );
+        }
+        println!(
+            "PASS Rust aggregate membership: aliased={aliased} filtered={filtered} logging={logging} typed={typed}"
+        );
+    }
+}
+
+#[test]
+fn aggregate_with_distinct_forward_field() {
+    futures_executor::block_on(async {
+        verify_aggregate(false, false, false).await;
+        verify_aggregate(false, true, false).await;
+    });
+}
+
+#[test]
+fn aggregate_with_visible_overlapping_forward_field() {
+    futures_executor::block_on(verify_aggregate(true, false, false));
+}
+
+#[test]
+fn aggregate_with_filtered_overlapping_forward_field() {
+    futures_executor::block_on(verify_aggregate(true, true, false));
+}
+
+#[test]
+fn aggregate_with_typed_flat_hydration() {
+    futures_executor::block_on(async {
+        for aliased in [false, true] {
+            for filtered in [false, true] {
+                verify_aggregate(aliased, filtered, true).await;
+            }
+        }
+    });
+}
+
+#[test]
+fn aggregate_alias_cannot_change_later_aggregate_membership() {
+    futures_executor::block_on(async {
+        let context = setup(false).await;
+        let query = PurposedSelectQuery::new(
+            SelectQuery::new("MembershipChild")
+                .limit(10)
+                .comment("project two independent counts"),
+            "verify aliases cannot change subsequent aggregation keys",
+        );
+        let count = |alias| {
+            teaql_core::RelationAggregate::new(
+                "second_parent",
+                alias,
+                SelectQuery::new("MembershipParent").count("value"),
+                true,
+            )
+        };
+        let rows = context
+            .entity_data_service::<Executor>("MembershipChild")
+            .unwrap()
+            .fetch_smart_list_with_relation_aggregates(
+                &query,
+                &[count("parent_id"), count("parent_count")],
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        for row in rows.iter() {
+            assert_eq!(row.get("parent_id").and_then(Value::try_i64), Some(1));
+            assert_eq!(row.get("parent_count").and_then(Value::try_i64), Some(1));
+        }
+        assert_eq!(context.sql_logs().len(), 3);
+    });
 }

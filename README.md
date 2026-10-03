@@ -98,6 +98,11 @@ loads, and does not replace explicitly filtered null with an inverse reference.
 Its 32 combinations cover window/probe loading and diagnostic logging on/off;
 logged cases assert real SQL count and exact runtime-created relation paths.
 This native fixture is distinct from generated flat identity-graph acceptance.
+Relation aggregates additionally retain pre-hydration keys across filtered
+forward references and aggregate aliases. Their SQL uses the model's relation
+name and original request root. Native row/typed-flat checks cover sixteen
+logging/filter/name combinations plus a sequential alias regression; these do
+not prove filtered visibility when separate graph branches share a target.
 
 SQLite now holds an operation-owned connection lease for the entire transaction.
 Its low-level `SqlTransactionTransport::Tx` is a non-cloneable

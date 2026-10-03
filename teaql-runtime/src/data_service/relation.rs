@@ -251,9 +251,52 @@ where
         Ok(all_supported.then_some((query_plans, behavior_plans)))
     }
 
+    pub(crate) fn relation_aggregate_key_rows(
+        &self,
+        rows: &[CompactRow],
+        aggregates: &[RelationAggregate],
+    ) -> Result<Vec<CompactRow>, RuntimeError> {
+        if aggregates.is_empty() {
+            return Ok(Vec::new());
+        }
+        let descriptor = self
+            .data_service
+            .metadata
+            .context
+            .require_entity(&self.entity)?;
+        let fields = aggregates
+            .iter()
+            .map(|aggregate| {
+                descriptor
+                    .relation_by_name(&aggregate.relation_name)
+                    .map(|relation| relation.local_key.as_str())
+                    .ok_or_else(|| RuntimeError::MissingRelation {
+                        entity: self.entity.clone(),
+                        relation: aggregate.relation_name.clone(),
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                CompactRow::from_map(
+                    fields
+                        .iter()
+                        .filter_map(|field| {
+                            row.get(field)
+                                .cloned()
+                                .map(|value| ((*field).to_owned(), value))
+                        })
+                        .collect(),
+                )
+            })
+            .collect())
+    }
+
     pub(crate) fn enhance_relation_aggregates_internal<'b>(
         &'b self,
         parent_rows: &'b mut [CompactRow],
+        parent_keys: &'b [CompactRow],
         relation_aggregates: &'b [RelationAggregate],
         parent_cache_options: Option<teaql_core::AggregationCacheOptions>,
         parent_trace_chain: &'b [teaql_core::TraceNode],
@@ -264,6 +307,7 @@ where
             for aggregate in relation_aggregates {
                 self.enhance_relation_aggregate(
                     parent_rows,
+                    parent_keys,
                     aggregate,
                     parent_cache_options,
                     parent_trace_chain,
@@ -368,6 +412,7 @@ where
     async fn enhance_relation_aggregate(
         &self,
         parent_rows: &mut [CompactRow],
+        parent_keys: &[CompactRow],
         aggregate: &RelationAggregate,
         parent_cache_options: Option<teaql_core::AggregationCacheOptions>,
         parent_trace_chain: &[teaql_core::TraceNode],
@@ -390,7 +435,7 @@ where
                 })
             })?;
 
-        let ids = parent_rows
+        let ids = parent_keys
             .iter()
             .filter_map(|row| row.get(&plan.local_key).cloned())
             .collect::<Vec<_>>();
@@ -399,7 +444,12 @@ where
             return Ok(());
         }
 
-        let child_repo = self.relation_child_repo(&plan);
+        let mut chain = self.trace_context.clone();
+        chain.extend_from_slice(parent_trace_chain);
+        let parent_repo = self
+            .scoped_data_service_internal(self.entity.clone())
+            .with_trace_context(chain);
+        let child_repo = parent_repo.relation_child_repo(&plan);
         let mut query = aggregate.query.clone();
         query.entity = plan.target_entity.clone();
         if query.aggregation_cache.is_none()
@@ -427,18 +477,7 @@ where
         }
         query = query.and_filter(Expr::in_list(plan.foreign_key.clone(), ids));
 
-        let mut chain = parent_trace_chain.to_vec();
-        chain.push(teaql_core::TraceNode {
-            kind: teaql_core::TraceKind::Relation,
-            entity_type: query.entity.clone(),
-            entity_id: None,
-            comment: aggregate.alias.clone(),
-        });
-
-        let mut aggregate_rows = child_repo
-            .with_trace_context(chain)
-            .fetch_compact_all_internal(query)
-            .await?;
+        let mut aggregate_rows = child_repo.fetch_compact_all_internal(query).await?;
         let foreign_key_column = self
             .data_service
             .metadata
@@ -462,7 +501,7 @@ where
                 }
             }
         }
-        attach_relation_aggregate_rows(parent_rows, &plan, aggregate, aggregate_rows);
+        attach_relation_aggregate_rows(parent_rows, parent_keys, &plan, aggregate, aggregate_rows);
         Ok(())
     }
 
