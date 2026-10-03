@@ -2,7 +2,6 @@
 #![allow(clippy::type_complexity)]
 
 use std::collections::BTreeMap;
-use std::slice;
 
 use teaql_core::{
     Aggregate, CompactRow, Expr, ObjectGroupBy, OrderBy, RelationAggregate, RelationLoad,
@@ -38,6 +37,29 @@ fn unique_relation_values(rows: &[CompactRow], field: &str) -> Vec<Value> {
     values.sort_unstable_by(|left, right| left.0.cmp(&right.0));
     values.dedup_by(|left, right| left.0 == right.0);
     values.into_iter().map(|(_, value)| value).collect()
+}
+
+// Capture only assembly keys, not entire records. Relation names may be the
+// same as scalar FK fields; a previous sibling can replace that field with an
+// object or null. These private rows never enter the returned graph or ledger.
+fn relation_key_rows(rows: &[CompactRow], plans: &[RelationLoadPlan]) -> Vec<CompactRow> {
+    if plans.is_empty() {
+        return Vec::new();
+    }
+    rows.iter()
+        .map(|row| {
+            CompactRow::from_map(
+                plans
+                    .iter()
+                    .filter_map(|plan| {
+                        row.get(&plan.local_key)
+                            .cloned()
+                            .map(|value| (plan.local_key.clone(), value))
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,8 +171,9 @@ where
         parent_rows: &mut [CompactRow],
     ) -> Result<(), DataServiceError<E::Error>> {
         let plans = self.relation_plans().map_err(DataServiceError::Runtime)?;
+        let keys = relation_key_rows(parent_rows, &plans);
         for plan in plans {
-            self.enhance_plan(parent_rows, &plan).await?;
+            self.enhance_plan(parent_rows, &keys, &plan).await?;
         }
         Ok(())
     }
@@ -168,8 +191,9 @@ where
         let traced = self
             .scoped_data_service_internal(query.entity.clone())
             .with_trace_context(parent_trace);
+        let keys = relation_key_rows(parent_rows, &plans);
         for plan in plans {
-            traced.enhance_plan(parent_rows, &plan).await?;
+            traced.enhance_plan(parent_rows, &keys, &plan).await?;
         }
         Ok(())
     }
@@ -530,6 +554,7 @@ where
     fn enhance_plan<'b>(
         &'b self,
         parent_rows: &'b mut [CompactRow],
+        parent_keys: &'b [CompactRow],
         plan: &'b RelationLoadPlan,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
@@ -537,7 +562,7 @@ where
         Box::pin(async move {
             let capabilities =
                 teaql_data_service::DataServiceExecutor::capabilities(self.data_service.executor);
-            let parent_count = unique_relation_values(parent_rows, &plan.local_key).len();
+            let parent_count = unique_relation_values(parent_keys, &plan.local_key).len();
             let selected_plan = relation_top_n_execution_plan(&capabilities, plan, parent_count);
             let scope = self.data_service.metadata.context.start_runtime_operation(
                 relation_top_n_operation(plan, selected_plan, parent_count),
@@ -546,34 +571,30 @@ where
                 .run(async {
                     let child_repo = self.relation_child_repo(plan);
                     let mut child_rows = self
-                        .fetch_relation_rows(&child_repo, plan, parent_rows, false)
+                        .fetch_relation_rows(&child_repo, plan, parent_keys, false)
                         .await?;
                     for child in &mut child_rows {
                         child.remove(teaql_core::PARTITION_RANK_PROPERTY);
                     }
-                    self.attach_relation_rows(parent_rows, plan, child_rows);
-
-                    if !plan.children.is_empty() {
-                        for parent in parent_rows.iter_mut() {
-                            match parent.get_mut(&plan.relation_name) {
-                                Some(Value::Object(child)) => {
-                                    child_repo
-                                        .enhance_child_record(child, &plan.children)
-                                        .await?;
-                                }
-                                Some(Value::List(values)) => {
-                                    for value in values.iter_mut() {
-                                        if let Value::Object(child) = value {
-                                            child_repo
-                                                .enhance_child_record(child, &plan.children)
-                                                .await?;
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
+                    // This planner owns the subtree. Load each nested relation once for
+                    // the whole child batch, before publishing it into the parent graph.
+                    let attachment_keys = child_rows
+                        .iter()
+                        .map(|row| row.get(&plan.foreign_key).cloned())
+                        .collect::<Vec<_>>();
+                    let child_keys = relation_key_rows(&child_rows, &plan.children);
+                    for child_plan in &plan.children {
+                        child_repo
+                            .enhance_plan(&mut child_rows, &child_keys, child_plan)
+                            .await?;
                     }
+                    self.attach_relation_rows(
+                        parent_rows,
+                        parent_keys,
+                        plan,
+                        child_rows,
+                        attachment_keys,
+                    );
                     Ok(())
                 })
                 .await;
@@ -871,23 +892,6 @@ where
         Ok(())
     }
 
-    fn enhance_child_record<'b>(
-        &'b self,
-        child: &'b mut std::collections::BTreeMap<String, Value>,
-        plans: &'b [RelationLoadPlan],
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
-    > {
-        Box::pin(async move {
-            for plan in plans {
-                let mut row = CompactRow::from_map(std::mem::take(child));
-                self.enhance_plan(slice::from_mut(&mut row), plan).await?;
-                *child = row.into_map();
-            }
-            Ok(())
-        })
-    }
-
     fn relation_child_repo(&self, plan: &RelationLoadPlan) -> EntityDataService<'a, E> {
         let mut trace = self.trace_context.clone();
         trace.push(teaql_core::TraceNode::typed(
@@ -911,6 +915,8 @@ where
             .clone()
             .unwrap_or_else(|| SelectQuery::new(plan.target_entity.clone()));
         query.entity = plan.target_entity.clone();
+        // The relation planner, not fetch_prepared_all, executes nested loads.
+        query.relations.clear();
         ensure_projection(&mut query, &plan.foreign_key);
         for child in &plan.children {
             ensure_projection(&mut query, &child.local_key);
@@ -985,6 +991,7 @@ where
             .clone()
             .unwrap_or_else(|| SelectQuery::new(plan.target_entity.clone()));
         query.entity = plan.target_entity.clone();
+        query.relations.clear();
         ensure_projection(&mut query, &plan.foreign_key);
         for child in &plan.children {
             ensure_projection(&mut query, &child.local_key);
@@ -1047,8 +1054,10 @@ where
     fn attach_relation_rows(
         &self,
         parent_rows: &mut [CompactRow],
+        parent_keys: &[CompactRow],
         plan: &RelationLoadPlan,
         child_rows: Vec<CompactRow>,
+        attachment_keys: Vec<Option<Value>>,
     ) {
         let inverse_relation = self
             .data_service
@@ -1062,20 +1071,28 @@ where
                         && relation.foreign_key == plan.local_key
                 })
             })
+            // An explicit nested request owns its result, including filtered null.
+            // Inverse convenience wiring must not override that predicate.
+            .filter(|relation| {
+                !plan
+                    .children
+                    .iter()
+                    .any(|child| child.relation_name == relation.name)
+            })
             .map(|relation| (relation.name.clone(), relation.many));
 
         let mut buckets: BTreeMap<String, Vec<CompactRow>> = BTreeMap::new();
-        for child in child_rows.clone() {
-            if let Some(key) = child.get(&plan.foreign_key) {
+        for (child, key) in child_rows.into_iter().zip(attachment_keys) {
+            if let Some(key) = key {
                 buckets
-                    .entry(graph_identity_key(key))
+                    .entry(graph_identity_key(&key))
                     .or_default()
                     .push(child);
             }
         }
 
-        for parent in parent_rows.iter_mut() {
-            let Some(local_value) = parent.get(&plan.local_key) else {
+        for (parent, keys) in parent_rows.iter_mut().zip(parent_keys) {
+            let Some(local_value) = keys.get(&plan.local_key) else {
                 continue;
             };
             let bucket_key = graph_identity_key(local_value);

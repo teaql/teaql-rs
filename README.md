@@ -91,6 +91,14 @@ immutable scope rebinding preserves ancestors and does not rewrite mutation
 payloads or put lineage on Context. Full case and internal-artifact gates remain
 incomplete; these are local source results, not a release claim.
 
+The controlled example gate also runs a small native SQLite relation fixture.
+Nested row hydration executes each requested branch once for the child batch,
+retains original attachment keys across filtered/aliased references and sibling
+loads, and does not replace explicitly filtered null with an inverse reference.
+Its 32 combinations cover window/probe loading and diagnostic logging on/off;
+logged cases assert real SQL count and exact runtime-created relation paths.
+This native fixture is distinct from generated flat identity-graph acceptance.
+
 SQLite now holds an operation-owned connection lease for the entire transaction.
 Its low-level `SqlTransactionTransport::Tx` is a non-cloneable
 `SqliteTransaction`, not a cloned `SqliteMutationExecutor`; use the transaction

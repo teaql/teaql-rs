@@ -12,6 +12,7 @@ if [[ "${actual[*]}" != "${expected[*]}" ]]; then
 fi
 
 cd "$repo"
+cargo test -p teaql-provider-sqlite --test relation_membership -- --nocapture
 cargo test -p teaql-examples --all-targets
 cargo run --quiet --manifest-path examples/conformance/Cargo.toml
 cargo run --quiet --manifest-path examples/school-management/Cargo.toml
