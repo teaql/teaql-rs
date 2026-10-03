@@ -91,7 +91,7 @@ pub async fn rollback_and_retry(database_url: String) -> Outcome<()> {
         observation.clone(),
     ));
     let pending = load_pending(&context, root_id, child_id, &next).await?;
-    let reason = format!("page 1 replace {old} with {next}");
+    let reason = format!("first page replace {old} with {next}");
     capture.clear();
     observation.clear();
     context.clear_sql_logs();
@@ -151,7 +151,7 @@ pub async fn rollback_and_retry(database_url: String) -> Outcome<()> {
         failed_log
             .audit_reason
             .as_deref()
-            .is_some_and(|s| s.starts_with("page 1"))
+            .is_some_and(|s| s.starts_with("first page"))
     );
     assert_eq!(
         failed_log.trace_path.first().unwrap().entity_type,

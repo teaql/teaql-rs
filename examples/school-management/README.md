@@ -18,11 +18,18 @@ transaction Save paths. The controlled example script runs
 this probe twice on one SQLite file without cleanup between runs; its SQLite
 rows were checked directly on September 15.
 
-The generated-crate School bootstrap integration test in `teaql-code-gen`
-additionally changes one constant, verifies that its version advances exactly
-once, and verifies an unchanged constant remains at version 1. This repository's
-School example itself checks first and repeated seeds; it does not claim that
-constant reconciliation is exercised by the SQLite provider unit tests.
+`bash scripts/verify-school-bootstrap-example.sh` (from the repository root)
+also runs the application-owned `bootstrap_trace_probe` twice per database,
+with SQL logging on and off independently. It verifies first/repeated seeds,
+audited constant drift and reconciliation, no-op reseeding, fixed identities,
+caller restoration, SQL trace routes and committed safe audit lineage. At audit
+delivery, an independent read-only SQLite connection must already see the
+persisted bootstrap version. Safe audits retain `bootstrap_audit` attribution;
+ordinary application saves have no bootstrap attribution. Derived readbacks
+retain intent, with target IDs redacted only in free-text diagnostics, not in
+SQL bindings or typed identities. Generated-library hashes must stay unchanged.
+Outputs and databases are retained at the path printed by the script. This is
+local-source acceptance, not a published-package or Registry replay.
 
 From the repository root, `examples/verify-runtime-examples.sh` runs this and
 the minimum conformance example against current path-patched runtime sources.

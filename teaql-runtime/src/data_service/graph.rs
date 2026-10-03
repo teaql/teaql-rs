@@ -1292,10 +1292,15 @@ where
         let mut query = teaql_core::SelectQuery::new(entity)
             .filter(teaql_core::Expr::eq(id_property, id.clone()));
         query.trace_chain = trace_chain;
-        let mut rows = self
-            .scoped_data_service_internal(entity.to_owned())
-            .fetch_all_internal(&query)
-            .await?;
+        let mut scoped = self.scoped_data_service_internal(entity.to_owned());
+        // The inherited mutation reason may mention this ID even though the
+        // SELECT compiler correctly treats its binding as plain. Carry the
+        // target only as free-text provenance, including IDs allocated during
+        // the write, without changing bindings or the reusable parent scope.
+        let mut redactions = scoped.query_intent_snapshot().unwrap_or_default();
+        redactions.capture_target_id(id);
+        scoped.query_log_intent = Some(std::sync::Mutex::new(redactions));
+        let mut rows = scoped.fetch_all_internal(&query).await?;
         Ok(rows.pop())
     }
 

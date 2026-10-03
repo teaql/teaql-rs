@@ -423,11 +423,17 @@ impl RawAuditEvent {
         }
         intent_values.sort_by_key(|value| std::cmp::Reverse(value.len()));
         crate::log_privacy::scrub_trace(&mut trace_chain, &intent_values);
+        let bootstrap_audit = self.bootstrap_audit.clone().map(|mut identity| {
+            crate::log_privacy::scrub(&mut identity.actor, &intent_values);
+            crate::log_privacy::scrub(&mut identity.reason, &intent_values);
+            identity
+        });
         SafeAuditEvent {
             kind: self.kind,
             entity: self.entity.clone(),
             fields: safe_fields,
             trace_chain,
+            bootstrap_audit,
             mutation_governance: self.mutation_governance.clone(),
         }
     }
@@ -575,6 +581,9 @@ pub struct SafeAuditEvent {
     pub entity: String,
     pub fields: Vec<SafeAuditField>,
     pub trace_chain: Vec<teaql_core::TraceNode>,
+    /// Framework bootstrap attribution, projected under the same privacy rules
+    /// as the safe lineage. Ordinary application mutations leave this absent.
+    pub bootstrap_audit: Option<BootstrapAuditIdentity>,
     pub mutation_governance: Option<crate::MutationGovernanceSnapshot>,
 }
 

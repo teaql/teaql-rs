@@ -88,8 +88,11 @@ pub async fn loaded_graph_privacy(
         capture.clear();
         observation.clear();
         context.clear_sql_logs();
+        // Numeric prose can collide with a generated target ID and is then
+        // correctly redacted. Use nonnumeric text as the public-prose control;
+        // the School bootstrap probe independently requires target-ID masking.
         root = root
-            .audit_as(format!("page 1 replace {old} with {next}"))
+            .audit_as(format!("first page replace {old} with {next}"))
             .save(context)
             .await?;
         assert_private(context, capture, &[&old, &next]);
@@ -97,7 +100,7 @@ pub async fn loaded_graph_privacy(
             context.sql_logs().iter().any(|entry| entry
                 .audit_reason
                 .as_deref()
-                .is_some_and(|s| s.contains("page 1"))),
+                .is_some_and(|s| s.contains("first page"))),
             "public business intent must remain"
         );
         let persisted = Q::order_items()
