@@ -451,6 +451,9 @@ pub struct SelectQuery {
     pub aggregates: Vec<Aggregate>,
     pub group_by: Vec<String>,
     pub relations: Vec<RelationLoad>,
+    /// Query-only Facet selections retained across ordinary relation planning.
+    /// The relation loader executes these, never the physical SQL compiler.
+    pub facets: Vec<crate::request::FacetRequest>,
     pub aggregation_cache: Option<AggregationCacheOptions>,
     pub comment: Option<String>,
     /// Explicit request purpose; trace nodes are diagnostic lineage, not intent.
@@ -486,6 +489,7 @@ impl SelectQuery {
             aggregates: Vec::new(),
             group_by: Vec::new(),
             relations: Vec::new(),
+            facets: Vec::new(),
             aggregation_cache: None,
             comment: None,
             purpose: None,
@@ -879,6 +883,13 @@ impl SelectQuery {
 
 pub type Record = BTreeMap<String, Value>;
 
+// Kept behind one optional pointer so rows without query-result metadata stay
+// compact. The result carrier is separate from projected/persistent values.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct LoadedRelationResults {
+    lists: BTreeMap<String, crate::SmartList<CompactRow>>,
+}
+
 /// A database result row whose column names are shared by the whole result set.
 ///
 /// Providers use this representation for typed decoding so a 100-row result does
@@ -887,12 +898,45 @@ pub type Record = BTreeMap<String, Value>;
 pub struct CompactRow {
     columns: Arc<[String]>,
     values: Vec<Value>,
+    // Read-result metadata only. Not a projected field, serialized Value, or
+    // mutation snapshot. Ordinary provider rows allocate no sidecar.
+    loaded_relations: Option<Box<LoadedRelationResults>>,
 }
 
 impl CompactRow {
     pub fn new(columns: Arc<[String]>, values: Vec<Value>) -> Self {
         debug_assert_eq!(columns.len(), values.len());
-        Self { columns, values }
+        Self {
+            columns,
+            values,
+            loaded_relations: None,
+        }
+    }
+
+    pub fn loaded_relation(&self, name: &str) -> Option<&crate::SmartList<CompactRow>> {
+        self.loaded_relations.as_ref()?.lists.get(name)
+    }
+
+    pub fn set_loaded_relation(&mut self, name: String, list: crate::SmartList<CompactRow>) {
+        self.loaded_relations
+            .get_or_insert_with(Default::default)
+            .lists
+            .insert(name, list);
+    }
+
+    pub fn take_loaded_relation(&mut self, name: &str) -> Option<crate::SmartList<CompactRow>> {
+        self.loaded_relations.as_mut()?.lists.remove(name)
+    }
+
+    pub fn has_loaded_relations(&self) -> bool {
+        self.loaded_relations
+            .as_ref()
+            .is_some_and(|relations| !relations.lists.is_empty())
+    }
+
+    /// Drop read-only relation metadata before retaining a persistence snapshot.
+    pub fn clear_loaded_relations(&mut self) {
+        self.loaded_relations = None;
     }
 
     pub fn get(&self, name: &str) -> Option<&Value> {
@@ -927,6 +971,7 @@ impl CompactRow {
     }
 
     pub fn remove(&mut self, name: &str) -> Option<Value> {
+        self.take_loaded_relation(name);
         let index = self.columns.iter().position(|column| column == name)?;
         let mut columns = self.columns.to_vec();
         columns.remove(index);
@@ -935,6 +980,12 @@ impl CompactRow {
     }
 
     pub fn extend(&mut self, other: CompactRow) {
+        if let Some(relations) = other.loaded_relations {
+            self.loaded_relations
+                .get_or_insert_with(Default::default)
+                .lists
+                .extend(relations.lists);
+        }
         for (name, value) in other.columns.iter().cloned().zip(other.values) {
             self.insert(name, value);
         }

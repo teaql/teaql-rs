@@ -264,7 +264,7 @@ impl PurposedSelectQuery {
     /// Sources remain diagnostic-only and compose with derived COUNT provenance.
     #[doc(hidden)]
     pub fn with_facet_diagnostics(mut self, options: &QueryOptions) -> Self {
-        if options.facets.is_empty() {
+        if options.facets.is_empty() && !query_has_facets(&self.query) {
             return self;
         }
         let source = self
@@ -276,6 +276,7 @@ impl PurposedSelectQuery {
                 .iter()
                 .map(|facet| facet_diagnostic_source(&facet.query)),
         );
+        expand_query_facet_diagnostics(source);
         self
     }
 
@@ -322,14 +323,43 @@ fn facet_diagnostic_source(selection: &QuerySelection) -> SelectQuery {
             .iter()
             .map(|aggregate| facet_diagnostic_source(&aggregate.query)),
     );
-    query.child_enhancements.extend(
-        selection
-            .query_options
-            .facets
-            .iter()
-            .map(|facet| facet_diagnostic_source(&facet.query)),
-    );
+    expand_query_facet_diagnostics(&mut query);
     query
+}
+
+fn query_has_facets(query: &SelectQuery) -> bool {
+    !query.facets.is_empty()
+        || query
+            .relations
+            .iter()
+            .filter_map(|relation| relation.query.as_deref())
+            .any(query_has_facets)
+        || query.child_enhancements.iter().any(query_has_facets)
+        || query
+            .object_group_bys
+            .iter()
+            .any(|group| query_has_facets(&group.query))
+}
+
+/// Expand query-only Facet sources into an invocation-local diagnostic tree.
+/// This tree is classified but never sent through relation enhancement/SQL.
+pub(crate) fn expand_query_facet_diagnostics(query: &mut SelectQuery) {
+    for facet in std::mem::take(&mut query.facets) {
+        query
+            .child_enhancements
+            .push(facet_diagnostic_source(&facet.query));
+    }
+    for relation in &mut query.relations {
+        if let Some(query) = relation.query.as_deref_mut() {
+            expand_query_facet_diagnostics(query);
+        }
+    }
+    for child in &mut query.child_enhancements {
+        expand_query_facet_diagnostics(child);
+    }
+    for group in &mut query.object_group_bys {
+        expand_query_facet_diagnostics(&mut group.query);
+    }
 }
 
 type FacetFuture<'a> = std::pin::Pin<

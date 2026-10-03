@@ -134,9 +134,15 @@ fn entity_identity_key(value: &Value) -> EntityIdentityKey {
 pub struct EntityGraphBuilder {
     tables: HashMap<TypeId, EntityTable>,
     relation_lists: HashMap<RelationListKey, Box<dyn Any + Send + Sync>>,
+    relation_facets: Option<Box<RelationFacetResults>>,
 }
 
 type EntityTable = HashMap<u64, Box<dyn Any + Send + Sync>>;
+
+#[derive(Default)]
+struct RelationFacetResults {
+    lists: HashMap<RelationListKey, BTreeMap<String, SmartList<teaql_core::CompactRow>>>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RelationListKey {
@@ -169,14 +175,43 @@ impl EntityGraphBuilder {
     ) where
         T: Any + Send + Sync,
     {
-        self.relation_lists.insert(
-            RelationListKey {
-                owner_entity: crate::canonical_id_space_entity(&owner_entity.into()),
-                owner_id,
-                relation: relation.into(),
-            },
-            Box::new(list),
-        );
+        let key = RelationListKey {
+            owner_entity: crate::canonical_id_space_entity(&owner_entity.into()),
+            owner_id,
+            relation: relation.into(),
+        };
+        if !list.facets.is_empty() {
+            self.relation_facets
+                .get_or_insert_with(Default::default)
+                .lists
+                .insert(key.clone(), list.facets.clone());
+        }
+        self.relation_lists.insert(key, Box::new(list));
+    }
+
+    /// Read-result metadata for a selected relation, including null to-one views.
+    /// It never participates in entity snapshots or mutation-ledger ownership.
+    pub fn install_relation_facets(
+        &mut self,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+        facets: BTreeMap<String, SmartList<teaql_core::CompactRow>>,
+    ) {
+        if facets.is_empty() {
+            return;
+        }
+        self.relation_facets
+            .get_or_insert_with(Default::default)
+            .lists
+            .insert(
+                RelationListKey {
+                    owner_entity: crate::canonical_id_space_entity(owner_entity),
+                    owner_id,
+                    relation: relation.to_owned(),
+                },
+                facets,
+            );
     }
 
     pub fn install_relation_option<T>(
@@ -206,6 +241,7 @@ impl EntityGraphBuilder {
         FrozenEntityGraph {
             tables: self.tables,
             relation_lists: self.relation_lists,
+            relation_facets: self.relation_facets,
         }
     }
 }
@@ -224,6 +260,7 @@ impl std::fmt::Debug for EntityGraphBuilder {
 struct FrozenEntityGraph {
     tables: HashMap<TypeId, EntityTable>,
     relation_lists: HashMap<RelationListKey, Box<dyn Any + Send + Sync>>,
+    relation_facets: Option<Box<RelationFacetResults>>,
 }
 
 impl std::fmt::Debug for FrozenEntityGraph {
@@ -702,6 +739,7 @@ impl EntityRuntimeState {
             .map_err(|graph| EntityGraphBuilder {
                 tables: graph.tables,
                 relation_lists: graph.relation_lists,
+                relation_facets: graph.relation_facets,
             })
     }
 
@@ -736,6 +774,28 @@ impl EntityRuntimeState {
                 relation: relation.to_owned(),
             })?
             .downcast_ref::<SmartList<T>>()
+    }
+
+    /// Inspect query-only Facet metadata without changing the relation getter's
+    /// cardinality or triggering I/O. Also available for a loaded null to-one.
+    pub fn relation_facet(
+        &self,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+        facet: &str,
+    ) -> Option<&SmartList<teaql_core::CompactRow>> {
+        self.graph
+            .frozen()?
+            .relation_facets
+            .as_ref()?
+            .lists
+            .get(&RelationListKey {
+                owner_entity: crate::canonical_id_space_entity(owner_entity),
+                owner_id,
+                relation: relation.to_owned(),
+            })?
+            .get(facet)
     }
 
     /// Resolve a to-many relation without performing an implicit database read.
@@ -931,8 +991,9 @@ impl EntityRuntimeState {
     pub fn set_original_compact_row(
         &mut self,
         entity: impl Into<Arc<str>>,
-        row: teaql_core::CompactRow,
+        mut row: teaql_core::CompactRow,
     ) {
+        row.clear_loaded_relations();
         self.loaded_snapshot = Some(LoadedEntitySnapshot {
             entity: entity.into(),
             row,
@@ -1487,6 +1548,53 @@ mod lazy_root_tests {
     #[derive(Clone)]
     struct GraphChild {
         root: EntityRuntimeState,
+    }
+
+    #[test]
+    fn relation_facet_metadata_is_read_only_and_excluded_from_mutation_snapshots() {
+        let root = EntityRuntimeState::default();
+        let mut graph = EntityGraphBuilder::default();
+        let facets = BTreeMap::from([("choices".to_owned(), SmartList::new(Vec::new()))]);
+        graph.install_relation_facets("Owner", 1, "reference", facets.clone());
+        root.freeze_graph(graph).unwrap();
+        let mut first = EntityRuntimeState::fresh_with_shared_graph(&root);
+        let second = EntityRuntimeState::fresh_with_shared_graph(&root);
+        let mut row = teaql_core::CompactRow::from_map(BTreeMap::from([
+            ("id".to_owned(), Value::U64(1)),
+            ("version".to_owned(), Value::I64(1)),
+        ]));
+        row.set_loaded_relation(
+            "reference".to_owned(),
+            SmartList {
+                facets,
+                ..SmartList::new(Vec::new())
+            },
+        );
+        first.set_original_compact_row("Owner", row);
+        assert!(
+            !first
+                .loaded_snapshot
+                .as_ref()
+                .unwrap()
+                .row
+                .has_loaded_relations()
+        );
+        assert!(
+            first
+                .relation_facet("Owner", 1, "reference", "choices")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!first.has_mutation_context());
+        assert!(!second.has_mutation_context());
+        first.set_comment("first independent mutation");
+        assert_eq!(second.get_comment(), None);
+        assert!(!second.has_mutation_context());
+        assert!(
+            second
+                .relation_facet("Owner", 1, "reference", "choices")
+                .is_some()
+        );
     }
 
     #[test]

@@ -61,7 +61,7 @@ where
     fn flatten_relation_graph(
         &self,
         entity_name: &str,
-        record: &mut BTreeMap<String, Value>,
+        record: &mut CompactRow,
         root: &crate::EntityRuntimeState,
         graph: &mut crate::EntityGraphBuilder,
         installed: &mut BTreeSet<(String, u64)>,
@@ -76,26 +76,46 @@ where
             if !context.has_entity_graph_decoder(&relation.target_entity) {
                 continue;
             }
+            let loaded = record.take_loaded_relation(&relation.name);
             let Some(value) = record.remove(&relation.name) else {
                 continue;
             };
+            if !relation.many
+                && let Some(list) = loaded.as_ref().filter(|list| !list.facets.is_empty())
+            {
+                let owner_id = record.get("id").and_then(Value::try_u64).ok_or_else(|| {
+                    teaql_core::EntityError::new(entity_name, "Facet owner is missing its u64 id")
+                })?;
+                graph.install_relation_facets(
+                    entity_name,
+                    owner_id,
+                    &relation.name,
+                    list.facets.clone(),
+                );
+            }
             if !relation.many && matches!(value, Value::Null | Value::TypedNull(_)) {
                 record.insert(relation.name, value);
                 continue;
             }
-            let mut child_records = match value {
-                Value::Object(child) => vec![child],
-                Value::List(values) => values
-                    .into_iter()
-                    .filter_map(|value| match value {
-                        Value::Object(child) => Some(child),
-                        _ => None,
-                    })
-                    .collect(),
-                Value::Null | Value::TypedNull(_) => Vec::new(),
-                other => {
-                    record.insert(relation.name, other);
-                    continue;
+            let mut facets = BTreeMap::new();
+            let mut child_records = if let Some(list) = loaded {
+                facets = list.facets;
+                list.data
+            } else {
+                match value {
+                    Value::Object(child) => vec![CompactRow::from_map(child)],
+                    Value::List(values) => values
+                        .into_iter()
+                        .filter_map(|value| match value {
+                            Value::Object(child) => Some(CompactRow::from_map(child)),
+                            _ => None,
+                        })
+                        .collect(),
+                    Value::Null | Value::TypedNull(_) => Vec::new(),
+                    other => {
+                        record.insert(relation.name, other);
+                        continue;
+                    }
                 }
             };
 
@@ -117,12 +137,12 @@ where
                     )
                 })?;
                 if relation.many {
-                    context.decode_compact_entity_list_into_graph(
+                    context.decode_compact_smart_list_into_graph(
                         &relation.target_entity,
-                        child_records
-                            .into_iter()
-                            .map(teaql_core::CompactRow::from_map)
-                            .collect(),
+                        SmartList {
+                            facets,
+                            ..SmartList::new(child_records)
+                        },
                         root,
                         graph,
                         entity_name,
@@ -132,10 +152,7 @@ where
                 } else {
                     context.decode_compact_entity_option_into_graph(
                         &relation.target_entity,
-                        child_records
-                            .into_iter()
-                            .map(teaql_core::CompactRow::from_map)
-                            .collect(),
+                        child_records,
                         root,
                         graph,
                         entity_name,
@@ -156,7 +173,7 @@ where
                 if installed.insert((relation.target_entity.clone(), id)) {
                     context.decode_compact_entity_into_graph(
                         &relation.target_entity,
-                        teaql_core::CompactRow::from_map(child),
+                        child,
                         root,
                         graph,
                     )?;
@@ -175,15 +192,7 @@ where
         let mut graph = crate::EntityGraphBuilder::default();
         let mut installed = BTreeSet::new();
         for row in rows {
-            let mut record = row.clone().into_map();
-            self.flatten_relation_graph(
-                entity_name,
-                &mut record,
-                &root,
-                &mut graph,
-                &mut installed,
-            )?;
-            *row = teaql_core::CompactRow::from_map(record);
+            self.flatten_relation_graph(entity_name, row, &root, &mut graph, &mut installed)?;
         }
         root.freeze_graph(graph).map_err(|_| {
             teaql_core::EntityError::new(entity_name, "identity graph was already frozen")
@@ -1941,7 +1950,9 @@ where
             // A root comment can quote a future relation's sensitive binding.
             // Classify the complete request tree before the first SQL log, using
             // each node's own descriptor. This performs no database access.
-            let mut pending = vec![query];
+            let mut diagnostic_source = query.clone();
+            crate::generated_support::expand_query_facet_diagnostics(&mut diagnostic_source);
+            let mut pending = vec![&diagnostic_source];
             while let Some(query) = pending.pop() {
                 redactions.extend(&self.data_service.executor.query_log_intent(query));
                 pending.extend(

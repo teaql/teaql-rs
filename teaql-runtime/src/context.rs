@@ -559,6 +559,28 @@ impl UserContext {
             .decode_compact_batch(entity, rows, root, graph)
     }
 
+    #[allow(clippy::too_many_arguments)] // Same native decoder boundary, retaining list metadata.
+    pub(crate) fn decode_compact_smart_list_into_graph(
+        &self,
+        entity: &str,
+        rows: teaql_core::SmartList<teaql_core::CompactRow>,
+        root: &EntityRuntimeState,
+        graph: &mut EntityGraphBuilder,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+    ) -> Result<(), teaql_core::EntityError> {
+        self.entity_graph_decoders.decode_compact_smart_list(
+            entity,
+            rows,
+            root,
+            graph,
+            owner_entity,
+            owner_id,
+            relation,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)] // Mirrors the generated decoder contract.
     pub(crate) fn decode_compact_entity_option_into_graph(
         &self,

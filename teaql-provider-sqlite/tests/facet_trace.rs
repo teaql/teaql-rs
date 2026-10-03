@@ -66,6 +66,7 @@ async fn setup() -> Runtime {
                 .foreign_key("id"),
         );
     let school_type = entity("SchoolType", "facet_school_type")
+        .audit_mask_fields(vec!["name".into()])
         .property(PropertyDescriptor::new("platform_id", DataType::I64))
         .relation(
             RelationDescriptor::new("schools", "School")
@@ -555,6 +556,597 @@ fn repeated_facet_diagnostics_merge_with_removed_count_sources() {
         let rendered = format!("{logs:?}");
         for secret in [first, second, removed] {
             assert!(!rendered.contains(secret));
+        }
+    });
+}
+
+macro_rules! graph_view {
+    ($view:ident, $entity:literal, $table:literal) => {
+        struct $view {
+            row: CompactRow,
+            state: teaql_runtime::EntityRuntimeState,
+        }
+        impl teaql_core::TeaqlEntity for $view {
+            const ENTITY_NAME: &'static str = $entity;
+            fn entity_descriptor() -> EntityDescriptor {
+                entity($entity, $table)
+            }
+        }
+        impl teaql_core::Entity for $view {
+            fn from_compact_row(row: CompactRow) -> Result<Self, teaql_core::EntityError> {
+                Ok(Self {
+                    row,
+                    state: Default::default(),
+                })
+            }
+            fn into_values(self) -> teaql_core::MutationValues {
+                self.row.into_map().into()
+            }
+            fn on_loaded(&mut self, context: &dyn std::any::Any) {
+                self.state = context
+                    .downcast_ref::<teaql_runtime::EntityRuntimeState>()
+                    .unwrap()
+                    .clone();
+            }
+        }
+        impl teaql_core::IdentifiableEntity for $view {
+            fn id_value(&self) -> Value {
+                self.row.get("id").unwrap().clone()
+            }
+        }
+    };
+}
+graph_view!(PlatformView, "Platform", "facet_platform");
+graph_view!(SchoolTypeView, "SchoolType", "facet_school_type");
+
+async fn loaded_setup() -> Runtime {
+    let mut runtime = setup().await;
+    runtime
+        .0
+        .execute_in_transaction::<Executor, _, _>(|transaction| {
+            Box::pin(async move {
+                for command in [
+                    InsertCommand::new("Platform")
+                        .value("id", 3_i64)
+                        .value("name", "no types"),
+                    InsertCommand::new("SchoolType")
+                        .value("id", 40_i64)
+                        .value("name", "primary")
+                        .value("platform_id", 2_i64),
+                ] {
+                    transaction
+                        .mutate(
+                            MutationCommand::Insert(command.value("version", 1_i64))
+                                .request("seed second loaded Facet owner")?,
+                        )
+                        .await?;
+                }
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    let mut decoders = teaql_runtime::InMemoryEntityGraphDecoderRegistry::default();
+    decoders.register::<PlatformView>();
+    decoders.register::<SchoolTypeView>();
+    runtime.0.set_entity_graph_decoder_registry(decoders);
+    runtime.0.clear_sql_logs();
+    runtime
+}
+
+fn loaded_query(include_all: bool, threshold: usize) -> PurposedSelectQuery {
+    let mut choices = QuerySelection::new(SelectQuery::new("Platform").limit(10));
+    choices
+        .query_options
+        .relation_aggregates
+        .push(RelationAggregate::new(
+            "school_types",
+            "type_count",
+            SelectQuery::new("SchoolType"),
+            true,
+        ));
+    // This binding exists only in a future loaded-relation Facet aggregate.
+    choices
+        .query_options
+        .relation_aggregates
+        .push(RelationAggregate::new(
+            "school_types",
+            "matching_count",
+            SelectQuery::new("SchoolType").filter(Expr::eq("name", "primary")),
+            true,
+        ));
+    let mut types = QuerySelection::new(
+        SelectQuery::new("SchoolType")
+            .filter(Expr::ne("name", "unused"))
+            .order_asc("id")
+            .limit(1)
+            .top_n_probe_parent_threshold(threshold),
+    );
+    types.query_options.facets.push(FacetRequest::new(
+        "platformChoices",
+        "platform",
+        choices,
+        include_all,
+    ));
+    let mut root = QuerySelection::new(SelectQuery::new("Platform").order_asc("id").limit(10));
+    root.relation_selections
+        .push(teaql_core::request::RelationSelection::new(
+            "school_types",
+            types,
+        ));
+    PurposedSelectQuery::new(
+        root.into_query()
+            .comment("load primary choices by platform"),
+        "render primary counts independently",
+    )
+    .with_facet_diagnostics(&QueryOptions::default())
+}
+
+#[test]
+fn loaded_relation_facets_keep_per_parent_counts_and_empty_typed_lists() {
+    futures_executor::block_on(async {
+        for include_all in [true, false] {
+            for logging in [true, false] {
+                for threshold in [0, 32] {
+                    let mut runtime = loaded_setup().await;
+                    if !logging {
+                        runtime.0.disable_sql_log();
+                    }
+                    let query = loaded_query(include_all, threshold);
+                    let rows = runtime
+                        .0
+                        .entity_data_service::<Executor>("Platform")
+                        .unwrap()
+                        .fetch_enhanced_entities::<PlatformView>(&query)
+                        .await
+                        .unwrap();
+                    assert_eq!(rows.len(), 3);
+                    for parent in &rows.data {
+                        let id = parent.row.get("id").and_then(Value::try_u64).unwrap();
+                        let handle = parent.state.relation_list::<SchoolTypeView>(
+                            "Platform",
+                            id,
+                            "school_types",
+                        );
+                        let types = handle
+                            .value()
+                            .expect("selected empty relation still has a SmartList");
+                        assert_eq!(
+                            types.len(),
+                            usize::from(id != 3),
+                            "TopN page still has at most one row"
+                        );
+                        let choices = types.facet("platformChoices").expect(
+                            "loaded relation SmartList must retain per-parent Facet metadata",
+                        );
+                        let expected_count = if id == 1 {
+                            2
+                        } else if id == 2 {
+                            1
+                        } else {
+                            0
+                        };
+                        let expected = if include_all {
+                            (1..=3)
+                                .map(|choice| {
+                                    (
+                                        choice,
+                                        if choice == id as i64 {
+                                            expected_count
+                                        } else {
+                                            0
+                                        },
+                                    )
+                                })
+                                .collect()
+                        } else if id == 3 {
+                            Vec::new()
+                        } else {
+                            vec![(id as i64, expected_count)]
+                        };
+                        assert_eq!(
+                            counts(choices, "type_count"),
+                            expected,
+                            "facet membership is full filtered collection, not TopN rows"
+                        );
+                        let expected_matching = if include_all {
+                            (1..=3)
+                                .map(|choice| (choice, i64::from(id != 3 && choice == id as i64)))
+                                .collect()
+                        } else if id == 3 {
+                            Vec::new()
+                        } else {
+                            vec![(id as i64, 1)]
+                        };
+                        assert_eq!(counts(choices, "matching_count"), expected_matching);
+                        assert!(parent.row.keys().all(|key| key != "platformChoices"));
+                        assert!(
+                            types
+                                .data
+                                .iter()
+                                .all(|row| row.row.keys().all(|key| key != "platformChoices"))
+                        );
+                        assert_eq!(
+                            handle.state(),
+                            if id == 3 {
+                                teaql_runtime::LoadedRelation::Empty
+                            } else {
+                                teaql_runtime::LoadedRelation::Loaded
+                            }
+                        );
+                    }
+                    let logs = runtime.0.sql_logs();
+                    if logging {
+                        assert_eq!(
+                            logs.len(),
+                            1 + if threshold == 0 { 1 } else { 3 }
+                                + if include_all { 9 } else { 7 },
+                            "bounded one relation batch/probe and one Facet tree per owner"
+                        );
+                        assert!(
+                            !format!("{logs:?}").contains("primary"),
+                            "future loaded Facet bind must mask the first root SQL too"
+                        );
+                        assert!(
+                            logs.iter()
+                                .all(|log| log.trace_path[0].entity_type == "Platform"
+                                    && log.trace_path[1].entity_type == "Platform")
+                        );
+                        assert!(logs.iter().any(|log| {
+                            log.trace_path
+                                .iter()
+                                .filter(|node| node.kind == TraceKind::Relation)
+                                .map(|node| node.comment.as_str())
+                                .collect::<Vec<_>>()
+                                == vec![
+                                    "Platform.school_types",
+                                    "SchoolType.platform",
+                                    "Platform.school_types",
+                                ]
+                        }));
+                    } else {
+                        assert!(logs.is_empty());
+                    }
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn loaded_relation_future_binding_masks_first_root_sql() {
+    futures_executor::block_on(async {
+        let runtime = loaded_setup().await;
+        let query = loaded_query(true, 0);
+        runtime
+            .0
+            .entity_data_service::<Executor>("Platform")
+            .unwrap()
+            .fetch_enhanced_entities::<PlatformView>(&query)
+            .await
+            .unwrap();
+        let logs = runtime.0.sql_logs();
+        assert!(
+            !format!("{:?}", logs[0]).contains("primary"),
+            "future relation Facets must be captured before first SQL"
+        );
+    });
+}
+
+#[test]
+fn loaded_relation_compact_sidecars_never_enter_persistent_values() {
+    futures_executor::block_on(async {
+        let runtime = loaded_setup().await;
+        let rows = runtime
+            .0
+            .entity_data_service::<Executor>("Platform")
+            .unwrap()
+            .fetch_all(&loaded_query(true, 0))
+            .await
+            .unwrap();
+        for row in rows {
+            let id = row.get("id").and_then(Value::try_i64).unwrap();
+            let list = row
+                .loaded_relation("school_types")
+                .expect("compact result retains list metadata");
+            assert_eq!(list.len(), usize::from(id != 3));
+            let expected = (1..=3)
+                .map(|choice| {
+                    (
+                        choice,
+                        if choice == id {
+                            if id == 1 {
+                                2
+                            } else if id == 2 {
+                                1
+                            } else {
+                                0
+                            }
+                        } else {
+                            0
+                        },
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                counts(list.facet("platformChoices").unwrap(), "type_count"),
+                expected
+            );
+            assert!(
+                !teaql_core::compact_row_to_json_value(&row)
+                    .to_string()
+                    .contains("platformChoices")
+            );
+            assert!(!format!("{:?}", row.into_map()).contains("platformChoices"));
+        }
+    });
+}
+
+#[test]
+fn loaded_relation_facets_survive_slow_typed_hydration_with_root_aggregate() {
+    futures_executor::block_on(async {
+        let runtime = loaded_setup().await;
+        let aggregates = [teaql_core::RelationAggregate::new(
+            "school_types",
+            "whole_count",
+            SelectQuery::new("SchoolType"),
+            true,
+        )];
+        let rows = runtime
+            .0
+            .entity_data_service::<Executor>("Platform")
+            .unwrap()
+            .fetch_enhanced_entities_with_relation_aggregates::<PlatformView>(
+                &loaded_query(true, 0),
+                &aggregates,
+            )
+            .await
+            .unwrap();
+        for parent in rows.data {
+            let id = parent.row.get("id").and_then(Value::try_u64).unwrap();
+            let types =
+                parent
+                    .state
+                    .relation_list::<SchoolTypeView>("Platform", id, "school_types");
+            let expected = if id == 1 {
+                2
+            } else if id == 2 {
+                1
+            } else {
+                0
+            };
+            assert_eq!(
+                types
+                    .value()
+                    .unwrap()
+                    .facet("platformChoices")
+                    .unwrap()
+                    .data
+                    .iter()
+                    .find(|row| row.get("id").and_then(Value::try_u64) == Some(id))
+                    .unwrap()
+                    .get("type_count")
+                    .and_then(Value::try_i64),
+                Some(expected)
+            );
+            assert_eq!(
+                parent.row.get("whole_count").and_then(Value::try_i64),
+                Some(if id == 1 {
+                    3
+                } else if id == 2 {
+                    1
+                } else {
+                    0
+                })
+            );
+        }
+        assert_eq!(runtime.0.sql_logs().len(), 12);
+        assert!(!format!("{:?}", runtime.0.sql_logs()).contains("primary"));
+    });
+}
+
+#[test]
+fn loaded_to_one_facets_remain_query_metadata_for_shared_and_filtered_targets() {
+    futures_executor::block_on(async {
+        let runtime = loaded_setup().await;
+        let mut choices = QuerySelection::new(SelectQuery::new("SchoolType").limit(10));
+        choices
+            .query_options
+            .relation_aggregates
+            .push(RelationAggregate::new(
+                "platform",
+                "platform_count",
+                SelectQuery::new("Platform"),
+                true,
+            ));
+        let mut target =
+            QuerySelection::new(SelectQuery::new("Platform").filter(Expr::ne("name", "empty")));
+        target.query_options.facets.push(FacetRequest::new(
+            "typeChoices",
+            "school_types",
+            choices,
+            false,
+        ));
+        let mut source = QuerySelection::new(
+            SelectQuery::new("SchoolType")
+                .projects(["id", "version", "name", "platform_id"])
+                .order_asc("id")
+                .limit(10),
+        );
+        source
+            .relation_selections
+            .push(teaql_core::request::RelationSelection::new(
+                "platform", target,
+            ));
+        let query = PurposedSelectQuery::new(
+            source.into_query().comment("load selected platform facets"),
+            "retain read-only relation metadata",
+        );
+        let repository = runtime
+            .0
+            .entity_data_service::<Executor>("SchoolType")
+            .unwrap();
+        let rows = repository
+            .fetch_enhanced_entities::<SchoolTypeView>(&query)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 4);
+        for row in rows.data {
+            let id = row.row.get("id").and_then(Value::try_u64).unwrap();
+            let choices = row
+                .state
+                .relation_facet("SchoolType", id, "platform", "typeChoices")
+                .expect("to-one cardinality must not discard Facet results");
+            assert_eq!(
+                counts(choices, "platform_count"),
+                if id == 40 {
+                    vec![]
+                } else {
+                    vec![(10, 1), (20, 1), (30, 1)]
+                }
+            );
+            assert!(!format!("{:?}", row.row.into_map()).contains("typeChoices"));
+        }
+        let compact = repository.fetch_all(&query).await.unwrap();
+        for row in compact {
+            let id = row.get("id").and_then(Value::try_u64).unwrap();
+            let target = row.loaded_relation("platform").unwrap();
+            assert_eq!(target.len(), usize::from(id != 40));
+            assert_eq!(
+                counts(target.facet("typeChoices").unwrap(), "platform_count"),
+                if id == 40 {
+                    vec![]
+                } else {
+                    vec![(10, 1), (20, 1), (30, 1)]
+                }
+            );
+            assert!(
+                !teaql_core::compact_row_to_json_value(&row)
+                    .to_string()
+                    .contains("typeChoices")
+            );
+        }
+    });
+}
+
+#[test]
+fn loaded_to_one_null_and_missing_keys_retain_empty_facets_without_orphan_counts() {
+    futures_executor::block_on(async {
+        for missing_key in [false, true] {
+            for include_all in [false, true] {
+                for logging in [false, true] {
+                    let mut runtime = loaded_setup().await;
+                    runtime
+                        .0
+                        .execute_in_transaction::<Executor, _, _>(|transaction| {
+                            Box::pin(async move {
+                                transaction
+                                    .mutate(
+                                        MutationCommand::Insert(
+                                            InsertCommand::new("SchoolType")
+                                                .value("id", 50_i64)
+                                                .value("version", 1_i64)
+                                                .value("name", "unassigned")
+                                                .value("platform_id", Value::Null),
+                                        )
+                                        .request("seed nullable relation owner")?,
+                                    )
+                                    .await?;
+                                Ok(())
+                            })
+                        })
+                        .await
+                        .unwrap();
+                    runtime.0.clear_sql_logs();
+                    if !logging {
+                        runtime.0.disable_sql_log();
+                    }
+                    let mut choices = QuerySelection::new(SelectQuery::new("SchoolType").limit(10));
+                    choices
+                        .query_options
+                        .relation_aggregates
+                        .push(RelationAggregate::new(
+                            "platform",
+                            "platform_count",
+                            SelectQuery::new("Platform"),
+                            true,
+                        ));
+                    let mut target = QuerySelection::new(SelectQuery::new("Platform"));
+                    target.query_options.facets.push(FacetRequest::new(
+                        "typeChoices",
+                        "school_types",
+                        choices,
+                        include_all,
+                    ));
+                    let mut root = SelectQuery::new("SchoolType")
+                        .projects(["id", "version", "name", "platform_id"])
+                        .limit(10);
+                    if missing_key {
+                        // Native SQLite DTO projection intentionally omits the local key.
+                        // No fabricated rows or traces are passed to the runtime.
+                        root = root
+                            .raw_sql("SELECT id, version, name FROM facet_school_type ORDER BY id");
+                    }
+                    let mut source = QuerySelection::new(root);
+                    // apply_runtime_metadata owns the raw SQL option, matching the builder boundary.
+                    source.query_options.raw_sql = source.query.raw_sql.clone();
+                    source
+                        .relation_selections
+                        .push(teaql_core::request::RelationSelection::new(
+                            "platform", target,
+                        ));
+                    let query = PurposedSelectQuery::new(
+                        source
+                            .into_query()
+                            .comment("load nullable relation choices"),
+                        "preserve empty relation Facets",
+                    );
+                    let rows = runtime
+                        .0
+                        .entity_data_service::<Executor>("SchoolType")
+                        .unwrap()
+                        .fetch_enhanced_entities::<SchoolTypeView>(&query)
+                        .await
+                        .unwrap();
+                    assert_eq!(rows.len(), 5);
+                    for row in rows.data {
+                        let id = row.row.get("id").and_then(Value::try_u64).unwrap();
+                        let empty = missing_key || id == 50;
+                        let choices = row
+                            .state
+                            .relation_facet("SchoolType", id, "platform", "typeChoices")
+                            .unwrap();
+                        let ids: Vec<i64> = if include_all {
+                            vec![10, 20, 30, 40, 50]
+                        } else if empty {
+                            vec![]
+                        } else if id == 40 {
+                            vec![40]
+                        } else {
+                            vec![10, 20, 30]
+                        };
+                        let expected = ids
+                            .into_iter()
+                            .map(|choice| {
+                                (
+                                    choice,
+                                    i64::from(
+                                        !empty && choice != 50 && (choice == 40) == (id == 40),
+                                    ),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        assert_eq!(counts(choices, "platform_count"), expected);
+                    }
+                    assert!(
+                        runtime.0.sql_logs().len() <= 12,
+                        "bounded Facet work per selected owner"
+                    );
+                    if !logging {
+                        assert!(runtime.0.sql_logs().is_empty());
+                    }
+                }
+            }
         }
     });
 }
