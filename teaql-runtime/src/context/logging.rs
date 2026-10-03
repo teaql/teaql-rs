@@ -4,6 +4,10 @@ use std::time::{Duration, SystemTime};
 use super::UserContext;
 use teaql_core::Value;
 
+#[cfg(test)]
+#[path = "logging_vectors_tests.rs"]
+mod vectors_tests;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SqlLogOperation {
     Select,
