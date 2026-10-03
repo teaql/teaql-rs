@@ -1,7 +1,7 @@
 //! Per-compilation binding provenance. Never stored in a thread-local or context.
 use crate::DatabaseKind;
 use teaql_core::{EntityDescriptor, Expr, Value};
-use teaql_data_service::{SqlLogContext, SqlParameterLogPolicy as Policy, is_credential_log_name};
+use teaql_data_service::{SqlLogContext, SqlParameterLogPolicy as Policy};
 
 #[derive(Debug, Clone, Default)]
 pub struct SqlBindings {
@@ -47,22 +47,7 @@ impl std::ops::Deref for SqlBindings {
 }
 
 pub(crate) fn field_policy(entity: &EntityDescriptor, field: &str) -> Policy {
-    let Some(property) = entity.property_by_name(field) else {
-        return Policy::Unknown;
-    };
-    if is_credential_log_name(&property.name) || is_credential_log_name(&property.column_name) {
-        Policy::Credential
-    } else if !entity.audit_mask_fields_declared {
-        Policy::Unknown
-    } else if entity
-        .audit_mask_fields
-        .iter()
-        .any(|name| name == &property.name)
-    {
-        Policy::Masked
-    } else {
-        Policy::Plain
-    }
+    teaql_data_service::SqlIntentRedactions::field_policy(entity, field)
 }
 
 pub(crate) fn combine(left: Option<Policy>, right: Option<Policy>) -> Option<Policy> {

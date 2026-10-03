@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 mod batching;
 mod database_ids;
 mod failure;
+mod graph_privacy;
 mod observation;
 mod readback_transport;
 mod scenarios;
@@ -512,6 +513,7 @@ async fn main() -> Outcome<()> {
     context.insert_resource(executor.clone());
     context.register_executor(Observed::new(executor, observation.clone()));
     context.ensure_schema().await?;
+    graph_privacy::loaded_graph_privacy(&context, &capture, &observation).await?;
     normative_graph(&context, &capture, &observation).await?;
     batching::same_type_batch(&mut context, &capture, &observation).await?;
     scenarios::concurrent_graphs(&context, &capture, &observation).await?;

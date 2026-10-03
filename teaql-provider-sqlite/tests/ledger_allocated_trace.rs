@@ -425,7 +425,39 @@ fn assert_insert(capture: &Capture, entity: &str, expected: &[(&str, u64, &str)]
             event.entity == entity && event.kind == teaql_runtime::RawAuditEventKind::Created
         })
         .expect("committed safe audit event");
-    assert_assigned_chain(&event.trace_chain, expected);
+    // Fixture names have undeclared log policy, so they are private. Trusted
+    // command/physical facts above retain the exact reason; exported audit must
+    // mask quoted names across every sibling, while keeping typed identities.
+    let mut private_names = Vec::new();
+    let mut pending: Vec<_> = commands.iter().collect();
+    while let Some(request) = pending.pop() {
+        match &request.command {
+            MutationCommand::Batch(children) => pending.extend(children),
+            MutationCommand::Insert(command) => {
+                if let Some(Value::Text(name)) = command.values.get("name") {
+                    private_names.push(name);
+                }
+            }
+            _ => {}
+        }
+    }
+    private_names.sort_by_key(|name| std::cmp::Reverse(name.len()));
+    let safe_reasons: Vec<_> = expected
+        .iter()
+        .map(|(_, _, reason)| {
+            private_names
+                .iter()
+                .fold((*reason).to_owned(), |text, name| {
+                    text.replace(name.as_str(), "[REDACTED]")
+                })
+        })
+        .collect();
+    let safe_expected: Vec<_> = expected
+        .iter()
+        .zip(&safe_reasons)
+        .map(|((entity, id, _), reason)| (*entity, *id, reason.as_str()))
+        .collect();
+    assert_assigned_chain(&event.trace_chain, &safe_expected);
     assert!(
         event.fields.iter().any(|field| field.name == "id"
             && field.value.as_deref() == Some(assigned.to_string().as_str()))
@@ -469,12 +501,12 @@ fn root_allocated_during_ledger_planning_reaches_command_sql_and_committed_audit
             .iter()
             .filter(|entry| {
                 entry.operation == teaql_runtime::SqlLogOperation::Select
-                    && entry.comment.as_deref() == Some("create late root")
+                    && entry.comment.as_deref() == Some("create [REDACTED]")
             })
             .collect();
         assert!(!readbacks.is_empty(), "readback reaches the safe SQL sink");
         assert!(readbacks.iter().all(|entry| {
-            entry.audit_reason.as_deref() == Some("create late root")
+            entry.audit_reason.as_deref() == Some("create [REDACTED]")
                 && entry
                     .purpose
                     .as_deref()
@@ -700,7 +732,7 @@ async fn assert_new_database_graph(reverse: bool, forward: bool) {
     assert_safe_insert_log(
         &context,
         "AllocationChild",
-        "allocate new graph child",
+        "allocate [REDACTED] child",
         teaql_data_service::SqlExecutionOutcome::Success,
     );
 }

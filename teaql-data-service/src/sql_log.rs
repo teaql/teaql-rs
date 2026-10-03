@@ -92,6 +92,30 @@ impl std::fmt::Debug for SqlIntentRedactions {
 }
 
 impl SqlIntentRedactions {
+    /// Same classification for loaded graph provenance and SQL bindings.
+    pub fn field_policy(
+        entity: &teaql_core::EntityDescriptor,
+        field: &str,
+    ) -> SqlParameterLogPolicy {
+        use SqlParameterLogPolicy as Policy;
+        let Some(property) = entity.property_by_name(field) else {
+            return Policy::Unknown;
+        };
+        if is_credential_log_name(&property.name) || is_credential_log_name(&property.column_name) {
+            Policy::Credential
+        } else if !entity.audit_mask_fields_declared {
+            Policy::Unknown
+        } else if entity
+            .audit_mask_fields
+            .iter()
+            .any(|name| name == &property.name)
+        {
+            Policy::Masked
+        } else {
+            Policy::Plain
+        }
+    }
+
     /// Conservative provider fallback; not a wire-level permission or a retained
     /// cache value. Visit only this statement (including SQL subqueries), not
     /// separately executed relation siblings. Iterative to bound the Rust stack.

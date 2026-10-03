@@ -128,6 +128,7 @@ impl MutationCommand {
 pub struct MutationRequest {
     pub command: MutationCommand,
     intent: MutationIntent,
+    diagnostic_redactions: Option<std::sync::Arc<SqlIntentRedactions>>,
 }
 
 impl MutationRequest {
@@ -139,7 +140,26 @@ impl MutationRequest {
     }
 
     pub fn with_intent(command: MutationCommand, intent: MutationIntent) -> Self {
-        Self { command, intent }
+        Self {
+            command,
+            intent,
+            diagnostic_redactions: None,
+        }
+    }
+
+    /// Trusted, invocation-local provenance; never a command value or wire option.
+    #[doc(hidden)]
+    pub fn with_diagnostic_redactions(
+        mut self,
+        values: Option<std::sync::Arc<SqlIntentRedactions>>,
+    ) -> Self {
+        self.diagnostic_redactions = values;
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn diagnostic_redactions(&self) -> Option<&SqlIntentRedactions> {
+        self.diagnostic_redactions.as_deref()
     }
 
     pub fn intent(&self) -> &MutationIntent {

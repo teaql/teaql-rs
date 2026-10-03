@@ -1668,7 +1668,8 @@ where
         Ok(affected)
     }
 
-    fn emit_event(&self, event: RawAuditEvent) -> Result<(), RuntimeError> {
+    fn emit_event(&self, mut event: RawAuditEvent) -> Result<(), RuntimeError> {
+        event.diagnostic_redactions = self.data_service.mutation_privacy.clone();
         self.data_service.metadata.context.send_event(event)
     }
 
@@ -1822,6 +1823,7 @@ where
                 },
                 executor: self.data_service.executor,
                 mutation_intent: self.data_service.mutation_intent.clone(),
+                mutation_privacy: self.data_service.mutation_privacy.clone(),
             },
             trace_context: Vec::new(),
             request_intent: self.request_intent.clone(),

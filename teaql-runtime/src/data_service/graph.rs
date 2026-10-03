@@ -211,7 +211,10 @@ where
         )
         .map_err(RuntimeError::from)
         .map_err(DataServiceError::Runtime)?;
-        let scoped = self.with_mutation_intent(intent);
+        let scoped = self
+            .with_mutation_intent(intent)
+            .with_plan_privacy(&plan)
+            .map_err(DataServiceError::Runtime)?;
         // Do not embed the complete executor state machine in each intent
         // boundary. Generated bootstrap also runs on small test-thread stacks.
         Box::pin(scoped.execute_graph_plan_scoped(plan)).await
@@ -1481,7 +1484,10 @@ where
         let intent = teaql_core::MutationIntent::from_optional(root.get_comment().as_deref())
             .map_err(RuntimeError::from)
             .map_err(DataServiceError::Runtime)?;
-        let scoped = self.with_mutation_intent(intent);
+        let scoped = self
+            .with_mutation_intent(intent)
+            .with_ledger_privacy(&root)
+            .map_err(DataServiceError::Runtime)?;
         Box::pin(scoped.execute_ledger_plan_scoped(root, locations)).await
     }
 
@@ -1760,7 +1766,7 @@ where
                 cmd.batch_ids.push(key.id.clone());
                 cmd.batch_expected_versions
                     .push(root.get_original_version(key));
-                cmd.batch_old_values.push(None); // or fetch from original state if needed
+                cmd.batch_old_values.push(root.original_values_for(key));
                 let my_trace = resolve_trace_chain(root.get_trace_chain(key), &trace_chain);
                 traces.push(my_trace);
             }

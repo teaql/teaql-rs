@@ -179,3 +179,16 @@ the committed sink.
 Owning issues: [Rust #239](https://github.com/teaql/teaql-rs/issues/239),
 [generator #251](https://github.com/teaql/teaql-code-gen/issues/251), and
 [Rust 5.x Assist #252](https://github.com/teaql/teaql-code-gen/issues/252).
+
+The loaded graph privacy scenario (`src/graph_privacy.rs`) adds two successive
+updates and a marked deletion. A root reason quotes a child's old/new masked
+name; both SQL diagnostics and committed audit must hide those values, while
+generated Q/E verifies the actual stored values. A later independent query keeps
+its own intent unchanged. The verifier requires the `TC-REQ-16 LOADED GRAPH
+PRIVACY PASSED` marker. Loaded snapshots and pending values are captured by the
+runtime before graph execution, not by a generated helper or shared Context.
+
+Trusted `MutationRequest` and `RawAuditEvent` now carry private diagnostic
+provenance. Application integrations should construct audit facts through their
+existing constructors, not struct literals; safe audit output has no such field.
+No generated API or generator update is required for this checkpoint.

@@ -47,6 +47,7 @@ where
             metadata,
             executor,
             mutation_intent: None,
+            mutation_privacy: None,
         }
     }
 
@@ -179,7 +180,10 @@ where
         );
         let res = self
             .executor
-            .mutate_observed(request, self.metadata.mutation_diagnostic_observer())
+            .mutate_observed(
+                request.with_diagnostic_redactions(self.mutation_privacy.clone()),
+                self.metadata.mutation_diagnostic_observer(),
+            )
             .await
             .map_err(DataServiceError::Executor)?;
         self.metadata.record_metadata_log(&res.metadata);
@@ -202,7 +206,10 @@ where
         );
         let res = self
             .executor
-            .mutate_observed(request, self.metadata.mutation_diagnostic_observer())
+            .mutate_observed(
+                request.with_diagnostic_redactions(self.mutation_privacy.clone()),
+                self.metadata.mutation_diagnostic_observer(),
+            )
             .await
             .map_err(DataServiceError::Executor)?;
         self.metadata.record_metadata_log(&res.metadata);
@@ -236,7 +243,10 @@ where
         );
         let res = self
             .executor
-            .mutate_observed(request, self.metadata.mutation_diagnostic_observer())
+            .mutate_observed(
+                request.with_diagnostic_redactions(self.mutation_privacy.clone()),
+                self.metadata.mutation_diagnostic_observer(),
+            )
             .await
             .map_err(DataServiceError::Executor)?;
         self.metadata.record_metadata_log(&res.metadata);
@@ -280,7 +290,8 @@ where
                     MutationRequest::with_intent(
                         teaql_data_service::MutationCommand::Insert(insert_cmd),
                         self.required_mutation_intent()?,
-                    ),
+                    )
+                    .with_diagnostic_redactions(self.mutation_privacy.clone()),
                     self.metadata.mutation_diagnostic_observer(),
                 )
                 .await
@@ -328,7 +339,8 @@ where
                     MutationRequest::with_intent(
                         teaql_data_service::MutationCommand::Update(update_cmd),
                         self.required_mutation_intent()?,
-                    ),
+                    )
+                    .with_diagnostic_redactions(self.mutation_privacy.clone()),
                     self.metadata.mutation_diagnostic_observer(),
                 )
                 .await
@@ -375,7 +387,10 @@ where
         );
         let res = self
             .executor
-            .mutate_observed(request, self.metadata.mutation_diagnostic_observer())
+            .mutate_observed(
+                request.with_diagnostic_redactions(self.mutation_privacy.clone()),
+                self.metadata.mutation_diagnostic_observer(),
+            )
             .await
             .map_err(DataServiceError::Executor)?;
         self.metadata.record_metadata_log(&res.metadata);

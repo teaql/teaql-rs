@@ -102,12 +102,15 @@ where
             "",
         ));
     }
-    let mut redactions = SqlIntentRedactions::default();
+    let mut redactions = request.diagnostic_redactions().cloned().unwrap_or_default();
     if !matches!(request.command, MutationCommand::Batch(_)) {
         return redactions;
     }
     let mut pending = vec![request];
     while let Some(request) = pending.pop() {
+        if let Some(source) = request.diagnostic_redactions() {
+            redactions.extend(source);
+        }
         match &request.command {
             MutationCommand::Batch(children) => pending.extend(children),
             MutationCommand::Insert(command) => {
@@ -310,11 +313,7 @@ where
     let scope = MutationExecutionScope {
         root_intent: request.intent().clone(),
         batch: None,
-        redactions: matches!(
-            request.command,
-            teaql_data_service::MutationCommand::Batch(_)
-        )
-        .then(|| Arc::new(batch_intent_redactions(&request, lookup))),
+        redactions: Some(Arc::new(batch_intent_redactions(&request, lookup))),
         observer: journal.recorder(),
     };
     let result = execute_tree(dialect, transport, lookup, cache, request, readback, scope).await;

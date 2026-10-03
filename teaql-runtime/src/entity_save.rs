@@ -162,6 +162,8 @@ where
                 context,
                 crate::with_mutation_governance(governance, async {
                     let eds = crate::EntityDataService::for_executor(context, &entity, &tx)
+                        .with_ledger_privacy(&root)
+                        .map_err(DataServiceError::Runtime)?
                         .with_mutation_intent(
                             teaql_core::MutationIntent::from_optional(node.comment.as_deref())
                                 .map_err(RuntimeError::from)
@@ -1754,6 +1756,7 @@ where
             })?;
             let data_service =
                 crate::EntityDataService::for_executor(context, &entity_name, executor)
+                    .with_ledger_privacy(&root)?
                     .with_mutation_intent(teaql_core::MutationIntent::from_optional(
                         node.comment.as_deref(),
                     )?);

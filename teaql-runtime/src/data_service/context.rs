@@ -35,6 +35,7 @@ impl UserContext {
             metadata: UserContextMetadata { context: self },
             executor,
             mutation_intent: None,
+            mutation_privacy: None,
         })
     }
 
@@ -144,6 +145,7 @@ where
     fn data_service(&self) -> RuntimeDataService<'_, UserContextMetadata<'_>, E> {
         let mut service = RuntimeDataService::new(&self.metadata, self.executor);
         service.mutation_intent = self.mutation_intent.clone();
+        service.mutation_privacy = self.mutation_privacy.clone();
         service
     }
 
