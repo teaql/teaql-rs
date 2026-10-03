@@ -888,7 +888,32 @@ where
     where
         E: teaql_data_service::StreamQueryExecutor,
     {
-        let query = self
+        self.fetch_stream_with_source_internal(query, query).await
+    }
+
+    async fn fetch_stream_with_source_internal(
+        &self,
+        query: &SelectQuery,
+        diagnostic_source: &SelectQuery,
+    ) -> Result<
+        std::pin::Pin<
+            Box<
+                dyn futures_core::Stream<
+                        Item = Result<teaql_data_service::StreamChunk, DataServiceError<E::Error>>,
+                    > + '_,
+            >,
+        >,
+        DataServiceError<E::Error>,
+    >
+    where
+        E: teaql_data_service::StreamQueryExecutor,
+    {
+        // The observer owns this scoped service; no reference to a local scope
+        // or mutable Context state survives into delayed cursor consumption.
+        let scoped = self
+            .query_scoped_service(diagnostic_source)
+            .map_err(DataServiceError::Runtime)?;
+        let query = scoped
             .prepare_select_query(query)
             .map_err(DataServiceError::Runtime)?;
         let query = query
@@ -927,11 +952,10 @@ where
         };
 
         let chunks = if capture_metadata {
-            let context = self.data_service.metadata.context;
             self.data_service.executor.query_stream_observed(
                 request,
                 chunk_size,
-                std::sync::Arc::new(move |metadata| context.record_metadata_log(&metadata)),
+                std::sync::Arc::new(move |metadata| scoped.record_query_metadata(&metadata)),
             )
         } else {
             self.data_service.executor.query_stream(request, chunk_size)
@@ -1238,7 +1262,9 @@ where
             .prepare_select_query(query)
             .map_err(DataServiceError::Runtime)?;
 
-        self.data_service.fetch_smart_list(&query).await
+        self.fetch_prepared_compact_owned(query)
+            .await
+            .map(SmartList::from)
     }
 
     pub(crate) async fn fetch_smart_list_with_relation_aggregates_internal(
@@ -1263,7 +1289,13 @@ where
             .map_err(DataServiceError::Runtime)?;
         self.ensure_entity_identity_projection(&mut query);
 
-        self.data_service.fetch_entities(&query).await
+        self.fetch_prepared_compact_owned(query)
+            .await?
+            .into_iter()
+            .map(T::from_compact_row)
+            .collect::<Result<Vec<_>, _>>()
+            .map(SmartList::from)
+            .map_err(DataServiceError::Entity)
     }
 
     pub(crate) async fn fetch_entities_with_relation_aggregates_internal<T>(
@@ -1506,7 +1538,11 @@ where
     where
         E: teaql_data_service::StreamQueryExecutor,
     {
-        self.fetch_stream_internal(query.as_query()).await
+        self.fetch_stream_with_source_internal(
+            query.as_query(),
+            query.diagnostic_source().unwrap_or(query.as_query()),
+        )
+        .await
     }
 
     #[doc(hidden)]
@@ -1514,7 +1550,16 @@ where
         &self,
         query: &PurposedSelectQuery,
     ) -> Result<SmartList<teaql_core::CompactRow>, DataServiceError<E::Error>> {
-        self.fetch_smart_list_internal(query.as_query()).await
+        let scoped = query
+            .diagnostic_source()
+            .map(|source| self.query_scoped_service(source))
+            .transpose()
+            .map_err(DataServiceError::Runtime)?;
+        scoped
+            .as_ref()
+            .unwrap_or(self)
+            .fetch_smart_list_internal(query.as_query())
+            .await
     }
 
     #[doc(hidden)]
@@ -1523,11 +1568,19 @@ where
         query: &PurposedSelectQuery,
         relation_aggregates: &[RelationAggregate],
     ) -> Result<SmartList<teaql_core::CompactRow>, DataServiceError<E::Error>> {
-        self.fetch_smart_list_with_relation_aggregates_internal(
-            query.as_query(),
-            relation_aggregates,
-        )
-        .await
+        let scoped = query
+            .diagnostic_source()
+            .map(|source| self.query_scoped_service(source))
+            .transpose()
+            .map_err(DataServiceError::Runtime)?;
+        scoped
+            .as_ref()
+            .unwrap_or(self)
+            .fetch_smart_list_with_relation_aggregates_internal(
+                query.as_query(),
+                relation_aggregates,
+            )
+            .await
     }
 
     #[doc(hidden)]
@@ -1538,7 +1591,16 @@ where
     where
         T: Entity,
     {
-        self.fetch_entities_internal(query.as_query()).await
+        let scoped = query
+            .diagnostic_source()
+            .map(|source| self.query_scoped_service(source))
+            .transpose()
+            .map_err(DataServiceError::Runtime)?;
+        scoped
+            .as_ref()
+            .unwrap_or(self)
+            .fetch_entities_internal(query.as_query())
+            .await
     }
 
     #[doc(hidden)]
@@ -1549,7 +1611,15 @@ where
     where
         T: Entity,
     {
-        self.fetch_enhanced_entities_internal(query.as_query())
+        let scoped = query
+            .diagnostic_source()
+            .map(|source| self.query_scoped_service(source))
+            .transpose()
+            .map_err(DataServiceError::Runtime)?;
+        scoped
+            .as_ref()
+            .unwrap_or(self)
+            .fetch_enhanced_entities_internal(query.as_query())
             .await
     }
 
@@ -1562,11 +1632,19 @@ where
     where
         T: Entity,
     {
-        self.fetch_enhanced_entities_with_relation_aggregates_internal(
-            query.as_query(),
-            relation_aggregates,
-        )
-        .await
+        let scoped = query
+            .diagnostic_source()
+            .map(|source| self.query_scoped_service(source))
+            .transpose()
+            .map_err(DataServiceError::Runtime)?;
+        scoped
+            .as_ref()
+            .unwrap_or(self)
+            .fetch_enhanced_entities_with_relation_aggregates_internal(
+                query.as_query(),
+                relation_aggregates,
+            )
+            .await
     }
 
     #[doc(hidden)]
@@ -1578,11 +1656,19 @@ where
     where
         T: Entity,
     {
-        self.fetch_enhanced_entities_with_relation_aggregates_owned_internal(
-            query.into_query(),
-            relation_aggregates,
-        )
-        .await
+        let scoped = query
+            .diagnostic_source()
+            .map(|source| self.query_scoped_service(source))
+            .transpose()
+            .map_err(DataServiceError::Runtime)?;
+        scoped
+            .as_ref()
+            .unwrap_or(self)
+            .fetch_enhanced_entities_with_relation_aggregates_owned_internal(
+                query.into_query(),
+                relation_aggregates,
+            )
+            .await
     }
 
     pub(crate) async fn insert_internal(

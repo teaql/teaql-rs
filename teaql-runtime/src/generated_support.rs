@@ -260,6 +260,25 @@ impl PurposedSelectQuery {
         self
     }
 
+    /// Classify future Facet bindings before the first root SQL statement.
+    /// Sources remain diagnostic-only and compose with derived COUNT provenance.
+    #[doc(hidden)]
+    pub fn with_facet_diagnostics(mut self, options: &QueryOptions) -> Self {
+        if options.facets.is_empty() {
+            return self;
+        }
+        let source = self
+            .diagnostic_source
+            .get_or_insert_with(|| Box::new(self.query.clone()));
+        source.child_enhancements.extend(
+            options
+                .facets
+                .iter()
+                .map(|facet| facet_diagnostic_source(&facet.query)),
+        );
+        self
+    }
+
     pub(crate) fn diagnostic_source(&self) -> Option<&SelectQuery> {
         self.diagnostic_source.as_deref()
     }
@@ -279,47 +298,113 @@ pub async fn execute_facets<C>(
     options: &QueryOptions,
 ) -> Result<BTreeMap<String, SmartList<CompactRow>>, RuntimeError>
 where
-    C: TeaqlRuntime + ?Sized,
+    C: TeaqlRuntime + Sync + ?Sized,
 {
-    let intent = teaql_core::QueryIntent::from_optional(
-        outer_query.comment.as_deref(),
-        outer_query.purpose.as_deref(),
-    )?;
-    let mut facets = BTreeMap::new();
-    for facet in &options.facets {
-        let mut selection = facet.query.clone();
-        merge_outer_filter_into_facet_aggregates(&mut selection, outer_query);
-        if !facet.include_all_facets {
-            selection = restrict_facet_to_outer_query(
-                context,
-                selection,
-                outer_query,
-                &facet.relation_name,
-            )?;
-        }
-        let relation_aggregates = runtime_relation_aggregates(&selection.query_options);
-        let mut query = apply_runtime_metadata(
-            selection.query,
-            &selection.query_options,
-            &selection.child_enhancements,
-        );
-        query.comment = Some(intent.comment().to_owned());
-        let entity = query.entity.clone();
-        let mut chain = outer_query.trace_chain.clone();
-        chain.push(TraceNode {
-            kind: teaql_core::TraceKind::Relation,
-            entity_type: query.entity.clone(),
-            entity_id: None,
-            comment: facet.facet_name.clone(),
-        });
+    // Facet materialization can omit the root's bindings (include_all_facets).
+    // Keep classification sources local to this invocation, never on Context or
+    // on an executed query's child enhancements.
+    let mut diagnostic_source = outer_query.clone();
+    diagnostic_source.child_enhancements.extend(
+        options
+            .facets
+            .iter()
+            .map(|facet| facet_diagnostic_source(&facet.query)),
+    );
+    execute_facets_with_source(context, outer_query, options, &diagnostic_source).await
+}
 
-        let query = PurposedSelectQuery::new(query, intent.purpose());
-        let facet_rows = context
-            .fetch_facet_smart_list(&entity, &query, &relation_aggregates, chain)
+fn facet_diagnostic_source(selection: &QuerySelection) -> SelectQuery {
+    let mut query = selection.clone().into_query();
+    query.child_enhancements.extend(
+        selection
+            .query_options
+            .relation_aggregates
+            .iter()
+            .map(|aggregate| facet_diagnostic_source(&aggregate.query)),
+    );
+    query.child_enhancements.extend(
+        selection
+            .query_options
+            .facets
+            .iter()
+            .map(|facet| facet_diagnostic_source(&facet.query)),
+    );
+    query
+}
+
+fn execute_facets_with_source<'a, C>(
+    context: &'a C,
+    outer_query: &'a SelectQuery,
+    options: &'a QueryOptions,
+    diagnostic_source: &'a SelectQuery,
+) -> std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = Result<BTreeMap<String, SmartList<CompactRow>>, RuntimeError>,
+            > + Send
+            + 'a,
+    >,
+>
+where
+    C: TeaqlRuntime + Sync + ?Sized,
+{
+    Box::pin(async move {
+        let intent = teaql_core::QueryIntent::from_optional(
+            outer_query.comment.as_deref(),
+            outer_query.purpose.as_deref(),
+        )?;
+        let mut facets = BTreeMap::new();
+        for facet in &options.facets {
+            let descriptor = context
+                .user_context()
+                .entity(&outer_query.entity)
+                .ok_or_else(|| RuntimeError::MissingEntity(outer_query.entity.clone()))?;
+            let relation = descriptor
+                .relation_by_name(&facet.relation_name)
+                .ok_or_else(|| RuntimeError::MissingRelation {
+                    entity: outer_query.entity.clone(),
+                    relation: facet.relation_name.clone(),
+                })?;
+            let mut selection = facet.query.clone();
+            merge_outer_filter_into_facet_aggregates(&mut selection, outer_query);
+            if !facet.include_all_facets {
+                selection = restrict_facet_to_outer_query(
+                    context,
+                    selection,
+                    outer_query,
+                    &facet.relation_name,
+                )?;
+            }
+            let relation_aggregates = runtime_relation_aggregates(&selection.query_options);
+            let mut query = selection.clone().into_query();
+            query.comment = Some(intent.comment().to_owned());
+            let entity = query.entity.clone();
+            query.trace_chain = outer_query.trace_chain.clone();
+            query.trace_chain.push(TraceNode {
+                kind: teaql_core::TraceKind::Relation,
+                entity_type: relation.name.clone(),
+                entity_id: None,
+                comment: format!("{}.{}", outer_query.entity, relation.name),
+            });
+
+            let mut query = PurposedSelectQuery::new(query, intent.purpose());
+            query.diagnostic_source = Some(Box::new(diagnostic_source.clone()));
+            // The query already owns the complete ancestry. Passing it again as a
+            // repository prefix duplicates the edge in derived aggregate SQL.
+            let mut facet_rows = context
+                .fetch_facet_smart_list(&entity, &query, &relation_aggregates, Vec::new())
+                .await?;
+            facet_rows.facets = execute_facets_with_source(
+                context,
+                query.as_query(),
+                &selection.query_options,
+                diagnostic_source,
+            )
             .await?;
-        facets.insert(facet.facet_name.clone(), facet_rows);
-    }
-    Ok(facets)
+            facets.insert(facet.facet_name.clone(), facet_rows);
+        }
+        Ok(facets)
+    })
 }
 
 pub fn restrict_facet_to_outer_query<C>(
