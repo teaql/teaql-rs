@@ -5,6 +5,7 @@ mod batching;
 mod database_ids;
 mod failure;
 mod graph_privacy;
+mod graph_privacy_failure;
 mod observation;
 mod readback_transport;
 mod scenarios;
@@ -495,6 +496,9 @@ async fn normative_graph(
 #[tokio::main]
 async fn main() -> Outcome<()> {
     let database_url = std::env::var("TEAQL_TRACE_CHAIN_DATABASE")?;
+    if std::env::var("TEAQL_TRACE_CHAIN_SCENARIO").as_deref() == Ok("loaded-privacy-rollback") {
+        return graph_privacy_failure::rollback_and_retry(database_url).await;
+    }
     let capture = AuditCapture::default();
     let observation = Observation::default();
     let mut context = service_runtime(ServiceRuntimeConfig {
@@ -525,5 +529,6 @@ async fn main() -> Outcome<()> {
     paging::paged_graph(&context, &capture, &observation).await?;
     failure::failed_graph(&mut context, &capture, &observation).await?;
     failure::failed_readback(database_url.clone(), &capture, &observation).await?;
+    graph_privacy_failure::rollback_and_retry(database_url.clone()).await?;
     database_ids::generated_database_ids(database_url).await
 }

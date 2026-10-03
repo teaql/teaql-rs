@@ -4,7 +4,7 @@ use teaql_runtime::UserContext;
 use trace_chain_service_core::teaql_core::Entity as _;
 use trace_chain_service_core::{AuditedSave as _, E, LedgerEntity as _, Q};
 
-fn assert_private(context: &UserContext, capture: &AuditCapture, secrets: &[&str]) {
+pub(super) fn assert_private(context: &UserContext, capture: &AuditCapture, secrets: &[&str]) {
     let logs = context.sql_logs();
     assert!(!logs.is_empty(), "real SQL diagnostics required");
     let audits = capture.events();

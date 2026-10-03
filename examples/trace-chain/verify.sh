@@ -85,6 +85,10 @@ for trace_pass in 1 2; do
     printf 'FAIL missing loaded graph privacy acceptance in %s\n' "$trace_log" >&2
     exit 1
   fi
+  if ! rg -Fq 'TC-REQ-16 GRAPH PRIVACY ROLLBACK PASSED' "$trace_log"; then
+    printf 'FAIL missing loaded graph privacy rollback acceptance in %s\n' "$trace_log" >&2
+    exit 1
+  fi
   printf 'PASS generated Trace Chain replay %s (same database, no cleanup)\n' "$trace_pass"
 done
 trace_library_after="$(generated_hash)"

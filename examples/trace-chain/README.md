@@ -192,3 +192,13 @@ Trusted `MutationRequest` and `RawAuditEvent` now carry private diagnostic
 provenance. Application integrations should construct audit facts through their
 existing constructors, not struct literals; safe audit output has no such field.
 No generated API or generator update is required for this checkpoint.
+
+`src/graph_privacy_failure.rs` combines loaded private values with failure and
+retry. Both real UPDATEs succeed, then the child's readback is deliberately
+rejected. The example requires safe failure diagnostics, zero committed audit,
+unchanged stored values/versions, and a successful fresh-query retry with exactly
+one version increment. Independent intent must remain unchanged afterward.
+The controlled verifier requires `TC-REQ-16 GRAPH PRIVACY ROLLBACK PASSED`.
+For a focused diagnostic run, set
+`TEAQL_TRACE_CHAIN_SCENARIO=loaded-privacy-rollback`; the complete gate requires
+all other scenarios too, so that selector cannot silently skip acceptance.
