@@ -1448,7 +1448,18 @@ where
         &self,
         query: &PurposedSelectQuery,
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
-        self.fetch_all_internal(query.as_query()).await
+        let scoped = query
+            .diagnostic_source()
+            .map(|source| self.query_scoped_service(source))
+            .transpose()
+            .map_err(DataServiceError::Runtime)?;
+        // Keep one await site: duplicating the large hydration future in two
+        // branches inflates native callers' stack frames even for ordinary Q.
+        scoped
+            .as_ref()
+            .unwrap_or(self)
+            .fetch_all_internal(query.as_query())
+            .await
     }
 
     #[doc(hidden)]
@@ -1456,7 +1467,16 @@ where
         &self,
         query: PurposedSelectQuery,
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
-        self.fetch_all_owned_internal(query.into_query()).await
+        let scoped = query
+            .diagnostic_source()
+            .map(|source| self.query_scoped_service(source))
+            .transpose()
+            .map_err(DataServiceError::Runtime)?;
+        scoped
+            .as_ref()
+            .unwrap_or(self)
+            .fetch_all_owned_internal(query.into_query())
+            .await
     }
 
     #[doc(hidden)]
@@ -1818,9 +1838,25 @@ where
         let mut scoped = self.scoped_data_service_internal(self.entity.clone());
         scoped.trace_context = self.trace_context.clone();
         scoped.request_intent = Some(self.request_intent_for(query)?);
-        scoped.query_log_intent = Some(std::sync::Mutex::new(
-            self.query_intent_snapshot().unwrap_or_default(),
-        ));
+        let mut redactions = self.query_intent_snapshot().unwrap_or_default();
+        if self.data_service.metadata.capture_execution_metadata() {
+            // A root comment can quote a future relation's sensitive binding.
+            // Classify the complete request tree before the first SQL log, using
+            // each node's own descriptor. This performs no database access.
+            let mut pending = vec![query];
+            while let Some(query) = pending.pop() {
+                redactions.extend(&self.data_service.executor.query_log_intent(query));
+                pending.extend(
+                    query
+                        .relations
+                        .iter()
+                        .filter_map(|relation| relation.query.as_deref()),
+                );
+                pending.extend(query.child_enhancements.iter());
+                pending.extend(query.object_group_bys.iter().map(|group| &group.query));
+            }
+        }
+        scoped.query_log_intent = Some(std::sync::Mutex::new(redactions));
         Ok(scoped)
     }
 }

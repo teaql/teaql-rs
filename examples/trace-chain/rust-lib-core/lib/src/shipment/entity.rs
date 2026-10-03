@@ -18,15 +18,15 @@ pub struct Shipment {
 #[teaql(id)]
     id: u64,
 
-// @source model.xml:16
+// @source model.xml:17
 #[teaql(max_length = 100)]
     reference_code: String,
 #[teaql(version)]
     version: i64,
-// @source model.xml:16
+// @source model.xml:17
 #[teaql(column = "customer_order")]
     customer_order_id: u64,
-// @source model.xml:16
+// @source model.xml:17
 #[teaql(relation(target = "CustomerOrder", local_key = "customer_order_id", foreign_key = "id"))]
     customer_order: Option<Box<crate::CustomerOrder>>,
     #[teaql(dynamic)]

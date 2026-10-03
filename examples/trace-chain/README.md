@@ -21,7 +21,7 @@ bash examples/trace-chain/verify.sh
 ```
 
 The script first runs eleven native allocation tests and six native identity
-graph tests twice, then requires ten generated scenario markers twice on one persistent
+graph tests twice, then requires eleven generated scenario markers twice on one persistent
 database without cleanup. It retains all six logs and prints their
 directory, the database URL, and a relative-path SHA-256 manifest digest for the
 unchanged generated library.
@@ -48,6 +48,7 @@ verification. Keep the lockfile for repeatable dependency resolution.
 | Readback failure | A transport probe delegates the real INSERT unchanged to SQLite, then rejects the following readback; successful write metadata and failed readback metadata remain separate, the graph rolls back and no committed audit event is delivered |
 | Successful readback | Generated Q/E and one root save create and then update a root/item graph. Each changed row returns its actual write followed by a SELECT, retaining root and branch reasons at physical metadata and the safe SQL sink; four writes and four reads produce only four committed audits |
 | Scalar streaming | Generated Q/E retains owned intent across deferred consumption and overlapping requests. SQLite serializes them on one connection lease: Drop releases the active cursor before safe cancellation logging, and the waiting stream and query then complete. Terminal counts are 1 cancelled / 3 successful; saving one fully loaded streamed row never saves or clears its sibling's mutation |
+| Page and COUNT | Generated Q/E returns total=3, offset=1, two independently editable roots and their filtered items. The model explicitly masks `order_item.name`. COUNT retains removed relation bindings for local classification, without executing them; COUNT, root and child intent all redact the secret while preserving the ordinary root filter. Saves retain per-row versions and reasons |
 | Generated database IDs | The real SQLite ID-space generator assigns root/item IDs during `new_entity`, before transaction begin; save does not allocate again, and commands, physical SQL, committed audits and reloaded generated Q/E agree on both identities and the foreign key |
 | Native transaction allocation | Eleven tests include both in-process allocation checks and database-backed allocation inside a real transaction; declared forward/reverse ID references resolve to the allocated parent, an unrelated numeric zero is unchanged, and failed writes retain typed lineage without committing rows or audit |
 | Generated library | Its file-content manifest digest is unchanged across application verification |
@@ -113,8 +114,19 @@ guard retention, no-match and hard-delete cases, sibling-secret masking and
 concurrent independent native batches. No extra SELECT is issued for tracing.
 The generated library remains unchanged. The verifier requires
 `TC-REQ-10 SUCCESSFUL READBACK PASSED` on both retained starts.
-Paging, broader entry-point/privacy/provider acceptance and immutable
+Broader entry-point/privacy/provider acceptance and immutable
 artifact consumption remain separate gates; this is not complete Trace Chain.
+
+`src/paging.rs` uses current field/query/list-page Assist. The count transform now
+belongs to the runtime's `PurposedSelectQuery`: it retains a private diagnostic
+source, never serializes it, and does not print that extra source in `Debug`.
+Runtime query-tree classification visits each nested query with its own compiler
+metadata before root logging. It executes no extra SQL and stores no provenance
+on the shared Context. Native SQLite tests cover borrowed/owned count execution,
+real SELECT failure, ordinary-value visibility, no cross-request contamination,
+logging-off validation and a counterexample reproducing the old source-discarding
+transform. The generated library requires the matching local runtime revision;
+the unchanged 5.0.5 label is not evidence of a published compatible artifact.
 
 `src/streaming.rs` uses current `rust-assist-list-page/customer_order` and
 expression/update Assist. It rejects missing/blank comments and unsupported

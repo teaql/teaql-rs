@@ -7,6 +7,7 @@
                   platform="platform()" order_number="TRACE-ORDER-001"
                   description="Draft order"/>
   <order_item _name="Order Item" _module="Trace Chain" _module_key="trace-chain"
+              _audit_mask_fields="name"
               customer_order="customer_order()" name="Available item"/>
   <payment _name="Payment" _module="Trace Chain" _module_key="trace-chain"
            customer_order="customer_order()" reference_code="TRACE-PAYMENT-001"/>

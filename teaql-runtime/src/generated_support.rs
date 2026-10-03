@@ -207,9 +207,21 @@ impl<T> PurposedQuery<T> {
 /// their terminal methods. Runtime execution APIs accept this wrapper rather
 /// than a bare [`SelectQuery`], so infrastructure callers must also declare
 /// intent explicitly.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PurposedSelectQuery {
     query: SelectQuery,
+    // Local compiler provenance only: never serialized or stored on UserContext.
+    diagnostic_source: Option<Box<SelectQuery>>,
+}
+
+impl std::fmt::Debug for PurposedSelectQuery {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PurposedSelectQuery")
+            .field("query", &self.query)
+            .field("has_diagnostic_source", &self.diagnostic_source.is_some())
+            .finish()
+    }
 }
 
 impl PurposedSelectQuery {
@@ -226,7 +238,30 @@ impl PurposedSelectQuery {
             entity_id: None,
             comment: purpose,
         });
-        Self { query }
+        Self {
+            query,
+            diagnostic_source: None,
+        }
+    }
+
+    /// Derive the root count without losing removed expressions' log privacy.
+    /// The original query is classified locally; it is never executed for tracing.
+    #[doc(hidden)]
+    pub fn for_exact_count(mut self, alias: impl Into<String>) -> Self {
+        if self.diagnostic_source.is_none() {
+            self.diagnostic_source = Some(Box::new(self.query.clone()));
+        }
+        self.query.projection.clear();
+        self.query.expr_projection.clear();
+        self.query.order_by.clear();
+        self.query.slice = None;
+        self.query.relations.clear();
+        self.query = self.query.count(alias);
+        self
+    }
+
+    pub(crate) fn diagnostic_source(&self) -> Option<&SelectQuery> {
+        self.diagnostic_source.as_deref()
     }
 
     pub fn as_query(&self) -> &SelectQuery {

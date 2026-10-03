@@ -26,6 +26,168 @@ impl SchemaProvider for Schema {
 type Executor = SqlDataServiceExecutor<SqliteDialect, SqliteMutationExecutor, Schema>;
 
 #[test]
+fn derived_count_retains_removed_relation_privacy_without_executing_it() {
+    futures_executor::block_on(async {
+        use teaql_core::Expr;
+        use teaql_runtime::PurposedSelectQuery;
+        let context = batch_context().await;
+        let secret = "COUNT-PRIVATE-DESCENDANT";
+        let source = PurposedSelectQuery::new(
+            SelectQuery::new("BatchProbe")
+                .filter(Expr::eq("status", "ACTIVE"))
+                .relation_query(
+                    "unused_relation",
+                    SelectQuery::new("BatchProbe").filter(Expr::eq("name", secret)),
+                )
+                .limit(1)
+                .comment(format!("count ACTIVE including {secret}")),
+            format!("page ACTIVE with {secret}"),
+        );
+        let count = source.clone().for_exact_count("count");
+        assert!(
+            !format!("{count:?}").contains("unused_relation"),
+            "removed source is not exposed by Debug"
+        );
+        assert!(count.as_query().relations.is_empty());
+        assert!(count.as_query().slice.is_none());
+        let repository = context
+            .entity_data_service::<Executor>("BatchProbe")
+            .unwrap();
+        for owned in [false, true] {
+            context.clear_sql_logs();
+            let rows = if owned {
+                repository.fetch_all_owned(count.clone()).await.unwrap()
+            } else {
+                repository.fetch_all(&count).await.unwrap()
+            };
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].get("count").and_then(Value::try_u64), Some(2));
+            let logs = context.sql_logs();
+            assert_eq!(
+                logs.len(),
+                1,
+                "classify removed relation without executing SQL"
+            );
+            assert!(
+                !format!("{logs:?}").contains(secret),
+                "COUNT must redact descendant value in intent"
+            );
+            assert!(
+                logs[0].comment.as_deref().unwrap().contains("ACTIVE"),
+                "ordinary bindings remain visible"
+            );
+            assert!(logs[0].purpose.as_deref().unwrap().contains("ACTIVE"));
+            assert_eq!(logs[0].params, vec![Value::from("ACTIVE")]);
+        }
+        context.clear_sql_logs();
+        repository
+            .fetch_all(&PurposedSelectQuery::new(
+                SelectQuery::new("BatchProbe").limit(1).comment(secret),
+                "independent query",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            context.sql_logs()[0].comment.as_deref(),
+            Some(secret),
+            "no request-local classification leaks to the next query"
+        );
+
+        // Reproduce the old generated transform: discarding source provenance
+        // really does leak this canary despite the physical COUNT being correct.
+        context.clear_sql_logs();
+        let legacy = PurposedSelectQuery::new(count.clone().into_query(), "legacy probe");
+        repository.fetch_all(&legacy).await.unwrap();
+        assert!(
+            context.sql_logs()[0]
+                .comment
+                .as_deref()
+                .unwrap()
+                .contains(secret)
+        );
+    });
+}
+
+#[test]
+fn failed_count_retains_removed_relation_privacy_at_the_error_sink() {
+    futures_executor::block_on(async {
+        use teaql_core::Expr;
+        use teaql_runtime::PurposedSelectQuery;
+        let context = batch_context().await;
+        // Provider-owned in-memory fixture only: cause a real SELECT failure.
+        context
+            .require_resource::<Executor>()
+            .unwrap()
+            .transport
+            .connection()
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TABLE batch_probe")
+            .unwrap();
+        let secret = "FAILED-COUNT-PRIVATE";
+        let count = PurposedSelectQuery::new(
+            SelectQuery::new("BatchProbe")
+                .relation_query(
+                    "unused",
+                    SelectQuery::new("BatchProbe").filter(Expr::eq("password", secret)),
+                )
+                .comment(format!("count {secret}")),
+            format!("failure {secret}"),
+        )
+        .for_exact_count("count");
+        assert!(
+            context
+                .entity_data_service::<Executor>("BatchProbe")
+                .unwrap()
+                .fetch_all(&count)
+                .await
+                .is_err()
+        );
+        let logs = context.sql_logs();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(
+            logs[0].log_context.execution_outcome,
+            Some(teaql_data_service::SqlExecutionOutcome::Failure)
+        );
+        assert!(!format!("{logs:?}").contains(secret));
+    });
+}
+
+#[test]
+fn count_logging_off_does_not_disable_required_intent() {
+    futures_executor::block_on(async {
+        use teaql_runtime::PurposedSelectQuery;
+        let mut context = batch_context().await;
+        context.disable_sql_log();
+        let query =
+            PurposedSelectQuery::new(SelectQuery::new("BatchProbe"), "missing comment probe")
+                .for_exact_count("count");
+        assert!(
+            context
+                .entity_data_service::<Executor>("BatchProbe")
+                .unwrap()
+                .fetch_all(&query)
+                .await
+                .is_err()
+        );
+        assert!(context.sql_logs().is_empty());
+        let query = PurposedSelectQuery::new(
+            SelectQuery::new("BatchProbe").comment("count with logging off"),
+            "prove unchanged query semantics",
+        )
+        .for_exact_count("count");
+        let rows = context
+            .entity_data_service::<Executor>("BatchProbe")
+            .unwrap()
+            .fetch_all(&query)
+            .await
+            .unwrap();
+        assert_eq!(rows[0].get("count").and_then(Value::try_u64), Some(2));
+        assert!(context.sql_logs().is_empty());
+    });
+}
+
+#[test]
 fn native_recover_request_preserves_operation_and_owned_reason_at_safe_log_sink() {
     futures_executor::block_on(async {
         let descriptor = EntityDescriptor::new("RecoveryProbe")

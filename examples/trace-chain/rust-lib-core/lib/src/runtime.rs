@@ -133,6 +133,10 @@ impl teaql_data_service::DataServiceExecutor for ServiceRuntimeExecutor {
 }
 
 impl teaql_data_service::QueryExecutor for ServiceRuntimeExecutor {
+    fn query_log_intent(&self, query: &teaql_core::SelectQuery) -> teaql_data_service::SqlIntentRedactions {
+        teaql_data_service::QueryExecutor::query_log_intent(&self.inner, query)
+    }
+
     async fn query(&self, request: teaql_data_service::QueryRequest) -> Result<teaql_data_service::QueryResult, Self::Error> {
         self.query_observed(request, None).await
     }

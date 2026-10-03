@@ -222,18 +222,12 @@ impl<R> PlatformRequest<R> {
         C: TeaqlRuntime + ?Sized,
     {
         let query_options = self.query_options.clone();
-        let mut query = apply_runtime_metadata(
+        let query = apply_runtime_metadata(
             self.query,
             &query_options,
             &self.child_enhancements,
         );
-        query.projection.clear();
-        query.expr_projection.clear();
-        query.order_by.clear();
-        query.slice = None;
-        query.relations.clear();
-        query = query.count(COUNT_ALIAS);
-        let query = authorize_query(query)?;
+        let query = authorize_query(query)?.for_exact_count(COUNT_ALIAS);
         let rows = context.fetch_compact_rows("Platform", &query).await?;
         rows.first()
             .and_then(|row| row.get(COUNT_ALIAS))
