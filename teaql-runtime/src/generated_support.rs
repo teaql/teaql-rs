@@ -332,19 +332,21 @@ fn facet_diagnostic_source(selection: &QuerySelection) -> SelectQuery {
     query
 }
 
-fn execute_facets_with_source<'a, C>(
-    context: &'a C,
-    outer_query: &'a SelectQuery,
-    options: &'a QueryOptions,
-    diagnostic_source: &'a SelectQuery,
-) -> std::pin::Pin<
+type FacetFuture<'a> = std::pin::Pin<
     Box<
         dyn std::future::Future<
                 Output = Result<BTreeMap<String, SmartList<CompactRow>>, RuntimeError>,
             > + Send
             + 'a,
     >,
->
+>;
+
+fn execute_facets_with_source<'a, C>(
+    context: &'a C,
+    outer_query: &'a SelectQuery,
+    options: &'a QueryOptions,
+    diagnostic_source: &'a SelectQuery,
+) -> FacetFuture<'a>
 where
     C: TeaqlRuntime + Sync + ?Sized,
 {
