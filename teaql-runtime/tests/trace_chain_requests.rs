@@ -77,6 +77,28 @@ fn create(entity: &str, id: u64) -> GraphNode {
         .value("id", id)
 }
 
+fn assert_intent_error(
+    error: teaql_runtime::DataServiceError<std::io::Error>,
+    kind: teaql_core::RequestKind,
+    field: &str,
+) {
+    let teaql_runtime::DataServiceError::Runtime(teaql_runtime::RuntimeError::RequestIntent(error)) =
+        error
+    else {
+        panic!("expected a structured request intent error, got {error:?}");
+    };
+    assert_eq!(error.request_kind, kind);
+    assert_eq!(error.field, field);
+    assert_eq!(
+        error.code(),
+        if field == "purpose" {
+            "QUERY_PURPOSE_REQUIRED"
+        } else {
+            "REQUEST_COMMENT_REQUIRED"
+        }
+    );
+}
+
 #[tokio::test]
 async fn query_missing_comment_cannot_be_repaired_by_trace_or_disabled_logs() {
     for disable_logs in [false, true] {
@@ -99,7 +121,7 @@ async fn query_missing_comment_cannot_be_repaired_by_trace_or_disabled_logs() {
                     "fabricated root comment",
                 )]);
             let error = service.fetch_all(&query).await.unwrap_err();
-            assert!(error.to_string().contains("REQUEST_COMMENT_REQUIRED"));
+            assert_intent_error(error, teaql_core::RequestKind::Query, "comment");
         }
     }
 }
@@ -132,8 +154,7 @@ async fn graph_planner_rejects_missing_or_blank_root_comment_before_io() {
             .plan_graph(node)
             .await
             .expect_err("the root request must own a non-blank comment");
-        assert!(error.to_string().contains("REQUEST_COMMENT_REQUIRED"));
-        assert!(error.to_string().contains("comment"));
+        assert_intent_error(error, teaql_core::RequestKind::Mutation, "comment");
     }
 }
 
