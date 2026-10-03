@@ -1920,6 +1920,94 @@ mod tests {
 
     struct DirtyFieldProbe(Arc<AtomicBool>);
 
+    struct IntentGateNoIo;
+    impl teaql_data_service::DataServiceExecutor for IntentGateNoIo {
+        type Error = std::io::Error;
+        fn capabilities(&self) -> teaql_data_service::DataServiceCapabilities {
+            teaql_data_service::DataServiceCapabilities::default()
+        }
+    }
+    impl teaql_data_service::QueryExecutor for IntentGateNoIo {
+        async fn query(
+            &self,
+            _: teaql_data_service::QueryRequest,
+        ) -> Result<teaql_data_service::QueryResult, Self::Error> {
+            panic!("missing root intent reached query IO")
+        }
+    }
+    impl teaql_data_service::MutationExecutor for IntentGateNoIo {
+        async fn mutate(
+            &self,
+            _: teaql_data_service::MutationRequest,
+        ) -> Result<teaql_data_service::MutationResult, Self::Error> {
+            panic!("missing root intent reached mutation IO")
+        }
+    }
+    impl teaql_data_service::TransactionExecutor for IntentGateNoIo {
+        type Tx<'a> = Self;
+        async fn begin(&self) -> Result<Self, Self::Error> {
+            panic!("missing root intent allocated a transaction")
+        }
+    }
+    impl teaql_data_service::Transaction for IntentGateNoIo {
+        type Error = std::io::Error;
+        async fn commit(self) -> Result<(), Self::Error> {
+            panic!("unexpected commit")
+        }
+        async fn rollback(self) -> Result<(), Self::Error> {
+            panic!("unexpected rollback")
+        }
+    }
+
+    #[tokio::test]
+    async fn graph_and_ledger_savers_reject_missing_intent_before_policy_and_transaction() {
+        for logging in [false, true] {
+            let mut context = UserContext::new().with_mutation_policy_registry(
+                |_: &str| -> Option<Arc<dyn crate::MutationPolicy>> {
+                    panic!("missing root intent reached customer policy registry")
+                },
+            );
+            if !logging {
+                context.disable_sql_log();
+            }
+            context.register_executor(IntentGateNoIo);
+            let saver = GraphSaverFor::<IntentGateNoIo>::new();
+            for comment in [
+                None,
+                Some(""),
+                Some(" \t\r\n"),
+                Some("\u{85}"),
+                Some("\u{a0}"),
+                Some("\u{2003}"),
+            ] {
+                let mut node = GraphNode::new("DirtyTrackedOrder")
+                    .value("id", 1_u64)
+                    .relation(
+                        "children",
+                        GraphNode::new("Child").comment("valid child reason"),
+                    );
+                node.comment = comment.map(str::to_owned);
+                for error in [
+                    saver
+                        .save_graph_dyn(&context, node.clone())
+                        .await
+                        .unwrap_err(),
+                    saver
+                        .save_ledger_dyn(&context, node, crate::EntityRuntimeState::default())
+                        .await
+                        .unwrap_err(),
+                ] {
+                    let RuntimeError::RequestIntent(error) = error else {
+                        panic!("unexpected diagnostic: {error:?}")
+                    };
+                    assert_eq!(error.code(), "REQUEST_COMMENT_REQUIRED");
+                    assert_eq!(error.field, "comment");
+                    assert_eq!(error.request_kind, teaql_core::RequestKind::Mutation);
+                }
+            }
+        }
+    }
+
     impl TypedChecker<DirtyTrackedOrder> for DirtyFieldProbe {
         fn check_and_fix_typed(
             &self,
