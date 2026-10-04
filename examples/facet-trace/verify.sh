@@ -22,6 +22,18 @@ for round in 1 2; do
       loaded_relation_future_binding_masks_root_sql; do
     rg -q "test $name .*ok" "$evidence_dir/run-$round.log"
   done
+  if ! cargo test --offline --locked --manifest-path "$example_dir/Cargo.toml" \
+      --test counted_facets -- --show-output --test-threads=1 > "$evidence_dir/count-$round.log" 2>&1; then
+    tail -100 "$evidence_dir/count-$round.log" >&2
+    printf 'FAIL: retained counted Facet evidence %s\n' "$evidence_dir" >&2
+    exit 1
+  fi
+  for name in root_count_uses_full_filtered_membership_not_the_visible_page \
+      nested_count_retains_original_root_and_empty_parent_metadata \
+      loaded_relation_count_retains_ancestor_and_empty_collection \
+      future_count_binding_masks_first_statement_but_not_the_next_request; do
+    rg -q "test $name .*ok" "$evidence_dir/count-$round.log"
+  done
   printf 'PASS generated Rust Facet round %s: same database, no cleanup\n' "$round"
 done
 hash_library > "$evidence_dir/library-after.sha256"

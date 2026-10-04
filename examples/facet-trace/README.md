@@ -12,10 +12,10 @@ bash examples/facet-trace/verify.sh
 
 Cargo dependencies must already be fetched; the verifier runs offline. Reuse
 `CARGO_TARGET_DIR` to avoid recompiling unchanged dependencies. It creates a fresh
-retained database, executes the four tests twice without cleanup, checks exact
+retained database, executes eight tests twice without cleanup, checks exact
 test identities, and verifies every library input hash before/after.
 
-The tests cover 16 combinations: four root/nested include-all/matched-only
+The original four tests cover 16 combinations: four root/nested include-all/matched-only
 queries; eight typed loaded-relation empty/nonempty include-all combinations;
 and four root/loaded future-binding privacy combinations. Every group includes
 diagnostic logging on/off. They check inherited intent, canonical physical
@@ -23,12 +23,26 @@ paths, real constant identities, Loaded/Empty collection state, retained empty
 Facet metadata, no persistent query-metadata fields, and privacy isolation from
 the next independent request. `FACET_CASE` records retain actual result sizes.
 
-This is the generated materialization/privacy subset of `TC-SQL-09`, not its
-entire count contract or the complete Trace Chain suite. These queries do not
-request COUNT aggregates. Current entity/ID Assist did not provide a Facet-count
-configuration method (`MISSING_ASSIST`); do not guess one or inspect generated
-source to discover it. The separate native SQLite Facet suite is not substituted
-for missing generated-count acceptance. No Facet-specific E traversal or new
+The four counted-Facet tests add 22 combinations: root membership counts with
+and without the active filter, nested counts through an empty root, loaded typed
+relations with empty/nonempty targets, and a sensitive binding used only in a
+future count query. Counts use the full matching set even when the visible page
+has one row. Every emitted statement must retain the original root and exact
+relation ancestry; an empty target skips aggregate SQL instead of fabricating a
+trace. Logging off still verifies real results, with no diagnostic SQL entries.
+`COUNTED_FACET` records contain actual counts, statement paths and intent, and
+privacy isolation from the next independent request.
+
+Count methods are discovered through reverse-relation field Assist, for example
+`rust-assist-query/platform.school_type_list` and
+`rust-assist-query/school_type.school_list`. Configure
+`count_school_types_with("typeCount", child_request)` on the Platform Facet
+target. Ordinary `count_as` aggregates the current query; it is not a replacement
+for Facet membership counting. This documentation gap is repaired in the local
+producer branch; deployed Assist is a separate gate.
+
+These are generated materialization/count/privacy cases for `TC-SQL-09`, not
+the complete numbered Trace Chain suite. No Facet-specific E traversal or new
 mutation/audit claim is made here; those belong to the existing Trace Chain
 example.
 
