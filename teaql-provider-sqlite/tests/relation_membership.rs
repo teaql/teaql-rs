@@ -1,6 +1,6 @@
 //! Native SQLite probe for relation membership and execution-owned trace paths (#239).
 //! No generated source or manually inserted trace frames are used.
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use teaql_core::{
     DataType, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor, RelationDescriptor,
@@ -36,6 +36,9 @@ macro_rules! graph_entity {
             }
         }
         impl teaql_core::Entity for $name {
+            fn is_field_loaded(&self, field: &str) -> bool {
+                self.row.contains_key(field)
+            }
             fn from_compact_row(
                 row: teaql_core::CompactRow,
             ) -> Result<Self, teaql_core::EntityError> {
@@ -200,8 +203,8 @@ async fn verify(filtered: bool, threshold: usize, aliased: bool, sibling: bool, 
         if filtered {
             assert_eq!(
                 child.get(forward),
-                Some(&Value::Null),
-                "inverse attachment must not undo the explicit filter"
+                Some(&Value::object(BTreeMap::from([("id".into(), Value::I64(100))]))),
+                "filtered detail retains the real identity without loading its fields"
             );
         } else {
             assert!(matches!(child.get(forward), Some(Value::Object(_))));
@@ -361,7 +364,9 @@ async fn verify_aggregate(aliased: bool, filtered: bool, typed: bool) {
                 "aggregate membership must use the original scalar FK"
             );
             if filtered && !typed {
-                assert_eq!(row.get(forward), Some(&Value::Null));
+                assert_eq!(row.get(forward), Some(&Value::object(BTreeMap::from([
+                    ("id".into(), Value::I64(100)),
+                ]))));
             }
         }
         let logs = context.sql_logs();
@@ -458,5 +463,53 @@ fn aggregate_alias_cannot_change_later_aggregate_membership() {
             assert_eq!(row.get("parent_count").and_then(Value::try_i64), Some(1));
         }
         assert_eq!(context.sql_logs().len(), 3);
+    });
+}
+
+#[test]
+fn typed_filtered_reference_has_an_edge_owned_identity_only_view() {
+    futures_executor::block_on(async {
+        for aliased in [false, true] {
+            for optimized in [false, true] {
+                let context = setup(aliased).await;
+                let forward = if aliased { "parent_id" } else { "parent" };
+                let query = PurposedSelectQuery::new(
+                    SelectQuery::new("MembershipChild")
+                        .relation_query(forward, SelectQuery::new("MembershipParent")
+                            .filter(Expr::eq("name", "ABSENT")))
+                        .relation_query("second_parent", SelectQuery::new("MembershipParent"))
+                        .limit(10).comment("load filtered and visible references to the same parent"),
+                    "preserve identity without leaking sibling detail",
+                );
+                let repo = context.entity_data_service::<Executor>("MembershipChild").unwrap();
+                let rows = if optimized {
+                    repo.fetch_enhanced_entities::<MembershipChild>(&query).await.unwrap()
+                } else {
+                    // A relation aggregate selects the general flat graph path;
+                    // fetch_entities intentionally constructs no identity graph.
+                    let aggregates = [teaql_core::RelationAggregate::new(
+                        "second_parent", "parent_count",
+                        SelectQuery::new("MembershipParent").count("value"), true,
+                    )];
+                    repo.fetch_enhanced_entities_with_relation_aggregates::<MembershipChild>(
+                        &query, &aggregates,
+                    ).await.unwrap()
+                };
+                assert_eq!(rows.len(), 2);
+                for child in rows {
+                    let id = child.row.get("id").and_then(Value::try_u64).unwrap();
+                    let view = child.state.resolve_relation_option::<MembershipParent>(
+                        "MembershipChild", id, forward,
+                    ).expect("filtered edge must not fall back to the shared identity table")
+                     .as_ref().expect("real FK cannot become a null relationship");
+                    assert_eq!(view.row.get("id").and_then(Value::try_i64), Some(100));
+                    assert!(!teaql_core::Entity::is_field_loaded(view, "name"));
+                    assert!(!view.row.contains_key("version"));
+                    assert_eq!(child.row.get("parent_id").and_then(Value::try_i64), Some(100));
+                    let visible = child.state.resolve_entity::<MembershipParent>(100).unwrap();
+                    assert_eq!(visible.row.get("name"), Some(&Value::Text(PRIVATE_NAME.into())));
+                }
+            }
+        }
     });
 }

@@ -3,7 +3,7 @@ use super::{
 };
 use teaql_runtime::{RawAuditEventKind, UserContext};
 use trace_chain_service_core::teaql_core::{Entity as _, TraceKind};
-use trace_chain_service_core::{AuditedSave as _, CustomerOrder, LedgerEntity as _, Q};
+use trace_chain_service_core::{AuditedSave as _, CustomerOrder, E, LedgerEntity as _, Q};
 
 pub async fn query_three_relations(
     context: &UserContext,
@@ -97,6 +97,29 @@ pub async fn query_three_relations(
         assert_eq!(statement.result_count, Some(1));
     }
     println!("TC-SQL-07 PASSED generated relation path: payment -> customer_order -> platform");
+    let payment_id = attempt.as_ref().unwrap().payment().unwrap().id();
+    let order_id = attempt.as_ref().unwrap().payment().unwrap().customer_order().unwrap().id();
+    let mut hidden = Q::payments_minimal().with_id_is(payment_id).limit(1)
+        .select_customer_order_with(Q::customer_orders_minimal().with_id_is(0).limit(1))
+        .comment("load filtered forward identity").purpose("distinguish unfetched detail from null")
+        .execute_for_one(context).await?.expect("payment exists");
+    let identity = hidden.customer_order().expect("known FK remains available");
+    assert_eq!(identity.id(), order_id);
+    assert!(!identity.is_field_loaded("description"), "hidden detail was fabricated");
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        E::customer_order(&identity).get_description().eval()
+    })).is_err(), "E must fail closed rather than return loaded-null");
+    let visible = Q::payments_minimal().with_id_is(payment_id).limit(1)
+        .select_customer_order_with(Q::customer_orders().with_id_is(order_id).limit(1))
+        .comment("load independent full reference").purpose("verify edge-owned load boundaries")
+        .execute_for_one(context).await?.expect("payment exists");
+    let full = visible.customer_order().expect("visible detail loaded");
+    assert!(full.is_field_loaded("description"));
+    assert!(E::customer_order(&full).get_description().eval().is_some());
+    assert!(!identity.is_field_loaded("description"), "full view leaked into hidden edge");
+    hidden.update_customer_order_id(0_u64);
+    assert!(hidden.customer_order().is_none(), "an old edge view overrode the mutated FK");
+    println!("PASS FORWARD_NOTLOADED: generated Q/E retains known identity and independent load boundaries");
     Ok(())
 }
 

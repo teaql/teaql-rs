@@ -1,7 +1,7 @@
 // Named aliases will replace these recursive relation-future signatures in a later API cycle.
 #![allow(clippy::type_complexity)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use teaql_core::{
     Aggregate, CompactRow, Expr, ObjectGroupBy, OrderBy, RelationAggregate, RelationLoad,
@@ -839,9 +839,7 @@ where
                             .map_err(DataServiceError::Entity)?;
                     }
                 } else if related.is_empty() {
-                    // Forward optional relations use the scalar loaded marker to distinguish a
-                    // loaded null from a relation that was never requested.
-                    parent.insert(plan.relation_name.clone(), Value::Null);
+                    self.install_unfetched_forward_detail(parent, plan, root, graph)?;
                 } else {
                     for child in related {
                         context
@@ -922,6 +920,9 @@ where
         // identity table. Building owner buckets and then removing them one parent at a time
         // creates a map and one Vec per distinct target without adding information.
         if !plan.many && plan.local_key != "id" {
+            let fetched_keys: BTreeSet<_> = child_rows.iter()
+                .filter_map(|row| row.get(&plan.foreign_key))
+                .map(FlatIdentityKey::from_value).collect();
             if plan
                 .query
                 .as_ref()
@@ -945,7 +946,7 @@ where
                     );
                 }
             }
-            return self
+            self
                 .data_service
                 .metadata
                 .context
@@ -955,7 +956,14 @@ where
                     root,
                     graph,
                 )
-                .map_err(DataServiceError::Entity);
+                .map_err(DataServiceError::Entity)?;
+            for parent in parent_rows {
+                if !parent.get(&plan.local_key).is_some_and(|key|
+                    fetched_keys.contains(&FlatIdentityKey::from_value(key))) {
+                    self.install_unfetched_forward_detail(parent, plan, root, graph)?;
+                }
+            }
+            return Ok(());
         }
 
         let mut buckets: BTreeMap<FlatIdentityKey, Vec<CompactRow>> = BTreeMap::new();
@@ -1042,6 +1050,29 @@ where
             }
         }
         Ok(())
+    }
+
+    fn install_unfetched_forward_detail(
+        &self,
+        parent: &CompactRow,
+        plan: &RelationLoadPlan,
+        root: &crate::EntityRuntimeState,
+        graph: &mut crate::EntityGraphBuilder,
+    ) -> Result<(), DataServiceError<E::Error>> {
+        let owner_id = parent.get("id").and_then(Value::try_u64).ok_or_else(||
+            DataServiceError::Entity(teaql_core::EntityError::new(
+                &plan.parent_entity, "forward relation owner is missing its u64 id")))?;
+        let rows = parent.get(&plan.local_key)
+            .filter(|key| !matches!(key, Value::Null | Value::TypedNull(_)))
+            .map(|key| vec![CompactRow::from_map(BTreeMap::from([(
+                plan.foreign_key.clone(), key.clone(),
+            )]))]).unwrap_or_default();
+        // This is an edge-owned view, not a shared identity-table entry. A
+        // sibling may load the same entity fully without widening this view.
+        self.data_service.metadata.context.decode_compact_entity_option_into_graph(
+            &plan.target_entity, rows, root, graph, &plan.parent_entity, owner_id,
+            &plan.relation_name,
+        ).map_err(DataServiceError::Entity)
     }
 
     fn relation_child_repo(&self, plan: &RelationLoadPlan) -> EntityDataService<'a, E> {
@@ -1279,7 +1310,7 @@ where
                         && relation.foreign_key == plan.local_key
                 })
             })
-            // An explicit nested request owns its result, including filtered null.
+            // An explicit nested request owns its detail projection.
             // Inverse convenience wiring must not override that predicate.
             .filter(|relation| {
                 !plan
@@ -1305,7 +1336,7 @@ where
                 .and_then(|value| buckets.get(&graph_identity_key(value)))
                 .cloned()
                 .unwrap_or_default();
-            let related = match &inverse_relation {
+            let mut related = match &inverse_relation {
                 Some((inverse_relation, inverse_many)) => {
                     let mut parent_object = parent.clone();
                     parent_object.remove(&plan.relation_name);
@@ -1340,6 +1371,18 @@ where
                 }
                 None => related,
             };
+            // A target filter cannot erase the real FK. Do not run inverse
+            // convenience wiring on this identity-only row: its other fields
+            // (including reverse lists) were not loaded.
+            if !plan.many && related.is_empty() {
+                if let Some(key) = keys.get(&plan.local_key).filter(|key| {
+                    !matches!(key, Value::Null | Value::TypedNull(_))
+                }) {
+                    related.push(CompactRow::from_map(BTreeMap::from([(
+                        plan.foreign_key.clone(), key.clone(),
+                    )])));
+                }
+            }
             if plan
                 .query
                 .as_ref()

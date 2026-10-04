@@ -1011,7 +1011,13 @@ fn loaded_to_one_facets_remain_query_metadata_for_shared_and_filtered_targets() 
         for row in compact {
             let id = row.get("id").and_then(Value::try_u64).unwrap();
             let target = row.loaded_relation("platform").unwrap();
-            assert_eq!(target.len(), usize::from(id != 40));
+            assert_eq!(target.len(), 1);
+            if id == 40 {
+                // The filter hides details, not SchoolType's real platform FK.
+                assert_eq!(target[0].len(), 1);
+                assert!(target[0].contains_key("id"));
+                assert!(!target[0].contains_key("name"));
+            }
             assert_eq!(
                 counts(target.facet("typeChoices").unwrap(), "platform_count"),
                 if id == 40 {

@@ -192,6 +192,13 @@ impl CustomerOrder {
                     teaql_core::eval::EvalResult::Value(self.platform_id())
                 }}
     pub fn platform(&self) -> Option<&crate::Platform> {
+        let state = self.__teaql_runtime_state();
+        if state.has_relation_view(<Self as teaql_core::TeaqlEntity>::ENTITY_NAME, self.id(), "platform") {
+            let value: Option<&crate::Platform> = state.relation_option(<Self as teaql_core::TeaqlEntity>::ENTITY_NAME, self.id(), "platform").value();
+            if value.is_some_and(|related| related.id() == self.platform_id()) {
+                return value;
+            }
+        }
         self.platform.as_deref().or_else(|| {
             self.__teaql_runtime_state().resolve_entity(self.platform_id())})
     }

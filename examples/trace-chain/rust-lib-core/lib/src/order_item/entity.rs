@@ -161,6 +161,13 @@ impl OrderItem {
                     teaql_core::eval::EvalResult::Value(self.customer_order_id())
                 }}
     pub fn customer_order(&self) -> Option<&crate::CustomerOrder> {
+        let state = self.__teaql_runtime_state();
+        if state.has_relation_view(<Self as teaql_core::TeaqlEntity>::ENTITY_NAME, self.id(), "customer_order") {
+            let value: Option<&crate::CustomerOrder> = state.relation_option(<Self as teaql_core::TeaqlEntity>::ENTITY_NAME, self.id(), "customer_order").value();
+            if value.is_some_and(|related| related.id() == self.customer_order_id()) {
+                return value;
+            }
+        }
         self.customer_order.as_deref().or_else(|| {
             self.__teaql_runtime_state().resolve_entity(self.customer_order_id())})
     }

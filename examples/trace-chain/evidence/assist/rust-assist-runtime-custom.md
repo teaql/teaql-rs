@@ -73,6 +73,46 @@ pub fn reject_governance_override(input: &serde_json::Value) -> Result<(), Strin
 
 ## Executable contract
 
+## Wrapping the generated Checker registry
+
+`checker_registry()` returns every generated model Checker. Preserve this
+registry when adding trusted instrumentation; replacing it with one custom
+Checker silently drops validation for the other entity types.
+
+```rust
+use trace_chain_service_core::checker_registry;
+use teaql_runtime::{Checker, CheckerRegistry, CheckResults, EntityValues,
+    InMemoryCheckerRegistry, ObjectLocation};
+
+struct ObservedCheckers(InMemoryCheckerRegistry);
+struct ObservedChecker(std::sync::Arc<dyn Checker>);
+impl CheckerRegistry for ObservedCheckers {
+    fn checker(&self, entity: &str) -> Option<std::sync::Arc<dyn Checker>> {
+        self.0.checker(entity).map(|inner|
+            std::sync::Arc::new(ObservedChecker(inner)) as std::sync::Arc<dyn Checker>)
+    }
+}
+impl Checker for ObservedChecker {
+    fn entity(&self) -> &str { self.0.entity() }
+    fn check_and_fix(&self, context: &UserContext, values: &mut EntityValues,
+        location: &ObjectLocation, results: &mut CheckResults) {
+        // Observe only; delegate unchanged Context, values, location and results.
+        self.0.check_and_fix(context, values, location, results);
+    }
+}
+
+pub fn install_checker_observation(context: &mut UserContext) {
+    context.set_checker_registry(ObservedCheckers(checker_registry()));
+}
+```
+
+Checkers are synchronous callbacks. A test proving overlapping checks must use
+real threads, with a bounded synchronization wait, while passing the same original
+Context. Two futures joined on one thread do not prove overlapping Checker calls.
+Never insert fabricated violations or trace nodes, clear another invocation's
+results, or keep mutation/check state on Context. The generated required-field
+rules remain authoritative; blank text is not automatically a required-field error.
+
 The generated `ServiceRuntimeExecutor` also provides a trusted diagnostic SPI
 for deterministic in-memory checks of successful query metadata. This is off
 by default; it is not a business query argument or a safe operator log sink.

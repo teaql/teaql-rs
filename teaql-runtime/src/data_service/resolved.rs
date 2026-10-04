@@ -129,6 +129,13 @@ where
                 )?;
             }
 
+            if !relation.many && relation.local_key != "id" {
+                if let Some(key) = child_records.first()
+                    .and_then(|child| child.get(&relation.foreign_key)).cloned() {
+                    record.insert(relation.local_key.clone(), key);
+                }
+            }
+
             if relation.many || relation.local_key == "id" {
                 let owner_id = record.get("id").and_then(Value::try_u64).ok_or_else(|| {
                     teaql_core::EntityError::new(
@@ -160,6 +167,20 @@ where
                         &relation.name,
                     )?;
                 }
+                continue;
+            }
+
+            // An identity-only forward view is edge-owned. Publishing it to
+            // the shared table could either hide a visible sibling's detail or
+            // expose that sibling's detail through this filtered reference.
+            if child_records.len() == 1 && child_records[0].len() == 1
+                && child_records[0].contains_key(&relation.foreign_key) {
+                let owner_id = record.get("id").and_then(Value::try_u64).ok_or_else(||
+                    teaql_core::EntityError::new(entity_name, "forward relation owner is missing its u64 id"))?;
+                context.decode_compact_entity_option_into_graph(
+                    &relation.target_entity, child_records, root, graph, entity_name,
+                    owner_id, &relation.name,
+                )?;
                 continue;
             }
 

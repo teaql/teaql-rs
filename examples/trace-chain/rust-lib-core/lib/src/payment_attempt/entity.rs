@@ -161,6 +161,13 @@ impl PaymentAttempt {
                     teaql_core::eval::EvalResult::Value(self.payment_id())
                 }}
     pub fn payment(&self) -> Option<&crate::Payment> {
+        let state = self.__teaql_runtime_state();
+        if state.has_relation_view(<Self as teaql_core::TeaqlEntity>::ENTITY_NAME, self.id(), "payment") {
+            let value: Option<&crate::Payment> = state.relation_option(<Self as teaql_core::TeaqlEntity>::ENTITY_NAME, self.id(), "payment").value();
+            if value.is_some_and(|related| related.id() == self.payment_id()) {
+                return value;
+            }
+        }
         self.payment.as_deref().or_else(|| {
             self.__teaql_runtime_state().resolve_entity(self.payment_id())})
     }
