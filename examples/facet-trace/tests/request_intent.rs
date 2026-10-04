@@ -1,6 +1,52 @@
 use school_management_service_core::{service_runtime, ServiceRuntimeConfig, Q};
 use teaql_core::{Entity as _, TraceKind, Value};
 
+fn assert_path(path: &[teaql_core::TraceNode], root: &str, route: &[&str]) {
+    assert_eq!(path.len(), route.len() + 4);
+    assert_eq!(
+        (
+            path[0].kind,
+            path[0].entity_type.as_str(),
+            path[0].comment.as_str()
+        ),
+        (TraceKind::Operation, root, "query")
+    );
+    assert_eq!(
+        (
+            path[1].kind,
+            path[1].entity_type.as_str(),
+            path[1].comment.as_str()
+        ),
+        (TraceKind::Request, root, "")
+    );
+    let mut owner = root;
+    for (node, name) in path[2..path.len() - 2].iter().zip(route) {
+        assert_eq!(node.kind, TraceKind::Relation);
+        assert_eq!(node.entity_type, *name);
+        assert_eq!(node.comment, format!("{owner}.{name}"));
+        owner = match *name {
+            "school_type" | "school_type_list" => "SchoolType",
+            "platform" => "Platform",
+            _ => panic!("unexpected route"),
+        };
+    }
+    assert_eq!(
+        (
+            path[path.len() - 2].kind,
+            path[path.len() - 2].entity_type.as_str()
+        ),
+        (TraceKind::Provider, "sqlite")
+    );
+    assert_eq!(
+        (
+            path[path.len() - 1].kind,
+            path[path.len() - 1].entity_type.as_str()
+        ),
+        (TraceKind::Sql, "select")
+    );
+    assert!(path.iter().all(|node| node.entity_id.is_none()));
+}
+
 #[tokio::test]
 async fn generated_facet_inherits_explicit_root_comment_and_purpose() {
     eprintln!("FACET_PHASE runtime initialization");
@@ -86,6 +132,7 @@ async fn generated_facet_inherits_explicit_root_comment_and_purpose() {
             );
             let routes = [vec![], vec!["school_type"], vec!["school_type", "platform"]];
             for (entry, route) in logs.iter().zip(routes) {
+                assert_path(&entry.trace_path, "School", &route);
                 assert!(entry.operation.is_select());
                 assert_eq!(
                     entry.comment.as_deref(),
@@ -203,7 +250,12 @@ async fn future_facet_binding_masks_the_first_root_statement() {
             continue;
         }
         assert_eq!(logs.len(), 3);
-        for entry in logs {
+        for (index, entry) in logs.into_iter().enumerate() {
+            assert_path(
+                &entry.trace_path,
+                "School",
+                &[vec![], vec!["school_type"], vec!["school_type", "platform"]][index],
+            );
             assert!(
                 !format!("{entry:?}").contains(SECRET),
                 "a future-only binding must be masked before the first root SQL: {entry:?}"
@@ -354,7 +406,16 @@ async fn loaded_typed_relation_retains_facets_even_when_empty() {
                     "the derived Facet must reach SQLite with its full relation ancestry"
                 );
             }
-            for log in logs {
+            for (index, log) in logs.into_iter().enumerate() {
+                assert_path(
+                    &log.trace_path,
+                    "Platform",
+                    &[
+                        vec![],
+                        vec!["school_type_list"],
+                        vec!["school_type_list", "platform"],
+                    ][index],
+                );
                 assert!(log.operation.is_select());
                 assert_eq!(log.comment.as_deref(), Some("load typed collection facets"));
                 assert_eq!(
@@ -450,8 +511,27 @@ async fn loaded_relation_future_binding_masks_root_sql() {
             assert!(logs.is_empty());
             continue;
         }
-        assert!(logs.len() >= 3);
-        for log in logs {
+        assert_eq!(logs.len(), 3);
+        for (index, log) in logs.into_iter().enumerate() {
+            assert_path(
+                &log.trace_path,
+                "Platform",
+                &[
+                    vec![],
+                    vec!["school_type_list"],
+                    vec!["school_type_list", "platform"],
+                ][index],
+            );
+            assert!(log
+                .comment
+                .as_deref()
+                .unwrap()
+                .starts_with("what: compare "));
+            assert!(log
+                .purpose
+                .as_deref()
+                .unwrap()
+                .starts_with("why: safely display "));
             assert!(
                 !format!("{log:?}").contains(SECRET),
                 "loaded Facet binding was lost before a physical statement: {log:?}"
