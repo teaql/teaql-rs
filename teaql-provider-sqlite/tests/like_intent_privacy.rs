@@ -37,7 +37,9 @@ impl SqlTransport for Probe {
     }
 }
 #[derive(Clone, Default)]
-struct Policy(Arc<Mutex<Vec<(Option<String>, Option<String>)>>>);
+struct Policy(Arc<Mutex<Vec<ObservedIntent>>>);
+
+type ObservedIntent = (Option<String>, Option<String>);
 impl RequestPolicy for Policy {
     fn enforce_select(&self, _: &UserContext, query: &mut SelectQuery) -> Result<(), RuntimeError> {
         self.0
@@ -207,37 +209,38 @@ async fn matrix(future: bool) {
                             Some(expected_id)
                         );
                     }
-                    let reads = probe.reads.lock().unwrap();
-                    assert_eq!(reads.len(), if future { 2 } else { 1 });
-                    if future {
-                        assert!(
-                            reads[0]
-                                .params
-                                .iter()
-                                .all(|value| value != &Value::from(operand))
-                        );
-                    }
-                    let physical = reads.last().unwrap();
-                    let pattern = Value::from(kind.pattern(operand));
-                    let index = physical
-                        .params
-                        .iter()
-                        .position(|value| value == &pattern)
-                        .expect("unchanged decorated SQL bind");
-                    assert_eq!(
-                        physical.log_context.parameter_policies[index],
-                        if masked {
-                            SqlParameterLogPolicy::Masked
-                        } else {
-                            SqlParameterLogPolicy::Plain
+                    {
+                        let reads = probe.reads.lock().unwrap();
+                        assert_eq!(reads.len(), if future { 2 } else { 1 });
+                        if future {
+                            assert!(
+                                reads[0]
+                                    .params
+                                    .iter()
+                                    .all(|value| value != &Value::from(operand))
+                            );
                         }
-                    );
-                    assert!(physical.sql.contains(if kind.negative() {
-                        "NOT LIKE"
-                    } else {
-                        "LIKE"
-                    }));
-                    drop(reads);
+                        let physical = reads.last().unwrap();
+                        let pattern = Value::from(kind.pattern(operand));
+                        let index = physical
+                            .params
+                            .iter()
+                            .position(|value| value == &pattern)
+                            .expect("unchanged decorated SQL bind");
+                        assert_eq!(
+                            physical.log_context.parameter_policies[index],
+                            if masked {
+                                SqlParameterLogPolicy::Masked
+                            } else {
+                                SqlParameterLogPolicy::Plain
+                            }
+                        );
+                        assert!(physical.sql.contains(if kind.negative() {
+                            "NOT LIKE"
+                        } else {
+                            "LIKE"
+                        }));
+                    }
                     assert_eq!(
                         request.as_query().comment.as_deref(),
                         Some(comment.as_str())
