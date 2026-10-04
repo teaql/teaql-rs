@@ -431,6 +431,11 @@ impl RawAuditEvent {
         SafeAuditEvent {
             kind: self.kind,
             entity: self.entity.clone(),
+            entity_id: match self.values.get("id") {
+                Some(Value::U64(id)) if *id > 0 => Some(*id),
+                Some(Value::I64(id)) if *id > 0 => Some(*id as u64),
+                _ => None,
+            },
             fields: safe_fields,
             trace_chain,
             bootstrap_audit,
@@ -579,6 +584,10 @@ pub struct SafeAuditField {
 pub struct SafeAuditEvent {
     pub kind: RawAuditEventKind,
     pub entity: String,
+    /// Positive integer target identity, independent of changed fields and
+    /// responsibility lineage. Schema events have no target ID. Never infer
+    /// this from a parent reason or an old snapshot.
+    pub entity_id: Option<u64>,
     pub fields: Vec<SafeAuditField>,
     pub trace_chain: Vec<teaql_core::TraceNode>,
     /// Framework bootstrap attribution, projected under the same privacy rules

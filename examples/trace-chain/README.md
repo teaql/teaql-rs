@@ -65,9 +65,14 @@ verification. Keep the lockfile for repeatable dependency resolution.
 
 Canonical SQL Trace Path and audit lineage remain distinct. The accepted v1
 canonicalization omits Entity IDs when rebuilding a path; command/physical
-metadata identity is checked before that projection. Deleted audit field
-projections need not contain a new ID value; this fixture checks the deleted
-child's typed identity in its lineage rather than inventing a field value.
+metadata identity is checked before that projection. Committed SafeAuditEvent
+retains the independent positive-integer `entity_id` alongside `entity`, even
+when changed fields omit ID and the entire responsibility chain belongs to the
+parent. No child reason or ID field change is invented. After the normative
+graph, an unannotated child is marked for deletion and saved through its clean
+parent; exactly that child is identified at command/metadata/audit boundaries,
+its chain remains root-only, and bounded generated Q confirms it is hidden.
+The verifier requires `TC-MUT-15 SAFE TARGET PASSED` in both retained runs.
 
 The batch scenario uses the existing Runtime Telemetry SPI to witness one
 successful `OrderItem.batch_insert` and one `OrderItem.batch_update` operation.

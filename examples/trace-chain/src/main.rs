@@ -2,19 +2,19 @@
 //! Expected chains are test assertions only, never inputs to the runtime.
 use std::sync::{Arc, Mutex};
 mod batching;
+mod checker_overlap;
 mod database_ids;
 mod failure;
 mod graph_privacy;
 mod graph_privacy_failure;
+mod ledger_override;
 mod observation;
+mod paging;
 mod readback_transport;
 mod scenarios;
 mod shared_reference;
-mod checker_overlap;
-mod ledger_override;
-mod successful_readback;
 mod streaming;
-mod paging;
+mod successful_readback;
 use observation::{Observation, Observed};
 use teaql_runtime::{
     RawAuditEventKind, RuntimeError, SafeAuditEvent, SafeAuditEventSink, SqlLogOperation,
@@ -75,14 +75,7 @@ fn assert_audit_graph(events: &[SafeAuditEvent], expected: &[ExpectedItem]) {
             .filter(|event| {
                 event.entity == item.entity
                     && event.kind == item.kind
-                    && (event.fields.iter().any(|field| {
-                        field.name == "id" && field.value.as_deref() == Some(&item.id.to_string())
-                    }) || (event.kind == RawAuditEventKind::Deleted
-                        && event.trace_chain.iter().any(|node| {
-                            // Deleted field projections describe removed values; their
-                            // typed lineage carries this fixture's deleted-child identity.
-                            node.entity_type == item.entity && node.entity_id == Some(item.id)
-                        })))
+                    && event.entity_id == Some(item.id)
             })
             .collect();
         assert_eq!(
@@ -501,6 +494,55 @@ async fn normative_graph(
         "TC-MUT-15 PASSED order={order_id} payment={payment_id} attempt={attempt_id} shipment={shipment_id}"
     );
     scenarios::query_three_relations(context, observation, attempt_id).await?;
+
+    // An unannotated child's deletion inherits only the root responsibility.
+    // The committed safe event must nevertheless identify the deleted child.
+    let mut available = Q::order_items()
+        .with_id_is(available_id)
+        .limit(1)
+        .comment("what: load the child for inherited-reason deletion")
+        .purpose("why: distinguish target identity from responsibility lineage")
+        .execute_for_one(context)
+        .await?
+        .ok_or("available item must exist before deletion")?;
+    available.mark_for_deletion();
+    let order = Q::customer_orders()
+        .with_id_is(order_id)
+        .limit(1)
+        .comment("what: load the clean parent for inherited-reason deletion")
+        .purpose("why: compose only the fully loaded child's pending mutation")
+        .execute_for_one(context)
+        .await?
+        .ok_or("parent must exist before child deletion")?;
+    order.include_pending_mutations_from(&available)?;
+    capture.clear();
+    observation.clear();
+    context.clear_sql_logs();
+    order
+        .audit_as("delete inherited child")
+        .save(context)
+        .await?;
+    let deleted = [ExpectedItem {
+        entity: "OrderItem",
+        id: available_id,
+        kind: RawAuditEventKind::Deleted,
+        reasons: vec![("CustomerOrder", order_id, "delete inherited child")],
+    }];
+    assert_audit_graph(&capture.events(), &deleted);
+    assert_execution_lineage(observation, &deleted);
+    assert!(
+        Q::order_items()
+            .with_id_is(available_id)
+            .limit(1)
+            .comment("what: verify inherited-reason deletion")
+            .purpose("why: ensure the identified child is no longer visible")
+            .execute_for_one(context)
+            .await?
+            .is_none()
+    );
+    println!(
+        "TC-MUT-15 SAFE TARGET PASSED unannotated child deletion retains independent typed identity"
+    );
     Ok(())
 }
 

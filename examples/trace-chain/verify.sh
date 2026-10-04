@@ -107,6 +107,7 @@ for trace_pass in 1 2; do
     exit 1
   fi
   rg -Fq 'PASS FORWARD_NOTLOADED: generated Q/E retains known identity and independent load boundaries' "$trace_log"
+  rg -Fq 'TC-MUT-15 SAFE TARGET PASSED unannotated child deletion retains independent typed identity' "$trace_log"
   if ! rg -Fq 'TC-MUT-12 GENERATED CHECKER OVERLAP PASSED logging=false' "$trace_log" ||
      ! rg -Fq 'TC-MUT-12 GENERATED CHECKER OVERLAP PASSED logging=true' "$trace_log"; then
     printf 'FAIL missing generated Checker overlap in both logging modes in %s\n' "$trace_log" >&2
