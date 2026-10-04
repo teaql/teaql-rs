@@ -154,10 +154,11 @@ fn compile_select_with_cache<D: SqlDialect>(
                 descriptor == entity && select_plan_matches(candidate, query)
             })
     {
+        let params = collect_select_params(entity, query, dialect.large_in_uses_array_param());
         return Ok(CompiledQuery {
-            log_context: log_context.clone(),
+            log_context: params.rebind_log_context(log_context),
             sql: sql.clone(),
-            params: collect_select_params(entity, query, dialect.large_in_uses_array_param()),
+            params: params.into_values(),
             comment: query.comment.clone(),
         });
     }
@@ -171,12 +172,9 @@ fn compile_select_with_cache<D: SqlDialect>(
         if !cache.iter().any(|(descriptor, candidate, _, _)| {
             descriptor == entity && select_plan_matches(candidate, query)
         }) {
-            cache.push((
-                entity.clone(),
-                key,
-                compiled.sql.clone(),
-                compiled.log_context.clone(),
-            ));
+            let mut log_context = compiled.log_context.clone();
+            log_context.intent_redactions.clear();
+            cache.push((entity.clone(), key, compiled.sql.clone(), log_context));
         }
     }
     Ok(compiled)
@@ -240,6 +238,7 @@ fn expr_plan_matches(key: &Expr, query: &Expr) -> bool {
         (Expr::Value(Value::List(_)), Expr::Value(_))
         | (Expr::Value(_), Expr::Value(Value::List(_))) => false,
         (Expr::Value(_), Expr::Value(_)) => true,
+        (Expr::LikePattern { .. }, Expr::LikePattern { .. }) => true,
         (
             Expr::Function {
                 function: left_function,
@@ -349,6 +348,10 @@ fn normalize_expr_values(expr: &mut Expr) {
             values.fill(Value::Null);
         }
         Expr::Value(value) => *value = Value::Null,
+        Expr::LikePattern { pattern, original } => {
+            pattern.clear();
+            original.clear();
+        }
         Expr::Function { args, .. } | Expr::And(args) | Expr::Or(args) => {
             for arg in args {
                 normalize_expr_values(arg);
@@ -378,58 +381,68 @@ fn collect_select_params(
     entity: &EntityDescriptor,
     query: &SelectQuery,
     large_in_uses_array_param: bool,
-) -> Vec<Value> {
-    let mut params = Vec::new();
+) -> crate::SqlBindings {
+    let mut params = crate::SqlBindings::new();
+    append_select_params(entity, query, large_in_uses_array_param, &mut params);
+    params
+}
+
+fn append_select_params(
+    entity: &EntityDescriptor,
+    query: &SelectQuery,
+    large_in_uses_array_param: bool,
+    params: &mut crate::SqlBindings,
+) {
     if query.raw_sql.is_some() {
-        return params;
+        return;
     }
     for projection in &query.expr_projection {
-        collect_expr_params(&projection.expr, &mut params, large_in_uses_array_param);
+        collect_expr_params(&projection.expr, params, large_in_uses_array_param);
     }
     let partitioned = query.partition_by.is_some() && query.slice.is_some();
     if partitioned {
         for order in &query.order_by {
             if let Some(expr) = &order.expr {
-                collect_expr_params(expr, &mut params, large_in_uses_array_param);
+                collect_expr_params(expr, params, large_in_uses_array_param);
             }
         }
     }
     if let Some(filter) = &query.filter {
-        collect_expr_params(filter, &mut params, large_in_uses_array_param);
+        collect_expr_params(filter, params, large_in_uses_array_param);
     }
     if let Some(search_text) = &query.search_with_text {
         let value = Value::from(format!("%{search_text}%"));
-        params.extend(
-            entity
-                .properties
-                .iter()
-                .filter(|property| {
-                    matches!(
-                        property.data_type,
-                        teaql_core::DataType::Text | teaql_core::DataType::LargeText
-                    )
-                })
-                .map(|_| value.clone()),
-        );
+        for _ in entity.properties.iter().filter(|property| {
+            matches!(
+                property.data_type,
+                teaql_core::DataType::Text | teaql_core::DataType::LargeText
+            )
+        }) {
+            params.push(value.clone());
+        }
     }
     if partitioned {
-        return params;
+        return;
     }
     if let Some(having) = &query.having {
-        collect_expr_params(having, &mut params, large_in_uses_array_param);
+        collect_expr_params(having, params, large_in_uses_array_param);
     }
     for order in &query.order_by {
         if let Some(expr) = &order.expr {
-            collect_expr_params(expr, &mut params, large_in_uses_array_param);
+            collect_expr_params(expr, params, large_in_uses_array_param);
         }
     }
-    params
 }
 
-fn collect_expr_params(expr: &Expr, params: &mut Vec<Value>, large_in_uses_array_param: bool) {
+fn collect_expr_params(
+    expr: &Expr,
+    params: &mut crate::SqlBindings,
+    large_in_uses_array_param: bool,
+) {
     match expr {
         Expr::Column(_) => {}
         Expr::Value(value) => params.push(value.clone()),
+        Expr::LikePattern { pattern, .. } => params.push(Value::from(pattern.clone())),
         Expr::Function { args, .. } | Expr::And(args) | Expr::Or(args) => {
             for arg in args {
                 collect_expr_params(arg, params, large_in_uses_array_param);
@@ -437,7 +450,9 @@ fn collect_expr_params(expr: &Expr, params: &mut Vec<Value>, large_in_uses_array
         }
         Expr::Binary { left, op, right } => {
             collect_expr_params(left, params, large_in_uses_array_param);
-            if let Expr::Value(Value::List(values)) = right.as_ref()
+            if let Some((pattern, original)) = crate::bindings::like_operand(*op, right) {
+                params.push_like_pattern(pattern, original);
+            } else if let Expr::Value(Value::List(values)) = right.as_ref()
                 && matches!(
                     op,
                     teaql_core::BinaryOp::In
@@ -454,7 +469,9 @@ fn collect_expr_params(expr: &Expr, params: &mut Vec<Value>, large_in_uses_array
                 {
                     params.push(Value::List(values.clone()));
                 } else {
-                    params.extend(values.iter().cloned());
+                    for value in values {
+                        params.push(value.clone());
+                    }
                 }
             } else {
                 collect_expr_params(right, params, large_in_uses_array_param);
@@ -467,11 +484,7 @@ fn collect_expr_params(expr: &Expr, params: &mut Vec<Value>, large_in_uses_array
             ..
         } => {
             collect_expr_params(left, params, large_in_uses_array_param);
-            params.extend(collect_select_params(
-                entity,
-                query,
-                large_in_uses_array_param,
-            ));
+            append_select_params(entity, query, large_in_uses_array_param, params);
         }
         Expr::Between { expr, lower, upper } => {
             collect_expr_params(expr, params, large_in_uses_array_param);
@@ -1097,6 +1110,47 @@ mod tests {
         assert_eq!(long.metadata.params.len(), 3);
     }
 
+    #[test]
+    fn cached_like_plan_rebinds_originals_across_all_expression_positions() {
+        let entity = test_entity().audit_mask_fields(vec!["name".into()]);
+        let cache = RwLock::new(Vec::new());
+        for prefix in ["FIRST-SECRET", "SECOND-SECRET"] {
+            let query = SelectQuery::new("Order")
+                .project_expr("public", Expr::value(format!("PLAIN-{prefix}")))
+                .filter(Expr::and([
+                    Expr::contain("name", format!("{prefix}-FILTER")),
+                    Expr::in_list("id", [Value::U64(1), Value::U64(2)]),
+                    Expr::in_subquery(
+                        "id",
+                        entity.clone(),
+                        SelectQuery::new("Order")
+                            .filter(Expr::begin_with("name", format!("{prefix}-SUBQUERY"))),
+                        "id",
+                    ),
+                ]))
+                .having(Expr::not_end_with("name", format!("{prefix}-HAVING")))
+                .order_by(teaql_core::OrderBy::asc_expr(Expr::end_with(
+                    "name",
+                    format!("{prefix}-ORDER"),
+                )));
+            let actual = compile_select_with_cache(&TestDialect, &cache, &entity, &query).unwrap();
+            assert_eq!(actual, TestDialect.compile_select(&entity, &query).unwrap());
+            let mut secrets = Vec::new();
+            actual
+                .log_context
+                .intent_redactions
+                .extend_secrets(false, &mut secrets);
+            for suffix in ["FILTER", "SUBQUERY", "HAVING", "ORDER"] {
+                assert!(secrets.contains(&format!("{prefix}-{suffix}")));
+            }
+            assert!(secrets.iter().all(|secret| secret.starts_with(prefix)));
+            let plans = cache.read().unwrap();
+            assert_eq!(plans.len(), 1, "same shape must reuse its plan");
+            assert!(plans[0].3.intent_redactions.is_empty());
+            assert!(!format!("{:?}", plans[0].1).contains("SECRET"));
+        }
+    }
+
     #[tokio::test]
     async fn cached_select_plan_rebinds_large_in_as_one_array_parameter() {
         let executor = SqlDataServiceExecutor::new(
@@ -1285,7 +1339,7 @@ impl<
                 if let Some(param_index) = first
                     .params
                     .iter()
-                    .zip(&second_params)
+                    .zip(second_params.iter())
                     .position(|(left, right)| left != right)
                 {
                     let rows = self

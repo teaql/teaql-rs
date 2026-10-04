@@ -62,6 +62,58 @@ fn explicitly_empty_field_policy_keeps_ordinary_parameters_replayable() {
     let compiled = Dialect.compile_select(&declared, &query).unwrap();
     assert_eq!(compiled.log_context.parameter_policies, [Plain, Credential]);
 }
+
+#[test]
+fn typed_like_originals_follow_resolved_field_policy_without_changing_bindings() {
+    let compiled = Dialect
+        .compile_select(
+            &entity(),
+            &SelectQuery::new("Customer").filter(Expr::and([
+                Expr::contain("display_name", "%MASKED_\\%"),
+                Expr::begin_with("status", "PLAIN-ORIGINAL"),
+                Expr::end_with("password", "CREDENTIAL-ORIGINAL"),
+            ])),
+        )
+        .unwrap();
+    assert_eq!(
+        compiled.params,
+        [
+            Value::from("%%MASKED_\\%%"),
+            Value::from("PLAIN-ORIGINAL%"),
+            Value::from("%CREDENTIAL-ORIGINAL"),
+        ]
+    );
+    assert_eq!(
+        compiled.log_context.parameter_policies,
+        [Masked, Plain, Credential]
+    );
+    for debug in [false, true] {
+        let mut secrets = Vec::new();
+        compiled
+            .log_context
+            .intent_redactions
+            .extend_secrets(debug, &mut secrets);
+        assert_eq!(secrets.contains(&"%MASKED_\\%".to_owned()), !debug);
+        assert!(secrets.contains(&"CREDENTIAL-ORIGINAL".to_owned()));
+        assert!(!secrets.contains(&"PLAIN-ORIGINAL".to_owned()));
+    }
+    let legacy =
+        EntityDescriptor::new("Legacy").property(PropertyDescriptor::new("name", DataType::Text));
+    let unknown = Dialect
+        .compile_select(
+            &legacy,
+            &SelectQuery::new("Legacy").filter(Expr::not_contain("name", "UNKNOWN-ORIGINAL")),
+        )
+        .unwrap();
+    assert_eq!(unknown.log_context.parameter_policies, [Unknown]);
+    let mut secrets = Vec::new();
+    unknown
+        .log_context
+        .intent_redactions
+        .extend_secrets(true, &mut secrets);
+    assert_eq!(secrets, ["UNKNOWN-ORIGINAL"]);
+    assert!(!format!("{:?}", compiled.log_context).contains("ORIGINAL"));
+}
 fn policies(query: &SelectQuery) -> Vec<Policy> {
     let compiled = Dialect.compile_select(&entity(), query).unwrap();
     assert_eq!(

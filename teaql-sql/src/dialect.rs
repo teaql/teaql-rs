@@ -1217,6 +1217,10 @@ pub trait SqlDialect {
                 params.push(value.clone());
                 Ok(self.placeholder(params.len()))
             }
+            Expr::LikePattern { pattern, .. } => {
+                params.push(Value::from(pattern.clone()));
+                Ok(self.placeholder(params.len()))
+            }
             Expr::Function { function, args } => {
                 self.compile_function(entity, *function, args, params)
             }
@@ -1228,7 +1232,13 @@ pub trait SqlDialect {
                     return self.compile_in(entity, left, *op, right, params);
                 }
                 let lhs = self.compile_expr(entity, left, params)?;
-                let rhs = self.compile_expr(entity, right, params)?;
+                let rhs =
+                    if let Some((pattern, original)) = crate::bindings::like_operand(*op, right) {
+                        params.push_like_pattern(pattern, original);
+                        self.placeholder(params.len())
+                    } else {
+                        self.compile_expr(entity, right, params)?
+                    };
                 let op = match op {
                     BinaryOp::Eq => "=",
                     BinaryOp::Ne => "!=",

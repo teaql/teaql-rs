@@ -38,6 +38,14 @@ pub enum ExprFunction {
 pub enum Expr {
     Column(String),
     Value(Value),
+    /// Compiler provenance for typed LIKE helpers. `pattern` is the unchanged
+    /// execution value; `original` is used only for classified intent projection.
+    /// Raw `like`/`not_like` expressions deliberately do not create this leaf.
+    #[doc(hidden)]
+    LikePattern {
+        pattern: String,
+        original: String,
+    },
     Function {
         function: ExprFunction,
         args: Vec<Expr>,
@@ -194,27 +202,44 @@ impl Expr {
     }
 
     pub fn contain(column: impl Into<String>, value: impl Into<String>) -> Self {
-        Self::like(column, format!("%{}%", value.into()))
+        Self::typed_like(column, value.into(), BinaryOp::Like, "%", "%")
     }
 
     pub fn not_contain(column: impl Into<String>, value: impl Into<String>) -> Self {
-        Self::not_like(column, format!("%{}%", value.into()))
+        Self::typed_like(column, value.into(), BinaryOp::NotLike, "%", "%")
     }
 
     pub fn begin_with(column: impl Into<String>, value: impl Into<String>) -> Self {
-        Self::like(column, format!("{}%", value.into()))
+        Self::typed_like(column, value.into(), BinaryOp::Like, "", "%")
     }
 
     pub fn not_begin_with(column: impl Into<String>, value: impl Into<String>) -> Self {
-        Self::not_like(column, format!("{}%", value.into()))
+        Self::typed_like(column, value.into(), BinaryOp::NotLike, "", "%")
     }
 
     pub fn end_with(column: impl Into<String>, value: impl Into<String>) -> Self {
-        Self::like(column, format!("%{}", value.into()))
+        Self::typed_like(column, value.into(), BinaryOp::Like, "%", "")
     }
 
     pub fn not_end_with(column: impl Into<String>, value: impl Into<String>) -> Self {
-        Self::not_like(column, format!("%{}", value.into()))
+        Self::typed_like(column, value.into(), BinaryOp::NotLike, "%", "")
+    }
+
+    fn typed_like(
+        column: impl Into<String>,
+        original: String,
+        op: BinaryOp,
+        prefix: &str,
+        suffix: &str,
+    ) -> Self {
+        Self::binary(
+            Self::column(column),
+            op,
+            Self::LikePattern {
+                pattern: format!("{prefix}{original}{suffix}"),
+                original,
+            },
+        )
     }
 
     pub fn binary(left: Expr, op: BinaryOp, right: Expr) -> Self {
