@@ -6,7 +6,7 @@ use teaql_core::{
     BinaryOp, DataType, EntityDescriptor, Expr, InsertCommand, OrderBy, PropertyDescriptor,
     RelationDescriptor, SelectQuery, TraceKind, Value,
 };
-use teaql_data_service::{MutationCommand, SchemaProvider};
+use teaql_data_service::{MutationCommand, QueryExecutor, QueryRequest, SchemaProvider};
 use teaql_provider_sqlite::{SqliteDialect, SqliteMutationExecutor, SqliteProviderExt};
 use teaql_runtime::{InMemoryMetadataStore, PurposedSelectQuery, UserContext};
 use teaql_sql::SqlDataServiceExecutor;
@@ -321,6 +321,79 @@ fn loaded_scalar_groups_preserve_only_the_real_relation_edge_probes() {
         for logging in [true, false] {
             for having in [false, true] {
                 verify(Shape::RelationProbe, logging, having).await;
+            }
+        }
+    });
+}
+
+#[test]
+fn cached_partition_having_rebinds_real_sqlite_results() {
+    futures_executor::block_on(async {
+        for capture_debug_query in [true, false] {
+            let context = setup().await;
+            let executor = context.get_resource::<Executor>().unwrap();
+            // Both executions use the same executor and live SQLite database.
+            // The first compiles the shape; the second must rebind the warm plan.
+            for (threshold, original, expected) in [
+                (0_i64, "PRIVATE", vec![(10, 2), (20, 1)]),
+                (1_i64, "NUMERIC", vec![(10, 2)]),
+            ] {
+                let query = SelectQuery::new("MetricSample")
+                    .group_by("bucket")
+                    .group_by("name")
+                    .count("n")
+                    .having(Expr::and([
+                        Expr::binary(Expr::count_all(), BinaryOp::Gt, Expr::value(threshold)),
+                        Expr::contain("name", original),
+                    ]))
+                    .order_by(OrderBy::asc("bucket"))
+                    .limit(10)
+                    .partition_by("bucket");
+                let mut request = QueryRequest::new(
+                    query,
+                    teaql_core::QueryIntent::new(
+                        "verify partition cache rebinding",
+                        format!("count grouped {original} samples"),
+                    )
+                    .unwrap(),
+                );
+                request.capture_debug_query = capture_debug_query;
+                let result = executor.query(request).await.unwrap();
+                let mut actual = result
+                    .rows
+                    .iter()
+                    .map(|row| {
+                        (
+                            row.get("bucket").and_then(Value::try_i64).unwrap(),
+                            row.get("n").and_then(Value::try_i64).unwrap(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                actual.sort();
+                assert_eq!(actual, expected);
+                assert_eq!(
+                    result.metadata.params,
+                    [Value::I64(threshold), Value::from(format!("%{original}%"))]
+                );
+                assert!(
+                    result.metadata.debug_query.is_none(),
+                    "provider flags never authorize interpolating private bindings"
+                );
+                let sql = result.metadata.parameterized_query.as_deref().unwrap();
+                assert!(sql.contains("ROW_NUMBER() OVER (PARTITION BY"));
+                assert!(sql.contains(" GROUP BY "));
+                assert!(sql.contains(" HAVING "));
+                let mut secrets = Vec::new();
+                result
+                    .metadata
+                    .sql_log
+                    .intent_redactions
+                    .extend_secrets(false, &mut secrets);
+                assert_eq!(secrets, [original]);
+                println!(
+                    "PARTITION_CACHE_SQLITE debug={capture_debug_query} threshold={threshold} rows={actual:?} bind_count={}",
+                    result.metadata.params.len()
+                );
             }
         }
     });

@@ -421,11 +421,13 @@ fn append_select_params(
             params.push(value.clone());
         }
     }
-    if partitioned {
-        return;
-    }
     if let Some(having) = &query.having {
         collect_expr_params(having, params, large_in_uses_array_param);
+    }
+    // GROUP BY/HAVING belong inside the partition wrapper. Window ordering
+    // was collected above, so only the ordinary trailing ORDER BY is skipped.
+    if partitioned {
+        return;
     }
     for order in &query.order_by {
         if let Some(expr) = &order.expr {
@@ -1146,6 +1148,87 @@ mod tests {
             assert!(secrets.iter().all(|secret| secret.starts_with(prefix)));
             let plans = cache.read().unwrap();
             assert_eq!(plans.len(), 1, "same shape must reuse its plan");
+            assert!(plans[0].3.intent_redactions.is_empty());
+            assert!(!format!("{:?}", plans[0].1).contains("SECRET"));
+        }
+    }
+
+    #[test]
+    fn cached_partition_having_rebinds_numeric_and_private_like_operands() {
+        struct CountingDialect(Arc<AtomicUsize>);
+        impl SqlDialect for CountingDialect {
+            fn kind(&self) -> crate::DatabaseKind {
+                TestDialect.kind()
+            }
+            fn quote_ident(&self, ident: &str) -> String {
+                TestDialect.quote_ident(ident)
+            }
+            fn placeholder(&self, index: usize) -> String {
+                TestDialect.placeholder(index)
+            }
+            fn compile_select(
+                &self,
+                entity: &EntityDescriptor,
+                query: &SelectQuery,
+            ) -> Result<CompiledQuery, SqlCompileError> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                TestDialect.compile_select(entity, query)
+            }
+        }
+
+        let entity = test_entity().audit_mask_fields(vec!["name".into()]);
+        let compilations = Arc::new(AtomicUsize::new(0));
+        let dialect = CountingDialect(compilations.clone());
+        let cache = RwLock::new(Vec::new());
+        for (number, original) in [(1_i64, "FIRST-SECRET"), (11, "SECOND-SECRET")] {
+            let query = SelectQuery::new("Order")
+                .project_expr("marker", Expr::value(number))
+                .filter(Expr::gt("id", number + 1))
+                .search_with_text(format!("SEARCH-{number}"))
+                .group_by("id")
+                .group_by("name")
+                .count("n")
+                .having(Expr::and([
+                    Expr::binary(
+                        Expr::count_all(),
+                        teaql_core::BinaryOp::Gt,
+                        Expr::value(number + 2),
+                    ),
+                    Expr::contain("name", original),
+                ]))
+                .order_by(teaql_core::OrderBy::asc_expr(Expr::value(number + 3)))
+                .page(0, 10)
+                .partition_by("id");
+            let fresh = TestDialect.compile_select(&entity, &query).unwrap();
+            assert!(fresh.sql.contains("ROW_NUMBER() OVER (PARTITION BY \"id\""));
+            assert!(fresh.sql.contains(" GROUP BY "));
+            assert!(fresh.sql.contains(" HAVING "));
+            assert_eq!(
+                fresh.params,
+                vec![
+                    Value::I64(number),
+                    Value::I64(number + 3),
+                    Value::I64(number + 1),
+                    Value::from(format!("%SEARCH-{number}%")),
+                    Value::I64(number + 2),
+                    Value::from(format!("%{original}%")),
+                ],
+                "projection, window order, WHERE, search, then HAVING bindings"
+            );
+            let cached = compile_select_with_cache(&dialect, &cache, &entity, &query).unwrap();
+            assert_eq!(
+                cached, fresh,
+                "cold/warm plans must match fresh compilation"
+            );
+            assert_eq!(compilations.load(Ordering::Relaxed), 1, "warm cache hit");
+            let mut secrets = Vec::new();
+            cached
+                .log_context
+                .intent_redactions
+                .extend_secrets(false, &mut secrets);
+            assert_eq!(secrets, [original]);
+            let plans = cache.read().unwrap();
+            assert_eq!(plans.len(), 1);
             assert!(plans[0].3.intent_redactions.is_empty());
             assert!(!format!("{:?}", plans[0].1).contains("SECRET"));
         }
