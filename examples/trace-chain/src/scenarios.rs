@@ -58,6 +58,16 @@ pub async fn query_three_relations(
             expected[..depth],
             "actual generated relation route at level {depth}"
         );
+        let qualified = ["PaymentAttempt.payment", "Payment.customer_order", "CustomerOrder.platform"];
+        let mut canonical = vec![
+            (TraceKind::Operation, "PaymentAttempt", "query"),
+            (TraceKind::Request, "PaymentAttempt", ""),
+        ];
+        canonical.extend((0..depth).map(|i| (TraceKind::Relation, expected[i], qualified[i])));
+        canonical.extend([(TraceKind::Provider, "sqlite", ""), (TraceKind::Sql, "select", "")]);
+        assert_eq!(log.trace_path.iter().map(|n| (n.kind, n.entity_type.as_str(), n.comment.as_str())).collect::<Vec<_>>(),
+            canonical, "canonical generated path at every physical boundary");
+        assert!(log.trace_path.iter().all(|n| n.entity_id.is_none()));
         assert_eq!(log.result_count, Some(1));
     }
     let metadata = observation.metadata();
@@ -86,6 +96,10 @@ pub async fn query_three_relations(
             expected[..depth],
             "physical relation metadata at level {depth}"
         );
+        assert_eq!(statement.trace_chain.iter().filter(|n| n.kind == TraceKind::Relation)
+            .map(|n| n.comment.as_str()).collect::<Vec<_>>(),
+            ["PaymentAttempt.payment", "Payment.customer_order", "CustomerOrder.platform"][..depth],
+            "qualified relations come from the actual provider request");
         let purpose = statement
             .trace_chain
             .iter()
