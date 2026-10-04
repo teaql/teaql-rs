@@ -110,7 +110,7 @@ impl<R> ShipmentRequest<R> {
             self.query,
             &query_options,
             &self.child_enhancements,
-        ))?;
+        ))?.with_facet_diagnostics(&query_options);
         let (mut rows, facets) = if query_options.facets.is_empty() {
             let rows = context.fetch_entity_smart_list::<R>(
                 "Shipment",
@@ -143,7 +143,7 @@ impl<R> ShipmentRequest<R> {
             self.query,
             &self.query_options,
             &self.child_enhancements,
-        ))?;
+        ))?.with_facet_diagnostics(&self.query_options);
         context.fetch_compact_smart_list("Shipment", &query).await
     }
 
@@ -159,7 +159,7 @@ impl<R> ShipmentRequest<R> {
             self.query,
             &self.query_options,
             &self.child_enhancements,
-        ))?;
+        ))?.with_facet_diagnostics(&self.query_options);
         Ok(context.fetch_entity_stream("Shipment", query))
     }
 
@@ -227,7 +227,8 @@ impl<R> ShipmentRequest<R> {
             &query_options,
             &self.child_enhancements,
         );
-        let query = authorize_query(query)?.for_exact_count(COUNT_ALIAS);
+        let query = authorize_query(query)?.for_exact_count(COUNT_ALIAS)
+            .with_facet_diagnostics(&query_options);
         let rows = context.fetch_compact_rows("Shipment", &query).await?;
         rows.first()
             .and_then(|row| row.get(COUNT_ALIAS))
@@ -248,7 +249,7 @@ impl<R> ShipmentRequest<R> {
             &self.child_enhancements,
         ).limit(1);
         query.relations.clear();
-        let query = authorize_query(query)?;
+        let query = authorize_query(query)?.with_facet_diagnostics(&self.query_options);
         let rows = context.fetch_compact_rows("Shipment", &query).await?;
         Ok(!rows.is_empty())
     }

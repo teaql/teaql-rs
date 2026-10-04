@@ -529,82 +529,31 @@ where
     }
 }
 
-pub(crate) async fn execute_facets<C>(
+// The generated module binds its executor; the runtime owns Facet semantics.
+struct FacetRuntime<'a, C: ?Sized>(&'a C);
+
+impl<C: TeaqlRuntime + ?Sized> teaql_runtime::generated_support::TeaqlRuntime
+    for FacetRuntime<'_, C>
+{
+    fn user_context(&self) -> &UserContext {
+        self.0.user_context()
+    }
+
+    async fn fetch_facet_smart_list(
+        &self,
+        entity: &str,
+        query: &PurposedSelectQuery,
+        relation_aggregates: &[RuntimeRelationAggregate],
+        trace_context: Vec<teaql_core::TraceNode>,
+    ) -> Result<SmartList<CompactRow>, RuntimeError> {
+        self.0.fetch_facet_smart_list(entity, query, relation_aggregates, trace_context).await
+    }
+}
+
+pub(crate) async fn execute_facets<C: TeaqlRuntime + ?Sized>(
     context: &C,
     outer_query: &SelectQuery,
     options: &QueryOptions,
-) -> Result<BTreeMap<String, SmartList<CompactRow>>, RuntimeError>
-where
-    C: TeaqlRuntime + ?Sized,
-{
-    let intent = teaql_core::QueryIntent::from_optional(
-        outer_query.comment.as_deref(),
-        outer_query.purpose.as_deref(),
-    )?;
-    let mut facets = BTreeMap::new();
-    for facet in &options.facets {
-        let mut selection = facet.query.clone();
-        merge_outer_filter_into_facet_aggregates(&mut selection, outer_query);
-        if !facet.include_all_facets {
-            selection = restrict_facet_to_outer_query(context, selection, outer_query, &facet.relation_name)?;
-        }
-        let relation_aggregates = runtime_relation_aggregates(&selection.query_options);
-        let mut query = apply_runtime_metadata(
-            selection.query,
-            &selection.query_options,
-            &selection.child_enhancements,
-        );
-        query.comment = Some(intent.comment().to_owned());
-        let entity = query.entity.clone();
-        let mut chain = outer_query.trace_chain.clone();
-        chain.push(teaql_core::TraceNode::typed(
-            teaql_core::TraceKind::Relation,
-            query.entity.clone(),
-            None,
-            facet.facet_name.clone(),
-        ));
-
-        let query = PurposedSelectQuery::new(query, intent.purpose());
-        let facet_rows = context.fetch_facet_smart_list(&entity, &query, &relation_aggregates, chain).await?;
-        facets.insert(facet.facet_name.clone(), facet_rows);
-    }
-    Ok(facets)
-}
-
-pub(crate) fn restrict_facet_to_outer_query<C>(
-    context: &C,
-    mut selection: QuerySelection,
-    outer_query: &SelectQuery,
-    relation_name: &str,
-) -> Result<QuerySelection, RuntimeError>
-where
-    C: TeaqlRuntime + ?Sized,
-{
-    let descriptor = context
-        .user_context()
-        .entity(&outer_query.entity)
-        .cloned()
-        .ok_or_else(|| RuntimeError::Graph(format!("missing entity: {}", outer_query.entity)))?;
-    let relation = descriptor
-        .relation_by_name(relation_name)
-        .cloned()
-        .ok_or_else(|| RuntimeError::MissingRelation {
-            entity: outer_query.entity.clone(),
-            relation: relation_name.to_owned(),
-        })?;
-    let mut subquery = outer_query.clone();
-    subquery.projection.clear();
-    subquery.expr_projection.clear();
-    subquery.order_by.clear();
-    subquery.slice = None;
-    subquery.aggregates.clear();
-    subquery.group_by.clear();
-    subquery.relations.clear();
-    selection.query = selection.query.and_filter(Expr::in_subquery(
-        relation.foreign_key,
-        descriptor,
-        subquery,
-        relation.local_key,
-    ));
-    Ok(selection)
+) -> Result<BTreeMap<String, SmartList<CompactRow>>, RuntimeError> {
+    teaql_runtime::generated_support::execute_facets(&FacetRuntime(context), outer_query, options).await
 }
