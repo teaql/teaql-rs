@@ -170,7 +170,8 @@ pub async fn failed_graph(
         .expect("actual SQLite failure must reach safe SQL sink");
     assert_eq!(
         failed.audit_reason.as_deref(),
-        Some("authorize failing payment")
+        Some("submit failing graph"),
+        "failed physical SQL retains the request root; branch ancestry is checked separately above"
     );
     assert_eq!(
         failed.trace_path.first().unwrap().entity_type,

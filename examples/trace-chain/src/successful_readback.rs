@@ -93,7 +93,8 @@ fn verify_physical_pairs(
         assert_eq!(safe.comment.as_deref(), Some(item.reasons[0].2));
         assert_eq!(
             safe.audit_reason.as_deref(),
-            Some(item.reasons.last().unwrap().2)
+            Some(item.reasons[0].2),
+            "derived readback inherits request intent; physical metadata retains the full branch lineage above"
         );
         assert_eq!(
             safe.trace_path.first().unwrap().entity_type,

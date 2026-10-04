@@ -417,7 +417,8 @@ async fn normative_graph(
             .expect("canonical SQL path identifies the actual entity type and operation");
         assert_eq!(
             log.audit_reason.as_deref(),
-            Some(item.reasons.last().unwrap().2)
+            Some(root_reason.2),
+            "SQL intent belongs to the root request; local reasons remain in the independently checked lineage"
         );
         assert_eq!(log.trace_path.first().unwrap().entity_type, "CustomerOrder");
         assert_eq!(log.trace_path.last().unwrap().kind, TraceKind::Sql);

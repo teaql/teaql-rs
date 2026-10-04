@@ -143,8 +143,8 @@ fn expected_items(
     expected
 }
 
-fn assert_safe_reasons(context: &UserContext, reasons: [&str; 2]) {
-    let mut actual: Vec<_> = context
+fn assert_safe_root_reason(context: &UserContext, root_reason: &str) {
+    let actual: Vec<_> = context
         .sql_logs()
         .into_iter()
         .filter(|log| {
@@ -156,15 +156,13 @@ fn assert_safe_reasons(context: &UserContext, reasons: [&str; 2]) {
         })
         .map(|log| {
             log.audit_reason
-                .expect("safe SQL retains each local reason")
+                .expect("safe SQL retains the request-owned root reason")
         })
         .collect();
-    actual.sort();
-    let mut expected = reasons.map(str::to_owned);
-    expected.sort();
     assert_eq!(
-        actual, expected,
-        "safe SQL must not replace both local reasons with the batch root"
+        actual,
+        [root_reason, root_reason],
+        "both physical statements retain the batch request intent; command, metadata and committed audit checks retain distinct local reasons"
     );
 }
 
@@ -232,7 +230,7 @@ pub async fn same_type_batch(
         observation,
         teaql_data_service::DataServiceOperation::Insert,
     );
-    assert_safe_reasons(context, create_reasons);
+    assert_safe_root_reason(context, "create batched items");
 
     // Fully load each editing target through the current generated Q API.
     let mut order = Q::customer_orders()
@@ -290,7 +288,7 @@ pub async fn same_type_batch(
         observation,
         teaql_data_service::DataServiceOperation::Update,
     );
-    assert_safe_reasons(context, update_reasons);
+    assert_safe_root_reason(context, "update batched items");
 
     let order = Q::customer_orders()
         .with_id_is(order_id)

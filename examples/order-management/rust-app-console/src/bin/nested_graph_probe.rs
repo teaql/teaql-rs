@@ -1,7 +1,7 @@
 use chrono::NaiveDate;
 use order_management_service_core::teaql_core::Entity as _;
 use order_management_service_core::{
-    request_support::AuditedSave as _, service_runtime, ServiceRuntimeConfig, Q,
+    Q, ServiceRuntimeConfig, request_support::AuditedSave as _, service_runtime,
 };
 use rust_decimal::Decimal;
 use std::sync::{Arc, Mutex};
@@ -518,23 +518,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     assert!(root_seen && update_seen && delete_seen);
     let logs = context.sql_logs();
-    for reason in [
-        "verify graph lineage",
-        "adjust child quantity",
-        "remove child after review",
+    for (operation, entity) in [
+        (teaql_runtime::SqlLogOperation::Update, "CustomerOrder"),
+        (teaql_runtime::SqlLogOperation::Update, "OrderLine"),
+        (teaql_runtime::SqlLogOperation::Delete, "OrderLine"),
     ] {
         assert!(
             logs[sql_start..].iter().any(|entry| {
-                entry.operation.is_mutation()
-                    && entry.audit_reason.as_deref() == Some(reason)
+                entry.operation == operation
+                    && entry.audit_reason.as_deref() == Some("verify graph lineage")
+                    && entry.trace_path.iter().any(|node| {
+                        node.kind == order_management_service_core::teaql_core::TraceKind::Entity
+                            && node.entity_type == entity
+                    })
                     && entry
                         .trace_path
                         .first()
                         .is_some_and(|node| node.entity_type == "CustomerOrder")
             }),
-            "SQL metadata lost branch intent: {reason}"
+            "SQL metadata lost owned root intent or statement target: {operation:?}/{entity}"
         );
     }
-    println!("TRACE_LINEAGE: root={order_id}, updated_child={line_id}, deleted_child={added_id}, safe_audit_events=3");
+    println!(
+        "TRACE_LINEAGE: root={order_id}, updated_child={line_id}, deleted_child={added_id}, safe_audit_events=3"
+    );
     Ok(())
 }

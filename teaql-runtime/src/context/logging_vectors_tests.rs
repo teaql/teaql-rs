@@ -76,3 +76,63 @@ fn shared_sql_trace_vectors_are_canonical_idempotent_and_keep_intent_separate() 
         println!("PASS shared SQL vector {id}");
     }
 }
+
+#[test]
+fn executed_sql_projects_owned_root_reason_without_changing_local_lineage_or_pure_fold() {
+    use teaql_data_service::{DataServiceOperation, ExecutionMetadata};
+    let context = crate::UserContext::new();
+    let lineage = vec![
+        TraceNode::typed(TraceKind::AuditReason, "Order", Some(100), "submit order"),
+        TraceNode::typed(
+            TraceKind::AuditReason,
+            "Payment",
+            Some(201),
+            "authorize payment",
+        ),
+    ];
+    assert_eq!(
+        trace_value(&lineage, TraceKind::AuditReason).as_deref(),
+        Some("authorize payment")
+    );
+    for operation in [
+        DataServiceOperation::Insert,
+        DataServiceOperation::Update,
+        DataServiceOperation::Delete,
+        DataServiceOperation::Recover,
+        DataServiceOperation::Query,
+    ] {
+        context.clear_sql_logs();
+        let mut metadata = ExecutionMetadata::unrecorded_query(1);
+        metadata.backend = "sqlite".into();
+        metadata.operation = operation;
+        metadata.trace_chain = lineage.clone();
+        metadata.comment = Some("submit order".into());
+        context.record_metadata_log(&metadata);
+        let logs = context.sql_logs();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].audit_reason.as_deref(), Some("submit order"));
+        assert_eq!(
+            metadata.trace_chain, lineage,
+            "projection must not mutate per-entity responsibility"
+        );
+        assert!(
+            logs[0]
+                .trace_path
+                .iter()
+                .all(|node| node.kind != TraceKind::AuditReason)
+        );
+    }
+    // Request-owned intent is invocation-local, not remembered on Context.
+    context.clear_sql_logs();
+    let mut independent = ExecutionMetadata::unrecorded_query(1);
+    independent.backend = "sqlite".into();
+    independent.comment = Some("independent query".into());
+    independent.trace_chain = vec![TraceNode::typed(
+        TraceKind::Comment,
+        "Order",
+        None,
+        "independent query",
+    )];
+    context.record_metadata_log(&independent);
+    assert_eq!(context.sql_logs()[0].audit_reason, None);
+}

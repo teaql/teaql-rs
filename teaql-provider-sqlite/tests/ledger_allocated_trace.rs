@@ -318,7 +318,7 @@ fn clear_observations(context: &UserContext, capture: &Capture) {
 fn assert_safe_insert_log(
     context: &UserContext,
     entity: &str,
-    local_reason: &str,
+    root_reason: &str,
     outcome: teaql_data_service::SqlExecutionOutcome,
 ) {
     let logs = context.sql_logs();
@@ -334,7 +334,7 @@ fn assert_safe_insert_log(
         .collect();
     assert_eq!(matching.len(), 1, "one actual safe INSERT log for {entity}");
     let log = matching[0];
-    assert_eq!(log.audit_reason.as_deref(), Some(local_reason));
+    assert_eq!(log.audit_reason.as_deref(), Some(root_reason));
     assert_eq!(log.log_context.execution_outcome, Some(outcome));
     assert_eq!(
         log.trace_path.first().unwrap().entity_type,
@@ -732,7 +732,7 @@ async fn assert_new_database_graph(reverse: bool, forward: bool) {
     assert_safe_insert_log(
         &context,
         "AllocationChild",
-        "allocate [REDACTED] child",
+        "allocate [REDACTED]",
         teaql_data_service::SqlExecutionOutcome::Success,
     );
 }
@@ -862,8 +862,9 @@ fn database_graph_failure_retains_assigned_trace_but_rolls_back_rows_and_retryab
         assert_safe_insert_log(
             &context,
             "AllocationChild",
-            // Failed bind values are redacted even when they occur in prose.
-            "authorize [REDACTED]",
+            // SQL exposes the request-owned reason; the private local child
+            // reason remains in separately verified per-entity lineage.
+            "first graph attempt",
             teaql_data_service::SqlExecutionOutcome::Failure,
         );
         assert_eq!(database_id_floor(&transport, "AllocationRoot"), 500);
@@ -972,4 +973,365 @@ fn database_allocated_explicit_transaction_delivers_audit_only_after_commit() {
         assert_eq!(database_id_floor(&transport, "AllocationRoot"), 501);
         assert_eq!(persisted_rows(&transport, "allocation_root_data"), 1);
     });
+}
+
+// TC-MUT-11: native ledger -> metadata-driven graph -> real SQLite. These
+// fixtures do not stand in for generated relation/API acceptance.
+struct BlankLocalCommitProbe {
+    capture: Capture,
+    independent: Mutex<rusqlite::Connection>,
+}
+
+impl SafeAuditEventSink for BlankLocalCommitProbe {
+    fn on_safe_event(&self, _: &UserContext, event: &SafeAuditEvent) -> Result<(), RuntimeError> {
+        let table = match event.entity.as_str() {
+            "AllocationRoot" => "allocation_root_data",
+            "Payment" => "payment_data",
+            "PaymentAttempt" => "payment_attempt_data",
+            "Shipment" => "shipment_data",
+            other => panic!("unexpected audit target {other}"),
+        };
+        let connection = self.independent.lock().unwrap();
+        assert!(connection.is_autocommit());
+        let id = event.entity_id.expect("independent committed target ID");
+        let row: (i64, i64) = connection
+            .query_row(
+                &format!("SELECT id, version FROM {table} WHERE id = ?"),
+                [i64::try_from(id).unwrap()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("safe audit must see the row through a separate connection after commit");
+        assert_eq!(row, (i64::try_from(id).unwrap(), 1));
+        self.capture.audits.lock().unwrap().push(event.clone());
+        Ok(())
+    }
+}
+
+async fn blank_local_context(logging: bool) -> (UserContext, Capture, SqliteMutationExecutor) {
+    use teaql_core::{DataType, PropertyDescriptor};
+    let parent = |name: &str, foreign: &str| {
+        EntityDescriptor::new(name)
+            .table_name(match name {
+                "Payment" => "payment_data",
+                "PaymentAttempt" => "payment_attempt_data",
+                "Shipment" => "shipment_data",
+                _ => unreachable!(),
+            })
+            .property(PropertyDescriptor::new("id", DataType::U64).id())
+            .property(PropertyDescriptor::new("version", DataType::I64).version())
+            .property(PropertyDescriptor::new("name", DataType::Text))
+            .property(PropertyDescriptor::new(foreign, DataType::U64))
+    };
+    let root = AllocationRoot::entity_descriptor()
+        .table_name("allocation_root_data")
+        .relation(
+            RelationDescriptor::new("payments", "Payment")
+                .many()
+                .local_key("id")
+                .foreign_key("customer_order"),
+        )
+        .relation(
+            RelationDescriptor::new("shipments", "Shipment")
+                .many()
+                .local_key("id")
+                .foreign_key("customer_order"),
+        );
+    let payment = parent("Payment", "customer_order").relation(
+        RelationDescriptor::new("attempts", "PaymentAttempt")
+            .many()
+            .local_key("id")
+            .foreign_key("payment"),
+    );
+    let entities = vec![
+        root,
+        payment,
+        parent("PaymentAttempt", "payment"),
+        parent("Shipment", "customer_order"),
+    ];
+    let directory = std::env::temp_dir().join(format!(
+        "teaql-rust-blank-local-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let database = directory.join("trace.sqlite");
+    let transport =
+        SqliteMutationExecutor::from_connection(rusqlite::Connection::open(&database).unwrap());
+    let mut metadata = InMemoryMetadataStore::new();
+    for entity in &entities {
+        metadata = metadata.with_entity(entity.clone());
+    }
+    let mut context = UserContext::new().with_metadata(metadata);
+    context.use_sqlite_provider(transport.clone());
+    context.ensure_schema().await.unwrap();
+    let capture = Capture::default();
+    context.register_executor(Observed(
+        SqlDataServiceExecutor::new(
+            SqliteDialect,
+            transport.clone(),
+            Schema(entities.into_iter().map(Arc::new).collect()),
+        ),
+        capture.clone(),
+    ));
+    context.set_custom_event_sink(BlankLocalCommitProbe {
+        capture: capture.clone(),
+        independent: Mutex::new(rusqlite::Connection::open(&database).unwrap()),
+    });
+    if !logging {
+        context.disable_sql_log();
+    }
+    clear_observations(&context, &capture);
+    println!(
+        "BLANK_LOCAL_DATABASE logging={logging} path={}",
+        database.display()
+    );
+    (context, capture, transport)
+}
+
+async fn run_blank_local_execution(logging: bool, reasons: &[Option<&str>], inherit: bool) {
+    let (context, capture, transport) = blank_local_context(logging).await;
+    if inherit {
+        for blank in reasons {
+            // The existing fluent audited constructor rejects invalid input by
+            // panic. Test that boundary separately from the structured request
+            // error returned by native graph planning, not as a failed save.
+            let rejected = std::panic::catch_unwind(|| {
+                new_root(9999, "invalid root").audit_as(blank.unwrap_or_default())
+            });
+            let rejected = rejected
+                .err()
+                .expect("blank audited constructor must reject");
+            assert_eq!(
+                rejected
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| rejected.downcast_ref::<String>().map(String::as_str)),
+                Some("audit comment must not be empty")
+            );
+            let mut invalid = teaql_runtime::GraphNode::new("AllocationRoot")
+                .operation(teaql_runtime::GraphOperation::Create)
+                .value("id", 9999_u64);
+            invalid.comment = blank.map(str::to_owned);
+            let executor = context.require_resource::<Executor>().unwrap();
+            let error = teaql_runtime::EntityDataService::for_executor(
+                &context,
+                "AllocationRoot",
+                executor,
+            )
+            .plan_graph(invalid)
+            .await
+            .unwrap_err();
+            let teaql_runtime::DataServiceError::Runtime(RuntimeError::RequestIntent(error)) =
+                error
+            else {
+                panic!("wrong intent failure {error:?}");
+            };
+            assert_eq!(error.code(), "REQUEST_COMMENT_REQUIRED");
+            assert_eq!(error.field, "comment");
+            assert_eq!(error.request_kind, teaql_core::RequestKind::Mutation);
+            assert!(capture.commands.lock().unwrap().is_empty());
+            assert!(capture.metadata.lock().unwrap().is_empty());
+            assert!(capture.audits.lock().unwrap().is_empty());
+            assert!(context.sql_logs().is_empty());
+        }
+    }
+    let root = new_root(100, "native root");
+    let ledger = root.entity_runtime_state().unwrap();
+    let add = |entity: &str, id: u64, foreign: &str, parent: u64, reason: Option<&str>| {
+        let key = EntityKey::new(entity, id);
+        ledger.mark_as_new(key.clone());
+        ledger.set(key.clone(), foreign, parent);
+        ledger.set(key.clone(), "name", format!("native {entity} {id}"));
+        if let Some(reason) = reason {
+            ledger.set_entity_comment(key, reason);
+        }
+    };
+    add(
+        "Payment",
+        201,
+        "customer_order",
+        100,
+        Some("authorize payment"),
+    );
+    add(
+        "Shipment",
+        301,
+        "customer_order",
+        100,
+        Some("prepare shipment"),
+    );
+    for (index, reason) in reasons.iter().enumerate() {
+        // Original null/blank/control values reach runtime classification. No
+        // test-side parent fallback or expected trace is installed on the ledger.
+        add(
+            "PaymentAttempt",
+            400 + index as u64,
+            "payment",
+            201,
+            *reason,
+        );
+    }
+    let saved = save_audited_ledger_entity(root.audit_as("submit order"), &context)
+        .await
+        .unwrap();
+    assert_eq!((saved.id, saved.version), (100, 1));
+    let mut commands = Vec::new();
+    fn scalar_requests<'a>(request: &'a MutationRequest, into: &mut Vec<&'a MutationRequest>) {
+        if let MutationCommand::Batch(items) = &request.command {
+            for item in items {
+                scalar_requests(item, into);
+            }
+        } else {
+            into.push(request);
+        }
+    }
+    let captured = capture.commands.lock().unwrap();
+    for request in captured.iter() {
+        scalar_requests(request, &mut commands);
+    }
+    assert_eq!(commands.len(), reasons.len() + 3);
+    let metadata = capture.metadata.lock().unwrap();
+    let physical: Vec<_> = metadata
+        .iter()
+        .flat_map(|row| {
+            if row.statements.is_empty() {
+                std::slice::from_ref(row)
+            } else {
+                row.statements.as_slice()
+            }
+        })
+        .collect();
+    let audits = capture.audits.lock().unwrap();
+    assert_eq!(audits.len(), commands.len());
+    assert_eq!(
+        physical
+            .iter()
+            .filter(|row| row.operation == teaql_data_service::DataServiceOperation::Insert)
+            .count(),
+        commands.len()
+    );
+    assert!(
+        physical
+            .iter()
+            .any(|row| row.operation == teaql_data_service::DataServiceOperation::Query),
+        "actual authoritative readback required"
+    );
+    for request in commands {
+        let MutationCommand::Insert(command) = &request.command else {
+            panic!("non-insert in create fixture");
+        };
+        let id = command.values["id"].try_u64().unwrap();
+        let mut expected = vec![("AllocationRoot", 100, "submit order")];
+        if command.entity == "Payment" || command.entity == "PaymentAttempt" {
+            expected.push(("Payment", 201, "authorize payment"));
+            if command.entity == "PaymentAttempt" && !inherit {
+                expected.push(("PaymentAttempt", id, reasons[(id - 400) as usize].unwrap()));
+            }
+        } else if command.entity == "Shipment" {
+            expected.push(("Shipment", 301, "prepare shipment"));
+        }
+        assert_eq!(request.comment(), "submit order");
+        assert_assigned_chain(request.trace_chain(), &expected);
+        let matching: Vec<_> = audits
+            .iter()
+            .filter(|event| event.entity == command.entity && event.entity_id == Some(id))
+            .collect();
+        assert_eq!(matching.len(), 1);
+        assert_assigned_chain(&matching[0].trace_chain, &expected);
+        let statements: Vec<_> = physical
+            .iter()
+            .filter(|row| {
+                row.operation == teaql_data_service::DataServiceOperation::Insert
+                    && row.trace_chain.iter().any(|node| {
+                        node.kind == TraceKind::Entity
+                            && node.entity_type == command.entity
+                            && node.entity_id == Some(id)
+                    })
+            })
+            .collect();
+        assert_eq!(statements.len(), 1);
+        assert_assigned_chain(&statements[0].trace_chain, &expected);
+        assert_eq!(statements[0].comment.as_deref(), Some("submit order"));
+        assert_eq!(statements[0].affected_rows, Some(1));
+        assert_eq!(
+            statements[0].sql_log.execution_outcome,
+            Some(teaql_data_service::SqlExecutionOutcome::Success)
+        );
+    }
+    let logs = context.sql_logs();
+    if logging {
+        assert_eq!(logs.len(), physical.len());
+        for log in logs {
+            assert_eq!(
+                log.audit_reason.as_deref(),
+                Some("submit order"),
+                "owned request reason must not become a descendant's local reason"
+            );
+            assert_eq!(log.trace_path[0].entity_type, "AllocationRoot");
+            assert_eq!(log.trace_path.last().unwrap().kind, TraceKind::Sql);
+        }
+    } else {
+        assert!(logs.is_empty());
+    }
+    assert!(transport.connection().lock().unwrap().is_autocommit());
+}
+
+#[test]
+fn blank_local_reasons_inherit_at_real_sinks_logging_on() {
+    futures_executor::block_on(run_blank_local_execution(
+        true,
+        &[
+            None,
+            Some(""),
+            Some(" \t\r\n"),
+            Some("\u{85}"),
+            Some("\u{a0}"),
+            Some("\u{2003}"),
+        ],
+        true,
+    ));
+}
+#[test]
+fn blank_local_reasons_inherit_at_real_sinks_logging_off() {
+    futures_executor::block_on(run_blank_local_execution(
+        false,
+        &[
+            None,
+            Some(""),
+            Some(" \t\r\n"),
+            Some("\u{85}"),
+            Some("\u{a0}"),
+            Some("\u{2003}"),
+        ],
+        true,
+    ));
+}
+#[test]
+fn non_white_space_local_reasons_survive_at_real_sinks_logging_on() {
+    futures_executor::block_on(run_blank_local_execution(
+        true,
+        &[
+            Some("\u{1c}"),
+            Some("\u{1d}"),
+            Some("\u{1e}"),
+            Some("\u{1f}"),
+        ],
+        false,
+    ));
+}
+#[test]
+fn non_white_space_local_reasons_survive_at_real_sinks_logging_off() {
+    futures_executor::block_on(run_blank_local_execution(
+        false,
+        &[
+            Some("\u{1c}"),
+            Some("\u{1d}"),
+            Some("\u{1e}"),
+            Some("\u{1f}"),
+        ],
+        false,
+    ));
 }

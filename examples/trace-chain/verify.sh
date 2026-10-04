@@ -20,7 +20,7 @@ for allocation_pass in 1 2; do
   allocation_log="$trace_evidence_dir/native-allocation-$allocation_pass.log"
   allocation_status=0
   timeout 180s cargo test --locked --manifest-path "$example_dir/../../Cargo.toml" \
-    -p teaql-provider-sqlite --test ledger_allocated_trace -- --nocapture \
+    -p teaql-provider-sqlite --test ledger_allocated_trace -- --show-output --test-threads=1 \
     >"$allocation_log" 2>&1 || allocation_status=$?
   if (( allocation_status != 0 )); then
     sed -n '1,240p' "$allocation_log" >&2
@@ -38,13 +38,17 @@ for allocation_pass in 1 2; do
     database_allocation_rolls_back_and_retry_uses_new_identity_and_intent \
     database_id_failure_cannot_fall_back_to_an_in_process_identity \
     database_graph_failure_retains_assigned_trace_but_rolls_back_rows_and_retryable_ids \
-    database_allocated_explicit_transaction_delivers_audit_only_after_commit; do
+    database_allocated_explicit_transaction_delivers_audit_only_after_commit \
+    blank_local_reasons_inherit_at_real_sinks_logging_on \
+    blank_local_reasons_inherit_at_real_sinks_logging_off \
+    non_white_space_local_reasons_survive_at_real_sinks_logging_on \
+    non_white_space_local_reasons_survive_at_real_sinks_logging_off; do
     if ! rg -Fq "test $allocation_case ... ok" "$allocation_log"; then
       printf 'FAIL missing native allocation case %s in %s\n' "$allocation_case" "$allocation_log" >&2
       exit 1
     fi
   done
-  printf 'PASS native database allocation replay %s (11 cases, real SQLite)\n' "$allocation_pass"
+  printf 'PASS native database allocation replay %s (15 cases, real SQLite, including blank-local execution)\n' "$allocation_pass"
   reference_log="$trace_evidence_dir/native-shared-reference-$allocation_pass.log"
   reference_status=0
   timeout 180s cargo test --locked --manifest-path "$example_dir/../../Cargo.toml" \
@@ -67,7 +71,7 @@ for allocation_pass in 1 2; do
   partition_log="$trace_evidence_dir/native-numeric-partition-$allocation_pass.log"
   partition_status=0
   timeout 180s cargo test --locked --manifest-path "$example_dir/../../Cargo.toml" \
-    -p teaql-provider-sqlite --test numeric_partition_trace -- --nocapture \
+    -p teaql-provider-sqlite --test numeric_partition_trace -- --show-output --test-threads=1 \
     >"$partition_log" 2>&1 || partition_status=$?
   if (( partition_status != 0 )); then
     sed -n '1,240p' "$partition_log" >&2
