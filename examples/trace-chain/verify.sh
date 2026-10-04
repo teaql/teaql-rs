@@ -64,6 +64,26 @@ for allocation_pass in 1 2; do
     fi
   done
   printf 'PASS native shared-reference replay %s (6 identity-graph cases)\n' "$allocation_pass"
+  partition_log="$trace_evidence_dir/native-numeric-partition-$allocation_pass.log"
+  partition_status=0
+  timeout 180s cargo test --locked --manifest-path "$example_dir/../../Cargo.toml" \
+    -p teaql-provider-sqlite --test numeric_partition_trace -- --nocapture \
+    >"$partition_log" 2>&1 || partition_status=$?
+  if (( partition_status != 0 )); then
+    sed -n '1,240p' "$partition_log" >&2
+    printf 'FAIL native numeric partition replay %s: exit %s; evidence %s\n' "$allocation_pass" "$partition_status" "$partition_log" >&2
+    exit "$partition_status"
+  fi
+  for partition_case in \
+    scalar_partition_keeps_groups_and_does_not_invent_relation_edges \
+    loaded_scalar_groups_preserve_only_the_real_relation_edge_window \
+    loaded_scalar_groups_preserve_only_the_real_relation_edge_probes; do
+    if ! rg -Fq "test $partition_case ... ok" "$partition_log"; then
+      printf 'FAIL missing native numeric partition case %s in %s\n' "$partition_case" "$partition_log" >&2
+      exit 1
+    fi
+  done
+  printf 'PASS native numeric partition replay %s (3 cases, 12 SQLite scenarios)\n' "$allocation_pass"
 done
 trace_library_before="$(generated_hash)"
 for trace_pass in 1 2; do

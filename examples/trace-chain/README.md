@@ -20,9 +20,10 @@ export CARGO_TARGET_DIR=/path/to/shared-cargo-target
 bash examples/trace-chain/verify.sh
 ```
 
-The script first runs eleven native allocation tests and six native identity
-graph tests twice, then requires eleven generated scenario markers twice on one persistent
-database without cleanup. It retains all six logs and prints their
+The script first runs eleven native allocation tests, six native identity
+graph tests, and three numeric-partition tests (12 SQLite scenarios) twice,
+then requires eleven generated scenario markers twice on one persistent
+database without cleanup. It retains all eight logs and prints their
 directory, the database URL, and a relative-path SHA-256 manifest digest for the
 unchanged generated library.
 An existing database may be supplied with `TEAQL_TRACE_CHAIN_DATABASE`; retained
@@ -51,6 +52,7 @@ verification. Keep the lockfile for repeatable dependency resolution.
 | Page and COUNT | Generated Q/E returns total=3, offset=1, two independently editable roots and their filtered items. The model explicitly masks `order_item.name`. COUNT retains removed relation bindings for local classification, without executing them; COUNT, root and child intent all redact the secret while preserving the ordinary root filter. Saves retain per-row versions and reasons |
 | Generated database IDs | The real SQLite ID-space generator assigns root/item IDs during `new_entity`, before transaction begin; save does not allocate again, and commands, physical SQL, committed audits and reloaded generated Q/E agree on both identities and the foreign key |
 | Native transaction allocation | Eleven tests include both in-process allocation checks and database-backed allocation inside a real transaction; declared forward/reverse ID references resolve to the allocated parent, an unrelated numeric zero is unchanged, and failed writes retain typed lineage without committing rows or audit |
+| Native numeric grouping | Root scalar partitions and loaded relation window/probe queries preserve GROUP BY/HAVING counts, use grouping keys for Top-N tie-breaking, and retain only real relation edges; first-root intent masks future child secrets, logging-off returns the same data, and the next independent request is isolated |
 | Generated library | Its file-content manifest digest is unchanged across application verification |
 
 Canonical SQL Trace Path and audit lineage remain distinct. The accepted v1

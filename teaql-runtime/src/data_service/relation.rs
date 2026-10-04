@@ -1196,6 +1196,21 @@ where
         if query.slice.is_none() {
             return;
         }
+        if !query.group_by.is_empty() || !query.aggregates.is_empty() {
+            // A grouped result has group identity, not a source-row identity.
+            // Adding the entity id is invalid on strict SQL databases unless it
+            // is itself grouped, and does not make aggregate pagination stable.
+            for field in &query.group_by {
+                if !query
+                    .order_by
+                    .iter()
+                    .any(|order| order.expr.is_none() && order.field == *field)
+                {
+                    query.order_by.push(OrderBy::asc(field.clone()));
+                }
+            }
+            return;
+        }
         let Some(id_property) = self
             .data_service
             .metadata

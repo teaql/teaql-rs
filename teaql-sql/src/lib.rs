@@ -304,6 +304,33 @@ mod tests {
     }
 
     #[test]
+    fn partitioned_grouping_preserves_having_before_window_slice() {
+        let query = TestDialect
+            .compile_select(
+                &line_entity(),
+                &SelectQuery::new("OrderLine")
+                    .group_by("order_id")
+                    .group_by("name")
+                    .count("n")
+                    .filter(Expr::eq("name", "retained"))
+                    .having(Expr::binary(
+                        Expr::count_all(),
+                        BinaryOp::Gt,
+                        Expr::value(1_i64),
+                    ))
+                    .order_by(OrderBy::asc("name"))
+                    .page(1, 3)
+                    .partition_by("order_id"),
+            )
+            .unwrap();
+        assert_eq!(
+            query.sql,
+            "SELECT * FROM (SELECT \"order_id\", \"name\", COUNT(*) AS \"n\", ROW_NUMBER() OVER (PARTITION BY \"order_id\" ORDER BY \"name\" ASC) AS \"__teaql_partition_rank\" FROM \"orderline\" WHERE (\"name\" = $1) GROUP BY \"order_id\", \"name\" HAVING (COUNT(*) > $2)) AS \"__teaql_partitioned\" WHERE \"__teaql_partition_rank\" > 1 AND \"__teaql_partition_rank\" <= 4 ORDER BY \"__teaql_partition_rank\""
+        );
+        assert_eq!(query.params, vec![Value::from("retained"), Value::I64(1)]);
+    }
+
+    #[test]
     fn deduplicates_partition_projection_for_mysql_derived_tables() {
         let query = TestDialect
             .compile_select(
