@@ -26,6 +26,9 @@ then requires eleven generated scenario markers twice on one persistent
 database without cleanup. It retains all eight logs and prints their
 directory, the database URL, and a relative-path SHA-256 manifest digest for the
 unchanged generated library.
+It also requires the generated Checker-overlap marker in both logging modes on
+each run. For the focused same-database case, set
+`TEAQL_TRACE_CHAIN_SCENARIO=checker-overlap` when running the example directly.
 An existing database may be supplied with `TEAQL_TRACE_CHAIN_DATABASE`; retained
 logs may be directed with `TEAQL_TRACE_CHAIN_EVIDENCE_DIR`. The application adds
 fresh graphs on each start and never resets tables.
@@ -45,6 +48,7 @@ verification. Keep the lockfile for repeatable dependency resolution.
 | Same-type batches | Two OrderItems are included in reverse order, inserted together and later updated with the same changed fields; each command, physical SQL record and committed event retains its own local reason and typed ID; generated Q/E verifies both values and version increments |
 | Concurrent saves | Two generated graphs share one Context, meet at a test-only barrier before transaction begin, and yield after acquiring a transaction; each command, SQL metadata item and committed audit event retains its own reasons |
 | Shared read-only reference | One bounded generated Q loads two orders whose E Platform values are pointer-identical. Their mutation ledgers stay independent, each composes only its own new item, and overlapping saves write exactly four items with isolated command/SQL/audit reasons. The shared Platform snapshot, ledger and version stay unchanged; generated Q/E reloads both commits |
+| Real generated Checker overlap | Two OS threads save independently owned graphs through one original Context and pointer-shared immutable Platform. A bounded callback rendezvous delegates the generated Checker unchanged, holding actual empty/Required result sets concurrently. Only the valid root/item reach commands, SQL and committed audit; the rejected root's database version/value and the Platform remain unchanged, and its missing-name child is absent. Both logging modes run |
 | Provider failure | A test-owned faulty ID allocator causes a real SQLite primary-key conflict after the root INSERT; attempted command and failure SQL metadata retain branch lineage, both writes roll back, and no committed audit event is delivered |
 | Readback failure | A transport probe delegates the real INSERT unchanged to SQLite, then rejects the following readback; successful write metadata and failed readback metadata remain separate, the graph rolls back and no committed audit event is delivered |
 | Successful readback | Generated Q/E and one root save create and then update a root/item graph. Each changed row returns its actual write followed by a SELECT, retaining root and branch reasons at physical metadata and the safe SQL sink; four writes and four reads produce only four committed audits |
@@ -107,6 +111,18 @@ prove safe synchronous allocation by another operation while an unrelated save
 owns the connection, or shared ID-space aliases between display and type names.
 Complete ledger-specific override semantics and immutable internal-artifact
 replay remain separate gates.
+
+`src/checker_overlap.rs` uses current Runtime Customization, Create, Update,
+Query and Expression Assist. Its registry wraps `checker_registry()` and retains
+every model Checker; it neither manufactures failures nor changes values,
+locations or results. The invalid new item deliberately omits its required name,
+which the actual generated typed Checker reports at `order_item_list[0].name`.
+Blank-string validation is not assumed. Thread IDs, original Context pointer and
+peak callback activity are asserted, and the rendezvous times out after 15 seconds.
+This is stronger than joining synchronous callbacks on one async thread.
+The dedicated `RustCheckerOverlapAcceptanceTest` producer fixture regenerates and
+hashes library bytes without reading generated sources; do not use the older
+source-inspecting regeneration test for this acceptance path.
 
 Successful readback diagnostics are physical children of the existing mutation
 summary. Runtime sinks visit those children once; affected-row totals and

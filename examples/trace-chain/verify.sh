@@ -105,6 +105,11 @@ for trace_pass in 1 2; do
     printf 'FAIL missing loaded graph privacy acceptance in %s\n' "$trace_log" >&2
     exit 1
   fi
+  if ! rg -Fq 'TC-MUT-12 GENERATED CHECKER OVERLAP PASSED logging=false' "$trace_log" ||
+     ! rg -Fq 'TC-MUT-12 GENERATED CHECKER OVERLAP PASSED logging=true' "$trace_log"; then
+    printf 'FAIL missing generated Checker overlap in both logging modes in %s\n' "$trace_log" >&2
+    exit 1
+  fi
   if ! rg -Fq 'TC-REQ-16 GRAPH PRIVACY ROLLBACK PASSED' "$trace_log"; then
     printf 'FAIL missing loaded graph privacy rollback acceptance in %s\n' "$trace_log" >&2
     exit 1

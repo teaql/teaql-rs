@@ -10,6 +10,7 @@ mod observation;
 mod readback_transport;
 mod scenarios;
 mod shared_reference;
+mod checker_overlap;
 mod successful_readback;
 mod streaming;
 mod paging;
@@ -517,6 +518,9 @@ async fn main() -> Outcome<()> {
     context.insert_resource(executor.clone());
     context.register_executor(Observed::new(executor, observation.clone()));
     context.ensure_schema().await?;
+    if std::env::var("TEAQL_TRACE_CHAIN_SCENARIO").as_deref() == Ok("checker-overlap") {
+        return checker_overlap::checker_overlap(&mut context, &capture, &observation).await;
+    }
     graph_privacy::loaded_graph_privacy(&context, &capture, &observation).await?;
     normative_graph(&context, &capture, &observation).await?;
     batching::same_type_batch(&mut context, &capture, &observation).await?;
@@ -524,6 +528,7 @@ async fn main() -> Outcome<()> {
     // The following failure fixture deliberately installs a broken allocator
     // for this Context's final use; normal allocation probes must precede it.
     shared_reference::shared_reference_graphs(&context, &capture, &observation).await?;
+    checker_overlap::checker_overlap(&mut context, &capture, &observation).await?;
     successful_readback::successful_graph_readback(&context, &capture, &observation).await?;
     streaming::scalar_streams(&context, &capture, &observation).await?;
     paging::paged_graph(&context, &capture, &observation).await?;
