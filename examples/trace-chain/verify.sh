@@ -77,13 +77,14 @@ for allocation_pass in 1 2; do
   for partition_case in \
     scalar_partition_keeps_groups_and_does_not_invent_relation_edges \
     loaded_scalar_groups_preserve_only_the_real_relation_edge_window \
-    loaded_scalar_groups_preserve_only_the_real_relation_edge_probes; do
+    loaded_scalar_groups_preserve_only_the_real_relation_edge_probes \
+    cached_partition_having_rebinds_real_sqlite_results; do
     if ! rg -Fq "test $partition_case ... ok" "$partition_log"; then
       printf 'FAIL missing native numeric partition case %s in %s\n' "$partition_case" "$partition_log" >&2
       exit 1
     fi
   done
-  printf 'PASS native numeric partition replay %s (3 cases, 12 SQLite scenarios)\n' "$allocation_pass"
+  printf 'PASS native numeric partition replay %s (4 cases, including actual warm-cache execution)\n' "$allocation_pass"
 done
 trace_library_before="$(generated_hash)"
 for trace_pass in 1 2; do
@@ -114,6 +115,12 @@ for trace_pass in 1 2; do
     printf 'FAIL missing loaded graph privacy rollback acceptance in %s\n' "$trace_log" >&2
     exit 1
   fi
+  for ledger_logging in false true; do
+    if ! rg -Fq "TC-MUT-10 GENERATED LEDGER PRECEDENCE PASSED logging=$ledger_logging" "$trace_log"; then
+      printf 'FAIL missing generated ledger precedence in %s\n' "$trace_log" >&2
+      exit 1
+    fi
+  done
   printf 'PASS generated Trace Chain replay %s (same database, no cleanup)\n' "$trace_pass"
 done
 trace_library_after="$(generated_hash)"

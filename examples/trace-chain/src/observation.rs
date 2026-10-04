@@ -7,14 +7,22 @@ use teaql_data_service::{
     Transaction, TransactionExecutor,
 };
 
+type BeforeBegin = Arc<dyn Fn() + Send + Sync>;
+
 #[derive(Clone, Default)]
 pub struct Observation {
     commands: Arc<Mutex<Vec<MutationRequest>>>,
     metadata: Arc<Mutex<Vec<ExecutionMetadata>>>,
     begin_barrier: Arc<Mutex<Option<Arc<tokio::sync::Barrier>>>>,
+    before_begin: Arc<Mutex<Option<BeforeBegin>>>,
 }
 
 impl Observation {
+    /// Observe runtime-owned planning state once, without changing the request.
+    pub fn observe_next_begin(&self, observe: impl Fn() + Send + Sync + 'static) {
+        *self.before_begin.lock().unwrap() = Some(Arc::new(observe));
+    }
+
     pub fn probe_concurrent_begins(&self, enabled: bool) {
         *self.begin_barrier.lock().unwrap() =
             enabled.then(|| Arc::new(tokio::sync::Barrier::new(2)));
@@ -142,6 +150,10 @@ where
         Self: 'a;
 
     async fn begin(&self) -> Result<Self::Tx<'_>, Self::Error> {
+        let observe = { self.observation.before_begin.lock().unwrap().take() };
+        if let Some(observe) = observe {
+            observe();
+        }
         let barrier = self.observation.begin_barrier.lock().unwrap().clone();
         if let Some(barrier) = &barrier {
             // Both generated saves reach begin before either enters SQLite.

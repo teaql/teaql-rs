@@ -34,6 +34,27 @@ fn resolve_trace_chain(
     }
 }
 
+#[cfg(test)]
+mod ledger_trace_resolution_tests {
+    use super::resolve_trace_chain;
+    use teaql_core::{TraceKind, TraceNode};
+
+    #[test]
+    fn complete_ledger_chain_replaces_fallback_and_empty_chain_inherits_it() {
+        let root = TraceNode::typed(TraceKind::AuditReason, "CustomerOrder", Some(1), "root");
+        let child = TraceNode::typed(TraceKind::AuditReason, "OrderItem", Some(1), "child");
+        let fallback = vec![root.clone()];
+        let specific = vec![root, child];
+        assert_eq!(resolve_trace_chain(specific.clone(), &fallback), specific);
+        assert_eq!(resolve_trace_chain(Vec::new(), &fallback), fallback);
+        assert_eq!(resolve_trace_chain(Vec::new(), &[]), Vec::new());
+        // Neither resolving the specific item nor its sibling consumes or
+        // mutates the shared fallback. Equal numeric IDs remain typed.
+        assert_eq!(resolve_trace_chain(Vec::new(), &fallback), fallback);
+        assert_eq!(fallback.len(), 1);
+    }
+}
+
 impl<'a, E> EntityDataService<'a, E>
 where
     E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,

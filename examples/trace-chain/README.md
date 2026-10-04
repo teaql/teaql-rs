@@ -21,7 +21,8 @@ bash examples/trace-chain/verify.sh
 ```
 
 The script first runs eleven native allocation tests, six native identity
-graph tests, and three numeric-partition tests (12 SQLite scenarios) twice,
+graph tests, and four numeric-partition tests (including actual cold/warm cache
+execution) twice,
 then requires eleven generated scenario markers twice on one persistent
 database without cleanup. It retains all eight logs and prints their
 directory, the database URL, and a relative-path SHA-256 manifest digest for the
@@ -29,6 +30,8 @@ unchanged generated library.
 It also requires the generated Checker-overlap marker in both logging modes on
 each run. For the focused same-database case, set
 `TEAQL_TRACE_CHAIN_SCENARIO=checker-overlap` when running the example directly.
+The generated ledger-precedence marker is also required in both logging modes;
+`TEAQL_TRACE_CHAIN_SCENARIO=ledger-override` selects that focused case.
 An existing database may be supplied with `TEAQL_TRACE_CHAIN_DATABASE`; retained
 logs may be directed with `TEAQL_TRACE_CHAIN_EVIDENCE_DIR`. The application adds
 fresh graphs on each start and never resets tables.
@@ -49,6 +52,7 @@ verification. Keep the lockfile for repeatable dependency resolution.
 | Concurrent saves | Two generated graphs share one Context, meet at a test-only barrier before transaction begin, and yield after acquiring a transaction; each command, SQL metadata item and committed audit event retains its own reasons |
 | Shared read-only reference | One bounded generated Q loads two orders whose E Platform values are pointer-identical. Their mutation ledgers stay independent, each composes only its own new item, and overlapping saves write exactly four items with isolated command/SQL/audit reasons. The shared Platform snapshot, ledger and version stay unchanged; generated Q/E reloads both commits |
 | Real generated Checker overlap | Two OS threads save independently owned graphs through one original Context and pointer-shared immutable Platform. A bounded callback rendezvous delegates the generated Checker unchanged, holding actual empty/Required result sets concurrently. Only the valid root/item reach commands, SQL and committed audit; the rejected root's database version/value and the Platform remain unchanged, and its missing-name child is absent. Both logging modes run |
+| Complete ledger-chain precedence | Before BEGIN, a read-only observer captures planner-owned chains. Insert/update/delete then emit exactly those complete chains at commands, physical SQL and committed safe audit; fallback is not appended, an unannotated sibling remains root-only, and committed scopes clear. Generated Q/E checks stored names, foreign keys, optimistic versions and deletion. Both logging modes run |
 | Provider failure | A test-owned faulty ID allocator causes a real SQLite primary-key conflict after the root INSERT; attempted command and failure SQL metadata retain branch lineage, both writes roll back, and no committed audit event is delivered |
 | Readback failure | A transport probe delegates the real INSERT unchanged to SQLite, then rejects the following readback; successful write metadata and failed readback metadata remain separate, the graph rolls back and no committed audit event is delivered |
 | Successful readback | Generated Q/E and one root save create and then update a root/item graph. Each changed row returns its actual write followed by a SELECT, retaining root and branch reasons at physical metadata and the safe SQL sink; four writes and four reads produce only four committed audits |
@@ -109,8 +113,19 @@ These tests do not change generated creation semantics. The generated scenario
 uses its normal early allocation path and verifies it separately. They do not
 prove safe synchronous allocation by another operation while an unrelated save
 owns the connection, or shared ID-space aliases between display and type names.
-Complete ledger-specific override semantics and immutable internal-artifact
-replay remain separate gates.
+The complete-chain precedence scenario below closes that generated assertion;
+immutable internal-artifact replay remains a separate gate.
+
+`src/ledger_override.rs` observes existing runtime-produced scopes, not a new
+public API for injecting arbitrary audit chains. The once-only pre-BEGIN probe
+does not mutate the graph, transaction, or request. One annotated child and one
+unannotated sibling are saved through create, update and soft-delete phases.
+Changing the native resolver to append fallback to the specific chain makes the
+actual emitted-command assertion fail (two root reasons instead of one). That
+deliberate negative control is restored before the two-run acceptance; it is
+not an existing product defect. A separate native unit test covers empty-chain
+fallback. The generated scenario neither supplies expected trace nodes nor
+claims an external ledger-override setter. The same DB retains earlier attempts.
 
 `src/checker_overlap.rs` uses current Runtime Customization, Create, Update,
 Query and Expression Assist. Its registry wraps `checker_registry()` and retains

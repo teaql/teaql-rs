@@ -266,33 +266,34 @@ pub async fn checker_overlap(
             violations[0].location.to_string(),
             "order_item_list[0].name"
         );
-        let checks = overlap.arrived.lock().unwrap();
-        assert_eq!(checks.len(), 2);
-        assert_ne!(checks[0].thread, checks[1].thread);
-        assert_eq!(overlap.peak.load(Ordering::SeqCst), 2);
-        assert_eq!(overlap.active.load(Ordering::SeqCst), 0);
-        assert!(checks.iter().all(|entry| entry.context == context_address));
-        assert!(
-            checks
+        {
+            let checks = overlap.arrived.lock().unwrap();
+            assert_eq!(checks.len(), 2);
+            assert_ne!(checks[0].thread, checks[1].thread);
+            assert_eq!(overlap.peak.load(Ordering::SeqCst), 2);
+            assert_eq!(overlap.active.load(Ordering::SeqCst), 0);
+            assert!(checks.iter().all(|entry| entry.context == context_address));
+            assert!(
+                checks
+                    .iter()
+                    .find(|entry| entry.id == good_child_id)
+                    .unwrap()
+                    .results
+                    .is_empty()
+            );
+            let invalid = &checks
                 .iter()
-                .find(|entry| entry.id == good_child_id)
+                .find(|entry| entry.id == bad_child_id)
                 .unwrap()
-                .results
-                .is_empty()
-        );
-        let invalid = &checks
-            .iter()
-            .find(|entry| entry.id == bad_child_id)
-            .unwrap()
-            .results;
-        assert_eq!(invalid.len(), 1);
-        assert_eq!(invalid[0].rule, CheckRule::Required);
-        assert_eq!(invalid[0].location, violations[0].location);
-        println!(
-            "CHECKER_OVERLAP threads={:?},{:?} original_context={context_address:x} peak=2 rejected_location={}",
-            checks[0].thread, checks[1].thread, violations[0].location
-        );
-        drop(checks);
+                .results;
+            assert_eq!(invalid.len(), 1);
+            assert_eq!(invalid[0].rule, CheckRule::Required);
+            assert_eq!(invalid[0].location, violations[0].location);
+            println!(
+                "CHECKER_OVERLAP threads={:?},{:?} original_context={context_address:x} peak=2 rejected_location={}",
+                checks[0].thread, checks[1].thread, violations[0].location
+            );
+        }
         let root = ("CustomerOrder", good_id, "accept checker graph");
         let expected = [
             ExpectedItem {

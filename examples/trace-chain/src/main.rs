@@ -11,6 +11,7 @@ mod readback_transport;
 mod scenarios;
 mod shared_reference;
 mod checker_overlap;
+mod ledger_override;
 mod successful_readback;
 mod streaming;
 mod paging;
@@ -148,6 +149,15 @@ fn assert_execution_lineage(observation: &Observation, expected: &[ExpectedItem]
             .collect();
         assert_eq!(commands.len(), 1, "emitted command identifies {item:?}");
         let request = commands[0];
+        assert_eq!(
+            request
+                .trace_chain()
+                .iter()
+                .filter(|node| node.kind == TraceKind::AuditReason)
+                .count(),
+            item.reasons.len(),
+            "complete ledger chain must replace, not append to, fallback: {item:?}"
+        );
         assert_eq!(
             request.comment(),
             item.reasons[0].2,
@@ -521,6 +531,9 @@ async fn main() -> Outcome<()> {
     if std::env::var("TEAQL_TRACE_CHAIN_SCENARIO").as_deref() == Ok("checker-overlap") {
         return checker_overlap::checker_overlap(&mut context, &capture, &observation).await;
     }
+    if std::env::var("TEAQL_TRACE_CHAIN_SCENARIO").as_deref() == Ok("ledger-override") {
+        return ledger_override::ledger_override(&mut context, &capture, &observation).await;
+    }
     graph_privacy::loaded_graph_privacy(&context, &capture, &observation).await?;
     normative_graph(&context, &capture, &observation).await?;
     batching::same_type_batch(&mut context, &capture, &observation).await?;
@@ -529,6 +542,7 @@ async fn main() -> Outcome<()> {
     // for this Context's final use; normal allocation probes must precede it.
     shared_reference::shared_reference_graphs(&context, &capture, &observation).await?;
     checker_overlap::checker_overlap(&mut context, &capture, &observation).await?;
+    ledger_override::ledger_override(&mut context, &capture, &observation).await?;
     successful_readback::successful_graph_readback(&context, &capture, &observation).await?;
     streaming::scalar_streams(&context, &capture, &observation).await?;
     paging::paged_graph(&context, &capture, &observation).await?;
