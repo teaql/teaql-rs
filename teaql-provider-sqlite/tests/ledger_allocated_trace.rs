@@ -549,7 +549,28 @@ fn child_allocated_during_ledger_planning_retains_its_own_and_parent_identity() 
             "late child",
         );
         child.set_comment("authorize late child");
+        assert_eq!(
+            child.get_comment().as_deref(),
+            Some("authorize late child"),
+            "native macro stores the local comment"
+        );
+        assert_eq!(
+            child_state
+                .get_entity_comment(&child.entity_key())
+                .as_deref(),
+            Some("authorize late child"),
+            "the source ledger holds the local comment"
+        );
+        assert_eq!(child.entity_key(), EntityKey::new("AllocationChild", 0_u64));
         root.include_pending_mutations_from(&child).unwrap();
+        assert_eq!(
+            root.entity_runtime_state()
+                .unwrap()
+                .get_entity_comment(&EntityKey::new("AllocationChild", 0_u64))
+                .as_deref(),
+            Some("authorize late child"),
+            "composition retains the child's local comment before allocation"
+        );
         save_audited_ledger_entity(root.audit_as("submit root"), &context)
             .await
             .unwrap();

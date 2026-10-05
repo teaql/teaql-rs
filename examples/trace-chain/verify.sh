@@ -110,6 +110,10 @@ for trace_pass in 1 2; do
     printf 'FAIL missing loaded graph privacy acceptance in %s\n' "$trace_log" >&2
     exit 1
   fi
+  if ! rg -Fq 'TC-REQ-16 COMPLETE PRIVATE LINEAGE PASSED raw commands/SQL, safe SQL route and committed audit' "$trace_log"; then
+    printf 'FAIL missing complete raw/safe private graph lineage in %s\n' "$trace_log" >&2
+    exit 1
+  fi
   rg -Fq 'PASS FORWARD_NOTLOADED: generated Q/E retains known identity and independent load boundaries' "$trace_log"
   rg -Fq 'TC-MUT-15 SAFE TARGET PASSED unannotated child deletion retains independent typed identity' "$trace_log"
   if ! rg -Fq 'TC-MUT-12 GENERATED CHECKER OVERLAP PASSED logging=false' "$trace_log" ||
