@@ -220,10 +220,36 @@ async fn normative_graph(
         .await?
         .ok_or("platform must be seeded")?;
 
-    let mut order = Q::customer_orders()
-        .comment("what: create the normative order")
-        .purpose("why: prepare the mixed mutation fixture")
-        .new_entity(context);
+    // TC-MUT-08 is a deliberate fixture condition, not an accidental property
+    // of fresh databases. Reserve unused IDs through the generated allocator
+    // until both independent type sequences reach the same number. Discarded
+    // entities are never saved; gaps do not imply abandoned business rows.
+    let new_order = || {
+        Q::customer_orders()
+            .comment("what: create the normative order")
+            .purpose("why: prepare the mixed mutation fixture")
+            .new_entity(context)
+    };
+    let new_payment = || {
+        Q::payments()
+            .comment("what: create a pending payment")
+            .purpose("why: prepare a nested mutation branch")
+            .new_entity(context)
+    };
+    let mut order = new_order();
+    let mut payment = new_payment();
+    for _ in 0..512 {
+        match order.id().cmp(&payment.id()) {
+            std::cmp::Ordering::Equal => break,
+            std::cmp::Ordering::Less => order = new_order(),
+            std::cmp::Ordering::Greater => payment = new_payment(),
+        }
+    }
+    assert_eq!(
+        order.id(),
+        payment.id(),
+        "bounded fixture must align type-specific IDs"
+    );
     order.update_platform_id(platform.id());
     order.update_order_number("TRACE-ORDER-001");
     order.update_description("Draft order");
@@ -257,10 +283,6 @@ async fn normative_graph(
         .save(context)
         .await?;
 
-    let mut payment = Q::payments()
-        .comment("what: create a pending payment")
-        .purpose("why: prepare a nested mutation branch")
-        .new_entity(context);
     payment.update_customer_order_id(order_id);
     payment.update_reference_code("TRACE-PAYMENT-001");
     let payment_id = payment.id();
@@ -383,6 +405,13 @@ async fn normative_graph(
     ];
     assert_audit_graph(&capture.events(), &expected);
     assert_execution_lineage(observation, &expected);
+    assert_eq!(
+        order_id, payment_id,
+        "same numeric identity must be exercised in the saved graph"
+    );
+    println!(
+        "TC-MUT-08 GENERATED SAME ID PASSED order={order_id} payment={payment_id}; distinct command/SQL/audit targets"
+    );
     let mutation_logs: Vec<_> = context
         .sql_logs()
         .into_iter()
