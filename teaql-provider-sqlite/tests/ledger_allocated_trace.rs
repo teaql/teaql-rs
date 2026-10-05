@@ -1109,7 +1109,12 @@ async fn run_blank_local_execution(logging: bool, reasons: &[Option<&str>], inhe
                     .downcast_ref::<&str>()
                     .copied()
                     .or_else(|| rejected.downcast_ref::<String>().map(String::as_str)),
-                Some("audit comment must not be empty")
+                Some(
+                    teaql_core::MutationIntent::from_optional(*blank)
+                        .unwrap_err()
+                        .to_string()
+                        .as_str()
+                )
             );
             let mut invalid = teaql_runtime::GraphNode::new("AllocationRoot")
                 .operation(teaql_runtime::GraphOperation::Create)

@@ -105,6 +105,10 @@ impl MutationIntent {
     pub fn comment(&self) -> &str {
         &self.comment
     }
+
+    pub(crate) fn into_comment(self) -> String {
+        self.comment
+    }
 }
 
 #[cfg(test)]
