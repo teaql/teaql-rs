@@ -600,6 +600,97 @@ async fn main() -> Outcome<()> {
     context.insert_resource(executor.clone());
     context.register_executor(Observed::new(executor, observation.clone()));
     context.ensure_schema().await?;
+    let initial_bootstrap_metadata = observation.metadata();
+    let initial_bootstrap_commands = observation.commands();
+    let initial_bootstrap_audits = capture.events();
+    observation.clear();
+    capture.clear();
+    context.clear_sql_logs();
+    context.ensure_schema().await?;
+    let repeated = observation.metadata();
+    assert!(
+        !initial_bootstrap_metadata.is_empty(),
+        "observe real generated bootstrap SQL"
+    );
+    assert!(!repeated.is_empty(), "observe repeated bootstrap lookups");
+    assert!(observation.commands().is_empty(), "no repeated seed writes");
+    assert!(
+        capture.events().iter().all(|event| !matches!(
+            event.kind,
+            RawAuditEventKind::Created
+                | RawAuditEventKind::Updated
+                | RawAuditEventKind::Deleted
+                | RawAuditEventKind::Recovered
+        )),
+        "no repeated committed data mutation"
+    );
+    let first_lookup = &initial_bootstrap_metadata[0];
+    for fact in &initial_bootstrap_metadata {
+        assert!(
+            fact.comment
+                .as_deref()
+                .is_some_and(|comment| !comment.trim().is_empty()),
+            "all bootstrap statements own nonblank intent"
+        );
+    }
+    for fact in &repeated {
+        assert_eq!(
+            fact.operation,
+            teaql_data_service::DataServiceOperation::Query
+        );
+        assert_eq!(
+            fact.comment, first_lookup.comment,
+            "generated bootstrap lookup intent is stable"
+        );
+        assert!(
+            fact.trace_chain
+                .iter()
+                .any(|node| node.kind == TraceKind::Purpose && !node.comment.trim().is_empty())
+        );
+    }
+    let data_audits: Vec<_> = initial_bootstrap_audits
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind,
+                RawAuditEventKind::Created | RawAuditEventKind::Updated
+            )
+        })
+        .collect();
+    assert_eq!(initial_bootstrap_commands.len(), data_audits.len());
+    for event in data_audits {
+        let identity = event
+            .bootstrap_audit
+            .as_ref()
+            .expect("generated bootstrap audit attribution");
+        assert_eq!(identity.actor, "teaql-generated-bootstrap");
+        assert_eq!(identity.category, "runtime-bootstrap");
+        assert!(!identity.reason.trim().is_empty());
+        assert_eq!(event.trace_chain.len(), 1);
+        assert_eq!(event.trace_chain[0].kind, TraceKind::AuditReason);
+        assert_eq!(event.trace_chain[0].entity_type, "Platform");
+        assert_eq!(event.trace_chain[0].entity_id, Some(1));
+    }
+    for command in &initial_bootstrap_commands {
+        assert!(!command.comment().trim().is_empty());
+        let reasons: Vec<_> = command
+            .trace_chain()
+            .iter()
+            .filter(|node| node.kind == TraceKind::AuditReason)
+            .collect();
+        assert_eq!(reasons.len(), 1);
+        assert_eq!(reasons[0].comment, command.comment());
+        assert_eq!(reasons[0].entity_type, "Platform");
+        assert_eq!(reasons[0].entity_id, Some(1));
+    }
+    println!(
+        "TC-REQ-09 RUST GENERATED BOOTSTRAP PASSED first_writes={} repeat_writes=0 comment={}",
+        initial_bootstrap_commands.len(),
+        first_lookup.comment.as_deref().unwrap()
+    );
+    observation.clear();
+    capture.clear();
+    context.clear_sql_logs();
     if std::env::var("TEAQL_TRACE_CHAIN_SCENARIO").as_deref() == Ok("checker-overlap") {
         return checker_overlap::checker_overlap(&mut context, &capture, &observation).await;
     }
