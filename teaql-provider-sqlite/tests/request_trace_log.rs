@@ -349,6 +349,109 @@ async fn batch_context() -> UserContext {
     context
 }
 
+// TC-REQ-13 native request input, not an injected expected graph lineage.
+// Direct TransactionScope::mutate does not emit a graph safe-audit event;
+// committed graph-audit assertions remain in ledger_allocated_trace.rs.
+async fn assert_blank_typed_tail_at_sqlite(logging: bool) {
+    let mut context = batch_context().await;
+    if !logging {
+        context.disable_sql_log();
+    }
+    for (index, kind) in [TraceKind::Entity, TraceKind::Provider, TraceKind::Sql]
+        .into_iter()
+        .enumerate()
+    {
+        context.clear_sql_logs();
+        let id = 100_i64 + index as i64;
+        let tail = teaql_core::TraceNode::typed(kind, "BatchProbe", Some(id as u64), "");
+        let mut command = InsertCommand::new("BatchProbe")
+            .value("id", id)
+            .value("version", 1_i64)
+            .value("name", "native blank tail")
+            .value("status", "ACTIVE");
+        command.trace_chain.push(tail.clone());
+        let request = MutationCommand::Insert(command)
+            .request(" explicit root comment ")
+            .unwrap();
+        assert_eq!(request.trace_chain().last(), Some(&tail));
+        let original = request.clone();
+        let result = context
+            .execute_in_transaction::<Executor, _, _>(|transaction| {
+                Box::pin(async move { transaction.mutate(request).await })
+            })
+            .await
+            .unwrap();
+        assert_eq!(original.comment(), " explicit root comment ");
+        assert_eq!(original.trace_chain().last(), Some(&tail));
+        assert_eq!(result.affected_rows, 1);
+        assert_eq!(
+            result
+                .persisted_snapshot
+                .as_ref()
+                .unwrap()
+                .get("id")
+                .and_then(Value::try_i64),
+            Some(id)
+        );
+        let physical = leaf_metadata(&result.metadata);
+        assert_eq!(
+            physical.len(),
+            2,
+            "real insert and authoritative readback required"
+        );
+        assert_eq!(physical[0].operation, DataServiceOperation::Insert);
+        assert_eq!(physical[1].operation, DataServiceOperation::Query);
+        for statement in physical {
+            assert_eq!(statement.comment.as_deref(), Some(original.comment()));
+            assert_eq!(
+                statement.sql_log.execution_outcome,
+                Some(teaql_data_service::SqlExecutionOutcome::Success)
+            );
+            assert!(
+                statement
+                    .parameterized_query
+                    .as_ref()
+                    .is_some_and(|sql| !sql.is_empty())
+            );
+        }
+        let logs = context.sql_logs();
+        assert_eq!(logs.len(), if logging { 2 } else { 0 });
+        for entry in logs {
+            assert_eq!(entry.audit_reason.as_deref(), Some(original.comment()));
+            assert_eq!(entry.comment.as_deref(), Some(original.comment()));
+        }
+        // A new transaction must see the committed row, not a pre-commit echo.
+        let rows = context
+            .execute_in_transaction::<Executor, _, _>(|transaction| {
+                Box::pin(async move {
+                    transaction
+                        .query(QueryRequest::from_query(
+                            SelectQuery::new("BatchProbe")
+                                .filter(teaql_core::Expr::eq("id", id))
+                                .limit(1)
+                                .comment("load committed blank-tail probe")
+                                .purpose("verify request-owned intent survives SQLite execution"),
+                        )?)
+                        .await
+                })
+            })
+            .await
+            .unwrap();
+        assert_eq!(rows.rows.len(), 1);
+        assert_eq!(rows.rows[0].get("id").and_then(Value::try_i64), Some(id));
+    }
+}
+
+#[test]
+fn blank_typed_route_tails_keep_owned_intent_at_sqlite_logging_on() {
+    futures_executor::block_on(assert_blank_typed_tail_at_sqlite(true));
+}
+
+#[test]
+fn blank_typed_route_tails_keep_owned_intent_at_sqlite_logging_off() {
+    futures_executor::block_on(assert_blank_typed_tail_at_sqlite(false));
+}
+
 fn batch_with_sibling_secret(fail_second_write: bool) -> MutationRequest {
     let second = if fail_second_write {
         MutationCommand::Insert(

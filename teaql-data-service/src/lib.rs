@@ -456,20 +456,34 @@ mod tests {
 
     #[test]
     fn mutation_comment_is_owned_and_never_derived_from_trace_tail() {
-        let trace = TraceNode::typed(teaql_core::TraceKind::Entity, "User", Some(1), "");
-        let commands = [
-            MutationCommand::Insert(InsertCommand {
-                entity: "User".into(),
-                values: Default::default(),
-                trace_chain: vec![trace.clone()],
-            }),
-            MutationCommand::Update(UpdateCommand::new("User", 1_u64)),
-            MutationCommand::Delete(DeleteCommand::new("User", 1_u64)),
-            MutationCommand::Recover(RecoverCommand::new("User", 1_u64, -1)),
-        ];
-        for command in commands {
-            let request = command.request("review user changes").unwrap();
-            assert_eq!(request.comment(), "review user changes");
+        use teaql_core::TraceKind;
+        for kind in [TraceKind::Entity, TraceKind::Provider, TraceKind::Sql] {
+            let trace = TraceNode::typed(kind, "User", Some(1), "");
+            let mut commands = [
+                MutationCommand::Insert(InsertCommand::new("User")),
+                MutationCommand::Update(UpdateCommand::new("User", 1_u64)),
+                MutationCommand::Delete(DeleteCommand::new("User", 1_u64)),
+                MutationCommand::Recover(RecoverCommand::new("User", 1_u64, -1)),
+            ];
+            for command in &mut commands {
+                match command {
+                    MutationCommand::Insert(command) => command.trace_chain.push(trace.clone()),
+                    MutationCommand::Update(command) => command.trace_chain.push(trace.clone()),
+                    MutationCommand::Delete(command) => command.trace_chain.push(trace.clone()),
+                    MutationCommand::Recover(command) => command.trace_chain.push(trace.clone()),
+                    MutationCommand::Batch(_) => unreachable!(),
+                }
+            }
+            for command in commands {
+                // Put the actual tail in the input BEFORE capturing its intent.
+                let request = command.request(" review user changes ").unwrap();
+                assert_eq!(request.trace_chain().last(), Some(&trace));
+                assert_eq!(request.comment(), " review user changes ");
+                assert_eq!(
+                    request.execution_trace_chain()[0].comment,
+                    request.comment()
+                );
+            }
         }
     }
 
