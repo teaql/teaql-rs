@@ -89,6 +89,23 @@ for allocation_pass in 1 2; do
     fi
   done
   printf 'PASS native numeric partition replay %s (4 cases, including actual warm-cache execution)\n' "$allocation_pass"
+  membership_log="$trace_evidence_dir/native-membership-$allocation_pass.log"
+  membership_status=0
+  timeout 180s cargo test --locked --manifest-path "$example_dir/../../Cargo.toml" \
+    -p teaql-provider-sqlite --test relation_membership -- --show-output --test-threads=1 \
+    >"$membership_log" 2>&1 || membership_status=$?
+  if (( membership_status != 0 )); then
+    sed -n '1,240p' "$membership_log" >&2
+    exit "$membership_status"
+  fi
+  for membership_case in \
+    explicit_forward_projection_survives_reverse_inverse_wiring_with_aggregates \
+    future_aggregate_bindings_are_masked_before_parent_sql_for_all_result_shapes \
+    nested_typed_selection_executes_its_related_counts_once; do
+    rg -Fq "test $membership_case ... ok" "$membership_log"
+  done
+  rg -Fq 'test result: ok. 13 passed; 0 failed; 0 ignored' "$membership_log"
+  printf 'PASS native relation membership replay %s (13 cases, including nested metrics and projection ownership)\n' "$allocation_pass"
 done
 trace_library_before="$(generated_hash)"
 for trace_pass in 1 2; do
@@ -135,6 +152,17 @@ for trace_pass in 1 2; do
       exit 1
     fi
   done
+  rg -Fq 'TC-SQL-10 RUST GENERATED AGGREGATION PASSED' "$trace_log"
+  for aggregate_kind in OBSERVED NUMERIC FORWARD; do
+    if [[ "$(rg -c "^RUST_AGGREGATE_$aggregate_kind " "$trace_log")" != 4 ]]; then
+      printf 'FAIL incomplete generated aggregation %s in %s\n' "$aggregate_kind" "$trace_log" >&2
+      exit 1
+    fi
+  done
+  if [[ "$(rg -c '^RUST_AGGREGATE_MEMBERSHIP ' "$trace_log")" != 8 ]]; then
+    printf 'FAIL incomplete generated membership in %s\n' "$trace_log" >&2
+    exit 1
+  fi
   printf 'PASS generated Trace Chain replay %s (same database, no cleanup)\n' "$trace_pass"
 done
 trace_library_after="$(generated_hash)"

@@ -2,6 +2,7 @@
 //! Expected chains are test assertions only, never inputs to the runtime.
 use std::sync::{Arc, Mutex};
 mod batching;
+mod aggregation;
 mod checker_overlap;
 mod database_ids;
 mod failure;
@@ -697,6 +698,9 @@ async fn main() -> Outcome<()> {
     if std::env::var("TEAQL_TRACE_CHAIN_SCENARIO").as_deref() == Ok("ledger-override") {
         return ledger_override::ledger_override(&mut context, &capture, &observation).await;
     }
+    if std::env::var("TEAQL_TRACE_CHAIN_SCENARIO").as_deref() == Ok("aggregation") {
+        return aggregation::verify(&mut context, &capture, &observation).await;
+    }
     graph_privacy::loaded_graph_privacy(&context, &capture, &observation).await?;
     normative_graph(&context, &capture, &observation).await?;
     batching::same_type_batch(&mut context, &capture, &observation).await?;
@@ -709,6 +713,7 @@ async fn main() -> Outcome<()> {
     successful_readback::successful_graph_readback(&context, &capture, &observation).await?;
     streaming::scalar_streams(&context, &capture, &observation).await?;
     paging::paged_graph(&context, &capture, &observation).await?;
+    aggregation::verify(&mut context, &capture, &observation).await?;
     failure::failed_graph(&mut context, &capture, &observation).await?;
     failure::failed_readback(database_url.clone(), &capture, &observation).await?;
     graph_privacy_failure::rollback_and_retry(database_url.clone()).await?;

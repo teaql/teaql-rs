@@ -20,11 +20,11 @@ export CARGO_TARGET_DIR=/path/to/shared-cargo-target
 bash examples/trace-chain/verify.sh
 ```
 
-The script first runs eleven native allocation tests, six native identity
-graph tests, and four numeric-partition tests (including actual cold/warm cache
-execution) twice,
-then requires eleven generated scenario markers twice on one persistent
-database without cleanup. It retains all eight logs and prints their
+The script first runs fifteen native allocation tests, six native identity
+graph tests, four numeric-partition tests (including actual cold/warm cache
+execution), and thirteen relation-membership tests twice,
+then requires the generated scenario markers and all twenty structured aggregate
+observations twice on one persistent database without cleanup. It retains all ten logs and prints their
 directory, the database URL, and a relative-path SHA-256 manifest digest for the
 unchanged generated library.
 It also requires the generated Checker-overlap marker in both logging modes on
@@ -35,6 +35,22 @@ The generated ledger-precedence marker is also required in both logging modes;
 An existing database may be supplied with `TEAQL_TRACE_CHAIN_DATABASE`; retained
 logs may be directed with `TEAQL_TRACE_CHAIN_EVIDENCE_DIR`. The application adds
 fresh graphs on each start and never resets tables.
+
+`TEAQL_TRACE_CHAIN_SCENARIO=aggregation` selects the focused aggregate case.
+Four root/nested × logging combinations check related counts and ordinary
+numeric grouping; eight additionally load the reverse members with visible or
+filtered forward detail. Four independent full-detail reads must not widen the
+earlier NotLoaded views. The related count is 1 while list membership remains 2.
+Logging-on compares complete original request metadata and runtime-owned safe
+SQL paths; logging-off checks successful Q/E results and intentionally unrecorded
+diagnostics. It never forces capture or supplies expected trace frames.
+
+The native regressions cover inverse convenience wiring overriding explicit
+forward projections, future aggregate bindings leaking into the first parent
+SQL log, and nested typed selections losing their related metrics. Generated
+entities expose aliases through `Entity::into_values`, not `BaseEntity::dynamic_i64`.
+Runtime and Assist changes belong to the existing issues linked below. Source
+verification is not an immutable Registry replay or a public release claim.
 
 `Cargo.toml` resolves every TeaQL dependency to this repository through local
 paths and patches. This is the local-source gate, not an internal/public artifact

@@ -4032,6 +4032,7 @@ mod tests {
             group_by: Vec::new(),
             relations: Vec::new(),
             facets: Vec::new(),
+            relation_aggregates: Vec::new(),
             aggregation_cache: None,
             comment: None,
             purpose: None,

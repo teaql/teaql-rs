@@ -454,6 +454,9 @@ pub struct SelectQuery {
     /// Query-only Facet selections retained across ordinary relation planning.
     /// The relation loader executes these, never the physical SQL compiler.
     pub facets: Vec<crate::request::FacetRequest>,
+    /// Runtime-assembled related metrics retained by nested typed selections.
+    /// These are not physical SQL aggregates or relation projection requests.
+    pub relation_aggregates: Vec<RelationAggregate>,
     pub aggregation_cache: Option<AggregationCacheOptions>,
     pub comment: Option<String>,
     /// Explicit request purpose; trace nodes are diagnostic lineage, not intent.
@@ -490,6 +493,7 @@ impl SelectQuery {
             group_by: Vec::new(),
             relations: Vec::new(),
             facets: Vec::new(),
+            relation_aggregates: Vec::new(),
             aggregation_cache: None,
             comment: None,
             purpose: None,

@@ -203,7 +203,10 @@ async fn verify(filtered: bool, threshold: usize, aliased: bool, sibling: bool, 
         if filtered {
             assert_eq!(
                 child.get(forward),
-                Some(&Value::object(BTreeMap::from([("id".into(), Value::I64(100))]))),
+                Some(&Value::object(BTreeMap::from([(
+                    "id".into(),
+                    Value::I64(100)
+                )]))),
                 "filtered detail retains the real identity without loading its fields"
             );
         } else {
@@ -364,9 +367,13 @@ async fn verify_aggregate(aliased: bool, filtered: bool, typed: bool) {
                 "aggregate membership must use the original scalar FK"
             );
             if filtered && !typed {
-                assert_eq!(row.get(forward), Some(&Value::object(BTreeMap::from([
-                    ("id".into(), Value::I64(100)),
-                ]))));
+                assert_eq!(
+                    row.get(forward),
+                    Some(&Value::object(BTreeMap::from([(
+                        "id".into(),
+                        Value::I64(100)
+                    ),])))
+                );
             }
         }
         let logs = context.sql_logs();
@@ -475,40 +482,396 @@ fn typed_filtered_reference_has_an_edge_owned_identity_only_view() {
                 let forward = if aliased { "parent_id" } else { "parent" };
                 let query = PurposedSelectQuery::new(
                     SelectQuery::new("MembershipChild")
-                        .relation_query(forward, SelectQuery::new("MembershipParent")
-                            .filter(Expr::eq("name", "ABSENT")))
+                        .relation_query(
+                            forward,
+                            SelectQuery::new("MembershipParent").filter(Expr::eq("name", "ABSENT")),
+                        )
                         .relation_query("second_parent", SelectQuery::new("MembershipParent"))
-                        .limit(10).comment("load filtered and visible references to the same parent"),
+                        .limit(10)
+                        .comment("load filtered and visible references to the same parent"),
                     "preserve identity without leaking sibling detail",
                 );
-                let repo = context.entity_data_service::<Executor>("MembershipChild").unwrap();
+                let repo = context
+                    .entity_data_service::<Executor>("MembershipChild")
+                    .unwrap();
                 let rows = if optimized {
-                    repo.fetch_enhanced_entities::<MembershipChild>(&query).await.unwrap()
+                    repo.fetch_enhanced_entities::<MembershipChild>(&query)
+                        .await
+                        .unwrap()
                 } else {
                     // A relation aggregate selects the general flat graph path;
                     // fetch_entities intentionally constructs no identity graph.
                     let aggregates = [teaql_core::RelationAggregate::new(
-                        "second_parent", "parent_count",
-                        SelectQuery::new("MembershipParent").count("value"), true,
+                        "second_parent",
+                        "parent_count",
+                        SelectQuery::new("MembershipParent").count("value"),
+                        true,
                     )];
                     repo.fetch_enhanced_entities_with_relation_aggregates::<MembershipChild>(
-                        &query, &aggregates,
-                    ).await.unwrap()
+                        &query,
+                        &aggregates,
+                    )
+                    .await
+                    .unwrap()
                 };
                 assert_eq!(rows.len(), 2);
                 for child in rows {
                     let id = child.row.get("id").and_then(Value::try_u64).unwrap();
-                    let view = child.state.resolve_relation_option::<MembershipParent>(
-                        "MembershipChild", id, forward,
-                    ).expect("filtered edge must not fall back to the shared identity table")
-                     .as_ref().expect("real FK cannot become a null relationship");
+                    let view = child
+                        .state
+                        .resolve_relation_option::<MembershipParent>("MembershipChild", id, forward)
+                        .expect("filtered edge must not fall back to the shared identity table")
+                        .as_ref()
+                        .expect("real FK cannot become a null relationship");
                     assert_eq!(view.row.get("id").and_then(Value::try_i64), Some(100));
                     assert!(!teaql_core::Entity::is_field_loaded(view, "name"));
                     assert!(!view.row.contains_key("version"));
-                    assert_eq!(child.row.get("parent_id").and_then(Value::try_i64), Some(100));
+                    assert_eq!(
+                        child.row.get("parent_id").and_then(Value::try_i64),
+                        Some(100)
+                    );
                     let visible = child.state.resolve_entity::<MembershipParent>(100).unwrap();
-                    assert_eq!(visible.row.get("name"), Some(&Value::Text(PRIVATE_NAME.into())));
+                    assert_eq!(
+                        visible.row.get("name"),
+                        Some(&Value::Text(PRIVATE_NAME.into()))
+                    );
                 }
+            }
+        }
+    });
+}
+
+#[test]
+fn explicit_forward_projection_survives_reverse_inverse_wiring_with_aggregates() {
+    futures_executor::block_on(async {
+        for aliased in [false, true] {
+            for filtered in [false, true] {
+                for aggregated in [false, true] {
+                    for logging in [false, true] {
+                        let mut context = setup(aliased).await;
+                        if !logging {
+                            context.disable_sql_log();
+                        }
+                        let forward = if aliased { "parent_id" } else { "parent" };
+                        let query = PurposedSelectQuery::new(
+                            SelectQuery::new("MembershipParent")
+                                .project("id")
+                                .project("version")
+                                .limit(10)
+                                .relation_query(
+                                    "children",
+                                    SelectQuery::new("MembershipChild")
+                                        .relation_query(
+                                            forward,
+                                            SelectQuery::new("MembershipParent")
+                                                .filter(Expr::eq(
+                                                    "id",
+                                                    if filtered { 0_i64 } else { 100_i64 },
+                                                ))
+                                                .limit(10),
+                                        )
+                                        .limit(10),
+                                )
+                                .comment("inspect explicitly selected parent detail"),
+                            "inverse convenience must not replace an explicit projection",
+                        );
+                        let repo = context
+                            .entity_data_service::<Executor>("MembershipParent")
+                            .unwrap();
+                        let aggregates = [teaql_core::RelationAggregate::new(
+                            "children",
+                            "selected_count",
+                            SelectQuery::new("MembershipChild")
+                                .filter(Expr::eq("name", "first"))
+                                .count("value"),
+                            true,
+                        )];
+                        let rows = if aggregated {
+                            repo.fetch_enhanced_entities_with_relation_aggregates::<MembershipParent>(&query, &aggregates).await.unwrap()
+                        } else {
+                            repo.fetch_enhanced_entities::<MembershipParent>(&query)
+                                .await
+                                .unwrap()
+                        };
+                        assert_eq!(rows.len(), 1);
+                        let parent = &rows.data[0];
+                        assert!(!teaql_core::Entity::is_field_loaded(parent, "name"));
+                        if aggregated {
+                            assert_eq!(
+                                parent.row.get("selected_count").and_then(Value::try_i64),
+                                Some(1)
+                            );
+                        }
+                        let children = parent
+                            .state
+                            .resolve_relation_list::<MembershipChild>(
+                                "MembershipParent",
+                                100,
+                                "children",
+                            )
+                            .unwrap();
+                        assert_eq!(children.len(), 2);
+                        for child in &children.data {
+                            let id = child.row.get("id").and_then(Value::try_u64).unwrap();
+                            assert_eq!(
+                                child.row.get("parent_id").and_then(Value::try_i64),
+                                Some(100)
+                            );
+                            let owned = child.state.resolve_relation_option::<MembershipParent>(
+                                "MembershipChild",
+                                id,
+                                forward,
+                            );
+                            let shared = child.state.resolve_entity::<MembershipParent>(100);
+                            let view = owned
+                                .as_ref()
+                                .and_then(|v| v.as_ref())
+                                .or(shared.as_deref())
+                                .unwrap();
+                            assert_eq!(view.row.get("id").and_then(Value::try_i64), Some(100));
+                            assert_eq!(
+                                teaql_core::Entity::is_field_loaded(view, "name"),
+                                !filtered,
+                                "explicit forward detail must survive inverse convenience wiring"
+                            );
+                            if !filtered {
+                                assert_eq!(
+                                    view.row.get("name"),
+                                    Some(&Value::Text(PRIVATE_NAME.into()))
+                                );
+                            }
+                        }
+                        println!(
+                            "EXPLICIT_FORWARD_PROJECTION aliased={aliased} filtered={filtered} aggregated={aggregated} logging={logging}"
+                        );
+                    }
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn future_aggregate_bindings_are_masked_before_parent_sql_for_all_result_shapes() {
+    futures_executor::block_on(async {
+        for logging in [false, true] {
+            for shape in ["rows", "typed", "owned"] {
+                let mut context = setup(false).await;
+                if !logging {
+                    context.disable_sql_log();
+                }
+                let query = PurposedSelectQuery::new(
+                    SelectQuery::new("MembershipChild")
+                        .limit(10)
+                        .comment(format!("inspect {PRIVATE_NAME}")),
+                    format!("verify aggregate {PRIVATE_NAME}"),
+                );
+                let aggregates = [teaql_core::RelationAggregate::new(
+                    "parent",
+                    "private_count",
+                    SelectQuery::new("MembershipParent")
+                        .filter(Expr::eq("name", PRIVATE_NAME))
+                        .count("value"),
+                    true,
+                )];
+                let repo = context
+                    .entity_data_service::<Executor>("MembershipChild")
+                    .unwrap();
+                let values: Vec<_> = match shape {
+                    "rows" => {
+                        repo.fetch_smart_list_with_relation_aggregates(&query, &aggregates)
+                            .await
+                            .unwrap()
+                            .data
+                    }
+                    "typed" => repo
+                        .fetch_enhanced_entities_with_relation_aggregates::<MembershipChild>(
+                            &query,
+                            &aggregates,
+                        )
+                        .await
+                        .unwrap()
+                        .data
+                        .into_iter()
+                        .map(|row| row.row)
+                        .collect(),
+                    "owned" => repo
+                        .fetch_enhanced_entities_with_relation_aggregates_owned::<MembershipChild>(
+                            query,
+                            &aggregates,
+                        )
+                        .await
+                        .unwrap()
+                        .data
+                        .into_iter()
+                        .map(|row| row.row)
+                        .collect(),
+                    _ => unreachable!(),
+                };
+                assert_eq!(values.len(), 2);
+                for row in values {
+                    assert_eq!(row.get("private_count").and_then(Value::try_i64), Some(1));
+                }
+                let logs = context.sql_logs();
+                assert_eq!(logs.len(), if logging { 2 } else { 0 });
+                for entry in &logs {
+                    assert_eq!(entry.comment.as_deref(), Some("inspect [REDACTED]"));
+                    assert_eq!(
+                        entry.purpose.as_deref(),
+                        Some("verify aggregate [REDACTED]")
+                    );
+                    assert!(!format!("{entry:?}").contains(PRIVATE_NAME));
+                }
+                context.clear_sql_logs();
+                let independent = PurposedSelectQuery::new(
+                    SelectQuery::new("MembershipChild")
+                        .limit(10)
+                        .comment(format!("independent {PRIVATE_NAME}")),
+                    "no aggregate in this request",
+                );
+                assert_eq!(
+                    repo.fetch_enhanced_entities::<MembershipChild>(&independent)
+                        .await
+                        .unwrap()
+                        .len(),
+                    2
+                );
+                if logging {
+                    assert_eq!(
+                        context.sql_logs()[0].comment.as_deref(),
+                        Some(format!("independent {PRIVATE_NAME}").as_str())
+                    );
+                }
+                println!("FUTURE_AGGREGATE_PRIVACY shape={shape} logging={logging}");
+            }
+        }
+    });
+}
+
+#[test]
+fn nested_typed_selection_executes_its_related_counts_once() {
+    futures_executor::block_on(async {
+        for logging in [false, true] {
+            for cyclic in [false, true] {
+                let mut context = setup(false).await;
+                if !logging {
+                    context.disable_sql_log();
+                }
+                let mut selected = SelectQuery::new("MembershipParent")
+                    .project("id")
+                    .project("version")
+                    .limit(10);
+                if cyclic {
+                    selected = selected.relation_query(
+                        "children",
+                        SelectQuery::new("MembershipChild")
+                            .limit(10)
+                            .relation_query(
+                                "parent",
+                                SelectQuery::new("MembershipParent").limit(10),
+                            ),
+                    );
+                }
+                let mut nested = teaql_core::request::QuerySelection::new(selected);
+                nested.query_options.relation_aggregates.push(
+                    teaql_core::request::RelationAggregate::new(
+                        "children",
+                        "selected_count",
+                        SelectQuery::new("MembershipChild")
+                            .filter(Expr::eq("name", "first"))
+                            .count("value"),
+                        true,
+                    ),
+                );
+                let query = PurposedSelectQuery::new(
+                    SelectQuery::new("MembershipChild")
+                        .limit(10)
+                        .relation_query("parent", nested.into_query())
+                        .comment("load nested related count"),
+                    "typed selections must preserve related metrics",
+                );
+                let repo = context
+                    .entity_data_service::<Executor>("MembershipChild")
+                    .unwrap();
+                let rows = repo
+                    .fetch_enhanced_entities::<MembershipChild>(&query)
+                    .await
+                    .unwrap();
+                assert_eq!(rows.len(), 2);
+                for child in &rows.data {
+                    let owner_id = child.row.get("id").and_then(Value::try_u64).unwrap();
+                    let owned = child.state.resolve_relation_option::<MembershipParent>(
+                        "MembershipChild",
+                        owner_id,
+                        "parent",
+                    );
+                    let shared = child.state.resolve_entity::<MembershipParent>(100);
+                    let parent = owned
+                        .as_ref()
+                        .and_then(|value| value.as_ref())
+                        .or(shared)
+                        .unwrap();
+                    assert_eq!(
+                        parent.row.get("selected_count").and_then(Value::try_i64),
+                        Some(1)
+                    );
+                    assert!(!teaql_core::Entity::is_field_loaded(parent, "name"));
+                    if cyclic {
+                        let members = parent
+                            .state
+                            .resolve_relation_list::<MembershipChild>(
+                                "MembershipParent",
+                                100,
+                                "children",
+                            )
+                            .unwrap();
+                        assert_eq!(members.len(), 2);
+                        for member in &members.data {
+                            let detail = member
+                                .state
+                                .resolve_entity::<MembershipParent>(100)
+                                .unwrap();
+                            assert_eq!(
+                                detail.row.get("name"),
+                                Some(&Value::Text(PRIVATE_NAME.into()))
+                            );
+                        }
+                    }
+                }
+                let logs = context.sql_logs();
+                assert_eq!(
+                    logs.len(),
+                    if logging {
+                        if cyclic { 5 } else { 3 }
+                    } else {
+                        0
+                    }
+                );
+                if logging {
+                    assert_eq!(
+                        logs.iter()
+                            .filter(|entry| entry.sql.to_ascii_uppercase().contains("COUNT("))
+                            .count(),
+                        1
+                    );
+                    let count = logs
+                        .iter()
+                        .find(|entry| entry.sql.to_ascii_uppercase().contains("COUNT("))
+                        .unwrap();
+                    let edges: Vec<_> = count
+                        .trace_path
+                        .iter()
+                        .filter(|node| node.kind == teaql_core::TraceKind::Relation)
+                        .map(|node| node.comment.as_str())
+                        .collect();
+                    assert_eq!(
+                        edges,
+                        ["MembershipChild.parent", "MembershipParent.children"]
+                    );
+                }
+                println!(
+                    "NESTED_TYPED_AGGREGATE logging={logging} cyclic={cyclic} children=2 count=1"
+                );
             }
         }
     });

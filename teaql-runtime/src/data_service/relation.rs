@@ -727,6 +727,14 @@ where
                             && relation.foreign_key == plan.local_key
                     })
                 })
+                // An explicitly selected inverse owns its projection and filter.
+                // Do not replace it with the minimally loaded parent snapshot.
+                .filter(|relation| {
+                    !plan
+                        .children
+                        .iter()
+                        .any(|child| child.relation_name == relation.name)
+                })
                 .map(|relation| (relation.name.clone(), relation.many));
 
             let mut buckets: BTreeMap<FlatIdentityKey, Vec<CompactRow>> = BTreeMap::new();
@@ -871,6 +879,49 @@ where
             let child_rows = self
                 .fetch_relation_rows(&child_repo, plan, parent_rows, true)
                 .await?;
+            // Install a forward ancestor before descendants. A descendant may
+            // explicitly reload the same identity with a richer projection;
+            // installing the ancestor last would replace that fetched detail.
+            let installed_before_children = !plan.many && plan.local_key != "id";
+            if installed_before_children {
+                self.install_compact_flat_relation(
+                    parent_rows,
+                    plan,
+                    child_rows.clone(),
+                    root,
+                    graph,
+                )
+                .await?;
+                // The selected ancestor also owns an edge view. Descendants
+                // may fetch the same identity with different fields/metrics;
+                // neither view may replace the other's explicit projection.
+                for parent in parent_rows {
+                    let owner_id = parent.get("id").and_then(Value::try_u64).ok_or_else(|| {
+                        DataServiceError::Entity(teaql_core::EntityError::new(
+                            &plan.parent_entity,
+                            "forward relation owner is missing its u64 id",
+                        ))
+                    })?;
+                    let rows = child_rows
+                        .iter()
+                        .filter(|row| row.get(&plan.foreign_key) == parent.get(&plan.local_key))
+                        .cloned()
+                        .collect();
+                    self.data_service
+                        .metadata
+                        .context
+                        .decode_compact_entity_option_into_graph(
+                            &plan.target_entity,
+                            rows,
+                            root,
+                            graph,
+                            &plan.parent_entity,
+                            owner_id,
+                            &plan.relation_name,
+                        )
+                        .map_err(DataServiceError::Entity)?;
+                }
+            }
 
             for child_plan in &plan.children {
                 if child_plan.children.is_empty() {
@@ -884,8 +935,12 @@ where
                 }
             }
 
-            self.install_compact_flat_relation(parent_rows, plan, child_rows, root, graph)
-                .await
+            if installed_before_children {
+                Ok(())
+            } else {
+                self.install_compact_flat_relation(parent_rows, plan, child_rows, root, graph)
+                    .await
+            }
         })
     }
 
@@ -920,9 +975,11 @@ where
         // identity table. Building owner buckets and then removing them one parent at a time
         // creates a map and one Vec per distinct target without adding information.
         if !plan.many && plan.local_key != "id" {
-            let fetched_keys: BTreeSet<_> = child_rows.iter()
+            let fetched_keys: BTreeSet<_> = child_rows
+                .iter()
                 .filter_map(|row| row.get(&plan.foreign_key))
-                .map(FlatIdentityKey::from_value).collect();
+                .map(FlatIdentityKey::from_value)
+                .collect();
             if plan
                 .query
                 .as_ref()
@@ -946,8 +1003,7 @@ where
                     );
                 }
             }
-            self
-                .data_service
+            self.data_service
                 .metadata
                 .context
                 .decode_compact_entity_batch_into_graph(
@@ -958,8 +1014,10 @@ where
                 )
                 .map_err(DataServiceError::Entity)?;
             for parent in parent_rows {
-                if !parent.get(&plan.local_key).is_some_and(|key|
-                    fetched_keys.contains(&FlatIdentityKey::from_value(key))) {
+                if !parent
+                    .get(&plan.local_key)
+                    .is_some_and(|key| fetched_keys.contains(&FlatIdentityKey::from_value(key)))
+                {
                     self.install_unfetched_forward_detail(parent, plan, root, graph)?;
                 }
             }
@@ -1059,20 +1117,37 @@ where
         root: &crate::EntityRuntimeState,
         graph: &mut crate::EntityGraphBuilder,
     ) -> Result<(), DataServiceError<E::Error>> {
-        let owner_id = parent.get("id").and_then(Value::try_u64).ok_or_else(||
+        let owner_id = parent.get("id").and_then(Value::try_u64).ok_or_else(|| {
             DataServiceError::Entity(teaql_core::EntityError::new(
-                &plan.parent_entity, "forward relation owner is missing its u64 id")))?;
-        let rows = parent.get(&plan.local_key)
+                &plan.parent_entity,
+                "forward relation owner is missing its u64 id",
+            ))
+        })?;
+        let rows = parent
+            .get(&plan.local_key)
             .filter(|key| !matches!(key, Value::Null | Value::TypedNull(_)))
-            .map(|key| vec![CompactRow::from_map(BTreeMap::from([(
-                plan.foreign_key.clone(), key.clone(),
-            )]))]).unwrap_or_default();
+            .map(|key| {
+                vec![CompactRow::from_map(BTreeMap::from([(
+                    plan.foreign_key.clone(),
+                    key.clone(),
+                )]))]
+            })
+            .unwrap_or_default();
         // This is an edge-owned view, not a shared identity-table entry. A
         // sibling may load the same entity fully without widening this view.
-        self.data_service.metadata.context.decode_compact_entity_option_into_graph(
-            &plan.target_entity, rows, root, graph, &plan.parent_entity, owner_id,
-            &plan.relation_name,
-        ).map_err(DataServiceError::Entity)
+        self.data_service
+            .metadata
+            .context
+            .decode_compact_entity_option_into_graph(
+                &plan.target_entity,
+                rows,
+                root,
+                graph,
+                &plan.parent_entity,
+                owner_id,
+                &plan.relation_name,
+            )
+            .map_err(DataServiceError::Entity)
     }
 
     fn relation_child_repo(&self, plan: &RelationLoadPlan) -> EntityDataService<'a, E> {
@@ -1375,11 +1450,13 @@ where
             // convenience wiring on this identity-only row: its other fields
             // (including reverse lists) were not loaded.
             if !plan.many && related.is_empty() {
-                if let Some(key) = keys.get(&plan.local_key).filter(|key| {
-                    !matches!(key, Value::Null | Value::TypedNull(_))
-                }) {
+                if let Some(key) = keys
+                    .get(&plan.local_key)
+                    .filter(|key| !matches!(key, Value::Null | Value::TypedNull(_)))
+                {
                     related.push(CompactRow::from_map(BTreeMap::from([(
-                        plan.foreign_key.clone(), key.clone(),
+                        plan.foreign_key.clone(),
+                        key.clone(),
                     )])));
                 }
             }

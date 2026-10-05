@@ -130,8 +130,11 @@ where
             }
 
             if !relation.many && relation.local_key != "id" {
-                if let Some(key) = child_records.first()
-                    .and_then(|child| child.get(&relation.foreign_key)).cloned() {
+                if let Some(key) = child_records
+                    .first()
+                    .and_then(|child| child.get(&relation.foreign_key))
+                    .cloned()
+                {
                     record.insert(relation.local_key.clone(), key);
                 }
             }
@@ -173,13 +176,24 @@ where
             // An identity-only forward view is edge-owned. Publishing it to
             // the shared table could either hide a visible sibling's detail or
             // expose that sibling's detail through this filtered reference.
-            if child_records.len() == 1 && child_records[0].len() == 1
-                && child_records[0].contains_key(&relation.foreign_key) {
-                let owner_id = record.get("id").and_then(Value::try_u64).ok_or_else(||
-                    teaql_core::EntityError::new(entity_name, "forward relation owner is missing its u64 id"))?;
+            if child_records.len() == 1
+                && child_records[0].len() == 1
+                && child_records[0].contains_key(&relation.foreign_key)
+            {
+                let owner_id = record.get("id").and_then(Value::try_u64).ok_or_else(|| {
+                    teaql_core::EntityError::new(
+                        entity_name,
+                        "forward relation owner is missing its u64 id",
+                    )
+                })?;
                 context.decode_compact_entity_option_into_graph(
-                    &relation.target_entity, child_records, root, graph, entity_name,
-                    owner_id, &relation.name,
+                    &relation.target_entity,
+                    child_records,
+                    root,
+                    graph,
+                    entity_name,
+                    owner_id,
+                    &relation.name,
                 )?;
                 continue;
             }
@@ -473,6 +487,7 @@ where
         // `fetch_prepared_all(&query)` cloned the complete SelectQuery (including
         // projections and expression trees) twice for every probe.
         if query.continuous_page_fetch.is_none()
+            && query.relation_aggregates.is_empty()
             && query.object_group_bys.is_empty()
             && query.child_enhancements.is_empty()
             && query.relations.is_empty()
@@ -1008,9 +1023,21 @@ where
         query: &SelectQuery,
         relation_aggregates: &[RelationAggregate],
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
+        if !query.relation_aggregates.is_empty() {
+            let mut execution = query.clone();
+            let mut combined = std::mem::take(&mut execution.relation_aggregates);
+            // Generated root requests also pass these selections explicitly;
+            // execute each identical declaration once, not once per transport.
+            for aggregate in relation_aggregates {
+                if !combined.contains(aggregate) {
+                    combined.push(aggregate.clone());
+                }
+            }
+            return Box::pin(self.fetch_prepared_all_with_aggregates(&execution, &combined)).await;
+        }
         if self.request_intent.is_none() {
             return Box::pin(
-                self.query_scoped_service(query)
+                self.query_scoped_service_with_aggregates(query, relation_aggregates)
                     .map_err(DataServiceError::Runtime)?
                     .fetch_prepared_all_with_aggregates(query, relation_aggregates),
             )
@@ -1270,7 +1297,7 @@ where
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         if self.request_intent.is_none() {
             return Box::pin(
-                self.query_scoped_service(query)
+                self.query_scoped_service_with_aggregates(query, relation_aggregates)
                     .map_err(DataServiceError::Runtime)?
                     .fetch_all_with_relation_aggregates_internal(query, relation_aggregates),
             )
@@ -1397,7 +1424,7 @@ where
         Box::pin(async move {
             if self.request_intent.is_none() {
                 return self
-                    .query_scoped_service(&query)
+                    .query_scoped_service_with_aggregates(&query, relation_aggregates)
                     .map_err(DataServiceError::Runtime)?
                     .fetch_enhanced_entities_with_relation_aggregates_prepared(
                         query,
@@ -1407,6 +1434,7 @@ where
             }
             let (mut query, id_set_total_count) = self.prepare_id_set_page(query).await?;
             if relation_aggregates.is_empty()
+                && query.relation_aggregates.is_empty()
                 && query.continuous_page_fetch.is_none()
                 && query.object_group_bys.is_empty()
                 && query.child_enhancements.is_empty()
@@ -1434,6 +1462,7 @@ where
             }
             let root_query = query;
             if relation_aggregates.is_empty()
+                && root_query.relation_aggregates.is_empty()
                 && root_query.continuous_page_fetch.is_none()
                 && root_query.object_group_bys.is_empty()
                 && root_query.child_enhancements.is_empty()
@@ -1598,14 +1627,13 @@ where
         query: &PurposedSelectQuery,
         relation_aggregates: &[RelationAggregate],
     ) -> Result<SmartList<teaql_core::CompactRow>, DataServiceError<E::Error>> {
-        let scoped = query
-            .diagnostic_source()
-            .map(|source| self.query_scoped_service(source))
-            .transpose()
+        let scoped = self
+            .query_scoped_service_with_aggregates(
+                query.diagnostic_source().unwrap_or(query.as_query()),
+                relation_aggregates,
+            )
             .map_err(DataServiceError::Runtime)?;
         scoped
-            .as_ref()
-            .unwrap_or(self)
             .fetch_smart_list_with_relation_aggregates_internal(
                 query.as_query(),
                 relation_aggregates,
@@ -1662,14 +1690,13 @@ where
     where
         T: Entity,
     {
-        let scoped = query
-            .diagnostic_source()
-            .map(|source| self.query_scoped_service(source))
-            .transpose()
+        let scoped = self
+            .query_scoped_service_with_aggregates(
+                query.diagnostic_source().unwrap_or(query.as_query()),
+                relation_aggregates,
+            )
             .map_err(DataServiceError::Runtime)?;
         scoped
-            .as_ref()
-            .unwrap_or(self)
             .fetch_enhanced_entities_with_relation_aggregates_internal(
                 query.as_query(),
                 relation_aggregates,
@@ -1686,14 +1713,13 @@ where
     where
         T: Entity,
     {
-        let scoped = query
-            .diagnostic_source()
-            .map(|source| self.query_scoped_service(source))
-            .transpose()
+        let scoped = self
+            .query_scoped_service_with_aggregates(
+                query.diagnostic_source().unwrap_or(query.as_query()),
+                relation_aggregates,
+            )
             .map_err(DataServiceError::Runtime)?;
         scoped
-            .as_ref()
-            .unwrap_or(self)
             .fetch_enhanced_entities_with_relation_aggregates_owned_internal(
                 query.into_query(),
                 relation_aggregates,
@@ -1959,6 +1985,24 @@ where
         }
     }
 
+    fn query_scoped_service_with_aggregates(
+        &self,
+        query: &SelectQuery,
+        aggregates: &[RelationAggregate],
+    ) -> Result<EntityDataService<'a, E>, RuntimeError> {
+        if aggregates.is_empty() || !self.data_service.metadata.capture_execution_metadata() {
+            return self.query_scoped_service(query);
+        }
+        // Aggregate selection is an execution argument, not a query relation.
+        // Classify its bindings before parent SQL without executing extra work
+        // or inserting fabricated relation frames into the real request.
+        let mut source = query.clone();
+        source
+            .child_enhancements
+            .extend(aggregates.iter().map(|aggregate| aggregate.query.clone()));
+        self.query_scoped_service(&source)
+    }
+
     fn query_scoped_service(
         &self,
         query: &SelectQuery,
@@ -1983,6 +2027,12 @@ where
                         .filter_map(|relation| relation.query.as_deref()),
                 );
                 pending.extend(query.child_enhancements.iter());
+                pending.extend(
+                    query
+                        .relation_aggregates
+                        .iter()
+                        .map(|aggregate| &aggregate.query),
+                );
                 pending.extend(query.object_group_bys.iter().map(|group| &group.query));
             }
         }
