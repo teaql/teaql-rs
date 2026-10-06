@@ -2,6 +2,14 @@
 set -euo pipefail
 
 example_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_dir="$(cd "$example_dir/../.." && pwd)"
+# A cross-checkout shared Cargo target has twice failed allocation/lineage tests
+# while the exact same source passes in an independent target. The specific
+# cache entry is not attributed here. Source verification owns its namespace.
+# Preserve compiled outputs and databases, and permit an explicit private target.
+export CARGO_TARGET_DIR="${TEAQL_TRACE_CHAIN_CARGO_TARGET_DIR:-$repo_dir/target/trace-chain-verification}"
+mkdir -p "$CARGO_TARGET_DIR"
+printf 'SOURCE_VERIFICATION_TARGET %s\n' "$CARGO_TARGET_DIR"
 trace_evidence_dir="${TEAQL_TRACE_CHAIN_EVIDENCE_DIR:-$(mktemp -d /tmp/teaql-trace-chain-evidence-XXXXXX)}"
 mkdir -p "$trace_evidence_dir"
 export TEAQL_TRACE_CHAIN_DATABASE="${TEAQL_TRACE_CHAIN_DATABASE:-sqlite:file:$trace_evidence_dir/trace-chain.sqlite}"
