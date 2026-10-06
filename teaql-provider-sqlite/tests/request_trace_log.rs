@@ -514,7 +514,7 @@ fn native_nested_batch_inherits_root_intent_and_preserves_local_lineage() {
             .filter(|statement| statement.operation != DataServiceOperation::Query)
             .collect();
         assert_eq!(writes.len(), 2);
-        for (pair, expected) in leaves.chunks_exact(2).zip([
+        for (pair, expected) in leaves.as_chunks::<2>().0.iter().zip([
             vec![original.comment(), "remove stale probe"],
             vec![
                 original.comment(),
