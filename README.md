@@ -59,6 +59,65 @@ project can turn a compact domain model into a typed Rust service crate with
 entity structs, `Q::merchants()`-style query builders, behavior/checker hooks,
 and audited graph-save entrypoints.
 
+### Required request intent on the development branch
+
+Query and Mutation Requests own a non-blank `comment`; Query also owns a
+non-blank `purpose`. Generated queries supply these through
+`.comment("what").purpose("why")`, and generated writes transfer
+`.audit_as("reason")` into the Mutation Request. Callers do not supply a second
+audit-reason field. Missing intent fails before provider access even when SQL
+logging is disabled. Context and trace frames cannot fill a missing comment.
+
+Low-level adapters use validated `QueryIntent` and `MutationIntent` values.
+Mutation payloads are now `MutationCommand`; construct their envelope with
+`MutationCommand::Insert(command).request("reason")?` rather than the old
+`MutationRequest::Insert(command)` variant. Batches require their own root
+comment. Derived relation and Facet queries inherit root intent; mutation
+readback inherits its originating reason and has an explicit runtime purpose.
+
+Native batch SQL and readback inherit the batch's root Comment while retaining
+each item's local trace lineage. Safe logs account for sensitive values in
+other batch items, including prior values; execution bindings and caller intent
+are unchanged. This is native request coverage, not completion of the full
+generated Trace Chain graph ([#239](https://github.com/teaql/teaql-rs/issues/239)).
+
+The dedicated [generated Trace Chain example](examples/trace-chain/README.md)
+now checks the six-entity mixed graph, three relation levels, concurrent saves,
+same-type insert/update batches and write/readback failures at actual command,
+SQL and committed safe-audit boundaries. Existing runtime telemetry confirms
+the prepared batch path; each batch currently executes separate physical
+statements, not one bulk SQL statement. Separate SQLite lower-ledger tests verify IDs allocated during save;
+immutable scope rebinding preserves ancestors and does not rewrite mutation
+payloads or put lineage on Context. Full case and internal-artifact gates remain
+incomplete; these are local source results, not a release claim.
+
+The controlled example gate also runs a small native SQLite relation fixture.
+Nested row hydration executes each requested branch once for the child batch,
+retains original attachment keys across filtered/aliased references and sibling
+loads, and does not replace explicitly filtered null with an inverse reference.
+Its 32 combinations cover window/probe loading and diagnostic logging on/off;
+logged cases assert real SQL count and exact runtime-created relation paths.
+This native fixture is distinct from generated flat identity-graph acceptance.
+Relation aggregates additionally retain pre-hydration keys across filtered
+forward references and aggregate aliases. Their SQL uses the model's relation
+name and original request root. Native row/typed-flat checks cover sixteen
+logging/filter/name combinations plus a sequential alias regression; these do
+not prove filtered visibility when separate graph branches share a target.
+
+SQLite now holds an operation-owned connection lease for the entire transaction.
+Its low-level `SqlTransactionTransport::Tx` is a non-cloneable
+`SqliteTransaction`, not a cloned `SqliteMutationExecutor`; use the transaction
+returned by `begin_sql()` for its I/O. Drop/cancellation rolls back before
+releasing the lease. Generated Context Q/E/save calls keep their spelling.
+See the [SQLite provider guide](teaql-provider-sqlite/README.md) for the
+concurrency boundary ([#240](https://github.com/teaql/teaql-rs/issues/240)).
+
+This branch is not a published artifact. The changed Rust Facet template and
+the runtime must be verified together before adoption. The retained request
+tests are `teaql-data-service/tests/request_intent_vectors.rs` and
+`teaql-runtime/tests/trace_chain_requests.rs`; run the complete local example
+gate with `./examples/verify-runtime-examples.sh`.
+
 TeaQL is not trying to be a general replacement for Diesel, SeaORM, or direct
 `sqlx` use:
 

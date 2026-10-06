@@ -3,6 +3,8 @@ mod cache;
 mod context;
 mod executor;
 mod graph;
+#[cfg(test)]
+mod graph_readback_tests;
 mod helpers;
 mod relation;
 mod resolved;

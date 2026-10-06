@@ -181,6 +181,9 @@ where
         &self,
         node: GraphNode,
     ) -> Result<GraphMutationPlan, DataServiceError<E::Error>> {
+        let intent = teaql_core::MutationIntent::from_optional(node.comment.as_deref())
+            .map_err(RuntimeError::from)
+            .map_err(DataServiceError::Runtime)?;
         if node.entity != self.entity {
             return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
                 "entity data service {} cannot plan graph root {}",
@@ -189,7 +192,8 @@ where
         }
         let mut node = node;
         let mut plan = GraphMutationPlan::default();
-        self.collect_graph_plan(&mut node, &mut plan, None, None, false)
+        self.with_mutation_intent(intent)
+            .collect_graph_plan(&mut node, &mut plan, None, None, false)
             .await?;
         plan.planned_root = Some(node);
         plan.rebuild_batches();
@@ -197,6 +201,26 @@ where
     }
 
     pub(crate) async fn execute_graph_plan_internal(
+        &self,
+        plan: GraphMutationPlan,
+    ) -> Result<GraphNode, DataServiceError<E::Error>> {
+        let intent = teaql_core::MutationIntent::from_optional(
+            plan.planned_root
+                .as_ref()
+                .and_then(|node| node.comment.as_deref()),
+        )
+        .map_err(RuntimeError::from)
+        .map_err(DataServiceError::Runtime)?;
+        let scoped = self
+            .with_mutation_intent(intent)
+            .with_plan_privacy(&plan)
+            .map_err(DataServiceError::Runtime)?;
+        // Do not embed the complete executor state machine in each intent
+        // boundary. Generated bootstrap also runs on small test-thread stacks.
+        Box::pin(scoped.execute_graph_plan_scoped(plan)).await
+    }
+
+    async fn execute_graph_plan_scoped(
         &self,
         plan: GraphMutationPlan,
     ) -> Result<GraphNode, DataServiceError<E::Error>> {
@@ -375,12 +399,13 @@ where
                     return Ok(());
                 }
                 GraphOperation::Remove => {
+                    let scope = node.trace_scope(parent_token, plan.next_item_index);
                     plan.push(
                         node.entity.clone(),
                         GraphMutationKind::Delete,
                         node.values.clone().into(),
                         Vec::new(),
-                        parent_token,
+                        scope,
                         node.original_values.clone(),
                     );
                     return Ok(());
@@ -396,18 +421,9 @@ where
                 .map_err(DataServiceError::Runtime)?;
 
             // Create scope node on the current stack frame if this node has a comment
-            let current_scope = node.comment.as_ref().map(|c| ScopedCommentNode {
+            let current_scope = node.audit_trace_node().map(|track| ScopedCommentNode {
                 parent: parent_scope,
-                track: teaql_core::TraceNode {
-                    kind: teaql_core::TraceKind::AuditReason,
-                    entity_type: node.entity.clone(),
-                    entity_id: node.id().and_then(|v| match v {
-                        Value::U64(n) => Some(*n),
-                        Value::I64(n) => Some(*n as u64),
-                        _ => None,
-                    }),
-                    comment: c.clone(),
-                },
+                track,
             });
             let active_scope = current_scope.as_ref().or(parent_scope);
 
@@ -490,26 +506,7 @@ where
 
             // Build the TraceScopeToken for this node (only if it has a comment).
             // This is an Arc-linked persistent list: zero-copy, O(1) creation.
-            let current_token = node
-                .comment
-                .as_ref()
-                .map(|c| {
-                    Arc::new(TraceScopeToken {
-                        parent: parent_token.clone(),
-                        track: teaql_core::TraceNode {
-                            kind: teaql_core::TraceKind::AuditReason,
-                            entity_type: node.entity.clone(),
-                            entity_id: node.id().and_then(|v| match v {
-                                Value::U64(n) => Some(*n),
-                                Value::I64(n) => Some(*n as u64),
-                                _ => None,
-                            }),
-                            comment: c.clone(),
-                        },
-                        node_index: plan.next_item_index,
-                    })
-                })
-                .or_else(|| parent_token.clone());
+            let current_token = node.trace_scope(parent_token, plan.next_item_index);
 
             plan.push(
                 node.entity.clone(),
@@ -1295,10 +1292,15 @@ where
         let mut query = teaql_core::SelectQuery::new(entity)
             .filter(teaql_core::Expr::eq(id_property, id.clone()));
         query.trace_chain = trace_chain;
-        let mut rows = self
-            .scoped_data_service_internal(entity.to_owned())
-            .fetch_all_internal(&query)
-            .await?;
+        let mut scoped = self.scoped_data_service_internal(entity.to_owned());
+        // The inherited mutation reason may mention this ID even though the
+        // SELECT compiler correctly treats its binding as plain. Carry the
+        // target only as free-text provenance, including IDs allocated during
+        // the write, without changing bindings or the reusable parent scope.
+        let mut redactions = scoped.query_intent_snapshot().unwrap_or_default();
+        redactions.capture_target_id(id);
+        scoped.query_log_intent = Some(std::sync::Mutex::new(redactions));
+        let mut rows = scoped.fetch_all_internal(&query).await?;
         Ok(rows.pop())
     }
 
@@ -1412,7 +1414,89 @@ where
         Ok(ordered)
     }
 
+    /// Resolve only declared ID references after the whole graph is allocated.
+    /// Do not rewrite arbitrary scalar values equal to a temporary ID, or mutate
+    /// the retryable source ledger. Both forward and reverse descriptors can
+    /// describe the same foreign key; their assignments must agree.
+    fn rebind_allocated_ledger_relations(
+        &self,
+        changes: &mut std::collections::BTreeMap<crate::EntityKey, crate::EntityValues>,
+        assigned: &std::collections::BTreeMap<crate::EntityKey, Value>,
+    ) -> Result<(), RuntimeError> {
+        if assigned.is_empty() {
+            return Ok(());
+        }
+        let mut bindings = std::collections::BTreeMap::<(crate::EntityKey, String), Value>::new();
+        for descriptor in self.data_service.metadata.context.all_entities() {
+            for relation in &descriptor.relations {
+                let (referencing_entity, referencing_field, referenced_entity) =
+                    if relation.many && relation.local_key == "id" {
+                        (
+                            &relation.target_entity,
+                            &relation.foreign_key,
+                            &descriptor.name,
+                        )
+                    } else if !relation.many && relation.foreign_key == "id" {
+                        (
+                            &descriptor.name,
+                            &relation.local_key,
+                            &relation.target_entity,
+                        )
+                    } else {
+                        continue;
+                    };
+                for (key, record) in changes
+                    .iter()
+                    .filter(|(key, _)| key.entity.as_ref() == referencing_entity)
+                {
+                    let Some(value) = record
+                        .get(referencing_field)
+                        .filter(|value| !matches!(value, Value::Null | Value::TypedNull(_)))
+                    else {
+                        continue;
+                    };
+                    let reference = crate::EntityKey::new(referenced_entity.clone(), value.clone());
+                    let Some(allocated) = assigned.get(&reference) else {
+                        continue;
+                    };
+                    let binding = (key.clone(), referencing_field.clone());
+                    if let Some(previous) = bindings.insert(binding, allocated.clone())
+                        && previous != *allocated
+                    {
+                        return Err(RuntimeError::Graph(format!(
+                            "conflicting allocated relation identities for {}.{}",
+                            key.entity, referencing_field
+                        )));
+                    }
+                }
+            }
+        }
+        for ((key, field), id) in bindings {
+            changes
+                .get_mut(&key)
+                .expect("binding owns a change record")
+                .insert(field, id);
+        }
+        Ok(())
+    }
+
     pub(crate) async fn execute_ledger_plan_internal(
+        &self,
+        root: crate::EntityRuntimeState,
+        locations: &std::collections::BTreeMap<crate::EntityKey, crate::ObjectLocation>,
+    ) -> Result<std::collections::BTreeMap<crate::EntityKey, Value>, DataServiceError<E::Error>>
+    {
+        let intent = teaql_core::MutationIntent::from_optional(root.get_comment().as_deref())
+            .map_err(RuntimeError::from)
+            .map_err(DataServiceError::Runtime)?;
+        let scoped = self
+            .with_mutation_intent(intent)
+            .with_ledger_privacy(&root)
+            .map_err(DataServiceError::Runtime)?;
+        Box::pin(scoped.execute_ledger_plan_scoped(root, locations)).await
+    }
+
+    async fn execute_ledger_plan_scoped(
         &self,
         root: crate::EntityRuntimeState,
         locations: &std::collections::BTreeMap<crate::EntityKey, crate::ObjectLocation>,
@@ -1551,6 +1635,22 @@ where
         let ordered_insert_keys = self
             .order_new_ledger_keys(insert_batches.values().flatten().cloned(), &checked_changes)
             .map_err(DataServiceError::Runtime)?;
+        // Allocate the whole graph before recovering any item lineage. A child
+        // can inherit a root/ancestor scope created before its ID was known.
+        for key in &ordered_insert_keys {
+            if crate::data_service::helpers::is_unassigned_id_value(&key.id) {
+                let id = self
+                    .data_service
+                    .metadata
+                    .context
+                    .next_id(&key.entity)
+                    .map_err(DataServiceError::Runtime)?;
+                generated_ids.insert(key.clone(), Value::U64(id));
+            }
+        }
+        root.enrich_allocated_trace_scopes(&generated_ids);
+        self.rebind_allocated_ledger_relations(&mut checked_changes, &generated_ids)
+            .map_err(DataServiceError::Runtime)?;
         let mut ordered_insert_batches = Vec::<(String, Vec<crate::EntityKey>)>::new();
         for key in ordered_insert_keys {
             let entity = key.entity.to_string();
@@ -1576,17 +1676,10 @@ where
             for key in &keys {
                 let record = checked_changes.get(key).unwrap();
                 let mut db_record = crate::EntityValues::new();
-                let mut real_id = key.id.clone();
-                if crate::data_service::helpers::is_unassigned_id_value(&real_id) {
-                    let gen_id = self
-                        .data_service
-                        .metadata
-                        .context
-                        .next_id(&entity)
-                        .map_err(DataServiceError::Runtime)?;
-                    real_id = Value::U64(gen_id);
-                    generated_ids.insert(key.clone(), real_id.clone());
-                }
+                let real_id = generated_ids
+                    .get(key)
+                    .cloned()
+                    .unwrap_or_else(|| key.id.clone());
                 db_record.insert("id".to_owned(), real_id);
                 for (field, value) in record {
                     if field == "id" {
@@ -1678,7 +1771,7 @@ where
                 cmd.batch_ids.push(key.id.clone());
                 cmd.batch_expected_versions
                     .push(root.get_original_version(key));
-                cmd.batch_old_values.push(None); // or fetch from original state if needed
+                cmd.batch_old_values.push(root.original_values_for(key));
                 let my_trace = resolve_trace_chain(root.get_trace_chain(key), &trace_chain);
                 traces.push(my_trace);
             }
@@ -1687,5 +1780,26 @@ where
         }
 
         Ok(generated_ids)
+    }
+}
+
+#[cfg(test)]
+mod ledger_trace_resolution_tests {
+    use super::resolve_trace_chain;
+    use teaql_core::{TraceKind, TraceNode};
+
+    #[test]
+    fn complete_ledger_chain_replaces_fallback_and_empty_chain_inherits_it() {
+        let root = TraceNode::typed(TraceKind::AuditReason, "CustomerOrder", Some(1), "root");
+        let child = TraceNode::typed(TraceKind::AuditReason, "OrderItem", Some(1), "child");
+        let fallback = vec![root.clone()];
+        let specific = vec![root, child];
+        assert_eq!(resolve_trace_chain(specific.clone(), &fallback), specific);
+        assert_eq!(resolve_trace_chain(Vec::new(), &fallback), fallback);
+        assert_eq!(resolve_trace_chain(Vec::new(), &[]), Vec::new());
+        // Neither resolving the specific item nor its sibling consumes or
+        // mutates the shared fallback. Equal numeric IDs remain typed.
+        assert_eq!(resolve_trace_chain(Vec::new(), &fallback), fallback);
+        assert_eq!(fallback.len(), 1);
     }
 }

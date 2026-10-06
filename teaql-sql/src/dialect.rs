@@ -440,19 +440,6 @@ pub trait SqlDialect {
             sql.push_str(&where_parts.join(" AND "));
         }
 
-        if let Some((_, slice)) = partitioned_slice {
-            let rank = self.quote_ident(teaql_core::PARTITION_RANK_PROPERTY);
-            let alias = self.quote_ident("__teaql_partitioned");
-            let mut predicates = vec![format!("{rank} > {}", slice.offset)];
-            if let Some(limit) = slice.limit {
-                predicates.push(format!("{rank} <= {}", slice.offset.saturating_add(limit)));
-            }
-            return Ok(format!(
-                "SELECT * FROM ({sql}) AS {alias} WHERE {} ORDER BY {rank}",
-                predicates.join(" AND ")
-            ));
-        }
-
         if !query.group_by.is_empty() {
             let group_by = query
                 .group_by
@@ -468,6 +455,21 @@ pub trait SqlDialect {
             let having_sql = self.compile_expr(entity, having, params)?;
             sql.push_str(" HAVING ");
             sql.push_str(&having_sql);
+        }
+
+        // Ranking applies to the grouped/filtered result, not to ungrouped
+        // source rows. Returning before these clauses silently collapses counts.
+        if let Some((_, slice)) = partitioned_slice {
+            let rank = self.quote_ident(teaql_core::PARTITION_RANK_PROPERTY);
+            let alias = self.quote_ident("__teaql_partitioned");
+            let mut predicates = vec![format!("{rank} > {}", slice.offset)];
+            if let Some(limit) = slice.limit {
+                predicates.push(format!("{rank} <= {}", slice.offset.saturating_add(limit)));
+            }
+            return Ok(format!(
+                "SELECT * FROM ({sql}) AS {alias} WHERE {} ORDER BY {rank}",
+                predicates.join(" AND ")
+            ));
         }
 
         if !query.order_by.is_empty() {
@@ -1215,6 +1217,10 @@ pub trait SqlDialect {
                 params.push(value.clone());
                 Ok(self.placeholder(params.len()))
             }
+            Expr::LikePattern { pattern, .. } => {
+                params.push(Value::from(pattern.clone()));
+                Ok(self.placeholder(params.len()))
+            }
             Expr::Function { function, args } => {
                 self.compile_function(entity, *function, args, params)
             }
@@ -1226,7 +1232,13 @@ pub trait SqlDialect {
                     return self.compile_in(entity, left, *op, right, params);
                 }
                 let lhs = self.compile_expr(entity, left, params)?;
-                let rhs = self.compile_expr(entity, right, params)?;
+                let rhs =
+                    if let Some((pattern, original)) = crate::bindings::like_operand(*op, right) {
+                        params.push_like_pattern(pattern, original);
+                        self.placeholder(params.len())
+                    } else {
+                        self.compile_expr(entity, right, params)?
+                    };
                 let op = match op {
                     BinaryOp::Eq => "=",
                     BinaryOp::Ne => "!=",

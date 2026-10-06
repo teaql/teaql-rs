@@ -364,6 +364,8 @@ pub fn apply_runtime_metadata(
         query = query.comment(c);
     }
     query.raw_sql = options.raw_sql.clone();
+    query.facets = options.facets.clone();
+    query.relation_aggregates = runtime_relation_aggregates(options);
     query.raw_sql_search_criteria = options.raw_sql_search_criteria.clone();
     query.dynamic_properties = options
         .dynamic_properties

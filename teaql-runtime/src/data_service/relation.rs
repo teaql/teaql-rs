@@ -1,17 +1,40 @@
 // Named aliases will replace these recursive relation-future signatures in a later API cycle.
 #![allow(clippy::type_complexity)]
 
-use std::collections::BTreeMap;
-use std::slice;
+use std::collections::{BTreeMap, BTreeSet};
 
 use teaql_core::{
     Aggregate, CompactRow, Expr, ObjectGroupBy, OrderBy, RelationAggregate, RelationLoad,
-    SelectQuery, Value,
+    SelectQuery, SmartList, Value,
 };
 
 use crate::{DataServiceError, MetadataStore, RuntimeError};
 
 use super::{EntityDataService, RelationLoadPlan, helpers::*};
+
+// Native relation Facets reuse the request-local scope, not a new Context root.
+impl<E> crate::TeaqlRuntime for EntityDataService<'_, E>
+where
+    E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
+{
+    fn user_context(&self) -> &crate::UserContext {
+        self.data_service.metadata.context
+    }
+
+    async fn fetch_facet_smart_list(
+        &self,
+        entity: &str,
+        query: &crate::PurposedSelectQuery,
+        aggregates: &[RelationAggregate],
+        trace_context: Vec<teaql_core::TraceNode>,
+    ) -> Result<SmartList<CompactRow>, RuntimeError> {
+        self.scoped_data_service_internal(entity.to_owned())
+            .with_trace_context(trace_context)
+            .fetch_smart_list_with_relation_aggregates(query, aggregates)
+            .await
+            .map_err(|error| RuntimeError::Graph(error.to_string()))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum FlatIdentityKey {
@@ -33,11 +56,35 @@ fn unique_relation_values(rows: &[CompactRow], field: &str) -> Vec<Value> {
     let mut values = rows
         .iter()
         .filter_map(|row| row.get(field).cloned())
+        .filter(|value| !matches!(value, Value::Null | Value::TypedNull(_)))
         .map(|value| (FlatIdentityKey::from_value(&value), value))
         .collect::<Vec<_>>();
     values.sort_unstable_by(|left, right| left.0.cmp(&right.0));
     values.dedup_by(|left, right| left.0 == right.0);
     values.into_iter().map(|(_, value)| value).collect()
+}
+
+// Capture only assembly keys, not entire records. Relation names may be the
+// same as scalar FK fields; a previous sibling can replace that field with an
+// object or null. These private rows never enter the returned graph or ledger.
+fn relation_key_rows(rows: &[CompactRow], plans: &[RelationLoadPlan]) -> Vec<CompactRow> {
+    if plans.is_empty() {
+        return Vec::new();
+    }
+    rows.iter()
+        .map(|row| {
+            CompactRow::from_map(
+                plans
+                    .iter()
+                    .filter_map(|plan| {
+                        row.get(&plan.local_key)
+                            .cloned()
+                            .map(|value| (plan.local_key.clone(), value))
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,8 +196,9 @@ where
         parent_rows: &mut [CompactRow],
     ) -> Result<(), DataServiceError<E::Error>> {
         let plans = self.relation_plans().map_err(DataServiceError::Runtime)?;
+        let keys = relation_key_rows(parent_rows, &plans);
         for plan in plans {
-            self.enhance_plan(parent_rows, &plan).await?;
+            self.enhance_plan(parent_rows, &keys, &plan).await?;
         }
         Ok(())
     }
@@ -163,13 +211,14 @@ where
         let plans = self
             .build_relation_plans_from_loads(&query.entity, &query.relations)
             .map_err(DataServiceError::Runtime)?;
-        let mut parent_trace = self.trace_context.clone();
-        parent_trace.extend(query.trace_chain.clone());
+        // Prepared queries already contain the inherited repository prefix.
+        let parent_trace = query.trace_chain.clone();
         let traced = self
             .scoped_data_service_internal(query.entity.clone())
             .with_trace_context(parent_trace);
+        let keys = relation_key_rows(parent_rows, &plans);
         for plan in plans {
-            traced.enhance_plan(parent_rows, &plan).await?;
+            traced.enhance_plan(parent_rows, &keys, &plan).await?;
         }
         Ok(())
     }
@@ -227,9 +276,52 @@ where
         Ok(all_supported.then_some((query_plans, behavior_plans)))
     }
 
+    pub(crate) fn relation_aggregate_key_rows(
+        &self,
+        rows: &[CompactRow],
+        aggregates: &[RelationAggregate],
+    ) -> Result<Vec<CompactRow>, RuntimeError> {
+        if aggregates.is_empty() {
+            return Ok(Vec::new());
+        }
+        let descriptor = self
+            .data_service
+            .metadata
+            .context
+            .require_entity(&self.entity)?;
+        let fields = aggregates
+            .iter()
+            .map(|aggregate| {
+                descriptor
+                    .relation_by_name(&aggregate.relation_name)
+                    .map(|relation| relation.local_key.as_str())
+                    .ok_or_else(|| RuntimeError::MissingRelation {
+                        entity: self.entity.clone(),
+                        relation: aggregate.relation_name.clone(),
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                CompactRow::from_map(
+                    fields
+                        .iter()
+                        .filter_map(|field| {
+                            row.get(field)
+                                .cloned()
+                                .map(|value| ((*field).to_owned(), value))
+                        })
+                        .collect(),
+                )
+            })
+            .collect())
+    }
+
     pub(crate) fn enhance_relation_aggregates_internal<'b>(
         &'b self,
         parent_rows: &'b mut [CompactRow],
+        parent_keys: &'b [CompactRow],
         relation_aggregates: &'b [RelationAggregate],
         parent_cache_options: Option<teaql_core::AggregationCacheOptions>,
         parent_trace_chain: &'b [teaql_core::TraceNode],
@@ -240,6 +332,7 @@ where
             for aggregate in relation_aggregates {
                 self.enhance_relation_aggregate(
                     parent_rows,
+                    parent_keys,
                     aggregate,
                     parent_cache_options,
                     parent_trace_chain,
@@ -344,6 +437,7 @@ where
     async fn enhance_relation_aggregate(
         &self,
         parent_rows: &mut [CompactRow],
+        parent_keys: &[CompactRow],
         aggregate: &RelationAggregate,
         parent_cache_options: Option<teaql_core::AggregationCacheOptions>,
         parent_trace_chain: &[teaql_core::TraceNode],
@@ -366,7 +460,7 @@ where
                 })
             })?;
 
-        let ids = parent_rows
+        let ids = parent_keys
             .iter()
             .filter_map(|row| row.get(&plan.local_key).cloned())
             .collect::<Vec<_>>();
@@ -375,7 +469,11 @@ where
             return Ok(());
         }
 
-        let child_repo = self.relation_child_repo(&plan);
+        let chain = parent_trace_chain.to_vec();
+        let parent_repo = self
+            .scoped_data_service_internal(self.entity.clone())
+            .with_trace_context(chain);
+        let child_repo = parent_repo.relation_child_repo(&plan);
         let mut query = aggregate.query.clone();
         query.entity = plan.target_entity.clone();
         if query.aggregation_cache.is_none()
@@ -403,18 +501,7 @@ where
         }
         query = query.and_filter(Expr::in_list(plan.foreign_key.clone(), ids));
 
-        let mut chain = parent_trace_chain.to_vec();
-        chain.push(teaql_core::TraceNode {
-            kind: teaql_core::TraceKind::Relation,
-            entity_type: query.entity.clone(),
-            entity_id: None,
-            comment: aggregate.alias.clone(),
-        });
-
-        let mut aggregate_rows = child_repo
-            .with_trace_context(chain)
-            .fetch_compact_all_internal(query)
-            .await?;
+        let mut aggregate_rows = child_repo.fetch_compact_all_internal(query).await?;
         let foreign_key_column = self
             .data_service
             .metadata
@@ -438,7 +525,7 @@ where
                 }
             }
         }
-        attach_relation_aggregate_rows(parent_rows, &plan, aggregate, aggregate_rows);
+        attach_relation_aggregate_rows(parent_rows, parent_keys, &plan, aggregate, aggregate_rows);
         Ok(())
     }
 
@@ -530,6 +617,7 @@ where
     fn enhance_plan<'b>(
         &'b self,
         parent_rows: &'b mut [CompactRow],
+        parent_keys: &'b [CompactRow],
         plan: &'b RelationLoadPlan,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
@@ -537,7 +625,7 @@ where
         Box::pin(async move {
             let capabilities =
                 teaql_data_service::DataServiceExecutor::capabilities(self.data_service.executor);
-            let parent_count = unique_relation_values(parent_rows, &plan.local_key).len();
+            let parent_count = unique_relation_values(parent_keys, &plan.local_key).len();
             let selected_plan = relation_top_n_execution_plan(&capabilities, plan, parent_count);
             let scope = self.data_service.metadata.context.start_runtime_operation(
                 relation_top_n_operation(plan, selected_plan, parent_count),
@@ -546,31 +634,43 @@ where
                 .run(async {
                     let child_repo = self.relation_child_repo(plan);
                     let mut child_rows = self
-                        .fetch_relation_rows(&child_repo, plan, parent_rows, false)
+                        .fetch_relation_rows(&child_repo, plan, parent_keys, false)
                         .await?;
                     for child in &mut child_rows {
                         child.remove(teaql_core::PARTITION_RANK_PROPERTY);
                     }
-                    self.attach_relation_rows(parent_rows, plan, child_rows);
-
-                    if !plan.children.is_empty() {
-                        for parent in parent_rows.iter_mut() {
-                            match parent.get_mut(&plan.relation_name) {
-                                Some(Value::Object(child)) => {
-                                    child_repo
-                                        .enhance_child_record(child, &plan.children)
-                                        .await?;
-                                }
-                                Some(Value::List(values)) => {
-                                    for value in values.iter_mut() {
-                                        if let Value::Object(child) = value {
-                                            child_repo
-                                                .enhance_child_record(child, &plan.children)
-                                                .await?;
-                                        }
-                                    }
-                                }
-                                _ => {}
+                    // This planner owns the subtree. Load each nested relation once for
+                    // the whole child batch, before publishing it into the parent graph.
+                    let attachment_keys = child_rows
+                        .iter()
+                        .map(|row| row.get(&plan.foreign_key).cloned())
+                        .collect::<Vec<_>>();
+                    let child_keys = relation_key_rows(&child_rows, &plan.children);
+                    for child_plan in &plan.children {
+                        child_repo
+                            .enhance_plan(&mut child_rows, &child_keys, child_plan)
+                            .await?;
+                    }
+                    self.attach_relation_rows(
+                        parent_rows,
+                        parent_keys,
+                        plan,
+                        child_rows,
+                        attachment_keys,
+                    );
+                    if plan
+                        .query
+                        .as_ref()
+                        .is_some_and(|query| !query.facets.is_empty())
+                    {
+                        for (parent, keys) in parent_rows.iter_mut().zip(parent_keys) {
+                            let facets = self
+                                .relation_facets(plan, keys.get(&plan.local_key))
+                                .await?;
+                            if let Some(mut list) = parent.take_loaded_relation(&plan.relation_name)
+                            {
+                                list.facets = facets;
+                                parent.set_loaded_relation(plan.relation_name.clone(), list);
                             }
                         }
                     }
@@ -627,6 +727,14 @@ where
                             && relation.foreign_key == plan.local_key
                     })
                 })
+                // An explicitly selected inverse owns its projection and filter.
+                // Do not replace it with the minimally loaded parent snapshot.
+                .filter(|relation| {
+                    !plan
+                        .children
+                        .iter()
+                        .any(|child| child.relation_name == relation.name)
+                })
                 .map(|relation| (relation.name.clone(), relation.many));
 
             let mut buckets: BTreeMap<FlatIdentityKey, Vec<CompactRow>> = BTreeMap::new();
@@ -641,12 +749,33 @@ where
 
             let context = self.data_service.metadata.context;
             for parent in parent_rows {
-                let Some(local_value) = parent.get(&plan.local_key) else {
-                    continue;
-                };
-                let related = buckets
-                    .remove(&FlatIdentityKey::from_value(local_value))
+                let local_value = parent.get(&plan.local_key);
+                let related = local_value
+                    .and_then(|value| {
+                        let key = FlatIdentityKey::from_value(value);
+                        if plan.local_key == "id" {
+                            buckets.remove(&key)
+                        } else {
+                            buckets.get(&key).cloned()
+                        }
+                    })
                     .unwrap_or_default();
+
+                let facets = self.relation_facets(plan, local_value).await?;
+                if !plan.many && !facets.is_empty() {
+                    let owner_id = parent.get("id").and_then(Value::try_u64).ok_or_else(|| {
+                        DataServiceError::Entity(teaql_core::EntityError::new(
+                            &plan.parent_entity,
+                            "Facet owner is missing its u64 id",
+                        ))
+                    })?;
+                    graph.install_relation_facets(
+                        &plan.parent_entity,
+                        owner_id,
+                        &plan.relation_name,
+                        facets.clone(),
+                    );
+                }
 
                 if let Some((inverse_name, inverse_many)) = &inverse_relation {
                     let parent_record = parent.clone();
@@ -691,9 +820,12 @@ where
                     })?;
                     if plan.many {
                         context
-                            .decode_compact_entity_list_into_graph(
+                            .decode_compact_smart_list_into_graph(
                                 &plan.target_entity,
-                                related,
+                                SmartList {
+                                    facets,
+                                    ..SmartList::new(related)
+                                },
                                 root,
                                 graph,
                                 &plan.parent_entity,
@@ -715,9 +847,7 @@ where
                             .map_err(DataServiceError::Entity)?;
                     }
                 } else if related.is_empty() {
-                    // Forward optional relations use the scalar loaded marker to distinguish a
-                    // loaded null from a relation that was never requested.
-                    parent.insert(plan.relation_name.clone(), Value::Null);
+                    self.install_unfetched_forward_detail(parent, plan, root, graph)?;
                 } else {
                     for child in related {
                         context
@@ -749,6 +879,49 @@ where
             let child_rows = self
                 .fetch_relation_rows(&child_repo, plan, parent_rows, true)
                 .await?;
+            // Install a forward ancestor before descendants. A descendant may
+            // explicitly reload the same identity with a richer projection;
+            // installing the ancestor last would replace that fetched detail.
+            let installed_before_children = !plan.many && plan.local_key != "id";
+            if installed_before_children {
+                self.install_compact_flat_relation(
+                    parent_rows,
+                    plan,
+                    child_rows.clone(),
+                    root,
+                    graph,
+                )
+                .await?;
+                // The selected ancestor also owns an edge view. Descendants
+                // may fetch the same identity with different fields/metrics;
+                // neither view may replace the other's explicit projection.
+                for parent in parent_rows {
+                    let owner_id = parent.get("id").and_then(Value::try_u64).ok_or_else(|| {
+                        DataServiceError::Entity(teaql_core::EntityError::new(
+                            &plan.parent_entity,
+                            "forward relation owner is missing its u64 id",
+                        ))
+                    })?;
+                    let rows = child_rows
+                        .iter()
+                        .filter(|row| row.get(&plan.foreign_key) == parent.get(&plan.local_key))
+                        .cloned()
+                        .collect();
+                    self.data_service
+                        .metadata
+                        .context
+                        .decode_compact_entity_option_into_graph(
+                            &plan.target_entity,
+                            rows,
+                            root,
+                            graph,
+                            &plan.parent_entity,
+                            owner_id,
+                            &plan.relation_name,
+                        )
+                        .map_err(DataServiceError::Entity)?;
+                }
+            }
 
             for child_plan in &plan.children {
                 if child_plan.children.is_empty() {
@@ -762,7 +935,12 @@ where
                 }
             }
 
-            self.install_compact_flat_relation(parent_rows, plan, child_rows, root, graph)
+            if installed_before_children {
+                Ok(())
+            } else {
+                self.install_compact_flat_relation(parent_rows, plan, child_rows, root, graph)
+                    .await
+            }
         })
     }
 
@@ -781,10 +959,11 @@ where
                 .fetch_relation_rows(&child_repo, plan, parent_rows, true)
                 .await?;
             self.install_compact_flat_relation(parent_rows, plan, child_rows, root, graph)
+                .await
         })
     }
 
-    fn install_compact_flat_relation(
+    async fn install_compact_flat_relation(
         &self,
         parent_rows: &[CompactRow],
         plan: &RelationLoadPlan,
@@ -796,8 +975,35 @@ where
         // identity table. Building owner buckets and then removing them one parent at a time
         // creates a map and one Vec per distinct target without adding information.
         if !plan.many && plan.local_key != "id" {
-            return self
-                .data_service
+            let fetched_keys: BTreeSet<_> = child_rows
+                .iter()
+                .filter_map(|row| row.get(&plan.foreign_key))
+                .map(FlatIdentityKey::from_value)
+                .collect();
+            if plan
+                .query
+                .as_ref()
+                .is_some_and(|query| !query.facets.is_empty())
+            {
+                for parent in parent_rows {
+                    let owner_id = parent.get("id").and_then(Value::try_u64).ok_or_else(|| {
+                        DataServiceError::Entity(teaql_core::EntityError::new(
+                            &plan.parent_entity,
+                            "Facet owner is missing its u64 id",
+                        ))
+                    })?;
+                    let facets = self
+                        .relation_facets(plan, parent.get(&plan.local_key))
+                        .await?;
+                    graph.install_relation_facets(
+                        &plan.parent_entity,
+                        owner_id,
+                        &plan.relation_name,
+                        facets,
+                    );
+                }
+            }
+            self.data_service
                 .metadata
                 .context
                 .decode_compact_entity_batch_into_graph(
@@ -806,7 +1012,16 @@ where
                     root,
                     graph,
                 )
-                .map_err(DataServiceError::Entity);
+                .map_err(DataServiceError::Entity)?;
+            for parent in parent_rows {
+                if !parent
+                    .get(&plan.local_key)
+                    .is_some_and(|key| fetched_keys.contains(&FlatIdentityKey::from_value(key)))
+                {
+                    self.install_unfetched_forward_detail(parent, plan, root, graph)?;
+                }
+            }
+            return Ok(());
         }
 
         let mut buckets: BTreeMap<FlatIdentityKey, Vec<CompactRow>> = BTreeMap::new();
@@ -821,12 +1036,33 @@ where
 
         let context = self.data_service.metadata.context;
         for parent in parent_rows {
-            let Some(local_value) = parent.get(&plan.local_key) else {
-                continue;
-            };
-            let related = buckets
-                .remove(&FlatIdentityKey::from_value(local_value))
+            let local_value = parent.get(&plan.local_key);
+            let related = local_value
+                .and_then(|value| {
+                    let key = FlatIdentityKey::from_value(value);
+                    if plan.local_key == "id" {
+                        buckets.remove(&key)
+                    } else {
+                        buckets.get(&key).cloned()
+                    }
+                })
                 .unwrap_or_default();
+
+            let facets = self.relation_facets(plan, local_value).await?;
+            if !plan.many && !facets.is_empty() {
+                let owner_id = parent.get("id").and_then(Value::try_u64).ok_or_else(|| {
+                    DataServiceError::Entity(teaql_core::EntityError::new(
+                        &plan.parent_entity,
+                        "Facet owner is missing its u64 id",
+                    ))
+                })?;
+                graph.install_relation_facets(
+                    &plan.parent_entity,
+                    owner_id,
+                    &plan.relation_name,
+                    facets.clone(),
+                );
+            }
 
             if plan.many || plan.local_key == "id" {
                 let owner_id = parent.get("id").and_then(Value::try_u64).ok_or_else(|| {
@@ -837,9 +1073,12 @@ where
                 })?;
                 if plan.many {
                     context
-                        .decode_compact_entity_list_into_graph(
+                        .decode_compact_smart_list_into_graph(
                             &plan.target_entity,
-                            related,
+                            SmartList {
+                                facets,
+                                ..SmartList::new(related)
+                            },
                             root,
                             graph,
                             &plan.parent_entity,
@@ -871,21 +1110,44 @@ where
         Ok(())
     }
 
-    fn enhance_child_record<'b>(
-        &'b self,
-        child: &'b mut std::collections::BTreeMap<String, Value>,
-        plans: &'b [RelationLoadPlan],
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
-    > {
-        Box::pin(async move {
-            for plan in plans {
-                let mut row = CompactRow::from_map(std::mem::take(child));
-                self.enhance_plan(slice::from_mut(&mut row), plan).await?;
-                *child = row.into_map();
-            }
-            Ok(())
-        })
+    fn install_unfetched_forward_detail(
+        &self,
+        parent: &CompactRow,
+        plan: &RelationLoadPlan,
+        root: &crate::EntityRuntimeState,
+        graph: &mut crate::EntityGraphBuilder,
+    ) -> Result<(), DataServiceError<E::Error>> {
+        let owner_id = parent.get("id").and_then(Value::try_u64).ok_or_else(|| {
+            DataServiceError::Entity(teaql_core::EntityError::new(
+                &plan.parent_entity,
+                "forward relation owner is missing its u64 id",
+            ))
+        })?;
+        let rows = parent
+            .get(&plan.local_key)
+            .filter(|key| !matches!(key, Value::Null | Value::TypedNull(_)))
+            .map(|key| {
+                vec![CompactRow::from_map(BTreeMap::from([(
+                    plan.foreign_key.clone(),
+                    key.clone(),
+                )]))]
+            })
+            .unwrap_or_default();
+        // This is an edge-owned view, not a shared identity-table entry. A
+        // sibling may load the same entity fully without widening this view.
+        self.data_service
+            .metadata
+            .context
+            .decode_compact_entity_option_into_graph(
+                &plan.target_entity,
+                rows,
+                root,
+                graph,
+                &plan.parent_entity,
+                owner_id,
+                &plan.relation_name,
+            )
+            .map_err(DataServiceError::Entity)
     }
 
     fn relation_child_repo(&self, plan: &RelationLoadPlan) -> EntityDataService<'a, E> {
@@ -911,6 +1173,9 @@ where
             .clone()
             .unwrap_or_else(|| SelectQuery::new(plan.target_entity.clone()));
         query.entity = plan.target_entity.clone();
+        // The relation planner, not fetch_prepared_all, executes nested loads.
+        query.relations.clear();
+        query.facets.clear();
         ensure_projection(&mut query, &plan.foreign_key);
         for child in &plan.children {
             ensure_projection(&mut query, &child.local_key);
@@ -979,12 +1244,52 @@ where
         Ok(rows)
     }
 
+    async fn relation_facets(
+        &self,
+        plan: &RelationLoadPlan,
+        local_value: Option<&Value>,
+    ) -> Result<BTreeMap<String, SmartList<CompactRow>>, DataServiceError<E::Error>> {
+        let Some(source) = plan.query.as_ref().filter(|query| !query.facets.is_empty()) else {
+            return Ok(BTreeMap::new());
+        };
+        let child_repo = self.relation_child_repo(plan);
+        let mut outer = source.clone();
+        let options = teaql_core::request::QueryOptions {
+            facets: std::mem::take(&mut outer.facets),
+            ..Default::default()
+        };
+        // Facet membership belongs to the complete filtered relation for this
+        // owner, never its limited materialized page or another owner's rows.
+        outer.slice = None;
+        outer.partition_by = None;
+        outer.order_by.clear();
+        outer = outer.and_filter(match local_value {
+            Some(value) if !matches!(value, Value::Null | Value::TypedNull(_)) => {
+                Expr::eq(plan.foreign_key.clone(), value.clone())
+            }
+            _ => Expr::Value(Value::Bool(false)),
+        });
+        let intent = child_repo
+            .request_intent_for(&outer)
+            .map_err(DataServiceError::Runtime)?;
+        outer.comment = Some(intent.comment().to_owned());
+        outer.purpose = Some(intent.purpose().to_owned());
+        let mut trace = child_repo.trace_context.clone();
+        trace.extend(outer.trace_chain);
+        outer.trace_chain = trace;
+        crate::execute_facets(&child_repo, &outer, &options)
+            .await
+            .map_err(DataServiceError::Runtime)
+    }
+
     fn base_relation_query(&self, plan: &RelationLoadPlan) -> SelectQuery {
         let mut query = plan
             .query
             .clone()
             .unwrap_or_else(|| SelectQuery::new(plan.target_entity.clone()));
         query.entity = plan.target_entity.clone();
+        query.relations.clear();
+        query.facets.clear();
         ensure_projection(&mut query, &plan.foreign_key);
         for child in &plan.children {
             ensure_projection(&mut query, &child.local_key);
@@ -995,6 +1300,21 @@ where
 
     fn ensure_stable_top_n_order(&self, plan: &RelationLoadPlan, query: &mut SelectQuery) {
         if query.slice.is_none() {
+            return;
+        }
+        if !query.group_by.is_empty() || !query.aggregates.is_empty() {
+            // A grouped result has group identity, not a source-row identity.
+            // Adding the entity id is invalid on strict SQL databases unless it
+            // is itself grouped, and does not make aggregate pagination stable.
+            for field in &query.group_by {
+                if !query
+                    .order_by
+                    .iter()
+                    .any(|order| order.expr.is_none() && order.field == *field)
+                {
+                    query.order_by.push(OrderBy::asc(field.clone()));
+                }
+            }
             return;
         }
         let Some(id_property) = self
@@ -1030,6 +1350,7 @@ where
         // fetch_compact_all_internal hydrate the same subtree first; the flat hydrator then
         // hydrates it again, causing an exponential number of duplicate relation queries.
         query.relations.clear();
+        query.facets.clear();
         ensure_projection(&mut query, &plan.foreign_key);
         for child in &plan.children {
             ensure_projection(&mut query, &child.local_key);
@@ -1047,8 +1368,10 @@ where
     fn attach_relation_rows(
         &self,
         parent_rows: &mut [CompactRow],
+        parent_keys: &[CompactRow],
         plan: &RelationLoadPlan,
         child_rows: Vec<CompactRow>,
+        attachment_keys: Vec<Option<Value>>,
     ) {
         let inverse_relation = self
             .data_service
@@ -1062,25 +1385,33 @@ where
                         && relation.foreign_key == plan.local_key
                 })
             })
+            // An explicit nested request owns its detail projection.
+            // Inverse convenience wiring must not override that predicate.
+            .filter(|relation| {
+                !plan
+                    .children
+                    .iter()
+                    .any(|child| child.relation_name == relation.name)
+            })
             .map(|relation| (relation.name.clone(), relation.many));
 
         let mut buckets: BTreeMap<String, Vec<CompactRow>> = BTreeMap::new();
-        for child in child_rows.clone() {
-            if let Some(key) = child.get(&plan.foreign_key) {
+        for (child, key) in child_rows.into_iter().zip(attachment_keys) {
+            if let Some(key) = key {
                 buckets
-                    .entry(graph_identity_key(key))
+                    .entry(graph_identity_key(&key))
                     .or_default()
                     .push(child);
             }
         }
 
-        for parent in parent_rows.iter_mut() {
-            let Some(local_value) = parent.get(&plan.local_key) else {
-                continue;
-            };
-            let bucket_key = graph_identity_key(local_value);
-            let related = buckets.get(&bucket_key).cloned().unwrap_or_default();
-            let related = match &inverse_relation {
+        for (parent, keys) in parent_rows.iter_mut().zip(parent_keys) {
+            let related = keys
+                .get(&plan.local_key)
+                .and_then(|value| buckets.get(&graph_identity_key(value)))
+                .cloned()
+                .unwrap_or_default();
+            let mut related = match &inverse_relation {
                 Some((inverse_relation, inverse_many)) => {
                     let mut parent_object = parent.clone();
                     parent_object.remove(&plan.relation_name);
@@ -1115,6 +1446,32 @@ where
                 }
                 None => related,
             };
+            // A target filter cannot erase the real FK. Do not run inverse
+            // convenience wiring on this identity-only row: its other fields
+            // (including reverse lists) were not loaded.
+            if !plan.many
+                && related.is_empty()
+                && let Some(key) = keys
+                    .get(&plan.local_key)
+                    .filter(|key| !matches!(key, Value::Null | Value::TypedNull(_)))
+            {
+                related.push(CompactRow::from_map(BTreeMap::from([(
+                    plan.foreign_key.clone(),
+                    key.clone(),
+                )])));
+            }
+            if plan
+                .query
+                .as_ref()
+                .is_some_and(|query| !query.facets.is_empty())
+                || related.iter().any(CompactRow::has_loaded_relations)
+            {
+                let mut result = SmartList::new(related.clone());
+                if !plan.many {
+                    result.data.truncate(1);
+                }
+                parent.set_loaded_relation(plan.relation_name.clone(), result);
+            }
             match plan.many {
                 true => {
                     parent.insert(

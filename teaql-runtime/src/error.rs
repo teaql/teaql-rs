@@ -5,6 +5,11 @@ use crate::CheckResult;
 
 #[derive(Debug)]
 pub enum RuntimeError {
+    RequestIntent(teaql_core::RequestIntentError),
+    /// The mutation is committed; callers must not blindly retry the write.
+    AuditAfterCommit {
+        source: Box<RuntimeError>,
+    },
     MissingEntity(String),
     SqlCompile(SqlCompileError),
     Behavior(String),
@@ -17,13 +22,24 @@ pub enum RuntimeError {
     UnsupportedLocale(String),
     Schema(String),
     Transaction(String),
-    MissingRelation { entity: String, relation: String },
-    OptimisticLockConflict { entity: String, id: String },
+    MissingRelation {
+        entity: String,
+        relation: String,
+    },
+    OptimisticLockConflict {
+        entity: String,
+        id: String,
+    },
 }
 
 impl std::fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::RequestIntent(err) => err.fmt(f),
+            Self::AuditAfterCommit { .. } => write!(
+                f,
+                "AUDIT_DELIVERY_AFTER_COMMIT: transaction committed but audit delivery failed; do not retry the mutation blindly"
+            ),
             Self::MissingEntity(entity) => write!(f, "missing entity descriptor: {entity}"),
             Self::SqlCompile(err) => err.fmt(f),
             Self::Behavior(message) => write!(f, "entity data service behavior error: {message}"),
@@ -54,6 +70,12 @@ impl std::fmt::Display for RuntimeError {
 }
 
 impl std::error::Error for RuntimeError {}
+
+impl From<teaql_core::RequestIntentError> for RuntimeError {
+    fn from(value: teaql_core::RequestIntentError) -> Self {
+        Self::RequestIntent(value)
+    }
+}
 
 impl From<SqlCompileError> for RuntimeError {
     fn from(value: SqlCompileError) -> Self {

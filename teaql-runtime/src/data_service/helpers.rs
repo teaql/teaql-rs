@@ -226,6 +226,7 @@ mod aggregation_cache_key_tests {
 
 pub(super) fn attach_relation_aggregate_rows(
     parent_rows: &mut [CompactRow],
+    parent_keys: &[CompactRow],
     plan: &RelationLoadPlan,
     aggregate: &RelationAggregate,
     aggregate_rows: Vec<CompactRow>,
@@ -240,8 +241,8 @@ pub(super) fn attach_relation_aggregate_rows(
         }
     }
 
-    for parent in parent_rows {
-        let value = parent
+    for (parent, keys) in parent_rows.iter_mut().zip(parent_keys) {
+        let value = keys
             .get(&plan.local_key)
             .and_then(|local_value| buckets.get(&graph_identity_key(local_value)))
             .map(|rows| relation_aggregate_value(rows, aggregate.single_result))

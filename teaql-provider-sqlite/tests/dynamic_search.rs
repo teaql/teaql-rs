@@ -122,7 +122,11 @@ fn scoped_dynamic_search_retains_outer_and_related_tenant_filters() {
         let response = executor
             .query(QueryRequest {
                 query: result.query,
-                comment: base.comment,
+                intent: teaql_core::QueryIntent::new(
+                    base.comment.as_deref().expect("query fixture comment"),
+                    "verify dynamic search",
+                )
+                .unwrap(),
                 trace_chain: base.trace_chain,
                 capture_debug_query: true,
                 capture_execution_metadata: true,

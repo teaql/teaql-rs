@@ -78,7 +78,14 @@ fn input(capture: bool) -> (CompiledQuery, QueryRequest) {
         compiled,
         QueryRequest {
             trace_chain: vec![],
-            comment: query.comment.clone(),
+            intent: teaql_core::QueryIntent::new(
+                query
+                    .comment
+                    .as_deref()
+                    .expect("explicit fixture query comment"),
+                "verify provider query behavior",
+            )
+            .unwrap(),
             query,
             capture_debug_query: false,
             capture_execution_metadata: capture,

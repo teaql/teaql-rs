@@ -48,7 +48,13 @@ async fn context(seed: bool) -> UserContext {
                             Some(id),
                             "seed cursor fixture",
                         ));
-                        scope.mutate(MutationRequest::Insert(command)).await?;
+                        scope
+                            .mutate(
+                                teaql_data_service::MutationCommand::Insert(command)
+                                    .request("verify safe provider diagnostics")
+                                    .unwrap(),
+                            )
+                            .await?;
                     }
                     Ok(())
                 })
@@ -287,7 +293,11 @@ async fn transaction_query_failure_has_safe_diagnostic() {
                 scope
                     .query(teaql_data_service::QueryRequest {
                         trace_chain: query.trace_chain.clone(),
-                        comment: query.comment.clone(),
+                        intent: teaql_core::QueryIntent::from_optional(
+                            query.comment.as_deref(),
+                            query.purpose.as_deref(),
+                        )
+                        .unwrap(),
                         query,
                         capture_debug_query: true,
                         capture_execution_metadata: true,
@@ -372,7 +382,9 @@ fn insert_customer(id: u64) -> MutationRequest {
         Some(id),
         "test audited write",
     ));
-    MutationRequest::Insert(command)
+    teaql_data_service::MutationCommand::Insert(command)
+        .request("test audited write")
+        .unwrap()
 }
 
 #[tokio::test]
@@ -418,11 +430,15 @@ async fn partial_batch_keeps_statement_success_even_when_transaction_rolls_back(
         .execute_in_transaction::<Executor, _, _>(|scope| {
             Box::pin(async move {
                 scope
-                    .mutate(MutationRequest::Batch(vec![
-                        insert_customer(4),
-                        insert_customer(1),
-                        insert_customer(5),
-                    ]))
+                    .mutate(
+                        teaql_data_service::MutationCommand::Batch(vec![
+                            insert_customer(4),
+                            insert_customer(1),
+                            insert_customer(5),
+                        ])
+                        .request("verify safe provider diagnostics")
+                        .unwrap(),
+                    )
                     .await?;
                 Ok(())
             })
@@ -474,10 +490,18 @@ async fn sqlite_trigger_missing_readback_keeps_both_sql_successes() {
         .execute_in_transaction::<Executor, _, _>(|scope| {
             Box::pin(async move {
                 let mut request = insert_customer(4);
-                if let MutationRequest::Insert(command) = &mut request {
+                if let teaql_data_service::MutationCommand::Insert(command) = &mut request.command {
                     command.trace_chain[0].comment =
                         "test audited write Riverside PASSWORD-CANARY".into();
                 }
+                // Intent belongs to the request, not a mutable diagnostic frame.
+                // Keep the original masking canaries and assertions at the owner.
+                request = MutationRequest::with_intent(
+                    request.command,
+                    teaql_core::MutationIntent::new(
+                        "test audited write Riverside PASSWORD-CANARY",
+                    )?,
+                );
                 scope.mutate(request).await?;
                 Ok(())
             })

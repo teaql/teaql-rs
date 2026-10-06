@@ -1,0 +1,22 @@
+[package]
+name = "facet-trace-example"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+school_management_service_core = { package = "school-management-service-core", path = "lib" }
+teaql-core = { path = "../../teaql-core" }
+teaql-runtime = { path = "../../teaql-runtime" }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[workspace]
+
+[patch.crates-io]
+teaql-core = { path = "../../teaql-core" }
+teaql-macros = { path = "../../teaql-macros" }
+teaql-runtime = { path = "../../teaql-runtime" }
+teaql-sql = { path = "../../teaql-sql" }
+teaql-data-service = { path = "../../teaql-data-service" }
+teaql-provider-sqlite = { path = "../../teaql-provider-sqlite" }

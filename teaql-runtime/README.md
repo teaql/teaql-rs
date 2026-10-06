@@ -93,6 +93,24 @@ See the maintained `examples/order-management` mutation-policy probe for an
 approved save, a denied save with zero persisted rows, and a repeated run
 against the same SQLite database.
 
+## Safe Audit Target Identity
+
+`SafeAuditEvent.entity` and `entity_id: Option<u64>` identify the modified
+object independently of its changed fields and inherited responsibility chain.
+Updates need not change ID; deletes and recoveries need not have a new ID field
+value. The target comes from the authoritative raw event's positive integer ID,
+never from an ancestor reason or an old snapshot. Schema events and events with
+no valid integer ID retain `None`. Adding this identity does not add a changed
+field, a child reason or a write, and does not weaken existing value/intent
+masking. Applications constructing safe events with struct literals must provide
+the new field; ordinary sinks consuming runtime-produced events need no factory.
+
+`tests/safe_audit_target.rs` covers all four mutation kinds, root-only inherited
+lineage, equal IDs across entity types, snapshot ownership, invalid IDs and
+schema events. The generated `examples/trace-chain` SQLite gate also deletes an
+unannotated child through its clean parent and verifies the child's committed
+identity without inventing a local reason.
+
 ## Example
 
 ```rust

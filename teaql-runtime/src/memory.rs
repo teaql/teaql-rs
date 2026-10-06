@@ -472,7 +472,7 @@ fn local_single_relation_aggregate_value(row: &CompactRow) -> Value {
 
 fn eval_filter(expr: &Expr, row: &CompactRow) -> Result<bool, MemoryDataServiceError> {
     match expr {
-        Expr::Column(_) | Expr::Value(_) | Expr::Function { .. } => {
+        Expr::Column(_) | Expr::Value(_) | Expr::LikePattern { .. } | Expr::Function { .. } => {
             value_truthy(&eval_value(expr, row)?)
         }
         Expr::Binary { left, op, right } => {
@@ -516,6 +516,7 @@ fn eval_value(expr: &Expr, row: &CompactRow) -> Result<Value, MemoryDataServiceE
     match expr {
         Expr::Column(column) => Ok(row.get(column).cloned().unwrap_or(Value::Null)),
         Expr::Value(value) => Ok(value.clone()),
+        Expr::LikePattern { pattern, .. } => Ok(Value::from(pattern.clone())),
         Expr::Function { function, args } => eval_function(*function, args, row),
         other => Err(MemoryDataServiceError::UnsupportedExpression(format!(
             "cannot evaluate {other:?} as a scalar value"
@@ -1056,5 +1057,41 @@ fn local_graph_identity_key(value: &Value) -> String {
         Value::Object(_) => "o".to_owned(),
         Value::List(_) => "l".to_owned(),
         Value::TypedNull(_) => "null".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod like_provenance_tests {
+    use super::*;
+
+    #[test]
+    fn both_memory_evaluators_use_unchanged_typed_like_patterns() {
+        let row = CompactRow::from_map(BTreeMap::from([("name".into(), Value::from("teaql"))]));
+        for (typed, raw) in [
+            (Expr::contain("name", "ea"), Expr::like("name", "%ea%")),
+            (
+                Expr::not_contain("name", "ea"),
+                Expr::not_like("name", "%ea%"),
+            ),
+            (Expr::begin_with("name", "tea"), Expr::like("name", "tea%")),
+            (
+                Expr::not_begin_with("name", "tea"),
+                Expr::not_like("name", "tea%"),
+            ),
+            (Expr::end_with("name", "ql"), Expr::like("name", "%ql")),
+            (
+                Expr::not_end_with("name", "ql"),
+                Expr::not_like("name", "%ql"),
+            ),
+        ] {
+            assert_eq!(
+                eval_filter(&typed, &row).unwrap(),
+                eval_filter(&raw, &row).unwrap()
+            );
+            assert_eq!(
+                crate::inmemory_engine::ExprEvaluator::eval(&typed, &row),
+                crate::inmemory_engine::ExprEvaluator::eval(&raw, &row)
+            );
+        }
     }
 }

@@ -134,9 +134,15 @@ fn entity_identity_key(value: &Value) -> EntityIdentityKey {
 pub struct EntityGraphBuilder {
     tables: HashMap<TypeId, EntityTable>,
     relation_lists: HashMap<RelationListKey, Box<dyn Any + Send + Sync>>,
+    relation_facets: Option<Box<RelationFacetResults>>,
 }
 
 type EntityTable = HashMap<u64, Box<dyn Any + Send + Sync>>;
+
+#[derive(Default)]
+struct RelationFacetResults {
+    lists: HashMap<RelationListKey, BTreeMap<String, SmartList<teaql_core::CompactRow>>>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RelationListKey {
@@ -169,14 +175,43 @@ impl EntityGraphBuilder {
     ) where
         T: Any + Send + Sync,
     {
-        self.relation_lists.insert(
-            RelationListKey {
-                owner_entity: crate::canonical_id_space_entity(&owner_entity.into()),
-                owner_id,
-                relation: relation.into(),
-            },
-            Box::new(list),
-        );
+        let key = RelationListKey {
+            owner_entity: crate::canonical_id_space_entity(&owner_entity.into()),
+            owner_id,
+            relation: relation.into(),
+        };
+        if !list.facets.is_empty() {
+            self.relation_facets
+                .get_or_insert_with(Default::default)
+                .lists
+                .insert(key.clone(), list.facets.clone());
+        }
+        self.relation_lists.insert(key, Box::new(list));
+    }
+
+    /// Read-result metadata for a selected relation, including null to-one views.
+    /// It never participates in entity snapshots or mutation-ledger ownership.
+    pub fn install_relation_facets(
+        &mut self,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+        facets: BTreeMap<String, SmartList<teaql_core::CompactRow>>,
+    ) {
+        if facets.is_empty() {
+            return;
+        }
+        self.relation_facets
+            .get_or_insert_with(Default::default)
+            .lists
+            .insert(
+                RelationListKey {
+                    owner_entity: crate::canonical_id_space_entity(owner_entity),
+                    owner_id,
+                    relation: relation.to_owned(),
+                },
+                facets,
+            );
     }
 
     pub fn install_relation_option<T>(
@@ -206,6 +241,7 @@ impl EntityGraphBuilder {
         FrozenEntityGraph {
             tables: self.tables,
             relation_lists: self.relation_lists,
+            relation_facets: self.relation_facets,
         }
     }
 }
@@ -224,6 +260,7 @@ impl std::fmt::Debug for EntityGraphBuilder {
 struct FrozenEntityGraph {
     tables: HashMap<TypeId, EntityTable>,
     relation_lists: HashMap<RelationListKey, Box<dyn Any + Send + Sync>>,
+    relation_facets: Option<Box<RelationFacetResults>>,
 }
 
 impl std::fmt::Debug for FrozenEntityGraph {
@@ -383,6 +420,8 @@ struct EntityMutationLedger {
     change_sets: ChangeSetStack,
     /// Annotation comment for observability during graph save.
     comment: Option<String>,
+    /// Local entity reasons are distinct from the root request reason.
+    entity_comments: std::collections::BTreeMap<EntityKey, String>,
     /// Entity keys that have been marked for deletion.
     /// When the entity is saved, the graph save pipeline will treat these as Remove operations.
     deleted_keys: std::collections::BTreeSet<EntityKey>,
@@ -390,8 +429,13 @@ struct EntityMutationLedger {
     new_keys: std::collections::BTreeSet<EntityKey>,
     /// The original loaded snapshot, used to avoid redundant fetching during save.
     original_snapshot: Option<OriginalSnapshot>,
-    /// Trace chains associated with each entity key.
-    trace_chains: std::collections::BTreeMap<EntityKey, Vec<teaql_core::TraceNode>>,
+    /// Immutable parent tokens are materialized only at a consumer boundary.
+    trace_chains: std::collections::BTreeMap<EntityKey, Arc<crate::TraceScopeToken>>,
+    /// Scope ownership before legacy lower-ledger allocation. Never infer an
+    /// owner's identity from the entity name or from an inherited child scope.
+    unassigned_trace_scopes: BTreeMap<EntityKey, Arc<crate::TraceScopeToken>>,
+    /// Loaded snapshots needed to locate composed/deleted children without I/O.
+    original_snapshots: std::collections::BTreeMap<EntityKey, OriginalSnapshot>,
     /// Original versions of entities to perform optimistic concurrency control.
     original_versions: OriginalVersions,
     /// A generated, void-returning graph attachment could not safely merge two snapshots.
@@ -520,8 +564,18 @@ impl EntityRuntimeState {
     }
 
     fn context(&self) -> &Arc<Mutex<EntityMutationLedger>> {
-        self.inner
-            .get_or_init(|| Arc::new(Mutex::new(EntityMutationLedger::default())))
+        self.inner.get_or_init(|| {
+            let mut ledger = EntityMutationLedger::default();
+            if let Some(snapshot) = &self.loaded_snapshot
+                && let Some(id) = snapshot.row.get("id")
+            {
+                ledger.original_snapshots.insert(
+                    EntityKey::new(snapshot.entity.as_ref(), id.clone()),
+                    OriginalSnapshot::Compact(snapshot.row.clone()),
+                );
+            }
+            Arc::new(Mutex::new(ledger))
+        })
     }
 
     fn read_context<R>(&self, default: R, read: impl FnOnce(&EntityMutationLedger) -> R) -> R {
@@ -656,14 +710,20 @@ impl EntityRuntimeState {
                 target.original_versions.insert(key, version);
             }
             for (key, traces) in snapshot.trace_chains {
-                target.trace_chains.entry(key).or_default().extend(traces);
+                // Each stored chain is complete, not a segment to concatenate.
+                target.trace_chains.entry(key).or_insert(traces);
+            }
+            for (key, scope) in snapshot.unassigned_trace_scopes {
+                target.unassigned_trace_scopes.entry(key).or_insert(scope);
+            }
+            target.entity_comments.extend(snapshot.entity_comments);
+            for (key, snapshot) in snapshot.original_snapshots {
+                target.original_snapshots.entry(key).or_insert(snapshot);
             }
             if target.original_snapshot.is_none() {
                 target.original_snapshot = snapshot.original_snapshot;
             }
-            if target.comment.is_none() {
-                target.comment = snapshot.comment;
-            }
+            // Composition never supplies the receiving request's root reason.
             target.is_new |= snapshot.is_new;
             Ok(())
         })
@@ -679,6 +739,7 @@ impl EntityRuntimeState {
             .map_err(|graph| EntityGraphBuilder {
                 tables: graph.tables,
                 relation_lists: graph.relation_lists,
+                relation_facets: graph.relation_facets,
             })
     }
 
@@ -713,6 +774,28 @@ impl EntityRuntimeState {
                 relation: relation.to_owned(),
             })?
             .downcast_ref::<SmartList<T>>()
+    }
+
+    /// Inspect query-only Facet metadata without changing the relation getter's
+    /// cardinality or triggering I/O. Also available for a loaded null to-one.
+    pub fn relation_facet(
+        &self,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+        facet: &str,
+    ) -> Option<&SmartList<teaql_core::CompactRow>> {
+        self.graph
+            .frozen()?
+            .relation_facets
+            .as_ref()?
+            .lists
+            .get(&RelationListKey {
+                owner_entity: crate::canonical_id_space_entity(owner_entity),
+                owner_id,
+                relation: relation.to_owned(),
+            })?
+            .get(facet)
     }
 
     /// Resolve a to-many relation without performing an implicit database read.
@@ -837,8 +920,11 @@ impl EntityRuntimeState {
                 context.new_keys.clear();
                 context.original_versions.clear();
                 context.trace_chains.clear();
+                context.unassigned_trace_scopes.clear();
                 context.original_snapshot = None;
+                context.original_snapshots.clear();
                 context.comment = None;
+                context.entity_comments.clear();
                 context.is_new = false;
             });
         }
@@ -869,6 +955,19 @@ impl EntityRuntimeState {
         self.read_context(None, |context| context.comment.clone())
     }
 
+    /// Record only this entity's local reason, even in a shared graph ledger.
+    #[doc(hidden)]
+    pub fn set_entity_comment(&self, key: EntityKey, comment: impl Into<String>) {
+        self.write_context(|context| {
+            context.entity_comments.insert(key, comment.into());
+        });
+    }
+
+    #[doc(hidden)]
+    pub fn get_entity_comment(&self, key: &EntityKey) -> Option<String> {
+        self.read_context(None, |context| context.entity_comments.get(key).cloned())
+    }
+
     /// Mark this entity root as a newly created entity in memory.
     pub fn mark_as_new(&self, key: EntityKey) {
         self.write_context(|context| {
@@ -892,8 +991,9 @@ impl EntityRuntimeState {
     pub fn set_original_compact_row(
         &mut self,
         entity: impl Into<Arc<str>>,
-        row: teaql_core::CompactRow,
+        mut row: teaql_core::CompactRow,
     ) {
+        row.clear_loaded_relations();
         self.loaded_snapshot = Some(LoadedEntitySnapshot {
             entity: entity.into(),
             row,
@@ -965,7 +1065,123 @@ impl EntityRuntimeState {
 
     pub fn get_trace_chain(&self, key: &EntityKey) -> Vec<teaql_core::TraceNode> {
         self.read_context(Vec::new(), |context| {
-            context.trace_chains.get(key).cloned().unwrap_or_default()
+            context
+                .trace_chains
+                .get(key)
+                .map(|scope| scope.recover_trace_chain())
+                .unwrap_or_default()
+        })
+    }
+
+    pub(crate) fn replace_trace_scopes(
+        &self,
+        scopes: std::collections::BTreeMap<EntityKey, Arc<crate::TraceScopeToken>>,
+        unassigned: BTreeMap<EntityKey, Arc<crate::TraceScopeToken>>,
+    ) {
+        self.write_context(|context| {
+            context.trace_chains = scopes;
+            context.unassigned_trace_scopes = unassigned;
+        });
+    }
+
+    /// Rebind immutable ancestors after allocation, before command/event
+    /// materialization. Keys and mutation payloads remain retryable; this only
+    /// updates operation-owned trace tokens. Shared ancestors stay shared.
+    pub(crate) fn enrich_allocated_trace_scopes(&self, assigned: &BTreeMap<EntityKey, Value>) {
+        if assigned.is_empty() {
+            return;
+        }
+        type Token = crate::TraceScopeToken;
+        fn rebind(
+            scope: &Arc<Token>,
+            identities: &HashMap<*const Token, u64>,
+            cache: &mut HashMap<*const Token, Arc<Token>>,
+        ) -> Arc<Token> {
+            let mut pending = Vec::new();
+            let mut cursor = Some(scope.clone());
+            while let Some(token) = cursor {
+                if cache.contains_key(&Arc::as_ptr(&token)) {
+                    break;
+                }
+                cursor = token.parent.clone();
+                pending.push(token);
+            }
+            while let Some(token) = pending.pop() {
+                let pointer = Arc::as_ptr(&token);
+                let parent = token.parent.as_ref().map(|parent| {
+                    cache
+                        .get(&Arc::as_ptr(parent))
+                        .expect("parent rebound first")
+                        .clone()
+                });
+                let assigned_id = identities.get(&pointer).copied();
+                let changed_parent = match (&token.parent, &parent) {
+                    (Some(old), Some(new)) => !Arc::ptr_eq(old, new),
+                    _ => false,
+                };
+                let rebound = if changed_parent
+                    || assigned_id.is_some_and(|id| token.track.entity_id != Some(id))
+                {
+                    let mut track = token.track.clone();
+                    if let Some(id) = assigned_id {
+                        track.entity_id = Some(id);
+                    }
+                    Arc::new(Token {
+                        parent,
+                        track,
+                        node_index: token.node_index,
+                    })
+                } else {
+                    token.clone()
+                };
+                cache.insert(pointer, rebound);
+            }
+            cache
+                .get(&Arc::as_ptr(scope))
+                .expect("scope rebound")
+                .clone()
+        }
+
+        self.write_context(|context| {
+            let identities = context
+                .unassigned_trace_scopes
+                .iter()
+                .filter_map(|(key, scope)| {
+                    assigned
+                        .get(key)?
+                        .try_u64()
+                        .filter(|id| *id > 0)
+                        .map(|id| (Arc::as_ptr(scope), id))
+                })
+                .collect::<HashMap<_, _>>();
+            if identities.is_empty() {
+                return;
+            }
+            let mut cache = HashMap::new();
+            for scope in context.trace_chains.values_mut() {
+                *scope = rebind(scope, &identities, &mut cache);
+            }
+            for scope in context.unassigned_trace_scopes.values_mut() {
+                *scope = rebind(scope, &identities, &mut cache);
+            }
+        });
+    }
+
+    pub(crate) fn original_values_for(&self, key: &EntityKey) -> Option<EntitySnapshot> {
+        self.read_context(None, |context| {
+            context
+                .original_snapshots
+                .get(key)
+                .map(|snapshot| match snapshot {
+                    OriginalSnapshot::Materialized(values) => values.clone(),
+                    OriginalSnapshot::Compact(row) => EntitySnapshot::from(row.clone().into_map()),
+                })
+        })
+        .or_else(|| {
+            let snapshot = self.loaded_snapshot.as_ref()?;
+            (snapshot.entity.as_ref() == key.entity.as_ref()
+                && snapshot.row.get("id")?.try_u64() == key.id.try_u64())
+            .then(|| EntitySnapshot::from(snapshot.row.clone().into_map()))
         })
     }
 
@@ -1335,6 +1551,53 @@ mod lazy_root_tests {
     }
 
     #[test]
+    fn relation_facet_metadata_is_read_only_and_excluded_from_mutation_snapshots() {
+        let root = EntityRuntimeState::default();
+        let mut graph = EntityGraphBuilder::default();
+        let facets = BTreeMap::from([("choices".to_owned(), SmartList::new(Vec::new()))]);
+        graph.install_relation_facets("Owner", 1, "reference", facets.clone());
+        root.freeze_graph(graph).unwrap();
+        let mut first = EntityRuntimeState::fresh_with_shared_graph(&root);
+        let second = EntityRuntimeState::fresh_with_shared_graph(&root);
+        let mut row = teaql_core::CompactRow::from_map(BTreeMap::from([
+            ("id".to_owned(), Value::U64(1)),
+            ("version".to_owned(), Value::I64(1)),
+        ]));
+        row.set_loaded_relation(
+            "reference".to_owned(),
+            SmartList {
+                facets,
+                ..SmartList::new(Vec::new())
+            },
+        );
+        first.set_original_compact_row("Owner", row);
+        assert!(
+            !first
+                .loaded_snapshot
+                .as_ref()
+                .unwrap()
+                .row
+                .has_loaded_relations()
+        );
+        assert!(
+            first
+                .relation_facet("Owner", 1, "reference", "choices")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!first.has_mutation_context());
+        assert!(!second.has_mutation_context());
+        first.set_comment("first independent mutation");
+        assert_eq!(second.get_comment(), None);
+        assert!(!second.has_mutation_context());
+        assert!(
+            second
+                .relation_facet("Owner", 1, "reference", "choices")
+                .is_some()
+        );
+    }
+
+    #[test]
     fn loaded_snapshot_does_not_allocate_ledger_until_mutation() {
         let mut root = EntityRuntimeState::default();
         root.set_original_compact_row(
@@ -1507,5 +1770,62 @@ mod lazy_root_tests {
         let absent = root.relation_option::<u64>("Owner", 1, "absent");
         assert_eq!(absent.state(), LoadedRelation::NotLoaded);
         assert!(absent.value().is_none());
+    }
+}
+
+#[cfg(test)]
+mod trace_allocation_sharing_tests {
+    use super::*;
+
+    #[test]
+    fn rebinding_preserves_shared_immutable_ancestors_and_cleanup() {
+        let state = EntityRuntimeState::default();
+        let key = EntityKey::new("Order", 0_u64);
+        let child = EntityKey::new("Payment", 301_u64);
+        let inherited = EntityKey::new("OrderItem", 201_u64);
+        let root_scope = Arc::new(crate::TraceScopeToken {
+            parent: None,
+            track: teaql_core::TraceNode::typed(
+                teaql_core::TraceKind::AuditReason,
+                "Order",
+                None,
+                "submit",
+            ),
+            node_index: 0,
+        });
+        let child_scope = Arc::new(crate::TraceScopeToken {
+            parent: Some(root_scope.clone()),
+            track: teaql_core::TraceNode::typed(
+                teaql_core::TraceKind::AuditReason,
+                "Payment",
+                Some(301),
+                "authorize",
+            ),
+            node_index: 1,
+        });
+        state.replace_trace_scopes(
+            BTreeMap::from([
+                (key.clone(), root_scope.clone()),
+                (child.clone(), child_scope),
+                (inherited.clone(), root_scope.clone()),
+            ]),
+            BTreeMap::from([(key.clone(), root_scope)]),
+        );
+        state.enrich_allocated_trace_scopes(&BTreeMap::from([(key.clone(), Value::U64(100))]));
+        state.read_context((), |ledger| {
+            let root = &ledger.trace_chains[&key];
+            assert_eq!(root.track.entity_id, Some(100));
+            assert!(Arc::ptr_eq(root, &ledger.trace_chains[&inherited]));
+            assert!(Arc::ptr_eq(
+                root,
+                ledger.trace_chains[&child].parent.as_ref().unwrap()
+            ));
+            assert!(Arc::ptr_eq(root, &ledger.unassigned_trace_scopes[&key]));
+        });
+        state.clear_committed();
+        state.read_context((), |ledger| {
+            assert!(ledger.trace_chains.is_empty());
+            assert!(ledger.unassigned_trace_scopes.is_empty());
+        });
     }
 }

@@ -252,7 +252,7 @@ impl ExprEvaluator {
             // Function expressions are not boolean predicates in general.
             Expr::Function { .. } => false,
             // A bare column or value is truthy if it is a Bool(true).
-            Expr::Column(_) | Expr::Value(_) => {
+            Expr::Column(_) | Expr::Value(_) | Expr::LikePattern { .. } => {
                 matches!(Self::resolve(expr, row), Value::Bool(true))
             }
         }
@@ -263,6 +263,7 @@ impl ExprEvaluator {
         match expr {
             Expr::Column(name) => row.get(name).cloned().unwrap_or(Value::Null),
             Expr::Value(v) => v.clone(),
+            Expr::LikePattern { pattern, .. } => Value::from(pattern.clone()),
             Expr::Binary { left, op, right } => {
                 let lv = Self::resolve(left, row);
                 let rv = Self::resolve(right, row);

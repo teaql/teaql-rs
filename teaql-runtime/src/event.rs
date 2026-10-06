@@ -54,6 +54,7 @@ pub struct RawAuditEvent {
     pub trace_chain: Vec<teaql_core::TraceNode>,
     pub bootstrap_audit: Option<BootstrapAuditIdentity>,
     pub mutation_governance: Option<crate::MutationGovernanceSnapshot>,
+    pub(crate) diagnostic_redactions: Option<Arc<teaql_data_service::SqlIntentRedactions>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +85,7 @@ impl RawAuditEvent {
             trace_chain: Vec::new(),
             bootstrap_audit: None,
             mutation_governance: None,
+            diagnostic_redactions: None,
         }
     }
 
@@ -101,6 +103,7 @@ impl RawAuditEvent {
             trace_chain: Vec::new(),
             bootstrap_audit: None,
             mutation_governance: None,
+            diagnostic_redactions: None,
         }
     }
 
@@ -124,6 +127,7 @@ impl RawAuditEvent {
             trace_chain: Vec::new(),
             bootstrap_audit: None,
             mutation_governance: None,
+            diagnostic_redactions: None,
         }
     }
 
@@ -143,6 +147,7 @@ impl RawAuditEvent {
             trace_chain: Vec::new(),
             bootstrap_audit: None,
             mutation_governance: None,
+            diagnostic_redactions: None,
         }
     }
 
@@ -184,6 +189,7 @@ impl RawAuditEvent {
             trace_chain: Vec::new(),
             bootstrap_audit: None,
             mutation_governance: None,
+            diagnostic_redactions: None,
         }
     }
 
@@ -234,6 +240,7 @@ impl RawAuditEvent {
             trace_chain: Vec::new(),
             bootstrap_audit: None,
             mutation_governance: None,
+            diagnostic_redactions: None,
         }
     }
 
@@ -263,6 +270,7 @@ impl RawAuditEvent {
             trace_chain: Vec::new(),
             bootstrap_audit: None,
             mutation_governance: None,
+            diagnostic_redactions: None,
         }
     }
 
@@ -292,6 +300,7 @@ impl RawAuditEvent {
             trace_chain: Vec::new(),
             bootstrap_audit: None,
             mutation_governance: None,
+            diagnostic_redactions: None,
         }
     }
 
@@ -323,6 +332,7 @@ impl RawAuditEvent {
             trace_chain: Vec::new(),
             bootstrap_audit: None,
             mutation_governance: None,
+            diagnostic_redactions: None,
         }
     }
 
@@ -351,6 +361,9 @@ impl RawAuditEvent {
         let mut safe_fields = Vec::new();
         let allow = crate::log_privacy::plaintext_enabled();
         let mut secrets = Vec::new();
+        if let Some(source) = &self.diagnostic_redactions {
+            source.extend_secrets(allow, &mut secrets);
+        }
         for change in &self.changes {
             if crate::log_privacy::credential_name(&change.field)
                 || (!allow && audit_mask_fields.contains(&change.field))
@@ -395,7 +408,9 @@ impl RawAuditEvent {
                 safe_field.masked = true;
                 safe_field.output_length = Some("[REDACTED]".len());
                 safe_field.truncated = false;
-            } else if let Some(value) = &mut safe_field.value {
+            } else if let Some(value) = &mut safe_field.value
+                && (safe_field.masked || (change.field != "id" && change.field != "version"))
+            {
                 crate::log_privacy::scrub(value, &secrets);
                 safe_field.output_length = Some(value.chars().count());
             }
@@ -408,11 +423,22 @@ impl RawAuditEvent {
         }
         intent_values.sort_by_key(|value| std::cmp::Reverse(value.len()));
         crate::log_privacy::scrub_trace(&mut trace_chain, &intent_values);
+        let bootstrap_audit = self.bootstrap_audit.clone().map(|mut identity| {
+            crate::log_privacy::scrub(&mut identity.actor, &intent_values);
+            crate::log_privacy::scrub(&mut identity.reason, &intent_values);
+            identity
+        });
         SafeAuditEvent {
             kind: self.kind,
             entity: self.entity.clone(),
+            entity_id: match self.values.get("id") {
+                Some(Value::U64(id)) if *id > 0 => Some(*id),
+                Some(Value::I64(id)) if *id > 0 => Some(*id as u64),
+                _ => None,
+            },
             fields: safe_fields,
             trace_chain,
+            bootstrap_audit,
             mutation_governance: self.mutation_governance.clone(),
         }
     }
@@ -558,8 +584,15 @@ pub struct SafeAuditField {
 pub struct SafeAuditEvent {
     pub kind: RawAuditEventKind,
     pub entity: String,
+    /// Positive integer target identity, independent of changed fields and
+    /// responsibility lineage. Schema events have no target ID. Never infer
+    /// this from a parent reason or an old snapshot.
+    pub entity_id: Option<u64>,
     pub fields: Vec<SafeAuditField>,
     pub trace_chain: Vec<teaql_core::TraceNode>,
+    /// Framework bootstrap attribution, projected under the same privacy rules
+    /// as the safe lineage. Ordinary application mutations leave this absent.
+    pub bootstrap_audit: Option<BootstrapAuditIdentity>,
     pub mutation_governance: Option<crate::MutationGovernanceSnapshot>,
 }
 

@@ -1,6 +1,7 @@
 extern crate self as teaql_runtime;
 mod business_id;
 mod checker;
+mod commit_audit;
 mod context;
 mod data_service;
 mod document_round_trip;
@@ -131,6 +132,14 @@ pub use telemetry_opentelemetry::OpenTelemetryRuntimeTelemetry;
     clippy::items_after_test_module
 )]
 mod tests {
+    // Explicit test intent: this fixture helper does not exist in production.
+    fn fixture_select(entity: impl Into<String>, scenario: &str) -> teaql_core::SelectQuery {
+        let mut query = teaql_core::SelectQuery::new(entity);
+        query.comment = Some(format!("what: verify {scenario}"));
+        query.purpose = Some(format!("why: regress {scenario}"));
+        query
+    }
+
     use std::collections::{BTreeMap, VecDeque};
     use std::sync::{Arc, Mutex};
 
@@ -1233,9 +1242,12 @@ mod tests {
         let sql = PostgresDialect
             .compile_select(
                 &descriptor,
-                &SelectQuery::new("PaymentOrder")
-                    .project("id")
-                    .project("channel_id"),
+                &fixture_select(
+                    "PaymentOrder",
+                    "scalar_fk_column_named_like_relation_does_not_create_related_entity",
+                )
+                .project("id")
+                .project("channel_id"),
             )
             .unwrap()
             .sql;
@@ -1336,7 +1348,10 @@ mod tests {
             affected: 0,
             rows: Vec::new(),
         };
-        let repo = RuntimeDataService::new(&store, &executor);
+        let repo = RuntimeDataService::new(&store, &executor).with_mutation_intent(
+            teaql_core::MutationIntent::new("verify data_service_returns_optimistic_lock_conflict")
+                .unwrap(),
+        );
 
         let err = repo
             .update(
@@ -1387,7 +1402,13 @@ mod tests {
             rows: Vec::new(),
         });
 
-        let repo = context.data_service_internal::<StubExecutor>().unwrap();
+        let repo = context
+            .data_service_internal::<StubExecutor>()
+            .unwrap()
+            .with_mutation_intent(
+                teaql_core::MutationIntent::new("verify user_context_builds_context_data_service")
+                    .unwrap(),
+            );
         let affected = repo
             .update(
                 &UpdateCommand::new("Order", 1_u64)
@@ -1417,9 +1438,18 @@ mod tests {
 
         let repo = context
             .entity_data_service::<StubExecutor>("Order")
-            .unwrap();
+            .unwrap()
+            .with_mutation_intent(
+                teaql_core::MutationIntent::new(
+                    "verify user_context_resolves_entity_data_service_by_entity_type",
+                )
+                .unwrap(),
+            );
         assert_eq!(repo.entity(), "Order");
-        assert_eq!(repo.select().entity, "Order");
+        assert_eq!(
+            fixture_select(repo.entity(), "verify typed repository selection").entity,
+            "Order"
+        );
 
         let affected = repo
             .insert_internal(
@@ -1456,9 +1486,15 @@ mod tests {
 
         let repo = context
             .entity_data_service::<StubExecutor>("Order")
-            .unwrap();
+            .unwrap()
+            .with_mutation_intent(
+                teaql_core::MutationIntent::new(
+                    "verify entity_data_service_applies_behavior_hooks",
+                )
+                .unwrap(),
+            );
 
-        // let compiled = repo.compile(&repo.select()).unwrap();
+        // let compiled = repo.compile(&fixture_select(repo.entity(), "verify typed repository selection")).unwrap();
         // assert!(compiled.sql.contains("WHERE (version = $1)"));
 
         let insert = repo.insert_command().value("id", 1_u64).value("name", "n");
@@ -1493,7 +1529,7 @@ mod tests {
             .entity_data_service::<StubExecutor>("Order")
             .unwrap();
 
-        // let compiled = repo.compile(&repo.select()).unwrap();
+        // let compiled = repo.compile(&fixture_select(repo.entity(), "verify typed repository selection")).unwrap();
         // assert!(compiled.sql.contains("version = $1"));
         // assert!(compiled.sql.contains("id = $2"));
 
@@ -1519,9 +1555,22 @@ mod tests {
         let repo = context
             .entity_data_service::<StubExecutor>("Order")
             .unwrap();
-        let query = PurposedSelectQuery::new(repo.select(), "verify query policy coverage");
-        let relation_aggregate =
-            RelationAggregate::new("lines", "lineCount", SelectQuery::new("OrderLine"), true);
+        let query = PurposedSelectQuery::new(
+            fixture_select(
+                "Order",
+                "public_query_families_cannot_bypass_request_policy",
+            ),
+            "verify query policy coverage",
+        );
+        let relation_aggregate = RelationAggregate::new(
+            "lines",
+            "lineCount",
+            fixture_select(
+                "OrderLine",
+                "public_query_families_cannot_bypass_request_policy",
+            ),
+            true,
+        );
 
         assert_query_policy_probe(repo.fetch_all(&query).await);
         assert_query_policy_probe(repo.fetch_all_owned(query.clone()).await);
@@ -1552,7 +1601,8 @@ mod tests {
         );
 
         let aggregate_query = PurposedSelectQuery::new(
-            repo.select().aggregate(Aggregate::count("orderCount")),
+            fixture_select(repo.entity(), "verify typed repository selection")
+                .aggregate(Aggregate::count("orderCount")),
             "verify aggregate query policy coverage",
         );
         assert_query_policy_probe(repo.fetch_all(&aggregate_query).await);
@@ -1772,6 +1822,9 @@ mod tests {
         let executor = StubExecutor::default();
         let repo = EntityDataService::for_executor(&context, "OrderLine", &executor);
         let root = EntityRuntimeState::default();
+        root.set_comment(
+            "verify nested_sparse_ledger_insert_plan_rejects_required_field_at_child_path",
+        );
         let child_key = EntityKey::new("OrderLine", 9_u64);
         root.mark_as_new(child_key.clone());
         root.set(child_key.clone(), "order_id", Value::U64(7));
@@ -1817,6 +1870,9 @@ mod tests {
         };
         let repo = EntityDataService::for_executor(&context, "School", &executor);
         let root = EntityRuntimeState::default();
+        root.set_comment(
+            "verify ledger_update_of_existing_versioned_row_requires_loaded_original_version",
+        );
         root.set(
             EntityKey::new("School", 1_u64),
             "name",
@@ -1852,6 +1908,9 @@ mod tests {
         let executor = StubExecutor::default();
         let repo = EntityDataService::for_executor(&context, "School", &executor);
         let root = EntityRuntimeState::default();
+        root.set_comment(
+            "verify generated_attachment_version_conflict_rejects_ledger_plan_before_sql",
+        );
         let stale = EntityRuntimeState::default();
         let key = EntityKey::new("School", 1_u64);
         root.set_original_version(key.clone(), 2);
@@ -1891,6 +1950,9 @@ mod tests {
         let executor = StubExecutor::default();
         let repo = EntityDataService::for_executor(&context, "School", &executor);
         let root = EntityRuntimeState::default();
+        root.set_comment(
+            "verify ledger_delete_of_existing_versioned_row_requires_loaded_original_version",
+        );
         root.mark_as_delete(EntityKey::new("School", 1_u64));
         let error = repo
             .execute_ledger_plan_internal(root, &BTreeMap::new())
@@ -2244,7 +2306,13 @@ mod tests {
 
         let repo = context
             .entity_data_service::<StubExecutor>("Order")
-            .unwrap();
+            .unwrap()
+            .with_mutation_intent(
+                teaql_core::MutationIntent::new(
+                    "verify user_context_event_sink_receives_data_service_mutation_events",
+                )
+                .unwrap(),
+            );
         repo.insert_internal(&repo.insert_command().value("name", "created"))
             .await
             .unwrap();
@@ -2578,7 +2646,13 @@ mod tests {
 
         let repo = context
             .entity_data_service::<StubExecutor>("Order")
-            .unwrap();
+            .unwrap()
+            .with_mutation_intent(
+                teaql_core::MutationIntent::new(
+                    "verify entity_data_service_enhances_parent_rows_with_relations",
+                )
+                .unwrap(),
+            );
         let mut parents = vec![
             teaql_core::CompactRow::from_map(Record::from([(String::from("id"), Value::U64(11))])),
             teaql_core::CompactRow::from_map(Record::from([(String::from("id"), Value::U64(12))])),
@@ -2635,16 +2709,29 @@ mod tests {
 
         let repo = context
             .entity_data_service::<CapturingQueryExecutor>("Order")
-            .unwrap();
+            .unwrap()
+            .with_mutation_intent(
+                teaql_core::MutationIntent::new(
+                    "verify topn_006_008_009_relation_is_stable_empty_safe_and_count_free",
+                )
+                .unwrap(),
+            );
         let mut parents = vec![
             teaql_core::CompactRow::from_map(Record::from([(String::from("id"), Value::U64(11))])),
             teaql_core::CompactRow::from_map(Record::from([(String::from("id"), Value::U64(12))])),
         ];
-        let query = SelectQuery::new("Order").relation_query(
+        let query = fixture_select(
+            "Order",
+            "topn_006_008_009_relation_is_stable_empty_safe_and_count_free",
+        )
+        .relation_query(
             "lines",
-            SelectQuery::new("OrderLine")
-                .order_by(OrderBy::desc("name"))
-                .limit(3),
+            fixture_select(
+                "OrderLine",
+                "topn_006_008_009_relation_is_stable_empty_safe_and_count_free",
+            )
+            .order_by(OrderBy::desc("name"))
+            .limit(3),
         );
 
         repo.enhance_query_relations_internal(&mut parents, &query)
@@ -2713,7 +2800,11 @@ mod tests {
             .unwrap();
         let rows = repo
             .fetch_enhanced_entities_internal::<OrderLineWithProductEntityRow>(
-                &SelectQuery::new("OrderLine").relation("product"),
+                &fixture_select(
+                    "OrderLine",
+                    "relation_enhancement_wraps_inverse_many_relation_as_list",
+                )
+                .relation("product"),
             )
             .await
             .unwrap();
@@ -2750,7 +2841,11 @@ mod tests {
             .unwrap();
         let rows = repo
             .fetch_enhanced_entities_internal::<FlatTripRow>(
-                &SelectQuery::new("FlatTrip").relation("vendor"),
+                &fixture_select(
+                    "FlatTrip",
+                    "generated_to_one_getter_resolves_from_runtime_module_identity_graph",
+                )
+                .relation("vendor"),
             )
             .await
             .unwrap();
@@ -2791,7 +2886,11 @@ mod tests {
             .unwrap();
         let mut rows = repo
             .fetch_enhanced_entities_internal::<FlatFleetRow>(
-                &SelectQuery::new("FlatFleet").relation("trip_list"),
+                &fixture_select(
+                    "FlatFleet",
+                    "generated_to_many_getter_uses_adjacency_and_mutation_copies_on_write",
+                )
+                .relation("trip_list"),
             )
             .await
             .unwrap();
@@ -2838,7 +2937,10 @@ mod tests {
             .entity_data_service::<StubExecutor>("Order")
             .unwrap();
         let rows = repo
-            .fetch_entities_internal::<OrderEntity>(&repo.select())
+            .fetch_entities_internal::<OrderEntity>(&fixture_select(
+                repo.entity(),
+                "verify typed repository selection",
+            ))
             .await
             .unwrap();
 
@@ -2872,12 +2974,22 @@ mod tests {
             .entity_data_service::<CapturingQueryExecutor>("Order")
             .unwrap();
         let rows = repo
-            .fetch_entities_internal::<OrderEntity>(&SelectQuery::new("Order").project("name"))
+            .fetch_entities_internal::<OrderEntity>(
+                &fixture_select(
+                    "Order",
+                    "typed_entity_fetch_restores_id_and_version_to_reduced_projection",
+                )
+                .project("name"),
+            )
             .await
             .unwrap();
         let enhanced_rows = repo
             .fetch_enhanced_entities_internal::<OrderEntity>(
-                &SelectQuery::new("Order").project("name"),
+                &fixture_select(
+                    "Order",
+                    "typed_entity_fetch_restores_id_and_version_to_reduced_projection",
+                )
+                .project("name"),
             )
             .await
             .unwrap();
@@ -2913,7 +3025,10 @@ mod tests {
             .entity_data_service::<StubExecutor>("CatalogProduct")
             .unwrap();
         let rows = repo
-            .fetch_entities_internal::<CatalogProductRow>(&repo.select())
+            .fetch_entities_internal::<CatalogProductRow>(&fixture_select(
+                repo.entity(),
+                "verify typed repository selection",
+            ))
             .await
             .unwrap();
 
@@ -2949,7 +3064,10 @@ mod tests {
             .entity_data_service::<StubExecutor>("OrderAggregate")
             .unwrap();
         let rows = repo
-            .fetch_entities_internal::<OrderAggregateDynamic>(&repo.select())
+            .fetch_entities_internal::<OrderAggregateDynamic>(&fixture_select(
+                repo.entity(),
+                "verify typed repository selection",
+            ))
             .await
             .unwrap();
 
@@ -3006,15 +3124,17 @@ mod tests {
             .unwrap();
         let rows = repo
             .fetch_all_with_relation_aggregates_internal(
-                &repo
-                    .select()
+                &fixture_select(repo.entity(), "verify typed repository selection")
                     .project("id")
                     .project("version")
                     .project("name"),
                 &[RelationAggregate::new(
                     "lines",
                     "lineCount",
-                    SelectQuery::new("OrderLine"),
+                    fixture_select(
+                        "OrderLine",
+                        "entity_data_service_executes_relation_aggregates_into_dynamic_properties",
+                    ),
                     true,
                 )],
             )
@@ -3068,15 +3188,17 @@ mod tests {
             .unwrap();
         let rows = repo
             .fetch_all_with_relation_aggregates_internal(
-                &repo
-                    .select()
+                &fixture_select(repo.entity(), "verify typed repository selection")
                     .project("id")
                     .project("version")
                     .project("name"),
                 &[RelationAggregate::new(
                     "lines",
                     "lineCount",
-                    SelectQuery::new("OrderLine"),
+                    fixture_select(
+                        "OrderLine",
+                        "entity_data_service_maps_relation_aggregate_storage_key_to_property_key",
+                    ),
                     true,
                 )],
             )
@@ -3115,8 +3237,7 @@ mod tests {
         let repo = context
             .entity_data_service::<QueueExecutor>("Order")
             .unwrap();
-        let query = repo
-            .select()
+        let query = fixture_select(repo.entity(), "verify typed repository selection")
             .count("count")
             .enable_aggregation_cache_for(60_000);
 
@@ -3168,20 +3289,26 @@ mod tests {
             .entity_data_service::<CapturingQueryExecutor>("Order")
             .unwrap();
 
-        let first = SelectQuery::new("Order")
-            .order_desc("id")
-            .page(0, 10)
-            .optimize_for_continuous_page_fetch_with("recent-orders", 60);
+        let first = fixture_select(
+            "Order",
+            "continuous_page_fetch_uses_id_seek_for_the_next_page",
+        )
+        .order_desc("id")
+        .page(0, 10)
+        .optimize_for_continuous_page_fetch_with("recent-orders", 60);
         repo.fetch_all_internal(&first).await.unwrap();
         assert_eq!(
             context.continuous_page_plan().as_deref(),
             Some("OFFSET_FALLBACK:FIRST_PAGE")
         );
 
-        let second = SelectQuery::new("Order")
-            .order_desc("id")
-            .page(10, 10)
-            .optimize_for_continuous_page_fetch_with("recent-orders", 60);
+        let second = fixture_select(
+            "Order",
+            "continuous_page_fetch_uses_id_seek_for_the_next_page",
+        )
+        .order_desc("id")
+        .page(10, 10)
+        .optimize_for_continuous_page_fetch_with("recent-orders", 60);
         repo.fetch_all_internal(&second).await.unwrap();
         assert_eq!(
             context.continuous_page_plan().as_deref(),
@@ -3238,11 +3365,14 @@ mod tests {
 
         let first = repo
             .fetch_enhanced_entities_with_relation_aggregates_internal::<Order>(
-                &SelectQuery::new("Order")
-                    .projects(["id", "version", "name"])
-                    .order_asc("name")
-                    .page(20, 10)
-                    .optimize_pagination_with_id_set_config("orders", 60, 1_000),
+                &fixture_select(
+                    "Order",
+                    "id_set_pagination_reuses_ordered_ids_and_returns_exact_count",
+                )
+                .projects(["id", "version", "name"])
+                .order_asc("name")
+                .page(20, 10)
+                .optimize_pagination_with_id_set_config("orders", 60, 1_000),
                 &[],
             )
             .await
@@ -3253,11 +3383,14 @@ mod tests {
 
         let second = repo
             .fetch_enhanced_entities_with_relation_aggregates_internal::<Order>(
-                &SelectQuery::new("Order")
-                    .projects(["id", "version", "name"])
-                    .order_asc("name")
-                    .page(50, 10)
-                    .optimize_pagination_with_id_set_config("orders", 60, 1_000),
+                &fixture_select(
+                    "Order",
+                    "id_set_pagination_reuses_ordered_ids_and_returns_exact_count",
+                )
+                .projects(["id", "version", "name"])
+                .order_asc("name")
+                .page(50, 10)
+                .optimize_pagination_with_id_set_config("orders", 60, 1_000),
                 &[],
             )
             .await
@@ -3316,11 +3449,14 @@ mod tests {
             .unwrap();
         let rows = repo
             .fetch_enhanced_entities_with_relation_aggregates_internal::<Order>(
-                &SelectQuery::new("Order")
-                    .projects(["id", "version", "name"])
-                    .order_asc("id")
-                    .page(0, 1)
-                    .optimize_pagination_with_id_set_config("overflow", 60, 3),
+                &fixture_select(
+                    "Order",
+                    "id_set_pagination_limit_overflow_falls_back_without_false_count",
+                )
+                .projects(["id", "version", "name"])
+                .order_asc("id")
+                .page(0, 1)
+                .optimize_pagination_with_id_set_config("overflow", 60, 3),
                 &[],
             )
             .await
@@ -3351,11 +3487,14 @@ mod tests {
         };
         let first_context = make_context(executor.clone());
         let second_context = make_context(executor);
-        let query = SelectQuery::new("Order")
-            .projects(["id", "version", "name"])
-            .order_asc("id")
-            .page(0, 1)
-            .optimize_pagination_with_id_set_config("single-flight", 60, 100);
+        let query = fixture_select(
+            "Order",
+            "id_set_pagination_coalesces_concurrent_cache_misses",
+        )
+        .projects(["id", "version", "name"])
+        .order_asc("id")
+        .page(0, 1)
+        .optimize_pagination_with_id_set_config("single-flight", 60, 100);
 
         let first = async {
             first_context
@@ -3395,7 +3534,7 @@ mod tests {
         context.set_id_set_store(Arc::new(crate::InMemoryIdSetStore::default()));
         context.insert_resource(PostgresDialect);
         context.insert_resource(executor);
-        let query = SelectQuery::new("Order")
+        let query = fixture_select("Order", "id_set_pagination_rebuilds_after_ttl_expiry")
             .projects(["id", "version", "name"])
             .order_asc("id")
             .page(0, 1)
@@ -3433,11 +3572,14 @@ mod tests {
         };
         let first_context = make_context("tenant-1:user-1");
         let second_context = make_context("tenant-1:user-2");
-        let query = SelectQuery::new("Order")
-            .projects(["id", "version", "name"])
-            .order_asc("id")
-            .page(0, 1)
-            .optimize_pagination_with_id_set_config("principal-isolation", 60, 100);
+        let query = fixture_select(
+            "Order",
+            "id_set_pagination_isolates_principals_in_a_shared_store",
+        )
+        .projects(["id", "version", "name"])
+        .order_asc("id")
+        .page(0, 1)
+        .optimize_pagination_with_id_set_config("principal-isolation", 60, 100);
 
         first_context
             .entity_data_service::<ConcurrentIdSetExecutor>("Order")
@@ -3470,7 +3612,7 @@ mod tests {
             rows: Mutex::new(VecDeque::from([Vec::new(), Vec::new()])),
             queries: Mutex::new(Vec::new()),
         });
-        let query = SelectQuery::new("Order")
+        let query = fixture_select("Order", "id_set_pagination_retains_empty_exact_result")
             .projects(["id", "version", "name"])
             .order_asc("id")
             .page(0, 10)
@@ -3504,11 +3646,14 @@ mod tests {
             ])]])),
             queries: Mutex::new(Vec::new()),
         });
-        let query = SelectQuery::new("Order")
-            .projects(["id", "version", "name"])
-            .order_asc("id")
-            .page(0, 10)
-            .optimize_pagination_with_id_set_config("unavailable", 60, 100);
+        let query = fixture_select(
+            "Order",
+            "id_set_pagination_store_failure_falls_back_without_changing_rows",
+        )
+        .projects(["id", "version", "name"])
+        .order_asc("id")
+        .page(0, 10)
+        .optimize_pagination_with_id_set_config("unavailable", 60, 100);
 
         let rows = context
             .entity_data_service::<IdSetQueueExecutor>("Order")
@@ -3546,11 +3691,14 @@ mod tests {
             ])),
             queries: Mutex::new(Vec::new()),
         });
-        let query = SelectQuery::new("Order")
-            .projects(["id", "version", "name"])
-            .order_asc("id")
-            .page(0, 2)
-            .optimize_pagination_with_id_set_config("delete", 60, 100);
+        let query = fixture_select(
+            "Order",
+            "id_set_pagination_does_not_shift_page_when_an_entity_disappears",
+        )
+        .projects(["id", "version", "name"])
+        .order_asc("id")
+        .page(0, 2)
+        .optimize_pagination_with_id_set_config("delete", 60, 100);
 
         let rows = context
             .entity_data_service::<IdSetQueueExecutor>("Order")
@@ -3579,11 +3727,14 @@ mod tests {
             ])]])),
             queries: Mutex::new(Vec::new()),
         });
-        let query = SelectQuery::new("Order")
-            .projects(["id", "version", "name"])
-            .order_expr_asc(Expr::column("name"))
-            .page(0, 10)
-            .optimize_pagination_with_id_set_config("unsupported", 60, 100);
+        let query = fixture_select(
+            "Order",
+            "id_set_pagination_unsupported_shape_falls_back_visibly",
+        )
+        .projects(["id", "version", "name"])
+        .order_expr_asc(Expr::column("name"))
+        .page(0, 10)
+        .optimize_pagination_with_id_set_config("unsupported", 60, 100);
 
         let rows = context
             .entity_data_service::<IdSetQueueExecutor>("Order")
@@ -3621,9 +3772,14 @@ mod tests {
 
         let repo = context
             .entity_data_service::<QueueExecutor>("Order")
-            .unwrap();
-        let query = repo
-            .select()
+            .unwrap()
+            .with_mutation_intent(
+                teaql_core::MutationIntent::new(
+                    "verify aggregation_cache_is_namespaced_and_invalidated_after_write",
+                )
+                .unwrap(),
+            );
+        let query = fixture_select(repo.entity(), "verify typed repository selection")
             .count("count")
             .enable_aggregation_cache_for(60_000);
 
@@ -3682,15 +3838,21 @@ mod tests {
         let repo = context
             .entity_data_service::<QueueExecutor>("Order")
             .unwrap();
-        let query = repo
-            .select()
+        let query = fixture_select(repo.entity(), "verify typed repository selection")
             .project("id")
             .project("version")
             .project("name")
             .enable_aggregation_cache_for(60_000)
             .propagate_aggregation_cache(60_000);
-        let aggregate =
-            RelationAggregate::new("lines", "lineCount", SelectQuery::new("OrderLine"), true);
+        let aggregate = RelationAggregate::new(
+            "lines",
+            "lineCount",
+            fixture_select(
+                "OrderLine",
+                "aggregation_cache_propagates_to_relation_aggregates",
+            ),
+            true,
+        );
 
         let first = repo
             .fetch_all_with_relation_aggregates_internal(&query, &[aggregate.clone()])
@@ -3730,14 +3892,17 @@ mod tests {
             ],
         );
 
-        let query = teaql_core::SelectQuery::new("Order")
-            .filter(Expr::Binary {
-                left: Box::new(Expr::column("id")),
-                op: teaql_core::BinaryOp::Gte,
-                right: Box::new(Expr::value(2_u64)),
-            })
-            .order_by(OrderBy::desc("id"))
-            .limit(1);
+        let query = fixture_select(
+            "Order",
+            "memory_data_service_fetches_smart_list_entities_with_query_features",
+        )
+        .filter(Expr::Binary {
+            left: Box::new(Expr::column("id")),
+            op: teaql_core::BinaryOp::Gte,
+            right: Box::new(Expr::value(2_u64)),
+        })
+        .order_by(OrderBy::desc("id"))
+        .limit(1);
 
         let orders = data_service.fetch_entities::<Order>(&query).unwrap();
 
@@ -3792,9 +3957,15 @@ mod tests {
                 ],
             );
 
-        let query = SelectQuery::new("Order").project("id").project("name");
-        let aggregate =
-            RelationAggregate::new("lines", "lineCount", SelectQuery::new("OrderLine"), true);
+        let query = fixture_select("Order", "memory_data_service_runs_relation_aggregates")
+            .project("id")
+            .project("name");
+        let aggregate = RelationAggregate::new(
+            "lines",
+            "lineCount",
+            fixture_select("OrderLine", "memory_data_service_runs_relation_aggregates"),
+            true,
+        );
 
         let rows = data_service
             .fetch_all_with_relation_aggregates(&query, &[aggregate])
@@ -3860,8 +4031,11 @@ mod tests {
             ],
             group_by: Vec::new(),
             relations: Vec::new(),
+            facets: Vec::new(),
+            relation_aggregates: Vec::new(),
             aggregation_cache: None,
             comment: None,
+            purpose: None,
             raw_sql: None,
             raw_sql_search_criteria: Vec::new(),
             dynamic_properties: Vec::new(),
@@ -3907,15 +4081,18 @@ mod tests {
 
         let rows = data_service
             .fetch_all(
-                &teaql_core::SelectQuery::new("Order")
-                    .filter(
-                        Expr::between("version", 1_i64, 3_i64)
-                            .and_expr(Expr::not_like("name", "tmp%"))
-                            .and_expr(Expr::not_in_list("name", vec![Value::from("deleted")])),
-                    )
-                    .group_by("name")
-                    .count("total")
-                    .sum("version", "versionSum"),
+                &fixture_select(
+                    "Order",
+                    "memory_data_service_runs_grouped_aggregates_and_extended_filters",
+                )
+                .filter(
+                    Expr::between("version", 1_i64, 3_i64)
+                        .and_expr(Expr::not_like("name", "tmp%"))
+                        .and_expr(Expr::not_in_list("name", vec![Value::from("deleted")])),
+                )
+                .group_by("name")
+                .count("total")
+                .sum("version", "versionSum"),
             )
             .unwrap();
 
@@ -3954,13 +4131,16 @@ mod tests {
 
         let rows = data_service
             .fetch_all(
-                &teaql_core::SelectQuery::new("Order")
-                    .group_by("name")
-                    .count("total")
-                    .stddev("version", "stddevVersion")
-                    .var_pop("version", "varPopVersion")
-                    .bit_or("version", "bitOrVersion")
-                    .having(Expr::gt("total", 1_i64)),
+                &fixture_select(
+                    "Order",
+                    "memory_data_service_runs_extended_aggregates_and_having",
+                )
+                .group_by("name")
+                .count("total")
+                .stddev("version", "stddevVersion")
+                .var_pop("version", "varPopVersion")
+                .bit_or("version", "bitOrVersion")
+                .having(Expr::gt("total", 1_i64)),
             )
             .unwrap();
 
@@ -4009,7 +4189,7 @@ mod tests {
 
         let rows = data_service
             .fetch_all(
-                &teaql_core::SelectQuery::new("Order")
+                &fixture_select("Order", "memory_data_service_runs_sound_like_filter")
                     .filter(Expr::sound_like("name", "Robert"))
                     .order_asc("id"),
             )
@@ -4052,16 +4232,19 @@ mod tests {
 
         let rows = data_service
             .fetch_all(
-                &teaql_core::SelectQuery::new("Order")
-                    .filter(
-                        Expr::contain("name", "tea")
-                            .and_expr(Expr::begin_with("name", "tea"))
-                            .and_expr(Expr::end_with("name", "order"))
-                            .and_expr(Expr::not_contain("name", "coffee"))
-                            .and_expr(Expr::not_begin_with("name", "archived"))
-                            .and_expr(Expr::not_end_with("name", "draft")),
-                    )
-                    .order_asc("id"),
+                &fixture_select(
+                    "Order",
+                    "memory_data_service_runs_java_style_string_match_filters",
+                )
+                .filter(
+                    Expr::contain("name", "tea")
+                        .and_expr(Expr::begin_with("name", "tea"))
+                        .and_expr(Expr::end_with("name", "order"))
+                        .and_expr(Expr::not_contain("name", "coffee"))
+                        .and_expr(Expr::not_begin_with("name", "archived"))
+                        .and_expr(Expr::not_end_with("name", "draft")),
+                )
+                .order_asc("id"),
             )
             .unwrap();
 
@@ -4093,9 +4276,12 @@ mod tests {
 
         let rows = data_service
             .fetch_all(
-                &teaql_core::SelectQuery::new("Order")
-                    .filter(Expr::compare_columns("version", BinaryOp::Gte, "id"))
-                    .order_asc("id"),
+                &fixture_select(
+                    "Order",
+                    "memory_data_service_runs_property_to_property_filters",
+                )
+                .filter(Expr::compare_columns("version", BinaryOp::Gte, "id"))
+                .order_asc("id"),
             )
             .unwrap();
 
@@ -4125,7 +4311,13 @@ mod tests {
             .unwrap();
 
         let row = data_service
-            .fetch_all(&teaql_core::SelectQuery::new("Order").filter(Expr::eq("id", 10_u64)))
+            .fetch_all(
+                &fixture_select(
+                    "Order",
+                    "memory_data_service_supports_mutations_and_optimistic_locking",
+                )
+                .filter(Expr::eq("id", 10_u64)),
+            )
             .unwrap()
             .pop()
             .unwrap();
@@ -4151,7 +4343,13 @@ mod tests {
             .delete(&DeleteCommand::new("Order", 10_u64).expected_version(2))
             .unwrap();
         let row = data_service
-            .fetch_all(&teaql_core::SelectQuery::new("Order").filter(Expr::eq("id", 10_u64)))
+            .fetch_all(
+                &fixture_select(
+                    "Order",
+                    "memory_data_service_supports_mutations_and_optimistic_locking",
+                )
+                .filter(Expr::eq("id", 10_u64)),
+            )
             .unwrap()
             .pop()
             .unwrap();
@@ -4161,7 +4359,13 @@ mod tests {
             .recover(&RecoverCommand::new("Order", 10_u64, -3))
             .unwrap();
         let row = data_service
-            .fetch_all(&teaql_core::SelectQuery::new("Order").filter(Expr::eq("id", 10_u64)))
+            .fetch_all(
+                &fixture_select(
+                    "Order",
+                    "memory_data_service_supports_mutations_and_optimistic_locking",
+                )
+                .filter(Expr::eq("id", 10_u64)),
+            )
             .unwrap()
             .pop()
             .unwrap();

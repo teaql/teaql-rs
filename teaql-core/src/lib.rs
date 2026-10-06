@@ -11,6 +11,7 @@ mod mutation;
 mod naming;
 mod query;
 pub mod request;
+mod request_intent;
 mod safe_expression;
 pub mod serde_utils;
 pub mod time;
@@ -38,6 +39,7 @@ pub use query::{
     RawSqlProjection, Record, RelationAggregate, RelationLoad, SelectQuery, Slice, SortDirection,
     StreamConfig, compact_row_to_json_value, record_to_json_value,
 };
+pub use request_intent::{MutationIntent, QueryIntent, RequestIntentError, RequestKind};
 pub use safe_expression::{SafeExpression, TeaqlEmpty};
 pub use trace::{TraceKind, TraceNode};
 pub use value::{DataType, Decimal, Value};
@@ -476,21 +478,56 @@ mod tests {
 
     #[test]
     fn java_style_string_match_builders_expand_like_patterns() {
-        assert_eq!(Expr::contain("name", "tea"), Expr::like("name", "%tea%"));
-        assert_eq!(
-            Expr::not_contain("name", "tea"),
-            Expr::not_like("name", "%tea%")
-        );
-        assert_eq!(Expr::begin_with("name", "tea"), Expr::like("name", "tea%"));
-        assert_eq!(
-            Expr::not_begin_with("name", "tea"),
-            Expr::not_like("name", "tea%")
-        );
-        assert_eq!(Expr::end_with("name", "tea"), Expr::like("name", "%tea"));
-        assert_eq!(
-            Expr::not_end_with("name", "tea"),
-            Expr::not_like("name", "%tea")
-        );
+        for original in ["tea", "%tea_\\%"] {
+            for (expr, op, pattern) in [
+                (
+                    Expr::contain("name", original),
+                    BinaryOp::Like,
+                    format!("%{original}%"),
+                ),
+                (
+                    Expr::not_contain("name", original),
+                    BinaryOp::NotLike,
+                    format!("%{original}%"),
+                ),
+                (
+                    Expr::begin_with("name", original),
+                    BinaryOp::Like,
+                    format!("{original}%"),
+                ),
+                (
+                    Expr::not_begin_with("name", original),
+                    BinaryOp::NotLike,
+                    format!("{original}%"),
+                ),
+                (
+                    Expr::end_with("name", original),
+                    BinaryOp::Like,
+                    format!("%{original}"),
+                ),
+                (
+                    Expr::not_end_with("name", original),
+                    BinaryOp::NotLike,
+                    format!("%{original}"),
+                ),
+            ] {
+                assert_eq!(
+                    expr,
+                    Expr::binary(
+                        Expr::column("name"),
+                        op,
+                        Expr::LikePattern {
+                            pattern,
+                            original: original.into()
+                        }
+                    )
+                );
+            }
+        }
+        let Expr::Binary { right, .. } = Expr::like("name", "%tea%") else {
+            panic!()
+        };
+        assert_eq!(*right, Expr::value("%tea%"));
     }
 
     #[test]

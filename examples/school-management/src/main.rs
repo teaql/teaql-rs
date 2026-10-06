@@ -54,9 +54,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .audit_as("Create the School Query conformance fixture")
         .save(&context)
         .await?;
+    eprintln!("CHECK School fixture persisted");
 
     macro_rules! assert_query {
         ($label:expr, $request:expr, $expected:expr) => {{
+            eprintln!("CHECK School query: {}", $label);
             let rows = $request
                 .comment(format!("Query parity: {}", $label))
                 .purpose("Execute the shared School Query conformance case")
@@ -138,6 +140,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         1
     );
 
+    eprintln!("CHECK School forward relations");
     let related = Q::schools()
         .with_name_is("Riverside Primary School")
         .select_platform_with(Q::platforms_minimal().select_name().select_base_url())
@@ -169,6 +172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(projected.len(), 1);
     assert_eq!(projected[0].name(), "Riverside Primary School");
 
+    eprintln!("CHECK School include-all Facet");
     let include_all = Q::schools()
         .with_name_containing("Primary")
         .facet_by_school_type_as_with_options(

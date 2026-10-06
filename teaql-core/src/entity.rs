@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    CompactRow, Decimal, EntityDescriptor, EntitySnapshot, MutationValues, Value,
+    CompactRow, Decimal, EntityDescriptor, EntitySnapshot, MutationIntent, MutationValues, Value,
     record_to_json_value,
 };
 
@@ -119,21 +119,22 @@ pub trait Entity: TeaqlEntity + Sized {
 }
 
 /// A wrapper that carries a mandatory audit comment with an entity.
-/// Only `Commented<T>` has a `.save()` method — bare entities cannot be saved directly.
+/// Only `Audited<T>` has a `.save()` method — bare entities cannot be saved directly.
 /// This enforces the "must comment on save" policy at compile time.
 pub struct Audited<T: Entity> {
     inner: T,
-    comment: String,
+    comment: MutationIntent,
 }
 
 impl<T: Entity> Audited<T> {
-    /// Create a new Commented wrapper. Panics if comment is empty.
+    /// Create an audited wrapper with a validated, request-owned root reason.
+    ///
+    /// The fluent constructor remains infallible in its type signature, but
+    /// invalid input panics with the same code, location and repair guidance as
+    /// `MutationIntent`. Callers handling untrusted input can validate it with
+    /// `MutationIntent::new` before constructing this wrapper.
     pub fn new(entity: T, comment: impl Into<String>) -> Self {
-        let comment = comment.into();
-        assert!(
-            !comment.trim().is_empty(),
-            "audit comment must not be empty"
-        );
+        let comment = MutationIntent::new(comment).unwrap_or_else(|error| panic!("{error}"));
         Self {
             inner: entity,
             comment,
@@ -153,13 +154,13 @@ impl<T: Entity> Audited<T> {
     /// Consume and return the inner entity with comment applied.
     pub fn into_entity(self) -> T {
         let mut entity = self.inner;
-        entity.set_comment(self.comment);
+        entity.set_comment(self.comment.into_comment());
         entity
     }
 
     /// Get the comment.
     pub fn get_comment(&self) -> &str {
-        &self.comment
+        self.comment.comment()
     }
 }
 

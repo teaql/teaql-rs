@@ -1,10 +1,24 @@
 use chrono::NaiveDate;
 use order_management_service_core::teaql_core::Entity as _;
 use order_management_service_core::{
-    request_support::AuditedSave as _, service_runtime, ServiceRuntimeConfig, Q,
+    Q, ServiceRuntimeConfig, request_support::AuditedSave as _, service_runtime,
 };
 use rust_decimal::Decimal;
+use std::sync::{Arc, Mutex};
 use teaql_runtime::LedgerEntity as _;
+
+struct CaptureAudit(Arc<Mutex<Vec<teaql_runtime::SafeAuditEvent>>>);
+
+impl teaql_runtime::SafeAuditEventSink for CaptureAudit {
+    fn on_safe_event(
+        &self,
+        _context: &teaql_runtime::UserContext,
+        event: &teaql_runtime::SafeAuditEvent,
+    ) -> Result<(), teaql_runtime::RuntimeError> {
+        self.0.lock().unwrap().push(event.clone());
+        Ok(())
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -18,7 +32,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
         })?
         .to_owned();
-    let context = service_runtime(ServiceRuntimeConfig { database_url }).await?;
+    let audit_events = Arc::new(Mutex::new(Vec::new()));
+    let context = service_runtime(ServiceRuntimeConfig { database_url })
+        .await?
+        .with_custom_event_sink(CaptureAudit(audit_events.clone()));
     context.ensure_schema().await?;
 
     let platforms = Q::commerce_platforms()
@@ -426,6 +443,104 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("CANCELLED: new_child_id={cancelled_id}, database_rows=0");
     println!(
         "MIXED: parent_id={order_id}, updated_child={line_id}, deleted_child={removable_id}, added_child={added_id}"
+    );
+
+    // Observe the generated save at safe audit and SQL boundaries. Never inject TraceNodes.
+    let mut parent = Q::customer_orders()
+        .with_id_is(order_id)
+        .comment("what: load the root for lineage verification")
+        .purpose("why: observe generated Mutation API audit ancestry")
+        .execute_for_one(&context)
+        .await?
+        .expect("parent is loaded before mutation");
+    let mut changed = Q::order_lines()
+        .with_id_is(line_id)
+        .comment("what: load the child whose quantity changes")
+        .purpose("why: carry its original optimistic version")
+        .execute_for_one(&context)
+        .await?
+        .expect("changed child is loaded before mutation");
+    let mut removed = Q::order_lines()
+        .with_id_is(added_id)
+        .comment("what: load the child that will be removed")
+        .purpose("why: retain a deleted-child local business reason")
+        .execute_for_one(&context)
+        .await?
+        .expect("removed child is loaded before mutation");
+    parent.update_total_amount(Decimal::new(5000, 2));
+    changed
+        .update_quantity(4)
+        .set_comment("adjust child quantity");
+    removed
+        .set_comment("remove child after review")
+        .mark_for_deletion();
+    parent.include_pending_mutations_from(&changed)?;
+    parent.include_pending_mutations_from(&removed)?;
+    let audit_start = audit_events.lock().unwrap().len();
+    let sql_start = context.sql_logs().len();
+    parent
+        .audit_as("verify graph lineage")
+        .save(&context)
+        .await?;
+    let events = audit_events.lock().unwrap();
+    let events = &events[audit_start..];
+    assert_eq!(events.len(), 3, "one committed audit per changed entity");
+    let (mut root_seen, mut update_seen, mut delete_seen) = (false, false, false);
+    for event in events {
+        let chain = &event.trace_chain;
+        let first = chain.first().expect("audit lineage must retain its root");
+        assert_eq!(
+            first.kind,
+            order_management_service_core::teaql_core::TraceKind::AuditReason
+        );
+        assert_eq!(first.entity_type, "CustomerOrder");
+        assert_eq!(first.entity_id, Some(order_id));
+        assert_eq!(first.comment, "verify graph lineage");
+        match event.kind {
+            teaql_runtime::RawAuditEventKind::Updated if event.entity == "CustomerOrder" => {
+                assert_eq!(chain.len(), 1);
+                root_seen = true;
+            }
+            teaql_runtime::RawAuditEventKind::Updated if event.entity == "OrderLine" => {
+                assert_eq!(chain.len(), 2);
+                assert_eq!(chain[1].entity_id, Some(line_id));
+                assert_eq!(chain[1].comment, "adjust child quantity");
+                update_seen = true;
+            }
+            teaql_runtime::RawAuditEventKind::Deleted if event.entity == "OrderLine" => {
+                assert_eq!(chain.len(), 2);
+                assert_eq!(chain[1].entity_id, Some(added_id));
+                assert_eq!(chain[1].comment, "remove child after review");
+                delete_seen = true;
+            }
+            _ => panic!("unexpected graph event: {event:?}"),
+        }
+    }
+    assert!(root_seen && update_seen && delete_seen);
+    let logs = context.sql_logs();
+    for (operation, entity) in [
+        (teaql_runtime::SqlLogOperation::Update, "CustomerOrder"),
+        (teaql_runtime::SqlLogOperation::Update, "OrderLine"),
+        (teaql_runtime::SqlLogOperation::Delete, "OrderLine"),
+    ] {
+        assert!(
+            logs[sql_start..].iter().any(|entry| {
+                entry.operation == operation
+                    && entry.audit_reason.as_deref() == Some("verify graph lineage")
+                    && entry.trace_path.iter().any(|node| {
+                        node.kind == order_management_service_core::teaql_core::TraceKind::Entity
+                            && node.entity_type == entity
+                    })
+                    && entry
+                        .trace_path
+                        .first()
+                        .is_some_and(|node| node.entity_type == "CustomerOrder")
+            }),
+            "SQL metadata lost owned root intent or statement target: {operation:?}/{entity}"
+        );
+    }
+    println!(
+        "TRACE_LINEAGE: root={order_id}, updated_child={line_id}, deleted_child={added_id}, safe_audit_events=3"
     );
     Ok(())
 }

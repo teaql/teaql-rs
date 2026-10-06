@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use teaql_core::{
     CompactRow, DeleteCommand, Entity, EntityDescriptor, EntityDescriptorStore, EntityError,
-    IdentifiableEntity, InsertCommand, RecoverCommand, SelectQuery, UpdateCommand,
+    IdentifiableEntity, InsertCommand, RecoverCommand, SelectQuery, SmartList, UpdateCommand,
 };
 
 use crate::{
@@ -16,6 +16,14 @@ type CompactEntityGraphDecoder =
 type CompactEntityGraphBatchDecoder =
     fn(Vec<CompactRow>, &EntityRuntimeState, &mut EntityGraphBuilder) -> Result<(), EntityError>;
 type CompactEntityGraphListDecoder = fn(
+    SmartList<CompactRow>,
+    &EntityRuntimeState,
+    &mut EntityGraphBuilder,
+    &str,
+    u64,
+    &str,
+) -> Result<(), EntityError>;
+type CompactEntityGraphOptionDecoder = fn(
     Vec<CompactRow>,
     &EntityRuntimeState,
     &mut EntityGraphBuilder,
@@ -29,7 +37,7 @@ pub struct InMemoryEntityGraphDecoderRegistry {
     compact_decoders: BTreeMap<String, CompactEntityGraphDecoder>,
     compact_batch_decoders: BTreeMap<String, CompactEntityGraphBatchDecoder>,
     compact_list_decoders: BTreeMap<String, CompactEntityGraphListDecoder>,
-    compact_option_decoders: BTreeMap<String, CompactEntityGraphListDecoder>,
+    compact_option_decoders: BTreeMap<String, CompactEntityGraphOptionDecoder>,
 }
 
 impl InMemoryEntityGraphDecoderRegistry {
@@ -59,7 +67,7 @@ impl InMemoryEntityGraphDecoderRegistry {
         }
 
         fn decode_compact_list<T>(
-            rows: Vec<CompactRow>,
+            rows: SmartList<CompactRow>,
             root: &EntityRuntimeState,
             graph: &mut EntityGraphBuilder,
             owner_entity: &str,
@@ -76,7 +84,7 @@ impl InMemoryEntityGraphDecoderRegistry {
             // known. Reserve the exact row count and decode directly into the
             // final SmartList allocation.
             let mut entities = Vec::with_capacity(rows.len());
-            for row in rows {
+            for row in rows.data {
                 entities.push(T::from_compact_row_with_context(
                     row,
                     &graph_root as &dyn std::any::Any,
@@ -86,7 +94,14 @@ impl InMemoryEntityGraphDecoderRegistry {
                 owner_entity,
                 owner_id,
                 relation,
-                teaql_core::SmartList::new(entities),
+                SmartList {
+                    data: entities,
+                    total_count: rows.total_count,
+                    aggregations: rows.aggregations,
+                    summary: rows.summary,
+                    facets: rows.facets,
+                    is_loaded: rows.is_loaded,
+                },
             );
             Ok(())
         }
@@ -162,6 +177,28 @@ impl InMemoryEntityGraphDecoderRegistry {
         &self,
         entity: &str,
         rows: Vec<CompactRow>,
+        root: &EntityRuntimeState,
+        graph: &mut EntityGraphBuilder,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+    ) -> Result<(), EntityError> {
+        self.decode_compact_smart_list(
+            entity,
+            SmartList::new(rows),
+            root,
+            graph,
+            owner_entity,
+            owner_id,
+            relation,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // Metadata-preserving counterpart of the Vec boundary.
+    pub fn decode_compact_smart_list(
+        &self,
+        entity: &str,
+        rows: SmartList<CompactRow>,
         root: &EntityRuntimeState,
         graph: &mut EntityGraphBuilder,
         owner_entity: &str,

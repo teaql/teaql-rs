@@ -4,7 +4,7 @@ use teaql_core::{
     CompactRow, DataType, EntityDescriptor, Expr, InsertCommand, PropertyDescriptor,
     RelationAggregate, RelationDescriptor, SelectQuery, TraceKind, TraceNode, Value,
 };
-use teaql_data_service::{MutationRequest, SqlExecutionOutcome};
+use teaql_data_service::SqlExecutionOutcome;
 use teaql_provider_sqlite::{SqliteDialect, SqliteMutationExecutor, SqliteProviderExt as _};
 use teaql_runtime::{InMemoryMetadataStore, PurposedSelectQuery, UserContext};
 
@@ -136,7 +136,13 @@ async fn fixture() -> (UserContext, SqliteMutationExecutor) {
                         Some(1),
                         "seed relation mask fixture",
                     ));
-                    scope.mutate(MutationRequest::Insert(command)).await?;
+                    scope
+                        .mutate(
+                            teaql_data_service::MutationCommand::Insert(command)
+                                .request("verify safe provider diagnostics")
+                                .unwrap(),
+                        )
+                        .await?;
                 }
                 Ok(())
             })
@@ -295,14 +301,9 @@ async fn run(shape: &str, transaction: bool, failure: bool) {
         }
     }
     let logs = context.sql_logs();
-    // The current row-based loader fetches descendants both within the child
-    // request and while attaching the relation plan. Retain that existing four-
-    // statement behavior here; changing query planning is not this mask fix.
-    let expected = if shape == "flat_nested" {
-        3
-    } else if (shape == "nested" || shape == "forward") && !failure {
-        4
-    } else if shape == "nested" {
+    // Both row and flat planners now own nested loading exactly once. Failure
+    // in the child SELECT stops before any nested SELECT can run.
+    let expected = if shape.ends_with("nested") || (shape == "forward" && !failure) {
         3
     } else {
         2
@@ -312,6 +313,34 @@ async fn run(shape: &str, transaction: bool, failure: bool) {
         expected,
         "one log per executed statement: {logs:#?}"
     );
+    if shape.ends_with("nested") || (shape == "forward" && !failure) {
+        let paths = logs
+            .iter()
+            .map(|entry| {
+                entry
+                    .trace_path
+                    .iter()
+                    .filter(|node| node.kind == TraceKind::Relation)
+                    .map(|node| node.entity_type.as_str())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            vec![
+                vec![],
+                vec!["orders"],
+                vec![
+                    "orders",
+                    if shape == "forward" {
+                        "customer"
+                    } else {
+                        "items"
+                    }
+                ]
+            ]
+        );
+    }
     for (index, entry) in logs.iter().enumerate() {
         let retained = format!("{entry:?}");
         assert!(

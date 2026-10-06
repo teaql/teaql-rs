@@ -23,6 +23,9 @@ use teaql_sql::{
     quote_identifier_if_needed, schema_index_specs,
 };
 
+mod transaction;
+pub use transaction::SqliteTransaction;
+
 pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";
 pub const DEFAULT_BUSINESS_ID_SPACE_TABLE: &str = "teaql_business_id_space";
 pub const DEFAULT_PREPARED_STATEMENT_CACHE_CAPACITY: usize = 64;
@@ -220,6 +223,7 @@ impl From<SqlCompileError> for MutationExecutorError {
 pub struct SqliteMutationExecutor {
     connection: Arc<Mutex<Connection>>,
     column_layout_cache: Arc<Mutex<HashMap<String, Arc<ColumnLayout>>>>,
+    transaction_lease: Arc<futures_util::lock::Mutex<()>>,
 }
 
 impl SqliteMutationExecutor {
@@ -231,6 +235,7 @@ impl SqliteMutationExecutor {
         Self {
             connection,
             column_layout_cache: Arc::new(Mutex::new(HashMap::new())),
+            transaction_lease: Arc::new(futures_util::lock::Mutex::new(())),
         }
     }
 
@@ -469,6 +474,32 @@ impl SqliteMutationExecutor {
                 layout.names.clone(),
                 decode_sqlite_values(row, &layout.columns)?,
             ));
+        }
+        Ok(result)
+    }
+
+    fn fetch_repeated_compact_unleased(
+        &self,
+        template: &CompiledQuery,
+        param_index: usize,
+        values: &[Value],
+    ) -> Result<Vec<CompactRow>, MutationExecutorError> {
+        let connection = self.lock()?;
+        let sql = template.sql_with_comment();
+        let mut statement = connection.prepare_cached(&sql)?;
+        let layout = cached_column_layout(&self.column_layout_cache, &template.sql, &statement);
+        let mut result = Vec::new();
+        let mut query_params = template.params.clone();
+        for value in values {
+            query_params[param_index] = value.clone();
+            let params = bind_values(&query_params)?;
+            let mut rows = statement.query(params_from_iter(params.iter()))?;
+            while let Some(row) = rows.next()? {
+                result.push(CompactRow::new(
+                    layout.names.clone(),
+                    decode_sqlite_values(row, &layout.columns)?,
+                ));
+            }
         }
         Ok(result)
     }
@@ -761,6 +792,7 @@ impl SqlTransport for SqliteMutationExecutor {
         &self,
         query: &CompiledQuery,
     ) -> Result<Vec<CompactRow>, Self::Error> {
+        let _lease = self.transaction_lease.lock().await;
         SqliteMutationExecutor::fetch_all_compact(self, query)
     }
 
@@ -770,27 +802,12 @@ impl SqlTransport for SqliteMutationExecutor {
         param_index: usize,
         values: &[Value],
     ) -> Result<Vec<CompactRow>, Self::Error> {
-        let connection = self.lock()?;
-        let sql = template.sql_with_comment();
-        let mut statement = connection.prepare_cached(&sql)?;
-        let layout = cached_column_layout(&self.column_layout_cache, &template.sql, &statement);
-        let mut result = Vec::new();
-        let mut query_params = template.params.clone();
-        for value in values {
-            query_params[param_index] = value.clone();
-            let params = bind_values(&query_params)?;
-            let mut rows = statement.query(params_from_iter(params.iter()))?;
-            while let Some(row) = rows.next()? {
-                result.push(CompactRow::new(
-                    layout.names.clone(),
-                    decode_sqlite_values(row, &layout.columns)?,
-                ));
-            }
-        }
-        Ok(result)
+        let _lease = self.transaction_lease.lock().await;
+        self.fetch_repeated_compact_unleased(template, param_index, values)
     }
 
     async fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
+        let _lease = self.transaction_lease.lock().await;
         SqliteMutationExecutor::execute(self, query)
     }
 }
@@ -805,9 +822,23 @@ impl teaql_sql::StreamingSqlTransport for SqliteMutationExecutor {
         query: CompiledQuery,
         chunk_size: usize,
     ) -> teaql_data_service::QueryStream<'_, Self::Error> {
+        self.stream_sql_unleased(query, chunk_size, true)
+    }
+}
+
+impl SqliteMutationExecutor {
+    #[allow(clippy::await_holding_lock)]
+    fn stream_sql_unleased(
+        &self,
+        query: CompiledQuery,
+        chunk_size: usize,
+        acquire_lease: bool,
+    ) -> teaql_data_service::QueryStream<'_, MutationExecutorError> {
         let connection = self.connection.clone();
         let column_layout_cache = self.column_layout_cache.clone();
+        let transaction_lease = self.transaction_lease.clone();
         Box::pin(async_stream::try_stream! {
+            let _lease = if acquire_lease { Some(transaction_lease.lock_owned().await) } else { None };
             let params = bind_values(&query.params)?;
             let guard = connection.lock().map_err(|err| MutationExecutorError::Lock(err.to_string()))?;
             let sql = query.sql_with_comment();
@@ -841,30 +872,6 @@ impl teaql_data_service::StreamQueryExecutor for SqliteMutationExecutor {
                 Err(MutationExecutorError::SqlCompile(error))
             })),
         }
-    }
-}
-
-impl teaql_sql::SqlTransaction for SqliteMutationExecutor {
-    type Error = MutationExecutorError;
-
-    async fn commit_sql(self) -> Result<(), Self::Error> {
-        self.commit_transaction()
-    }
-
-    async fn rollback_sql(self) -> Result<(), Self::Error> {
-        self.rollback_transaction()
-    }
-}
-
-impl teaql_sql::SqlTransactionTransport for SqliteMutationExecutor {
-    type Tx<'a>
-        = Self
-    where
-        Self: 'a;
-
-    async fn begin_sql(&self) -> Result<Self::Tx<'_>, Self::Error> {
-        self.begin_transaction()?;
-        Ok(self.clone())
     }
 }
 
@@ -2540,20 +2547,28 @@ mod tests {
         futures_executor::block_on(context.execute_in_transaction::<Executor, _, _>(|scope| {
             Box::pin(async move {
                 scope
-                    .mutate(teaql_data_service::MutationRequest::Insert(
-                        teaql_core::InsertCommand::new("Order")
-                            .value("id", 1_u64)
-                            .value("version", 1_i64)
-                            .value("name", "first"),
-                    ))
+                    .mutate(
+                        teaql_data_service::MutationCommand::Insert(
+                            teaql_core::InsertCommand::new("Order")
+                                .value("id", 1_u64)
+                                .value("version", 1_i64)
+                                .value("name", "first"),
+                        )
+                        .request("audited provider conformance test")
+                        .unwrap(),
+                    )
                     .await?;
                 scope
-                    .mutate(teaql_data_service::MutationRequest::Insert(
-                        teaql_core::InsertCommand::new("Order")
-                            .value("id", 2_u64)
-                            .value("version", 1_i64)
-                            .value("name", "second"),
-                    ))
+                    .mutate(
+                        teaql_data_service::MutationCommand::Insert(
+                            teaql_core::InsertCommand::new("Order")
+                                .value("id", 2_u64)
+                                .value("version", 1_i64)
+                                .value("name", "second"),
+                        )
+                        .request("audited provider conformance test")
+                        .unwrap(),
+                    )
                     .await?;
                 Ok(())
             })
@@ -2564,20 +2579,28 @@ mod tests {
             futures_executor::block_on(context.execute_in_transaction::<Executor, _, _>(|scope| {
                 Box::pin(async move {
                     scope
-                        .mutate(teaql_data_service::MutationRequest::Insert(
-                            teaql_core::InsertCommand::new("Order")
-                                .value("id", 3_u64)
-                                .value("version", 1_i64)
-                                .value("name", "must roll back"),
-                        ))
+                        .mutate(
+                            teaql_data_service::MutationCommand::Insert(
+                                teaql_core::InsertCommand::new("Order")
+                                    .value("id", 3_u64)
+                                    .value("version", 1_i64)
+                                    .value("name", "must roll back"),
+                            )
+                            .request("audited provider conformance test")
+                            .unwrap(),
+                        )
                         .await?;
                     scope
-                        .mutate(teaql_data_service::MutationRequest::Insert(
-                            teaql_core::InsertCommand::new("Order")
-                                .value("id", 1_u64)
-                                .value("version", 1_i64)
-                                .value("name", "duplicate"),
-                        ))
+                        .mutate(
+                            teaql_data_service::MutationCommand::Insert(
+                                teaql_core::InsertCommand::new("Order")
+                                    .value("id", 1_u64)
+                                    .value("version", 1_i64)
+                                    .value("name", "duplicate"),
+                            )
+                            .request("audited provider conformance test")
+                            .unwrap(),
+                        )
                         .await?;
                     Ok(())
                 })
@@ -3344,7 +3367,11 @@ mod tests {
                     teaql_data_service::QueryRequest {
                         query,
                         trace_chain: Vec::new(),
-                        comment: Some("TOPN plan equivalence".to_owned()),
+                        intent: teaql_core::QueryIntent::new(
+                            "TOPN plan equivalence".to_owned(),
+                            "verify provider query behavior",
+                        )
+                        .unwrap(),
                         capture_debug_query: false,
                         capture_execution_metadata: false,
                     },

@@ -77,7 +77,7 @@ pub fn expand_teaql_entity_attribute(mut input: ItemStruct) -> proc_macro2::Toke
             }
 
             pub fn set_comment(&mut self, comment: impl Into<String>) -> &mut Self {
-                self.__teaql_runtime_state.set_comment(comment);
+                self.__teaql_runtime_state.set_entity_comment(self.entity_key(), comment);
                 self
             }
         }
@@ -413,15 +413,19 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         Default::default()
     };
 
-    let root_methods_impl = if let Some(state_ident) = &runtime_state_field_ident {
+    let root_methods_impl = if let (Some(state_ident), Some(id_ident)) =
+        (&runtime_state_field_ident, &id_field_ident)
+    {
         {
             quote! {
                 fn get_comment(&self) -> Option<String> {
-                    self.#state_ident.get_comment()
+                    let key = ::teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
+                    self.#state_ident.get_entity_comment(&key)
                 }
 
                 fn set_comment(&mut self, comment: String) {
-                    self.#state_ident.set_comment(comment);
+                    let key = ::teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
+                    self.#state_ident.set_entity_comment(key, comment);
                 }
 
                 fn original_values(&self) -> Option<::teaql_core::EntitySnapshot> {

@@ -154,10 +154,11 @@ fn compile_select_with_cache<D: SqlDialect>(
                 descriptor == entity && select_plan_matches(candidate, query)
             })
     {
+        let params = collect_select_params(entity, query, dialect.large_in_uses_array_param());
         return Ok(CompiledQuery {
-            log_context: log_context.clone(),
+            log_context: params.rebind_log_context(log_context),
             sql: sql.clone(),
-            params: collect_select_params(entity, query, dialect.large_in_uses_array_param()),
+            params: params.into_values(),
             comment: query.comment.clone(),
         });
     }
@@ -171,12 +172,9 @@ fn compile_select_with_cache<D: SqlDialect>(
         if !cache.iter().any(|(descriptor, candidate, _, _)| {
             descriptor == entity && select_plan_matches(candidate, query)
         }) {
-            cache.push((
-                entity.clone(),
-                key,
-                compiled.sql.clone(),
-                compiled.log_context.clone(),
-            ));
+            let mut log_context = compiled.log_context.clone();
+            log_context.intent_redactions.clear();
+            cache.push((entity.clone(), key, compiled.sql.clone(), log_context));
         }
     }
     Ok(compiled)
@@ -240,6 +238,7 @@ fn expr_plan_matches(key: &Expr, query: &Expr) -> bool {
         (Expr::Value(Value::List(_)), Expr::Value(_))
         | (Expr::Value(_), Expr::Value(Value::List(_))) => false,
         (Expr::Value(_), Expr::Value(_)) => true,
+        (Expr::LikePattern { .. }, Expr::LikePattern { .. }) => true,
         (
             Expr::Function {
                 function: left_function,
@@ -349,6 +348,10 @@ fn normalize_expr_values(expr: &mut Expr) {
             values.fill(Value::Null);
         }
         Expr::Value(value) => *value = Value::Null,
+        Expr::LikePattern { pattern, original } => {
+            pattern.clear();
+            original.clear();
+        }
         Expr::Function { args, .. } | Expr::And(args) | Expr::Or(args) => {
             for arg in args {
                 normalize_expr_values(arg);
@@ -378,58 +381,70 @@ fn collect_select_params(
     entity: &EntityDescriptor,
     query: &SelectQuery,
     large_in_uses_array_param: bool,
-) -> Vec<Value> {
-    let mut params = Vec::new();
+) -> crate::SqlBindings {
+    let mut params = crate::SqlBindings::new();
+    append_select_params(entity, query, large_in_uses_array_param, &mut params);
+    params
+}
+
+fn append_select_params(
+    entity: &EntityDescriptor,
+    query: &SelectQuery,
+    large_in_uses_array_param: bool,
+    params: &mut crate::SqlBindings,
+) {
     if query.raw_sql.is_some() {
-        return params;
+        return;
     }
     for projection in &query.expr_projection {
-        collect_expr_params(&projection.expr, &mut params, large_in_uses_array_param);
+        collect_expr_params(&projection.expr, params, large_in_uses_array_param);
     }
     let partitioned = query.partition_by.is_some() && query.slice.is_some();
     if partitioned {
         for order in &query.order_by {
             if let Some(expr) = &order.expr {
-                collect_expr_params(expr, &mut params, large_in_uses_array_param);
+                collect_expr_params(expr, params, large_in_uses_array_param);
             }
         }
     }
     if let Some(filter) = &query.filter {
-        collect_expr_params(filter, &mut params, large_in_uses_array_param);
+        collect_expr_params(filter, params, large_in_uses_array_param);
     }
     if let Some(search_text) = &query.search_with_text {
         let value = Value::from(format!("%{search_text}%"));
-        params.extend(
-            entity
-                .properties
-                .iter()
-                .filter(|property| {
-                    matches!(
-                        property.data_type,
-                        teaql_core::DataType::Text | teaql_core::DataType::LargeText
-                    )
-                })
-                .map(|_| value.clone()),
-        );
-    }
-    if partitioned {
-        return params;
+        for _ in entity.properties.iter().filter(|property| {
+            matches!(
+                property.data_type,
+                teaql_core::DataType::Text | teaql_core::DataType::LargeText
+            )
+        }) {
+            params.push(value.clone());
+        }
     }
     if let Some(having) = &query.having {
-        collect_expr_params(having, &mut params, large_in_uses_array_param);
+        collect_expr_params(having, params, large_in_uses_array_param);
+    }
+    // GROUP BY/HAVING belong inside the partition wrapper. Window ordering
+    // was collected above, so only the ordinary trailing ORDER BY is skipped.
+    if partitioned {
+        return;
     }
     for order in &query.order_by {
         if let Some(expr) = &order.expr {
-            collect_expr_params(expr, &mut params, large_in_uses_array_param);
+            collect_expr_params(expr, params, large_in_uses_array_param);
         }
     }
-    params
 }
 
-fn collect_expr_params(expr: &Expr, params: &mut Vec<Value>, large_in_uses_array_param: bool) {
+fn collect_expr_params(
+    expr: &Expr,
+    params: &mut crate::SqlBindings,
+    large_in_uses_array_param: bool,
+) {
     match expr {
         Expr::Column(_) => {}
         Expr::Value(value) => params.push(value.clone()),
+        Expr::LikePattern { pattern, .. } => params.push(Value::from(pattern.clone())),
         Expr::Function { args, .. } | Expr::And(args) | Expr::Or(args) => {
             for arg in args {
                 collect_expr_params(arg, params, large_in_uses_array_param);
@@ -437,7 +452,9 @@ fn collect_expr_params(expr: &Expr, params: &mut Vec<Value>, large_in_uses_array
         }
         Expr::Binary { left, op, right } => {
             collect_expr_params(left, params, large_in_uses_array_param);
-            if let Expr::Value(Value::List(values)) = right.as_ref()
+            if let Some((pattern, original)) = crate::bindings::like_operand(*op, right) {
+                params.push_like_pattern(pattern, original);
+            } else if let Expr::Value(Value::List(values)) = right.as_ref()
                 && matches!(
                     op,
                     teaql_core::BinaryOp::In
@@ -454,7 +471,9 @@ fn collect_expr_params(expr: &Expr, params: &mut Vec<Value>, large_in_uses_array
                 {
                     params.push(Value::List(values.clone()));
                 } else {
-                    params.extend(values.iter().cloned());
+                    for value in values {
+                        params.push(value.clone());
+                    }
                 }
             } else {
                 collect_expr_params(right, params, large_in_uses_array_param);
@@ -467,11 +486,7 @@ fn collect_expr_params(expr: &Expr, params: &mut Vec<Value>, large_in_uses_array
             ..
         } => {
             collect_expr_params(left, params, large_in_uses_array_param);
-            params.extend(collect_select_params(
-                entity,
-                query,
-                large_in_uses_array_param,
-            ));
+            append_select_params(entity, query, large_in_uses_array_param, params);
         }
         Expr::Between { expr, lower, upper } => {
             collect_expr_params(expr, params, large_in_uses_array_param);
@@ -741,7 +756,11 @@ mod tests {
         QueryRequest {
             query: SelectQuery::new("Order"),
             trace_chain: Vec::new(),
-            comment: None,
+            intent: teaql_core::QueryIntent::new(
+                "verify bounded provider query",
+                "verify provider query behavior",
+            )
+            .unwrap(),
             capture_debug_query,
             capture_execution_metadata: true,
         }
@@ -830,14 +849,22 @@ mod tests {
             },
         );
         let result = executor
-            .mutate(MutationRequest::Batch(vec![
-                MutationRequest::Insert(
-                    teaql_core::InsertCommand::new("Order").value("name", "first"),
-                ),
-                MutationRequest::Insert(
-                    teaql_core::InsertCommand::new("Order").value("name", "second"),
-                ),
-            ]))
+            .mutate(
+                teaql_data_service::MutationCommand::Batch(vec![
+                    teaql_data_service::MutationCommand::Insert(
+                        teaql_core::InsertCommand::new("Order").value("name", "first"),
+                    )
+                    .request("audited provider conformance test")
+                    .unwrap(),
+                    teaql_data_service::MutationCommand::Insert(
+                        teaql_core::InsertCommand::new("Order").value("name", "second"),
+                    )
+                    .request("audited provider conformance test")
+                    .unwrap(),
+                ])
+                .request("audited provider conformance test")
+                .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(result.metadata.statements.len(), 2);
@@ -901,9 +928,13 @@ mod tests {
             vec![Value::from("PRIVATE-BINDING-CANARY")]
         );
         let inserted = executor
-            .mutate(MutationRequest::Insert(
-                teaql_core::InsertCommand::new("Order").value("name", "PRIVATE-BINDING-CANARY"),
-            ))
+            .mutate(
+                teaql_data_service::MutationCommand::Insert(
+                    teaql_core::InsertCommand::new("Order").value("name", "PRIVATE-BINDING-CANARY"),
+                )
+                .request("audited provider conformance test")
+                .unwrap(),
+            )
             .await
             .unwrap();
         assert!(inserted.metadata.debug_query.is_none());
@@ -1038,7 +1069,11 @@ mod tests {
         let request = |filter| QueryRequest {
             query: SelectQuery::new("Order").filter(filter),
             trace_chain: Vec::new(),
-            comment: None,
+            intent: teaql_core::QueryIntent::new(
+                "verify bounded provider query",
+                "verify provider query behavior",
+            )
+            .unwrap(),
             capture_debug_query: false,
             capture_execution_metadata: true,
         };
@@ -1077,6 +1112,128 @@ mod tests {
         assert_eq!(long.metadata.params.len(), 3);
     }
 
+    #[test]
+    fn cached_like_plan_rebinds_originals_across_all_expression_positions() {
+        let entity = test_entity().audit_mask_fields(vec!["name".into()]);
+        let cache = RwLock::new(Vec::new());
+        for prefix in ["FIRST-SECRET", "SECOND-SECRET"] {
+            let query = SelectQuery::new("Order")
+                .project_expr("public", Expr::value(format!("PLAIN-{prefix}")))
+                .filter(Expr::and([
+                    Expr::contain("name", format!("{prefix}-FILTER")),
+                    Expr::in_list("id", [Value::U64(1), Value::U64(2)]),
+                    Expr::in_subquery(
+                        "id",
+                        entity.clone(),
+                        SelectQuery::new("Order")
+                            .filter(Expr::begin_with("name", format!("{prefix}-SUBQUERY"))),
+                        "id",
+                    ),
+                ]))
+                .having(Expr::not_end_with("name", format!("{prefix}-HAVING")))
+                .order_by(teaql_core::OrderBy::asc_expr(Expr::end_with(
+                    "name",
+                    format!("{prefix}-ORDER"),
+                )));
+            let actual = compile_select_with_cache(&TestDialect, &cache, &entity, &query).unwrap();
+            assert_eq!(actual, TestDialect.compile_select(&entity, &query).unwrap());
+            let mut secrets = Vec::new();
+            actual
+                .log_context
+                .intent_redactions
+                .extend_secrets(false, &mut secrets);
+            for suffix in ["FILTER", "SUBQUERY", "HAVING", "ORDER"] {
+                assert!(secrets.contains(&format!("{prefix}-{suffix}")));
+            }
+            assert!(secrets.iter().all(|secret| secret.starts_with(prefix)));
+            let plans = cache.read().unwrap();
+            assert_eq!(plans.len(), 1, "same shape must reuse its plan");
+            assert!(plans[0].3.intent_redactions.is_empty());
+            assert!(!format!("{:?}", plans[0].1).contains("SECRET"));
+        }
+    }
+
+    #[test]
+    fn cached_partition_having_rebinds_numeric_and_private_like_operands() {
+        struct CountingDialect(Arc<AtomicUsize>);
+        impl SqlDialect for CountingDialect {
+            fn kind(&self) -> crate::DatabaseKind {
+                TestDialect.kind()
+            }
+            fn quote_ident(&self, ident: &str) -> String {
+                TestDialect.quote_ident(ident)
+            }
+            fn placeholder(&self, index: usize) -> String {
+                TestDialect.placeholder(index)
+            }
+            fn compile_select(
+                &self,
+                entity: &EntityDescriptor,
+                query: &SelectQuery,
+            ) -> Result<CompiledQuery, SqlCompileError> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                TestDialect.compile_select(entity, query)
+            }
+        }
+
+        let entity = test_entity().audit_mask_fields(vec!["name".into()]);
+        let compilations = Arc::new(AtomicUsize::new(0));
+        let dialect = CountingDialect(compilations.clone());
+        let cache = RwLock::new(Vec::new());
+        for (number, original) in [(1_i64, "FIRST-SECRET"), (11, "SECOND-SECRET")] {
+            let query = SelectQuery::new("Order")
+                .project_expr("marker", Expr::value(number))
+                .filter(Expr::gt("id", number + 1))
+                .search_with_text(format!("SEARCH-{number}"))
+                .group_by("id")
+                .group_by("name")
+                .count("n")
+                .having(Expr::and([
+                    Expr::binary(
+                        Expr::count_all(),
+                        teaql_core::BinaryOp::Gt,
+                        Expr::value(number + 2),
+                    ),
+                    Expr::contain("name", original),
+                ]))
+                .order_by(teaql_core::OrderBy::asc_expr(Expr::value(number + 3)))
+                .page(0, 10)
+                .partition_by("id");
+            let fresh = TestDialect.compile_select(&entity, &query).unwrap();
+            assert!(fresh.sql.contains("ROW_NUMBER() OVER (PARTITION BY \"id\""));
+            assert!(fresh.sql.contains(" GROUP BY "));
+            assert!(fresh.sql.contains(" HAVING "));
+            assert_eq!(
+                fresh.params,
+                vec![
+                    Value::I64(number),
+                    Value::I64(number + 3),
+                    Value::I64(number + 1),
+                    Value::from(format!("%SEARCH-{number}%")),
+                    Value::I64(number + 2),
+                    Value::from(format!("%{original}%")),
+                ],
+                "projection, window order, WHERE, search, then HAVING bindings"
+            );
+            let cached = compile_select_with_cache(&dialect, &cache, &entity, &query).unwrap();
+            assert_eq!(
+                cached, fresh,
+                "cold/warm plans must match fresh compilation"
+            );
+            assert_eq!(compilations.load(Ordering::Relaxed), 1, "warm cache hit");
+            let mut secrets = Vec::new();
+            cached
+                .log_context
+                .intent_redactions
+                .extend_secrets(false, &mut secrets);
+            assert_eq!(secrets, [original]);
+            let plans = cache.read().unwrap();
+            assert_eq!(plans.len(), 1);
+            assert!(plans[0].3.intent_redactions.is_empty());
+            assert!(!format!("{:?}", plans[0].1).contains("SECRET"));
+        }
+    }
+
     #[tokio::test]
     async fn cached_select_plan_rebinds_large_in_as_one_array_parameter() {
         let executor = SqlDataServiceExecutor::new(
@@ -1089,7 +1246,11 @@ mod tests {
         let request = |values: Vec<Value>| QueryRequest {
             query: SelectQuery::new("Order").filter(Expr::in_list("id", values)),
             trace_chain: Vec::new(),
-            comment: None,
+            intent: teaql_core::QueryIntent::new(
+                "verify bounded provider query",
+                "verify provider query behavior",
+            )
+            .unwrap(),
             capture_debug_query: false,
             capture_execution_metadata: true,
         };
@@ -1128,7 +1289,11 @@ mod tests {
             let request = |query| QueryRequest {
                 query,
                 trace_chain: Vec::new(),
-                comment: None,
+                intent: teaql_core::QueryIntent::new(
+                    "verify bounded provider query",
+                    "verify provider query behavior",
+                )
+                .unwrap(),
                 capture_debug_query: false,
                 capture_execution_metadata: true,
             };
@@ -1257,7 +1422,7 @@ impl<
                 if let Some(param_index) = first
                     .params
                     .iter()
-                    .zip(&second_params)
+                    .zip(second_params.iter())
                     .position(|(left, right)| left != right)
                 {
                     let rows = self
@@ -1319,8 +1484,8 @@ fn query_diagnostic_metadata<D: SqlDialect>(
         ended_at: now,
         affected_rows: None,
         result_count: None,
-        trace_chain: request.trace_chain.clone(),
-        comment: request.comment.clone(),
+        trace_chain: request.execution_trace_chain(),
+        comment: Some(request.intent.comment().to_owned()),
         backend_request_id: None,
         parameterized_query: Some(compiled.sql.clone()),
         params: compiled.params.clone(),
@@ -1363,11 +1528,12 @@ impl<
 }
 
 fn guarded_mutation_entity_name(request: &MutationRequest) -> Result<&str, SqlCompileError> {
-    match request {
-        MutationRequest::Update(command) => Ok(&command.entity),
-        MutationRequest::Delete(command) => Ok(&command.entity),
-        MutationRequest::Recover(command) => Ok(&command.entity),
-        MutationRequest::Insert(_) | MutationRequest::Batch(_) => {
+    match &request.command {
+        teaql_data_service::MutationCommand::Update(command) => Ok(&command.entity),
+        teaql_data_service::MutationCommand::Delete(command) => Ok(&command.entity),
+        teaql_data_service::MutationCommand::Recover(command) => Ok(&command.entity),
+        teaql_data_service::MutationCommand::Insert(_)
+        | teaql_data_service::MutationCommand::Batch(_) => {
             Err(SqlCompileError::InvalidFunctionArguments(
                 "guarded mutation supports update, delete, and recover only".to_owned(),
             ))
@@ -1387,31 +1553,37 @@ where
     T: SqlTransport + Sync,
 {
     let GuardedMutationRequest { mutation, guard } = request;
-    let (entity_name, operation, persisted_id) = match &mutation {
-        MutationRequest::Update(command) => (
+    let (entity_name, operation, persisted_id) = match &mutation.command {
+        teaql_data_service::MutationCommand::Update(command) => (
             &command.entity,
             DataServiceOperation::Update,
             Some(command.id.clone()),
         ),
-        MutationRequest::Delete(command) => (
+        teaql_data_service::MutationCommand::Delete(command) => (
             &command.entity,
             DataServiceOperation::Delete,
             command.soft_delete.then(|| command.id.clone()),
         ),
-        MutationRequest::Recover(command) => (
+        teaql_data_service::MutationCommand::Recover(command) => (
             &command.entity,
             DataServiceOperation::Recover,
             Some(command.id.clone()),
         ),
-        MutationRequest::Insert(_) | MutationRequest::Batch(_) => unreachable!(),
+        teaql_data_service::MutationCommand::Insert(_)
+        | teaql_data_service::MutationCommand::Batch(_) => unreachable!(),
     };
-    let compiled = match &mutation {
-        MutationRequest::Update(command) => dialect.compile_guarded_update(entity, command, &guard),
-        MutationRequest::Delete(command) => dialect.compile_guarded_delete(entity, command, &guard),
-        MutationRequest::Recover(command) => {
+    let compiled = match &mutation.command {
+        teaql_data_service::MutationCommand::Update(command) => {
+            dialect.compile_guarded_update(entity, command, &guard)
+        }
+        teaql_data_service::MutationCommand::Delete(command) => {
+            dialect.compile_guarded_delete(entity, command, &guard)
+        }
+        teaql_data_service::MutationCommand::Recover(command) => {
             dialect.compile_guarded_recover(entity, command, &guard)
         }
-        MutationRequest::Insert(_) | MutationRequest::Batch(_) => unreachable!(),
+        teaql_data_service::MutationCommand::Insert(_)
+        | teaql_data_service::MutationCommand::Batch(_) => unreachable!(),
     }
     .map_err(SqlExecutorError::Compile)?;
 
@@ -1456,7 +1628,7 @@ where
         affected_rows: Some(affected_rows),
         result_count: None,
         trace_chain: mutation.trace_chain().to_vec(),
-        comment: mutation.comment().map(str::to_owned),
+        comment: Some(mutation.comment().to_owned()),
         backend_request_id: None,
         parameterized_query: Some(compiled.sql.clone()),
         params: compiled.params.clone(),

@@ -4,6 +4,10 @@ use std::time::{Duration, SystemTime};
 use super::UserContext;
 use teaql_core::Value;
 
+#[cfg(test)]
+#[path = "logging_vectors_tests.rs"]
+mod vectors_tests;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SqlLogOperation {
     Select,
@@ -194,7 +198,7 @@ impl UserContext {
             teaql_data_service::DataServiceOperation::Insert => SqlLogOperation::Insert,
             teaql_data_service::DataServiceOperation::Update => SqlLogOperation::Update,
             teaql_data_service::DataServiceOperation::Delete => SqlLogOperation::Delete,
-            teaql_data_service::DataServiceOperation::Recover => SqlLogOperation::Update,
+            teaql_data_service::DataServiceOperation::Recover => SqlLogOperation::Recover,
             teaql_data_service::DataServiceOperation::Batch => SqlLogOperation::Update,
             teaql_data_service::DataServiceOperation::Schema => SqlLogOperation::Update,
         };
@@ -225,7 +229,18 @@ impl UserContext {
             comment: trace_value(&metadata.trace_chain, teaql_core::TraceKind::Comment)
                 .or_else(|| metadata.comment.clone()),
             purpose: trace_value(&metadata.trace_chain, teaql_core::TraceKind::Purpose),
-            audit_reason: trace_value(&metadata.trace_chain, teaql_core::TraceKind::AuditReason),
+            audit_reason: {
+                let local = trace_value(&metadata.trace_chain, teaql_core::TraceKind::AuditReason);
+                // Executed mutations and their readback retain request-owned
+                // intent in metadata.comment. A descendant's local reason is
+                // lineage, not a replacement for that root. Standalone legacy
+                // metadata without owned intent keeps its canonical fold.
+                if operation != SqlLogOperation::Select || local.is_some() {
+                    metadata.comment.clone().or(local)
+                } else {
+                    None
+                }
+            },
             trace_path: trace_path.clone(),
             sql: metadata.parameterized_query.clone().unwrap_or_default(),
             params: metadata.params.clone(),

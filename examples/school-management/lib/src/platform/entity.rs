@@ -25,23 +25,28 @@ use teaql_macros::{teaql_entity, TeaqlEntity};
     foreign_key = "platform_id",
     many
 ))]
-#[teaql(entity = "Platform", table = "platform_data", data_service = "sqlite")]
+#[teaql(
+    entity = "Platform",
+    table = "platform_data",
+    data_service = "sqlite",
+    audit_mask_fields = ""
+)]
 pub struct Platform {
     #[teaql(id)]
     id: u64,
 
-    // @source school-model.xml:13
+    // @source main.xml:13
     #[teaql(max_length = 100)]
     name: String,
 
-    // @source school-model.xml:13
+    // @source main.xml:13
     #[teaql(max_length = 100)]
     base_url: String,
 
-    // @source school-model.xml:13
+    // @source main.xml:13
     create_time: teaql_core::time::Timestamp,
 
-    // @source school-model.xml:13
+    // @source main.xml:13
     update_time: teaql_core::time::Timestamp,
     #[teaql(version)]
     version: i64,

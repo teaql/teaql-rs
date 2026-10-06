@@ -1,0 +1,25 @@
+[package]
+name = "trace-chain-example"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+trace-chain-service-core = { path = "rust-lib-core/lib" }
+teaql-runtime = { path = "../../teaql-runtime" }
+teaql-data-service = { path = "../../teaql-data-service" }
+teaql-sql = { path = "../../teaql-sql" }
+teaql-provider-sqlite = { path = "../../teaql-provider-sqlite" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
+serde_json = "1"
+futures-util = "0.3"
+
+[workspace]
+
+[patch.crates-io]
+teaql-core = { path = "../../teaql-core" }
+teaql-macros = { path = "../../teaql-macros" }
+teaql-runtime = { path = "../../teaql-runtime" }
+teaql-sql = { path = "../../teaql-sql" }
+teaql-data-service = { path = "../../teaql-data-service" }
+teaql-provider-sqlite = { path = "../../teaql-provider-sqlite" }

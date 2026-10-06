@@ -21,7 +21,7 @@ fn entity() -> EntityDescriptor {
 
 #[tokio::test]
 async fn sqlite_compiler_to_context_logs_preserves_field_masking_across_crud_and_batch() {
-    use teaql_data_service::{MutationRequest, QueryRequest};
+    use teaql_data_service::QueryRequest;
     type Executor = teaql_sql::SqlDataServiceExecutor<
         SqliteDialect,
         SqliteMutationExecutor,
@@ -49,7 +49,11 @@ async fn sqlite_compiler_to_context_logs_preserves_field_masking_across_crud_and
         ));
         QueryRequest {
             trace_chain: query.trace_chain.clone(),
-            comment: query.comment.clone(),
+            intent: teaql_core::QueryIntent::new(
+                "what: inspect masked CRUD fixture",
+                "why: verify execution values differ from log projection",
+            )
+            .unwrap(),
             query,
             capture_debug_query: true,
             capture_execution_metadata: true,
@@ -72,9 +76,19 @@ async fn sqlite_compiler_to_context_logs_preserves_field_masking_across_crud_and
                         Some(id),
                         "create masking fixture",
                     ));
-                    inserts.push(MutationRequest::Insert(command));
+                    inserts.push(
+                        teaql_data_service::MutationCommand::Insert(command)
+                            .request("create masking fixture")
+                            .unwrap(),
+                    );
                 }
-                scope.mutate(MutationRequest::Batch(inserts)).await?;
+                scope
+                    .mutate(
+                        teaql_data_service::MutationCommand::Batch(inserts)
+                            .request("create masking fixture")
+                            .unwrap(),
+                    )
+                    .await?;
                 for _ in 0..2 {
                     let rows = scope
                         .query(request(
@@ -89,21 +103,33 @@ async fn sqlite_compiler_to_context_logs_preserves_field_masking_across_crud_and
                     );
                 }
                 scope
-                    .mutate(MutationRequest::Update(
-                        UpdateCommand::new("Order", 1_u64)
-                            .expected_version(1)
-                            .value("name", "Lakeside"),
-                    ))
+                    .mutate(
+                        teaql_data_service::MutationCommand::Update(
+                            UpdateCommand::new("Order", 1_u64)
+                                .expected_version(1)
+                                .value("name", "Lakeside"),
+                        )
+                        .request("create masking fixture")
+                        .unwrap(),
+                    )
                     .await?;
                 scope
-                    .mutate(MutationRequest::Delete(
-                        DeleteCommand::new("Order", 1_u64).expected_version(2),
-                    ))
+                    .mutate(
+                        teaql_data_service::MutationCommand::Delete(
+                            DeleteCommand::new("Order", 1_u64).expected_version(2),
+                        )
+                        .request("create masking fixture")
+                        .unwrap(),
+                    )
                     .await?;
                 scope
-                    .mutate(MutationRequest::Recover(teaql_core::RecoverCommand::new(
-                        "Order", 1_u64, -3,
-                    )))
+                    .mutate(
+                        teaql_data_service::MutationCommand::Recover(
+                            teaql_core::RecoverCommand::new("Order", 1_u64, -3),
+                        )
+                        .request("create masking fixture")
+                        .unwrap(),
+                    )
                     .await?;
                 let rows = scope
                     .query(request(
@@ -120,9 +146,35 @@ async fn sqlite_compiler_to_context_logs_preserves_field_masking_across_crud_and
     let logs = context.sql_logs();
     assert_eq!(
         logs.len(),
-        8,
-        "batch must emit two independent statement logs"
+        13,
+        "five writes, five readbacks and three caller queries"
     );
+    let writes: Vec<_> = logs
+        .iter()
+        .filter(|log| log.operation.is_mutation())
+        .collect();
+    let readbacks: Vec<_> = logs
+        .iter()
+        .filter(|log| log.purpose.as_deref() == Some("verify the persisted mutation result"))
+        .collect();
+    let queries: Vec<_> = logs
+        .iter()
+        .filter(|log| {
+            log.purpose.as_deref()
+                == Some("why: verify execution values differ from log projection")
+        })
+        .collect();
+    assert_eq!(writes.len(), 5);
+    assert_eq!(readbacks.len(), 5);
+    assert_eq!(queries.len(), 3);
+    for readback in &readbacks {
+        assert_eq!(readback.result_count, Some(1));
+        assert_eq!(
+            readback.audit_reason.as_deref(),
+            Some("create masking fixture")
+        );
+        assert_eq!(readback.trace_path.last().unwrap().entity_type, "select");
+    }
     for log in &logs {
         assert!(
             log.log_context.omission_reason.is_none(),
@@ -134,17 +186,17 @@ async fn sqlite_compiler_to_context_logs_preserves_field_masking_across_crud_and
         assert!(!format!("{log:?}").contains("Riverside"));
         assert!(!format!("{log:?}").contains("Lakeside"));
     }
-    assert!(logs[0].debug_sql.contains("'Ri*****de' /* masked */"));
-    assert!(logs[0].debug_sql.contains("'ACTIVE'"));
-    assert!(logs[0].debug_sql.contains("'[REDACTED]' /* masked */"));
-    assert!(logs[4].debug_sql.contains("'La****de' /* masked */"));
-    assert_eq!(logs[2].result_count, Some(2));
+    assert!(writes[0].debug_sql.contains("'Ri*****de' /* masked */"));
+    assert!(writes[0].debug_sql.contains("'ACTIVE'"));
+    assert!(writes[0].debug_sql.contains("'[REDACTED]' /* masked */"));
+    assert!(writes[2].debug_sql.contains("'La****de' /* masked */"));
+    assert_eq!(queries[0].result_count, Some(2));
     assert_eq!(
-        logs[0].audit_reason.as_deref(),
+        writes[0].audit_reason.as_deref(),
         Some("create masking fixture")
     );
     assert_eq!(
-        logs[2].purpose.as_deref(),
+        queries[0].purpose.as_deref(),
         Some("why: verify execution values differ from log projection")
     );
 }

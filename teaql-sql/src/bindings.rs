@@ -1,12 +1,13 @@
 //! Per-compilation binding provenance. Never stored in a thread-local or context.
 use crate::DatabaseKind;
-use teaql_core::{EntityDescriptor, Expr, Value};
-use teaql_data_service::{SqlLogContext, SqlParameterLogPolicy as Policy, is_credential_log_name};
+use teaql_core::{BinaryOp, EntityDescriptor, Expr, Value};
+use teaql_data_service::{SqlIntentRedactions, SqlLogContext, SqlParameterLogPolicy as Policy};
 
 #[derive(Debug, Clone, Default)]
 pub struct SqlBindings {
     values: Vec<Value>,
     policies: Vec<Policy>,
+    originals: Vec<(usize, Value)>,
     pub(crate) scope: Option<Policy>,
     untrusted_sql: bool,
 }
@@ -23,16 +24,49 @@ impl SqlBindings {
         self.values.push(value);
         self.policies.push(field_policy(entity, field));
     }
+    pub(crate) fn push_like_pattern(&mut self, pattern: &str, original: &str) {
+        self.originals
+            .push((self.values.len(), Value::from(original)));
+        self.push(Value::from(pattern));
+    }
+    /// Rebuild execution-local intent provenance using this invocation's exact
+    /// operands and the compiled plan's field policies, never cached raw text.
+    pub(crate) fn rebind_log_context(&self, source: &SqlLogContext) -> SqlLogContext {
+        let mut context = source.clone();
+        let original_source = SqlLogContext {
+            generated_sql: source.generated_sql,
+            parameter_policies: self
+                .originals
+                .iter()
+                .map(|(index, _)| {
+                    source
+                        .parameter_policies
+                        .get(*index)
+                        .copied()
+                        .unwrap_or_default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let originals = self
+            .originals
+            .iter()
+            .map(|(_, value)| value.clone())
+            .collect::<Vec<_>>();
+        context.intent_redactions =
+            SqlIntentRedactions::from_bindings(&original_source, &originals, "");
+        context
+    }
     pub fn mark_untrusted_sql(&mut self) {
         self.untrusted_sql = true;
     }
     pub fn log_context(&self, kind: DatabaseKind) -> SqlLogContext {
-        SqlLogContext {
+        self.rebind_log_context(&SqlLogContext {
             database_kind: Some(format!("{kind:?}").to_ascii_lowercase()),
             parameter_policies: self.policies.clone(),
             generated_sql: !self.untrusted_sql,
             ..Default::default()
-        }
+        })
     }
     pub fn into_values(self) -> Vec<Value> {
         self.values
@@ -47,22 +81,21 @@ impl std::ops::Deref for SqlBindings {
 }
 
 pub(crate) fn field_policy(entity: &EntityDescriptor, field: &str) -> Policy {
-    let Some(property) = entity.property_by_name(field) else {
-        return Policy::Unknown;
+    teaql_data_service::SqlIntentRedactions::field_policy(entity, field)
+}
+
+/// Validate retained lowering provenance after possible AST rewrites. This
+/// compares against an explicitly retained operand; it never infers one by
+/// removing wildcard or escape characters from an arbitrary SQL pattern.
+pub(crate) fn like_operand(op: BinaryOp, right: &Expr) -> Option<(&str, &str)> {
+    let Expr::LikePattern { pattern, original } = right else {
+        return None;
     };
-    if is_credential_log_name(&property.name) || is_credential_log_name(&property.column_name) {
-        Policy::Credential
-    } else if !entity.audit_mask_fields_declared {
-        Policy::Unknown
-    } else if entity
-        .audit_mask_fields
-        .iter()
-        .any(|name| name == &property.name)
-    {
-        Policy::Masked
-    } else {
-        Policy::Plain
-    }
+    (matches!(op, BinaryOp::Like | BinaryOp::NotLike)
+        && (pattern == &format!("%{original}%")
+            || pattern == &format!("{original}%")
+            || pattern == &format!("%{original}")))
+        .then_some((pattern, original))
 }
 
 pub(crate) fn combine(left: Option<Policy>, right: Option<Policy>) -> Option<Policy> {
@@ -97,6 +130,8 @@ pub(crate) fn expression_policy(entity: &EntityDescriptor, expr: &Expr) -> Optio
         ),
         Expr::IsNull(expr) | Expr::IsNotNull(expr) => expression_policy(entity, expr),
         Expr::SubQuery { left, .. } => expression_policy(entity, left),
-        Expr::Value(_) | Expr::And(_) | Expr::Or(_) | Expr::Not(_) => None,
+        Expr::Value(_) | Expr::LikePattern { .. } | Expr::And(_) | Expr::Or(_) | Expr::Not(_) => {
+            None
+        }
     }
 }

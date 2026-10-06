@@ -92,6 +92,30 @@ impl std::fmt::Debug for SqlIntentRedactions {
 }
 
 impl SqlIntentRedactions {
+    /// Same classification for loaded graph provenance and SQL bindings.
+    pub fn field_policy(
+        entity: &teaql_core::EntityDescriptor,
+        field: &str,
+    ) -> SqlParameterLogPolicy {
+        use SqlParameterLogPolicy as Policy;
+        let Some(property) = entity.property_by_name(field) else {
+            return Policy::Unknown;
+        };
+        if is_credential_log_name(&property.name) || is_credential_log_name(&property.column_name) {
+            Policy::Credential
+        } else if !entity.audit_mask_fields_declared {
+            Policy::Unknown
+        } else if entity
+            .audit_mask_fields
+            .iter()
+            .any(|name| name == &property.name)
+        {
+            Policy::Masked
+        } else {
+            Policy::Plain
+        }
+    }
+
     /// Conservative provider fallback; not a wire-level permission or a retained
     /// cache value. Visit only this statement (including SQL subqueries), not
     /// separately executed relation siblings. Iterative to bound the Rust stack.
@@ -127,11 +151,24 @@ impl SqlIntentRedactions {
                 }
                 Node::Expr(expr) => match expr {
                     Expr::Value(value) => values.push(value.clone()),
+                    Expr::LikePattern { pattern, .. } => {
+                        values.push(Value::from(pattern.clone()));
+                    }
                     Expr::Column(_) => {}
                     Expr::Function { args, .. } | Expr::And(args) | Expr::Or(args) => {
                         pending.extend(args.iter().map(Node::Expr));
                     }
-                    Expr::Binary { left, right, .. } => {
+                    Expr::Binary { left, op, right } => {
+                        if matches!(
+                            op,
+                            teaql_core::BinaryOp::Like | teaql_core::BinaryOp::NotLike
+                        ) && let Expr::LikePattern { pattern, original } = right.as_ref()
+                            && (pattern == &format!("%{original}%")
+                                || pattern == &format!("{original}%")
+                                || pattern == &format!("%{original}"))
+                        {
+                            values.push(Value::from(original.clone()));
+                        }
                         pending.extend([Node::Expr(left), Node::Expr(right)]);
                     }
                     Expr::SubQuery { left, query, .. } => {
@@ -337,12 +374,43 @@ mod query_intent_tests {
     }
 
     #[test]
+    fn fallback_like_provenance_ignores_rewritten_operands_and_operators() {
+        for rewrite_pattern in [false, true] {
+            let mut expr = Expr::begin_with("name", "STALE-ORIGINAL");
+            let Expr::Binary { op, right, .. } = &mut expr else {
+                panic!()
+            };
+            if rewrite_pattern {
+                let Expr::LikePattern { pattern, .. } = right.as_mut() else {
+                    panic!()
+                };
+                *pattern = "CURRENT-PATTERN%".into();
+            } else {
+                *op = teaql_core::BinaryOp::Eq;
+            }
+            let source = NoIo.query_log_intent(&SelectQuery::new("Root").filter(expr));
+            let mut secrets = Vec::new();
+            source.extend_secrets(true, &mut secrets);
+            assert!(!secrets.contains(&"STALE-ORIGINAL".to_owned()));
+            assert_eq!(
+                secrets,
+                [if rewrite_pattern {
+                    "CURRENT-PATTERN%"
+                } else {
+                    "STALE-ORIGINAL%"
+                }]
+            );
+        }
+    }
+
+    #[test]
     fn default_provider_intent_is_unknown_in_debug_and_never_visits_relation_siblings() {
         let nested = EntityDescriptor::new("Child")
             .property(PropertyDescriptor::new("id", DataType::U64).id());
         let query = SelectQuery::new("Root")
             .filter(Expr::and([
                 Expr::eq("name", "FILTER-SECRET"),
+                Expr::begin_with("name", "LIKE-SECRET"),
                 Expr::in_subquery(
                     "id",
                     nested,
@@ -372,6 +440,8 @@ mod query_intent_tests {
             source.extend_secrets(debug, &mut secrets);
             for expected in [
                 "FILTER-SECRET",
+                "LIKE-SECRET",
+                "LIKE-SECRET%",
                 "SUBQUERY-SECRET",
                 "NESTED-CREDENTIAL",
                 "PROJECTION-SECRET",

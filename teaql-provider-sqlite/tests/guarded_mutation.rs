@@ -5,7 +5,7 @@ use teaql_core::{
     RecoverCommand, UpdateCommand,
 };
 use teaql_data_service::{
-    GuardedMutationExecutor, GuardedMutationRequest, MutationRequest, SchemaProvider, Transaction,
+    GuardedMutationExecutor, GuardedMutationRequest, SchemaProvider, Transaction,
     TransactionExecutor,
 };
 use teaql_provider_sqlite::{SqliteDialect, SqliteMutationExecutor};
@@ -78,11 +78,13 @@ fn tenant_guard_is_atomic_for_update_delete_and_recover() {
 
         let cross_tenant_update = executor
             .mutate_guarded(GuardedMutationRequest::new(
-                MutationRequest::Update(
+                teaql_data_service::MutationCommand::Update(
                     UpdateCommand::new("Order", 2_i64)
                         .expected_version(1)
                         .value("name", "stolen"),
-                ),
+                )
+                .request("audited provider conformance test")
+                .unwrap(),
                 tenant_one(),
             ))
             .await
@@ -91,11 +93,13 @@ fn tenant_guard_is_atomic_for_update_delete_and_recover() {
 
         let own_update = executor
             .mutate_guarded(GuardedMutationRequest::new(
-                MutationRequest::Update(
+                teaql_data_service::MutationCommand::Update(
                     UpdateCommand::new("Order", 1_i64)
                         .expected_version(1)
                         .value("name", "updated"),
-                ),
+                )
+                .request("audited provider conformance test")
+                .unwrap(),
                 tenant_one(),
             ))
             .await
@@ -104,7 +108,11 @@ fn tenant_guard_is_atomic_for_update_delete_and_recover() {
 
         let cross_tenant_delete = executor
             .mutate_guarded(GuardedMutationRequest::new(
-                MutationRequest::Delete(DeleteCommand::new("Order", 2_i64).expected_version(1)),
+                teaql_data_service::MutationCommand::Delete(
+                    DeleteCommand::new("Order", 2_i64).expected_version(1),
+                )
+                .request("audited provider conformance test")
+                .unwrap(),
                 tenant_one(),
             ))
             .await
@@ -113,7 +121,11 @@ fn tenant_guard_is_atomic_for_update_delete_and_recover() {
 
         let own_delete = executor
             .mutate_guarded(GuardedMutationRequest::new(
-                MutationRequest::Delete(DeleteCommand::new("Order", 2_i64).expected_version(1)),
+                teaql_data_service::MutationCommand::Delete(
+                    DeleteCommand::new("Order", 2_i64).expected_version(1),
+                )
+                .request("audited provider conformance test")
+                .unwrap(),
                 tenant_two(),
             ))
             .await
@@ -122,7 +134,11 @@ fn tenant_guard_is_atomic_for_update_delete_and_recover() {
 
         let cross_tenant_recover = executor
             .mutate_guarded(GuardedMutationRequest::new(
-                MutationRequest::Recover(RecoverCommand::new("Order", 2_i64, -2)),
+                teaql_data_service::MutationCommand::Recover(RecoverCommand::new(
+                    "Order", 2_i64, -2,
+                ))
+                .request("audited provider conformance test")
+                .unwrap(),
                 tenant_one(),
             ))
             .await
@@ -131,7 +147,11 @@ fn tenant_guard_is_atomic_for_update_delete_and_recover() {
 
         let own_recover = executor
             .mutate_guarded(GuardedMutationRequest::new(
-                MutationRequest::Recover(RecoverCommand::new("Order", 2_i64, -2)),
+                teaql_data_service::MutationCommand::Recover(RecoverCommand::new(
+                    "Order", 2_i64, -2,
+                ))
+                .request("audited provider conformance test")
+                .unwrap(),
                 tenant_two(),
             ))
             .await
@@ -140,11 +160,13 @@ fn tenant_guard_is_atomic_for_update_delete_and_recover() {
 
         let cross_tenant_hard_delete = executor
             .mutate_guarded(GuardedMutationRequest::new(
-                MutationRequest::Delete(
+                teaql_data_service::MutationCommand::Delete(
                     DeleteCommand::new("Order", 3_i64)
                         .expected_version(1)
                         .hard_delete(),
-                ),
+                )
+                .request("audited provider conformance test")
+                .unwrap(),
                 tenant_one(),
             ))
             .await
@@ -153,11 +175,13 @@ fn tenant_guard_is_atomic_for_update_delete_and_recover() {
 
         let own_hard_delete = executor
             .mutate_guarded(GuardedMutationRequest::new(
-                MutationRequest::Delete(
+                teaql_data_service::MutationCommand::Delete(
                     DeleteCommand::new("Order", 3_i64)
                         .expected_version(1)
                         .hard_delete(),
-                ),
+                )
+                .request("audited provider conformance test")
+                .unwrap(),
                 tenant_two(),
             ))
             .await
@@ -167,11 +191,13 @@ fn tenant_guard_is_atomic_for_update_delete_and_recover() {
         let transaction = executor.begin().await.expect("begin transaction");
         let transactional_cross_tenant_update = transaction
             .mutate_guarded(GuardedMutationRequest::new(
-                MutationRequest::Update(
+                teaql_data_service::MutationCommand::Update(
                     UpdateCommand::new("Order", 2_i64)
                         .expected_version(3)
                         .value("name", "transactional theft"),
-                ),
+                )
+                .request("audited provider conformance test")
+                .unwrap(),
                 tenant_one(),
             ))
             .await

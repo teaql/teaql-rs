@@ -1157,7 +1157,7 @@ mod streaming_tests {
     use super::*;
     use futures_util::StreamExt;
     use teaql_core::RelationDescriptor;
-    use teaql_data_service::{MutationRequest, QueryRequest};
+    use teaql_data_service::QueryRequest;
     use teaql_sql::{SqlTransaction, SqlTransactionTransport, SqlTransport, StreamingSqlTransport};
 
     // Live ensure_schema tests share the provider's teaql_id_space table.
@@ -1241,7 +1241,13 @@ mod streaming_tests {
                         .value("version", 1_i64)
                         .value("display_name", "Riverside")
                         .value("status", "ACTIVE");
-                    scope.mutate(MutationRequest::Insert(insert)).await?;
+                    scope
+                        .mutate(
+                            teaql_data_service::MutationCommand::Insert(insert)
+                                .request("audited provider conformance test")
+                                .unwrap(),
+                        )
+                        .await?;
                     let query = SelectQuery::new("MaskProbe")
                         .filter(Expr::and([
                             Expr::eq("display_name", "Riverside"),
@@ -1260,7 +1266,11 @@ mod streaming_tests {
                         .query(QueryRequest {
                             query,
                             trace_chain: trace,
-                            comment: Some("what: verify live masked readback".into()),
+                            intent: teaql_core::QueryIntent::new(
+                                "what: verify live masked readback",
+                                "why: prove provider log privacy",
+                            )
+                            .unwrap(),
                             capture_debug_query: true,
                             capture_execution_metadata: true,
                         })
@@ -1283,7 +1293,14 @@ mod streaming_tests {
         ] {
             let log = logs
                 .iter()
-                .find(|log| log.operation == operation)
+                // Inserts also generate a real SELECT readback. Observe the
+                // explicit filtered query here; its field parameters, not the
+                // identity-only readback parameters, must be masked.
+                .find(|log| {
+                    log.operation == operation
+                        && (operation != teaql_runtime::SqlLogOperation::Select
+                            || log.comment.as_deref() == Some("what: verify live masked readback"))
+                })
                 .expect("live SQL log");
             assert!(
                 log.debug_sql.contains("Ri*****de"),

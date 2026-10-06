@@ -365,6 +365,9 @@ fn sql_entry_inner(entry: &SqlLogEntry, allow: bool, hide_intent: bool) -> SqlLo
 pub(crate) fn audit_event(event: &RawAuditEvent, allow: bool) -> RawAuditEvent {
     let mut result = event.clone();
     let mut secrets = Vec::new();
+    if let Some(source) = result.diagnostic_redactions.take() {
+        source.extend_secrets(allow, &mut secrets);
+    }
     fn redact(field: &str, value: &mut Value, allow: bool, secrets: &mut Vec<String>) {
         if credential_name(field)
             || has_credentials(value)
@@ -411,6 +414,48 @@ pub(crate) fn audit_event(event: &RawAuditEvent, allow: bool) -> RawAuditEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sibling_provenance_masks_audit_without_rewriting_trusted_intent() {
+        use teaql_data_service::{SqlIntentRedactions, SqlLogContext, SqlParameterLogPolicy};
+        let privacy = SqlIntentRedactions::from_bindings(
+            &SqlLogContext {
+                generated_sql: true,
+                parameter_policies: vec![
+                    SqlParameterLogPolicy::Masked,
+                    SqlParameterLogPolicy::Credential,
+                ],
+                ..Default::default()
+            },
+            &[Value::from("PRIVATE-SIBLING"), Value::from("PRIVATE-TOKEN")],
+            "",
+        );
+        let mut event = RawAuditEvent::created("CustomerOrder", Record::new());
+        event.trace_chain = vec![teaql_core::TraceNode::typed(
+            teaql_core::TraceKind::AuditReason,
+            "CustomerOrder",
+            Some(17),
+            "page 1 PRIVATE-SIBLING PRIVATE-TOKEN",
+        )];
+        event.diagnostic_redactions = Some(std::sync::Arc::new(privacy));
+        let safe = audit_event(&event, false);
+        assert_eq!(safe.trace_chain[0].comment, "page 1 [REDACTED] [REDACTED]");
+        assert!(
+            safe.diagnostic_redactions.is_none(),
+            "projected output must drop private source"
+        );
+        let debug = audit_event(&event, true);
+        assert_eq!(
+            debug.trace_chain[0].comment,
+            "page 1 PRIVATE-SIBLING [REDACTED]"
+        );
+        assert!(event.trace_chain[0].comment.contains("PRIVATE-TOKEN"));
+        let custom = event.build_safe_event(&[], None);
+        assert_eq!(
+            custom.trace_chain[0].comment,
+            "page 1 [REDACTED] [REDACTED]"
+        );
+    }
+
     #[test]
     fn exact_ack_only() {
         for value in [

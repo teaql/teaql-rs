@@ -21,42 +21,42 @@ pub struct School {
     #[teaql(id)]
     id: u64,
 
-    // @source school-model.xml:41
+    // @source main.xml:41
     #[teaql(max_length = 100)]
     name: String,
 
-    // @source school-model.xml:41
+    // @source main.xml:41
     #[teaql(max_length = 100)]
     address: String,
 
-    // @source school-model.xml:41
+    // @source main.xml:41
     established_date: chrono::NaiveDate,
 
-    // @source school-model.xml:41
+    // @source main.xml:41
     student_capacity: i64,
 
-    // @source school-model.xml:41
+    // @source main.xml:41
     active: bool,
 
-    // @source school-model.xml:41
+    // @source main.xml:41
     create_time: teaql_core::time::Timestamp,
 
-    // @source school-model.xml:41
+    // @source main.xml:41
     update_time: teaql_core::time::Timestamp,
     #[teaql(version)]
     version: i64,
-    // @source school-model.xml:41
+    // @source main.xml:41
     #[teaql(column = "platform")]
     platform_id: u64,
 
-    // @source school-model.xml:41
+    // @source main.xml:41
     #[teaql(column = "school_type")]
     school_type_id: u64,
-    // @source school-model.xml:41
+    // @source main.xml:41
     #[teaql(relation(target = "Platform", local_key = "platform_id", foreign_key = "id"))]
     platform: Option<Box<crate::Platform>>,
 
-    // @source school-model.xml:41
+    // @source main.xml:41
     #[teaql(relation(
         target = "SchoolType",
         local_key = "school_type_id",

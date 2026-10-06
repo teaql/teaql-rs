@@ -4,7 +4,7 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 verification_dir="$(mktemp -d)"
 trap 'status=$?; if (( status == 0 )); then rm -rf -- "$verification_dir"; else echo "FAILED: example evidence retained at $verification_dir" >&2; fi' EXIT
-expected=(business-id-runtime conformance context-bound-order-document order-management school-management tests)
+expected=(business-id-runtime conformance context-bound-order-document facet-trace order-management school-management tests trace-chain)
 mapfile -t actual < <(find "$repo/examples" -mindepth 1 -maxdepth 1 -type d ! -name src -printf '%f\n' | sort)
 if [[ "${actual[*]}" != "${expected[*]}" ]]; then
   echo "example inventory changed; update scripts/verify-examples.sh: ${actual[*]}" >&2
@@ -12,9 +12,11 @@ if [[ "${actual[*]}" != "${expected[*]}" ]]; then
 fi
 
 cd "$repo"
+cargo test -p teaql-provider-sqlite --test relation_membership -- --nocapture
 cargo test -p teaql-examples --all-targets
 cargo run --quiet --manifest-path examples/conformance/Cargo.toml
 cargo run --quiet --manifest-path examples/school-management/Cargo.toml
+bash scripts/verify-school-bootstrap-example.sh
 SCHOOL_MANAGEMENT_SERVICE_CORE_DATABASE_URL="$verification_dir/env-helper.db" \
   TEAQL_ALLOW_SENSITIVE_PLAINTEXT_LOGS=I_UNDERSTAND_SENSITIVE_DATA_MAY_BE_WRITTEN_TO_DISK \
   TEAQL_LOG_ENDPOINT="$verification_dir/env-helper-safe.log" \
@@ -68,4 +70,6 @@ TEAQL_SAVE_LOAD_STATE_DATABASE="sqlite:file:$verification_dir/graph.db" \
 TEAQL_SAVE_LOAD_STATE_DATABASE="sqlite:file:$verification_dir/graph.db" \
   cargo run --quiet --manifest-path examples/order-management/rust-app-console/Cargo.toml --bin save_forward_fk_probe
 cargo test -p teaql-tfp-endpoint --examples
+bash examples/trace-chain/verify.sh
+bash examples/facet-trace/verify.sh
 echo "PASS: all Rust examples"

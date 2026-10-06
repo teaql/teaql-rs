@@ -8,6 +8,7 @@ default-run = "school-management-bootstrap-example"
 school_management_service_core = { package = "school-management-service-core", path = "lib" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 rusqlite = "0.40"
+teaql-runtime = { path = "../../teaql-runtime" }
 
 [workspace]
 
