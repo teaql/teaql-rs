@@ -8,7 +8,11 @@ hash_library() {
   (cd "$example_dir/lib" && find . -type f -exec sha256sum {} \; | sort)
 }
 hash_library > "$evidence_dir/library-before.sha256"
-cargo generate-lockfile --offline --manifest-path "$example_dir/Cargo.toml" > "$evidence_dir/lock.log" 2>&1
+sha256sum "$example_dir/Cargo.lock" > "$evidence_dir/lock-before.sha256"
+# Verification consumes the committed dependency graph; an offline cache must
+# not silently select newer packages and rewrite the application's lockfile.
+cargo metadata --offline --locked --no-deps --format-version 1 \
+  --manifest-path "$example_dir/Cargo.toml" > "$evidence_dir/lock.log" 2>&1
 for round in 1 2; do
   if ! cargo test --offline --locked --manifest-path "$example_dir/Cargo.toml" \
       --test request_intent -- --show-output --test-threads=1 > "$evidence_dir/run-$round.log" 2>&1; then
@@ -38,5 +42,7 @@ for round in 1 2; do
 done
 hash_library > "$evidence_dir/library-after.sha256"
 cmp "$evidence_dir/library-before.sha256" "$evidence_dir/library-after.sha256"
+sha256sum "$example_dir/Cargo.lock" > "$evidence_dir/lock-after.sha256"
+cmp "$evidence_dir/lock-before.sha256" "$evidence_dir/lock-after.sha256"
 printf 'PASS: Rust generated Facet; unchanged library; database %s; evidence %s\n' \
   "$TEAQL_FACET_DATABASE" "$evidence_dir"
