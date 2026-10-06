@@ -964,7 +964,7 @@ mod streaming_tests {
                             trace_chain: trace,
                             intent: teaql_core::QueryIntent::new(
                                 "what: verify live masked readback",
-                                "verify provider query behavior",
+                                "why: prove provider log privacy",
                             )
                             .unwrap(),
                             capture_debug_query: true,
@@ -989,7 +989,14 @@ mod streaming_tests {
         ] {
             let log = logs
                 .iter()
-                .find(|log| log.operation == operation)
+                // Inserts also generate a real SELECT readback. Observe the
+                // explicit filtered query here; its field parameters, not the
+                // identity-only readback parameters, must be masked.
+                .find(|log| {
+                    log.operation == operation
+                        && (operation != teaql_runtime::SqlLogOperation::Select
+                            || log.comment.as_deref() == Some("what: verify live masked readback"))
+                })
                 .expect("live SQL log");
             assert!(
                 log.debug_sql.contains("Ri*****de"),
