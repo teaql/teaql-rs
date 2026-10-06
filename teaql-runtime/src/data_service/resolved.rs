@@ -129,14 +129,14 @@ where
                 )?;
             }
 
-            if !relation.many && relation.local_key != "id" {
-                if let Some(key) = child_records
+            if !relation.many
+                && relation.local_key != "id"
+                && let Some(key) = child_records
                     .first()
                     .and_then(|child| child.get(&relation.foreign_key))
                     .cloned()
-                {
-                    record.insert(relation.local_key.clone(), key);
-                }
+            {
+                record.insert(relation.local_key.clone(), key);
             }
 
             if relation.many || relation.local_key == "id" {

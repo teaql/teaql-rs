@@ -1449,16 +1449,16 @@ where
             // A target filter cannot erase the real FK. Do not run inverse
             // convenience wiring on this identity-only row: its other fields
             // (including reverse lists) were not loaded.
-            if !plan.many && related.is_empty() {
-                if let Some(key) = keys
+            if !plan.many
+                && related.is_empty()
+                && let Some(key) = keys
                     .get(&plan.local_key)
                     .filter(|key| !matches!(key, Value::Null | Value::TypedNull(_)))
-                {
-                    related.push(CompactRow::from_map(BTreeMap::from([(
-                        plan.foreign_key.clone(),
-                        key.clone(),
-                    )])));
-                }
+            {
+                related.push(CompactRow::from_map(BTreeMap::from([(
+                    plan.foreign_key.clone(),
+                    key.clone(),
+                )])));
             }
             if plan
                 .query

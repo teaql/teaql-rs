@@ -623,11 +623,7 @@ fn explicit_forward_projection_survives_reverse_inverse_wiring_with_aggregates()
                                 forward,
                             );
                             let shared = child.state.resolve_entity::<MembershipParent>(100);
-                            let view = owned
-                                .as_ref()
-                                .and_then(|v| v.as_ref())
-                                .or(shared.as_deref())
-                                .unwrap();
+                            let view = owned.as_ref().and_then(|v| v.as_ref()).or(shared).unwrap();
                             assert_eq!(view.row.get("id").and_then(Value::try_i64), Some(100));
                             assert_eq!(
                                 teaql_core::Entity::is_field_loaded(view, "name"),
