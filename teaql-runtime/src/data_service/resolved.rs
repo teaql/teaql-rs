@@ -1034,10 +1034,9 @@ where
         if !query.relations.is_empty()
             || !query.child_enhancements.is_empty()
             || !query.object_group_bys.is_empty()
-            || query.dynamic_field_selection.is_some()
         {
             return Err(DataServiceError::Runtime(RuntimeError::Graph(
-                "streaming relation, aggregate or dynamic-field enhancement is not supported; stream a root query or use execute_for_list"
+                "streaming relation or aggregate enhancement is not supported; stream a root query or use execute_for_list"
                     .to_owned(),
             )));
         }
@@ -1063,7 +1062,34 @@ where
             capture_execution_metadata: capture_metadata,
         };
 
-        let chunks = if capture_metadata {
+        let chunks = if let Some(selection) = &query.dynamic_field_selection {
+            let store = self
+                .data_service
+                .executor
+                .dynamic_field_store()
+                .ok_or_else(|| {
+                    DataServiceError::Runtime(RuntimeError::DynamicField(
+                        teaql_core::dynamic_fields::DynamicFieldError {
+                            code: "DYNAMIC_FIELD_STORAGE_UNSUPPORTED",
+                            field: query.entity.clone(),
+                        },
+                    ))
+                })?;
+            let plan = self
+                .data_service
+                .metadata
+                .context
+                .prepare_dynamic_field_stream(store, &query.entity, selection, &request.intent)
+                .map_err(|error| DataServiceError::Runtime(RuntimeError::DynamicField(error)))?;
+            let observer = capture_metadata.then(|| {
+                std::sync::Arc::new(move |metadata| scoped.record_query_metadata(&metadata))
+                    as teaql_data_service::ExecutionObserver<'_>
+            });
+            self.data_service
+                .executor
+                .query_stream_with_dynamic_fields(request, chunk_size, plan, observer)
+                .map_err(|error| DataServiceError::Runtime(RuntimeError::DynamicField(error)))?
+        } else if capture_metadata {
             self.data_service.executor.query_stream_observed(
                 request,
                 chunk_size,

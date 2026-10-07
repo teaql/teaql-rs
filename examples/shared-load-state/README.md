@@ -68,6 +68,15 @@ data requires an actual dynamic-property carrier and receives no fixed indexes.
 Decoded JSON is presentation data, not database authority or permission to save.
 Load governed data before business mutations and retain full Checker/audit requirements.
 
+`tests/support/dynamic_stream.rs` uses generated Q/E and audited Mutation APIs
+with durable extensions in an isolated SQLite file reused across both rounds.
+Cursor-local loading preserves Value, Null and NotLoaded at chunk sizes 1, 2,
+3 and 73. An early close releases the connection and transaction lease before
+an audited save of the held complete entity. Trusted definitions, selection and
+storage identity are checked before a cursor opens; the request cannot choose
+a storage namespace. Only providers implementing this protocol support dynamic
+field streams. Relation/aggregate stream enhancement remains unsupported.
+
 `tests/support/materialization.rs` exercises a bounded two-row Q/E capacity
 calculation. `_total_capacity` is a readonly result on the source School: it has
 no fixed slot and a native audited save must not persist it. To retain the result,

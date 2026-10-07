@@ -79,6 +79,22 @@ pub(crate) fn mutation_audit_value(
 
 #[async_trait::async_trait]
 pub trait DynamicFieldsProvider: Send + Sync {
+    /// Trusted storage plan, never constructed from request-supplied namespaces.
+    /// Custom providers opt in explicitly rather than falling back to ambient I/O.
+    fn prepare_stream_read(
+        &self,
+        _context: &UserContext,
+        _store: &dyn DynamicFieldStore,
+        owner_type: &str,
+        _selection: &DynamicFieldSelection,
+        _intent: &QueryIntent,
+    ) -> Result<teaql_data_service::dynamic_fields::DynamicFieldStreamPlan, DynamicFieldError> {
+        Err(DynamicFieldError {
+            code: "DYNAMIC_FIELD_STREAM_UNSUPPORTED",
+            field: owner_type.into(),
+        })
+    }
+
     fn supports_graph_save(&self) -> bool {
         false
     }
@@ -114,6 +130,24 @@ pub trait DynamicFieldsProvider: Send + Sync {
 struct DynamicFieldsProviderResource(Arc<dyn DynamicFieldsProvider>);
 
 impl UserContext {
+    pub(crate) fn prepare_dynamic_field_stream(
+        &self,
+        store: &dyn DynamicFieldStore,
+        owner_type: &str,
+        selection: &DynamicFieldSelection,
+        intent: &QueryIntent,
+    ) -> Result<teaql_data_service::dynamic_fields::DynamicFieldStreamPlan, DynamicFieldError> {
+        let provider = self
+            .get_resource::<DynamicFieldsProviderResource>()
+            .ok_or_else(|| DynamicFieldError {
+                code: "DYNAMIC_FIELD_PROVIDER_MISSING",
+                field: owner_type.into(),
+            })?;
+        provider
+            .0
+            .prepare_stream_read(self, store, owner_type, selection, intent)
+    }
+
     pub fn set_dynamic_fields_provider(&mut self, provider: Arc<dyn DynamicFieldsProvider>) {
         self.insert_resource(DynamicFieldsProviderResource(provider));
     }
@@ -233,6 +267,38 @@ impl<E> DynamicFieldsProvider for DatabaseDynamicFieldsProvider<E>
 where
     E: teaql_data_service::QueryExecutor + Send + Sync + 'static,
 {
+    fn prepare_stream_read(
+        &self,
+        context: &UserContext,
+        store: &dyn DynamicFieldStore,
+        owner_type: &str,
+        selection: &DynamicFieldSelection,
+        intent: &QueryIntent,
+    ) -> Result<teaql_data_service::dynamic_fields::DynamicFieldStreamPlan, DynamicFieldError> {
+        let definitions = self.definitions_for_context(context, owner_type)?;
+        let ambient = context
+            .require_resource::<E>()
+            .map_err(|_| DynamicFieldError {
+                code: "DYNAMIC_FIELD_EXECUTOR_MISSING",
+                field: owner_type.into(),
+            })?;
+        let ambient = ambient
+            .dynamic_field_store()
+            .ok_or_else(|| DynamicFieldError {
+                code: "DYNAMIC_FIELD_STORAGE_UNSUPPORTED",
+                field: owner_type.into(),
+            })?;
+        let plan = teaql_data_service::dynamic_fields::DynamicFieldStreamPlan::new(
+            self.namespace.clone(),
+            definitions,
+            selection.clone(),
+            ambient,
+            intent.clone(),
+        )?;
+        plan.validate_store(store)?;
+        Ok(plan)
+    }
+
     fn supports_graph_save(&self) -> bool {
         true
     }

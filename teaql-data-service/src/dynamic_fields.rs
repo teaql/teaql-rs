@@ -10,6 +10,137 @@ use teaql_core::dynamic_fields::{
 };
 use teaql_core::{MutationIntent, QueryIntent, Value};
 
+/// Trusted, non-wire read plan for enhancement on the cursor's own connection.
+/// It cannot choose storage independently of the executing native provider.
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct DynamicFieldStreamPlan {
+    namespace: String,
+    definitions: Arc<DynamicFieldDefinitions>,
+    selection: DynamicFieldSelection,
+    binding_key: usize,
+    source_identity: u64,
+    _intent: QueryIntent,
+}
+
+impl DynamicFieldStreamPlan {
+    pub fn new(
+        namespace: String,
+        definitions: Arc<DynamicFieldDefinitions>,
+        selection: DynamicFieldSelection,
+        store: &dyn DynamicFieldStore,
+        intent: QueryIntent,
+    ) -> Result<Self, DynamicFieldError> {
+        selection.validate(&definitions)?;
+        if namespace.trim().is_empty() {
+            return Err(DynamicFieldError {
+                code: "DYNAMIC_FIELD_NAMESPACE_REQUIRED",
+                field: "namespace".into(),
+            });
+        }
+        let source_identity = store.source_identity().ok_or_else(|| DynamicFieldError {
+            code: "DYNAMIC_FIELD_STORAGE_IDENTITY_REQUIRED",
+            field: definitions.owner_type().into(),
+        })?;
+        Ok(Self {
+            definitions: definitions.with_storage_binding(&namespace, source_identity),
+            namespace,
+            selection,
+            binding_key: store.binding_key(),
+            source_identity,
+            _intent: intent,
+        })
+    }
+
+    pub fn validate_store(&self, store: &dyn DynamicFieldStore) -> Result<(), DynamicFieldError> {
+        if store.binding_key() != self.binding_key
+            || store.source_identity() != Some(self.source_identity)
+        {
+            return Err(DynamicFieldError {
+                code: "DYNAMIC_FIELD_STORAGE_PROVENANCE_MISMATCH",
+                field: self.definitions.owner_type().into(),
+            });
+        }
+        Ok(())
+    }
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+    pub fn definitions(&self) -> &DynamicFieldDefinitions {
+        &self.definitions
+    }
+    pub fn selection(&self) -> &DynamicFieldSelection {
+        &self.selection
+    }
+
+    pub fn owner_ids(
+        &self,
+        rows: &[teaql_core::CompactRow],
+    ) -> Result<Vec<u64>, DynamicFieldError> {
+        rows.iter()
+            .map(|row| {
+                row.get("id")
+                    .and_then(Value::try_u64)
+                    .filter(|id| *id != 0)
+                    .ok_or_else(|| DynamicFieldError {
+                        code: "DYNAMIC_FIELD_OWNER_ID_REQUIRED",
+                        field: self.definitions.owner_type().into(),
+                    })
+            })
+            .collect()
+    }
+
+    /// Validate the complete batch before its rows can become visible to callers.
+    pub fn merge(
+        &self,
+        rows: &mut [teaql_core::CompactRow],
+        ids: &[u64],
+        mut stored: DynamicStorageRows,
+    ) -> Result<(), DynamicFieldError> {
+        let invalid = |code| DynamicFieldError {
+            code,
+            field: self.definitions.owner_type().into(),
+        };
+        if rows.len() != ids.len() {
+            return Err(invalid("DYNAMIC_FIELD_BATCH_OMITTED_OWNER"));
+        }
+        if self.owner_ids(rows)?.as_slice() != ids {
+            return Err(invalid("DYNAMIC_FIELD_OWNER_MISMATCH"));
+        }
+        let mut occurrences = HashMap::new();
+        for id in ids {
+            *occurrences.entry(*id).or_insert(0_usize) += 1;
+        }
+        if stored.keys().any(|id| !occurrences.contains_key(id)) {
+            return Err(invalid("DYNAMIC_FIELD_UNREQUESTED_OWNER"));
+        }
+        let mut payloads = Vec::with_capacity(ids.len());
+        for id in ids {
+            let count = occurrences.get_mut(id).expect("requested owner");
+            *count -= 1;
+            let values = if *count == 0 {
+                stored.remove(id)
+            } else {
+                stored.get(id).cloned()
+            }
+            .ok_or_else(|| invalid("DYNAMIC_FIELD_BATCH_OMITTED_OWNER"))?;
+            if values.keys().any(|code| !self.selection.contains(code)) {
+                return Err(invalid("DYNAMIC_FIELD_UNSELECTED_VALUE"));
+            }
+            payloads.push(values);
+        }
+        let values = teaql_core::dynamic_fields::DynamicFieldValues::from_batch(
+            self.definitions.clone(),
+            payloads,
+        )?;
+        let mut shapes = teaql_core::dynamic_fields::DynamicFieldMergeShapes::default();
+        for (row, fields) in rows.iter_mut().zip(values) {
+            row.merge_loaded_dynamic_fields(fields, &mut shapes)?;
+        }
+        Ok(())
+    }
+}
+
 pub type DynamicStorageFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, DynamicFieldError>> + Send + 'a>>;
 pub type DynamicStorageRows = HashMap<u64, HashMap<String, Value>>;

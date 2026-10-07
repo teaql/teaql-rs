@@ -61,6 +61,22 @@ pub trait SqlTransport: Send + Sync {
 }
 
 pub trait StreamingSqlTransport: SqlTransport {
+    #[doc(hidden)]
+    fn stream_sql_with_dynamic_fields(
+        &self,
+        _query: CompiledQuery,
+        _chunk_size: usize,
+        _plan: teaql_data_service::dynamic_fields::DynamicFieldStreamPlan,
+    ) -> Result<
+        teaql_data_service::QueryStream<'_, Self::Error>,
+        teaql_core::dynamic_fields::DynamicFieldError,
+    > {
+        Err(teaql_core::dynamic_fields::DynamicFieldError {
+            code: "DYNAMIC_FIELD_STREAM_UNSUPPORTED",
+            field: "stream".into(),
+        })
+    }
+
     fn stream_sql(
         &self,
         query: CompiledQuery,
@@ -2123,6 +2139,57 @@ impl<
     S: teaql_data_service::SchemaProvider + Send + Sync,
 > teaql_data_service::StreamQueryExecutor for SqlDataServiceExecutor<D, T, S>
 {
+    fn query_stream_with_dynamic_fields<'a>(
+        &'a self,
+        request: QueryRequest,
+        chunk_size: usize,
+        plan: teaql_data_service::dynamic_fields::DynamicFieldStreamPlan,
+        observer: Option<teaql_data_service::ExecutionObserver<'a>>,
+    ) -> Result<
+        teaql_data_service::QueryStream<'a, Self::Error>,
+        teaql_core::dynamic_fields::DynamicFieldError,
+    > {
+        use futures_util::StreamExt;
+        if plan.definitions().owner_type() != request.query.entity {
+            return Err(teaql_core::dynamic_fields::DynamicFieldError {
+                code: "DYNAMIC_FIELD_OWNER_MISMATCH",
+                field: request.query.entity,
+            });
+        }
+        if request.query.dynamic_field_selection.as_deref() != Some(plan.selection()) {
+            return Err(teaql_core::dynamic_fields::DynamicFieldError {
+                code: "DYNAMIC_FIELD_STREAM_SELECTION_MISMATCH",
+                field: request.query.entity,
+            });
+        }
+        let compiled = self
+            .entity_descriptor(&request.query.entity)
+            .ok_or_else(|| SqlCompileError::UnknownEntity(request.query.entity.clone()))
+            .and_then(|entity| self.compile_select_cached(&entity, &request.query));
+        let compiled = match compiled {
+            Ok(compiled) => compiled,
+            Err(error) => {
+                return Ok(Box::pin(futures_util::stream::once(async move {
+                    Err(SqlExecutorError::Compile(error))
+                })));
+            }
+        };
+        let metadata = request
+            .capture_execution_metadata
+            .then(|| query_diagnostic_metadata(&self.dialect, &compiled, &request));
+        let source = Box::pin(
+            self.transport
+                .stream_sql_with_dynamic_fields(compiled, chunk_size, plan)?
+                .map(|item| item.map_err(SqlExecutorError::Transport)),
+        );
+        Ok(match (metadata, observer) {
+            (Some(metadata), Some(observer)) => {
+                crate::diagnostic_stream::DiagnosticStream::wrap(source, metadata, observer)
+            }
+            _ => source,
+        })
+    }
+
     fn query_stream_observed<'a>(
         &'a self,
         request: QueryRequest,

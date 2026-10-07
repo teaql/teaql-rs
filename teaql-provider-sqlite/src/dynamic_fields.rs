@@ -165,7 +165,7 @@ fn decode(
     })
 }
 
-fn load(
+pub(super) fn load(
     connection: &Connection,
     namespace: &str,
     definitions: &DynamicFieldDefinitions,

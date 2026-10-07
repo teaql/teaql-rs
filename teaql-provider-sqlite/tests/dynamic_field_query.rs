@@ -1,5 +1,5 @@
 //! Real SQLite root queries with a context-owned dynamic-field provider.
-//! Dynamic persistence is not claimed: extensions are fixtures; root rows use audited graph save.
+//! Root and durable extension rows use audited graph save, including cursor-local stream reads.
 use std::collections::HashMap;
 use std::sync::Arc;
 use teaql_core::dynamic_fields::{
@@ -90,6 +90,395 @@ type AtomicFixture = (
     Arc<teaql_core::dynamic_fields::DynamicFieldDefinitions>,
     Arc<std::sync::Mutex<Vec<teaql_runtime::SafeAuditEvent>>>,
 );
+
+fn dynamic_stream_request(chunk_size: usize) -> PurposedSelectQuery {
+    let mut query = teaql_core::SelectQuery::new("DynamicSchool")
+        .projects(["id", "version", "name"])
+        .order_by(teaql_core::OrderBy::asc("id"))
+        .limit(3)
+        .select_dynamic_fields(
+            DynamicFieldSelection::fields([("note".into(), teaql_core::DataType::Text)]).unwrap(),
+        )
+        .comment("stream durable extension values through the native cursor");
+    query.stream_config = Some(teaql_core::StreamConfig { chunk_size });
+    PurposedSelectQuery::new(
+        query,
+        "verify bounded cursor-local loading without recursive locks",
+    )
+}
+
+async fn seed_stream_extensions(context: &UserContext) {
+    for (index, mut row) in atomic_rows(context).await.into_iter().take(2).enumerate() {
+        row.update_dynamic_field(
+            "note",
+            if index == 0 {
+                "stream-value".into()
+            } else {
+                Value::Null
+            },
+        )
+        .unwrap();
+        row.update_dynamic_field("untouched", "unselected-private".into())
+            .unwrap();
+        row.audit_as("seed stream value and explicit null through audited mutation")
+            .save(context)
+            .await
+            .unwrap();
+    }
+}
+
+#[test]
+fn dynamic_stream_uses_native_cursor_and_keeps_value_null_missing_and_tail() {
+    use futures_util::StreamExt;
+    futures_executor::block_on(async {
+        let (context, transport, _, _) = atomic_fixture(true).await;
+        seed_stream_extensions(&context).await;
+        let service = context
+            .entity_data_service::<Executor>("DynamicSchool")
+            .unwrap();
+        let mut stream = service
+            .fetch_stream(&dynamic_stream_request(2))
+            .await
+            .unwrap();
+        let first = stream.next().await.unwrap().unwrap();
+        assert_eq!(
+            (first.chunk_index, first.rows.len(), first.is_last),
+            (0, 2, false)
+        );
+        assert!(
+            transport.connection().try_lock().is_err(),
+            "cursor must retain the original connection"
+        );
+        let root = EntityRuntimeState::default();
+        let mut entities = teaql_runtime::decode_compact_rows_with_read_metadata::<DynamicSchool>(
+            first.rows, &root,
+        )
+        .unwrap();
+        let state = entities[0].loaded_state_snapshot().unwrap();
+        assert!(Arc::ptr_eq(
+            &state,
+            &entities[1].loaded_state_snapshot().unwrap()
+        ));
+        let tail = stream.next().await.unwrap().unwrap();
+        assert_eq!(
+            (tail.chunk_index, tail.rows.len(), tail.is_last),
+            (1, 1, true)
+        );
+        entities.extend(
+            teaql_runtime::decode_compact_rows_with_read_metadata::<DynamicSchool>(
+                tail.rows, &root,
+            )
+            .unwrap(),
+        );
+        assert!(stream.next().await.is_none());
+        drop(stream);
+        assert!(transport.connection().try_lock().is_ok());
+        for (index, row) in entities.iter().enumerate() {
+            assert_eq!(row.id, index as u64 + 1);
+            assert_eq!(row.name, format!("school-{}", row.id));
+            let fields = row.dynamic_field_values().unwrap();
+            assert_eq!(
+                fields.field("note").unwrap().state(),
+                match index {
+                    0 => DynamicFieldState::Value,
+                    1 => DynamicFieldState::Null,
+                    _ => DynamicFieldState::NotLoaded,
+                }
+            );
+            assert_eq!(
+                fields.field("untouched").unwrap().state(),
+                DynamicFieldState::NotLoaded
+            );
+            assert!(row.dirty_fields().is_none());
+        }
+        assert_eq!(
+            entities[0]
+                .dynamic_field_values()
+                .unwrap()
+                .field("note")
+                .unwrap()
+                .value(),
+            Some(&"stream-value".into())
+        );
+        assert_eq!(
+            atomic_rows(&context).await.len(),
+            3,
+            "completion releases transaction lease as well as the mutex"
+        );
+    });
+}
+
+#[test]
+fn dynamic_stream_drop_releases_native_cursor_and_allows_audited_save() {
+    use futures_util::StreamExt;
+    futures_executor::block_on(async {
+        let (context, transport, _, _) = atomic_fixture(true).await;
+        seed_stream_extensions(&context).await;
+        let service = context
+            .entity_data_service::<Executor>("DynamicSchool")
+            .unwrap();
+        let mut stream = service
+            .fetch_stream(&dynamic_stream_request(1))
+            .await
+            .unwrap();
+        let first = stream.next().await.unwrap().unwrap();
+        let root = EntityRuntimeState::default();
+        let mut row = teaql_runtime::decode_compact_rows_with_read_metadata::<DynamicSchool>(
+            first.rows, &root,
+        )
+        .unwrap()
+        .remove(0);
+        assert!(transport.connection().try_lock().is_err());
+        drop(stream);
+        assert!(transport.connection().try_lock().is_ok());
+        row.update_dynamic_field("note", "after-drop".into())
+            .unwrap();
+        row.audit_as("save a held streamed entity after early cursor close")
+            .save(&context)
+            .await
+            .unwrap();
+        assert_eq!(
+            atomic_rows(&context).await[0]
+                .dynamic_field_values()
+                .unwrap()
+                .field("note")
+                .unwrap()
+                .value(),
+            Some(&"after-drop".into())
+        );
+    });
+}
+
+#[test]
+fn dynamic_stream_invalid_stored_type_fails_the_batch_and_releases_locks() {
+    use futures_util::StreamExt;
+    futures_executor::block_on(async {
+        let (context, transport, _, _) = atomic_fixture(true).await;
+        seed_stream_extensions(&context).await;
+        // Deliberately corrupt the provider's persisted metadata, not application data construction.
+        transport.connection().lock().unwrap().execute(
+            "UPDATE teaql_dynamic_field_storage_v1 SET data_type='I64',is_null=0,payload='PRIVATE-CANARY' WHERE owner_id='2' AND code='note'", []
+        ).unwrap();
+        let service = context
+            .entity_data_service::<Executor>("DynamicSchool")
+            .unwrap();
+        let mut stream = service
+            .fetch_stream(&dynamic_stream_request(2))
+            .await
+            .unwrap();
+        let error = stream.next().await.unwrap().unwrap_err().to_string();
+        assert!(error.contains("DYNAMIC_FIELD_DEFINITION_MISMATCH"));
+        assert!(!error.contains("PRIVATE-CANARY"));
+        assert!(stream.next().await.is_none());
+        drop(stream);
+        assert!(transport.connection().try_lock().is_ok());
+        let rows = context
+            .entity_data_service::<Executor>("DynamicSchool")
+            .unwrap()
+            .fetch_enhanced_entities::<DynamicSchool>(&PurposedSelectQuery::new(
+                teaql_core::SelectQuery::new("DynamicSchool")
+                    .limit(3)
+                    .comment("read native rows after a failed extension stream"),
+                "prove cursor failure releases the transaction lease",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(rows.data.len(), 3);
+    });
+}
+
+#[test]
+fn dynamic_stream_covers_empty_exact_full_and_large_batch_limits() {
+    use futures_util::StreamExt;
+    futures_executor::block_on(async {
+        let (context, transport, _, _) = atomic_fixture(true).await;
+        seed_stream_extensions(&context).await;
+        let service = context
+            .entity_data_service::<Executor>("DynamicSchool")
+            .unwrap();
+        for size in [1, 2, 3, 73, 8_192] {
+            let mut stream = service
+                .fetch_stream(&dynamic_stream_request(size))
+                .await
+                .unwrap();
+            let mut count = 0;
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.unwrap();
+                assert!(chunk.rows.len() <= size);
+                count += chunk.rows.len();
+                let root = EntityRuntimeState::default();
+                let decoded =
+                    teaql_runtime::decode_compact_rows_with_read_metadata::<DynamicSchool>(
+                        chunk.rows, &root,
+                    )
+                    .unwrap();
+                assert!(
+                    decoded
+                        .iter()
+                        .all(|row| row.dynamic_field_values().is_some())
+                );
+            }
+            assert_eq!(count, 3);
+            drop(stream);
+            assert!(transport.connection().try_lock().is_ok());
+        }
+        let request = PurposedSelectQuery::new(
+            teaql_core::SelectQuery::new("DynamicSchool")
+                .limit(3)
+                .and_filter(teaql_core::Expr::eq("id", 404_u64))
+                .select_dynamic_fields(DynamicFieldSelection::All)
+                .comment("stream an empty extension result"),
+            "verify empty cursors release without an enhancement batch",
+        );
+        let mut stream = service.fetch_stream(&request).await.unwrap();
+        assert!(stream.next().await.is_none());
+        drop(stream);
+        assert!(transport.connection().try_lock().is_ok());
+        let error = match service.fetch_stream(&dynamic_stream_request(0)).await {
+            Ok(_) => panic!("zero-sized extension stream must fail before opening a cursor"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("DYNAMIC_FIELD_STREAM_CHUNK_REQUIRED")
+        );
+        assert!(transport.connection().try_lock().is_ok());
+    });
+}
+
+#[test]
+fn dynamic_stream_plan_cannot_cross_executor_instances_even_on_the_same_connection() {
+    use teaql_data_service::QueryExecutor;
+    use teaql_data_service::dynamic_fields::DynamicFieldStreamPlan;
+    use teaql_sql::{CompiledQuery, StreamingSqlTransport};
+    futures_executor::block_on(async {
+        let (context, transport, definitions, _) = atomic_fixture(true).await;
+        let store = context
+            .require_resource::<Executor>()
+            .unwrap()
+            .dynamic_field_store()
+            .unwrap();
+        let plan = DynamicFieldStreamPlan::new(
+            "atomic".into(),
+            definitions,
+            DynamicFieldSelection::All,
+            store,
+            teaql_core::QueryIntent::new(
+                "read extensions on a bound cursor",
+                "reject mismatched native executors",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let other = SqliteMutationExecutor::new(transport.connection());
+        let query = CompiledQuery {
+            sql: "SELECT id FROM dynamic_school".into(),
+            params: vec![],
+            comment: Some(
+                "what: cursor binding negative test; why: reject before executing".into(),
+            ),
+            log_context: Default::default(),
+        };
+        let error = match other.stream_sql_with_dynamic_fields(query, 2, plan) {
+            Ok(_) => panic!("another executor cannot consume this plan"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, "DYNAMIC_FIELD_STORAGE_PROVENANCE_MISMATCH");
+        assert!(transport.connection().try_lock().is_ok());
+    });
+}
+
+#[test]
+fn dynamic_stream_plan_validates_complete_batches_before_exposing_any_sidecar() {
+    use teaql_data_service::{QueryExecutor, dynamic_fields::DynamicFieldStreamPlan};
+    futures_executor::block_on(async {
+        let (context, _, definitions, _) = atomic_fixture(true).await;
+        let store = context
+            .require_resource::<Executor>()
+            .unwrap()
+            .dynamic_field_store()
+            .unwrap();
+        let plan = DynamicFieldStreamPlan::new(
+            "atomic".into(),
+            definitions,
+            DynamicFieldSelection::fields([("note".into(), teaql_core::DataType::Text)]).unwrap(),
+            store,
+            teaql_core::QueryIntent::new(
+                "read a selected extension batch",
+                "validate complete batches and duplicate owner views",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let make = || {
+            vec![
+                teaql_core::CompactRow::from_map(std::collections::BTreeMap::from([(
+                    "id".into(),
+                    1_u64.into(),
+                )])),
+                teaql_core::CompactRow::from_map(std::collections::BTreeMap::from([(
+                    "id".into(),
+                    1_u64.into(),
+                )])),
+            ]
+        };
+        for (ids, stored, expected) in [
+            (vec![1, 2], HashMap::new(), "DYNAMIC_FIELD_OWNER_MISMATCH"),
+            (
+                vec![1, 1],
+                HashMap::new(),
+                "DYNAMIC_FIELD_BATCH_OMITTED_OWNER",
+            ),
+            (
+                vec![1, 1],
+                HashMap::from([(2, HashMap::new())]),
+                "DYNAMIC_FIELD_UNREQUESTED_OWNER",
+            ),
+            (
+                vec![1, 1],
+                HashMap::from([(
+                    1,
+                    HashMap::from([("untouched".into(), "PRIVATE-CANARY".into())]),
+                )]),
+                "DYNAMIC_FIELD_UNSELECTED_VALUE",
+            ),
+            (
+                vec![1, 1],
+                HashMap::from([(1, HashMap::from([("note".into(), Value::Bool(true))]))]),
+                "DYNAMIC_FIELD_TYPE_MISMATCH",
+            ),
+        ] {
+            let mut rows = make();
+            let error = plan.merge(&mut rows, &ids, stored).unwrap_err();
+            assert_eq!(error.code, expected);
+            assert!(!error.to_string().contains("PRIVATE-CANARY"));
+            assert!(
+                rows.iter_mut()
+                    .all(|row| row.take_loaded_dynamic_fields().is_none())
+            );
+        }
+        let mut rows = make();
+        plan.merge(
+            &mut rows,
+            &[1, 1],
+            HashMap::from([(1, HashMap::from([("note".into(), "duplicate".into())]))]),
+        )
+        .unwrap();
+        let first = rows[0].take_loaded_dynamic_fields().unwrap();
+        let second = rows[1].take_loaded_dynamic_fields().unwrap();
+        assert!(Arc::ptr_eq(first.definitions(), second.definitions()));
+        assert!(Arc::ptr_eq(first.selected_codes(), second.selected_codes()));
+        assert_eq!(
+            first.field("note").unwrap().value(),
+            Some(&"duplicate".into())
+        );
+        assert_eq!(
+            second.field("note").unwrap().value(),
+            Some(&"duplicate".into())
+        );
+    });
+}
 
 #[test]
 fn held_dynamic_view_cannot_follow_a_changed_storage_profile() {

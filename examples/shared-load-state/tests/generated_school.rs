@@ -14,6 +14,8 @@ mod allocation_counter;
 mod checker_state;
 #[path = "support/dynamic_property.rs"]
 mod dynamic_property;
+#[path = "support/dynamic_stream.rs"]
+mod dynamic_stream;
 #[path = "support/property_metadata.rs"]
 mod property_metadata;
 #[path = "support/dynamic_rollback.rs"]
@@ -56,6 +58,12 @@ async fn fresh_generated_school_uses_shared_indexed_state() -> Result<(), Box<dy
 async fn fresh_generated_materialization_uses_its_own_model_target(
 ) -> Result<(), Box<dyn std::error::Error>> {
     Box::pin(materialization::run()).await
+}
+
+#[tokio::test]
+async fn fresh_generated_dynamic_stream_uses_native_cursor_and_audited_save(
+) -> Result<(), Box<dyn std::error::Error>> {
+    Box::pin(dynamic_stream::run()).await
 }
 
 async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
