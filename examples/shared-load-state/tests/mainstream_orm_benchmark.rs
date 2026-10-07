@@ -115,9 +115,9 @@ fn validate(raw: &Rows, typed: &[Probe], full: bool, count: usize) {
                 (r.id, r.version, r.name.as_str(), None)
             }
         };
-        assert_eq!(id, index as i64 + 1);
+        assert_eq!(id, index as i64 + 3);
         assert_eq!(version, 1);
-        assert_eq!(name, format!("row-{}", index + 1));
+        assert_eq!(name, format!("row-{}", index + 3));
         assert_eq!(note, (full && id % 2 != 0).then_some("nullable note"));
         assert_eq!(
             (row.id, row.version, row.name.as_str(), row.note.as_deref()),
@@ -195,8 +195,8 @@ fn mainstream_diesel_and_teaql_queries_agree() {
             insert
                 .execute(rusqlite::params![
                     id,
-                    if id == 10_001 { -1 } else { 1 },
-                    if id == 10_002 {
+                    if id == 1 { -1 } else { 1 },
+                    if id == 2 {
                         "not-selected".to_owned()
                     } else {
                         format!("row-{id}")
