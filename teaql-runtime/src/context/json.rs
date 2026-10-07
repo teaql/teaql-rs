@@ -14,11 +14,7 @@ impl UserContext {
         value: &serde_json::Value,
     ) -> Result<T, EntityError> {
         let descriptor = self.json_descriptor::<T>()?;
-        T::from_compact_row(native_row::<T>(
-            descriptor,
-            value,
-            &mut NativeJsonShapes::default(),
-        )?)
+        decode_value::<T>(self, descriptor, value, &mut NativeJsonShapes::default())
     }
 
     /// Compatible actual projections share immutable geometry; payloads and mutation state stay private.
@@ -31,11 +27,10 @@ impl UserContext {
             .as_array()
             .ok_or_else(|| error(T::ENTITY_NAME, "expected entity array"))?;
         let mut shapes = NativeJsonShapes::default();
-        let rows = array
+        array
             .iter()
-            .map(|value| native_row::<T>(descriptor, value, &mut shapes))
-            .collect::<Result<Vec<_>, _>>()?;
-        rows.into_iter().map(T::from_compact_row).collect()
+            .map(|value| decode_value::<T>(self, descriptor, value, &mut shapes))
+            .collect()
     }
 
     fn json_descriptor<T: Entity>(&self) -> Result<&EntityDescriptor, EntityError> {
@@ -84,6 +79,22 @@ fn native_row<'a, T: Entity>(
     value: &'a serde_json::Value,
     shapes: &mut NativeJsonShapes<'a>,
 ) -> Result<CompactRow, EntityError> {
+    scalar_row(
+        descriptor,
+        value,
+        shapes,
+        T::supports_dynamic_property_load(),
+        false,
+    )
+}
+
+fn scalar_row<'a>(
+    descriptor: &'a EntityDescriptor,
+    value: &'a serde_json::Value,
+    shapes: &mut NativeJsonShapes<'a>,
+    supports_dynamic: bool,
+    graph: bool,
+) -> Result<CompactRow, EntityError> {
     let object = value
         .as_object()
         .ok_or_else(|| error(&descriptor.name, "expected entity object"))?;
@@ -111,7 +122,7 @@ fn native_row<'a, T: Entity>(
             ));
         }
         if name.starts_with('_') {
-            if name.len() == 1 || !T::supports_dynamic_property_load() {
+            if name.len() == 1 || !supports_dynamic {
                 return Err(error(
                     &descriptor.name,
                     "entity lacks a readonly dynamic-property carrier",
@@ -133,6 +144,9 @@ fn native_row<'a, T: Entity>(
             .any(|relation| relation.name == *name)
             && (value.is_object() || value.is_array() || value.is_null())
         {
+            if graph {
+                continue;
+            }
             return Err(error(
                 &descriptor.name,
                 "relation input requires graph-aware hydration",
@@ -166,6 +180,10 @@ fn native_row<'a, T: Entity>(
     };
     Ok(CompactRow::with_layout(layout, values))
 }
+
+#[path = "json/graph.rs"]
+mod graph;
+use graph::decode_value;
 
 fn scalar(
     entity: &str,
@@ -221,217 +239,5 @@ fn scalar(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::BTreeMap;
-    use std::sync::Arc;
-    use teaql_core::{TeaqlEntity, eval::LoadState};
-
-    #[teaql_macros::teaql_entity]
-    #[derive(Clone, Debug, teaql_macros::TeaqlEntity)]
-    #[teaql(entity = "JsonProbe", indexed_layout)]
-    struct JsonProbe {
-        #[teaql(id)]
-        id: u64,
-        #[teaql(version)]
-        version: i64,
-        name: Option<String>,
-        address: Option<String>,
-        count: i64,
-        active: bool,
-        ratio: f64,
-        price: Decimal,
-        birthday: chrono::NaiveDate,
-        happened_at: teaql_core::time::Timestamp,
-        raw: serde_json::Value,
-        #[teaql(column = "base_url")]
-        display_name: Option<String>,
-        #[teaql(relation(target = "JsonProbe", local_key = "id", foreign_key = "id"))]
-        parent: Option<Box<JsonProbe>>,
-        #[teaql(dynamic)]
-        properties: BTreeMap<String, Value>,
-        #[teaql(skip)]
-        __load_state: LoadState,
-    }
-
-    impl JsonProbe {
-        const __TEAQL_FIELD_LAYOUT_REVISION: &'static str = "json-probe-v1";
-        const __TEAQL_FIXED_FIELD_INDEXES: &'static [(&'static str, usize)] = &[
-            ("id", 0),
-            ("version", 1),
-            ("name", 2),
-            ("address", 3),
-            ("count", 4),
-            ("active", 5),
-            ("ratio", 6),
-            ("price", 7),
-            ("birthday", 8),
-            ("happened_at", 9),
-            ("raw", 10),
-            ("base_url", 11),
-        ];
-        const __TEAQL_FIXED_FIELD_MAPPINGS: &'static [(
-            &'static str,
-            &'static str,
-            &'static str,
-        )] = &[
-            ("id", "id", "id"),
-            ("version", "version", "version"),
-            ("name", "name", "name"),
-            ("address", "address", "address"),
-            ("count", "count", "count"),
-            ("active", "active", "active"),
-            ("ratio", "ratio", "ratio"),
-            ("price", "price", "price"),
-            ("birthday", "birthday", "birthday"),
-            ("happened_at", "happened_at", "happened_at"),
-            ("raw", "raw", "raw"),
-            ("base_url", "display_name", "base_url"),
-        ];
-    }
-
-    fn context() -> UserContext {
-        crate::RuntimeModule::new()
-            .entity::<JsonProbe>()
-            .into_context()
-    }
-
-    #[test]
-    fn native_json_keeps_null_omission_falsy_dates_decimal_and_no_mutation() {
-        let input = serde_json::json!({"id":1,"version":7,"name":null,"count":0,"active":false,
-            "ratio":3.5,"price":"123.450","birthday":"2024-02-29","happened_at":1700000000123_i64,
-            "raw":{"literal":"_comment"},"base_url":"","_name":"derived","_nil":null,"_count":0});
-        let row = context().decode_json_entity::<JsonProbe>(&input).unwrap();
-        assert!(row.is_field_loaded("name"));
-        assert!(row.name.is_none());
-        assert!(!row.is_field_loaded("address"));
-        assert!(row.address.is_none());
-        assert_eq!(row.count, 0);
-        assert!(!row.active);
-        assert_eq!(row.ratio, 3.5);
-        assert_eq!(row.price.to_string(), "123.450");
-        assert_eq!(row.birthday.to_string(), "2024-02-29");
-        assert_eq!(row.happened_at.0, 1700000000123);
-        assert_eq!(row.display_name.as_deref(), Some(""));
-        assert!(row.dirty_fields().is_none());
-        assert!(!row.is_new());
-        assert!(!row.is_marked_as_delete());
-        assert!(!row.has_pending_dynamic_mutations());
-        let json = row.clone().into_json();
-        assert_eq!(json["_name"], "derived");
-        assert!(json["_nil"].is_null());
-        assert_eq!(json["_count"], 0);
-        assert!(json.get("address").is_none());
-        assert_eq!(json["name"], serde_json::Value::Null);
-        let restored = context().decode_json_entity::<JsonProbe>(&json).unwrap();
-        assert_eq!(json, restored.into_json());
-    }
-
-    #[test]
-    fn batch_actual_shapes_share_snapshots_and_keep_values_and_ledgers_private() {
-        let rows = context().decode_json_entities::<JsonProbe>(&serde_json::json!([
-            {"id":1,"version":7,"name":null},{"version":7,"name":"private","id":1},{"id":2,"version":7}
-        ])).unwrap();
-        assert!(Arc::ptr_eq(
-            &rows[0].loaded_state_snapshot().unwrap(),
-            &rows[1].loaded_state_snapshot().unwrap()
-        ));
-        assert!(!Arc::ptr_eq(
-            &rows[0].loaded_state_snapshot().unwrap(),
-            &rows[2].loaded_state_snapshot().unwrap()
-        ));
-        assert!(rows[0].name.is_none());
-        assert_eq!(rows[1].name.as_deref(), Some("private"));
-        assert!(!rows[2].is_field_loaded("name"));
-        let state = rows[0]
-            .__teaql_runtime_state_any()
-            .unwrap()
-            .downcast_ref::<crate::EntityRuntimeState>()
-            .unwrap();
-        state.set(
-            crate::EntityKey::new("JsonProbe", 1),
-            "name",
-            Value::Text("one private mutation".into()),
-        );
-        assert!(rows[0].dirty_fields().is_some());
-        assert!(rows[1].dirty_fields().is_none());
-        assert!(rows[2].dirty_fields().is_none());
-    }
-
-    #[test]
-    fn aliases_and_unsupported_input_reject_without_exposing_values() {
-        let ctx = context();
-        for input in [
-            serde_json::json!({"unknown":"PRIVATE_LITERAL"}),
-            serde_json::json!({"name":42}),
-            serde_json::json!({"active":null}),
-            serde_json::json!({"count":1.5}),
-            serde_json::json!({"id":-1}),
-            serde_json::json!({"birthday":"PRIVATE_LITERAL"}),
-            serde_json::json!({"_original_values":{}}),
-            serde_json::json!({"#name":"PRIVATE_LITERAL"}),
-            serde_json::json!({"display_name":"A","base_url":"B"}),
-            serde_json::json!({"parent":{"id":1,"name":"PRIVATE_LITERAL"}}),
-        ] {
-            let error = ctx.decode_json_entity::<JsonProbe>(&input).unwrap_err();
-            assert!(!error.to_string().contains("PRIVATE_LITERAL"));
-        }
-        assert!(
-            UserContext::new()
-                .decode_json_entity::<JsonProbe>(&serde_json::json!({"id":1}))
-                .is_err()
-        );
-        let mut descriptor = JsonProbe::entity_descriptor();
-        descriptor.properties[0].data_type = DataType::Text;
-        let wrong = UserContext::new()
-            .with_metadata(crate::InMemoryMetadataStore::new().with_entity(descriptor));
-        assert!(
-            wrong
-                .decode_json_entity::<JsonProbe>(&serde_json::json!({"id":"PRIVATE_LITERAL"}))
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn native_batches_construct_geometry_per_shape_not_per_row() {
-        let descriptor = JsonProbe::entity_descriptor();
-        let null = serde_json::json!({"id":1,"version":7,"display_name":null});
-        let value = serde_json::json!({"base_url":"private","version":7,"id":2});
-        let minimal = serde_json::json!({"id":3,"version":7});
-        for count in [1, 100, 10_000] {
-            let mut shapes = NativeJsonShapes::default();
-            let mut rows = Vec::with_capacity(count);
-            for index in 0..count {
-                let row = native_row::<JsonProbe>(
-                    &descriptor,
-                    if index % 2 == 0 { &null } else { &value },
-                    &mut shapes,
-                )
-                .unwrap();
-                if let Some(first) = rows.first() {
-                    assert!(Arc::ptr_eq(
-                        &row.shared_layout(),
-                        &CompactRow::shared_layout(first)
-                    ));
-                }
-                rows.push(row);
-            }
-            assert_eq!(shapes.layouts.len(), 1);
-            let other = native_row::<JsonProbe>(&descriptor, &minimal, &mut shapes).unwrap();
-            assert_eq!(shapes.layouts.len(), 2);
-            assert!(!Arc::ptr_eq(
-                &rows[0].shared_layout(),
-                &other.shared_layout()
-            ));
-            drop(shapes);
-            let first = JsonProbe::from_compact_row(rows.remove(0)).unwrap();
-            assert!(first.is_field_loaded("display_name"));
-            assert!(first.display_name.is_none());
-            assert!(
-                !JsonProbe::from_compact_row(other)
-                    .unwrap()
-                    .is_field_loaded("display_name")
-            );
-        }
-    }
-}
+#[path = "json/tests.rs"]
+mod tests;

@@ -103,8 +103,11 @@ type CompactEntityGraphOptionDecoder = fn(
     &str,
 ) -> Result<(), EntityError>;
 
+type JsonReadCapability = fn(&EntityDescriptor) -> Result<bool, EntityError>;
+
 #[derive(Default, Clone)]
 pub struct InMemoryEntityGraphDecoderRegistry {
+    json_capabilities: BTreeMap<String, JsonReadCapability>,
     compact_decoders: BTreeMap<String, CompactEntityGraphDecoder>,
     compact_batch_decoders: BTreeMap<String, CompactEntityGraphBatchDecoder>,
     compact_list_decoders: BTreeMap<String, CompactEntityGraphListDecoder>,
@@ -120,6 +123,29 @@ impl InMemoryEntityGraphDecoderRegistry {
     where
         T: Entity + IdentifiableEntity + Send + Sync + 'static,
     {
+        fn json_capability<T: Entity>(installed: &EntityDescriptor) -> Result<bool, EntityError> {
+            let expected = T::entity_descriptor();
+            if installed.properties.len() != expected.properties.len()
+                || expected
+                    .properties
+                    .iter()
+                    .any(|p| !installed.properties.contains(p))
+                || installed.relations.len() != expected.relations.len()
+                || expected
+                    .relations
+                    .iter()
+                    .any(|r| !installed.relations.contains(r))
+                || T::field_layout()?.is_none()
+            {
+                return Err(EntityError::new(
+                    T::ENTITY_NAME,
+                    "JSON_ENTITY_INPUT: installed graph metadata does not match its typed decoder",
+                ));
+            }
+            Ok(T::supports_dynamic_property_load())
+        }
+        self.json_capabilities
+            .insert(T::ENTITY_NAME.to_owned(), json_capability::<T>);
         fn decode_compact<T>(
             row: CompactRow,
             root: &EntityRuntimeState,
@@ -220,7 +246,7 @@ impl InMemoryEntityGraphDecoderRegistry {
                     )
                 })
                 .transpose()?;
-            graph.install_relation_option(owner_entity, owner_id, relation, value);
+            graph.install_typed_relation_option(owner_entity, owner_id, relation, value);
             Ok(())
         }
 
@@ -232,6 +258,20 @@ impl InMemoryEntityGraphDecoderRegistry {
             .insert(T::ENTITY_NAME.to_owned(), decode_compact_list::<T>);
         self.compact_option_decoders
             .insert(T::ENTITY_NAME.to_owned(), decode_compact_option::<T>);
+    }
+
+    pub(crate) fn json_capability(
+        &self,
+        descriptor: &EntityDescriptor,
+    ) -> Result<bool, EntityError> {
+        self.json_capabilities
+            .get(&descriptor.name)
+            .ok_or_else(|| {
+                EntityError::new(
+                    &descriptor.name,
+                    "JSON_ENTITY_INPUT: graph type has no installed typed decoder",
+                )
+            })?(descriptor)
     }
 
     pub fn decode_compact(

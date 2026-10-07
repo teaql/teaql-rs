@@ -133,11 +133,18 @@ fn entity_identity_key(value: &Value) -> EntityIdentityKey {
 #[derive(Default)]
 pub struct EntityGraphBuilder {
     tables: HashMap<TypeId, EntityTable>,
+    option_entities: Option<Box<RelationOptionEntities>>,
     relation_lists: HashMap<RelationListKey, Box<dyn Any + Send + Sync>>,
     relation_facets: Option<Box<RelationFacetResults>>,
 }
 
 type EntityTable = HashMap<u64, Box<dyn Any + Send + Sync>>;
+
+/// Optional JSON-only coordinates keep the ordinary graph frame to one nullable pointer.
+#[derive(Default)]
+struct RelationOptionEntities {
+    index: HashMap<(TypeId, u64), RelationListKey>,
+}
 
 #[derive(Default)]
 struct RelationFacetResults {
@@ -152,6 +159,38 @@ struct RelationListKey {
 }
 
 impl EntityGraphBuilder {
+    pub(crate) fn for_json_read() -> Self {
+        Self {
+            option_entities: Some(Box::default()),
+            ..Default::default()
+        }
+    }
+
+    pub(crate) fn install_typed_relation_option<T>(
+        &mut self,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+        value: Option<T>,
+    ) where
+        T: teaql_core::IdentifiableEntity + Any + Send + Sync,
+    {
+        if let Some(index) = self.option_entities.as_mut()
+            && let Some(entity) = value.as_ref()
+            && entity.is_field_loaded("id")
+            && let Some(id) = entity.id_value().try_u64()
+        {
+            index
+                .index
+                .entry((TypeId::of::<T>(), id))
+                .or_insert_with(|| RelationListKey {
+                    owner_entity: crate::canonical_id_space_entity(owner_entity),
+                    owner_id,
+                    relation: relation.to_owned(),
+                });
+        }
+        self.install_relation_option(owner_entity, owner_id, relation, value);
+    }
     pub fn install<T>(&mut self, id: u64, entity: T)
     where
         T: Any + Send + Sync,
@@ -240,6 +279,7 @@ impl EntityGraphBuilder {
     fn freeze(self) -> FrozenEntityGraph {
         FrozenEntityGraph {
             tables: self.tables,
+            option_entities: self.option_entities,
             relation_lists: self.relation_lists,
             relation_facets: self.relation_facets,
         }
@@ -259,6 +299,7 @@ impl std::fmt::Debug for EntityGraphBuilder {
 
 struct FrozenEntityGraph {
     tables: HashMap<TypeId, EntityTable>,
+    option_entities: Option<Box<RelationOptionEntities>>,
     relation_lists: HashMap<RelationListKey, Box<dyn Any + Send + Sync>>,
     relation_facets: Option<Box<RelationFacetResults>>,
 }
@@ -889,6 +930,7 @@ impl EntityRuntimeState {
             .set(builder.freeze())
             .map_err(|graph| EntityGraphBuilder {
                 tables: graph.tables,
+                option_entities: graph.option_entities,
                 relation_lists: graph.relation_lists,
                 relation_facets: graph.relation_facets,
             })
@@ -899,12 +941,24 @@ impl EntityRuntimeState {
     where
         T: Any + Send + Sync,
     {
-        self.graph
-            .frozen()?
+        let graph = self.graph.frozen()?;
+        if let Some(entity) = graph
             .tables
-            .get(&TypeId::of::<T>())?
-            .get(&id)?
-            .downcast_ref::<T>()
+            .get(&TypeId::of::<T>())
+            .and_then(|table| table.get(&id))
+        {
+            return entity.downcast_ref::<T>();
+        }
+        let key = graph
+            .option_entities
+            .as_ref()?
+            .index
+            .get(&(TypeId::of::<T>(), id))?;
+        graph
+            .relation_lists
+            .get(key)?
+            .downcast_ref::<Option<T>>()?
+            .as_ref()
     }
 
     pub fn resolve_relation_list<T>(

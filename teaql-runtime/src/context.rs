@@ -516,6 +516,13 @@ impl UserContext {
         self.entity_graph_decoders.contains(entity)
     }
 
+    pub(crate) fn json_graph_capability(
+        &self,
+        descriptor: &EntityDescriptor,
+    ) -> Result<bool, teaql_core::EntityError> {
+        self.entity_graph_decoders.json_capability(descriptor)
+    }
+
     pub(crate) fn decode_compact_entity_into_graph(
         &self,
         entity: &str,

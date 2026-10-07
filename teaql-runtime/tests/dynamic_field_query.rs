@@ -317,19 +317,30 @@ fn borrowed_reverse_graph_json_distinguishes_empty_and_unselected_lists() {
         )
         .unwrap();
     root.freeze_graph(builder).unwrap();
-    let json = |id| {
-        JsonGraphRow::from_compact_row_with_context(row(id), &root as &dyn std::any::Any)
+    let json = |id, selected| {
+        let mut projected = row(id);
+        if selected {
+            // Installing an edge in the graph does not select it in every view
+            // of the same identity. Preserve this view's requested projection.
+            projected.insert("children".into(), Value::Null);
+            if id == 2 {
+                projected.insert("single_child".into(), Value::Null);
+            }
+        }
+        JsonGraphRow::from_compact_row_with_context(projected, &root as &dyn std::any::Any)
             .unwrap()
             .into_json()
     };
-    let parent = json(1);
+    let parent = json(1, true);
     assert_eq!(parent["children"][0]["name"], "node-11");
     assert_eq!(parent["children"][1]["name"], "node-12");
     assert_eq!(parent["children"].as_array().unwrap().len(), 2);
-    assert_eq!(json(2)["children"], serde_json::json!([]));
-    assert!(json(2).get("single_child").unwrap().is_null());
-    assert!(json(3).get("children").is_none());
-    assert!(json(3).get("single_child").is_none());
+    assert_eq!(json(2, true)["children"], serde_json::json!([]));
+    assert!(json(2, true).get("single_child").unwrap().is_null());
+    for id in [1, 2, 3] {
+        assert!(json(id, false).get("children").is_none());
+        assert!(json(id, false).get("single_child").is_none());
+    }
     assert!(parent["children"][0].get("_original_values").is_none());
 }
 

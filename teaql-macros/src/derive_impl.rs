@@ -535,7 +535,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 let name = &relation.name;
                 if relation.many {
                     relations.push(quote! {
-                        if let Some(list) = self.#state_ident.resolve_relation_list::<#target>(#entity_name, self.#id_ident, #name) {
+                        if self.__load_state.is_loaded(#name) && let Some(list) = self.#state_ident.resolve_relation_list::<#target>(#entity_name, self.#id_ident, #name) {
                             let mut items = Vec::with_capacity(list.len());
                             for entity in &list.data { items.push(::teaql_core::Value::Json(::teaql_core::Entity::borrowed_json(entity, traversal)?)); }
                             record.insert(#name.to_owned(), ::teaql_core::Value::List(items));
@@ -543,7 +543,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                     });
                 } else {
                     relations.push(quote! {
-                        if let Some(edge) = self.#state_ident.resolve_relation_option::<#target>(#entity_name, self.#id_ident, #name) {
+                        if self.__load_state.is_loaded(#name) && let Some(edge) = self.#state_ident.resolve_relation_option::<#target>(#entity_name, self.#id_ident, #name) {
                             let value = match edge {
                                 Some(entity) => ::teaql_core::Value::Json(::teaql_core::Entity::borrowed_json(entity, traversal)?),
                                 None => ::teaql_core::Value::Null,
