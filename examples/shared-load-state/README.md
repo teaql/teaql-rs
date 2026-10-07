@@ -143,8 +143,6 @@ and 1/100/10,000 rows, checks exact shared overflow state and COW isolation, and
 retains a separate wide hydration CSV plus unchanged generated-source hashes.
 Prepared input rows and database/logging costs remain outside the measured region.
 
-## Matched driver logging modes
-
 ## Generated query allocation and latency probe
 
 With the existing wide generated fixture, run:
@@ -168,7 +166,7 @@ Every run uses a unique database. One complete prototype is created through the
 generated audited Mutation API, then cloned with fixture-only SQL before
 measurement. This expansion is not a production seeding recipe. Two generated
 audited saves establish dynamic Value and NULL; the remaining rows have absent
-extensions. Q/E assertions check IDs, versions, dates, zero/false/NotLoaded
+extensions. Q/E assertions check IDs, versions, dates, values/false/NotLoaded
 semantics, bounded relations, actual shared snapshot identity and clean ledgers.
 The measured reverse result retains its parent graph without cloning its child
 entities to manufacture the output.
