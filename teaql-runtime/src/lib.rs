@@ -4042,6 +4042,7 @@ mod tests {
             raw_sql: None,
             raw_sql_search_criteria: Vec::new(),
             dynamic_properties: Vec::new(),
+            dynamic_property_definitions: None,
             dynamic_field_selection: None,
             raw_projections: Vec::new(),
             object_group_bys: Vec::new(),

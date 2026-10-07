@@ -56,6 +56,64 @@ fn entity_without_derived_carrier_keeps_nullable_defaults_without_claiming_prese
 }
 
 #[test]
+fn readonly_property_schema_survives_typed_decode_without_presence_or_fixed_slots() {
+    use teaql_core::{CompactRowLayout, dynamic_properties::DynamicPropertyDefinitions};
+    let definitions = DynamicPropertyDefinitions::new([
+        ("_count".into(), DataType::I64),
+        ("_missing".into(), DataType::I64),
+    ])
+    .unwrap();
+    let columns = CompactRowLayout::new(Arc::from([
+        "id".into(),
+        "version".into(),
+        "name".into(),
+        "_count".into(),
+    ]))
+    .with_dynamic_property_definitions(definitions.clone());
+    let make = |id, value| {
+        School::from_compact_row(CompactRow::with_layout(
+            columns.clone(),
+            vec![Value::U64(id), Value::I64(1), "native".into(), value],
+        ))
+    };
+    let first = make(1, Value::I64(0)).unwrap();
+    let second = make(2, Value::TypedNull(DataType::I64)).unwrap();
+    let state = first.loaded_state_snapshot().unwrap();
+    assert!(Arc::ptr_eq(
+        &state,
+        &second.loaded_state_snapshot().unwrap()
+    ));
+    assert!(Arc::ptr_eq(
+        state.dynamic_property_definitions().unwrap(),
+        &definitions
+    ));
+    assert_eq!(first.dynamic_property("_count"), Some(&Value::I64(0)));
+    assert!(second.dynamic_property("_count").is_none());
+    assert!(second.has_dynamic_property("_count"));
+    assert_eq!(first.dynamic_property_type("_missing"), Some(DataType::I64));
+    assert!(first.dynamic_property("_missing").is_none());
+    assert!(!first.has_dynamic_property("_missing"));
+    assert_eq!(
+        School::field_layout().unwrap().unwrap().index("_count"),
+        None
+    );
+    assert!(!state.is_loaded("_count"));
+    assert!(first.dirty_fields().is_none());
+    for reads in [1, 100, 10_000] {
+        let (_, calls, bytes, _) = allocation_counter::measured(|| {
+            for _ in 0..reads {
+                std::hint::black_box(first.dynamic_property_type("_count"));
+                std::hint::black_box(first.dynamic_property("_missing"));
+            }
+        });
+        assert_eq!((calls, bytes), (0, 0));
+    }
+    let error = make(3, Value::Text("secret".into())).unwrap_err();
+    assert!(error.to_string().contains("_count"));
+    assert!(!error.to_string().contains("secret"));
+}
+
+#[test]
 fn derived_property_reads_borrow_values_preserve_null_absence_and_allocate_nothing() {
     let school = School::from_compact_row(CompactRow::from_map(BTreeMap::from([
         ("id".into(), Value::U64(1)),
@@ -768,9 +826,123 @@ impl MutationExecutor for FixedRows {
     }
 }
 impl StreamQueryExecutor for FixedRows {
-    fn query_stream(&self, _: QueryRequest, _: usize) -> QueryStream<'_, Self::Error> {
-        panic!("unsupported enhancement must reject before the cursor")
+    fn query_stream(
+        &self,
+        request: QueryRequest,
+        chunk_size: usize,
+    ) -> QueryStream<'_, Self::Error> {
+        assert!(request.query.dynamic_property_definitions.is_some());
+        assert!(
+            request.query.dynamic_field_selection.is_none(),
+            "unsupported enhancement must reject before the cursor"
+        );
+        self.queries.lock().unwrap().push(request);
+        let total = self.rows.len().div_ceil(chunk_size);
+        let chunks = self
+            .rows
+            .chunks(chunk_size)
+            .enumerate()
+            .map(|(index, rows)| {
+                Ok(teaql_data_service::StreamChunk {
+                    rows: rows.to_vec(),
+                    chunk_index: index,
+                    is_last: index + 1 == total,
+                })
+            })
+            .collect::<Vec<_>>();
+        Box::pin(futures_util::stream::iter(chunks))
     }
+}
+
+#[tokio::test]
+async fn query_and_stream_carry_readonly_schema_without_installing_absent_values() {
+    use futures_util::StreamExt;
+    use teaql_core::dynamic_properties::DynamicPropertyDefinitions;
+    let (context, calls, _) = context(None, false);
+    let definitions =
+        DynamicPropertyDefinitions::new([("_missing".into(), DataType::I64)]).unwrap();
+    let mut query = SelectQuery::new("School")
+        .projects(["id", "version", "name"])
+        .limit(3)
+        .comment("load a readonly schema through query and stream")
+        .with_dynamic_property_definitions(definitions.clone());
+    query.stream_config = Some(teaql_core::StreamConfig { chunk_size: 2 });
+    let request =
+        PurposedSelectQuery::new(query, "do not invent computed values or loaded markers");
+    let service = context.entity_data_service::<FixedRows>("School").unwrap();
+    let rows = service
+        .fetch_enhanced_entities::<School>(&request)
+        .await
+        .unwrap()
+        .data;
+    assert_eq!(rows.len(), 3);
+    let state = rows[0].loaded_state_snapshot().unwrap();
+    for row in &rows {
+        assert!(Arc::ptr_eq(&state, &row.loaded_state_snapshot().unwrap()));
+        assert_eq!(row.dynamic_property_type("_missing"), Some(DataType::I64));
+        assert!(row.dynamic_property("_missing").is_none());
+        assert!(!row.has_dynamic_property("_missing"));
+        assert!(!row.loaded_state_snapshot().unwrap().is_loaded("_missing"));
+    }
+    let mut chunks = service.fetch_stream(&request).await.unwrap();
+    let mut count = 0;
+    while let Some(chunk) = chunks.next().await {
+        for row in chunk.unwrap().rows {
+            let entity = School::from_compact_row(row).unwrap();
+            assert_eq!(
+                entity.dynamic_property_type("_missing"),
+                Some(DataType::I64)
+            );
+            assert!(!entity.has_dynamic_property("_missing"));
+            count += 1;
+        }
+    }
+    assert_eq!(count, 3);
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "readonly schema does not enter the extension provider"
+    );
+}
+
+#[tokio::test]
+async fn readonly_property_schema_survives_cache_miss_and_hit_without_extra_provider_calls() {
+    use teaql_core::dynamic_properties::DynamicPropertyDefinitions;
+    let (mut context, _, queries) = context(None, false);
+    context.insert_resource(teaql_runtime::InMemoryAggregationCache::default());
+    let definitions =
+        DynamicPropertyDefinitions::new([("_missing".into(), DataType::I64)]).unwrap();
+    let query = SelectQuery::new("School")
+        .projects(["id", "version", "name"])
+        .limit(3)
+        .comment("load cached readonly schema")
+        .enable_aggregation_cache()
+        .with_dynamic_property_definitions(definitions.clone());
+    let request = PurposedSelectQuery::new(query, "preserve declared types on both cache paths");
+    let service = context.entity_data_service::<FixedRows>("School").unwrap();
+    for _ in 0..2 {
+        let rows = service
+            .fetch_enhanced_entities::<School>(&request)
+            .await
+            .unwrap()
+            .data;
+        assert_eq!(rows.len(), 3);
+        for row in &rows {
+            assert_eq!(row.dynamic_property_type("_missing"), Some(DataType::I64));
+            assert!(!row.has_dynamic_property("_missing"));
+            assert!(Arc::ptr_eq(
+                row.loaded_state_snapshot()
+                    .unwrap()
+                    .dynamic_property_definitions()
+                    .unwrap(),
+                &definitions
+            ));
+        }
+    }
+    assert_eq!(
+        queries.lock().unwrap().len(),
+        1,
+        "the second round must really hit the cache"
+    );
 }
 
 #[derive(Clone, Copy)]

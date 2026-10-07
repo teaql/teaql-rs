@@ -120,6 +120,7 @@ pub struct LoadedSnapshot {
     bits: u64,
     overflow: Option<Arc<HashSet<usize>>>,
     selected_names: Option<Arc<HashSet<String>>>,
+    dynamic_properties: Option<Arc<crate::dynamic_properties::DynamicPropertyDefinitions>>,
 }
 
 impl LoadedSnapshot {
@@ -137,6 +138,12 @@ impl LoadedSnapshot {
         self.bits.hash(&mut hash);
         unordered_hash(self.overflow.iter().flat_map(|fields| fields.iter())).hash(&mut hash);
         unordered_hash(self.selected_names.iter().flat_map(|fields| fields.iter())).hash(&mut hash);
+        // Ordinary queries keep the existing hash work when no readonly schema
+        // was declared. A schema's fingerprint is precomputed, never per-row.
+        if let Some(definitions) = &self.dynamic_properties {
+            1_u8.hash(&mut hash);
+            definitions.hash(&mut hash);
+        }
         let key = hash.finish();
         let layout = self.layout.clone();
         let mut states = layout
@@ -180,6 +187,7 @@ impl LoadedSnapshot {
             },
             overflow: (count > 64).then(|| Arc::new((64..count).collect())),
             selected_names: None,
+            dynamic_properties: None,
         }
     }
     pub fn projection<'a>(
@@ -191,6 +199,7 @@ impl LoadedSnapshot {
             bits: 0,
             overflow: None,
             selected_names: None,
+            dynamic_properties: None,
         };
         for field in fields {
             state.mark(field, true);
@@ -209,6 +218,33 @@ impl LoadedSnapshot {
     }
     pub fn selected_names(&self) -> Option<&HashSet<String>> {
         self.selected_names.as_deref()
+    }
+
+    pub fn dynamic_property_definitions(
+        &self,
+    ) -> Option<&Arc<crate::dynamic_properties::DynamicPropertyDefinitions>> {
+        self.dynamic_properties.as_ref()
+    }
+
+    pub(crate) fn with_property_schema(
+        mut self,
+        definitions: Option<Arc<crate::dynamic_properties::DynamicPropertyDefinitions>>,
+    ) -> Self {
+        self.dynamic_properties = definitions;
+        self
+    }
+
+    /// Result-schema metadata only. Fixed slots and actual availability never change.
+    pub fn with_dynamic_property_definitions(
+        state: &Arc<Self>,
+        definitions: Arc<crate::dynamic_properties::DynamicPropertyDefinitions>,
+    ) -> Arc<Self> {
+        if state.dynamic_properties.as_ref() == Some(&definitions) {
+            return state.clone();
+        }
+        let mut next = (**state).clone();
+        next.dynamic_properties = Some(definitions);
+        next.into_shared()
     }
 
     /// Replace only persistent dynamic selection. Caller batches by actual shape;
@@ -339,6 +375,7 @@ impl PartialEq for LoadedSnapshot {
             && self.bits == other.bits
             && self.overflow == other.overflow
             && self.selected_names == other.selected_names
+            && self.dynamic_properties == other.dynamic_properties
     }
 }
 impl Eq for LoadedSnapshot {}

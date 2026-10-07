@@ -14,6 +14,8 @@ mod allocation_counter;
 mod checker_state;
 #[path = "support/dynamic_property.rs"]
 mod dynamic_property;
+#[path = "support/property_metadata.rs"]
+mod property_metadata;
 #[path = "support/dynamic_rollback.rs"]
 mod dynamic_rollback;
 #[path = "support/field_order.rs"]
@@ -170,6 +172,7 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(E::school(&full[0]).get_school_type_id().eval(), Some(1001));
     field_order::verify(&context, full[0].id()).await?;
     page_stream::verify(&context, &first, &second).await?;
+    Box::pin(property_metadata::verify(&context, &first, &second)).await?;
 
     let sparse = Q::schools_minimal()
         .with_name_in([first.as_str(), second.as_str()])

@@ -1073,9 +1073,19 @@ where
             self.data_service.executor.query_stream(request, chunk_size)
         };
         use futures_util::StreamExt;
-        Ok(Box::pin(
-            chunks.map(|item| item.map_err(DataServiceError::Executor)),
-        ))
+        let property_definitions = query.dynamic_property_definitions.clone();
+        Ok(Box::pin(chunks.map(move |item| {
+            item.map(|mut chunk| {
+                if let Some(definitions) = &property_definitions {
+                    teaql_core::CompactRow::attach_dynamic_property_definitions(
+                        &mut chunk.rows,
+                        definitions.clone(),
+                    );
+                }
+                chunk
+            })
+            .map_err(DataServiceError::Executor)
+        })))
     }
 
     async fn fetch_prepared_all(
@@ -1202,7 +1212,14 @@ where
             .await
             .map_err(DataServiceError::Executor)?;
         self.record_query_metadata(&res.metadata);
-        Ok(res.rows)
+        let mut rows = res.rows;
+        if let Some(definitions) = &query.dynamic_property_definitions {
+            teaql_core::CompactRow::attach_dynamic_property_definitions(
+                &mut rows,
+                definitions.clone(),
+            );
+        }
+        Ok(rows)
     }
 
     async fn fetch_prepared_query_owned(
@@ -1217,6 +1234,7 @@ where
             // Keeping this awaited future inline inflates every ordinary read.
             return Box::pin(self.fetch_prepared_query(&query)).await;
         }
+        let property_definitions = query.dynamic_property_definitions.clone();
         let capture_metadata = self.data_service.metadata.capture_execution_metadata();
         let trace_chain = if capture_metadata {
             std::mem::take(&mut query.trace_chain)
@@ -1240,13 +1258,18 @@ where
             .await
             .map_err(DataServiceError::Executor)?;
         self.record_query_metadata(&res.metadata);
-        Ok(res.rows)
+        let mut rows = res.rows;
+        if let Some(definitions) = property_definitions {
+            teaql_core::CompactRow::attach_dynamic_property_definitions(&mut rows, definitions);
+        }
+        Ok(rows)
     }
 
     pub(crate) async fn fetch_prepared_compact_owned(
         &self,
         mut query: SelectQuery,
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
+        let property_definitions = query.dynamic_property_definitions.clone();
         let capture_metadata = self.data_service.metadata.capture_execution_metadata();
         let trace_chain = if capture_metadata {
             std::mem::take(&mut query.trace_chain)
@@ -1270,7 +1293,11 @@ where
             .await
             .map_err(DataServiceError::Executor)?;
         self.record_query_metadata(&result.metadata);
-        Ok(result.rows)
+        let mut rows = result.rows;
+        if let Some(definitions) = property_definitions {
+            teaql_core::CompactRow::attach_dynamic_property_definitions(&mut rows, definitions);
+        }
+        Ok(rows)
     }
 
     async fn fetch_prepared_query_with_cache(
@@ -1345,11 +1372,17 @@ where
             })
             .await;
         match result {
-            Ok((rows, cache_result)) => {
+            Ok((mut rows, cache_result)) => {
                 scope.success(std::collections::BTreeMap::from([(
                     "teaql.cache.result".to_owned(),
                     crate::RuntimeAttributeValue::from(cache_result),
                 )]));
+                if let Some(definitions) = &query.dynamic_property_definitions {
+                    teaql_core::CompactRow::attach_dynamic_property_definitions(
+                        &mut rows,
+                        definitions.clone(),
+                    );
+                }
                 Ok(rows)
             }
             Err(error) => {

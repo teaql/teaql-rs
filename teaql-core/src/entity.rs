@@ -63,6 +63,11 @@ impl std::fmt::Display for EntityError {
 impl std::error::Error for EntityError {}
 
 pub trait Entity: TeaqlEntity + Sized {
+    /// Optional readonly schema: a known type does not make a missing property present.
+    fn dynamic_property_type(&self, key: &str) -> Option<crate::DataType> {
+        let state = self.loaded_state_snapshot()?;
+        state.dynamic_property_definitions()?.data_type(key)
+    }
     /// Framework JSON hydration capability; readonly properties remain unnumbered data.
     #[doc(hidden)]
     fn supports_dynamic_property_load() -> bool {

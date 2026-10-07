@@ -75,6 +75,7 @@ for round in first second; do
   rg -F "PASS generated Rust sparse Checker rejects before provider entry" "$run_dir/$round.log"
   rg -F "PASS generated Rust Q selection and real SQLite column-order invariance" "$run_dir/$round.log"
   rg -F "PASS generated Rust page and chunked stream shared load state" "$run_dir/$round.log"
+  rg -F "PASS generated Rust readonly property metadata shares schema without installing values or fixed slots" "$run_dir/$round.log"
   rg -F "PASS generated Rust typed Checker reconstruction shares snapshot without widening values" "$run_dir/$round.log"
   rg -F "PASS generated Rust dynamic property borrowed null/missing/zero reads with zero allocation and provider entry" "$run_dir/$round.log"
   rg -F "PASS generated Rust dynamic storage provenance and retry" "$run_dir/$round.log"

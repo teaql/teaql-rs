@@ -224,7 +224,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 fn dynamic_property(&self, key: &str) -> Option<&::teaql_core::Value> {
                     if !key.starts_with('_') { return None; }
                     self.#field_ident.get(key).filter(|value| match value {
-                        ::teaql_core::Value::Null => false,
+                        ::teaql_core::Value::Null | ::teaql_core::Value::TypedNull(_) => false,
                         ::teaql_core::Value::Json(value) => !value.is_null(),
                         _ => true,
                     })
@@ -846,6 +846,8 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     };
 
     let from_compact_body = quote! {
+            record.validate_dynamic_properties()
+                .map_err(|message| ::teaql_core::EntityError::new(#entity_name, message))?;
             #(#record_value_slots)*
             for (key, value) in record.iter() {
                 match key.as_str() {

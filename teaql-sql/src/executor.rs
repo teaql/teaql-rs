@@ -221,6 +221,7 @@ fn select_plan_matches(key: &SelectQuery, query: &SelectQuery) -> bool {
         && key.raw_sql == query.raw_sql
         && key.raw_sql_search_criteria == query.raw_sql_search_criteria
         && key.dynamic_properties == query.dynamic_properties
+        && key.dynamic_property_definitions == query.dynamic_property_definitions
         && key.raw_projections == query.raw_projections
         && key.object_group_bys == query.object_group_bys
         && key.child_enhancements == query.child_enhancements
