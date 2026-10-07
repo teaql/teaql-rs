@@ -1,11 +1,11 @@
 use school_management_service_core::{
-    service_runtime, AuditedSave, ServiceRuntimeConfig, ServiceRuntimeExecutor, E, Q,
+    AuditedSave, E, Q, ServiceRuntimeConfig, ServiceRuntimeExecutor, service_runtime,
 };
 use std::sync::Arc;
 use teaql_core::dynamic_fields::{
     DynamicFieldDefinitions, DynamicFieldSelection, DynamicFieldState,
 };
-use teaql_core::{time::Timestamp, Entity, TeaqlEntity, Value};
+use teaql_core::{Entity, TeaqlEntity, Value, time::Timestamp};
 use teaql_runtime::dynamic_fields::DatabaseDynamicFieldsProvider;
 
 #[path = "support/checker_allocations.rs"]
@@ -14,12 +14,12 @@ mod allocation_counter;
 mod checker_state;
 #[path = "support/dynamic_property.rs"]
 mod dynamic_property;
-#[path = "support/dynamic_stream.rs"]
-mod dynamic_stream;
-#[path = "support/property_metadata.rs"]
-mod property_metadata;
 #[path = "support/dynamic_rollback.rs"]
 mod dynamic_rollback;
+#[path = "support/dynamic_stream.rs"]
+mod dynamic_stream;
+#[path = "support/empty_native.rs"]
+mod empty_native;
 #[path = "support/field_order.rs"]
 mod field_order;
 #[path = "support/independent_mutation.rs"]
@@ -40,8 +40,8 @@ mod original_clone;
 mod page_stream;
 #[path = "support/partial_graph_checker.rs"]
 mod partial_graph_checker;
-#[path = "support/empty_native.rs"]
-mod empty_native;
+#[path = "support/property_metadata.rs"]
+mod property_metadata;
 
 #[tokio::test]
 async fn fresh_generated_school_uses_shared_indexed_state() -> Result<(), Box<dyn std::error::Error>>
@@ -55,14 +55,14 @@ async fn fresh_generated_school_uses_shared_indexed_state() -> Result<(), Box<dy
 }
 
 #[tokio::test]
-async fn fresh_generated_materialization_uses_its_own_model_target(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn fresh_generated_materialization_uses_its_own_model_target()
+-> Result<(), Box<dyn std::error::Error>> {
     Box::pin(materialization::run()).await
 }
 
 #[tokio::test]
-async fn fresh_generated_dynamic_stream_uses_native_cursor_and_audited_save(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn fresh_generated_dynamic_stream_uses_native_cursor_and_audited_save()
+-> Result<(), Box<dyn std::error::Error>> {
     Box::pin(dynamic_stream::run()).await
 }
 
@@ -324,9 +324,16 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     assert_eq!(saved.version(), full[0].version() + 1);
     let accepted_counts = observed.counts();
-    assert!(accepted_counts[0] > 0 && accepted_counts[1] > 0 && accepted_counts[2] > 0 && accepted_counts[3] > 0,
-        "the observer must see an accepted readback, mutation, transaction and commit: {accepted_counts:?}");
-    println!("PASS generated Rust sparse Checker rejects before provider entry; positive save counts={accepted_counts:?}");
+    assert!(
+        accepted_counts[0] > 0
+            && accepted_counts[1] > 0
+            && accepted_counts[2] > 0
+            && accepted_counts[3] > 0,
+        "the observer must see an accepted readback, mutation, transaction and commit: {accepted_counts:?}"
+    );
+    println!(
+        "PASS generated Rust sparse Checker rejects before provider entry; positive save counts={accepted_counts:?}"
+    );
     independent_mutation::verify(&context, changed_id, &renamed, &second).await?;
     partial_graph_checker::verify(&context, &renamed, &observed).await?;
     context.register_executor(original_executor);
@@ -414,15 +421,23 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
     >::new(
         "other-profile", [definitions.clone()]
     )?));
+    let before_provenance_rejection = observed.counts();
     let rejected = extended
         .clone()
         .audit_as("reject a held view in another profile")
         .save(&context)
         .await
         .unwrap_err();
-    assert!(rejected
-        .to_string()
-        .contains("DYNAMIC_FIELD_STORAGE_PROVENANCE_MISMATCH"));
+    assert!(
+        rejected
+            .to_string()
+            .contains("DYNAMIC_FIELD_STORAGE_PROVENANCE_MISMATCH")
+    );
+    assert_eq!(
+        before_provenance_rejection,
+        observed.counts(),
+        "held storage provenance must reject before executor entry"
+    );
     assert_eq!(extended.version(), held_version);
     assert!(extended.has_pending_dynamic_mutations());
     context.set_dynamic_fields_provider(Arc::new(DatabaseDynamicFieldsProvider::<
@@ -447,10 +462,16 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
         Some(&Value::Text("Private extension".into()))
     );
     extended.update_dynamic_field("note", Value::Null)?;
+    let before_valid_extension_save = observed.counts();
     let mut extended = extended
         .audit_as("persist explicit extension null")
         .save(&context)
         .await?;
+    assert_ne!(
+        before_valid_extension_save,
+        observed.counts(),
+        "positive control: a valid extension save must enter the executor"
+    );
     assert_eq!(
         extended
             .dynamic_field_values()
@@ -473,6 +494,9 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
         DynamicFieldState::NotLoaded
     );
     println!("PASS generated Rust dynamic storage provenance and retry");
+    println!(
+        "PASS generated Rust LF20 held provenance rejects before provider with valid-save positive control"
+    );
     let extended = Box::pin(dynamic_rollback::verify(
         &context, extended, &renamed, &second,
     ))
