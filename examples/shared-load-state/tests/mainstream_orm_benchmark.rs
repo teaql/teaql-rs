@@ -223,8 +223,10 @@ fn mainstream_diesel_and_teaql_queries_agree() {
     for full in [false, true] {
         for count in [1, 100, 10_000] {
             let mut query = SelectQuery::new("DriverProbe")
-                .filter(Expr::gt("version", 0_i64))
-                .filter(Expr::like("name", "row-%"))
+                .filter(Expr::and([
+                    Expr::gt("version", 0_i64),
+                    Expr::like("name", "row-%"),
+                ]))
                 .projects(["id", "version", "name"])
                 .order_by(OrderBy::asc("id"))
                 .limit(count as u64)
