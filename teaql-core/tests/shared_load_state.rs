@@ -411,6 +411,84 @@ fn physical_fk_alias_and_nested_object_are_distinguished_without_losing_identity
 }
 
 #[test]
+fn cold_concurrent_type_layout_installation_preserves_one_layout_and_snapshot() {
+    use teaql_core::{CompactRow, Entity, TeaqlEntity, Value};
+
+    // This type is local to this test: no other test can warm its OnceLock.
+    #[derive(Clone, Debug, teaql_macros::TeaqlEntity)]
+    #[teaql(entity = "ColdIndexedRow", indexed_layout)]
+    struct ColdIndexedRow {
+        #[teaql(id)]
+        id: u64,
+        #[teaql(version)]
+        version: i64,
+        #[teaql(column = "base_url")]
+        display_name: Option<String>,
+        active: bool,
+        #[teaql(skip)]
+        __load_state: LoadState,
+    }
+    impl ColdIndexedRow {
+        const __TEAQL_FIELD_LAYOUT_REVISION: &'static str = "cold-v1";
+        const __TEAQL_FIXED_FIELD_INDEXES: &'static [(&'static str, usize)] =
+            &[("id", 0), ("version", 1), ("base_url", 2), ("active", 3)];
+        const __TEAQL_FIXED_FIELD_MAPPINGS: &'static [(
+            &'static str,
+            &'static str,
+            &'static str,
+        )] = &[
+            ("id", "id", "id"),
+            ("version", "version", "version"),
+            ("base_url", "display_name", "base_url"),
+            ("active", "active", "active"),
+        ];
+    }
+    let start = std::sync::Barrier::new(16);
+    let rows = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..16)
+            .map(|index| {
+                let start = &start;
+                scope.spawn(move || {
+                    start.wait();
+                    let layout = ColdIndexedRow::field_layout().unwrap().unwrap();
+                    // Independent query shapes also converge on one immutable snapshot.
+                    let row = ColdIndexedRow::from_compact_row(CompactRow::from_map(
+                        std::collections::BTreeMap::from([
+                            ("id".into(), Value::U64(index + 1)),
+                            ("version".into(), Value::I64(1)),
+                            ("base_url".into(), Value::Null),
+                        ]),
+                    ))
+                    .unwrap();
+                    (layout, row)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    let LoadState::Indexed(first) = &rows[0].1.__load_state else {
+        panic!("cold hydration must install indexed state");
+    };
+    for (index, (layout, row)) in rows.iter().enumerate() {
+        let LoadState::Indexed(state) = &row.__load_state else {
+            panic!("cold hydration must install indexed state");
+        };
+        assert!(Arc::ptr_eq(&rows[0].0, layout));
+        assert!(Arc::ptr_eq(first, state));
+        assert_eq!(layout.index("base_url"), Some(2));
+        assert_eq!(layout.index("display_name"), Some(2));
+        assert_eq!(row.id, index as u64 + 1);
+        assert!(row.is_field_loaded("display_name"));
+        assert!(row.display_name.is_none());
+        assert!(!row.is_field_loaded("active"));
+        assert!(row.dirty_fields().is_none());
+    }
+}
+
+#[test]
 fn concurrent_decoders_reuse_one_immutable_snapshot() {
     use teaql_core::{CompactRow, CompactRowLayout, Entity, Value};
     let shape = CompactRowLayout::new(Arc::from(["id".to_owned(), "version".to_owned()]));
