@@ -134,6 +134,53 @@ fn allocation_layers(
         assert!(entity.dirty_fields().is_none());
     }
     println!("LAYER,runtime_compact_decode,{full},{count},{calls},{bytes}");
+    // Measure runtime-state cloning separately from SQL and typed-field cloning.
+    // Preparing references performs no ledger access and is outside the counter.
+    let states = typed
+        .iter()
+        .map(|entity| {
+            entity
+                .__teaql_runtime_state_any()
+                .unwrap()
+                .downcast_ref::<teaql_runtime::EntityRuntimeState>()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    for phase in ["first_state_clone", "repeat_state_clone"] {
+        let (cloned, calls, bytes, _) = measured(|| {
+            states
+                .iter()
+                .map(|state| teaql_runtime::EntityRuntimeState::clone(state))
+                .collect::<Vec<_>>()
+        });
+        // Retained baselines and empty mutation intent are correctness controls,
+        // not part of the measured cloning workload.
+        for (state, entity) in cloned.iter().zip(&typed) {
+            let original = state.original_snapshot().unwrap();
+            assert_eq!(
+                original.get("id").and_then(teaql_core::Value::try_u64),
+                Some(entity.id)
+            );
+            assert_eq!(
+                original.get("version").and_then(teaql_core::Value::try_i64),
+                Some(entity.version)
+            );
+            assert_eq!(
+                original.get("name").and_then(teaql_core::Value::try_text),
+                Some(entity.name.as_str())
+            );
+            assert_eq!(original.contains_key("note"), full);
+            if full {
+                assert_eq!(
+                    original.get("note").and_then(teaql_core::Value::try_text),
+                    entity.note.as_deref()
+                );
+            }
+            assert!(state.current_change_set().is_empty());
+        }
+        assert!(typed.iter().all(|entity| entity.dirty_fields().is_none()));
+        println!("LAYER,{phase},{full},{count},{calls},{bytes}");
+    }
 }
 
 #[test]

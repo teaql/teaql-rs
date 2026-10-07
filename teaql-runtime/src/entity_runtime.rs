@@ -606,7 +606,7 @@ pub struct EntityRuntimeState {
     graph: EntityGraphReference,
     // Zero for ordinary SQL graphs; JSON views get operation-local coordinates.
     json_view: u64,
-    loaded_snapshot: Option<LoadedEntitySnapshot>,
+    loaded_snapshot: LoadedSnapshotCarrier,
     // View-owned payload; no allocation on the ordinary fixed-field path.
     dynamic_fields: Option<Box<teaql_core::dynamic_fields::DynamicFieldValues>>,
 }
@@ -653,6 +653,67 @@ impl Clone for LazyLedgerSlot {
 struct LoadedEntitySnapshot {
     entity: Arc<str>,
     row: teaql_core::CompactRow,
+}
+
+/// An original row is immutable. Keep never-cloned views inline, and move the
+/// row into one shared owner on first clone instead of copying its value buffer.
+#[derive(Debug, Default)]
+struct LoadedSnapshotCarrier {
+    storage: Mutex<LoadedSnapshotStorage>,
+}
+
+#[derive(Debug, Default)]
+enum LoadedSnapshotStorage {
+    #[default]
+    Empty,
+    Inline(LoadedEntitySnapshot),
+    Shared(Arc<LoadedEntitySnapshot>),
+}
+
+impl LoadedSnapshotCarrier {
+    fn new(snapshot: LoadedEntitySnapshot) -> Self {
+        Self {
+            storage: Mutex::new(LoadedSnapshotStorage::Inline(snapshot)),
+        }
+    }
+
+    // Private readers only; callbacks cannot expose a mutable row or re-enter
+    // this carrier. Original-value APIs still return independently owned values.
+    fn with<R>(&self, read: impl FnOnce(&LoadedEntitySnapshot) -> R) -> Option<R> {
+        let storage = self
+            .storage
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &*storage {
+            LoadedSnapshotStorage::Empty => None,
+            LoadedSnapshotStorage::Inline(snapshot) => Some(read(snapshot)),
+            LoadedSnapshotStorage::Shared(snapshot) => Some(read(snapshot)),
+        }
+    }
+}
+
+impl Clone for LoadedSnapshotCarrier {
+    fn clone(&self) -> Self {
+        let mut storage = self
+            .storage
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let shared = match &*storage {
+            LoadedSnapshotStorage::Empty => return Self::default(),
+            LoadedSnapshotStorage::Shared(snapshot) => snapshot.clone(),
+            LoadedSnapshotStorage::Inline(_) => {
+                let LoadedSnapshotStorage::Inline(snapshot) = std::mem::take(&mut *storage) else {
+                    unreachable!("the carrier is locked during promotion")
+                };
+                let shared = Arc::new(snapshot);
+                *storage = LoadedSnapshotStorage::Shared(shared.clone());
+                shared
+            }
+        };
+        Self {
+            storage: Mutex::new(LoadedSnapshotStorage::Shared(shared)),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -715,7 +776,7 @@ impl Default for EntityRuntimeState {
             inner: LazyLedgerSlot::default(),
             graph: EntityGraphReference::Strong(Arc::default()),
             json_view: 0,
-            loaded_snapshot: None,
+            loaded_snapshot: LoadedSnapshotCarrier::default(),
             dynamic_fields: None,
         }
     }
@@ -798,14 +859,14 @@ impl EntityRuntimeState {
     fn context(&self) -> &Arc<Mutex<EntityMutationLedger>> {
         self.inner.get_or_init(|| {
             let mut ledger = EntityMutationLedger::default();
-            if let Some(snapshot) = &self.loaded_snapshot
-                && let Some(id) = snapshot.row.get("id")
-            {
-                ledger.original_snapshots.insert(
-                    EntityKey::new(snapshot.entity.as_ref(), id.clone()),
-                    OriginalSnapshot::Compact(snapshot.row.clone()),
-                );
-            }
+            self.loaded_snapshot.with(|snapshot| {
+                if let Some(id) = snapshot.row.get("id") {
+                    ledger.original_snapshots.insert(
+                        EntityKey::new(snapshot.entity.as_ref(), id.clone()),
+                        OriginalSnapshot::Compact(snapshot.row.clone()),
+                    );
+                }
+            });
             Arc::new(Mutex::new(ledger))
         })
     }
@@ -831,7 +892,7 @@ impl EntityRuntimeState {
             inner: LazyLedgerSlot::default(),
             graph: source.graph.preserve(),
             json_view: source.json_view,
-            loaded_snapshot: None,
+            loaded_snapshot: LoadedSnapshotCarrier::default(),
             dynamic_fields: None,
         }
     }
@@ -843,7 +904,7 @@ impl EntityRuntimeState {
             inner: LazyLedgerSlot::default(),
             graph: source.graph.weak(),
             json_view: source.json_view,
-            loaded_snapshot: None,
+            loaded_snapshot: LoadedSnapshotCarrier::default(),
             dynamic_fields: None,
         }
     }
@@ -890,11 +951,14 @@ impl EntityRuntimeState {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone();
-        let loaded_version = source.loaded_snapshot.as_ref().and_then(|loaded| {
-            let id = loaded.row.get("id")?.clone();
-            let version = loaded.row.get("version")?.try_i64()?;
-            Some((EntityKey::new(loaded.entity.as_ref(), id), version))
-        });
+        let loaded_version = source
+            .loaded_snapshot
+            .with(|loaded| {
+                let id = loaded.row.get("id")?.clone();
+                let version = loaded.row.get("version")?.try_i64()?;
+                Some((EntityKey::new(loaded.entity.as_ref(), id), version))
+            })
+            .flatten();
         self.write_context(|target| {
             let source_versions = snapshot
                 .original_versions
@@ -911,11 +975,14 @@ impl EntityRuntimeState {
                 .chain(loaded_version.iter().map(|(key, version)| (key, *version)));
             for (key, source_version) in source_versions {
                 let target_version = target.original_versions.get(key).or_else(|| {
-                    let loaded = self.loaded_snapshot.as_ref()?;
-                    (loaded.entity.as_ref() == key.entity.as_ref()
-                        && loaded.row.get("id")?.try_u64() == key.id.try_u64())
-                    .then(|| loaded.row.get("version")?.try_i64())
-                    .flatten()
+                    self.loaded_snapshot
+                        .with(|loaded| {
+                            (loaded.entity.as_ref() == key.entity.as_ref()
+                                && loaded.row.get("id")?.try_u64() == key.id.try_u64())
+                            .then(|| loaded.row.get("version")?.try_i64())
+                            .flatten()
+                        })
+                        .flatten()
                 });
                 if let Some(target_version) = target_version
                     && target_version != source_version
@@ -1377,7 +1444,7 @@ impl EntityRuntimeState {
         mut row: teaql_core::CompactRow,
     ) {
         row.clear_loaded_relations();
-        self.loaded_snapshot = Some(LoadedEntitySnapshot {
+        self.loaded_snapshot = LoadedSnapshotCarrier::new(LoadedEntitySnapshot {
             entity: entity.into(),
             row,
         });
@@ -1385,8 +1452,11 @@ impl EntityRuntimeState {
 
     /// Retrieve the original loaded entity snapshot.
     pub fn original_snapshot(&self) -> Option<EntitySnapshot> {
-        if let Some(snapshot) = &self.loaded_snapshot {
-            return Some(EntitySnapshot::from(snapshot.row.clone().into_map()));
+        if let Some(snapshot) = self
+            .loaded_snapshot
+            .with(|snapshot| EntitySnapshot::from(snapshot.row.clone().into_map()))
+        {
+            return Some(snapshot);
         }
         self.read_context(None, |context| {
             context
@@ -1433,16 +1503,19 @@ impl EntityRuntimeState {
     pub fn get_original_version(&self, key: &EntityKey) -> Option<i64> {
         self.read_context(None, |context| context.original_versions.get(key))
             .or_else(|| {
-                let snapshot = self.loaded_snapshot.as_ref()?;
-                if snapshot.entity.as_ref() != key.entity.as_ref() {
-                    return None;
-                }
-                snapshot
-                    .row
-                    .get("id")?
-                    .try_u64()
-                    .filter(|id| Some(*id) == key.id.try_u64())?;
-                snapshot.row.get("version")?.try_i64()
+                self.loaded_snapshot
+                    .with(|snapshot| {
+                        if snapshot.entity.as_ref() != key.entity.as_ref() {
+                            return None;
+                        }
+                        snapshot
+                            .row
+                            .get("id")?
+                            .try_u64()
+                            .filter(|id| Some(*id) == key.id.try_u64())?;
+                        snapshot.row.get("version")?.try_i64()
+                    })
+                    .flatten()
             })
     }
 
@@ -1561,10 +1634,13 @@ impl EntityRuntimeState {
                 })
         })
         .or_else(|| {
-            let snapshot = self.loaded_snapshot.as_ref()?;
-            (snapshot.entity.as_ref() == key.entity.as_ref()
-                && snapshot.row.get("id")?.try_u64() == key.id.try_u64())
-            .then(|| EntitySnapshot::from(snapshot.row.clone().into_map()))
+            self.loaded_snapshot
+                .with(|snapshot| {
+                    (snapshot.entity.as_ref() == key.entity.as_ref()
+                        && snapshot.row.get("id")?.try_u64() == key.id.try_u64())
+                    .then(|| EntitySnapshot::from(snapshot.row.clone().into_map()))
+                })
+                .flatten()
         })
     }
 
@@ -1935,6 +2011,144 @@ mod composition_api_tests {
 mod lazy_root_tests {
     use super::*;
 
+    fn readonly_probe() -> EntityRuntimeState {
+        let mut root = EntityRuntimeState::default();
+        root.set_original_compact_row(
+            "SnapshotProbe",
+            teaql_core::CompactRow::from_map(BTreeMap::from([
+                ("id".into(), Value::U64(7)),
+                ("version".into(), Value::I64(3)),
+                ("name".into(), Value::Text("immutable baseline".into())),
+            ])),
+        );
+        root
+    }
+
+    #[test]
+    fn original_row_moves_on_first_clone_and_returned_values_remain_private() {
+        let mut root = readonly_probe();
+        assert!(matches!(
+            *root.loaded_snapshot.storage.lock().unwrap(),
+            LoadedSnapshotStorage::Inline(_)
+        ));
+        let payload = root
+            .loaded_snapshot
+            .with(|snapshot| {
+                snapshot
+                    .row
+                    .get("name")
+                    .unwrap()
+                    .try_text()
+                    .unwrap()
+                    .as_ptr() as usize
+            })
+            .unwrap();
+        let clone = root.clone();
+        let shared = root
+            .loaded_snapshot
+            .with(|snapshot| snapshot as *const _ as usize)
+            .unwrap();
+        assert_eq!(
+            shared,
+            clone
+                .loaded_snapshot
+                .with(|snapshot| snapshot as *const _ as usize)
+                .unwrap()
+        );
+        assert_eq!(
+            payload,
+            clone
+                .loaded_snapshot
+                .with(|snapshot| snapshot
+                    .row
+                    .get("name")
+                    .unwrap()
+                    .try_text()
+                    .unwrap()
+                    .as_ptr() as usize)
+                .unwrap()
+        );
+        let mut returned = clone.original_snapshot().unwrap();
+        returned.insert("name".into(), Value::Text("not the original".into()));
+        assert_eq!(
+            root.original_snapshot().unwrap().get("name"),
+            Some(&Value::Text("immutable baseline".into()))
+        );
+        root.set_original_compact_row(
+            "SnapshotProbe",
+            teaql_core::CompactRow::from_map(BTreeMap::from([
+                ("id".into(), Value::U64(7)),
+                ("version".into(), Value::I64(4)),
+            ])),
+        );
+        let key = EntityKey::new_static("SnapshotProbe", 7_u64);
+        assert_eq!(root.get_original_version(&key), Some(4));
+        assert_eq!(clone.get_original_version(&key), Some(3));
+        assert_eq!(
+            clone.get_original_version(&EntityKey::new_static("OtherType", 7_u64)),
+            None
+        );
+        assert!(!root.has_mutation_context());
+        assert!(!clone.has_mutation_context());
+    }
+
+    #[test]
+    fn concurrent_first_snapshot_clones_share_one_immutable_row() {
+        let root = readonly_probe();
+        let barrier = std::sync::Barrier::new(16);
+        let clones = std::thread::scope(|scope| {
+            let workers = (0..16)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        root.clone()
+                    })
+                })
+                .collect::<Vec<_>>();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let shared = root
+            .loaded_snapshot
+            .with(|snapshot| snapshot as *const _ as usize)
+            .unwrap();
+        for clone in &clones {
+            assert_eq!(
+                shared,
+                clone
+                    .loaded_snapshot
+                    .with(|snapshot| snapshot as *const _ as usize)
+                    .unwrap()
+            );
+            assert_eq!(
+                clone.get_original_version(&EntityKey::new_static("SnapshotProbe", 7_u64)),
+                Some(3)
+            );
+            assert!(!clone.has_mutation_context());
+        }
+        let independent = readonly_probe();
+        let isolated = independent.clone();
+        assert_ne!(
+            shared,
+            isolated
+                .loaded_snapshot
+                .with(|snapshot| snapshot as *const _ as usize)
+                .unwrap()
+        );
+        clones[0].set(
+            EntityKey::new_static("SnapshotProbe", 7_u64),
+            "name",
+            "changed",
+        );
+        assert!(independent.current_change_set().is_empty());
+        assert_eq!(
+            clones[0].original_snapshot().unwrap().get("name"),
+            Some(&Value::Text("immutable baseline".into()))
+        );
+    }
+
     #[test]
     fn readonly_state_keeps_binding_and_ledger_unallocated_until_clone_or_mutation() {
         let root = EntityRuntimeState::default();
@@ -2024,10 +2238,8 @@ mod lazy_root_tests {
         assert!(
             !first
                 .loaded_snapshot
-                .as_ref()
+                .with(|snapshot| snapshot.row.has_loaded_relations())
                 .unwrap()
-                .row
-                .has_loaded_relations()
         );
         assert!(
             first
