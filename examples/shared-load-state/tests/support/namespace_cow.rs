@@ -39,6 +39,55 @@ pub async fn verify(
     object.insert("_name".into(), "readonly same name".into());
     let mut first: School = context.decode_json_entity(&json)?;
     first.install_loaded_dynamic_fields(fields, shared.clone())?;
+    assert_eq!(
+        first.dynamic_field_values().unwrap().field("note")?.state(),
+        DynamicFieldState::Value
+    );
+    let source_note = rows[0]
+        .dynamic_field_values()
+        .unwrap()
+        .field("note")?
+        .value()
+        .cloned();
+    let sibling_note = rows[1]
+        .dynamic_field_values()
+        .unwrap()
+        .field("note")?
+        .value()
+        .cloned();
+    first.update_dynamic_field("note", "value-only private control".into())?;
+    assert!(Arc::ptr_eq(
+        &shared,
+        &first.loaded_state_snapshot().unwrap()
+    ));
+    assert!(Arc::ptr_eq(
+        &shared,
+        &rows[1].loaded_state_snapshot().unwrap()
+    ));
+    assert_eq!(
+        first.dynamic_field_values().unwrap().field("note")?.value(),
+        Some(&Value::Text("value-only private control".into()))
+    );
+    assert_eq!(
+        rows[0]
+            .dynamic_field_values()
+            .unwrap()
+            .field("note")?
+            .value(),
+        source_note.as_ref()
+    );
+    assert_eq!(
+        rows[1]
+            .dynamic_field_values()
+            .unwrap()
+            .field("note")?
+            .value(),
+        sibling_note.as_ref()
+    );
+    assert!(rows[0].dirty_fields().is_none());
+    assert!(rows[1].dirty_fields().is_none());
+    assert!(!rows[1].has_pending_dynamic_mutations());
+    println!("PASS generated Rust value-only dynamic mutation retains shared snapshot and sibling payload");
     first.update_dynamic_field("name", "persistent same name".into())?;
     assert!(!Arc::ptr_eq(
         &shared,
