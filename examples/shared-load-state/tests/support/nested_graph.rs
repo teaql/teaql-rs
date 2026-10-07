@@ -1,7 +1,7 @@
 //! Application-owned graph acceptance. API names come from retained current Assist.
 use school_management_service_core::{AuditedSave, TeaqlRuntime, E, Q};
 use std::sync::Arc;
-use teaql_core::Entity;
+use teaql_core::{Entity, serde_json};
 use teaql_runtime::LoadedRelation;
 
 pub async fn verify_dynamic(
@@ -182,11 +182,45 @@ pub async fn verify(
     assert_eq!(restored.school_list().state(), LoadedRelation::Loaded);
     let restored_handle = restored.school_list();
     let restored_children = restored_handle.value().unwrap();
-    assert_eq!(E::school(&restored_children[0]).get_name().eval().as_deref(),Some(renamed));
-    assert!(Arc::ptr_eq(&restored_children[0].loaded_state_snapshot().unwrap(),&restored_children[1].loaded_state_snapshot().unwrap()));
+    assert_eq!(
+        E::school(&restored_children[0])
+            .get_name()
+            .eval()
+            .as_deref(),
+        Some(renamed)
+    );
+    assert!(Arc::ptr_eq(
+        &restored_children[0].loaded_state_snapshot().unwrap(),
+        &restored_children[1].loaded_state_snapshot().unwrap()
+    ));
     assert!(!restored_children[0].is_field_loaded("address"));
     assert!(restored.dirty_fields().is_none());
-    assert_eq!(restored.clone().into_json(),json);
+    assert_eq!(restored.clone().into_json(), json);
+
+    // Two Schools see different projections of the same Platform identity.
+    let mut views_json = json.clone();
+    let version = views_json["version"].clone();
+    views_json["school_list"][0]["platform_id"] = serde_json::json!(1);
+    views_json["school_list"][0]["platform"] = serde_json::json!({
+        "id":1,"version":version,"name":"Detailed projection","school_list":[]
+    });
+    views_json["school_list"][1]["platform_id"] = serde_json::json!(1);
+    views_json["school_list"][1]["platform"] = serde_json::json!({"id":1,"version":version});
+    let restored_views = decode_like(context, &platform, &views_json)?;
+    let views_handle = restored_views.school_list();
+    let views_children = views_handle.value().unwrap();
+    let detailed = E::school(&views_children[0]).get_platform().eval().unwrap();
+    let minimal = E::school(&views_children[1]).get_platform().eval().unwrap();
+    assert!(detailed.is_field_loaded("name"));
+    assert!(!minimal.is_field_loaded("name"));
+    assert_eq!(detailed.school_list().state(), LoadedRelation::Empty);
+    assert_eq!(minimal.school_list().state(), LoadedRelation::NotLoaded);
+    assert!(restored_views.dirty_fields().is_none());
+    assert!(views_children
+        .iter()
+        .all(|child| child.dirty_fields().is_none()));
+    assert_eq!(restored_views.clone().into_json(), views_json);
+    println!("PASS generated Rust same-identity JSON projection isolation through E API");
 
     let nested = Q::schools_minimal()
         .with_id_is(school_id)
@@ -212,13 +246,19 @@ pub async fn verify(
     assert_eq!(nested_json["platform"]["school_list"][0]["name"], renamed);
     assert_eq!(nested_json["platform"]["school_list"][1]["name"], second);
     let restored_nested = decode_like(context, &nested, &nested_json)?;
-    assert!(restored_nested.is_field_loaded("platform"),
+    assert!(
+        restored_nested.is_field_loaded("platform"),
         "decoded selected platform must be loaded; input_present={} state={:?}",
-        nested_json.get("platform").is_some(), restored_nested.loaded_state_snapshot());
+        nested_json.get("platform").is_some(),
+        restored_nested.loaded_state_snapshot()
+    );
     let restored_parent = E::school(&restored_nested).get_platform().eval().unwrap();
-    assert_eq!(restored_parent.school_list().state(),LoadedRelation::Loaded);
-    assert_eq!(restored_parent.school_list().value().unwrap().len(),2);
-    assert_eq!(restored_nested.clone().into_json(),nested_json);
+    assert_eq!(
+        restored_parent.school_list().state(),
+        LoadedRelation::Loaded
+    );
+    assert_eq!(restored_parent.school_list().value().unwrap().len(), 2);
+    assert_eq!(restored_nested.clone().into_json(), nested_json);
 
     let empty = Q::school_types_minimal()
         .with_id_is(1002)
@@ -240,8 +280,8 @@ pub async fn verify(
         .as_array()
         .unwrap()
         .is_empty());
-    let restored_empty = decode_like(context,&empty,&empty.clone().into_json())?;
-    assert_eq!(restored_empty.school_list().state(),LoadedRelation::Empty);
+    let restored_empty = decode_like(context, &empty, &empty.clone().into_json())?;
+    assert_eq!(restored_empty.school_list().state(), LoadedRelation::Empty);
 
     let unselected = Q::school_types_minimal()
         .with_id_is(1002)
@@ -254,8 +294,11 @@ pub async fn verify(
     assert_eq!(unselected.school_list().state(), LoadedRelation::NotLoaded);
     assert!(unselected.school_list().value().is_none());
     assert!(unselected.clone().into_json().get("school_list").is_none());
-    let restored_unselected=decode_like(context,&unselected,&unselected.clone().into_json())?;
-    assert_eq!(restored_unselected.school_list().state(),LoadedRelation::NotLoaded);
+    let restored_unselected = decode_like(context, &unselected, &unselected.clone().into_json())?;
+    assert_eq!(
+        restored_unselected.school_list().state(),
+        LoadedRelation::NotLoaded
+    );
 
     let filtered = Q::schools_minimal()
         .with_id_is(school_id)
@@ -279,8 +322,11 @@ pub async fn verify(
         .unwrap_or("");
     assert!(diagnostic.contains("school_type") && diagnostic.contains("missing_preload"));
     assert!(filtered.clone().into_json().get("school_type").is_none());
-    let restored_filtered=decode_like(context,&filtered,&filtered.clone().into_json())?;
-    assert_eq!(E::school(&restored_filtered).get_school_type_id().eval(),Some(1001));
+    let restored_filtered = decode_like(context, &filtered, &filtered.clone().into_json())?;
+    assert_eq!(
+        E::school(&restored_filtered).get_school_type_id().eval(),
+        Some(1001)
+    );
     assert!(!restored_filtered.is_field_loaded("school_type"));
     assert!(restored_filtered.dirty_fields().is_none());
     println!("PASS generated Rust typed JSON graph roundtrip and Empty/NotLoaded isolation");
@@ -288,7 +334,10 @@ pub async fn verify(
     Ok(())
 }
 
-fn decode_like<T: Entity>(context: &teaql_runtime::UserContext, _source: &T,
-    value: &teaql_core::serde_json::Value) -> Result<T, teaql_core::EntityError> {
+fn decode_like<T: Entity>(
+    context: &teaql_runtime::UserContext,
+    _source: &T,
+    value: &teaql_core::serde_json::Value,
+) -> Result<T, teaql_core::EntityError> {
     context.decode_json_entity::<T>(value)
 }

@@ -104,10 +104,28 @@ type CompactEntityGraphOptionDecoder = fn(
 ) -> Result<(), EntityError>;
 
 type JsonReadCapability = fn(&EntityDescriptor) -> Result<bool, EntityError>;
+pub(crate) struct JsonEdgeRequest<'a> {
+    pub owner: &'a str,
+    pub id: u64,
+    pub relation: &'a str,
+    pub many: bool,
+}
+type JsonEdgeDecoder = fn(
+    Vec<(u64, CompactRow)>,
+    &EntityRuntimeState,
+    &mut EntityGraphBuilder,
+    JsonEdgeRequest<'_>,
+) -> Result<(), EntityError>;
+
+#[derive(Clone)]
+struct JsonReadDecoder {
+    capability: JsonReadCapability,
+    edge: JsonEdgeDecoder,
+}
 
 #[derive(Default, Clone)]
 pub struct InMemoryEntityGraphDecoderRegistry {
-    json_capabilities: BTreeMap<String, JsonReadCapability>,
+    json_capabilities: BTreeMap<String, JsonReadDecoder>,
     compact_decoders: BTreeMap<String, CompactEntityGraphDecoder>,
     compact_batch_decoders: BTreeMap<String, CompactEntityGraphBatchDecoder>,
     compact_list_decoders: BTreeMap<String, CompactEntityGraphListDecoder>,
@@ -144,8 +162,62 @@ impl InMemoryEntityGraphDecoderRegistry {
             }
             Ok(T::supports_dynamic_property_load())
         }
-        self.json_capabilities
-            .insert(T::ENTITY_NAME.to_owned(), json_capability::<T>);
+        fn json_edge<T: Entity + IdentifiableEntity + Send + Sync + 'static>(
+            rows: Vec<(u64, CompactRow)>,
+            root: &EntityRuntimeState,
+            graph: &mut EntityGraphBuilder,
+            edge: JsonEdgeRequest<'_>,
+        ) -> Result<(), EntityError> {
+            let mut shapes = ReadHydrationShapes::default();
+            if edge.many {
+                let mut data = Vec::with_capacity(rows.len());
+                for (view, row) in rows {
+                    let scoped =
+                        EntityRuntimeState::fresh_with_weak_graph(root).with_json_view(view);
+                    data.push(decode_compact_row_with_read_metadata::<T>(
+                        row,
+                        &scoped,
+                        &mut shapes,
+                    )?);
+                }
+                graph.install_json_relation_list(
+                    root.json_view_id(),
+                    edge.owner,
+                    edge.id,
+                    edge.relation,
+                    SmartList {
+                        data,
+                        is_loaded: true,
+                        ..Default::default()
+                    },
+                );
+            } else {
+                let value = rows
+                    .into_iter()
+                    .next()
+                    .map(|(view, row)| {
+                        let scoped =
+                            EntityRuntimeState::fresh_with_weak_graph(root).with_json_view(view);
+                        decode_compact_row_with_read_metadata::<T>(row, &scoped, &mut shapes)
+                    })
+                    .transpose()?;
+                graph.install_typed_relation_option(
+                    root.json_view_id(),
+                    edge.owner,
+                    edge.id,
+                    edge.relation,
+                    value,
+                );
+            }
+            Ok(())
+        }
+        self.json_capabilities.insert(
+            T::ENTITY_NAME.to_owned(),
+            JsonReadDecoder {
+                capability: json_capability::<T>,
+                edge: json_edge::<T>,
+            },
+        );
         fn decode_compact<T>(
             row: CompactRow,
             root: &EntityRuntimeState,
@@ -246,7 +318,7 @@ impl InMemoryEntityGraphDecoderRegistry {
                     )
                 })
                 .transpose()?;
-            graph.install_typed_relation_option(owner_entity, owner_id, relation, value);
+            graph.install_typed_relation_option(0, owner_entity, owner_id, relation, value);
             Ok(())
         }
 
@@ -264,14 +336,33 @@ impl InMemoryEntityGraphDecoderRegistry {
         &self,
         descriptor: &EntityDescriptor,
     ) -> Result<bool, EntityError> {
-        self.json_capabilities
+        let decoder = self
+            .json_capabilities
             .get(&descriptor.name)
             .ok_or_else(|| {
                 EntityError::new(
                     &descriptor.name,
                     "JSON_ENTITY_INPUT: graph type has no installed typed decoder",
                 )
-            })?(descriptor)
+            })?;
+        (decoder.capability)(descriptor)
+    }
+
+    pub(crate) fn decode_json_edge(
+        &self,
+        entity: &str,
+        rows: Vec<(u64, CompactRow)>,
+        root: &EntityRuntimeState,
+        graph: &mut EntityGraphBuilder,
+        edge: JsonEdgeRequest<'_>,
+    ) -> Result<(), EntityError> {
+        let decoder = self.json_capabilities.get(entity).ok_or_else(|| {
+            EntityError::new(
+                entity,
+                "JSON_ENTITY_INPUT: graph type has no installed typed decoder",
+            )
+        })?;
+        (decoder.edge)(rows, root, graph, edge)
     }
 
     pub fn decode_compact(

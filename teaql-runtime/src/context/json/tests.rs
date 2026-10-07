@@ -1,4 +1,5 @@
 use super::*;
+use crate::LedgerEntity;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use teaql_core::{TeaqlEntity, eval::LoadState};
@@ -108,18 +109,32 @@ struct GraphChild {
     parent_id: Option<u64>,
     #[teaql(relation(target = "JsonParent", local_key = "parent_id", foreign_key = "id"))]
     parent: Option<Box<GraphParent>>,
+    #[teaql(column = "backup_parent")]
+    backup_parent_id: Option<u64>,
+    #[teaql(relation(
+        target = "JsonParent",
+        local_key = "backup_parent_id",
+        foreign_key = "id"
+    ))]
+    backup_parent: Option<Box<GraphParent>>,
     #[teaql(skip)]
     __load_state: LoadState,
 }
 impl GraphChild {
     const __TEAQL_FIELD_LAYOUT_REVISION: &'static str = "json-child-v1";
-    const __TEAQL_FIXED_FIELD_INDEXES: &'static [(&'static str, usize)] =
-        &[("id", 0), ("version", 1), ("name", 2), ("parent", 3)];
+    const __TEAQL_FIXED_FIELD_INDEXES: &'static [(&'static str, usize)] = &[
+        ("id", 0),
+        ("version", 1),
+        ("name", 2),
+        ("parent", 3),
+        ("backup_parent", 4),
+    ];
     const __TEAQL_FIXED_FIELD_MAPPINGS: &'static [(&'static str, &'static str, &'static str)] = &[
         ("id", "id", "id"),
         ("version", "version", "version"),
         ("name", "name", "name"),
         ("parent", "parent_id", "parent"),
+        ("backup_parent", "backup_parent_id", "backup_parent"),
     ];
 }
 fn graph_context() -> UserContext {
@@ -283,7 +298,99 @@ fn incompatible_forward_target_views_do_not_silently_choose_one_payload() {
     let error = graph_context()
         .decode_json_entity::<GraphParent>(&value)
         .unwrap_err();
-    assert!(error.to_string().contains("separate JSON root graphs"));
+    assert!(error.to_string().contains("conflicting native values"));
+    assert!(!error.to_string().contains("first"));
+    assert!(!error.to_string().contains("second"));
+}
+
+#[test]
+fn one_graph_preserves_forward_projection_and_reverse_list_views_of_equal_ids() {
+    let input = serde_json::json!({"id":1,"version":7,"name":"shared","child_list":[
+        {"id":1,"parent_id":1,"parent":{"id":1,"version":7,"name":"shared","child_list":[]}},
+        {"id":2,"parent_id":1,"parent":{"id":1,"version":7}}
+    ]});
+    let root = graph_context()
+        .decode_json_entity::<GraphParent>(&input)
+        .unwrap();
+    let root_state = root.entity_runtime_state().unwrap();
+    let list = root_state
+        .resolve_relation_list::<GraphChild>("JsonParent", 1, "child_list")
+        .unwrap();
+    let first_state = list[0].entity_runtime_state().unwrap();
+    let second_state = list[1].entity_runtime_state().unwrap();
+    let first = first_state.resolve_entity::<GraphParent>(1).unwrap();
+    let second = second_state.resolve_entity::<GraphParent>(1).unwrap();
+    assert_eq!(first.name.as_deref(), Some("shared"));
+    assert!(first.is_field_loaded("name"));
+    assert!(!second.is_field_loaded("name"));
+    assert!(second.name.is_none());
+    assert!(
+        first
+            .entity_runtime_state()
+            .unwrap()
+            .resolve_relation_list::<GraphChild>("JsonParent", 1, "child_list")
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        second
+            .entity_runtime_state()
+            .unwrap()
+            .resolve_relation_list::<GraphChild>("JsonParent", 1, "child_list")
+            .is_none()
+    );
+    assert!(Arc::ptr_eq(
+        &root.loaded_state_snapshot().unwrap(),
+        &first.loaded_state_snapshot().unwrap()
+    ));
+    assert!(!Arc::ptr_eq(
+        &first.loaded_state_snapshot().unwrap(),
+        &second.loaded_state_snapshot().unwrap()
+    ));
+    assert!(list.iter().all(|child| child.dirty_fields().is_none()));
+    let detached = first.clone();
+    assert_eq!(root.clone().into_json(), input);
+    drop(first_state);
+    drop(second_state);
+    drop(root_state);
+    drop(root);
+    assert_eq!(detached.name.as_deref(), Some("shared"));
+    assert!(
+        detached
+            .entity_runtime_state()
+            .unwrap()
+            .resolve_relation_list::<GraphChild>("JsonParent", 1, "child_list")
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(detached.into_json(), input["child_list"][0]["parent"]);
+}
+
+#[test]
+fn two_relations_to_equal_identity_keep_distinct_views_and_refuse_ambiguous_lookup() {
+    let input = serde_json::json!({"id":1,"parent_id":7,"parent":{"id":7,"name":"shared"},
+        "backup_parent_id":7,"backup_parent":{"id":7}});
+    let row = graph_context()
+        .decode_json_entity::<GraphChild>(&input)
+        .unwrap();
+    let state = row.entity_runtime_state().unwrap();
+    let first = state
+        .resolve_relation_option::<GraphParent>("JsonChild", 1, "parent")
+        .unwrap()
+        .as_ref()
+        .unwrap();
+    let second = state
+        .resolve_relation_option::<GraphParent>("JsonChild", 1, "backup_parent")
+        .unwrap()
+        .as_ref()
+        .unwrap();
+    assert!(first.is_field_loaded("name"));
+    assert!(!second.is_field_loaded("name"));
+    assert!(
+        state.resolve_entity::<GraphParent>(7).is_none(),
+        "identity alone cannot select an ambiguous projection"
+    );
+    assert_eq!(row.into_json(), input);
 }
 
 #[test]
@@ -296,6 +403,18 @@ fn graph_depth_is_bounded_before_hydration() {
         .decode_json_entity::<JsonProbe>(&value)
         .unwrap_err();
     assert!(err.to_string().contains("depth or node limit"));
+}
+
+#[test]
+fn overlarge_relation_rejects_before_allocating_or_decoding_child_views() {
+    let value = serde_json::json!({"id":1,"child_list":
+        vec![serde_json::json!({"unknown_child_field":"must not be decoded"}); 100_000]});
+    let error = graph_context()
+        .decode_json_entity::<GraphParent>(&value)
+        .unwrap_err();
+    assert!(error.to_string().contains("depth or node limit"));
+    assert!(!error.to_string().contains("unknown_child_field"));
+    assert!(!error.to_string().contains("must not be decoded"));
 }
 
 fn context() -> UserContext {

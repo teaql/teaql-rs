@@ -27,21 +27,26 @@ pub(super) fn decode_value<'a, T: Entity>(
     let parsed = parse_graph(context, descriptor, value, shapes, &mut plan, 0)?;
     let root = crate::EntityRuntimeState::default();
     let mut graph = crate::EntityGraphBuilder::for_json_read();
-    let row = install_edges(context, parsed, &root, &mut graph)?;
+    let (view, row) = install_edges(context, parsed, &root, &mut graph)?;
     root.freeze_graph(graph)
         .map_err(|_| error(&descriptor.name, "graph could not be frozen"))?;
-    T::from_compact_row_with_context(row, &root)
+    T::from_compact_row_with_context(row, &root.with_json_view(view))
 }
 
 #[derive(Default)]
 struct GraphJsonPlan<'a> {
     nodes: usize,
     capabilities: HashMap<&'a str, bool>,
-    edges: HashMap<(&'a str, u64, &'a str), &'a serde_json::Value>,
-    option_views: HashMap<(&'a str, u64), &'a serde_json::Value>,
+    native_views: HashMap<(&'a str, u64), NativeViews<'a>>,
     relation_shapes: teaql_core::RelationShapeCache,
 }
+struct NativeViews<'a> {
+    first: &'a serde_json::Value,
+    // Unique identities need no separate vector allocation.
+    additional: Vec<&'a serde_json::Value>,
+}
 struct ParsedGraph<'a> {
+    view: u64,
     descriptor: &'a EntityDescriptor,
     row: CompactRow,
     edges: Vec<ParsedEdge<'a>>,
@@ -50,7 +55,6 @@ struct ParsedEdge<'a> {
     relation: &'a teaql_core::RelationDescriptor,
     owner_id: u64,
     children: Vec<ParsedGraph<'a>>,
-    repeated: bool,
 }
 
 fn parse_graph<'a>(
@@ -62,6 +66,7 @@ fn parse_graph<'a>(
     depth: usize,
 ) -> Result<ParsedGraph<'a>, EntityError> {
     plan.nodes += 1;
+    let view = plan.nodes as u64;
     if depth > 64 || plan.nodes > 100_000 {
         return Err(error(
             &descriptor.name,
@@ -76,6 +81,39 @@ fn parse_graph<'a>(
         supports
     };
     let mut row = scalar_row(descriptor, value, shapes, supports, true)?;
+    if let Some(id) = descriptor
+        .properties
+        .iter()
+        .find(|p| p.is_id)
+        .and_then(|p| row.get(&p.name))
+        .and_then(Value::try_u64)
+    {
+        let entry = plan.native_views.entry((descriptor.name.as_str(), id));
+        if let std::collections::hash_map::Entry::Occupied(mut entry) = entry {
+            let previous = entry.get_mut();
+            for input in std::iter::once(previous.first).chain(previous.additional.iter().copied())
+            {
+                let prior = scalar_row(descriptor, input, shapes, supports, true)?;
+                for property in &descriptor.properties {
+                    if let (Some(left), Some(right)) =
+                        (prior.get(&property.name), row.get(&property.name))
+                        && !same_key(left, right)
+                    {
+                        return Err(error(
+                            &descriptor.name,
+                            "conflicting native values for one identity",
+                        ));
+                    }
+                }
+            }
+            previous.additional.push(value);
+        } else {
+            entry.or_insert(NativeViews {
+                first: value,
+                additional: Vec::new(),
+            });
+        }
+    }
     let mut edges = Vec::new();
     for relation in &descriptor.relations {
         let Some(payload) = value
@@ -106,22 +144,27 @@ fn parse_graph<'a>(
             let capability = context.json_graph_capability(target)?;
             plan.capabilities.insert(&target.name, capability);
         }
-        let values: Vec<&serde_json::Value> = if relation.many {
+        let values: &[serde_json::Value] = if relation.many {
             payload
                 .as_array()
                 .ok_or_else(|| error(&descriptor.name, "to-many relation requires an array"))?
-                .iter()
-                .collect()
+                .as_slice()
         } else if payload.is_null() {
-            Vec::new()
+            &[]
         } else if payload.is_object() {
-            vec![payload]
+            std::slice::from_ref(payload)
         } else {
             return Err(error(
                 &descriptor.name,
                 "to-one relation requires object or null",
             ));
         };
+        if values.len() > 100_000 - plan.nodes {
+            return Err(error(
+                &descriptor.name,
+                "graph input exceeds depth or node limit",
+            ));
+        }
         let mut children = Vec::with_capacity(values.len());
         for value in values {
             if !value.is_object() {
@@ -150,27 +193,6 @@ fn parse_graph<'a>(
                 )
             })?;
         if !relation.many && !local.is_id {
-            if let Some(child) = children.first() {
-                let identity = target
-                    .properties
-                    .iter()
-                    .find(|p| p.is_id)
-                    .and_then(|p| child.row.get(&p.name))
-                    .and_then(Value::try_u64);
-                if let Some(id) = identity {
-                    let key = (target.name.as_str(), id);
-                    if let Some(previous) = plan.option_views.get(&key) {
-                        if *previous != payload {
-                            return Err(error(
-                                &target.name,
-                                "incompatible target views require separate JSON root graphs",
-                            ));
-                        }
-                    } else {
-                        plan.option_views.insert(key, payload);
-                    }
-                }
-            }
             let supplied = children
                 .first()
                 .map(|child| {
@@ -224,28 +246,15 @@ fn parse_graph<'a>(
                 }
             }
         }
-        let key = (descriptor.name.as_str(), owner_id, relation.name.as_str());
-        let repeated = if let Some(previous) = plan.edges.get(&key) {
-            if *previous != payload {
-                return Err(error(
-                    &descriptor.name,
-                    "conflicting views of the same relation in one graph",
-                ));
-            }
-            true
-        } else {
-            plan.edges.insert(key, payload);
-            false
-        };
         row.mark_relation_loaded(&relation.name, &mut plan.relation_shapes);
         edges.push(ParsedEdge {
             relation,
             owner_id,
             children,
-            repeated,
         });
     }
     Ok(ParsedGraph {
+        view,
         descriptor,
         row,
         edges,
@@ -265,41 +274,25 @@ fn install_edges(
     parsed: ParsedGraph<'_>,
     root: &crate::EntityRuntimeState,
     graph: &mut crate::EntityGraphBuilder,
-) -> Result<CompactRow, EntityError> {
+) -> Result<(u64, CompactRow), EntityError> {
+    let owner = crate::EntityRuntimeState::fresh_with_weak_graph(root).with_json_view(parsed.view);
     for edge in parsed.edges {
         let mut rows = Vec::with_capacity(edge.children.len());
         for child in edge.children {
             rows.push(install_edges(context, child, root, graph)?);
         }
-        if edge.repeated {
-            continue;
-        }
-        if edge.relation.many {
-            let list = teaql_core::SmartList {
-                data: rows,
-                is_loaded: true,
-                ..Default::default()
-            };
-            context.decode_compact_smart_list_into_graph(
-                &edge.relation.target_entity,
-                list,
-                root,
-                graph,
-                &parsed.descriptor.name,
-                edge.owner_id,
-                &edge.relation.name,
-            )?;
-        } else {
-            context.decode_compact_entity_option_into_graph(
-                &edge.relation.target_entity,
-                rows,
-                root,
-                graph,
-                &parsed.descriptor.name,
-                edge.owner_id,
-                &edge.relation.name,
-            )?;
-        }
+        context.entity_graph_decoders.decode_json_edge(
+            &edge.relation.target_entity,
+            rows,
+            &owner,
+            graph,
+            crate::registry::JsonEdgeRequest {
+                owner: &parsed.descriptor.name,
+                id: edge.owner_id,
+                relation: &edge.relation.name,
+                many: edge.relation.many,
+            },
+        )?;
     }
-    Ok(parsed.row)
+    Ok((parsed.view, parsed.row))
 }

@@ -143,7 +143,7 @@ type EntityTable = HashMap<u64, Box<dyn Any + Send + Sync>>;
 /// Optional JSON-only coordinates keep the ordinary graph frame to one nullable pointer.
 #[derive(Default)]
 struct RelationOptionEntities {
-    index: HashMap<(TypeId, u64), RelationListKey>,
+    index: HashMap<(u64, TypeId, u64), Option<RelationListKey>>,
 }
 
 #[derive(Default)]
@@ -153,12 +153,31 @@ struct RelationFacetResults {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RelationListKey {
+    view_id: u64,
     owner_entity: String,
     owner_id: u64,
     relation: String,
 }
 
 impl EntityGraphBuilder {
+    pub(crate) fn install_json_relation_list<T: Any + Send + Sync>(
+        &mut self,
+        view_id: u64,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+        list: SmartList<T>,
+    ) {
+        self.relation_lists.insert(
+            RelationListKey {
+                view_id,
+                owner_entity: crate::canonical_id_space_entity(owner_entity),
+                owner_id,
+                relation: relation.to_owned(),
+            },
+            Box::new(list),
+        );
+    }
     pub(crate) fn for_json_read() -> Self {
         Self {
             option_entities: Some(Box::default()),
@@ -168,6 +187,7 @@ impl EntityGraphBuilder {
 
     pub(crate) fn install_typed_relation_option<T>(
         &mut self,
+        view_id: u64,
         owner_entity: &str,
         owner_id: u64,
         relation: &str,
@@ -182,14 +202,26 @@ impl EntityGraphBuilder {
         {
             index
                 .index
-                .entry((TypeId::of::<T>(), id))
-                .or_insert_with(|| RelationListKey {
-                    owner_entity: crate::canonical_id_space_entity(owner_entity),
-                    owner_id,
-                    relation: relation.to_owned(),
+                .entry((view_id, TypeId::of::<T>(), id))
+                .and_modify(|key| *key = None)
+                .or_insert_with(|| {
+                    Some(RelationListKey {
+                        view_id,
+                        owner_entity: crate::canonical_id_space_entity(owner_entity),
+                        owner_id,
+                        relation: relation.to_owned(),
+                    })
                 });
         }
-        self.install_relation_option(owner_entity, owner_id, relation, value);
+        self.relation_lists.insert(
+            RelationListKey {
+                view_id,
+                owner_entity: crate::canonical_id_space_entity(owner_entity),
+                owner_id,
+                relation: relation.to_owned(),
+            },
+            Box::new(value),
+        );
     }
     pub fn install<T>(&mut self, id: u64, entity: T)
     where
@@ -215,6 +247,7 @@ impl EntityGraphBuilder {
         T: Any + Send + Sync,
     {
         let key = RelationListKey {
+            view_id: 0,
             owner_entity: crate::canonical_id_space_entity(&owner_entity.into()),
             owner_id,
             relation: relation.into(),
@@ -245,6 +278,7 @@ impl EntityGraphBuilder {
             .lists
             .insert(
                 RelationListKey {
+                    view_id: 0,
                     owner_entity: crate::canonical_id_space_entity(owner_entity),
                     owner_id,
                     relation: relation.to_owned(),
@@ -264,6 +298,7 @@ impl EntityGraphBuilder {
     {
         self.relation_lists.insert(
             RelationListKey {
+                view_id: 0,
                 owner_entity: crate::canonical_id_space_entity(&owner_entity.into()),
                 owner_id,
                 relation: relation.into(),
@@ -569,6 +604,8 @@ pub struct EntityRuntimeState {
     // still materialize exactly one graph-owned ledger.
     inner: Arc<OnceLock<Arc<Mutex<EntityMutationLedger>>>>,
     graph: EntityGraphReference,
+    // Zero for ordinary SQL graphs; JSON views get operation-local coordinates.
+    json_view: u64,
     loaded_snapshot: Option<LoadedEntitySnapshot>,
     // View-owned payload; no allocation on the ordinary fixed-field path.
     dynamic_fields: Option<Box<teaql_core::dynamic_fields::DynamicFieldValues>>,
@@ -639,6 +676,7 @@ impl Default for EntityRuntimeState {
         Self {
             inner: Arc::default(),
             graph: EntityGraphReference::Strong(Arc::default()),
+            json_view: 0,
             loaded_snapshot: None,
             dynamic_fields: None,
         }
@@ -650,6 +688,7 @@ impl Clone for EntityRuntimeState {
         Self {
             inner: self.inner.clone(),
             graph: self.graph.promote(),
+            json_view: self.json_view,
             loaded_snapshot: self.loaded_snapshot.clone(),
             dynamic_fields: self.dynamic_fields.clone(),
         }
@@ -683,6 +722,15 @@ impl PartialEq for EntityRuntimeState {
 }
 
 impl EntityRuntimeState {
+    pub(crate) fn with_json_view(mut self, view_id: u64) -> Self {
+        self.json_view = view_id;
+        self
+    }
+
+    pub(crate) fn json_view_id(&self) -> u64 {
+        self.json_view
+    }
+
     pub fn loaded_dynamic_fields(&self) -> Option<&teaql_core::dynamic_fields::DynamicFieldValues> {
         self.dynamic_fields.as_deref()
     }
@@ -699,6 +747,7 @@ impl EntityRuntimeState {
     /// Explicit graph composition changes ledger ownership, not the entity view's loaded data.
     #[doc(hidden)]
     pub fn with_loaded_view_from(mut self, source: &Self) -> Self {
+        self.json_view = source.json_view;
         self.loaded_snapshot = source.loaded_snapshot.clone();
         self.dynamic_fields = source.dynamic_fields.clone();
         self
@@ -743,6 +792,7 @@ impl EntityRuntimeState {
         Self {
             inner: Arc::default(),
             graph: source.graph.preserve(),
+            json_view: source.json_view,
             loaded_snapshot: None,
             dynamic_fields: None,
         }
@@ -754,6 +804,7 @@ impl EntityRuntimeState {
         Self {
             inner: Arc::default(),
             graph: source.graph.weak(),
+            json_view: source.json_view,
             loaded_snapshot: None,
             dynamic_fields: None,
         }
@@ -765,6 +816,7 @@ impl EntityRuntimeState {
         Self {
             inner: self.inner.clone(),
             graph: source.graph.preserve(),
+            json_view: source.json_view,
             loaded_snapshot: self.loaded_snapshot.clone(),
             dynamic_fields: self.dynamic_fields.clone(),
         }
@@ -953,7 +1005,8 @@ impl EntityRuntimeState {
             .option_entities
             .as_ref()?
             .index
-            .get(&(TypeId::of::<T>(), id))?;
+            .get(&(self.json_view, TypeId::of::<T>(), id))?
+            .as_ref()?;
         graph
             .relation_lists
             .get(key)?
@@ -974,6 +1027,7 @@ impl EntityRuntimeState {
             .frozen()?
             .relation_lists
             .get(&RelationListKey {
+                view_id: self.json_view,
                 owner_entity: crate::canonical_id_space_entity(owner_entity),
                 owner_id,
                 relation: relation.to_owned(),
@@ -996,6 +1050,7 @@ impl EntityRuntimeState {
             .as_ref()?
             .lists
             .get(&RelationListKey {
+                view_id: self.json_view,
                 owner_entity: crate::canonical_id_space_entity(owner_entity),
                 owner_id,
                 relation: relation.to_owned(),
@@ -1017,6 +1072,7 @@ impl EntityRuntimeState {
             return RelationHandle::new(LoadedRelation::NotLoaded, None);
         };
         let key = RelationListKey {
+            view_id: self.json_view,
             owner_entity: crate::canonical_id_space_entity(owner_entity),
             owner_id,
             relation: relation.to_owned(),
@@ -1050,6 +1106,7 @@ impl EntityRuntimeState {
             .frozen()?
             .relation_lists
             .get(&RelationListKey {
+                view_id: self.json_view,
                 owner_entity: crate::canonical_id_space_entity(owner_entity),
                 owner_id,
                 relation: relation.to_owned(),
@@ -1071,6 +1128,7 @@ impl EntityRuntimeState {
             return RelationHandle::new(LoadedRelation::NotLoaded, None);
         };
         let key = RelationListKey {
+            view_id: self.json_view,
             owner_entity: crate::canonical_id_space_entity(owner_entity),
             owner_id,
             relation: relation.to_owned(),
@@ -1093,6 +1151,7 @@ impl EntityRuntimeState {
     pub fn has_relation_view(&self, owner_entity: &str, owner_id: u64, relation: &str) -> bool {
         self.graph.frozen().is_some_and(|graph| {
             graph.relation_lists.contains_key(&RelationListKey {
+                view_id: self.json_view,
                 owner_entity: crate::canonical_id_space_entity(owner_entity),
                 owner_id,
                 relation: relation.to_owned(),
