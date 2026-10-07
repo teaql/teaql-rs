@@ -289,6 +289,7 @@ fn matched_sqlite_driver_queries() {
                     teaql_core::Value::U64(value) => {
                         rusqlite::types::Value::Integer((*value).try_into().unwrap())
                     }
+                    teaql_core::Value::Text(value) => rusqlite::types::Value::Text(value.clone()),
                     other => panic!("unexpected fixture binding {other:?}"),
                 })
                 .collect();
