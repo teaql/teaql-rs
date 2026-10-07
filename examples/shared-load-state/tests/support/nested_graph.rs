@@ -1,7 +1,7 @@
 //! Application-owned graph acceptance. API names come from retained current Assist.
 use school_management_service_core::{AuditedSave, TeaqlRuntime, E, Q};
 use std::sync::Arc;
-use teaql_core::{Entity, serde_json};
+use teaql_core::{serde_json, Entity};
 use teaql_runtime::LoadedRelation;
 
 pub async fn verify_dynamic(

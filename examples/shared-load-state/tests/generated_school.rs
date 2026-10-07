@@ -10,6 +10,8 @@ use teaql_runtime::dynamic_fields::DatabaseDynamicFieldsProvider;
 
 #[path = "support/nested_graph.rs"]
 mod nested_graph;
+#[path = "support/observed_executor.rs"]
+mod observed_executor;
 
 #[tokio::test]
 async fn fresh_generated_school_uses_shared_indexed_state() -> Result<(), Box<dyn std::error::Error>>
@@ -220,6 +222,11 @@ async fn fresh_generated_school_uses_shared_indexed_state() -> Result<(), Box<dy
         &sparse_snapshot,
         &divergent.loaded_state_snapshot().unwrap()
     ));
+    let original_executor = context
+        .require_resource::<ServiceRuntimeExecutor>()?
+        .clone();
+    let observed = observed_executor::ObservedExecutor::new(original_executor.clone());
+    context.register_executor(observed.clone());
     let rejection = divergent
         .audit_as("reject sparse whole-object mutation")
         .save(&context)
@@ -228,6 +235,11 @@ async fn fresh_generated_school_uses_shared_indexed_state() -> Result<(), Box<dy
     assert!(
         matches!(rejection, teaql_runtime::RuntimeError::Check(_)),
         "wrong rejection: {rejection}"
+    );
+    assert_eq!(
+        observed.counts(),
+        [0; 5],
+        "Checker must reject before query, mutation or transaction provider entry"
     );
 
     let mut changed = full[0].clone();
@@ -244,6 +256,11 @@ async fn fresh_generated_school_uses_shared_indexed_state() -> Result<(), Box<dy
         .save(&context)
         .await?;
     assert_eq!(saved.version(), full[0].version() + 1);
+    let accepted_counts = observed.counts();
+    assert!(accepted_counts[0] > 0 && accepted_counts[1] > 0 && accepted_counts[2] > 0 && accepted_counts[3] > 0,
+        "the observer must see an accepted readback, mutation, transaction and commit: {accepted_counts:?}");
+    context.register_executor(original_executor);
+    println!("PASS generated Rust sparse Checker rejects before provider entry; positive save counts={accepted_counts:?}");
     let related = Q::schools()
         .with_id_is(changed_id)
         .select_platform_with(Q::platforms_minimal().select_name())

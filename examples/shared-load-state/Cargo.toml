@@ -11,6 +11,7 @@ inheritance = []
 school_management_service_core = { package = "school-management-service-core", path = "target/generated/lib" }
 teaql-core = { path = "../../teaql-core" }
 teaql-runtime = { path = "../../teaql-runtime" }
+teaql-data-service = { path = "../../teaql-data-service" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [workspace]
