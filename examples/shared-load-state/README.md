@@ -145,6 +145,41 @@ Prepared input rows and database/logging costs remain outside the measured regio
 
 ## Matched driver logging modes
 
+## Generated query allocation and latency probe
+
+With the existing wide generated fixture, run:
+
+```bash
+bash examples/shared-load-state/benchmark-generated.sh --smoke
+bash examples/shared-load-state/benchmark-generated.sh
+bash examples/shared-load-state/benchmark-generated.sh --default-log
+```
+
+Run these sequentially. Five generated Q/E shapes cover sparse fields, all 141
+fixed fields, durable dynamic fields, forward references and a bounded reverse
+list at 1/100/10,000 School rows. Full sampling uses 31 measurements after five
+warmups per shape; `--smoke` uses three. The native test process records p50/p95,
+QPS and thread-local allocation calls/requested bytes. Compilation, fixture
+setup, validation and result cleanup are outside each timed query. The CPU
+receipt covers the test process including setup and validation, not compilation.
+These are warmed queries, not process-cold startup or an ORM ranking.
+
+Every run uses a unique database. One complete prototype is created through the
+generated audited Mutation API, then cloned with fixture-only SQL before
+measurement. This expansion is not a production seeding recipe. Two generated
+audited saves establish dynamic Value and NULL; the remaining rows have absent
+extensions. Q/E assertions check IDs, versions, dates, zero/false/NotLoaded
+semantics, bounded relations, actual shared snapshot identity and clean ledgers.
+The measured reverse result retains its parent graph without cloning its child
+entities to manufacture the output.
+
+Default-log mode retains runtime policy and formatting, writing to a private
+masked log file. Off mode disables steady-state query logging. The runner
+rejects ambient log overrides, checks generated-source hashes before/after,
+records source/toolchain identity and verifies a single SQLite binding tree.
+
+## Matched driver logging modes
+
 ```bash
 bash examples/shared-load-state/benchmark-driver.sh
 bash examples/shared-load-state/benchmark-driver.sh --default-log
