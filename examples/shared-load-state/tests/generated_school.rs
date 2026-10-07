@@ -416,6 +416,10 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
     nested_graph::verify_dynamic(&context, changed_id, &renamed, &second).await?;
     let held_version = extended.version();
     extended.update_dynamic_field("note", "must not cross storage profile".into())?;
+    // The extension-only path uses its typed storage resource directly. Include
+    // a native mutation so this observer can prove the provenance gate runs
+    // before native DML, rather than merely proving eventual rollback.
+    extended.update_student_capacity(1_i64);
     context.set_dynamic_fields_provider(Arc::new(DatabaseDynamicFieldsProvider::<
         ServiceRuntimeExecutor,
     >::new(
@@ -440,6 +444,12 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
     );
     assert_eq!(extended.version(), held_version);
     assert!(extended.has_pending_dynamic_mutations());
+    assert!(
+        extended
+            .dirty_fields()
+            .unwrap()
+            .contains("student_capacity")
+    );
     context.set_dynamic_fields_provider(Arc::new(DatabaseDynamicFieldsProvider::<
         ServiceRuntimeExecutor,
     >::new("example", [definitions])?));
@@ -453,6 +463,7 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
         .await?
         .unwrap();
     assert_eq!(stored.version(), held_version);
+    assert_eq!(stored.student_capacity(), 0);
     assert_eq!(
         stored
             .dynamic_field_values()
