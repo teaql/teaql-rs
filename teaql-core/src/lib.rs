@@ -1,11 +1,13 @@
 extern crate self as teaql_core;
 
 pub mod business_id;
+pub mod dynamic_fields;
 pub mod dynamic_search;
 mod entity;
 mod entity_graph;
 mod expr;
 mod list;
+mod load_state;
 mod meta;
 mod mutation;
 mod naming;
@@ -22,25 +24,31 @@ mod xls;
 
 pub use entity::{
     Audited, BaseEntity, BaseEntityData, Entity, EntityDescriptorStore, EntityError,
-    IdentifiableEntity, TeaqlBoxedRelations, TeaqlEntity, VersionedEntity,
+    EntityJsonTraversal, IdentifiableEntity, TeaqlBoxedRelations, TeaqlEntity, VersionedEntity,
 };
 pub use entity_graph::{EntityGraph, EntityGraphBuilder, EntityGraphNode, EntityGraphOperation};
 pub use expr::{BinaryOp, Expr, ExprFunction};
 pub use list::SmartList;
+pub use load_state::{FieldLayout, LoadedSnapshot};
 pub use meta::{EntityDescriptor, PropertyDescriptor, RelationDescriptor};
 pub use mutation::{
     BatchInsertCommand, BatchUpdateCommand, DeleteCommand, EntitySnapshot, GeneratedValues,
     InsertCommand, MutationKind, MutationValues, RecoverCommand, UpdateCommand,
 };
 pub use naming::default_table_name;
+#[doc(hidden)]
+pub use query::RelationShapeCache;
 pub use query::{
-    Aggregate, AggregateFunction, AggregationCacheOptions, CompactRow, ContinuousPageFetchOptions,
-    IdSetPaginationOptions, NamedExpr, ObjectGroupBy, OrderBy, PARTITION_RANK_PROPERTY,
-    RawSqlProjection, Record, RelationAggregate, RelationLoad, SelectQuery, Slice, SortDirection,
-    StreamConfig, compact_row_to_json_value, record_to_json_value,
+    Aggregate, AggregateFunction, AggregationCacheOptions, CompactRow, CompactRowLayout,
+    ContinuousPageFetchOptions, IdSetPaginationOptions, NamedExpr, ObjectGroupBy, OrderBy,
+    PARTITION_RANK_PROPERTY, RawSqlProjection, Record, RelationAggregate, RelationLoad,
+    SelectQuery, Slice, SortDirection, StreamConfig, compact_row_to_json_value,
+    record_to_json_value,
 };
 pub use request_intent::{MutationIntent, QueryIntent, RequestIntentError, RequestKind};
 pub use safe_expression::{SafeExpression, TeaqlEmpty};
+#[doc(hidden)]
+pub use serde_json;
 pub use trace::{TraceKind, TraceNode};
 pub use value::{DataType, Decimal, Value};
 pub use web::{ACTION_LIST_KEY, STYLE_KEY, WEB_RESPONSE_VERSION, WebAction, WebResponse, WebStyle};

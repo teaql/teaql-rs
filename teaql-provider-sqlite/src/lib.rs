@@ -13,7 +13,9 @@ use rust_decimal::Decimal;
 use teaql_core::business_id::{
     BusinessIdAllocation, BusinessIdAllocator, BusinessIdError, BusinessIdErrorCode, BusinessIdPlan,
 };
-use teaql_core::{CompactRow, DataType, EntityDescriptor, PropertyDescriptor, Value};
+use teaql_core::{
+    CompactRow, CompactRowLayout, DataType, EntityDescriptor, PropertyDescriptor, Value,
+};
 use teaql_runtime::{
     InternalIdGenerator, RawAuditEvent, RuntimeError, SchemaProvider, UserContext,
     canonical_id_space_entity,
@@ -23,6 +25,7 @@ use teaql_sql::{
     quote_identifier_if_needed, schema_index_specs,
 };
 
+mod dynamic_fields;
 mod transaction;
 pub use transaction::SqliteTransaction;
 
@@ -224,7 +227,10 @@ pub struct SqliteMutationExecutor {
     connection: Arc<Mutex<Connection>>,
     column_layout_cache: Arc<Mutex<HashMap<String, Arc<ColumnLayout>>>>,
     transaction_lease: Arc<futures_util::lock::Mutex<()>>,
+    storage_instance_id: u64,
 }
+
+static NEXT_STORAGE_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl SqliteMutationExecutor {
     pub fn new(connection: Arc<Mutex<Connection>>) -> Self {
@@ -236,6 +242,13 @@ impl SqliteMutationExecutor {
             connection,
             column_layout_cache: Arc::new(Mutex::new(HashMap::new())),
             transaction_lease: Arc::new(futures_util::lock::Mutex::new(())),
+            storage_instance_id: NEXT_STORAGE_INSTANCE
+                .fetch_update(
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                    |id| id.checked_add(1),
+                )
+                .expect("SQLite storage instance identities exhausted"),
         }
     }
 
@@ -470,8 +483,8 @@ impl SqliteMutationExecutor {
         let mut rows = statement.query(params_from_iter(params.iter()))?;
         let mut result = Vec::new();
         while let Some(row) = rows.next()? {
-            result.push(CompactRow::new(
-                layout.names.clone(),
+            result.push(CompactRow::with_layout(
+                layout.row_layout.clone(),
                 decode_sqlite_values(row, &layout.columns)?,
             ));
         }
@@ -495,8 +508,8 @@ impl SqliteMutationExecutor {
             let params = bind_values(&query_params)?;
             let mut rows = statement.query(params_from_iter(params.iter()))?;
             while let Some(row) = rows.next()? {
-                result.push(CompactRow::new(
-                    layout.names.clone(),
+                result.push(CompactRow::with_layout(
+                    layout.row_layout.clone(),
                     decode_sqlite_values(row, &layout.columns)?,
                 ));
             }
@@ -523,8 +536,8 @@ impl SqliteMutationExecutor {
         let mut chunk_index = 0;
 
         while let Some(row) = rows.next()? {
-            current_chunk.push(CompactRow::new(
-                layout.names.clone(),
+            current_chunk.push(CompactRow::with_layout(
+                layout.row_layout.clone(),
                 decode_sqlite_values(row, &layout.columns)?,
             ));
             if current_chunk.len() >= chunk_size {
@@ -788,6 +801,12 @@ impl teaql_data_service::DataServiceExecutor for SqliteMutationExecutor {
 impl SqlTransport for SqliteMutationExecutor {
     type Error = MutationExecutorError;
 
+    fn dynamic_field_store(
+        &self,
+    ) -> Option<&dyn teaql_data_service::dynamic_fields::DynamicFieldStore> {
+        Some(self)
+    }
+
     async fn fetch_all_compact_sql(
         &self,
         query: &CompiledQuery,
@@ -847,7 +866,7 @@ impl SqliteMutationExecutor {
             let mut rows = statement.query(params_from_iter(params.iter()))?;
             let mut chunk = Vec::with_capacity(chunk_size); let mut index = 0;
             while let Some(row) = rows.next()? {
-                chunk.push(CompactRow::new(layout.names.clone(), decode_sqlite_values(row, &layout.columns)?));
+                chunk.push(CompactRow::with_layout(layout.row_layout.clone(), decode_sqlite_values(row, &layout.columns)?));
                 if chunk.len() == chunk_size { yield teaql_data_service::StreamChunk { rows: std::mem::take(&mut chunk), chunk_index: index, is_last: false }; index += 1; }
             }
             if !chunk.is_empty() { yield teaql_data_service::StreamChunk { rows: chunk, chunk_index: index, is_last: true }; }
@@ -1507,7 +1526,7 @@ enum SqliteDecodeKind {
 #[derive(Debug)]
 struct ColumnLayout {
     columns: Arc<[ColumnInfo]>,
-    names: Arc<[String]>,
+    row_layout: Arc<CompactRowLayout>,
 }
 
 fn cached_column_layout(
@@ -1527,7 +1546,10 @@ fn cached_column_layout(
         .map(|column| column.name.clone())
         .collect::<Vec<_>>()
         .into();
-    let layout = Arc::new(ColumnLayout { columns, names });
+    let layout = Arc::new(ColumnLayout {
+        columns,
+        row_layout: CompactRowLayout::new(names),
+    });
     if let Ok(mut cache) = cache.lock() {
         if cache.len() >= DEFAULT_COLUMN_LAYOUT_CACHE_CAPACITY {
             cache.clear();

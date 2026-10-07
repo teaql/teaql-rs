@@ -5,6 +5,7 @@ use crate::CheckResult;
 
 #[derive(Debug)]
 pub enum RuntimeError {
+    DynamicField(teaql_core::dynamic_fields::DynamicFieldError),
     RequestIntent(teaql_core::RequestIntentError),
     /// The mutation is committed; callers must not blindly retry the write.
     AuditAfterCommit {
@@ -35,6 +36,7 @@ pub enum RuntimeError {
 impl std::fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::DynamicField(err) => err.fmt(f),
             Self::RequestIntent(err) => err.fmt(f),
             Self::AuditAfterCommit { .. } => write!(
                 f,

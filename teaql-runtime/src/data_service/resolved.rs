@@ -44,20 +44,84 @@ fn decode_compact_rows<T: Entity>(
     rows: Vec<CompactRow>,
     root: &crate::EntityRuntimeState,
 ) -> Result<Vec<T>, teaql_core::EntityError> {
-    let mut entities = Vec::with_capacity(rows.len());
-    for row in rows {
-        entities.push(T::from_compact_row_with_context(
-            row,
-            root as &dyn std::any::Any,
-        )?);
-    }
-    Ok(entities)
+    crate::registry::decode_compact_rows_with_read_metadata(rows, root)
 }
 
 impl<'a, E> EntityDataService<'a, E>
 where
     E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
 {
+    fn decode_with_dynamic_fields<'b, T: Entity + 'b>(
+        &'b self,
+        rows: Vec<CompactRow>,
+        root: &'b crate::EntityRuntimeState,
+        selection: &'b teaql_core::dynamic_fields::DynamicFieldSelection,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Vec<T>, DataServiceError<E::Error>>>
+                + Send
+                + 'b,
+        >,
+    > {
+        // A rare extension path must not enlarge ordinary graph/readback futures.
+        Box::pin(async move {
+            if !T::supports_dynamic_field_load() {
+                return Err(DataServiceError::Entity(teaql_core::EntityError::new(
+                    T::ENTITY_NAME,
+                    "dynamic fields require a runtime-owned indexed entity carrier",
+                )));
+            }
+            let intent = self.request_intent.as_ref().ok_or_else(|| {
+                DataServiceError::Runtime(RuntimeError::Graph(
+                    "dynamic-field loading requires validated query intent".to_owned(),
+                ))
+            })?;
+            let mut rows = rows;
+            self.load_dynamic_fields_into_rows(&mut rows, T::ENTITY_NAME, selection, intent)
+                .await?;
+            decode_compact_rows::<T>(rows, root).map_err(DataServiceError::Entity)
+        })
+    }
+
+    pub(super) async fn load_dynamic_fields_into_rows(
+        &self,
+        rows: &mut [CompactRow],
+        owner_type: &str,
+        selection: &teaql_core::dynamic_fields::DynamicFieldSelection,
+        intent: &teaql_core::QueryIntent,
+    ) -> Result<(), DataServiceError<E::Error>> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let ids = rows
+            .iter()
+            .map(|row| {
+                row.get("id").and_then(Value::try_u64).ok_or_else(|| {
+                    DataServiceError::Entity(teaql_core::EntityError::new(
+                        owner_type,
+                        "dynamic-field owner ID is not loaded",
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let batch = self
+            .data_service
+            .metadata
+            .context
+            .load_dynamic_fields(owner_type, &ids, selection, intent)
+            .await
+            .map_err(|error| DataServiceError::Runtime(RuntimeError::DynamicField(error)))?;
+        let fields = batch
+            .into_values(owner_type, &ids, selection)
+            .map_err(|error| DataServiceError::Runtime(RuntimeError::DynamicField(error)))?;
+        let mut shapes = teaql_core::dynamic_fields::DynamicFieldMergeShapes::default();
+        for (row, values) in rows.iter_mut().zip(fields) {
+            row.merge_loaded_dynamic_fields(values, &mut shapes)
+                .map_err(|error| DataServiceError::Runtime(RuntimeError::DynamicField(error)))?;
+        }
+        Ok(())
+    }
+
     fn flatten_relation_graph(
         &self,
         entity_name: &str,
@@ -214,6 +278,8 @@ where
                     )?;
                 }
             }
+            let mut shapes = teaql_core::RelationShapeCache::default();
+            record.mark_relation_loaded(&relation.name, &mut shapes);
         }
         Ok(())
     }
@@ -968,9 +1034,10 @@ where
         if !query.relations.is_empty()
             || !query.child_enhancements.is_empty()
             || !query.object_group_bys.is_empty()
+            || query.dynamic_field_selection.is_some()
         {
             return Err(DataServiceError::Runtime(RuntimeError::Graph(
-                "streaming relation or aggregate enhancement is not supported; stream a root query or use execute_for_list"
+                "streaming relation, aggregate or dynamic-field enhancement is not supported; stream a root query or use execute_for_list"
                     .to_owned(),
             )));
         }
@@ -1146,7 +1213,9 @@ where
             .aggregation_cache
             .is_some_and(|options| options.enabled)
         {
-            return self.fetch_prepared_query(&query).await;
+            // Cache lookup/telemetry state belongs only to an enabled cache.
+            // Keeping this awaited future inline inflates every ordinary read.
+            return Box::pin(self.fetch_prepared_query(&query)).await;
         }
         let capture_metadata = self.data_service.metadata.capture_execution_metadata();
         let trace_chain = if capture_metadata {
@@ -1341,18 +1410,31 @@ where
     where
         T: Entity,
     {
-        let mut query = self
+        let scoped = if query.dynamic_field_selection.is_some() && self.request_intent.is_none() {
+            Some(Box::new(
+                self.query_scoped_service(query)
+                    .map_err(DataServiceError::Runtime)?,
+            ))
+        } else {
+            None
+        };
+        let service = scoped.as_deref().unwrap_or(self);
+        let mut query = service
             .prepare_select_query(query)
             .map_err(DataServiceError::Runtime)?;
         self.ensure_entity_identity_projection(&mut query);
 
-        self.fetch_prepared_compact_owned(query)
-            .await?
-            .into_iter()
-            .map(T::from_compact_row)
-            .collect::<Result<Vec<_>, _>>()
-            .map(SmartList::from)
-            .map_err(DataServiceError::Entity)
+        let selection = query.dynamic_field_selection.clone();
+        let rows = service.fetch_prepared_compact_owned(query).await?;
+        let root = crate::EntityRuntimeState::default();
+        let decoded = if let Some(selection) = selection.as_ref().filter(|_| !rows.is_empty()) {
+            service
+                .decode_with_dynamic_fields::<T>(rows, &root, selection)
+                .await
+        } else {
+            decode_compact_rows::<T>(rows, &root).map_err(DataServiceError::Entity)
+        };
+        decoded.map(SmartList::from)
     }
 
     pub(crate) async fn fetch_entities_with_relation_aggregates_internal<T>(
@@ -1363,16 +1445,33 @@ where
     where
         T: Entity,
     {
+        let scoped = if query.dynamic_field_selection.is_some() && self.request_intent.is_none() {
+            Some(Box::new(
+                self.query_scoped_service_with_aggregates(query, relation_aggregates)
+                    .map_err(DataServiceError::Runtime)?,
+            ))
+        } else {
+            None
+        };
+        let service = scoped.as_deref().unwrap_or(self);
         let mut query = query.clone();
         self.ensure_entity_identity_projection(&mut query);
         let root = crate::EntityRuntimeState::default();
-        decode_compact_rows::<T>(
-            self.fetch_all_with_relation_aggregates_internal(&query, relation_aggregates)
-                .await?,
-            &root,
-        )
-        .map(SmartList::from)
-        .map_err(DataServiceError::Entity)
+        let rows = service
+            .fetch_all_with_relation_aggregates_internal(&query, relation_aggregates)
+            .await?;
+        let decoded = if let Some(selection) = query
+            .dynamic_field_selection
+            .as_ref()
+            .filter(|_| !rows.is_empty())
+        {
+            service
+                .decode_with_dynamic_fields::<T>(rows, &root, selection)
+                .await
+        } else {
+            decode_compact_rows::<T>(rows, &root).map_err(DataServiceError::Entity)
+        };
+        decoded.map(SmartList::from)
     }
 
     pub(crate) async fn fetch_enhanced_entities_with_relation_aggregates_internal<T>(
@@ -1407,6 +1506,35 @@ where
             .await
     }
 
+    async fn decode_simple_query<T: Entity>(
+        &self,
+        query: SelectQuery,
+        total_count: Option<u64>,
+        record_disabled_id_set: bool,
+    ) -> Result<SmartList<T>, DataServiceError<E::Error>> {
+        if record_disabled_id_set {
+            self.data_service
+                .metadata
+                .context
+                .observe_id_set("ID_SET_DISABLED", None);
+        }
+        let selection = query.dynamic_field_selection.clone();
+        let query = query
+            .prepare_for_list()
+            .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
+        let root = crate::EntityRuntimeState::default();
+        let rows = self.fetch_prepared_query_owned(query).await?;
+        let decoded = if let Some(selection) = selection.as_ref().filter(|_| !rows.is_empty()) {
+            self.decode_with_dynamic_fields::<T>(rows, &root, selection)
+                .await
+        } else {
+            decode_compact_rows::<T>(rows, &root).map_err(DataServiceError::Entity)
+        };
+        decoded
+            .map(SmartList::from)
+            .map(|list| with_total_count(list, total_count))
+    }
+
     fn fetch_enhanced_entities_with_relation_aggregates_prepared<'b, T>(
         &'b self,
         query: SelectQuery,
@@ -1421,6 +1549,21 @@ where
     where
         T: Entity + 'b,
     {
+        // Select the ordinary path before constructing the boxed async state.
+        // A branch inside that state still reserves room for the largest graph
+        // or ID-set future even when neither feature is requested. An unscoped
+        // request must continue through the validated query-intent path below.
+        if self.request_intent.is_some()
+            && relation_aggregates.is_empty()
+            && query.id_set_pagination.is_none()
+            && query.relation_aggregates.is_empty()
+            && query.continuous_page_fetch.is_none()
+            && query.object_group_bys.is_empty()
+            && query.child_enhancements.is_empty()
+            && query.relations.is_empty()
+        {
+            return Box::pin(self.decode_simple_query::<T>(query, None, true));
+        }
         Box::pin(async move {
             if self.request_intent.is_none() {
                 return self
@@ -1440,17 +1583,9 @@ where
                 && query.child_enhancements.is_empty()
                 && query.relations.is_empty()
             {
-                let query = query
-                    .prepare_for_list()
-                    .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
-                let root = crate::EntityRuntimeState::default();
-                return decode_compact_rows::<T>(
-                    self.fetch_prepared_query_owned(query).await?,
-                    &root,
-                )
-                .map(SmartList::from)
-                .map(|list| with_total_count(list, id_set_total_count))
-                .map_err(DataServiceError::Entity);
+                return self
+                    .decode_simple_query::<T>(query, id_set_total_count, false)
+                    .await;
             }
 
             let flat_plans = self
@@ -1468,22 +1603,28 @@ where
                 && root_query.child_enhancements.is_empty()
                 && let Some((query_plans, behavior_plans)) = flat_plans.as_ref()
             {
+                let selection = root_query.dynamic_field_selection.clone();
                 let root_entity = root_query.entity.clone();
                 let root_trace = root_query.trace_chain.clone();
                 let root_query = root_query
                     .prepare_for_list()
                     .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
-                let rows = self.fetch_prepared_compact_owned(root_query).await?;
+                let mut rows = self.fetch_prepared_compact_owned(root_query).await?;
                 let root = crate::EntityRuntimeState::default();
                 let mut graph = crate::EntityGraphBuilder::default();
                 let traced = self
                     .scoped_data_service_internal(root_entity)
                     .with_trace_context(root_trace);
                 traced
-                    .hydrate_compact_flat_plans_internal(&rows, query_plans, &root, &mut graph)
+                    .hydrate_compact_flat_plans_internal(&mut rows, query_plans, &root, &mut graph)
                     .await?;
                 traced
-                    .hydrate_compact_flat_plans_internal(&rows, behavior_plans, &root, &mut graph)
+                    .hydrate_compact_flat_plans_internal(
+                        &mut rows,
+                        behavior_plans,
+                        &root,
+                        &mut graph,
+                    )
                     .await?;
                 root.freeze_graph(graph).map_err(|_| {
                     DataServiceError::Entity(teaql_core::EntityError::new(
@@ -1491,10 +1632,16 @@ where
                         "identity graph was already frozen",
                     ))
                 })?;
-                return decode_compact_rows::<T>(rows, &root)
+                let decoded =
+                    if let Some(selection) = selection.as_ref().filter(|_| !rows.is_empty()) {
+                        self.decode_with_dynamic_fields::<T>(rows, &root, selection)
+                            .await
+                    } else {
+                        decode_compact_rows::<T>(rows, &root).map_err(DataServiceError::Entity)
+                    };
+                return decoded
                     .map(SmartList::from)
-                    .map(|list| with_total_count(list, id_set_total_count))
-                    .map_err(DataServiceError::Entity);
+                    .map(|list| with_total_count(list, id_set_total_count));
             }
             let mut rows = self
                 .fetch_prepared_all_with_aggregates(&root_query, relation_aggregates)
@@ -1526,10 +1673,19 @@ where
                 self.attach_flat_relation_graph(&root_query.entity, &mut rows)
                     .map_err(DataServiceError::Entity)?
             };
-            decode_compact_rows::<T>(rows, &root)
+            let decoded = if let Some(selection) = root_query
+                .dynamic_field_selection
+                .as_ref()
+                .filter(|_| !rows.is_empty())
+            {
+                self.decode_with_dynamic_fields::<T>(rows, &root, selection)
+                    .await
+            } else {
+                decode_compact_rows::<T>(rows, &root).map_err(DataServiceError::Entity)
+            };
+            decoded
                 .map(SmartList::from)
                 .map(|list| with_total_count(list, id_set_total_count))
-                .map_err(DataServiceError::Entity)
         })
     }
 
@@ -2040,3 +2196,7 @@ where
         Ok(scoped)
     }
 }
+
+#[cfg(test)]
+#[path = "query_future_tests.rs"]
+mod future_size_tests;

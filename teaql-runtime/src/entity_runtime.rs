@@ -280,7 +280,20 @@ impl std::fmt::Debug for FrozenEntityGraph {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct EntityChangeSet {
     changes: BTreeMap<EntityKey, MutationValues>,
+    dynamic_changes: Option<Box<DynamicFieldChanges>>,
+    // Keep rare extension provenance off every ordinary change-set/future frame.
+    dynamic_metadata: Option<Box<DynamicMutationMetadata>>,
 }
+
+type DynamicOriginalValues = BTreeMap<EntityKey, BTreeMap<String, Option<Value>>>;
+#[derive(Debug, Clone, Default, PartialEq)]
+struct DynamicMutationMetadata {
+    definitions: BTreeMap<EntityKey, Arc<teaql_core::dynamic_fields::DynamicFieldDefinitions>>,
+    originals: DynamicOriginalValues,
+}
+
+pub type DynamicFieldChanges =
+    BTreeMap<EntityKey, BTreeMap<String, teaql_core::dynamic_fields::DynamicFieldMutation>>;
 
 #[derive(Debug, Clone, Default)]
 struct OriginalVersions {
@@ -324,6 +337,10 @@ impl OriginalVersions {
 impl EntityChangeSet {
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty()
+            && self
+                .dynamic_changes
+                .as_ref()
+                .is_none_or(|changes| changes.is_empty())
     }
 
     pub fn set(&mut self, key: EntityKey, field: impl Into<String>, value: Value) {
@@ -341,17 +358,77 @@ impl EntityChangeSet {
         &self.changes
     }
 
+    pub fn dynamic_changes(&self) -> Option<&DynamicFieldChanges> {
+        self.dynamic_changes.as_deref()
+    }
+
+    pub(crate) fn dynamic_definitions(
+        &self,
+        key: &EntityKey,
+    ) -> Option<&Arc<teaql_core::dynamic_fields::DynamicFieldDefinitions>> {
+        self.dynamic_metadata.as_ref()?.definitions.get(key)
+    }
+
+    pub(crate) fn dynamic_originals(
+        &self,
+        key: &EntityKey,
+    ) -> Option<&BTreeMap<String, Option<Value>>> {
+        self.dynamic_metadata.as_ref()?.originals.get(key)
+    }
+
+    fn set_dynamic(
+        &mut self,
+        key: EntityKey,
+        code: String,
+        mutation: teaql_core::dynamic_fields::DynamicFieldMutation,
+        definitions: Arc<teaql_core::dynamic_fields::DynamicFieldDefinitions>,
+        original: Option<Value>,
+    ) {
+        let metadata = self.dynamic_metadata.get_or_insert_with(Default::default);
+        metadata
+            .definitions
+            .entry(key.clone())
+            .or_insert(definitions);
+        metadata
+            .originals
+            .entry(key.clone())
+            .or_default()
+            .entry(code.clone())
+            .or_insert(original);
+        self.dynamic_changes
+            .get_or_insert_with(Default::default)
+            .entry(key)
+            .or_default()
+            .insert(code, mutation);
+    }
+
     /// Remove all pending changes for a specific entity key.
     pub fn clear_entity(&mut self, key: &EntityKey) {
         self.changes.remove(key);
+        if let Some(changes) = &mut self.dynamic_changes {
+            changes.remove(key);
+        }
+        if let Some(metadata) = &mut self.dynamic_metadata {
+            metadata.definitions.remove(key);
+            metadata.originals.remove(key);
+        }
     }
 
     /// Get the set of field names that have been modified for a given entity key.
     pub fn field_names(&self, key: &EntityKey) -> BTreeSet<String> {
-        self.changes
+        let mut names: BTreeSet<String> = self
+            .changes
             .get(key)
             .map(|record| record.keys().cloned().collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if let Some(fields) = self
+            .dynamic_changes
+            .as_ref()
+            .and_then(|changes| changes.get(key))
+        {
+            names.extend(fields.keys().map(|code| format!("#{code}")));
+        }
+        names
     }
 }
 
@@ -452,6 +529,8 @@ pub struct EntityRuntimeState {
     inner: Arc<OnceLock<Arc<Mutex<EntityMutationLedger>>>>,
     graph: EntityGraphReference,
     loaded_snapshot: Option<LoadedEntitySnapshot>,
+    // View-owned payload; no allocation on the ordinary fixed-field path.
+    dynamic_fields: Option<Box<teaql_core::dynamic_fields::DynamicFieldValues>>,
 }
 
 #[derive(Debug, Clone)]
@@ -520,6 +599,7 @@ impl Default for EntityRuntimeState {
             inner: Arc::default(),
             graph: EntityGraphReference::Strong(Arc::default()),
             loaded_snapshot: None,
+            dynamic_fields: None,
         }
     }
 }
@@ -530,6 +610,7 @@ impl Clone for EntityRuntimeState {
             inner: self.inner.clone(),
             graph: self.graph.promote(),
             loaded_snapshot: self.loaded_snapshot.clone(),
+            dynamic_fields: self.dynamic_fields.clone(),
         }
     }
 }
@@ -546,6 +627,9 @@ enum OriginalSnapshot {
 
 impl PartialEq for EntityRuntimeState {
     fn eq(&self, other: &Self) -> bool {
+        if self.dynamic_fields != other.dynamic_fields {
+            return false;
+        }
         if Arc::ptr_eq(&self.inner, &other.inner) {
             return true;
         }
@@ -558,6 +642,26 @@ impl PartialEq for EntityRuntimeState {
 }
 
 impl EntityRuntimeState {
+    pub fn loaded_dynamic_fields(&self) -> Option<&teaql_core::dynamic_fields::DynamicFieldValues> {
+        self.dynamic_fields.as_deref()
+    }
+
+    /// A query installs row-owned data; loading does not touch the mutation ledger.
+    #[doc(hidden)]
+    pub fn install_loaded_dynamic_fields(
+        &mut self,
+        values: teaql_core::dynamic_fields::DynamicFieldValues,
+    ) {
+        self.dynamic_fields = Some(Box::new(values));
+    }
+
+    /// Explicit graph composition changes ledger ownership, not the entity view's loaded data.
+    #[doc(hidden)]
+    pub fn with_loaded_view_from(mut self, source: &Self) -> Self {
+        self.loaded_snapshot = source.loaded_snapshot.clone();
+        self.dynamic_fields = source.dynamic_fields.clone();
+        self
+    }
     #[cfg(test)]
     fn has_mutation_context(&self) -> bool {
         self.inner.get().is_some()
@@ -599,6 +703,7 @@ impl EntityRuntimeState {
             inner: Arc::default(),
             graph: source.graph.preserve(),
             loaded_snapshot: None,
+            dynamic_fields: None,
         }
     }
 
@@ -609,6 +714,7 @@ impl EntityRuntimeState {
             inner: Arc::default(),
             graph: source.graph.weak(),
             loaded_snapshot: None,
+            dynamic_fields: None,
         }
     }
 
@@ -619,6 +725,7 @@ impl EntityRuntimeState {
             inner: self.inner.clone(),
             graph: source.graph.preserve(),
             loaded_snapshot: self.loaded_snapshot.clone(),
+            dynamic_fields: self.dynamic_fields.clone(),
         }
     }
 
@@ -694,10 +801,54 @@ impl EntityRuntimeState {
                     });
                 }
             }
+            // Check definition compatibility before importing any field intent.
+            for change_set in &snapshot.change_sets.stack {
+                if let Some(metadata) = &change_set.dynamic_metadata {
+                    for (key, source) in &metadata.definitions {
+                        for receiving in &target.change_sets.stack {
+                            if receiving
+                                .dynamic_definitions(key)
+                                .is_some_and(|existing| existing != source)
+                            {
+                                return Err(
+                                    LedgerCompositionError::ConflictingDynamicDefinitions {
+                                        entity: key.entity.to_string(),
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+            }
             for change_set in snapshot.change_sets.stack {
                 for (key, values) in change_set.changes {
                     for (field, value) in values {
                         target.change_sets.set(key.clone(), field, value);
+                    }
+                }
+                if let Some(changes) = change_set.dynamic_changes {
+                    for (key, fields) in *changes {
+                        let definitions = change_set
+                            .dynamic_metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.definitions.get(&key))
+                            .expect("typed dynamic mutation definitions");
+                        for (code, mutation) in fields {
+                            let original = change_set
+                                .dynamic_metadata
+                                .as_ref()
+                                .and_then(|metadata| metadata.originals.get(&key))
+                                .and_then(|originals| originals.get(&code))
+                                .cloned()
+                                .flatten();
+                            target.change_sets.current_mut().set_dynamic(
+                                key.clone(),
+                                code,
+                                mutation,
+                                definitions.clone(),
+                                original,
+                            );
+                        }
                     }
                 }
             }
@@ -942,6 +1093,87 @@ impl EntityRuntimeState {
         self.read_context(EntityChangeSet::default(), |context| {
             context.change_sets.current().cloned().unwrap_or_default()
         })
+    }
+
+    pub fn has_pending_dynamic_mutations(&self) -> bool {
+        self.read_context(false, |ledger| {
+            ledger.change_sets.stack.iter().any(|set| {
+                set.dynamic_changes
+                    .as_ref()
+                    .is_some_and(|changes| !changes.is_empty())
+            })
+        })
+    }
+
+    pub fn update_dynamic_field(
+        &mut self,
+        key: EntityKey,
+        code: &str,
+        value: Value,
+    ) -> Result<bool, teaql_core::dynamic_fields::DynamicFieldError> {
+        use teaql_core::dynamic_fields::{DynamicFieldError, DynamicFieldMutation};
+        let fields = self
+            .dynamic_fields
+            .as_mut()
+            .ok_or_else(|| DynamicFieldError {
+                code: "DYNAMIC_FIELD_DEFINITIONS_MISSING",
+                field: code.to_owned(),
+            })?;
+        if fields.definitions().owner_type() != key.entity.as_ref() {
+            return Err(DynamicFieldError {
+                code: "DYNAMIC_FIELD_OWNER_MISMATCH",
+                field: code.to_owned(),
+            });
+        }
+        let was_loaded = fields.selected_codes().contains(code);
+        let original = fields.values().get(code).cloned();
+        let definitions = fields.definitions().clone();
+        fields.assign(code, value.clone())?;
+        self.write_context(|ledger| {
+            ledger.change_sets.current_mut().set_dynamic(
+                key,
+                code.to_owned(),
+                DynamicFieldMutation::Set(value),
+                definitions,
+                original,
+            )
+        });
+        Ok(!was_loaded)
+    }
+
+    pub fn delete_dynamic_field(
+        &mut self,
+        key: EntityKey,
+        code: &str,
+    ) -> Result<bool, teaql_core::dynamic_fields::DynamicFieldError> {
+        use teaql_core::dynamic_fields::{DynamicFieldError, DynamicFieldMutation};
+        let fields = self
+            .dynamic_fields
+            .as_mut()
+            .ok_or_else(|| DynamicFieldError {
+                code: "DYNAMIC_FIELD_DEFINITIONS_MISSING",
+                field: code.to_owned(),
+            })?;
+        if fields.definitions().owner_type() != key.entity.as_ref() {
+            return Err(DynamicFieldError {
+                code: "DYNAMIC_FIELD_OWNER_MISMATCH",
+                field: code.to_owned(),
+            });
+        }
+        let was_loaded = fields.selected_codes().contains(code);
+        let original = fields.values().get(code).cloned();
+        let definitions = fields.definitions().clone();
+        fields.delete(code)?;
+        self.write_context(|ledger| {
+            ledger.change_sets.current_mut().set_dynamic(
+                key,
+                code.to_owned(),
+                DynamicFieldMutation::Delete,
+                definitions,
+                original,
+            )
+        });
+        Ok(was_loaded)
     }
 
     /// Set an annotation comment on this entity root.
@@ -1197,6 +1429,9 @@ impl EntityRuntimeState {
 /// An explicit graph composition failed before any database write.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LedgerCompositionError {
+    ConflictingDynamicDefinitions {
+        entity: String,
+    },
     MissingTargetState,
     MissingSourceState,
     ConflictingOriginalVersion {
@@ -1210,6 +1445,10 @@ pub enum LedgerCompositionError {
 impl std::fmt::Display for LedgerCompositionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ConflictingDynamicDefinitions { entity } => write!(
+                formatter,
+                "cannot compose incompatible dynamic definitions for {entity}"
+            ),
             Self::MissingTargetState => formatter.write_str("target entity has no mutation ledger"),
             Self::MissingSourceState => formatter.write_str("source entity has no mutation ledger"),
             Self::ConflictingOriginalVersion {

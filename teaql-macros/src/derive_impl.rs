@@ -4,9 +4,9 @@ use syn::{Data, DeriveInput, Fields, ItemStruct, parse_quote};
 use crate::attr::{parse_container_attrs, parse_field_attrs};
 use crate::mapping::{
     from_record_value_tokens_with_lookup, from_relation_value_tokens, identifiable_value_tokens,
-    into_record_value_tokens, into_relation_value_tokens,
+    into_record_value_tokens, into_relation_json_value_tokens, into_relation_value_tokens,
 };
-use crate::types::{is_option, rust_type_to_data_type};
+use crate::types::{box_inner_type, is_option, option_inner_type, rust_type_to_data_type};
 
 pub fn expand_teaql_entity_attribute(mut input: ItemStruct) -> proc_macro2::TokenStream {
     let struct_name = input.ident.clone();
@@ -64,7 +64,7 @@ pub fn expand_teaql_entity_attribute(mut input: ItemStruct) -> proc_macro2::Toke
                 &mut self,
                 state: ::teaql_runtime::EntityRuntimeState,
             ) {
-                self.__teaql_runtime_state = state;
+                self.__teaql_runtime_state = state.with_loaded_view_from(&self.__teaql_runtime_state);
             }
 
             pub fn entity_key(&self) -> ::teaql_runtime::EntityKey {
@@ -90,11 +90,23 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     let entity_name = attrs.entity_name;
     let table_name = attrs.table_name;
     let data_service = attrs.data_service;
-    let container_relation_tokens = attrs.reverse_relations.into_iter().map(|relation| {
-        let name = relation.name;
-        let target = relation.target;
-        let local_key = relation.local_key.unwrap_or_else(|| "id".to_owned());
-        let foreign_key = relation.foreign_key.unwrap_or_else(|| "id".to_owned());
+    let indexed_layout = attrs.indexed_layout;
+    let mut materialized_relation_names: Vec<String> = attrs
+        .reverse_relations
+        .iter()
+        .map(|relation| relation.name.clone())
+        .collect();
+    let container_relation_tokens = attrs.reverse_relations.iter().map(|relation| {
+        let name = &relation.name;
+        let target = &relation.target;
+        let local_key = relation
+            .local_key
+            .clone()
+            .unwrap_or_else(|| "id".to_owned());
+        let foreign_key = relation
+            .foreign_key
+            .clone()
+            .unwrap_or_else(|| "id".to_owned());
         let many = relation.many.then(|| quote! { .many() });
         quote! {
             descriptor = descriptor.relation(
@@ -163,6 +175,14 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     });
 
     let mut property_tokens = Vec::new();
+    let mut into_json_fields = Vec::new();
+    let mut property_member_names = Vec::new();
+    let forward_relation_names: std::collections::HashSet<String> = named_fields
+        .iter()
+        .filter(|field| parse_field_attrs(&field.attrs).relation.is_some())
+        .filter_map(|field| field.ident.as_ref().map(ToString::to_string))
+        .collect();
+    let mut alias_state_tokens = Vec::new();
     let mut relation_tokens = Vec::new();
     let mut from_record_fields = Vec::new();
     let mut record_value_slots = Vec::new();
@@ -174,7 +194,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     let mut id_field_ident: Option<syn::Ident> = None;
     let mut unknown_record_field_arm = quote! { _ => {} };
 
-    for field in named_fields {
+    for field in named_fields.iter().cloned() {
         let field_ident = field.ident.expect("named field");
         let field_name = field_ident.to_string();
         let parsed = parse_field_attrs(&field.attrs);
@@ -213,10 +233,20 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                     record.insert(key, value);
                 }
             });
+            into_json_fields.push(into_record_fields.last().unwrap().clone());
             continue;
         }
 
         if let Some(relation) = parsed.relation {
+            // Relation payloads are not readonly dynamic properties. In a flat
+            // view this may be only the selected-edge marker.
+            if !named_fields.iter().any(|candidate| {
+                let attrs = parse_field_attrs(&candidate.attrs);
+                attrs.relation.is_none() && attrs.column.as_deref() == Some(&field_name)
+            }) {
+                record_value_match_arms.push(quote! { #field_name => {}, });
+            }
+            materialized_relation_names.push(field_name.clone());
             let local_key = relation.local_key.unwrap_or_else(|| "id".to_owned());
             let foreign_key = relation.foreign_key.unwrap_or_else(|| "id".to_owned());
             let target = relation.target;
@@ -235,6 +265,13 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             });
             let from_relation = from_relation_value_tokens(&field.ty, &field_name, &entity_name);
             let into_relation = into_relation_value_tokens(&field.ty, quote! { self.#field_ident });
+            let loaded = if has_load_state_field {
+                quote! { self.__load_state.is_loaded(#field_name) }
+            } else {
+                quote! { false }
+            };
+            let json_relation =
+                into_relation_json_value_tokens(&field.ty, quote! { self.#field_ident }, loaded);
             from_record_fields.push(quote! {
                 #field_ident: #from_relation
             });
@@ -242,6 +279,9 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 if let Some(val) = #into_relation {
                     record.insert(#field_name.to_owned(), val);
                 }
+            });
+            into_json_fields.push(quote! {
+                if let Some(val) = #json_relation { record.insert(#field_name.to_owned(), val); }
             });
             continue;
         }
@@ -301,9 +341,18 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             into_record_fields.push(quote! {
                 ::teaql_core::TeaqlBoxedRelations::inject_into_values(self.#field_ident, &mut record);
             });
+            let loaded = if has_load_state_field {
+                quote! { Some(&self.__load_state) }
+            } else {
+                quote! { None }
+            };
+            into_json_fields.push(quote! {
+                ::teaql_core::TeaqlBoxedRelations::inject_into_json_values(self.#field_ident, &mut record, #loaded);
+            });
             continue;
         }
 
+        property_member_names.push(field_name.clone());
         property_tokens.push(quote! {
             descriptor = descriptor.property(
                 ::teaql_core::PropertyDescriptor::new(#field_name, #data_type)
@@ -324,6 +373,34 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         record_value_match_arms.push(quote! {
             #field_name => #value_slot = Some(value),
         });
+        if indexed_layout && column_name != field_name {
+            if forward_relation_names.contains(&column_name) {
+                let alias_kind = format_ident!("__teaql_alias_kind_{}", field_ident);
+                record_value_slots.push(quote! { let mut #alias_kind: Option<bool> = None; });
+                record_value_match_arms.push(quote! {
+                    #column_name => {
+                        if let ::teaql_core::Value::Object(object) = value {
+                            #value_slot = object.get("id");
+                            if #value_slot.is_none() {
+                                return Err(::teaql_core::EntityError::new(#entity_name, concat!("missing reference id: ", #column_name)));
+                            }
+                            #alias_kind = Some(true);
+                        } else {
+                            #value_slot = Some(value);
+                            #alias_kind = Some(false);
+                        }
+                    },
+                });
+                alias_state_tokens.push(quote! {
+                    if let Some(details) = #alias_kind {
+                        if !details && !record.is_loaded_relation(#column_name) { entity.__load_state.mark_unloaded(#column_name).expect("known relation alias"); }
+                        entity.__load_state.mark_loaded(#field_name).expect("known native FK field");
+                    }
+                });
+            } else {
+                record_value_match_arms.push(quote! { #column_name => #value_slot = Some(value), });
+            }
+        }
         let from_value = from_record_value_tokens_with_lookup(
             &field.ty,
             quote! { #value_slot },
@@ -334,9 +411,16 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         from_record_fields.push(quote! {
             #field_ident: #from_value
         });
-        into_record_fields.push(quote! {
-            record.insert(#field_name.to_owned(), #into_value);
+        into_record_fields.push(if indexed_layout && has_load_state_field {
+            quote! {
+                if self.__load_state.is_loaded(#field_name) {
+                    record.insert(#field_name.to_owned(), #into_value);
+                }
+            }
+        } else {
+            quote! { record.insert(#field_name.to_owned(), #into_value); }
         });
+        into_json_fields.push(into_record_fields.last().unwrap().clone());
     }
 
     let identifiable_impl_tokens = id_impl.map(|id_value| {
@@ -348,6 +432,147 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             }
         }
     });
+
+    // Only runtime-owned indexed carriers can borrow the immutable identity graph.
+    // No Clone bound on entities and no per-row serialization sidecar are needed.
+    let borrowed_json_impl = if indexed_layout
+        && has_load_state_field
+        && let Some(state_ident) = &runtime_state_field_ident
+    {
+        let mut values = Vec::new();
+        let mut relations = Vec::new();
+        for field in &named_fields {
+            let ident = field.ident.as_ref().expect("named field");
+            let parsed = parse_field_attrs(&field.attrs);
+            let name = ident.to_string();
+            if parsed.skip {
+                continue;
+            }
+            if parsed.boxed_relations {
+                // Preserve the consuming SPI until this carrier supports borrowing.
+                values.push(quote! { return None; });
+                continue;
+            }
+            if parsed.dynamic {
+                values.push(quote! { if expand { record.extend(self.#ident.iter().map(|(key, value)| (key.clone(), value.clone()))); } });
+                continue;
+            }
+            if let Some(relation) = parsed.relation {
+                let Some(inner) = option_inner_type(&field.ty) else {
+                    values.push(quote! { return None; });
+                    continue;
+                };
+                let target = box_inner_type(inner).unwrap_or(inner);
+                let local_key = relation.local_key.unwrap_or_else(|| "id".to_owned());
+                let local = named_fields.iter().find(|candidate| {
+                    candidate
+                        .ident
+                        .as_ref()
+                        .is_some_and(|key| key == local_key.as_str())
+                        || parse_field_attrs(&candidate.attrs).column.as_deref() == Some(&local_key)
+                });
+                let null_value = if let Some(local) = local {
+                    let local_ident = local.ident.as_ref().unwrap();
+                    let value =
+                        into_record_value_tokens(&local.ty, quote! { self.#local_ident.clone() });
+                    quote! {{ let value: ::teaql_core::Value = #value; matches!(value, ::teaql_core::Value::Null) }}
+                } else {
+                    quote! { false }
+                };
+                let resolve = if let Some(local) = local {
+                    let local_ident = local.ident.as_ref().unwrap();
+                    let id =
+                        into_record_value_tokens(&local.ty, quote! { self.#local_ident.clone() });
+                    quote! {{
+                        let id: ::teaql_core::Value = #id;
+                        id.try_u64().and_then(|id| self.#state_ident.resolve_entity::<#target>(id))
+                    }}
+                } else {
+                    quote! { None::<&#target> }
+                };
+                let resolve = if let Some(id_ident) = &id_field_ident {
+                    quote! {
+                        match self.#state_ident.resolve_relation_option::<#target>(#entity_name, self.#id_ident, #name) {
+                            Some(edge) => edge.as_ref(),
+                            None => #resolve,
+                        }
+                    }
+                } else {
+                    resolve
+                };
+                let embedded = if box_inner_type(inner).is_some() {
+                    quote! { self.#ident.as_deref() }
+                } else {
+                    quote! { self.#ident.as_ref() }
+                };
+                relations.push(quote! {
+                    if let Some(entity) = #embedded {
+                        record.insert(#name.to_owned(), ::teaql_core::Value::Json(::teaql_core::Entity::borrowed_json(entity, traversal)?));
+                    } else if self.__load_state.is_loaded(#name) {
+                        if let Some(entity) = #resolve {
+                            record.insert(#name.to_owned(), ::teaql_core::Value::Json(::teaql_core::Entity::borrowed_json(entity, traversal)?));
+                        } else if #null_value {
+                            record.insert(#name.to_owned(), ::teaql_core::Value::Null);
+                        }
+                        // A missing filtered target is NotLoaded, not a synthetic NULL.
+                    }
+                });
+                continue;
+            }
+            let value = into_record_value_tokens(&field.ty, quote! { self.#ident.clone() });
+            let identity = parsed.id || parsed.version;
+            values.push(quote! {
+                if (expand || #identity) && self.__load_state.is_loaded(#name) { record.insert(#name.to_owned(), #value); }
+            });
+        }
+        if let Some(id_ident) = &id_field_ident {
+            for relation in &attrs.reverse_relations {
+                let Some(target) = &relation.json_type else {
+                    continue;
+                };
+                let name = &relation.name;
+                if relation.many {
+                    relations.push(quote! {
+                        if let Some(list) = self.#state_ident.resolve_relation_list::<#target>(#entity_name, self.#id_ident, #name) {
+                            let mut items = Vec::with_capacity(list.len());
+                            for entity in &list.data { items.push(::teaql_core::Value::Json(::teaql_core::Entity::borrowed_json(entity, traversal)?)); }
+                            record.insert(#name.to_owned(), ::teaql_core::Value::List(items));
+                        }
+                    });
+                } else {
+                    relations.push(quote! {
+                        if let Some(edge) = self.#state_ident.resolve_relation_option::<#target>(#entity_name, self.#id_ident, #name) {
+                            let value = match edge {
+                                Some(entity) => ::teaql_core::Value::Json(::teaql_core::Entity::borrowed_json(entity, traversal)?),
+                                None => ::teaql_core::Value::Null,
+                            };
+                            record.insert(#name.to_owned(), value);
+                        }
+                    });
+                }
+            }
+        }
+        quote! {
+            fn borrowed_json(&self, traversal: &mut ::teaql_core::EntityJsonTraversal) -> Option<::teaql_core::serde_json::Value> {
+                let expand = traversal.enter(#entity_name, self as *const Self as usize);
+                let result = (|| {
+                    let mut record = ::std::collections::BTreeMap::new();
+                    #(#values)*
+                    if expand { #(#relations)* }
+                    for key in ["_comment", "_dirty_fields", "_original_values", "_is_new", "_is_deleted"] { record.remove(key); }
+                    let mut json = ::teaql_core::record_to_json_value(&record);
+                    if expand && let Some(fields) = ::teaql_core::Entity::dynamic_field_values(self) {
+                        json.as_object_mut().expect("entity JSON object").extend(fields.values().iter().map(|(code, value)| (format!("#{code}"), value.to_json_value())));
+                    }
+                    Some(json)
+                })();
+                traversal.leave();
+                result
+            }
+        }
+    } else {
+        Default::default()
+    };
 
     let versioned_impl_tokens = version_impl.map(|version| {
         quote! {
@@ -406,8 +631,16 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         };
 
     let set_original_compact_impl = if let Some(state_ident) = &runtime_state_field_ident {
-        quote! {
-            entity.#state_ident.set_original_compact_row(#entity_name, record);
+        if indexed_layout && has_load_state_field {
+            quote! {
+                let snapshot_type = match &entity.__load_state {
+                    ::teaql_core::eval::LoadState::Indexed(snapshot) => snapshot.layout().shared_entity_name(),
+                    _ => unreachable!("indexed hydration installs the generated layout"),
+                };
+                entity.#state_ident.set_original_compact_row(snapshot_type, record);
+            }
+        } else {
+            quote! { entity.#state_ident.set_original_compact_row(#entity_name, record); }
         }
     } else {
         Default::default()
@@ -447,7 +680,33 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         Default::default()
     };
 
-    let set_load_state_impl = if has_load_state_field {
+    let field_layout_impl = if indexed_layout {
+        quote! {
+            fn field_layout() -> Result<Option<::std::sync::Arc<::teaql_core::FieldLayout>>, ::teaql_core::EntityError> {
+                static LAYOUT: ::std::sync::OnceLock<Result<::std::sync::Arc<::teaql_core::FieldLayout>, String>> = ::std::sync::OnceLock::new();
+                LAYOUT.get_or_init(|| ::teaql_core::FieldLayout::from_generated(
+                    #entity_name, Self::__TEAQL_FIELD_LAYOUT_REVISION,
+                    Self::__TEAQL_FIXED_FIELD_INDEXES, Self::__TEAQL_FIXED_FIELD_MAPPINGS,
+                    &[#(#materialized_relation_names),*], &[#(#property_member_names),*],
+                )).clone().map(Some).map_err(|message| ::teaql_core::EntityError::new(#entity_name, message))
+            }
+        }
+    } else {
+        Default::default()
+    };
+
+    let validate_layout = if indexed_layout {
+        quote! { <Self as ::teaql_core::TeaqlEntity>::field_layout().expect("invalid generated field layout"); }
+    } else {
+        Default::default()
+    };
+
+    let set_load_state_impl = if has_load_state_field && indexed_layout {
+        quote! {
+            entity.__load_state = record.indexed_load_state(
+                <Self as ::teaql_core::TeaqlEntity>::field_layout()?.expect("indexed entity layout"));
+        }
+    } else if has_load_state_field {
         quote! {
             entity.__load_state =
                 ::teaql_core::eval::LoadState::SharedColumns(record.shared_columns());
@@ -456,7 +715,17 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         Default::default()
     };
 
-    let checker_load_state_impl = if has_load_state_field {
+    let checker_load_state_impl = if has_load_state_field && indexed_layout {
+        quote! {
+            fn is_field_loaded(&self, field: &str) -> bool { self.__load_state.is_loaded(field) }
+            fn set_checker_loaded_fields(&mut self, fields: ::std::collections::BTreeSet<String>) {
+                let layout = <Self as ::teaql_core::TeaqlEntity>::field_layout()
+                    .expect("validated generated field layout").expect("indexed entity layout");
+                self.__load_state = ::teaql_core::eval::LoadState::Indexed(
+                    ::teaql_core::LoadedSnapshot::projection(layout, fields.iter().map(String::as_str)).into_shared());
+            }
+        }
+    } else if has_load_state_field {
         quote! {
             fn is_field_loaded(&self, field: &str) -> bool {
                 self.__load_state.is_loaded(field)
@@ -488,6 +757,77 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         _ => Default::default(),
     };
 
+    let dynamic_field_impl = if let Some(state_ident) = &runtime_state_field_ident {
+        let mutate = if has_load_state_field && indexed_layout {
+            id_field_ident.as_ref().map(|id_ident| quote! {
+                fn update_dynamic_field(&mut self, code: &str, value: ::teaql_core::Value) -> Result<(), ::teaql_core::dynamic_fields::DynamicFieldError> {
+                    let state = <Self as ::teaql_core::Entity>::loaded_state_snapshot(self).ok_or_else(|| ::teaql_core::dynamic_fields::DynamicFieldError {
+                        code: "DYNAMIC_FIELD_INDEXED_STATE_MISSING", field: code.to_owned(),
+                    })?;
+                    if <Self as ::teaql_core::TeaqlEntity>::field_layout().ok().flatten().is_none_or(|layout| !::std::sync::Arc::ptr_eq(state.layout(), &layout)) {
+                        return Err(::teaql_core::dynamic_fields::DynamicFieldError { code: "DYNAMIC_FIELD_LAYOUT_MISMATCH", field: code.to_owned() });
+                    }
+                    if self.#state_ident.update_dynamic_field(::teaql_runtime::EntityKey::new(#entity_name, self.#id_ident), code, value)? {
+                        self.__load_state = ::teaql_core::eval::LoadState::Indexed(::teaql_core::LoadedSnapshot::with_dynamic_fields(
+                            &state, self.#state_ident.loaded_dynamic_fields().expect("validated dynamic definitions")
+                        ).expect("validated dynamic owner and layout"));
+                    }
+                    Ok(())
+                }
+                fn delete_dynamic_field(&mut self, code: &str) -> Result<(), ::teaql_core::dynamic_fields::DynamicFieldError> {
+                    let state = <Self as ::teaql_core::Entity>::loaded_state_snapshot(self).ok_or_else(|| ::teaql_core::dynamic_fields::DynamicFieldError {
+                        code: "DYNAMIC_FIELD_INDEXED_STATE_MISSING", field: code.to_owned(),
+                    })?;
+                    if <Self as ::teaql_core::TeaqlEntity>::field_layout().ok().flatten().is_none_or(|layout| !::std::sync::Arc::ptr_eq(state.layout(), &layout)) {
+                        return Err(::teaql_core::dynamic_fields::DynamicFieldError { code: "DYNAMIC_FIELD_LAYOUT_MISMATCH", field: code.to_owned() });
+                    }
+                    if self.#state_ident.delete_dynamic_field(::teaql_runtime::EntityKey::new(#entity_name, self.#id_ident), code)? {
+                        self.__load_state = ::teaql_core::eval::LoadState::Indexed(::teaql_core::LoadedSnapshot::with_dynamic_fields(
+                            &state, self.#state_ident.loaded_dynamic_fields().expect("validated dynamic definitions")
+                        ).expect("validated dynamic owner and layout"));
+                    }
+                    Ok(())
+                }
+            })
+        } else {
+            None
+        };
+        let install = if has_load_state_field && indexed_layout {
+            quote! {
+                fn supports_dynamic_field_load() -> bool { true }
+                fn loaded_state_snapshot(&self) -> Option<::std::sync::Arc<::teaql_core::LoadedSnapshot>> {
+                    match &self.__load_state { ::teaql_core::eval::LoadState::Indexed(state) => Some(state.clone()), _ => None }
+                }
+                fn install_loaded_dynamic_fields(
+                    &mut self,
+                    values: ::teaql_core::dynamic_fields::DynamicFieldValues,
+                    state: ::std::sync::Arc<::teaql_core::LoadedSnapshot>,
+                ) -> Result<(), ::teaql_core::EntityError> {
+                    let layout = <Self as ::teaql_core::TeaqlEntity>::field_layout()?.expect("indexed entity layout");
+                    if !::std::sync::Arc::ptr_eq(state.layout(), &layout) || values.definitions().owner_type() != #entity_name {
+                        return Err(::teaql_core::EntityError::new(#entity_name, "incompatible dynamic-field owner or loaded layout"));
+                    }
+                    self.#state_ident.install_loaded_dynamic_fields(values);
+                    self.__load_state = ::teaql_core::eval::LoadState::Indexed(state);
+                    Ok(())
+                }
+            }
+        } else {
+            quote! {}
+        };
+        quote! {
+            fn __teaql_runtime_state_any(&self) -> Option<&dyn ::std::any::Any> { Some(&self.#state_ident) }
+            fn dynamic_field_values(&self) -> Option<&::teaql_core::dynamic_fields::DynamicFieldValues> {
+                self.#state_ident.loaded_dynamic_fields()
+            }
+            fn has_pending_dynamic_mutations(&self) -> bool { self.#state_ident.has_pending_dynamic_mutations() }
+            #install
+            #mutate
+        }
+    } else {
+        quote! {}
+    };
+
     let from_compact_body = quote! {
             #(#record_value_slots)*
             for (key, value) in record.iter() {
@@ -500,6 +840,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 #(#from_record_fields),*
             };
             #set_load_state_impl
+            #(#alias_state_tokens)*
             #set_original_compact_impl
             Ok(entity)
     };
@@ -529,7 +870,10 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         impl ::teaql_core::TeaqlEntity for #struct_name {
             const ENTITY_NAME: &'static str = #entity_name;
 
+            #field_layout_impl
+
             fn entity_descriptor() -> ::teaql_core::EntityDescriptor {
+                #validate_layout
                 let mut descriptor = ::teaql_core::EntityDescriptor::new(#entity_name)
                     .table_name(#table_name);
 
@@ -546,6 +890,13 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
 
         impl ::teaql_core::Entity for #struct_name {
             #from_compact_impl
+            #borrowed_json_impl
+
+            fn into_json_values(self) -> ::std::collections::BTreeMap<String, ::teaql_core::Value> {
+                let mut record = ::std::collections::BTreeMap::new();
+                #(#into_json_fields)*
+                record
+            }
 
             fn into_values(self) -> ::teaql_core::MutationValues {
                 use ::teaql_core::Entity;
@@ -572,6 +923,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
 
             #checker_load_state_impl
             #checker_dirty_state_impl
+            #dynamic_field_impl
 
             fn on_loaded(&mut self, context: &dyn std::any::Any) {
                 #on_loaded_impl
@@ -614,6 +966,7 @@ pub fn expand_teaql_reverse_relations(input: DeriveInput) -> proc_macro2::TokenS
 
     let mut from_record_fields = Vec::new();
     let mut into_record_fields = Vec::new();
+    let mut into_json_fields = Vec::new();
     let mut relation_tokens = Vec::new();
     let entity_name = struct_name.to_string();
 
@@ -645,6 +998,11 @@ pub fn expand_teaql_reverse_relations(input: DeriveInput) -> proc_macro2::TokenS
             crate::mapping::from_relation_value_tokens(&field.ty, &field_name, &entity_name);
         let into_value =
             crate::mapping::into_relation_value_tokens(&field.ty, quote! { self.#field_ident });
+        let json_value = crate::mapping::into_relation_json_value_tokens(
+            &field.ty,
+            quote! { self.#field_ident },
+            quote! { loaded.is_some_and(|state| state.is_loaded(#field_name)) },
+        );
 
         from_record_fields.push(quote! {
             #field_ident: #from_value
@@ -653,6 +1011,9 @@ pub fn expand_teaql_reverse_relations(input: DeriveInput) -> proc_macro2::TokenS
             if let Some(val) = #into_value {
                 record.insert(#field_name.to_owned(), val);
             }
+        });
+        into_json_fields.push(quote! {
+            if let Some(val) = #json_value { record.insert(#field_name.to_owned(), val); }
         });
     }
 
@@ -670,6 +1031,10 @@ pub fn expand_teaql_reverse_relations(input: DeriveInput) -> proc_macro2::TokenS
 
             fn inject_into_values(self, record: &mut ::std::collections::BTreeMap<String, ::teaql_core::Value>) {
                 #(#into_record_fields)*
+            }
+            fn inject_into_json_values(self, record: &mut ::std::collections::BTreeMap<String, ::teaql_core::Value>, loaded: Option<&::teaql_core::eval::LoadState>) {
+                let _ = loaded;
+                #(#into_json_fields)*
             }
         }
     }

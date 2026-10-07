@@ -11,10 +11,36 @@ pub enum LoadState {
     PartialCompact(smallvec::SmallVec<[std::borrow::Cow<'static, str>; 8]>),
     /// Column layout shared by every row in one database result set.
     SharedColumns(std::sync::Arc<[String]>),
+    /// Runtime-only validated fixed layout. Never deserialize internal masks from a client.
+    #[serde(skip)]
+    Indexed(std::sync::Arc<crate::LoadedSnapshot>),
     FullyLoaded,
 }
 
 impl LoadState {
+    pub fn into_indexed(self, layout: std::sync::Arc<crate::FieldLayout>) -> Result<Self, String> {
+        let state = match self {
+            Self::Indexed(state) => {
+                if !std::sync::Arc::ptr_eq(state.layout(), &layout) {
+                    return Err("incompatible loaded-state type or layout revision".to_owned());
+                }
+                return Ok(Self::Indexed(state));
+            }
+            Self::FullyLoaded => crate::LoadedSnapshot::fully_loaded(layout),
+            Self::NotLoaded => crate::LoadedSnapshot::projection(layout, std::iter::empty()),
+            Self::Partial(fields) => {
+                crate::LoadedSnapshot::projection(layout, fields.iter().map(String::as_str))
+            }
+            Self::PartialCompact(fields) => {
+                crate::LoadedSnapshot::projection(layout, fields.iter().map(|field| field.as_ref()))
+            }
+            Self::SharedColumns(fields) => {
+                crate::LoadedSnapshot::projection(layout, fields.iter().map(String::as_str))
+            }
+        };
+        Ok(Self::Indexed(state.into_shared()))
+    }
+
     pub fn is_loaded(&self, field_or_relation: &str) -> bool {
         match self {
             LoadState::NotLoaded => false,
@@ -26,7 +52,61 @@ impl LoadState {
             LoadState::SharedColumns(columns) => {
                 columns.iter().any(|column| column == field_or_relation)
             }
+            LoadState::Indexed(state) => state.is_loaded(field_or_relation),
         }
+    }
+
+    pub fn mark_loaded(&mut self, field: &str) -> Result<(), String> {
+        match self {
+            Self::Indexed(state) => {
+                *state = crate::LoadedSnapshot::with_loaded(state, field, true)?
+            }
+            Self::NotLoaded => {
+                *self = Self::PartialCompact(smallvec::smallvec![field.to_owned().into()])
+            }
+            Self::Partial(fields) => {
+                fields.insert(field.to_owned());
+            }
+            Self::PartialCompact(fields) => {
+                if !fields.iter().any(|loaded| loaded.as_ref() == field) {
+                    fields.push(field.to_owned().into());
+                }
+            }
+            Self::SharedColumns(columns) => {
+                if !columns.iter().any(|loaded| loaded == field) {
+                    let mut next = columns.to_vec();
+                    next.push(field.to_owned());
+                    *columns = next.into();
+                }
+            }
+            Self::FullyLoaded => {}
+        }
+        Ok(())
+    }
+
+    pub fn mark_unloaded(&mut self, field: &str) -> Result<(), String> {
+        match self {
+            Self::Indexed(state) => {
+                *state = crate::LoadedSnapshot::with_loaded(state, field, false)?
+            }
+            Self::Partial(fields) => {
+                fields.remove(field);
+            }
+            Self::PartialCompact(fields) => fields.retain(|loaded| loaded.as_ref() != field),
+            Self::SharedColumns(columns) => {
+                *columns = columns
+                    .iter()
+                    .filter(|name| name.as_str() != field)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .into()
+            }
+            Self::NotLoaded => {}
+            Self::FullyLoaded => {
+                return Err("clearing availability requires a generated layout".to_owned());
+            }
+        }
+        Ok(())
     }
 }
 

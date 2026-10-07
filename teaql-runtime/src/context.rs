@@ -710,6 +710,9 @@ impl UserContext {
             .ok_or_else(|| RuntimeError::Schema("missing schema provider".to_owned()))?;
         let invocation = SchemaInvocation { _context_owned: () };
         provider.ensure_schema(self, &invocation).await?;
+        self.ensure_dynamic_fields_schema()
+            .await
+            .map_err(RuntimeError::DynamicField)?;
         if let Some(business_ids) = self.get_resource::<BusinessIdSchemaService>() {
             business_ids
                 .ensure_schema(self)

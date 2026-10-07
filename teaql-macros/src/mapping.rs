@@ -305,6 +305,50 @@ pub fn into_relation_value_tokens(
     quote! { Some(::teaql_core::Value::Null) }
 }
 
+pub fn into_relation_json_value_tokens(
+    ty: &Type,
+    value_expr: proc_macro2::TokenStream,
+    loaded: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    if option_inner_type(ty).is_some() {
+        let entity = if option_inner_type(ty).and_then(box_inner_type).is_some() {
+            quote! { *entity }
+        } else {
+            quote! { entity }
+        };
+        return quote! {
+            match #value_expr {
+                Some(entity) => Some(::teaql_core::Value::Json(::teaql_core::Entity::into_json(#entity))),
+                None if #loaded => Some(::teaql_core::Value::Null),
+                None => None,
+            }
+        };
+    }
+    if vec_inner_type(ty).is_some() {
+        return quote! {
+            {
+                let items = #value_expr;
+                if !items.is_empty() || #loaded {
+                    Some(::teaql_core::Value::List(items.into_iter().map(|entity|
+                        ::teaql_core::Value::Json(::teaql_core::Entity::into_json(entity))).collect()))
+                } else { None }
+            }
+        };
+    }
+    if smart_list_inner_type(ty).is_some() {
+        return quote! {
+            {
+                let list = #value_expr;
+                if list.is_loaded || !list.data.is_empty() {
+                    Some(::teaql_core::Value::List(list.data.into_iter().map(|entity|
+                        ::teaql_core::Value::Json(::teaql_core::Entity::into_json(entity))).collect()))
+                } else { None }
+            }
+        };
+    }
+    quote! { Some(::teaql_core::Value::Null) }
+}
+
 pub fn identifiable_value_tokens(
     ty: &Type,
     value_expr: proc_macro2::TokenStream,

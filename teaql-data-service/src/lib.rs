@@ -1,5 +1,7 @@
 #![allow(async_fn_in_trait)]
 
+#[doc(hidden)]
+pub mod dynamic_fields;
 mod sql_log;
 pub use sql_log::{
     SqlExecutionOutcome, SqlIntentRedactions, SqlLogContext, SqlParameterLogPolicy,
@@ -288,6 +290,12 @@ pub trait DataServiceExecutor {
 }
 
 pub trait QueryExecutor: DataServiceExecutor {
+    /// Executor-owned storage, not a separate connection obtained from Context.
+    #[doc(hidden)]
+    fn dynamic_field_store(&self) -> Option<&dyn dynamic_fields::DynamicFieldStore> {
+        None
+    }
+
     /// Provider diagnostic SPI for a cached/rewritten query whose original
     /// statement will not execute. Must not perform I/O or emit a SQL log.
     /// Providers can derive precise policies from compilation. The default

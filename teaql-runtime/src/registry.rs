@@ -11,6 +11,77 @@ use crate::{
     InMemoryRawAuditEventSink, Language, RawAuditEventSink, RuntimeError, UserContext,
 };
 
+pub(crate) fn decode_compact_rows_with_read_metadata<T: Entity>(
+    mut rows: Vec<CompactRow>,
+    root: &EntityRuntimeState,
+) -> Result<Vec<T>, EntityError> {
+    CompactRow::share_layouts(&mut rows);
+    let mut entities = Vec::with_capacity(rows.len());
+    let mut states = ReadHydrationShapes::default();
+    for row in rows {
+        entities.push(decode_compact_row_with_read_metadata::<T>(
+            row,
+            root,
+            &mut states,
+        )?);
+    }
+    Ok(entities)
+}
+
+#[derive(Default)]
+pub(crate) struct ReadHydrationShapes {
+    // Keep source pointers alive; an allocator-reused address must never merge
+    // different projection/selection geometry. The cache contains no row values.
+    #[allow(clippy::type_complexity)]
+    states: std::collections::HashMap<
+        (usize, usize),
+        (
+            Arc<teaql_core::LoadedSnapshot>,
+            Arc<std::collections::HashSet<String>>,
+            Arc<teaql_core::LoadedSnapshot>,
+        ),
+    >,
+}
+
+fn decode_compact_row_with_read_metadata<T: Entity>(
+    mut row: CompactRow,
+    root: &EntityRuntimeState,
+    shapes: &mut ReadHydrationShapes,
+) -> Result<T, EntityError> {
+    let fields = row.take_loaded_dynamic_fields();
+    if fields.is_some() && !T::supports_dynamic_field_load() {
+        return Err(EntityError::new(
+            T::ENTITY_NAME,
+            "dynamic fields require a runtime-owned indexed entity carrier",
+        ));
+    }
+    let mut entity = T::from_compact_row_with_context(row, root as &dyn std::any::Any)?;
+    if let Some(fields) = fields {
+        let base = entity.loaded_state_snapshot().ok_or_else(|| {
+            EntityError::new(
+                T::ENTITY_NAME,
+                "indexed load state missing during dynamic hydration",
+            )
+        })?;
+        let key = (
+            Arc::as_ptr(&base) as usize,
+            Arc::as_ptr(fields.selected_codes()) as usize,
+        );
+        let state = if let Some((_, _, state)) = shapes.states.get(&key) {
+            Arc::clone(state)
+        } else {
+            let state = teaql_core::LoadedSnapshot::with_dynamic_fields(&base, &fields)
+                .map_err(|message| EntityError::new(T::ENTITY_NAME, message))?;
+            shapes
+                .states
+                .insert(key, (base, fields.selected_codes().clone(), state.clone()));
+            state
+        };
+        entity.install_loaded_dynamic_fields(fields, state)?;
+    }
+    Ok(entity)
+}
+
 type CompactEntityGraphDecoder =
     fn(CompactRow, &EntityRuntimeState, &mut EntityGraphBuilder) -> Result<(), EntityError>;
 type CompactEntityGraphBatchDecoder =
@@ -58,7 +129,11 @@ impl InMemoryEntityGraphDecoderRegistry {
             T: Entity + IdentifiableEntity + Send + Sync + 'static,
         {
             let graph_root = EntityRuntimeState::fresh_with_weak_graph(root);
-            let entity = T::from_compact_row_with_context(row, &graph_root as &dyn std::any::Any)?;
+            let entity = decode_compact_row_with_read_metadata::<T>(
+                row,
+                &graph_root,
+                &mut ReadHydrationShapes::default(),
+            )?;
             let id = entity.id_value().try_u64().ok_or_else(|| {
                 EntityError::new(T::ENTITY_NAME, "identity graph requires a u64 entity id")
             })?;
@@ -83,13 +158,7 @@ impl InMemoryEntityGraphDecoderRegistry {
             // grows 4 -> 8 -> 16 even when the relation cardinality is already
             // known. Reserve the exact row count and decode directly into the
             // final SmartList allocation.
-            let mut entities = Vec::with_capacity(rows.len());
-            for row in rows.data {
-                entities.push(T::from_compact_row_with_context(
-                    row,
-                    &graph_root as &dyn std::any::Any,
-                )?);
-            }
+            let entities = decode_compact_rows_with_read_metadata::<T>(rows.data, &graph_root)?;
             graph.install_relation_list(
                 owner_entity,
                 owner_id,
@@ -107,7 +176,7 @@ impl InMemoryEntityGraphDecoderRegistry {
         }
 
         fn decode_compact_batch<T>(
-            rows: Vec<CompactRow>,
+            mut rows: Vec<CompactRow>,
             root: &EntityRuntimeState,
             graph: &mut EntityGraphBuilder,
         ) -> Result<(), EntityError>
@@ -115,9 +184,11 @@ impl InMemoryEntityGraphDecoderRegistry {
             T: Entity + IdentifiableEntity + Send + Sync + 'static,
         {
             let graph_root = EntityRuntimeState::fresh_with_weak_graph(root);
+            CompactRow::share_layouts(&mut rows);
+            let mut shapes = ReadHydrationShapes::default();
             for row in rows {
                 let entity =
-                    T::from_compact_row_with_context(row, &graph_root as &dyn std::any::Any)?;
+                    decode_compact_row_with_read_metadata::<T>(row, &graph_root, &mut shapes)?;
                 let id = entity.id_value().try_u64().ok_or_else(|| {
                     EntityError::new(T::ENTITY_NAME, "identity graph requires a u64 entity id")
                 })?;
@@ -141,7 +212,13 @@ impl InMemoryEntityGraphDecoderRegistry {
             let value = rows
                 .into_iter()
                 .next()
-                .map(|row| T::from_compact_row_with_context(row, &graph_root as &dyn std::any::Any))
+                .map(|row| {
+                    decode_compact_row_with_read_metadata::<T>(
+                        row,
+                        &graph_root,
+                        &mut ReadHydrationShapes::default(),
+                    )
+                })
                 .transpose()?;
             graph.install_relation_option(owner_entity, owner_id, relation, value);
             Ok(())

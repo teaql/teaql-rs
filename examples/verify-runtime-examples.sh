@@ -174,4 +174,9 @@ done
 printf 'PASS order-management forward-FK Save (old loaded relation invalidated, new FK hydrated; two runs, same database)\n'
 
 bash "$repo_dir/examples/trace-chain/verify.sh"
-printf 'PASS Rust runtime examples: 14/14\n'
+if [[ -n "${TEAQL_CODEGEN_DIR:-}" ]]; then
+  bash "$repo_dir/examples/shared-load-state/verify.sh" --generate
+else
+  bash "$repo_dir/examples/shared-load-state/verify.sh"
+fi
+printf 'PASS Rust runtime examples: 15/15\n'

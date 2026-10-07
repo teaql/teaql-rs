@@ -15,6 +15,60 @@ tokio::task_local! {
     static PENDING_AUDITS: PendingAuditBatch;
 }
 
+pub(crate) fn has_scope(context: &UserContext) -> bool {
+    PENDING_AUDITS
+        .try_with(|batch| batch.context_address == std::ptr::from_ref(context) as usize)
+        .unwrap_or(false)
+}
+
+/// Add extension intent to the same native entity fact, never an independent
+/// pre-commit event. Required facts must exist before commit can succeed.
+pub(crate) fn enrich_dynamic(
+    context: &UserContext,
+    owner: &str,
+    id: u64,
+    changes: impl IntoIterator<Item = crate::EntityPropertyChange>,
+) -> Result<(), RuntimeError> {
+    let changes = changes.into_iter().collect::<Vec<_>>();
+    let result = PENDING_AUDITS
+        .try_with(|batch| {
+            if batch.context_address != std::ptr::from_ref(context) as usize {
+                return false;
+            }
+            let mut events = batch
+                .events
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let Some(event) = events.iter_mut().rev().find(|event| {
+                event.entity == owner
+                    && event.values.get("id").and_then(teaql_core::Value::try_u64) == Some(id)
+            }) else {
+                return false;
+            };
+            for change in changes {
+                if let Some(value) = &change.new_value {
+                    event.values.insert(change.field.clone(), value.clone());
+                    if let Some(values) = &mut event.new_values {
+                        values.insert(change.field.clone(), value.clone());
+                    }
+                }
+                event.updated_fields.push(change.field.clone());
+                event.changes.push(change);
+            }
+            true
+        })
+        .unwrap_or(false);
+    if !result {
+        return Err(RuntimeError::DynamicField(
+            teaql_core::dynamic_fields::DynamicFieldError {
+                code: "DYNAMIC_FIELD_AUDIT_SCOPE_REQUIRED",
+                field: owner.into(),
+            },
+        ));
+    }
+    Ok(())
+}
+
 /// Return an unbuffered fact to the caller for immediate delivery. Not having
 /// this Context's transaction scope is not an audit error, and must not require
 /// boxing every large fact on the ordinary unscoped delivery path.
@@ -40,30 +94,33 @@ pub(crate) fn try_enqueue(context: &UserContext, event: RawAuditEvent) -> Option
     }
 }
 
-pub(crate) async fn collect<F: Future>(
-    context: &UserContext,
+pub(crate) fn collect<'a, F: Future + 'a>(
+    context: &'a UserContext,
     work: F,
-) -> (F::Output, Vec<RawAuditEvent>) {
-    PENDING_AUDITS
-        .scope(
-            PendingAuditBatch {
-                context_address: std::ptr::from_ref(context) as usize,
-                events: Mutex::new(Vec::new()),
-            },
-            async {
-                let result = work.await;
-                let events = PENDING_AUDITS.with(|batch| {
-                    std::mem::take(
-                        &mut *batch
-                            .events
-                            .lock()
-                            .unwrap_or_else(|error| error.into_inner()),
-                    )
-                });
-                (result, events)
-            },
-        )
-        .await
+) -> impl Future<Output = (F::Output, Vec<RawAuditEvent>)> + 'a {
+    let work = Box::pin(work);
+    async move {
+        PENDING_AUDITS
+            .scope(
+                PendingAuditBatch {
+                    context_address: std::ptr::from_ref(context) as usize,
+                    events: Mutex::new(Vec::new()),
+                },
+                async {
+                    let result = work.await;
+                    let events = PENDING_AUDITS.with(|batch| {
+                        std::mem::take(
+                            &mut *batch
+                                .events
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner()),
+                        )
+                    });
+                    (result, events)
+                },
+            )
+            .await
+    }
 }
 
 pub(crate) fn deliver(
@@ -88,6 +145,21 @@ pub(crate) fn deliver(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audit_scope_does_not_inline_work_future_payload() {
+        let context = UserContext::default();
+        let padding = std::hint::black_box([0_u8; 64 * 1024]);
+        let large = async move {
+            std::future::pending::<()>().await;
+            std::hint::black_box(padding);
+        };
+        let work_size = std::mem::size_of_val(&large);
+        let small = collect(&context, async {});
+        let large = collect(&context, large);
+        assert_eq!(std::mem::size_of_val(&small), std::mem::size_of_val(&large));
+        assert!(std::mem::size_of_val(&large) < work_size);
+    }
 
     #[test]
     fn unscoped_enqueue_returns_the_original_fact_for_immediate_delivery() {

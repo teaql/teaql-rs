@@ -84,6 +84,9 @@ impl<'a, E> EntityDataService<'a, E> {
         let changes = root.current_change_set();
         let mut keys = root.deleted_keys();
         keys.extend(changes.changes().keys().cloned());
+        if let Some(dynamic) = changes.dynamic_changes() {
+            keys.extend(dynamic.keys().cloned());
+        }
         let mut redactions = SqlIntentRedactions::default();
         for key in keys {
             let descriptor = self
@@ -121,6 +124,32 @@ impl<'a, E> EntityDataService<'a, E> {
                 &params,
                 "",
             ));
+            if let Some(dynamic) = changes
+                .dynamic_changes()
+                .and_then(|changes| changes.get(&key))
+            {
+                let mut operands = Vec::new();
+                for mutation in dynamic.values() {
+                    if let teaql_core::dynamic_fields::DynamicFieldMutation::Set(value) = mutation {
+                        operands.push(value.clone());
+                    }
+                }
+                if let Some(originals) = changes.dynamic_originals(&key) {
+                    operands.extend(originals.values().flatten().cloned());
+                }
+                redactions.extend(&SqlIntentRedactions::from_bindings(
+                    &SqlLogContext {
+                        generated_sql: true,
+                        parameter_policies: vec![
+                            teaql_data_service::SqlParameterLogPolicy::Unknown;
+                            operands.len()
+                        ],
+                        ..Default::default()
+                    },
+                    &operands,
+                    "",
+                ));
+            }
         }
         self.query_log_intent = Some(std::sync::Mutex::new(redactions.clone()));
         self.data_service.mutation_privacy = Some(std::sync::Arc::new(redactions));

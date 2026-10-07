@@ -27,6 +27,13 @@ use crate::{CompiledQuery, SqlCompileError, SqlDialect};
 pub trait SqlTransport: Send + Sync {
     type Error: std::error::Error + Send + Sync + 'static;
 
+    #[doc(hidden)]
+    fn dynamic_field_store(
+        &self,
+    ) -> Option<&dyn teaql_data_service::dynamic_fields::DynamicFieldStore> {
+        None
+    }
+
     fn fetch_all_compact_sql(
         &self,
         query: &CompiledQuery,
@@ -1365,6 +1372,11 @@ impl<
     S: teaql_data_service::SchemaProvider + Send + Sync,
 > QueryExecutor for SqlDataServiceExecutor<D, T, S>
 {
+    fn dynamic_field_store(
+        &self,
+    ) -> Option<&dyn teaql_data_service::dynamic_fields::DynamicFieldStore> {
+        self.transport.dynamic_field_store()
+    }
     fn query_log_intent(&self, query: &SelectQuery) -> teaql_data_service::SqlIntentRedactions {
         self.entity_descriptor(&query.entity)
             .and_then(|entity| self.compile_select_cached(&entity, query).ok())
@@ -1791,6 +1803,11 @@ impl<
     S: teaql_data_service::SchemaProvider + Send + Sync,
 > QueryExecutor for SqlDataServiceTransaction<'a, D, Tx, S>
 {
+    fn dynamic_field_store(
+        &self,
+    ) -> Option<&dyn teaql_data_service::dynamic_fields::DynamicFieldStore> {
+        self.transport.dynamic_field_store()
+    }
     fn query_log_intent(&self, query: &SelectQuery) -> teaql_data_service::SqlIntentRedactions {
         self.entity_descriptor(&query.entity)
             .and_then(|entity| self.compile_select_cached(&entity, query).ok())

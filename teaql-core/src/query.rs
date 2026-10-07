@@ -465,6 +465,9 @@ pub struct SelectQuery {
     pub raw_sql: Option<String>,
     pub raw_sql_search_criteria: Vec<String>,
     pub dynamic_properties: Vec<RawSqlProjection>,
+    /// Persistent extensions loaded by the context-owned provider, never compiled as physical SQL fields.
+    pub dynamic_field_selection:
+        Option<std::sync::Arc<crate::dynamic_fields::DynamicFieldSelection>>,
     pub raw_projections: Vec<RawSqlProjection>,
     pub object_group_bys: Vec<ObjectGroupBy>,
     pub child_enhancements: Vec<SelectQuery>,
@@ -501,6 +504,7 @@ impl SelectQuery {
             raw_sql: None,
             raw_sql_search_criteria: Vec::new(),
             dynamic_properties: Vec::new(),
+            dynamic_field_selection: None,
             raw_projections: Vec::new(),
             object_group_bys: Vec::new(),
             child_enhancements: Vec::new(),
@@ -512,6 +516,14 @@ impl SelectQuery {
 
     pub fn project(mut self, field: impl Into<String>) -> Self {
         self.projection.push(field.into());
+        self
+    }
+
+    pub fn select_dynamic_fields(
+        mut self,
+        selection: crate::dynamic_fields::DynamicFieldSelection,
+    ) -> Self {
+        self.dynamic_field_selection = Some(std::sync::Arc::new(selection));
         self
     }
 
@@ -892,24 +904,116 @@ pub type Record = BTreeMap<String, Value>;
 #[derive(Debug, Clone, Default, PartialEq)]
 struct LoadedRelationResults {
     lists: BTreeMap<String, crate::SmartList<CompactRow>>,
+    dynamic_fields: Option<crate::dynamic_fields::DynamicFieldValues>,
 }
 
 /// A database result row whose column names are shared by the whole result set.
 ///
 /// Providers use this representation for typed decoding so a 100-row result does
 /// not allocate 100 copies of every projected column name (or 100 B-trees).
+/// Result-shape metadata shared by rows. Cached availability never contains values or ledgers.
+#[derive(Debug)]
+pub struct CompactRowLayout {
+    names: Arc<[String]>,
+    relation_names: Arc<[String]>,
+    primary: std::sync::OnceLock<Arc<crate::LoadedSnapshot>>,
+    other_types:
+        std::sync::Mutex<std::collections::HashMap<usize, std::sync::Weak<crate::LoadedSnapshot>>>,
+}
+
+impl CompactRowLayout {
+    pub fn new(names: Arc<[String]>) -> Arc<Self> {
+        Self::with_relations(names, Arc::from([]))
+    }
+
+    fn with_relations(names: Arc<[String]>, relation_names: Arc<[String]>) -> Arc<Self> {
+        Arc::new(Self {
+            names,
+            relation_names,
+            primary: Default::default(),
+            other_types: Default::default(),
+        })
+    }
+
+    fn load_state(&self, layout: Arc<crate::FieldLayout>) -> crate::eval::LoadState {
+        let primary = self.primary.get_or_init(|| {
+            crate::LoadedSnapshot::projection(
+                layout.clone(),
+                self.names
+                    .iter()
+                    .chain(self.relation_names.iter())
+                    .map(String::as_str),
+            )
+            .into_shared()
+        });
+        if Arc::ptr_eq(primary.layout(), &layout) {
+            return crate::eval::LoadState::Indexed(primary.clone());
+        }
+        // Unusual case: more than one typed decoder consumes one result shape.
+        let key = Arc::as_ptr(&layout) as usize;
+        let mut states = self
+            .other_types
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        states.retain(|_, state| state.strong_count() > 0);
+        if let Some(state) = states.get(&key).and_then(std::sync::Weak::upgrade) {
+            return crate::eval::LoadState::Indexed(state);
+        }
+        let state = crate::LoadedSnapshot::projection(
+            layout,
+            self.names
+                .iter()
+                .chain(self.relation_names.iter())
+                .map(String::as_str),
+        )
+        .into_shared();
+        states.insert(key, Arc::downgrade(&state));
+        crate::eval::LoadState::Indexed(state)
+    }
+}
+
+impl std::ops::Deref for CompactRowLayout {
+    type Target = [String];
+    fn deref(&self) -> &Self::Target {
+        &self.names
+    }
+}
+
+impl PartialEq for CompactRowLayout {
+    fn eq(&self, other: &Self) -> bool {
+        self.names == other.names && self.relation_names == other.relation_names
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompactRow {
-    columns: Arc<[String]>,
+    columns: Arc<CompactRowLayout>,
     values: Vec<Value>,
     // Read-result metadata only. Not a projected field, serialized Value, or
     // mutation snapshot. Ordinary provider rows allocate no sidecar.
     loaded_relations: Option<Box<LoadedRelationResults>>,
 }
 
+/// Bounded to one hydration pass. Retaining the source shape prevents address
+/// reuse from confusing projections while no entity values are retained.
+#[doc(hidden)]
+#[derive(Default)]
+pub struct RelationShapeCache {
+    relation: Option<String>,
+    shapes: std::collections::HashMap<usize, (Arc<CompactRowLayout>, Arc<CompactRowLayout>)>,
+}
+
 impl CompactRow {
     pub fn new(columns: Arc<[String]>, values: Vec<Value>) -> Self {
-        debug_assert_eq!(columns.len(), values.len());
+        Self::with_layout(CompactRowLayout::new(columns), values)
+    }
+
+    pub fn with_layout(columns: Arc<CompactRowLayout>, values: Vec<Value>) -> Self {
+        assert_eq!(
+            columns.len(),
+            values.len(),
+            "row values must match the actual projection layout"
+        );
         Self {
             columns,
             values,
@@ -932,6 +1036,36 @@ impl CompactRow {
         self.loaded_relations.as_mut()?.lists.remove(name)
     }
 
+    /// Framework read metadata, never an SQL column or mutation payload.
+    #[doc(hidden)]
+    pub fn set_loaded_dynamic_fields(&mut self, values: crate::dynamic_fields::DynamicFieldValues) {
+        self.loaded_relations
+            .get_or_insert_with(Default::default)
+            .dynamic_fields = Some(values);
+    }
+
+    #[doc(hidden)]
+    pub fn merge_loaded_dynamic_fields(
+        &mut self,
+        values: crate::dynamic_fields::DynamicFieldValues,
+        shapes: &mut crate::dynamic_fields::DynamicFieldMergeShapes,
+    ) -> Result<(), crate::dynamic_fields::DynamicFieldError> {
+        let metadata = self.loaded_relations.get_or_insert_with(Default::default);
+        if let Some(current) = metadata.dynamic_fields.as_mut() {
+            current.merge_loaded(values, shapes)?;
+        } else {
+            metadata.dynamic_fields = Some(values);
+        }
+        Ok(())
+    }
+
+    #[doc(hidden)]
+    pub fn take_loaded_dynamic_fields(
+        &mut self,
+    ) -> Option<crate::dynamic_fields::DynamicFieldValues> {
+        self.loaded_relations.as_mut()?.dynamic_fields.take()
+    }
+
     pub fn has_loaded_relations(&self) -> bool {
         self.loaded_relations
             .as_ref()
@@ -951,7 +1085,73 @@ impl CompactRow {
     }
 
     pub fn shared_columns(&self) -> Arc<[String]> {
+        self.columns.names.clone()
+    }
+
+    pub fn shared_layout(&self) -> Arc<CompactRowLayout> {
         self.columns.clone()
+    }
+
+    pub fn indexed_load_state(&self, layout: Arc<crate::FieldLayout>) -> crate::eval::LoadState {
+        self.columns.load_state(layout)
+    }
+
+    /// Query-only edge availability lives in the shared shape, never a row value.
+    #[doc(hidden)]
+    pub fn mark_relation_loaded(&mut self, name: &str, shapes: &mut RelationShapeCache) {
+        if self.is_loaded_relation(name) {
+            return;
+        }
+        let key = Arc::as_ptr(&self.columns) as usize;
+        if shapes.relation.as_deref() != Some(name) {
+            shapes.shapes.clear();
+            shapes.relation = Some(name.to_owned());
+        }
+        self.columns = shapes
+            .shapes
+            .entry(key)
+            .or_insert_with(|| {
+                let mut relations = self.columns.relation_names.to_vec();
+                relations.push(name.to_owned());
+                (
+                    self.columns.clone(),
+                    CompactRowLayout::with_relations(self.columns.names.clone(), relations.into()),
+                )
+            })
+            .1
+            .clone();
+    }
+
+    #[doc(hidden)]
+    pub fn is_loaded_relation(&self, name: &str) -> bool {
+        self.columns
+            .relation_names
+            .iter()
+            .any(|relation| relation == name)
+    }
+
+    /// Share actual shapes after relation hydration. The temporary pool cannot
+    /// retain historical projections, entity values or mutation ownership.
+    pub fn share_layouts(rows: &mut [Self]) {
+        let mut shapes = std::collections::HashMap::<
+            (Arc<[String]>, Arc<[String]>),
+            Arc<CompactRowLayout>,
+        >::new();
+        let mut previous: Option<Arc<CompactRowLayout>> = None;
+        for row in rows {
+            if previous
+                .as_ref()
+                .is_some_and(|layout| Arc::ptr_eq(layout, &row.columns))
+            {
+                continue;
+            }
+            let layout = shapes
+                .entry((row.shared_columns(), row.columns.relation_names.clone()))
+                .or_insert_with(|| row.columns.clone())
+                .clone();
+            row.columns = layout.clone();
+            previous = Some(layout);
+        }
     }
 
     pub fn get_mut(&mut self, name: &str) -> Option<&mut Value> {
@@ -969,7 +1169,8 @@ impl CompactRow {
         }
         let mut columns = self.columns.to_vec();
         columns.push(name);
-        self.columns = columns.into();
+        self.columns =
+            CompactRowLayout::with_relations(columns.into(), self.columns.relation_names.clone());
         self.values.push(value);
         None
     }
@@ -979,20 +1180,78 @@ impl CompactRow {
         let index = self.columns.iter().position(|column| column == name)?;
         let mut columns = self.columns.to_vec();
         columns.remove(index);
-        self.columns = columns.into();
+        self.columns =
+            CompactRowLayout::with_relations(columns.into(), self.columns.relation_names.clone());
         Some(self.values.remove(index))
     }
 
     pub fn extend(&mut self, other: CompactRow) {
+        self.try_extend(other, &mut Default::default())
+            .expect("incompatible CompactRow read metadata");
+    }
+
+    /// Checked enhancement merge. Validate provenance before changing any
+    /// native value, relation or read payload; callers retain a failed row.
+    #[doc(hidden)]
+    pub fn try_extend(
+        &mut self,
+        other: CompactRow,
+        shapes: &mut crate::dynamic_fields::DynamicFieldMergeShapes,
+    ) -> Result<(), crate::dynamic_fields::DynamicFieldError> {
+        if let (Some(left), Some(right)) = (
+            self.loaded_relations
+                .as_ref()
+                .and_then(|metadata| metadata.dynamic_fields.as_ref()),
+            other
+                .loaded_relations
+                .as_ref()
+                .and_then(|metadata| metadata.dynamic_fields.as_ref()),
+        ) {
+            left.validate_merge(right)?;
+        }
+        let mut relation_names: Option<Vec<String>> = None;
+        for name in other.columns.relation_names.iter() {
+            let existing = relation_names
+                .as_deref()
+                .unwrap_or(&self.columns.relation_names);
+            if !existing.contains(name) {
+                relation_names
+                    .get_or_insert_with(|| self.columns.relation_names.to_vec())
+                    .push(name.clone());
+            }
+        }
         if let Some(relations) = other.loaded_relations {
+            if let Some(values) = relations.dynamic_fields {
+                self.merge_loaded_dynamic_fields(values, shapes)?;
+            }
             self.loaded_relations
                 .get_or_insert_with(Default::default)
                 .lists
                 .extend(relations.lists);
         }
-        for (name, value) in other.columns.iter().cloned().zip(other.values) {
-            self.insert(name, value);
+        let mut columns: Option<Vec<String>> = None;
+        for (name, value) in other.columns.iter().zip(other.values) {
+            let names = columns.as_deref().unwrap_or(&self.columns.names);
+            if let Some(index) = names.iter().position(|column| column == name) {
+                self.values[index] = value;
+            } else {
+                columns
+                    .get_or_insert_with(|| self.columns.names.to_vec())
+                    .push(name.clone());
+                self.values.push(value);
+            }
         }
+        if columns.is_some() || relation_names.is_some() {
+            self.columns = CompactRowLayout::with_relations(
+                columns
+                    .map(Arc::from)
+                    .unwrap_or_else(|| self.columns.names.clone()),
+                relation_names
+                    .map(Arc::from)
+                    .unwrap_or_else(|| self.columns.relation_names.clone()),
+            );
+        }
+        Ok(())
     }
 
     pub fn contains_key(&self, name: &str) -> bool {

@@ -137,6 +137,9 @@ where
         root: crate::EntityRuntimeState,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
+            if root.has_pending_dynamic_mutations() {
+                context.dynamic_graph_provider()?;
+            }
             capture_ledger_trace_scopes(&root, &node)?;
             let entity = node.entity.clone();
             let executor = context
@@ -170,9 +173,15 @@ where
                                 .map_err(DataServiceError::Runtime)?,
                         );
                     let locations = ledger_object_locations(&node);
-                    let generated_ids = eds
+                    let mut generated_ids = eds
                         .execute_ledger_plan_internal(root.clone(), &locations)
                         .await?;
+                    if let Some(readbacks) = &mut generated_ids.dynamic_readbacks {
+                        node.dynamic_fields = readbacks
+                            .remove(&root_key)
+                            .map(Box::new)
+                            .or(node.dynamic_fields.take());
+                    }
                     if let Some(new_id) = generated_ids.get(&root_key) {
                         node.values.insert(id_prop.name.clone(), new_id.clone());
                     }
@@ -228,6 +237,32 @@ where
     }
 }
 
+fn decode_saved_ledger_entity<T: Entity>(
+    mut saved: GraphNode,
+    root: &crate::EntityRuntimeState,
+    preserve_relations: bool,
+) -> Result<T, RuntimeError> {
+    let fields = saved.dynamic_fields.take();
+    let row = teaql_core::CompactRow::from_map(saved.values.into());
+    let mut entity = if preserve_relations {
+        T::from_compact_row_with_context(row, root)
+    } else {
+        T::from_compact_row(row)
+    }
+    .map_err(|error| RuntimeError::Graph(error.to_string()))?;
+    if let Some(fields) = fields {
+        let base = entity.loaded_state_snapshot().ok_or_else(|| {
+            RuntimeError::Graph("indexed state missing from dynamic save result".into())
+        })?;
+        let state = teaql_core::LoadedSnapshot::with_dynamic_fields(&base, &fields)
+            .map_err(RuntimeError::Graph)?;
+        entity
+            .install_loaded_dynamic_fields(*fields, state)
+            .map_err(|error| RuntimeError::Graph(error.to_string()))?;
+    }
+    Ok(entity)
+}
+
 fn reject_cancelled_new_root(
     root: &crate::EntityRuntimeState,
     root_key: &crate::EntityKey,
@@ -249,6 +284,13 @@ fn can_preserve_loaded_relations(
     descriptor: &teaql_core::EntityDescriptor,
 ) -> bool {
     if !root.new_keys().is_empty() || !root.deleted_keys().is_empty() {
+        return false;
+    }
+    if root
+        .current_change_set()
+        .dynamic_changes()
+        .is_some_and(|changes| changes.keys().any(|key| key != root_key))
+    {
         return false;
     }
     let changes = root.current_change_set();
@@ -782,6 +824,21 @@ pub fn graph_node_from_entity<T: Entity>(
     context: &UserContext,
     entity: T,
 ) -> Result<GraphNode, RuntimeError> {
+    if entity.has_pending_dynamic_mutations() {
+        return Err(RuntimeError::DynamicField(
+            teaql_core::dynamic_fields::DynamicFieldError {
+                code: "DYNAMIC_FIELD_TRANSACTION_BINDING_REQUIRED",
+                field: T::ENTITY_NAME.to_owned(),
+            },
+        ));
+    }
+    extract_graph_node(context, entity)
+}
+
+fn extract_graph_node<T: Entity>(
+    context: &UserContext,
+    entity: T,
+) -> Result<GraphNode, RuntimeError> {
     let descriptor = T::entity_descriptor();
     let loaded_fields = descriptor
         .properties
@@ -794,11 +851,13 @@ pub fn graph_node_from_entity<T: Entity>(
     let is_new = entity.is_new();
     let is_deleted = entity.is_marked_as_delete();
     let comment = entity.get_comment();
+    let dynamic_fields = entity.dynamic_field_values().cloned().map(Box::new);
     let mut node = graph_node_from_values(context, &descriptor.name, entity.into_values())?;
     node.values
         .insert("_loaded_fields".to_owned(), Value::List(loaded_fields));
     node.dirty_fields = dirty_fields;
     node.original_values = original_values;
+    node.dynamic_fields = dynamic_fields;
     if is_new {
         node.operation = GraphOperation::Create;
     }
@@ -998,6 +1057,9 @@ fn capture_ledger_trace_scopes(
         .collect::<BTreeSet<_>>();
     pending.extend(root.deleted_keys());
     pending.extend(root.new_keys());
+    if let Some(dynamic) = root.current_change_set().dynamic_changes() {
+        pending.extend(dynamic.keys().cloned());
+    }
     for key in pending {
         scopes.entry(key.clone()).or_insert_with(|| {
             match root
@@ -1443,6 +1505,9 @@ fn hydrate_ledger_relations(
         let mut discovered = Vec::new();
         let changes = root.current_change_set();
         let mut pending = changes.changes().keys().cloned().collect::<BTreeSet<_>>();
+        if let Some(dynamic) = changes.dynamic_changes() {
+            pending.extend(dynamic.keys().cloned());
+        }
         pending.extend(root.deleted_keys());
         pending.extend(root.new_keys());
         for key in &pending {
@@ -1551,6 +1616,52 @@ fn preflight_graph(
     Ok(())
 }
 
+fn preflight_pending_dynamic_entities(
+    context: &UserContext,
+    root: &crate::EntityRuntimeState,
+    node: &GraphNode,
+) -> Result<(), RuntimeError> {
+    let changes = root.current_change_set();
+    let Some(dynamic) = changes.dynamic_changes() else {
+        return Ok(());
+    };
+    let locations = ledger_object_locations(node);
+    for key in dynamic.keys() {
+        if locations.contains_key(key) || root.deleted_keys().contains(key) {
+            continue;
+        }
+        let mut pending = GraphNode::new(key.entity.to_string());
+        pending.original_values = root.original_values_for(key);
+        pending.values = pending
+            .original_values
+            .clone()
+            .map(|values| BTreeMap::from(values).into())
+            .unwrap_or_default();
+        if let Some(values) = changes.changes().get(key) {
+            pending.values.extend(values.clone());
+        }
+        pending.values.insert("id".into(), key.id.clone());
+        let loaded = pending
+            .values
+            .keys()
+            .filter(|field| !field.starts_with('_'))
+            .cloned()
+            .map(Value::Text)
+            .collect();
+        pending
+            .values
+            .insert("_loaded_fields".into(), Value::List(loaded));
+        pending.dirty_fields = Some(root.changed_field_names(key));
+        pending.operation = if root.new_keys().contains(key) {
+            GraphOperation::Create
+        } else {
+            GraphOperation::Upsert
+        };
+        preflight_graph(context, &mut pending, &ObjectLocation::root(), Some(root))?;
+    }
+    Ok(())
+}
+
 /// Retain the model-relative path discovered during graph preflight for the
 /// sparse SQL-payload gate. Multiple references to one ledger entity may
 /// exist; the first path in deterministic relation order is its diagnostic
@@ -1634,6 +1745,29 @@ where
         Box::pin(async move {
             let _entity_name = T::entity_descriptor().name;
             let entity = self.into_entity(); // applies comment onto the entity
+            if entity.has_pending_dynamic_mutations() || entity.dynamic_field_values().is_some() {
+                let root = entity
+                    .__teaql_runtime_state_any()
+                    .and_then(|state| state.downcast_ref::<crate::EntityRuntimeState>())
+                    .cloned();
+                if root.is_none() {
+                    return Err(RuntimeError::Graph(
+                        "dynamic save requires the runtime mutation ledger carrier".into(),
+                    ));
+                }
+                let evidence = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let result = GRAPH_FIX_TIME
+                    .scope(
+                        teaql_core::time::Timestamp::now(),
+                        GRAPH_FIX_EVIDENCE.scope(
+                            evidence.clone(),
+                            Box::pin(save_ledger_entity_body(entity, root, context)),
+                        ),
+                    )
+                    .await;
+                context.replace_last_fix_evidence(evidence.lock().unwrap().clone());
+                return result;
+            }
             let mut node = graph_node_from_entity(context, entity)?;
             preflight_graph(context, &mut node, &ObjectLocation::root(), None)?;
             let saver = context
@@ -1728,7 +1862,13 @@ where
             "generated entity graph attachment failed before save: {error}"
         )));
     }
-    let mut node = graph_node_from_entity(context, entity)?;
+    if root
+        .as_ref()
+        .is_some_and(|root| root.has_pending_dynamic_mutations())
+    {
+        context.dynamic_graph_provider()?;
+    }
+    let mut node = extract_graph_node(context, entity)?;
 
     if let Some(root) = root {
         let root_id = node.values.get("id").cloned().unwrap_or(Value::I64(0));
@@ -1743,8 +1883,9 @@ where
         hydrate_ledger_relations(context, &root, &mut node, &mut visited)?;
         preflight_graph(context, &mut node, &ObjectLocation::root(), Some(&root))?;
         merge_relation_mutations_into_root(&root, &node)?;
+        preflight_pending_dynamic_entities(context, &root, &node)?;
         capture_ledger_trace_scopes(&root, &node)?;
-        let has_ledger_changes = !root.current_change_set().changes().is_empty()
+        let has_ledger_changes = !root.current_change_set().is_empty()
             || !root.deleted_keys().is_empty()
             || !root.new_keys().is_empty();
         if has_ledger_changes {
@@ -1763,13 +1904,19 @@ where
             let locations = ledger_object_locations(&node);
             let policy_plan = crate::ledger_policy_plan(context, &node, &root);
             let governance = context.review_mutation_plan(&policy_plan)?;
-            let generated_ids = crate::with_mutation_governance(
+            let mut generated_ids = crate::with_mutation_governance(
                 governance,
                 data_service.execute_ledger_plan_internal(root.clone(), &locations),
             )
             .await
             .map_err(data_service_error_into_runtime)?;
 
+            if let Some(readbacks) = &mut generated_ids.dynamic_readbacks {
+                node.dynamic_fields = readbacks
+                    .remove(&root_key)
+                    .map(Box::new)
+                    .or(node.dynamic_fields.take());
+            }
             if let Some(new_id) = generated_ids.get(&root_key) {
                 node.values.insert(id_property.name.clone(), new_id.clone());
             }
@@ -1796,13 +1943,7 @@ where
                         "persisted {entity_name} record could not be read back"
                     ))
                 })?;
-            let row = teaql_core::CompactRow::from_map(node.values.into());
-            let entity = if preserve_relations {
-                T::from_compact_row_with_context(row, &root)
-            } else {
-                T::from_compact_row(row)
-            }
-            .map_err(|error| RuntimeError::Graph(error.to_string()))?;
+            let entity = decode_saved_ledger_entity::<T>(node, &root, preserve_relations)?;
             return Ok((entity, Some(root)));
         }
     }
@@ -1834,9 +1975,16 @@ async fn save_audited_ledger_entity_inner<T>(
 where
     T: crate::LedgerEntity + Send + 'static,
 {
-    let _entity_name = T::entity_descriptor().name;
     let entity = audited.into_entity();
     let root = entity.entity_runtime_state();
+    save_ledger_entity_body(entity, root, context).await
+}
+
+async fn save_ledger_entity_body<T: Entity + Send + 'static>(
+    entity: T,
+    root: Option<crate::EntityRuntimeState>,
+    context: &UserContext,
+) -> Result<T, RuntimeError> {
     if let Some(error) = root
         .as_ref()
         .and_then(|root| root.first_composition_error())
@@ -1845,7 +1993,13 @@ where
             "generated entity graph attachment failed before save: {error}"
         )));
     }
-    let mut node = graph_node_from_entity(context, entity)?;
+    if root
+        .as_ref()
+        .is_some_and(|root| root.has_pending_dynamic_mutations())
+    {
+        context.dynamic_graph_provider()?;
+    }
+    let mut node = extract_graph_node(context, entity)?;
     let saver = context
         .require_resource::<Arc<dyn DynGraphSaver>>()
         .map_err(|e| {
@@ -1867,28 +2021,22 @@ where
         hydrate_ledger_relations(context, &root, &mut node, &mut visited)?;
         preflight_graph(context, &mut node, &ObjectLocation::root(), Some(&root))?;
         merge_relation_mutations_into_root(&root, &node)?;
+        preflight_pending_dynamic_entities(context, &root, &node)?;
         capture_ledger_trace_scopes(&root, &node)?;
-        let has_ledger_changes = !root.current_change_set().changes().is_empty()
+        let has_ledger_changes = !root.current_change_set().is_empty()
             || !root.deleted_keys().is_empty()
             || !root.new_keys().is_empty();
         if has_ledger_changes {
             let descriptor = context.require_entity(&node.entity)?;
             let preserve_relations = can_preserve_loaded_relations(&root, &root_key, descriptor);
             let saved = saver.save_ledger_dyn(context, node, root.clone()).await?;
-            let row = teaql_core::CompactRow::from_map(saved.values.into());
-            return if preserve_relations {
-                T::from_compact_row_with_context(row, &root)
-            } else {
-                T::from_compact_row(row)
-            }
-            .map_err(|e| RuntimeError::Graph(e.to_string()));
+            return decode_saved_ledger_entity::<T>(saved, &root, preserve_relations);
         }
     }
 
     preflight_graph(context, &mut node, &ObjectLocation::root(), None)?;
     let saved = saver.save_graph_dyn(context, node).await?;
-    T::from_compact_row(teaql_core::CompactRow::from_map(saved.values.into()))
-        .map_err(|e| RuntimeError::Graph(e.to_string()))
+    decode_saved_ledger_entity::<T>(saved, &crate::EntityRuntimeState::default(), false)
 }
 
 #[cfg(test)]

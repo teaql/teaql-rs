@@ -5,10 +5,34 @@ use crate::{
     record_to_json_value,
 };
 
+/// A presentation-only, path-local guard. Never touches an entity's ledger.
+#[doc(hidden)]
+#[derive(Default)]
+pub struct EntityJsonTraversal {
+    path: Vec<(&'static str, usize)>,
+}
+
+impl EntityJsonTraversal {
+    pub fn enter(&mut self, entity: &'static str, address: usize) -> bool {
+        let expand = self.path.len() < 128 && !self.path.contains(&(entity, address));
+        self.path.push((entity, address));
+        expand
+    }
+
+    pub fn leave(&mut self) {
+        self.path.pop();
+    }
+}
+
 pub trait TeaqlEntity {
     const ENTITY_NAME: &'static str;
 
     fn entity_descriptor() -> EntityDescriptor;
+
+    /// Fixed metadata supplied by generation; hand-written adapters may remain unindexed.
+    fn field_layout() -> Result<Option<std::sync::Arc<crate::FieldLayout>>, EntityError> {
+        Ok(None)
+    }
 
     fn register_into(store: &mut impl EntityDescriptorStore) {
         store.register_descriptor(Self::entity_descriptor());
@@ -39,6 +63,63 @@ impl std::fmt::Display for EntityError {
 impl std::error::Error for EntityError {}
 
 pub trait Entity: TeaqlEntity + Sized {
+    /// Runtime-owned persistent-extension carrier, separate from readonly dynamic properties.
+    fn dynamic_field_values(&self) -> Option<&crate::dynamic_fields::DynamicFieldValues> {
+        None
+    }
+
+    fn has_pending_dynamic_mutations(&self) -> bool {
+        false
+    }
+
+    /// Type-erased framework bridge without a core -> runtime dependency.
+    #[doc(hidden)]
+    fn __teaql_runtime_state_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
+    fn update_dynamic_field(
+        &mut self,
+        code: &str,
+        _value: Value,
+    ) -> Result<(), crate::dynamic_fields::DynamicFieldError> {
+        Err(crate::dynamic_fields::DynamicFieldError {
+            code: "DYNAMIC_FIELD_CARRIER_MISSING",
+            field: code.to_owned(),
+        })
+    }
+
+    fn delete_dynamic_field(
+        &mut self,
+        code: &str,
+    ) -> Result<(), crate::dynamic_fields::DynamicFieldError> {
+        Err(crate::dynamic_fields::DynamicFieldError {
+            code: "DYNAMIC_FIELD_CARRIER_MISSING",
+            field: code.to_owned(),
+        })
+    }
+
+    fn supports_dynamic_field_load() -> bool {
+        false
+    }
+
+    fn loaded_state_snapshot(&self) -> Option<std::sync::Arc<crate::LoadedSnapshot>> {
+        None
+    }
+
+    /// Framework hydration only: it must not create mutation intent or share row payloads.
+    #[doc(hidden)]
+    fn install_loaded_dynamic_fields(
+        &mut self,
+        _values: crate::dynamic_fields::DynamicFieldValues,
+        _state: std::sync::Arc<crate::LoadedSnapshot>,
+    ) -> Result<(), EntityError> {
+        Err(EntityError::new(
+            Self::ENTITY_NAME,
+            "entity lacks the runtime-owned indexed dynamic-field carrier",
+        ))
+    }
+
     fn from_compact_row(row: CompactRow) -> Result<Self, EntityError>;
 
     fn from_compact_row_with_context(
@@ -51,6 +132,20 @@ pub trait Entity: TeaqlEntity + Sized {
     }
 
     fn into_values(self) -> MutationValues;
+
+    /// Presentation bridge for macro-generated typed relation carriers.
+    /// Kept separate so JSON conversion cannot change the mutation contract.
+    #[doc(hidden)]
+    fn into_json_values(self) -> BTreeMap<String, Value> {
+        self.into_values().into()
+    }
+
+    /// Borrow an indexed graph view without cloning entities or triggering I/O.
+    /// Older/manual carriers retain their existing consuming presentation path.
+    #[doc(hidden)]
+    fn borrowed_json(&self, _traversal: &mut EntityJsonTraversal) -> Option<serde_json::Value> {
+        None
+    }
 
     /// Whether a model field was loaded in the entity snapshot used for a
     /// mutation. Implementations without projection tracking remain fully
@@ -113,8 +208,39 @@ pub trait Entity: TeaqlEntity + Sized {
     fn on_loaded(&mut self, context: &dyn std::any::Any) {}
 
     fn into_json(self) -> serde_json::Value {
-        let values: BTreeMap<String, Value> = self.into_values().into();
-        record_to_json_value(&values)
+        if let Some(json) = self.borrowed_json(&mut EntityJsonTraversal::default()) {
+            return json;
+        }
+        // Persistent extensions are a separate carrier, never native mutation
+        // columns. Serialize only supplied values; absent definitions stay absent.
+        let extensions: serde_json::Map<String, serde_json::Value> = self
+            .dynamic_field_values()
+            .map(|fields| {
+                fields
+                    .values()
+                    .iter()
+                    .map(|(code, value)| (format!("#{code}"), value.to_json_value()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut values = self.into_json_values();
+        // These exact framework-owned keys belong to the mutation/checker
+        // contract, not to an external entity representation. Other `_` keys
+        // are legitimate readonly dynamic properties and must be preserved.
+        for key in [
+            "_comment",
+            "_dirty_fields",
+            "_original_values",
+            "_is_new",
+            "_is_deleted",
+        ] {
+            values.remove(key);
+        }
+        let mut json = record_to_json_value(&values);
+        json.as_object_mut()
+            .expect("entity serialization is an object")
+            .extend(extensions);
+        json
     }
 }
 
@@ -344,6 +470,14 @@ pub trait TeaqlBoxedRelations: Sized {
     fn extend_descriptor(descriptor: &mut EntityDescriptor);
     fn extract_from_values(values: &CompactRow) -> Result<Self, EntityError>;
     fn inject_into_values(self, values: &mut BTreeMap<String, Value>);
+    #[doc(hidden)]
+    fn inject_into_json_values(
+        self,
+        values: &mut BTreeMap<String, Value>,
+        _loaded: Option<&crate::eval::LoadState>,
+    ) {
+        self.inject_into_values(values);
+    }
 }
 
 impl<T: TeaqlBoxedRelations> TeaqlBoxedRelations for Box<T> {
@@ -355,6 +489,13 @@ impl<T: TeaqlBoxedRelations> TeaqlBoxedRelations for Box<T> {
     }
     fn inject_into_values(self, values: &mut BTreeMap<String, Value>) {
         (*self).inject_into_values(values);
+    }
+    fn inject_into_json_values(
+        self,
+        values: &mut BTreeMap<String, Value>,
+        loaded: Option<&crate::eval::LoadState>,
+    ) {
+        (*self).inject_into_json_values(values, loaded);
     }
 }
 
