@@ -22,6 +22,8 @@ mod field_order;
 mod nested_graph;
 #[path = "support/observed_executor.rs"]
 mod observed_executor;
+#[path = "support/original_clone.rs"]
+mod original_clone;
 #[path = "support/page_stream.rs"]
 mod page_stream;
 
@@ -98,6 +100,7 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
         .execute_for_list(&context)
         .await?;
     assert_eq!(full.len(), 2);
+    original_clone::verify(&full[0]);
     let snapshot = full[0]
         .loaded_state_snapshot()
         .expect("generated indexed state");
