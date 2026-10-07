@@ -133,3 +133,20 @@ also measures the actual generated School decoder at 3/64/full selected fields
 and 1/100/10,000 rows, checks exact shared overflow state and COW isolation, and
 retains a separate wide hydration CSV plus unchanged generated-source hashes.
 Prepared input rows and database/logging costs remain outside the measured region.
+
+## Matched driver logging modes
+
+```bash
+bash examples/shared-load-state/benchmark-driver.sh
+bash examples/shared-load-state/benchmark-driver.sh --default-log
+```
+
+Run these sequentially. Each run retains 31 alternating samples for sparse/full
+1/100/10,000-row queries, native driver SQL/binds, typed equality and snapshot
+sharing. Default mode retains the runtime policy and formatter, writing masked
+SQL to an isolated file; off mode disables steady-state query logging. The
+initial diagnostic query is not a process-cold measurement. Buffer cleanup and
+validation are outside timing. Scripts reject external logging overrides and
+plaintext opt-in. Compare only within this workload: Java uses a different
+connection/output strategy, and native-driver drift between processes is not
+logging overhead. No publication occurs.
