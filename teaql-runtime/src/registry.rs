@@ -11,7 +11,9 @@ use crate::{
     InMemoryRawAuditEventSink, Language, RawAuditEventSink, RuntimeError, UserContext,
 };
 
-pub(crate) fn decode_compact_rows_with_read_metadata<T: Entity>(
+/// Generated adapter bridge: decode a bounded batch without discarding read sidecars.
+#[doc(hidden)]
+pub fn decode_compact_rows_with_read_metadata<T: Entity>(
     mut rows: Vec<CompactRow>,
     root: &EntityRuntimeState,
 ) -> Result<Vec<T>, EntityError> {

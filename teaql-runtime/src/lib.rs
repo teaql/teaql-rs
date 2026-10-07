@@ -26,6 +26,8 @@ mod mutation_policy;
 #[allow(dead_code)]
 mod memory;
 mod registry;
+#[doc(hidden)]
+pub use registry::decode_compact_rows_with_read_metadata;
 mod round_trip_reference;
 mod telemetry;
 #[cfg(feature = "opentelemetry")]

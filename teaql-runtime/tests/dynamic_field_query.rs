@@ -153,6 +153,30 @@ fn graph_decoders_retain_dynamic_read_metadata_without_promoting_it_to_columns()
         })
         .collect();
     let root = teaql_runtime::EntityRuntimeState::default();
+    // Generated stream adapters must use the same decoder as list hydration:
+    // plain from_compact_row would discard this trusted read sidecar.
+    let decoded =
+        teaql_runtime::decode_compact_rows_with_read_metadata::<School>(rows.clone(), &root)
+            .unwrap();
+    assert!(Arc::ptr_eq(
+        &decoded[0].loaded_state_snapshot().unwrap(),
+        &decoded[1].loaded_state_snapshot().unwrap()
+    ));
+    for (row, expected) in decoded.iter().zip([
+        DynamicFieldState::Value,
+        DynamicFieldState::Null,
+        DynamicFieldState::NotLoaded,
+    ]) {
+        assert_eq!(
+            row.dynamic_field_values()
+                .unwrap()
+                .field("note")
+                .unwrap()
+                .state(),
+            expected
+        );
+        assert!(!row.has_pending_dynamic_mutations());
+    }
     let mut registry = teaql_runtime::InMemoryEntityGraphDecoderRegistry::default();
     registry.register::<School>();
     let mut builder = teaql_runtime::EntityGraphBuilder::default();
@@ -1206,6 +1230,15 @@ async fn no_selection_needs_no_provider_and_streaming_cannot_silently_drop_a_sel
     let count = queries.lock().unwrap().len();
     assert!(repo.fetch_stream(&query(true)).await.is_err());
     assert_eq!(queries.lock().unwrap().len(), count);
+}
+
+#[tokio::test]
+async fn dynamic_stream_rejects_before_cursor_even_when_a_provider_is_configured() {
+    let (context, calls, queries) = context(Some(Fault::None), false);
+    let repo = context.entity_data_service::<FixedRows>("School").unwrap();
+    assert!(repo.fetch_stream(&query(true)).await.is_err());
+    assert!(calls.lock().unwrap().is_empty());
+    assert!(queries.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
