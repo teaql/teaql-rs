@@ -8,6 +8,8 @@ use teaql_core::dynamic_fields::{
 use teaql_core::{time::Timestamp, Entity, TeaqlEntity, Value};
 use teaql_runtime::dynamic_fields::DatabaseDynamicFieldsProvider;
 
+#[path = "support/checker_state.rs"]
+mod checker_state;
 #[path = "support/field_order.rs"]
 mod field_order;
 #[path = "support/nested_graph.rs"]
@@ -153,6 +155,7 @@ async fn fresh_generated_school_uses_shared_indexed_state() -> Result<(), Box<dy
     assert!(sparse[0].is_field_loaded("id"));
     assert!(sparse[0].is_field_loaded("version"));
     assert!(!sparse[0].is_field_loaded("address"));
+    checker_state::verify(&context, &full[0], &sparse[0]);
     let sparse_json = sparse[0].clone().into_json();
     assert_eq!(sparse_json["name"], first);
     assert!(sparse_json.get("address").is_none());
