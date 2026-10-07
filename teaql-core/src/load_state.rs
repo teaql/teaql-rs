@@ -330,3 +330,53 @@ impl PartialEq for LoadedSnapshot {
     }
 }
 impl Eq for LoadedSnapshot {}
+
+#[cfg(test)]
+mod lifetime_tests {
+    use super::*;
+
+    #[test]
+    fn dead_projection_entries_are_pruned_without_retaining_states_or_layouts() {
+        let layout = FieldLayout::from_generated(
+            "LifetimeProbe",
+            "v1",
+            &[("id", 0), ("version", 1), ("name", 2)],
+            &[
+                ("id", "id", "id"),
+                ("version", "version", "version"),
+                ("name", "name", "name"),
+            ],
+            &[],
+            &["id", "version", "name"],
+        )
+        .unwrap();
+        let weak_layout = Arc::downgrade(&layout);
+        let retained = LoadedSnapshot::projection(layout.clone(), ["id", "name"]).into_shared();
+        let weak_retained = Arc::downgrade(&retained);
+        for index in 0..1_000 {
+            let code = format!("#temporary_{index}");
+            let temporary =
+                LoadedSnapshot::projection(layout.clone(), ["id", code.as_str()]).into_shared();
+            let weak_temporary = Arc::downgrade(&temporary);
+            assert!(temporary.is_loaded(&code));
+            assert!(!retained.is_loaded(&code));
+            drop(temporary);
+            assert!(weak_temporary.upgrade().is_none());
+        }
+        // One new interning operation sweeps the final dead entry.
+        let reused = LoadedSnapshot::projection(layout.clone(), ["id", "name"]).into_shared();
+        assert!(Arc::ptr_eq(&retained, &reused));
+        let cache = layout.states.lock().unwrap();
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.values().map(Vec::len).sum::<usize>(), 1);
+        drop(cache);
+        drop(reused);
+        drop(layout);
+        assert!(weak_layout.upgrade().is_some());
+        assert!(retained.is_loaded("name"));
+        assert!(!retained.is_loaded("version"));
+        drop(retained);
+        assert!(weak_retained.upgrade().is_none());
+        assert!(weak_layout.upgrade().is_none());
+    }
+}
