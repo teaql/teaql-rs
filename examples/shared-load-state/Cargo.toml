@@ -12,6 +12,9 @@ school_management_service_core = { package = "school-management-service-core", p
 teaql-core = { path = "../../teaql-core" }
 teaql-runtime = { path = "../../teaql-runtime" }
 teaql-data-service = { path = "../../teaql-data-service" }
+teaql-provider-sqlite = { path = "../../teaql-provider-sqlite" }
+teaql-sql = { path = "../../teaql-sql" }
+rusqlite = { version = "0.40", features = ["bundled"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [workspace]

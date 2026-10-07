@@ -8,6 +8,8 @@ use teaql_core::dynamic_fields::{
 use teaql_core::{time::Timestamp, Entity, TeaqlEntity, Value};
 use teaql_runtime::dynamic_fields::DatabaseDynamicFieldsProvider;
 
+#[path = "support/field_order.rs"]
+mod field_order;
 #[path = "support/nested_graph.rs"]
 mod nested_graph;
 #[path = "support/observed_executor.rs"]
@@ -128,6 +130,7 @@ async fn fresh_generated_school_uses_shared_indexed_state() -> Result<(), Box<dy
     assert_eq!(E::school(&full[0]).get_student_capacity().eval(), Some(0));
     assert_eq!(E::school(&full[0]).get_active().eval(), Some(false));
     assert_eq!(E::school(&full[0]).get_school_type_id().eval(), Some(1001));
+    field_order::verify(&context, full[0].id()).await?;
 
     let sparse = Q::schools_minimal()
         .with_name_in([first.as_str(), second.as_str()])
