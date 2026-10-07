@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+// Type-local optimization hints, not ownership of every live result shape.
+const MAX_SHARED_STATE_HINTS: usize = 512;
+
 /// Immutable type metadata. Positions originate in the generated library, never access order.
 #[derive(Debug)]
 pub struct FieldLayout {
@@ -120,7 +123,7 @@ pub struct LoadedSnapshot {
 }
 
 impl LoadedSnapshot {
-    /// Intern immutable geometry only. Weak entries cannot retain historical states or values.
+    /// Intern immutable geometry only. Bounded weak hints never own row values.
     pub fn into_shared(self) -> Arc<Self> {
         use std::hash::{Hash, Hasher};
         fn unordered_hash<T: Hash>(values: impl Iterator<Item = T>) -> u64 {
@@ -140,20 +143,29 @@ impl LoadedSnapshot {
             .states
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        states.retain(|_, states| {
-            states.retain(|state| state.strong_count() > 0);
-            !states.is_empty()
-        });
-        let bucket = states.entry(key).or_default();
-        if let Some(existing) = bucket
-            .iter()
+        if let Some(existing) = states
+            .get(&key)
+            .into_iter()
+            .flatten()
             .filter_map(std::sync::Weak::upgrade)
             .find(|state| **state == self)
         {
             return existing;
         }
+        // A live hit must not scan every historical projection. On a miss,
+        // reclaim dead hints and count references (including hash collisions).
+        let mut retained = 0;
+        states.retain(|_, bucket| {
+            bucket.retain(|state| state.strong_count() > 0);
+            retained += bucket.len();
+            !bucket.is_empty()
+        });
         let state = Arc::new(self);
-        bucket.push(Arc::downgrade(&state));
+        if retained < MAX_SHARED_STATE_HINTS {
+            states.entry(key).or_default().push(Arc::downgrade(&state));
+        }
+        // Saturation affects cache admission only. Operation-local result
+        // layouts still share this state; held views remain fully valid.
         state
     }
 
@@ -336,6 +348,74 @@ mod lifetime_tests {
     use super::*;
 
     #[test]
+    fn live_projection_cache_is_bounded_and_saturated_lists_still_share_geometry() {
+        let layout = FieldLayout::from_generated(
+            "BoundedProbe",
+            "v1",
+            &[("id", 0), ("version", 1), ("name", 2)],
+            &[
+                ("id", "id", "id"),
+                ("version", "version", "version"),
+                ("name", "name", "name"),
+            ],
+            &[],
+            &["id", "version", "name"],
+        )
+        .unwrap();
+        let retained = LoadedSnapshot::projection(layout.clone(), ["id", "name"]).into_shared();
+        let mut held = Vec::new();
+        for index in 0..10_000 {
+            let code = format!("#held_{index}");
+            let state =
+                LoadedSnapshot::projection(layout.clone(), ["id", code.as_str()]).into_shared();
+            assert!(state.is_loaded(&code));
+            assert!(!retained.is_loaded(&code));
+            held.push(state);
+        }
+        let cache = layout.states.lock().unwrap();
+        assert!(
+            cache.values().map(Vec::len).sum::<usize>() <= 512,
+            "live result shapes must not make the type cache unbounded"
+        );
+        drop(cache);
+        let reused = LoadedSnapshot::projection(layout.clone(), ["id", "name"]).into_shared();
+        assert!(Arc::ptr_eq(&retained, &reused));
+        // One provider/result layout owns the actual list shape even when
+        // the optional type-level interner has exhausted its admission budget.
+        let columns = crate::CompactRowLayout::new(Arc::from([
+            "id".to_owned(),
+            "version".to_owned(),
+            "name".to_owned(),
+        ]));
+        let mut first = None;
+        for id in 0..10_000 {
+            let row = crate::CompactRow::with_layout(
+                columns.clone(),
+                vec![
+                    crate::Value::U64(id),
+                    crate::Value::I64(1),
+                    crate::Value::Null,
+                ],
+            );
+            let crate::eval::LoadState::Indexed(state) = row.indexed_load_state(layout.clone())
+            else {
+                panic!("indexed layout required");
+            };
+            assert!(state.is_loaded("name"));
+            assert_eq!(row.get("id"), Some(&crate::Value::U64(id)));
+            if let Some(first) = &first {
+                assert!(Arc::ptr_eq(first, &state));
+            } else {
+                first = Some(state);
+            }
+        }
+        drop(columns);
+        drop(held);
+        assert!(first.unwrap().is_loaded("name"));
+        assert!(!retained.is_loaded("version"));
+    }
+
+    #[test]
     fn dead_projection_entries_are_pruned_without_retaining_states_or_layouts() {
         let layout = FieldLayout::from_generated(
             "LifetimeProbe",
@@ -363,12 +443,13 @@ mod lifetime_tests {
             drop(temporary);
             assert!(weak_temporary.upgrade().is_none());
         }
-        // One new interning operation sweeps the final dead entry.
+        // A live hit leaves unrelated weak hints alone; the final dead hint
+        // owns no snapshot fields and will be swept by the next miss.
         let reused = LoadedSnapshot::projection(layout.clone(), ["id", "name"]).into_shared();
         assert!(Arc::ptr_eq(&retained, &reused));
         let cache = layout.states.lock().unwrap();
-        assert_eq!(cache.len(), 1);
-        assert_eq!(cache.values().map(Vec::len).sum::<usize>(), 1);
+        assert!(cache.len() <= 2);
+        assert!(cache.values().map(Vec::len).sum::<usize>() <= 2);
         drop(cache);
         drop(reused);
         drop(layout);
