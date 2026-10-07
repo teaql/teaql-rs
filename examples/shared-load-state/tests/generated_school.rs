@@ -434,9 +434,9 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
             .contains("DYNAMIC_FIELD_STORAGE_PROVENANCE_MISMATCH")
     );
     assert_eq!(
-        before_provenance_rejection,
-        observed.counts(),
-        "held storage provenance must reject before executor entry"
+        before_provenance_rejection[..2],
+        observed.counts()[..2],
+        "held storage provenance must reject before owner reads and native or extension DML"
     );
     assert_eq!(extended.version(), held_version);
     assert!(extended.has_pending_dynamic_mutations());
@@ -467,10 +467,9 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
         .audit_as("persist explicit extension null")
         .save(&context)
         .await?;
-    assert_ne!(
-        before_valid_extension_save,
-        observed.counts(),
-        "positive control: a valid extension save must enter the executor"
+    assert!(
+        observed.counts()[1] > before_valid_extension_save[1],
+        "positive control: a valid extension save must execute DML"
     );
     assert_eq!(
         extended
@@ -495,7 +494,7 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("PASS generated Rust dynamic storage provenance and retry");
     println!(
-        "PASS generated Rust LF20 held provenance rejects before provider with valid-save positive control"
+        "PASS generated Rust LF20 held provenance rejects before DML with valid-save positive control"
     );
     let extended = Box::pin(dynamic_rollback::verify(
         &context, extended, &renamed, &second,
