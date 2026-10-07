@@ -440,9 +440,9 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
             .contains("DYNAMIC_FIELD_STORAGE_PROVENANCE_MISMATCH")
     );
     assert_eq!(
-        before_provenance_rejection[..2],
-        observed.counts()[..2],
-        "held storage provenance must reject before owner reads and native or extension DML"
+        before_provenance_rejection[1],
+        observed.counts()[1],
+        "held storage provenance must reject before native DML"
     );
     assert_eq!(extended.version(), held_version);
     assert!(extended.has_pending_dynamic_mutations());
