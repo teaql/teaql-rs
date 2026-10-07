@@ -20,6 +20,8 @@ mod property_metadata;
 mod dynamic_rollback;
 #[path = "support/field_order.rs"]
 mod field_order;
+#[path = "support/independent_mutation.rs"]
+mod independent_mutation;
 #[path = "support/materialization.rs"]
 mod materialization;
 #[path = "support/namespace_cow.rs"]
@@ -313,6 +315,7 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
         "the observer must see an accepted readback, mutation, transaction and commit: {accepted_counts:?}");
     context.register_executor(original_executor);
     println!("PASS generated Rust sparse Checker rejects before provider entry; positive save counts={accepted_counts:?}");
+    independent_mutation::verify(&context, changed_id, &renamed, &second).await?;
     let related = Q::schools()
         .with_id_is(changed_id)
         .select_platform_with(Q::platforms_minimal().select_name())
