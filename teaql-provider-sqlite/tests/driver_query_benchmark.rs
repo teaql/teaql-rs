@@ -150,8 +150,9 @@ fn allocation_layers(
         let (cloned, calls, bytes, _) = measured(|| {
             states
                 .iter()
-                .map(|state| teaql_runtime::EntityRuntimeState::clone(state))
-                .collect::<Vec<_>>()
+                .copied()
+                .cloned()
+                .collect::<Vec<teaql_runtime::EntityRuntimeState>>()
         });
         // Retained baselines and empty mutation intent are correctness controls,
         // not part of the measured cloning workload.
@@ -186,6 +187,11 @@ fn allocation_layers(
 #[test]
 #[ignore = "opt-in database/driver benchmark; run --release --ignored --nocapture"]
 fn matched_sqlite_driver_queries() {
+    let log_mode =
+        std::env::var("TEAQL_DRIVER_BENCHMARK_LOG_MODE").unwrap_or_else(|_| "off".into());
+    assert!(matches!(log_mode.as_str(), "off" | "default"));
+    let default_log = log_mode == "default";
+    println!("BENCHMARK_LOG_MODE,{log_mode}");
     let descriptor = Probe::entity_descriptor();
     let transport =
         SqliteMutationExecutor::from_connection(rusqlite::Connection::open_in_memory().unwrap());
@@ -197,7 +203,11 @@ fn matched_sqlite_driver_queries() {
         transport.clone(),
         Schema(Arc::new(descriptor.clone())),
     ));
-    context.disable_sql_log();
+    if !default_log {
+        context.disable_sql_log();
+    } else {
+        assert_eq!(context.sql_log_options(), Default::default());
+    }
     futures_executor::block_on(context.ensure_schema()).unwrap();
     let queries = Arc::new(Mutex::new(Vec::new()));
     let mut observed_context = UserContext::new()
@@ -256,7 +266,10 @@ fn matched_sqlite_driver_queries() {
             };
             let query = SelectQuery::new("DriverProbe")
                 .projects(names)
-                .filter(Expr::gt("version", 0_i64))
+                .filter(Expr::and([
+                    Expr::gt("version", 0_i64),
+                    Expr::begin_with("name", "row-"),
+                ]))
                 .order_by(OrderBy::asc("id"))
                 .limit(count)
                 .comment("what: matched typed load-state driver probe");
@@ -344,10 +357,14 @@ fn matched_sqlite_driver_queries() {
             // The capture lane already touched SQLite. This is the first query
             // on this runtime/shape, not a process/database cold-start result.
             println!("FIRST_RUNTIME_DEFAULT_LOG,{count},{full},{}", cold.3);
-            context.disable_select_sql_log();
+            if !default_log {
+                context.disable_select_sql_log();
+            }
+            context.clear_sql_logs();
             for _ in 0..20 {
                 std::hint::black_box(native());
                 std::hint::black_box(runtime(&context));
+                context.clear_sql_logs();
             }
             // Matched transport and prepared-input hydration allocation stages.
             // No setup, clone preparation, snapshot assertions or elapsed-time claims.
@@ -378,6 +395,31 @@ fn matched_sqlite_driver_queries() {
                     assert_eq!(typed.is_field_loaded("note"), full);
                     assert!(Arc::ptr_eq(&state, &typed.loaded_state_snapshot().unwrap()));
                 }
+                if default_log {
+                    let logs = context.sql_logs();
+                    assert_eq!(
+                        logs.len(),
+                        1,
+                        "one logged runtime query per measured sample"
+                    );
+                    assert_eq!(
+                        logs[0].comment.as_deref(),
+                        Some("what: matched typed load-state driver probe")
+                    );
+                    assert_eq!(
+                        logs[0].purpose.as_deref(),
+                        Some("why: isolate governed runtime query overhead")
+                    );
+                    assert_ne!(
+                        logs[0].params, compiled.params,
+                        "default diagnostics stay masked"
+                    );
+                } else {
+                    assert!(context.sql_logs().is_empty());
+                }
+                // Retaining or cloning log entries is outside the query counter.
+                // Bound the diagnostic buffer instead of accumulating 31 graphs/logs.
+                context.clear_sql_logs();
                 raw_times.push(raw_time);
                 runtime_times.push(typed_time);
                 raw_allocations.push((raw_calls, raw_bytes));
@@ -404,5 +446,7 @@ fn matched_sqlite_driver_queries() {
             }
         }
     }
-    println!("PASS matched typed driver results and shared immutable snapshots; log-off only");
+    println!(
+        "PASS matched typed driver results and shared immutable snapshots; log-mode={log_mode}"
+    );
 }
