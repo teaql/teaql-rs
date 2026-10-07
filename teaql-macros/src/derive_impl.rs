@@ -193,6 +193,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     let mut runtime_state_field_ident: Option<syn::Ident> = None;
     let mut id_field_ident: Option<syn::Ident> = None;
     let mut unknown_record_field_arm = quote! { _ => {} };
+    let mut has_dynamic_properties = false;
 
     for field in named_fields.iter().cloned() {
         let field_ident = field.ident.expect("named field");
@@ -217,6 +218,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         }
 
         if parsed.dynamic {
+            has_dynamic_properties = true;
             record_value_slots.push(quote! {
                 let mut __teaql_dynamic_values = ::std::collections::BTreeMap::new();
             });
@@ -889,6 +891,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         }
 
         impl ::teaql_core::Entity for #struct_name {
+            fn supports_dynamic_property_load() -> bool { #has_dynamic_properties }
             #from_compact_impl
             #borrowed_json_impl
 

@@ -158,6 +158,24 @@ async fn fresh_generated_school_uses_shared_indexed_state() -> Result<(), Box<dy
         "FK identity is not materialized target detail"
     );
     assert!(full_json.get("school_type").is_none());
+    let restored = context.decode_json_entity::<school_management_service_core::School>(&sparse_json)?;
+    assert_eq!(E::school(&restored).get_name().eval().as_deref(), Some(first.as_str()));
+    assert!(!restored.is_field_loaded("address"));
+    assert!(restored.dirty_fields().is_none());
+    assert!(!restored.has_pending_dynamic_mutations());
+    assert_eq!(restored.into_json(), sparse_json);
+    let restored = context.decode_json_entity::<school_management_service_core::School>(&full_json)?;
+    assert_eq!(E::school(&restored).get_student_capacity().eval(), Some(0));
+    assert_eq!(E::school(&restored).get_active().eval(), Some(false));
+    assert_eq!(E::school(&restored).get_school_type_id().eval(), Some(1001));
+    assert!(restored.dirty_fields().is_none());
+    assert_eq!(restored.into_json(), full_json);
+    let decoded = context.decode_json_entities::<school_management_service_core::School>(
+        &teaql_core::serde_json::json!([sparse[0].clone().into_json(), sparse[1].clone().into_json()])
+    )?;
+    assert!(Arc::ptr_eq(&decoded[0].loaded_state_snapshot().unwrap(), &decoded[1].loaded_state_snapshot().unwrap()));
+    assert_eq!(E::school(&decoded[1]).get_name().eval().as_deref(), Some(second.as_str()));
+    println!("PASS generated Rust typed native JSON roundtrip and snapshot sharing {round}");
     assert!(Arc::ptr_eq(
         &snapshot,
         &full[0].loaded_state_snapshot().unwrap()

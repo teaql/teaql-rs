@@ -35,6 +35,7 @@ use crate::{
 use teaql_core::business_id::BusinessIdAllocator;
 use teaql_core::{EntityDescriptor, Value};
 
+mod json;
 mod locking;
 mod logging;
 mod pagination;

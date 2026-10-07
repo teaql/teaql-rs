@@ -52,6 +52,22 @@ forward target retains the FK but remains NotLoaded; its E negative test catches
 the documented fail-fast diagnostic, not ordinary Null. Both rounds require
 this graph gate to pass.
 
+Both rounds also decode full and minimal native JSON through
+`context.decode_json_entity::<School>(&json)` and check generated E APIs,
+loaded NULL versus omitted NotLoaded, dates, zero/false and clean mutation state.
+`decode_json_entities` shares actual projection dictionaries and indexed
+snapshots across compatible rows without sharing their values or ledgers.
+The reader uses installed context metadata and CompactRow, not a Record API or
+serde deserialization of internal state. Native property aliases normalize to
+the same field; unknown keys, duplicate aliases and incompatible metadata reject.
+
+This first reader stage does not decode nested relation graphs or persistent
+`#` inputs: both reject explicitly rather than disappearing. Readonly `_` data
+requires an actual dynamic-property carrier; it receives no fixed indexes.
+Decoded JSON is presentation data, not database authority or permission to save.
+Load the governed object before business mutations and keep full Checker/audit
+requirements. Relation-graph input remains the next implementation stage.
+
 - Schema bootstrap is idempotent; constants keep IDs 1001 and 1002.
 - Generated field indexes match the installed shared type layout.
 - Compatible list rows share the exact immutable snapshot reference; full and

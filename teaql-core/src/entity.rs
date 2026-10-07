@@ -63,6 +63,11 @@ impl std::fmt::Display for EntityError {
 impl std::error::Error for EntityError {}
 
 pub trait Entity: TeaqlEntity + Sized {
+    /// Framework JSON hydration capability; readonly properties remain unnumbered data.
+    #[doc(hidden)]
+    fn supports_dynamic_property_load() -> bool {
+        false
+    }
     /// Runtime-owned persistent-extension carrier, separate from readonly dynamic properties.
     fn dynamic_field_values(&self) -> Option<&crate::dynamic_fields::DynamicFieldValues> {
         None

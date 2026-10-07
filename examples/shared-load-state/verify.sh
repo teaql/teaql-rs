@@ -69,6 +69,7 @@ for round in first second; do
       exit 1
     }
   rg -F "PASS generated indexed Q/E/Checker/create/update/delete and snapshot sharing $round" "$run_dir/$round.log"
+  rg -F "PASS generated Rust typed native JSON roundtrip and snapshot sharing $round" "$run_dir/$round.log"
   rg -F "PASS generated Rust dynamic storage provenance and retry" "$run_dir/$round.log"
   rg -F "PASS generated Rust namespace serialization and NotLoaded boundary" "$run_dir/$round.log"
   rg -F "PASS generated Rust nested/reverse graph Q/E/JSON and Empty/NotLoaded isolation" "$run_dir/$round.log"
