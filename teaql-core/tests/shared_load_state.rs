@@ -372,6 +372,148 @@ fn physical_scalar_alias_decodes_actual_payload_not_a_loaded_default() {
     assert!(row.is_field_loaded("display_name"));
 }
 
+#[test]
+fn canonical_member_and_physical_aliases_decode_the_same_value_and_unknown_names_load_nothing() {
+    use teaql_core::{CompactRow, CompactRowLayout, Entity, Value};
+    #[derive(Clone, Debug, teaql_macros::TeaqlEntity)]
+    #[teaql(entity = "ThreeNameRow", indexed_layout)]
+    struct Row {
+        #[teaql(id)]
+        id: u64,
+        #[teaql(version)]
+        version: i64,
+        #[teaql(column = "legacy_url")]
+        display_name: Option<String>,
+        #[teaql(skip)]
+        __load_state: LoadState,
+    }
+    impl Row {
+        const __TEAQL_FIELD_LAYOUT_REVISION: &'static str = "three-name-v1";
+        const __TEAQL_FIXED_FIELD_INDEXES: &'static [(&'static str, usize)] =
+            &[("id", 0), ("version", 1), ("business_name", 2)];
+        const __TEAQL_FIXED_FIELD_MAPPINGS: &'static [(
+            &'static str,
+            &'static str,
+            &'static str,
+        )] = &[
+            ("id", "id", "id"),
+            ("version", "version", "version"),
+            ("business_name", "display_name", "legacy_url"),
+        ];
+    }
+    for alias in [
+        "business_name",
+        "display_name",
+        "legacy_url",
+        "business_nmae",
+    ] {
+        let row = Row::from_compact_row(CompactRow::with_layout(
+            CompactRowLayout::new(Arc::from(["id".into(), "version".into(), alias.into()])),
+            vec![
+                Value::U64(1),
+                Value::I64(1),
+                Value::Text("actual value".into()),
+            ],
+        ))
+        .unwrap();
+        let known = alias != "business_nmae";
+        assert_eq!(
+            row.display_name.as_deref(),
+            known.then_some("actual value"),
+            "alias {alias}"
+        );
+        for name in ["business_name", "display_name", "legacy_url"] {
+            assert_eq!(
+                row.is_field_loaded(name),
+                known,
+                "availability via {name} for {alias}"
+            );
+        }
+        assert!(row.__load_state.is_loaded("id"));
+        assert!(row.dirty_fields().is_none());
+        let LoadState::Indexed(state) = &row.__load_state else {
+            panic!("indexed alias state");
+        };
+        assert!(LoadedSnapshot::with_loaded(state, "business_nmae", true).is_err());
+        assert_eq!(state.bits(), if known { 7 } else { 3 });
+    }
+}
+
+#[test]
+fn identical_column_shapes_do_not_reuse_masks_across_entity_types_or_revisions() {
+    use teaql_core::{CompactRow, CompactRowLayout, Entity, Value};
+    macro_rules! alternate {
+        ($name:ident, $entity:tt, $revision:literal) => {
+            #[derive(Clone, Debug, teaql_macros::TeaqlEntity)]
+            #[teaql(entity = $entity, indexed_layout)]
+            struct $name {
+                #[teaql(id)]
+                id: u64,
+                #[teaql(version)]
+                version: i64,
+                #[teaql(column = "base_url")]
+                display_name: Option<String>,
+                active: bool,
+                #[teaql(skip)]
+                __load_state: LoadState,
+            }
+            impl $name {
+                const __TEAQL_FIELD_LAYOUT_REVISION: &'static str = $revision;
+                const __TEAQL_FIXED_FIELD_INDEXES: &'static [(&'static str, usize)] =
+                    &[("id", 0), ("version", 1), ("active", 2), ("base_url", 3)];
+                const __TEAQL_FIXED_FIELD_MAPPINGS: &'static [(
+                    &'static str,
+                    &'static str,
+                    &'static str,
+                )] = &[
+                    ("id", "id", "id"),
+                    ("version", "version", "version"),
+                    ("active", "active", "active"),
+                    ("base_url", "display_name", "base_url"),
+                ];
+            }
+        };
+    }
+    alternate!(OtherType, "OtherIndexedRow", "typed-fixture-v1");
+    alternate!(OtherRevision, "TypedIndexedRow", "typed-fixture-v2");
+    let columns = CompactRowLayout::new(Arc::from([
+        "id".into(),
+        "version".into(),
+        "base_url".into(),
+    ]));
+    let input = || {
+        CompactRow::with_layout(
+            columns.clone(),
+            vec![Value::U64(1), Value::I64(7), Value::Text("private".into())],
+        )
+    };
+    let original = TypedIndexedRow::from_compact_row(input()).unwrap();
+    let foreign = OtherType::from_compact_row(input()).unwrap();
+    let revision = OtherRevision::from_compact_row(input()).unwrap();
+    let indexed = |state: &LoadState| match state {
+        LoadState::Indexed(snapshot) => snapshot.clone(),
+        _ => panic!("indexed entity state"),
+    };
+    let first = indexed(&original.__load_state);
+    let foreign_state = indexed(&foreign.__load_state);
+    let revised_state = indexed(&revision.__load_state);
+    assert_eq!(first.bits(), 7);
+    for state in [&foreign_state, &revised_state] {
+        assert_eq!(state.bits(), 11);
+        assert!(!Arc::ptr_eq(&first, state));
+        assert!(!Arc::ptr_eq(first.layout(), state.layout()));
+        assert!(state.is_loaded("display_name"));
+        assert!(!state.is_loaded("active"));
+    }
+    assert!(!Arc::ptr_eq(&foreign_state, &revised_state));
+    assert_eq!(original.display_name.as_deref(), Some("private"));
+    assert_eq!(foreign.display_name.as_deref(), Some("private"));
+    assert_eq!(revision.display_name.as_deref(), Some("private"));
+    let repeated = TypedIndexedRow::from_compact_row(input()).unwrap();
+    assert!(Arc::ptr_eq(&first, &indexed(&repeated.__load_state)));
+    assert_eq!(first.bits(), 7);
+}
+
 #[derive(Clone, Debug, teaql_macros::TeaqlEntity)]
 #[teaql(entity = "TypedParent", indexed_layout)]
 struct TypedParent {

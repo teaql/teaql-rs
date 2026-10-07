@@ -187,6 +187,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     let mut from_record_fields = Vec::new();
     let mut record_value_slots = Vec::new();
     let mut record_value_match_arms = Vec::new();
+    let mut record_member_fallback_arms = Vec::new();
     let mut into_record_fields = Vec::new();
     let mut id_impl = None;
     let mut version_impl = None;
@@ -384,6 +385,9 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         });
 
         let value_slot = format_ident!("__teaql_value_{}", field_ident);
+        record_member_fallback_arms.push(quote! {
+            #field_name => { #value_slot = Some(value); true },
+        });
         record_value_slots.push(quote! {
             let mut #value_slot: Option<&::teaql_core::Value> = None;
         });
@@ -843,6 +847,27 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         }
     } else {
         quote! {}
+    };
+
+    let unknown_record_field_arm = if indexed_layout {
+        quote! {
+            _ => {
+                // Known native/physical names take the match arms above. Only
+                // an unmatched spelling consults the shared generated table;
+                // never build or clone an alias dictionary per entity row.
+                let known = Self::__TEAQL_FIXED_FIELD_MAPPINGS.iter()
+                    .find(|(canonical, _, column)| *canonical == key.as_str() || *column == key.as_str())
+                    .is_some_and(|(_, member, _)| match *member {
+                        #(#record_member_fallback_arms)*
+                        _ => false,
+                    });
+                if !known {
+                    match key.as_str() { #unknown_record_field_arm }
+                }
+            }
+        }
+    } else {
+        unknown_record_field_arm
     };
 
     let from_compact_body = quote! {
