@@ -64,6 +64,19 @@ pub async fn verify_dynamic(
     let handle = platform.school_list();
     let rows = handle.value().unwrap();
     assert_eq!(rows.len(), 3);
+    let definitions = rows[0].dynamic_field_values().unwrap().definitions();
+    for row in rows {
+        assert!(
+            Arc::ptr_eq(
+                definitions,
+                row.dynamic_field_values().unwrap().definitions()
+            ),
+            "compatible child carriers must share immutable name/type metadata"
+        );
+        let snapshot = row.loaded_state_snapshot().unwrap();
+        assert!(snapshot.layout().index("#note").is_none());
+        assert!(snapshot.layout().index("_note").is_none());
+    }
     let values = rows[0]
         .dynamic_field_values()
         .expect("selected child extension carrier");
@@ -128,6 +141,7 @@ pub async fn verify_dynamic(
         .unwrap()
         .is_null());
     println!("PASS generated Rust nested dynamic Value/NULL/NotLoaded and shared snapshots");
+    println!("PASS generated Rust LF17 dynamic metadata shared without fixed slots");
     Ok(())
 }
 
@@ -299,6 +313,7 @@ pub async fn verify(
         restored_unselected.school_list().state(),
         LoadedRelation::NotLoaded
     );
+    println!("PASS generated Rust LF09 reverse Loaded/Empty/NotLoaded through Q/E/JSON");
 
     let filtered = Q::schools_minimal()
         .with_id_is(school_id)
@@ -329,6 +344,7 @@ pub async fn verify(
     );
     assert!(!restored_filtered.is_field_loaded("school_type"));
     assert!(restored_filtered.dirty_fields().is_none());
+    println!("PASS generated Rust LF08 loaded FK and excluded forward details stay distinct");
     println!("PASS generated Rust typed JSON graph roundtrip and Empty/NotLoaded isolation");
     println!("PASS generated Rust nested/reverse graph Q/E/JSON and Empty/NotLoaded isolation");
     Ok(())
