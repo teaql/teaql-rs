@@ -78,6 +78,64 @@ fn percentile(values: &[u128], numerator: usize) -> u128 {
     values[(values.len() * numerator).div_ceil(100).saturating_sub(1)]
 }
 
+fn native_compact(row: teaql_core::CompactRow) -> NativeRow {
+    NativeRow {
+        id: row.get("id").and_then(teaql_core::Value::try_u64).unwrap(),
+        version: row
+            .get("version")
+            .and_then(teaql_core::Value::try_i64)
+            .unwrap(),
+        name: row
+            .get("name")
+            .and_then(teaql_core::Value::try_text)
+            .unwrap()
+            .to_owned(),
+        note: row
+            .get("note")
+            .and_then(teaql_core::Value::try_text)
+            .map(str::to_owned),
+    }
+}
+
+fn allocation_layers(
+    transport: &SqliteMutationExecutor,
+    query: &CompiledQuery,
+    full: bool,
+    count: u64,
+) {
+    let (rows, calls, bytes, _) = measured(|| transport.fetch_all_compact(query).unwrap());
+    assert_eq!(rows.len(), count as usize);
+    println!("LAYER,compact_fetch,{full},{count},{calls},{bytes}");
+    let expected = rows.iter().cloned().map(native_compact).collect::<Vec<_>>();
+    let prepared = rows.clone();
+    let (plain, calls, bytes, _) =
+        measured(|| prepared.into_iter().map(native_compact).collect::<Vec<_>>());
+    assert_eq!(plain, expected);
+    println!("LAYER,plain_compact_decode,{full},{count},{calls},{bytes}");
+    let prepared = rows;
+    let root = teaql_runtime::EntityRuntimeState::default();
+    let (typed, calls, bytes, _) = measured(|| {
+        prepared
+            .into_iter()
+            .map(|row| Probe::from_compact_row_with_context(row, &root).unwrap())
+            .collect::<Vec<_>>()
+    });
+    let snapshot = typed[0].loaded_state_snapshot().unwrap();
+    for (native, entity) in expected.iter().zip(&typed) {
+        assert_eq!(
+            (&native.name, &native.note, native.id, native.version),
+            (&entity.name, &entity.note, entity.id, entity.version)
+        );
+        assert_eq!(entity.is_field_loaded("note"), full);
+        assert!(Arc::ptr_eq(
+            &snapshot,
+            &entity.loaded_state_snapshot().unwrap()
+        ));
+        assert!(entity.dirty_fields().is_none());
+    }
+    println!("LAYER,runtime_compact_decode,{full},{count},{calls},{bytes}");
+}
+
 #[test]
 #[ignore = "opt-in database/driver benchmark; run --release --ignored --nocapture"]
 fn matched_sqlite_driver_queries() {
@@ -244,6 +302,9 @@ fn matched_sqlite_driver_queries() {
                 std::hint::black_box(native());
                 std::hint::black_box(runtime(&context));
             }
+            // Matched transport and prepared-input hydration allocation stages.
+            // No setup, clone preparation, snapshot assertions or elapsed-time claims.
+            allocation_layers(&transport, &compiled, full, count);
             let mut raw_times = Vec::new();
             let mut runtime_times = Vec::new();
             let mut raw_allocations = Vec::new();

@@ -602,13 +602,51 @@ struct EntityMutationLedger {
 pub struct EntityRuntimeState {
     // The OnceLock itself is shared so entities composed before the first mutation
     // still materialize exactly one graph-owned ledger.
-    inner: Arc<OnceLock<Arc<Mutex<EntityMutationLedger>>>>,
+    inner: LazyLedgerSlot,
     graph: EntityGraphReference,
     // Zero for ordinary SQL graphs; JSON views get operation-local coordinates.
     json_view: u64,
     loaded_snapshot: Option<LoadedEntitySnapshot>,
     // View-owned payload; no allocation on the ordinary fixed-field path.
     dynamic_fields: Option<Box<teaql_core::dynamic_fields::DynamicFieldValues>>,
+}
+
+/// A never-cloned readonly view needs no heap-allocated mutation binding.
+/// Cloning shares only the empty slot; ledger construction still waits for mutation.
+#[derive(Debug, Default)]
+struct LazyLedgerSlot {
+    shared: OnceLock<SharedLedgerSlot>,
+}
+
+type MutationLedgerHandle = Arc<Mutex<EntityMutationLedger>>;
+type SharedLedgerSlot = Arc<OnceLock<MutationLedgerHandle>>;
+
+impl LazyLedgerSlot {
+    fn get(&self) -> Option<&MutationLedgerHandle> {
+        self.shared.get()?.get()
+    }
+
+    fn get_or_init(&self, create: impl FnOnce() -> MutationLedgerHandle) -> &MutationLedgerHandle {
+        self.shared.get_or_init(Arc::default).get_or_init(create)
+    }
+
+    fn shares_slot(&self, other: &Self) -> bool {
+        if std::ptr::eq(self, other) {
+            return true;
+        }
+        match (self.shared.get(), other.shared.get()) {
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            _ => false,
+        }
+    }
+}
+
+impl Clone for LazyLedgerSlot {
+    fn clone(&self) -> Self {
+        Self {
+            shared: OnceLock::from(self.shared.get_or_init(Arc::default).clone()),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -674,7 +712,7 @@ impl EntityGraphReference {
 impl Default for EntityRuntimeState {
     fn default() -> Self {
         Self {
-            inner: Arc::default(),
+            inner: LazyLedgerSlot::default(),
             graph: EntityGraphReference::Strong(Arc::default()),
             json_view: 0,
             loaded_snapshot: None,
@@ -710,7 +748,7 @@ impl PartialEq for EntityRuntimeState {
         if self.dynamic_fields != other.dynamic_fields {
             return false;
         }
-        if Arc::ptr_eq(&self.inner, &other.inner) {
+        if self.inner.shares_slot(&other.inner) {
             return true;
         }
         match (self.inner.get(), other.inner.get()) {
@@ -790,7 +828,7 @@ impl EntityRuntimeState {
 
     pub fn fresh_with_shared_graph(source: &EntityRuntimeState) -> Self {
         Self {
-            inner: Arc::default(),
+            inner: LazyLedgerSlot::default(),
             graph: source.graph.preserve(),
             json_view: source.json_view,
             loaded_snapshot: None,
@@ -802,7 +840,7 @@ impl EntityRuntimeState {
     /// the graph from strongly owning an entity that strongly owns the graph in return.
     pub(crate) fn fresh_with_weak_graph(source: &EntityRuntimeState) -> Self {
         Self {
-            inner: Arc::default(),
+            inner: LazyLedgerSlot::default(),
             graph: source.graph.weak(),
             json_view: source.json_view,
             loaded_snapshot: None,
@@ -1896,6 +1934,66 @@ mod composition_api_tests {
 #[cfg(test)]
 mod lazy_root_tests {
     use super::*;
+
+    #[test]
+    fn readonly_state_keeps_binding_and_ledger_unallocated_until_clone_or_mutation() {
+        let root = EntityRuntimeState::default();
+        let key = EntityKey::new_static("Probe", 7_u64);
+        assert!(root.inner.shared.get().is_none());
+        assert!(root.get(&key, "name").is_none());
+        assert!(!root.has_pending_dynamic_mutations());
+        assert!(root.inner.shared.get().is_none());
+        let cloned = root.clone();
+        assert!(root.inner.shares_slot(&cloned.inner));
+        assert!(!root.has_mutation_context());
+        assert!(!cloned.has_mutation_context());
+        let independent = EntityRuntimeState::default();
+        assert!(!root.inner.shares_slot(&independent.inner));
+        cloned.set(key.clone(), "name", "changed");
+        assert_eq!(root.get(&key, "name"), Some(Value::Text("changed".into())));
+        assert!(independent.get(&key, "name").is_none());
+        assert!(Arc::ptr_eq(
+            root.inner.get().unwrap(),
+            cloned.inner.get().unwrap()
+        ));
+    }
+
+    #[test]
+    fn concurrent_first_clones_share_one_empty_binding_then_one_ledger() {
+        let root = EntityRuntimeState::default();
+        let barrier = std::sync::Barrier::new(16);
+        let clones = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..16)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        root.clone()
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert!(!root.has_mutation_context());
+        for cloned in &clones {
+            assert!(root.inner.shares_slot(&cloned.inner));
+            assert!(!cloned.has_mutation_context());
+        }
+        let key = EntityKey::new_static("Probe", 1_u64);
+        clones[0].set(key.clone(), "name", "one ledger");
+        for cloned in &clones {
+            assert!(Arc::ptr_eq(
+                root.inner.get().unwrap(),
+                cloned.inner.get().unwrap()
+            ));
+            assert_eq!(
+                cloned.get(&key, "name"),
+                Some(Value::Text("one ledger".into()))
+            );
+        }
+    }
 
     #[derive(Clone)]
     struct GraphChild {
