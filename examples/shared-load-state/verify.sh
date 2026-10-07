@@ -74,6 +74,7 @@ for round in first second; do
   rg -F "PASS generated Rust same-identity JSON projection isolation through E API" "$run_dir/$round.log"
   rg -F "PASS generated Rust sparse Checker rejects before provider entry" "$run_dir/$round.log"
   rg -F "PASS generated Rust Q selection and real SQLite column-order invariance" "$run_dir/$round.log"
+  rg -F "PASS generated Rust page and chunked stream shared load state" "$run_dir/$round.log"
   rg -F "PASS generated Rust dynamic storage provenance and retry" "$run_dir/$round.log"
   rg -F "PASS generated Rust namespace serialization and NotLoaded boundary" "$run_dir/$round.log"
   rg -F "PASS generated Rust nested/reverse graph Q/E/JSON and Empty/NotLoaded isolation" "$run_dir/$round.log"

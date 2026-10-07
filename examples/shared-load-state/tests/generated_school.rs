@@ -14,6 +14,8 @@ mod field_order;
 mod nested_graph;
 #[path = "support/observed_executor.rs"]
 mod observed_executor;
+#[path = "support/page_stream.rs"]
+mod page_stream;
 
 #[tokio::test]
 async fn fresh_generated_school_uses_shared_indexed_state() -> Result<(), Box<dyn std::error::Error>>
@@ -131,6 +133,7 @@ async fn fresh_generated_school_uses_shared_indexed_state() -> Result<(), Box<dy
     assert_eq!(E::school(&full[0]).get_active().eval(), Some(false));
     assert_eq!(E::school(&full[0]).get_school_type_id().eval(), Some(1001));
     field_order::verify(&context, full[0].id()).await?;
+    page_stream::verify(&context, &first, &second).await?;
 
     let sparse = Q::schools_minimal()
         .with_name_in([first.as_str(), second.as_str()])
