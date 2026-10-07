@@ -414,11 +414,13 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
     assert!(saved_json.get("_original_values").is_none());
     println!("PASS generated Rust namespace serialization and NotLoaded boundary");
     nested_graph::verify_dynamic(&context, changed_id, &renamed, &second).await?;
+    // The earlier Checker control restores the normal graph saver. Reinstall
+    // the observer for this independent pre-DML provenance control.
+    context.register_executor(observed.clone());
     let held_version = extended.version();
     extended.update_dynamic_field("note", "must not cross storage profile".into())?;
-    // The extension-only path uses its typed storage resource directly. Include
-    // a native mutation so this observer can prove the provenance gate runs
-    // before native DML, rather than merely proving eventual rollback.
+    // Include a native mutation to prove the provenance gate runs before
+    // native DML, rather than merely proving eventual rollback.
     extended.update_student_capacity(1_i64);
     context.set_dynamic_fields_provider(Arc::new(DatabaseDynamicFieldsProvider::<
         observed_executor::ObservedExecutor<ServiceRuntimeExecutor>,
@@ -452,7 +454,7 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
     );
     context.set_dynamic_fields_provider(Arc::new(DatabaseDynamicFieldsProvider::<
         observed_executor::ObservedExecutor<ServiceRuntimeExecutor>,
-    >::new("example", [definitions])?));
+    >::new("example", [definitions.clone()])?));
     let stored = Q::schools()
         .with_id_is(changed_id)
         .select_dynamic_fields_with(DynamicFieldSelection::All)
@@ -507,6 +509,14 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "PASS generated Rust LF20 held provenance rejects before DML with valid-save positive control"
     );
+    context.register_executor(
+        context
+            .require_resource::<ServiceRuntimeExecutor>()?
+            .clone(),
+    );
+    context.set_dynamic_fields_provider(Arc::new(DatabaseDynamicFieldsProvider::<
+        ServiceRuntimeExecutor,
+    >::new("example", [definitions.clone()])?));
     let extended = Box::pin(dynamic_rollback::verify(
         &context, extended, &renamed, &second,
     ))
