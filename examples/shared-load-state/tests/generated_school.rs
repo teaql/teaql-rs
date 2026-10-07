@@ -36,6 +36,10 @@ mod observed_executor;
 mod original_clone;
 #[path = "support/page_stream.rs"]
 mod page_stream;
+#[path = "support/partial_graph_checker.rs"]
+mod partial_graph_checker;
+#[path = "support/empty_native.rs"]
+mod empty_native;
 
 #[tokio::test]
 async fn fresh_generated_school_uses_shared_indexed_state() -> Result<(), Box<dyn std::error::Error>>
@@ -217,6 +221,7 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
     assert!(!restored.is_field_loaded("address"));
     assert!(restored.dirty_fields().is_none());
     assert!(!restored.has_pending_dynamic_mutations());
+    empty_native::verify(&context, &sparse_json)?;
     assert_eq!(restored.into_json(), sparse_json);
     let restored =
         context.decode_json_entity::<school_management_service_core::School>(&full_json)?;
@@ -313,9 +318,10 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
     let accepted_counts = observed.counts();
     assert!(accepted_counts[0] > 0 && accepted_counts[1] > 0 && accepted_counts[2] > 0 && accepted_counts[3] > 0,
         "the observer must see an accepted readback, mutation, transaction and commit: {accepted_counts:?}");
-    context.register_executor(original_executor);
     println!("PASS generated Rust sparse Checker rejects before provider entry; positive save counts={accepted_counts:?}");
     independent_mutation::verify(&context, changed_id, &renamed, &second).await?;
+    partial_graph_checker::verify(&context, &renamed, &observed).await?;
+    context.register_executor(original_executor);
     let related = Q::schools()
         .with_id_is(changed_id)
         .select_platform_with(Q::platforms_minimal().select_name())
