@@ -79,6 +79,7 @@ for round in first second; do
   rg -F "PASS generated Rust Q selection and real SQLite column-order invariance" "$run_dir/$round.log"
   rg -F "PASS generated Rust page and chunked stream shared load state" "$run_dir/$round.log"
   rg -F "PASS generated Rust durable dynamic stream Value/Null/NotLoaded sharing and early-drop audited save $round" "$run_dir/$round.log"
+  rg -F "PASS generated Rust dynamic stream full/overflow/sparse state and Checker-before-provider $round" "$run_dir/$round.log"
   rg -F "PASS generated Rust readonly property metadata shares schema without installing values or fixed slots" "$run_dir/$round.log"
   rg -F "PASS generated Rust typed Checker reconstruction shares snapshot without widening values" "$run_dir/$round.log"
   rg -F "PASS generated Rust dynamic property borrowed null/missing/zero reads with zero allocation and provider entry" "$run_dir/$round.log"

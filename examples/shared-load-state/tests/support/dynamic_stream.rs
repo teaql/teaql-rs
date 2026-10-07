@@ -111,6 +111,43 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
             assert_eq!(E::school(row).get_student_capacity().eval(), Some(0));
             assert_eq!(E::school(row).get_active().eval(), Some(false));
+            let state = row.loaded_state_snapshot().unwrap();
+            for (name, slot) in School::__TEAQL_FIXED_FIELD_INDEXES {
+                // A reference's fixed bit stores its FK, not materialized target detail.
+                if state.layout().is_relation(name) {
+                    assert!(
+                        !row.is_field_loaded(name),
+                        "target detail was not requested"
+                    );
+                } else {
+                    assert!(
+                        row.is_field_loaded(name),
+                        "complete stream omitted fixed slot {slot}: {name}"
+                    );
+                }
+                if *slot < 64 {
+                    assert_ne!(
+                        state.bits() & (1_u64 << slot),
+                        0,
+                        "native/FK slot {slot} missing"
+                    );
+                } else {
+                    assert!(state.overflow().unwrap().contains(slot));
+                }
+            }
+            if std::env::var("TEAQL_LOAD_STATE_WIDE").as_deref() == Ok("true") {
+                let json = row.clone().into_json();
+                for slot in [63, 64, 65, 129] {
+                    let (name, _) = School::__TEAQL_FIXED_FIELD_INDEXES
+                        .iter()
+                        .find(|(_, index)| *index == slot)
+                        .unwrap();
+                    assert!(
+                        json.get(*name).unwrap().is_null(),
+                        "loaded-null slot {slot} changed during enhancement"
+                    );
+                }
+            }
             let fields = row.dynamic_field_values().unwrap();
             assert_eq!(
                 fields.field("note")?.state(),
@@ -128,6 +165,75 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             assert!(!row.has_pending_dynamic_mutations());
         }
     }
+    let mut sparse_stream = Q::schools_minimal()
+        .with_name_in(names.iter().map(String::as_str))
+        .select_name()
+        .select_dynamic_fields_with(selection.clone())
+        .order_by_id_asc()
+        .limit(3)
+        .stream(1)
+        .comment("what: stream a sparse native projection with loaded extensions")
+        .purpose("why: enhancement must not authorize an incomplete object save")
+        .execute_for_stream(&context)
+        .await?;
+    let mut sparse = Vec::new();
+    while let Some(row) = sparse_stream.next().await {
+        sparse.push(row?);
+    }
+    drop(sparse_stream);
+    assert_eq!(sparse.len(), 3);
+    for row in &sparse {
+        for (name, _) in School::__TEAQL_FIXED_FIELD_INDEXES {
+            assert_eq!(
+                row.is_field_loaded(name),
+                ["id", "version", "name"].contains(name)
+            );
+        }
+        assert_eq!(
+            row.dynamic_field_values().unwrap().field("unused")?.state(),
+            DynamicFieldState::NotLoaded
+        );
+    }
+    let shared = sparse[0].loaded_state_snapshot().unwrap();
+    assert!(Arc::ptr_eq(
+        &shared,
+        &sparse[1].loaded_state_snapshot().unwrap()
+    ));
+    let observed = crate::observed_executor::ObservedExecutor::new(
+        context
+            .require_resource::<ServiceRuntimeExecutor>()?
+            .clone(),
+    );
+    context.register_executor(observed.clone());
+    let before = observed.counts();
+    let mut pending = sparse[0].clone();
+    pending.update_dynamic_field("note", "must-not-persist".into())?;
+    let error = pending
+        .clone()
+        .audit_as("reject extension mutation on an incomplete streamed object")
+        .save(&context)
+        .await
+        .expect_err("loaded extensions cannot authorize a sparse object save");
+    assert!(
+        matches!(error, teaql_runtime::RuntimeError::Check(_)),
+        "wrong rejection: {error}"
+    );
+    assert_eq!(observed.counts(), before);
+    assert!(Arc::ptr_eq(
+        &shared,
+        &pending.loaded_state_snapshot().unwrap()
+    ));
+    assert!(!pending.is_field_loaded("address"));
+    assert!(pending.has_pending_dynamic_mutations());
+    assert_eq!(
+        sparse[1]
+            .dynamic_field_values()
+            .unwrap()
+            .field("note")?
+            .state(),
+        DynamicFieldState::Null
+    );
+    assert!(!sparse[1].has_pending_dynamic_mutations());
     let mut stream = Q::schools()
         .with_name_in(names.iter().map(String::as_str))
         .select_self_fields()
@@ -146,6 +252,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .audit_as("update a held streamed entity after early cursor close")
         .save(&context)
         .await?;
+    assert!(
+        observed.counts()[1] > before[1],
+        "positive save must prove the observer is live"
+    );
     let reloaded = Q::schools()
         .with_name_is(names[0].as_str())
         .select_self_fields()
@@ -165,5 +275,6 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(&"after-stream-close".into())
     );
     println!("PASS generated Rust durable dynamic stream Value/Null/NotLoaded sharing and early-drop audited save {round}");
+    println!("PASS generated Rust dynamic stream full/overflow/sparse state and Checker-before-provider {round}");
     Ok(())
 }
