@@ -8,6 +8,8 @@ use teaql_core::dynamic_fields::{
 use teaql_core::{time::Timestamp, Entity, TeaqlEntity, Value};
 use teaql_runtime::dynamic_fields::DatabaseDynamicFieldsProvider;
 
+#[path = "support/checker_allocations.rs"]
+mod allocation_counter;
 #[path = "support/checker_state.rs"]
 mod checker_state;
 #[path = "support/field_order.rs"]

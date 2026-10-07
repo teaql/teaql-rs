@@ -565,7 +565,6 @@ where
             ),
             _ => None,
         };
-        let checker_values: teaql_core::MutationValues = original_values.clone().into();
         let owned_record = original_values.clone().into();
         match T::from_compact_row(teaql_core::CompactRow::from_map(owned_record)) {
             Ok(mut entity) => {
@@ -573,6 +572,9 @@ where
                     entity.set_checker_loaded_fields(loaded_fields);
                 }
                 if let Some(dirty_fields) = dirty_fields {
+                    // Only mutation-aware reconstruction needs the original value map.
+                    // Readonly checks must not pay for an unused deep copy.
+                    let checker_values: teaql_core::MutationValues = original_values.clone().into();
                     entity.set_checker_dirty_fields(dirty_fields, &checker_values);
                 }
                 let before_check = entity.clone().into_values();
