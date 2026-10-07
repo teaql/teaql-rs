@@ -18,6 +18,8 @@ mod dynamic_property;
 mod dynamic_rollback;
 #[path = "support/field_order.rs"]
 mod field_order;
+#[path = "support/namespace_cow.rs"]
+mod namespace_cow;
 #[path = "support/nested_graph.rs"]
 mod nested_graph;
 #[path = "support/observed_executor.rs"]
@@ -51,6 +53,7 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
         [
             ("note".into(), teaql_core::DataType::Text),
             ("unused".into(), teaql_core::DataType::Text),
+            ("name".into(), teaql_core::DataType::Text),
         ],
     )?;
     context.set_dynamic_fields_provider(Arc::new(DatabaseDynamicFieldsProvider::<
@@ -445,6 +448,13 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
     ))
     .await?;
     let deletion_name = extended.name().to_owned();
+    let extended = Box::pin(namespace_cow::verify(
+        &context,
+        extended.id(),
+        &deletion_name,
+        &second,
+    ))
+    .await?;
     let mut deleted = extended;
     deleted.mark_for_deletion();
     deleted
