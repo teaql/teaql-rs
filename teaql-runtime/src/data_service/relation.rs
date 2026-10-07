@@ -161,6 +161,22 @@ fn relation_top_n_execution_plan(
     }
 }
 
+fn provider_owns_relation_probe_batch(
+    capabilities: &teaql_data_service::DataServiceCapabilities,
+    plan: &RelationLoadPlan,
+    parent_count: usize,
+) -> bool {
+    // The provider's repeated-probe fast path needs at least two values.
+    // A singleton partition otherwise falls back to a window scan; use the
+    // existing scalar bounded-probe path for that one parent instead.
+    parent_count >= 2
+        && capabilities.small_parent_relation_probes
+        && plan
+            .query
+            .as_ref()
+            .is_none_or(|query| query.top_n_probe_parent_threshold.is_none())
+}
+
 impl<'a, E> EntityDataService<'a, E>
 where
     E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
@@ -1269,11 +1285,8 @@ where
         // With execution metadata disabled, retain one semantic partition query and let an
         // embedded provider execute its indexed parent probes behind one executor boundary.
         // When metadata is enabled we intentionally keep one observable result per SQL probe.
-        let provider_owns_probe_batch = capabilities.small_parent_relation_probes
-            && plan
-                .query
-                .as_ref()
-                .is_none_or(|query| query.top_n_probe_parent_threshold.is_none());
+        let provider_owns_probe_batch =
+            provider_owns_relation_probe_batch(&capabilities, plan, ids.len());
         if provider_owns_probe_batch && !self.data_service.metadata.capture_execution_metadata() {
             let query = if compact {
                 self.query_for_compact_plan(plan, parent_rows)
@@ -1563,6 +1576,24 @@ mod planner_tests {
             query: Some(SelectQuery::new("Trip").order_desc("id").limit(10)),
             children: Vec::new(),
         }
+    }
+
+    #[test]
+    fn single_parent_probe_does_not_delegate_to_a_multi_parent_provider_batch() {
+        let mut capabilities = teaql_data_service::DataServiceCapabilities::default();
+        capabilities.small_parent_relation_probes = true;
+        let mut plan = limited_many_plan();
+        assert!(!provider_owns_relation_probe_batch(&capabilities, &plan, 0));
+        assert!(!provider_owns_relation_probe_batch(&capabilities, &plan, 1));
+        assert!(provider_owns_relation_probe_batch(&capabilities, &plan, 2));
+        assert!(provider_owns_relation_probe_batch(&capabilities, &plan, 32));
+        for threshold in [0, 32] {
+            plan.query.as_mut().unwrap().top_n_probe_parent_threshold = Some(threshold);
+            assert!(!provider_owns_relation_probe_batch(&capabilities, &plan, 2));
+        }
+        plan.query.as_mut().unwrap().top_n_probe_parent_threshold = None;
+        capabilities.small_parent_relation_probes = false;
+        assert!(!provider_owns_relation_probe_batch(&capabilities, &plan, 2));
     }
 
     #[test]
