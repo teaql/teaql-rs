@@ -88,6 +88,7 @@ for round in first second; do
   rg -F "PASS generated Rust LF17 dynamic metadata shared without fixed slots" "$run_dir/$round.log"
   rg -F "PASS generated Rust LF19 fixed derived and persistent same-name namespace isolation" "$run_dir/$round.log"
   rg -F "PASS generated Rust LF23 dynamic availability detaches only one view" "$run_dir/$round.log"
+  rg -F "PASS generated Rust LF20 readonly total persists only through modeled materialization" "$run_dir/$round.log"
   rg -F "PASS generated Rust original baseline repeat clones allocate zero and preserve loaded state" "$run_dir/$round.log"
   if [[ "$fixture_inheritance" == true ]]; then
     rg -F "PASS generated Rust inherited indexes Q/E/save and snapshot isolation $round" "$run_dir/$round.log"

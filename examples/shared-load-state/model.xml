@@ -11,4 +11,7 @@
           name="Riverside Primary School" address="12 River Road, Springfield"
           established_date="1995-09-01" student_capacity="800" active="true"
           create_time="createTime()" update_time="updateTime()"/>
+  <school_capacity_summary _name="School Capacity Summary" _module="Reporting"
+          _module_key="reporting" platform="platform()"
+          name="School capacity snapshot" total_capacity="800" school_count="1"/>
 </root>

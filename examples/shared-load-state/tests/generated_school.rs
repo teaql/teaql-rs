@@ -18,6 +18,8 @@ mod dynamic_property;
 mod dynamic_rollback;
 #[path = "support/field_order.rs"]
 mod field_order;
+#[path = "support/materialization.rs"]
+mod materialization;
 #[path = "support/namespace_cow.rs"]
 mod namespace_cow;
 #[path = "support/nested_graph.rs"]
@@ -38,6 +40,12 @@ async fn fresh_generated_school_uses_shared_indexed_state() -> Result<(), Box<dy
         std::mem::size_of_val(flow.as_ref().get_ref())
     );
     flow.await
+}
+
+#[tokio::test]
+async fn fresh_generated_materialization_uses_its_own_model_target(
+) -> Result<(), Box<dyn std::error::Error>> {
+    Box::pin(materialization::run()).await
 }
 
 async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {

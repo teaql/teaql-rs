@@ -29,7 +29,8 @@ rejects a narrow artifact. An existing wide artifact is checked in wide mode
 automatically, so replay cannot silently omit its boundary assertions.
 
 Add `--inheritance` during generation to append one Academy subtype with a
-campus code. The normal three-object model remains unchanged. The producer
+campus code. The base model has Platform, SchoolType, School and a small
+SchoolCapacitySummary reporting target. The producer
 retains a separate inheritance marker; replay activates the inherited test
 target automatically and a requested inherited run rejects a flat artifact.
 With `--wide --inheritance`, inherited fixed positions, private type identity,
@@ -61,12 +62,21 @@ The reader uses installed context metadata and CompactRow, not a Record API or
 serde deserialization of internal state. Native property aliases normalize to
 the same field; unknown keys, duplicate aliases and incompatible metadata reject.
 
-This first reader stage does not decode nested relation graphs or persistent
-`#` inputs: both reject explicitly rather than disappearing. Readonly `_` data
-requires an actual dynamic-property carrier; it receives no fixed indexes.
+Typed nested relation graphs are checked separately by the graph helpers.
+Persistent `#` input cannot establish trusted storage provenance. Readonly `_`
+data requires an actual dynamic-property carrier and receives no fixed indexes.
 Decoded JSON is presentation data, not database authority or permission to save.
-Load the governed object before business mutations and keep full Checker/audit
-requirements. Relation-graph input remains the next implementation stage.
+Load governed data before business mutations and retain full Checker/audit requirements.
+
+`tests/support/materialization.rs` exercises a bounded two-row Q/E capacity
+calculation. `_total_capacity` is a readonly result on the source School: it has
+no fixed slot and a native audited save must not persist it. To retain the result,
+the example creates the modeled SchoolCapacitySummary through its generated
+Mutation API, saves with an audit reason, and queries it back through generated
+Q/E. A nonzero total of 37 and contributor count of 2 prevent a missing value
+from passing as zero. The reporting test has its own SQLite file (the main
+path with `.materialization` appended), reused across both rounds. Keeping it
+separate also avoids enlarging the already-large wide-entity async test frame.
 
 - Schema bootstrap is idempotent; constants keep IDs 1001 and 1002.
 - Generated field indexes match the installed shared type layout.
