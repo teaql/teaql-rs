@@ -421,7 +421,7 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
     // before native DML, rather than merely proving eventual rollback.
     extended.update_student_capacity(1_i64);
     context.set_dynamic_fields_provider(Arc::new(DatabaseDynamicFieldsProvider::<
-        ServiceRuntimeExecutor,
+        observed_executor::ObservedExecutor<ServiceRuntimeExecutor>,
     >::new(
         "other-profile", [definitions.clone()]
     )?));
@@ -451,7 +451,7 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
             .contains("student_capacity")
     );
     context.set_dynamic_fields_provider(Arc::new(DatabaseDynamicFieldsProvider::<
-        ServiceRuntimeExecutor,
+        observed_executor::ObservedExecutor<ServiceRuntimeExecutor>,
     >::new("example", [definitions])?));
     let stored = Q::schools()
         .with_id_is(changed_id)
