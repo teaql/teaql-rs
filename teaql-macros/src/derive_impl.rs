@@ -194,6 +194,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     let mut id_field_ident: Option<syn::Ident> = None;
     let mut unknown_record_field_arm = quote! { _ => {} };
     let mut has_dynamic_properties = false;
+    let mut dynamic_property_impl = quote! {};
 
     for field in named_fields.iter().cloned() {
         let field_ident = field.ident.expect("named field");
@@ -219,6 +220,20 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
 
         if parsed.dynamic {
             has_dynamic_properties = true;
+            dynamic_property_impl = quote! {
+                fn dynamic_property(&self, key: &str) -> Option<&::teaql_core::Value> {
+                    if !key.starts_with('_') { return None; }
+                    self.#field_ident.get(key).filter(|value| match value {
+                        ::teaql_core::Value::Null => false,
+                        ::teaql_core::Value::Json(value) => !value.is_null(),
+                        _ => true,
+                    })
+                }
+
+                fn has_dynamic_property(&self, key: &str) -> bool {
+                    key.starts_with('_') && self.#field_ident.contains_key(key)
+                }
+            };
             record_value_slots.push(quote! {
                 let mut __teaql_dynamic_values = ::std::collections::BTreeMap::new();
             });
@@ -892,6 +907,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
 
         impl ::teaql_core::Entity for #struct_name {
             fn supports_dynamic_property_load() -> bool { #has_dynamic_properties }
+            #dynamic_property_impl
             #from_compact_impl
             #borrowed_json_impl
 

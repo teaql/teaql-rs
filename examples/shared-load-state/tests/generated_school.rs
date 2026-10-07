@@ -12,6 +12,8 @@ use teaql_runtime::dynamic_fields::DatabaseDynamicFieldsProvider;
 mod allocation_counter;
 #[path = "support/checker_state.rs"]
 mod checker_state;
+#[path = "support/dynamic_property.rs"]
+mod dynamic_property;
 #[path = "support/field_order.rs"]
 mod field_order;
 #[path = "support/nested_graph.rs"]
@@ -238,6 +240,12 @@ async fn fresh_generated_school_uses_shared_indexed_state() -> Result<(), Box<dy
         .clone();
     let observed = observed_executor::ObservedExecutor::new(original_executor.clone());
     context.register_executor(observed.clone());
+    dynamic_property::verify(&context, &full[0])?;
+    assert_eq!(
+        observed.counts(),
+        [0; 5],
+        "derived-property reads must not enter any provider"
+    );
     let rejection = divergent
         .audit_as("reject sparse whole-object mutation")
         .save(&context)

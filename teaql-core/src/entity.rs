@@ -68,6 +68,21 @@ pub trait Entity: TeaqlEntity + Sized {
     fn supports_dynamic_property_load() -> bool {
         false
     }
+
+    /// Borrow a readonly derived property using its full `_`-prefixed name.
+    /// Missing properties and explicit null both return `None`; real zero,
+    /// false and empty text remain values. This never loads data or changes state.
+    fn dynamic_property(&self, _key: &str) -> Option<&Value> {
+        None
+    }
+
+    /// Presence is separate from the nullable derived-property read contract.
+    /// An explicit null is present; an absent key is not. Native fields and
+    /// persistent `#` extensions are not part of this namespace.
+    fn has_dynamic_property(&self, _key: &str) -> bool {
+        false
+    }
+
     /// Runtime-owned persistent-extension carrier, separate from readonly dynamic properties.
     fn dynamic_field_values(&self) -> Option<&crate::dynamic_fields::DynamicFieldValues> {
         None

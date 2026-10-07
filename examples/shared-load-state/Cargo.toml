@@ -16,6 +16,7 @@ teaql-provider-sqlite = { path = "../../teaql-provider-sqlite" }
 teaql-sql = { path = "../../teaql-sql" }
 rusqlite = { version = "0.40", features = ["bundled"] }
 futures-util = "0.3"
+serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [workspace]

@@ -17,6 +17,9 @@ use teaql_runtime::dynamic_fields::{
 };
 use teaql_runtime::{InMemoryMetadataStore, LedgerEntity, PurposedSelectQuery, UserContext};
 
+#[path = "support/allocation_counter.rs"]
+mod allocation_counter;
+
 #[teaql_entity]
 #[derive(Clone, Debug, PartialEq, TeaqlEntity)]
 #[teaql(entity = "School", indexed_layout)]
@@ -30,6 +33,83 @@ struct School {
     dynamic: BTreeMap<String, Value>,
     #[teaql(skip)]
     __load_state: teaql_core::eval::LoadState,
+}
+
+#[test]
+fn entity_without_derived_carrier_keeps_nullable_defaults_without_claiming_presence() {
+    #[derive(Clone, Debug, PartialEq, TeaqlEntity)]
+    struct Plain {
+        #[teaql(id)]
+        id: u64,
+        name: String,
+    }
+    let row = Plain::from_compact_row(CompactRow::from_map(BTreeMap::from([
+        ("id".into(), Value::U64(1)),
+        ("name".into(), "native".into()),
+    ])))
+    .unwrap();
+    assert!(!Plain::supports_dynamic_property_load());
+    for key in ["_missing", "name", "#name"] {
+        assert!(row.dynamic_property(key).is_none());
+        assert!(!row.has_dynamic_property(key));
+    }
+}
+
+#[test]
+fn derived_property_reads_borrow_values_preserve_null_absence_and_allocate_nothing() {
+    let school = School::from_compact_row(CompactRow::from_map(BTreeMap::from([
+        ("id".into(), Value::U64(1)),
+        ("version".into(), Value::I64(1)),
+        ("name".into(), Value::Text("native".into())),
+        ("_name".into(), Value::Text("derived".into())),
+        ("_zero".into(), Value::I64(0)),
+        ("_null".into(), Value::Null),
+        ("_json_null".into(), Value::Json(serde_json::Value::Null)),
+        ("_false".into(), Value::Bool(false)),
+        ("_empty".into(), Value::Text(String::new())),
+    ])))
+    .unwrap();
+    let snapshot = school.loaded_state_snapshot().unwrap();
+    let value = school.dynamic.get("_name").unwrap();
+    assert!(std::ptr::eq(
+        value,
+        school.dynamic_property("_name").unwrap()
+    ));
+    assert!(school.dynamic_property("_missing").is_none());
+    assert!(!school.has_dynamic_property("_missing"));
+    assert!(school.dynamic_property("_null").is_none());
+    assert!(school.has_dynamic_property("_null"));
+    assert!(school.dynamic_property("_json_null").is_none());
+    assert!(school.has_dynamic_property("_json_null"));
+    for key in ["name", "#name", "id", "version", ""] {
+        assert!(school.dynamic_property(key).is_none());
+        assert!(!school.has_dynamic_property(key));
+    }
+    for reads in [1, 100, 10_000] {
+        let (_, calls, bytes, _) = allocation_counter::measured(|| {
+            for _ in 0..reads {
+                assert_eq!(school.dynamic_property("_zero"), Some(&Value::I64(0)));
+                assert_eq!(school.dynamic_property("_false"), Some(&Value::Bool(false)));
+                assert_eq!(
+                    school.dynamic_property("_empty").and_then(Value::try_text),
+                    Some("")
+                );
+                assert!(school.dynamic_property("_null").is_none());
+                assert!(school.dynamic_property("_missing").is_none());
+                assert!(school.has_dynamic_property("_null"));
+                assert!(!school.has_dynamic_property("_missing"));
+            }
+        });
+        assert_eq!((calls, bytes), (0, 0));
+    }
+    assert!(Arc::ptr_eq(
+        &snapshot,
+        &school.loaded_state_snapshot().unwrap()
+    ));
+    assert!(!snapshot.is_loaded("_zero"));
+    assert!(!snapshot.is_loaded("_missing"));
+    assert!(school.dirty_fields().is_none());
+    assert!(!school.has_pending_dynamic_mutations());
 }
 
 #[test]
