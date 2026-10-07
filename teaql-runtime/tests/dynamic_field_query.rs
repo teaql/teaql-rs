@@ -919,6 +919,10 @@ async fn readonly_property_schema_survives_cache_miss_and_hit_without_extra_prov
         .with_dynamic_property_definitions(definitions.clone());
     let request = PurposedSelectQuery::new(query, "preserve declared types on both cache paths");
     let service = context.entity_data_service::<FixedRows>("School").unwrap();
+    // Equal immutable schemas can reuse a snapshot interned by another query.
+    // Hold the first result snapshot: weak interning may release it once all
+    // results are dropped. Live compatible rows/cache paths must share it.
+    let mut shared_snapshot = None;
     for _ in 0..2 {
         let rows = service
             .fetch_enhanced_entities::<School>(&request)
@@ -929,13 +933,12 @@ async fn readonly_property_schema_survives_cache_miss_and_hit_without_extra_prov
         for row in &rows {
             assert_eq!(row.dynamic_property_type("_missing"), Some(DataType::I64));
             assert!(!row.has_dynamic_property("_missing"));
-            assert!(Arc::ptr_eq(
-                row.loaded_state_snapshot()
-                    .unwrap()
-                    .dynamic_property_definitions()
-                    .unwrap(),
-                &definitions
-            ));
+            let snapshot = row.loaded_state_snapshot().unwrap();
+            let actual = snapshot.dynamic_property_definitions().unwrap();
+            assert_eq!(actual.as_ref(),definitions.as_ref());
+            let shared = shared_snapshot.get_or_insert_with(||snapshot.clone());
+            assert!(Arc::ptr_eq(&snapshot, shared));
+            assert!(Arc::ptr_eq(actual, shared.dynamic_property_definitions().unwrap()));
         }
     }
     assert_eq!(

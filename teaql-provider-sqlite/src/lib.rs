@@ -864,8 +864,16 @@ impl SqliteMutationExecutor {
             let mut statement = guard.prepare_cached(&sql)?;
             let layout = cached_column_layout(&column_layout_cache, &query.sql, &statement);
             let mut rows = statement.query(params_from_iter(params.iter()))?;
-            let mut chunk = Vec::with_capacity(chunk_size); let mut index = 0;
+            // Allocate nothing for an empty cursor. A short prefix avoids
+            // reserving a whole block for tiny results/tails; its first growth
+            // reserves the known block bound once instead of doubling past it.
+            let mut chunk = Vec::new(); let mut index = 0;
             while let Some(row) = rows.next()? {
+                if chunk.capacity() == 0 {
+                    chunk.reserve_exact(chunk_size.min(4));
+                } else if chunk.len() == chunk.capacity() {
+                    chunk.reserve_exact(chunk_size.saturating_sub(chunk.len()));
+                }
                 chunk.push(CompactRow::with_layout(layout.row_layout.clone(), decode_sqlite_values(row, &layout.columns)?));
                 if chunk.len() == chunk_size { yield teaql_data_service::StreamChunk { rows: std::mem::take(&mut chunk), chunk_index: index, is_last: false }; index += 1; }
             }
