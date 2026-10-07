@@ -2,7 +2,7 @@
 use school_management_service_core::{AuditedSave, School, E, Q};
 use std::sync::Arc;
 use teaql_core::dynamic_fields::{DynamicFieldSelection, DynamicFieldState};
-use teaql_core::{Entity, SmartList, Value};
+use teaql_core::{DataType, Entity, SmartList, Value};
 use teaql_runtime::UserContext;
 
 pub async fn verify(
@@ -12,6 +12,7 @@ pub async fn verify(
     second_name: &str,
 ) -> Result<School, Box<dyn std::error::Error>> {
     first.update_dynamic_field("note", "matrix baseline".into())?;
+    first.update_dynamic_field("unused", "keep unselected".into())?;
     first
         .audit_as("seed the combined-state value control")
         .save(context)
@@ -31,9 +32,10 @@ pub async fn verify(
         .save(context)
         .await?;
 
+    let selected = DynamicFieldSelection::fields([("note".into(), DataType::Text)])?;
     let rows = Q::schools()
         .with_name_in([first_name, second_name])
-        .select_dynamic_fields_with(DynamicFieldSelection::All)
+        .select_dynamic_fields_with(selected.clone())
         .order_by_id_asc()
         .limit(2)
         .comment("what: load Value and Null dynamic rows together")
@@ -74,7 +76,7 @@ pub async fn verify(
     let sparse = Q::schools_minimal()
         .with_name_in([first_name])
         .select_name()
-        .select_dynamic_fields_with(DynamicFieldSelection::All)
+        .select_dynamic_fields_with(selected)
         .limit(1)
         .comment("what: append a sparse view of the same School")
         .purpose("why: a mixed list must not union native projections")
@@ -101,9 +103,22 @@ pub async fn verify(
     let first_version = held[0].version();
     let second_version = held[1].version();
     let mut pending = held[0].clone();
+    // Trusted fixture hydration attaches a readonly result without treating
+    // serialized persistent fields as authorized untrusted JSON input.
+    let fields = pending.dynamic_field_values().unwrap().clone();
+    let mut json = pending.into_json();
+    let object = json.as_object_mut().unwrap();
+    object.retain(|key, _| !key.starts_with('#'));
+    object.insert("_matrix_total".into(), 17.into());
+    pending = context.decode_json_entity(&json)?;
+    pending.install_loaded_dynamic_fields(fields, shared.clone())?;
+    assert!(pending.has_dynamic_property("_matrix_total"));
     let next_name = format!("{first_name} retry");
     pending.update_name(next_name.as_str());
     pending.update_dynamic_field("note", "matrix retry".into())?;
+    let dirty = pending.dirty_fields().unwrap();
+    assert!(!dirty.contains("_matrix_total"));
+    assert!(!dirty.contains("unused"));
     assert!(Arc::ptr_eq(
         &shared,
         &pending.loaded_state_snapshot().unwrap()
@@ -133,6 +148,7 @@ pub async fn verify(
     };
     assert!(error.to_string().contains("DYNAMIC_FIELD_INVALID_STORAGE"));
     assert_eq!(pending.version(), first_version);
+    assert!(pending.has_dynamic_property("_matrix_total"));
     assert!(pending.has_pending_dynamic_mutations());
     assert!(pending.dirty_fields().unwrap().contains("name"));
     assert!(Arc::ptr_eq(
@@ -183,6 +199,15 @@ pub async fn verify(
     );
     assert_eq!(stored[1].version(), second_version);
     assert_eq!(
+        stored[0]
+            .dynamic_field_values()
+            .unwrap()
+            .field("unused")?
+            .value(),
+        Some(&Value::Text("keep unselected".into()))
+    );
+    assert!(!stored[0].has_dynamic_property("_matrix_total"));
+    assert_eq!(
         stored[1]
             .dynamic_field_values()
             .unwrap()
@@ -217,6 +242,24 @@ pub async fn verify(
     ));
     assert!(!saved.has_pending_dynamic_mutations());
     assert!(saved.dirty_fields().is_none());
+    let inspected = Q::schools()
+        .with_name_in([next_name.as_str()])
+        .select_dynamic_fields_with(DynamicFieldSelection::All)
+        .limit(1)
+        .comment("what: inspect the unselected extension after retry")
+        .purpose("why: NotLoaded must not become a clear or delete intent")
+        .execute_for_one(context)
+        .await?
+        .unwrap();
+    assert_eq!(
+        inspected
+            .dynamic_field_values()
+            .unwrap()
+            .field("unused")?
+            .value(),
+        Some(&Value::Text("keep unselected".into()))
+    );
+    assert!(!inspected.has_dynamic_property("_matrix_total"));
     assert_eq!(held[1].version(), second_version);
     assert_eq!(
         held[1]
@@ -231,5 +274,6 @@ pub async fn verify(
         &held[1].loaded_state_snapshot().unwrap()
     ));
     println!("PASS generated Rust mixed dynamic Value/Null/NotLoaded list lifetime readback rollback and retry");
+    println!("PASS generated Rust stored unselected extension survives rollback retry and readonly property is not persisted");
     Ok(saved)
 }

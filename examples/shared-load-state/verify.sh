@@ -79,6 +79,7 @@ for round in first second; do
   rg -F "PASS generated Rust dynamic property borrowed null/missing/zero reads with zero allocation and provider entry" "$run_dir/$round.log"
   rg -F "PASS generated Rust dynamic storage provenance and retry" "$run_dir/$round.log"
   rg -F "PASS generated Rust mixed dynamic Value/Null/NotLoaded list lifetime readback rollback and retry" "$run_dir/$round.log"
+  rg -F "PASS generated Rust stored unselected extension survives rollback retry and readonly property is not persisted" "$run_dir/$round.log"
   rg -F "PASS generated Rust namespace serialization and NotLoaded boundary" "$run_dir/$round.log"
   rg -F "PASS generated Rust nested/reverse graph Q/E/JSON and Empty/NotLoaded isolation" "$run_dir/$round.log"
   rg -F "PASS generated Rust nested dynamic Value/NULL/NotLoaded and shared snapshots" "$run_dir/$round.log"
