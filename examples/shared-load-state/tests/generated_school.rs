@@ -22,6 +22,8 @@ mod field_order;
 mod materialization;
 #[path = "support/namespace_cow.rs"]
 mod namespace_cow;
+#[path = "support/native_rollback.rs"]
+mod native_rollback;
 #[path = "support/nested_graph.rs"]
 mod nested_graph;
 #[path = "support/observed_executor.rs"]

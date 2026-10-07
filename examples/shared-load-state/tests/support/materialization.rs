@@ -7,11 +7,12 @@ use teaql_core::{Entity, TeaqlEntity};
 use teaql_runtime::UserContext;
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let database = format!(
+        "{}.materialization",
+        std::env::var("TEAQL_LOAD_STATE_DATABASE")?
+    );
     let context = service_runtime(ServiceRuntimeConfig {
-        database_url: format!(
-            "{}.materialization",
-            std::env::var("TEAQL_LOAD_STATE_DATABASE")?
-        ),
+        database_url: database.clone(),
     })
     .await?;
     context.ensure_schema().await?;
@@ -41,6 +42,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             id = saved.id();
         }
     }
+    Box::pin(crate::native_rollback::verify(
+        &context, &database, &name, &sibling,
+    ))
+    .await?;
     Box::pin(verify(&context, id, &name, &sibling, &round)).await?;
     Ok(())
 }
