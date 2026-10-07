@@ -80,6 +80,28 @@ fn flat_relation_availability_is_shared_shape_metadata_not_a_row_value() {
 #[test]
 fn bitmap_and_lazy_overflow_keep_all_boundary_slots() {
     let layout = layout("v1");
+    for slot in [0, 31, 32, 63, 64, 65, 129] {
+        let selected = if slot == 0 {
+            "id".to_owned()
+        } else {
+            format!("field_{slot}")
+        };
+        let isolated = LoadedSnapshot::projection(layout.clone(), [selected.as_str()]);
+        assert_eq!(isolated.bits(), if slot < 64 { 1_u64 << slot } else { 0 });
+        if slot < 64 {
+            assert!(isolated.overflow().is_none());
+        } else {
+            assert_eq!(isolated.overflow(), Some(&HashSet::from([slot])));
+        }
+        for other in [0, 31, 32, 63, 64, 65, 129] {
+            let field = if other == 0 {
+                "id".to_owned()
+            } else {
+                format!("field_{other}")
+            };
+            assert_eq!(isolated.is_loaded(&field), slot == other);
+        }
+    }
     let state = Arc::new(LoadedSnapshot::projection(
         layout,
         ["id", "field_31", "field_32", "field_63"],

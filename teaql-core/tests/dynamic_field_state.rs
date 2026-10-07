@@ -208,6 +208,15 @@ fn wrapper_preserves_zero_false_empty_null_and_not_loaded_without_io() {
         assert!(field.is_loaded());
         assert!(field.value().is_some());
     }
+    assert_eq!(
+        row.field("note").unwrap().value(),
+        Some(&Value::Text(String::new()))
+    );
+    assert_eq!(row.field("number").unwrap().value(), Some(&Value::I64(0)));
+    assert_eq!(
+        row.field("active").unwrap().value(),
+        Some(&Value::Bool(false))
+    );
     let field = row.field("extra").unwrap();
     assert_eq!(field.state(), DynamicFieldState::NotLoaded);
     assert!(!field.is_loaded());
