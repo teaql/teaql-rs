@@ -14,6 +14,8 @@ mod allocation_counter;
 mod checker_state;
 #[path = "support/dynamic_property.rs"]
 mod dynamic_property;
+#[path = "support/dynamic_rollback.rs"]
+mod dynamic_rollback;
 #[path = "support/field_order.rs"]
 mod field_order;
 #[path = "support/nested_graph.rs"]
@@ -26,6 +28,15 @@ mod page_stream;
 #[tokio::test]
 async fn fresh_generated_school_uses_shared_indexed_state() -> Result<(), Box<dyn std::error::Error>>
 {
+    let flow = Box::pin(generated_school_flow());
+    println!(
+        "GENERATED_SCHOOL_FLOW_BYTES={}",
+        std::mem::size_of_val(flow.as_ref().get_ref())
+    );
+    flow.await
+}
+
+async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
     let database = std::env::var("TEAQL_LOAD_STATE_DATABASE")?;
     let round = std::env::var("TEAQL_LOAD_STATE_ROUND")?;
     let mut context = service_runtime(ServiceRuntimeConfig {
@@ -35,7 +46,10 @@ async fn fresh_generated_school_uses_shared_indexed_state() -> Result<(), Box<dy
     let definitions = DynamicFieldDefinitions::new(
         <school_management_service_core::School as TeaqlEntity>::ENTITY_NAME,
         "example-v1",
-        [("note".into(), teaql_core::DataType::Text)],
+        [
+            ("note".into(), teaql_core::DataType::Text),
+            ("unused".into(), teaql_core::DataType::Text),
+        ],
     )?;
     context.set_dynamic_fields_provider(Arc::new(DatabaseDynamicFieldsProvider::<
         ServiceRuntimeExecutor,
@@ -423,6 +437,11 @@ async fn fresh_generated_school_uses_shared_indexed_state() -> Result<(), Box<dy
         DynamicFieldState::NotLoaded
     );
     println!("PASS generated Rust dynamic storage provenance and retry");
+    let extended = Box::pin(dynamic_rollback::verify(
+        &context, extended, &renamed, &second,
+    ))
+    .await?;
+    let deletion_name = extended.name().to_owned();
     let mut deleted = extended;
     deleted.mark_for_deletion();
     deleted
@@ -430,7 +449,7 @@ async fn fresh_generated_school_uses_shared_indexed_state() -> Result<(), Box<dy
         .save(&context)
         .await?;
     let remaining = Q::schools()
-        .with_name_in([renamed.as_str(), second.as_str()])
+        .with_name_in([deletion_name.as_str(), second.as_str()])
         .order_by_id_asc()
         .limit(2)
         .comment("what: read the surviving probe after soft deletion")
@@ -439,7 +458,9 @@ async fn fresh_generated_school_uses_shared_indexed_state() -> Result<(), Box<dy
         .await?;
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].name(), second);
-    assert_eq!(remaining[0].version(), full[1].version());
+    // The combined control explicitly seeded NULL on this companion once.
+    // Its later sibling mutation/rollback/retry must not add another version.
+    assert_eq!(remaining[0].version(), full[1].version() + 1);
     println!(
         "PASS generated indexed Q/E/Checker/create/update/delete and snapshot sharing {round}"
     );
