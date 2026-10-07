@@ -30,7 +30,7 @@ cargo test --manifest-path "$runtime_dir/Cargo.toml" -p teaql-core --release \
     exit 1
   }
 printf 'case,width,iterations,allocation_calls,requested_bytes,elapsed_ns\n' >"$run_dir/allocations.csv"
-rg '^(cached_projection|loaded_|reference_)' "$run_dir/probe.log" >>"$run_dir/allocations.csv"
+rg '^(cold_projection|cached_projection|loaded_|reference_)' "$run_dir/probe.log" >>"$run_dir/allocations.csv"
 printf 'case,width,rows,allocation_calls,requested_bytes,elapsed_ns\n' >"$run_dir/relation-shape.csv"
 rg '^flat_edge_shape,' "$run_dir/probe.log" >>"$run_dir/relation-shape.csv"
 rg '^COMPACT_SAME_SHAPE_MERGE,' "$run_dir/probe.log" >"$run_dir/compact-merge.log"

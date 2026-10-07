@@ -40,6 +40,53 @@ unsafe impl GlobalAlloc for CountingAllocator {
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 #[test]
+fn cold_projection_metadata_cost_is_per_shape_not_per_row() {
+    // The counter must observe a real allocation before we trust zero/no-growth
+    // assertions. Fixture input values and the output vector are uncounted.
+    let (calls, bytes, _) = measure(1, || {
+        black_box(Box::new([0_u8; 128]));
+    });
+    assert!(calls > 0 && bytes >= 128);
+    for width in [4, 64, 130] {
+        let mut baseline = None;
+        for count in [1, 100, 10_000] {
+            let (layout, row) = fixture(width);
+            let rows = vec![row; count];
+            let mut snapshots = Vec::with_capacity(count);
+            let (calls, bytes, elapsed) = measure(1, || {
+                for row in &rows {
+                    snapshots.push(row.indexed_load_state(layout.clone()));
+                }
+            });
+            let teaql_core::eval::LoadState::Indexed(first) = &snapshots[0] else {
+                panic!("indexed cold projection fixture");
+            };
+            for state in &snapshots {
+                let teaql_core::eval::LoadState::Indexed(state) = state else {
+                    panic!("indexed cold projection fixture");
+                };
+                assert!(Arc::ptr_eq(first, state));
+                assert_eq!(state.overflow().is_some(), width > 64);
+                for slot in 0..width {
+                    let name = match slot {
+                        0 => "id".to_owned(),
+                        1 => "version".to_owned(),
+                        _ => format!("field_{slot}"),
+                    };
+                    assert!(state.is_loaded(&name));
+                }
+            }
+            assert!(calls > 0, "the first projection must be cold");
+            if let Some(expected) = baseline {
+                assert_eq!((calls, bytes), expected, "metadata grew with row count");
+            }
+            baseline = Some((calls, bytes));
+            println!("cold_projection,{width},{count},{calls},{bytes},{elapsed}");
+        }
+    }
+}
+
+#[test]
 fn same_shape_compact_enhancement_does_not_copy_column_names_or_allocate() {
     for width in [3, 64, 141] {
         let (_, source) = fixture(width);
