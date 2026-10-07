@@ -953,6 +953,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ordinary_sql_query_future_keeps_partition_probe_state_out_of_frame() {
+        let lookups = Arc::new(AtomicUsize::new(0));
+        let repeated = Arc::new(AtomicUsize::new(0));
+        let singles = Arc::new(AtomicUsize::new(0));
+        let executor = SqlDataServiceExecutor::new(
+            ProbeDialect,
+            RepeatedProbeTransport {
+                calls: repeated.clone(),
+                single_calls: singles.clone(),
+            },
+            CountingSchemaProvider {
+                lookups: lookups.clone(),
+            },
+        );
+        let mut request = query_request(false);
+        request.capture_execution_metadata = false;
+        request.query = request
+            .query
+            .limit(1)
+            .comment("what: ordinary SQL future size");
+        let future = executor.query(request);
+        let bytes = std::mem::size_of_val(&future);
+        println!("ORDINARY_SQL_QUERY_FRAME_BYTES={bytes}");
+        assert!(
+            bytes <= 4608,
+            "ordinary SQL future retains partition-probe state: {bytes}"
+        );
+        assert_eq!(
+            lookups.load(Ordering::Relaxed),
+            0,
+            "unpolled query must not execute"
+        );
+        assert_eq!(singles.load(Ordering::Relaxed), 0);
+        future.await.unwrap();
+        assert_eq!(lookups.load(Ordering::Relaxed), 1);
+        assert_eq!(singles.load(Ordering::Relaxed), 1);
+        assert_eq!(repeated.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn partition_probe_fallback_keeps_identical_single_and_explicit_policy_queries() {
+        for (values, threshold) in [
+            (vec![Value::U64(7), Value::U64(7)], None),
+            (vec![Value::U64(7)], None),
+            (vec![Value::U64(7), Value::U64(9)], Some(32)),
+        ] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let singles = Arc::new(AtomicUsize::new(0));
+            let executor = SqlDataServiceExecutor::new(
+                ProbeDialect,
+                RepeatedProbeTransport {
+                    calls: calls.clone(),
+                    single_calls: singles.clone(),
+                },
+                CountingSchemaProvider {
+                    lookups: Arc::new(AtomicUsize::new(0)),
+                },
+            );
+            let mut request = query_request(false);
+            request.capture_execution_metadata = false;
+            request.query = request
+                .query
+                .filter(Expr::in_list("id", values))
+                .order_desc("id")
+                .limit(1)
+                .partition_by("id");
+            request.query.top_n_probe_parent_threshold = threshold;
+            assert!(executor.query(request).await.unwrap().rows.is_empty());
+            assert_eq!(calls.load(Ordering::Relaxed), 0);
+            assert_eq!(singles.load(Ordering::Relaxed), 1);
+        }
+    }
+
+    #[tokio::test]
     async fn topn_004_011_sqlite_reuses_one_repeated_probe_boundary() {
         let calls = Arc::new(AtomicUsize::new(0));
         let single_calls = Arc::new(AtomicUsize::new(0));
@@ -1419,34 +1493,17 @@ impl<
                 && request.query.top_n_probe_parent_threshold.is_none()
                 && let Some(values) = partition_probe_values(&request.query)
                 && values.len() >= 2
-                && let (Some(first_query), Some(second_query)) = (
-                    scalar_partition_probe_query(&request.query, values[0].clone()),
-                    scalar_partition_probe_query(&request.query, values[1].clone()),
-                )
             {
-                let first = self
-                    .compile_select_cached(&entity_desc, &first_query)
-                    .map_err(SqlExecutorError::Compile)?;
-                let second_params = collect_select_params(
+                // The two cloned SelectQueries and repeated transport future
+                // belong to this optional path, not every ordinary read frame.
+                if let Some(result) = Box::pin(self.fetch_partition_probe_query(
                     &entity_desc,
-                    &second_query,
-                    self.dialect.large_in_uses_array_param(),
-                );
-                if let Some(param_index) = first
-                    .params
-                    .iter()
-                    .zip(second_params.iter())
-                    .position(|(left, right)| left != right)
+                    &request.query,
+                    &values,
+                ))
+                .await?
                 {
-                    let rows = self
-                        .transport
-                        .fetch_repeated_compact_sql(&first, param_index, &values)
-                        .await
-                        .map_err(SqlExecutorError::Transport)?;
-                    return Ok(QueryResult {
-                        metadata: ExecutionMetadata::unrecorded_query(rows.len()),
-                        rows,
-                    });
+                    return Ok(result);
                 }
             }
 
@@ -1456,6 +1513,52 @@ impl<
             execute_compiled_query(&self.dialect, &self.transport, compiled, request, observer)
                 .await
         }
+    }
+}
+
+impl<D, T, S> SqlDataServiceExecutor<D, T, S>
+where
+    D: SqlDialect + Send + Sync,
+    T: SqlTransport + Send + Sync,
+    S: teaql_data_service::SchemaProvider + Send + Sync,
+{
+    async fn fetch_partition_probe_query(
+        &self,
+        entity: &EntityDescriptor,
+        query: &SelectQuery,
+        values: &[Value],
+    ) -> Result<Option<QueryResult>, SqlExecutorError<T::Error>> {
+        let (Some(first_query), Some(second_query)) = (
+            scalar_partition_probe_query(query, values[0].clone()),
+            scalar_partition_probe_query(query, values[1].clone()),
+        ) else {
+            return Ok(None);
+        };
+        let first = self
+            .compile_select_cached(entity, &first_query)
+            .map_err(SqlExecutorError::Compile)?;
+        let second_params = collect_select_params(
+            entity,
+            &second_query,
+            self.dialect.large_in_uses_array_param(),
+        );
+        let Some(param_index) = first
+            .params
+            .iter()
+            .zip(second_params.iter())
+            .position(|(left, right)| left != right)
+        else {
+            return Ok(None);
+        };
+        let rows = self
+            .transport
+            .fetch_repeated_compact_sql(&first, param_index, values)
+            .await
+            .map_err(SqlExecutorError::Transport)?;
+        Ok(Some(QueryResult {
+            metadata: ExecutionMetadata::unrecorded_query(rows.len()),
+            rows,
+        }))
     }
 }
 
