@@ -110,6 +110,12 @@ fn matched_sqlite_driver_queries() {
     // Deterministic benchmark input, not model bootstrap or a business save
     // alternative. Raw setup is excluded from every reported query sample.
     let connection = transport.connection();
+    let engine: String = connection
+        .lock()
+        .unwrap()
+        .query_row("SELECT sqlite_version()", [], |row| row.get(0))
+        .unwrap();
+    println!("ENGINE_VERSION,sqlite,{engine}");
     {
         let mut db = connection.lock().unwrap();
         let transaction = db.transaction().unwrap();
