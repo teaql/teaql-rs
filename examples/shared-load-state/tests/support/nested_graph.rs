@@ -326,16 +326,7 @@ pub async fn verify(
         .unwrap();
     assert_eq!(E::school(&filtered).get_school_type_id().eval(), Some(1001));
     assert!(!filtered.is_field_loaded("school_type"));
-    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        E::school(&filtered).get_school_type().get_code().eval()
-    }))
-    .expect_err("NotLoaded expression access must fail fast, not return NULL");
-    let diagnostic = failure
-        .downcast_ref::<String>()
-        .map(String::as_str)
-        .or_else(|| failure.downcast_ref::<&str>().copied())
-        .unwrap_or("");
-    assert!(diagnostic.contains("school_type") && diagnostic.contains("missing_preload"));
+    assert_missing_school_type(&filtered);
     assert!(filtered.clone().into_json().get("school_type").is_none());
     let restored_filtered = decode_like(context, &filtered, &filtered.clone().into_json())?;
     assert_eq!(
@@ -344,10 +335,38 @@ pub async fn verify(
     );
     assert!(!restored_filtered.is_field_loaded("school_type"));
     assert!(restored_filtered.dirty_fields().is_none());
+    assert_missing_school_type(&restored_filtered);
+    println!("PASS generated Rust LF08 exact NotLoaded path and break point in Q and typed JSON");
     println!("PASS generated Rust LF08 loaded FK and excluded forward details stay distinct");
     println!("PASS generated Rust typed JSON graph roundtrip and Empty/NotLoaded isolation");
     println!("PASS generated Rust nested/reverse graph Q/E/JSON and Empty/NotLoaded isolation");
     Ok(())
+}
+
+fn assert_missing_school_type(row: &school_management_service_core::School) {
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        E::school(row).get_school_type().get_code().eval()
+    }))
+    .expect_err("NotLoaded expression access must fail fast, not return NULL");
+    let diagnostic = failure
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| failure.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        // Rust fails at the unavailable relation before traversing its detail.
+        diagnostic.contains("access_path: [\"school_type\"]"),
+        "wrong path: {diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("break_point: \"school_type\""),
+        "wrong break point: {diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("missing_preload: [\"school_type\"]"),
+        "wrong missing preload: {diagnostic}"
+    );
+    assert!(diagnostic.contains(&format!("root: School(id={})", row.id())), "wrong root: {diagnostic}");
 }
 
 fn decode_like<T: Entity>(

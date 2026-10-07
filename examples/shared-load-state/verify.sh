@@ -88,6 +88,7 @@ for round in first second; do
   rg -F "PASS generated Rust nested/reverse graph Q/E/JSON and Empty/NotLoaded isolation" "$run_dir/$round.log"
   rg -F "PASS generated Rust nested dynamic Value/NULL/NotLoaded and shared snapshots" "$run_dir/$round.log"
   rg -F "PASS generated Rust LF08 loaded FK and excluded forward details stay distinct" "$run_dir/$round.log"
+  rg -F "PASS generated Rust LF08 exact NotLoaded path and break point in Q and typed JSON" "$run_dir/$round.log"
   rg -F "PASS generated Rust LF09 reverse Loaded/Empty/NotLoaded through Q/E/JSON" "$run_dir/$round.log"
   rg -F "PASS generated Rust LF17 dynamic metadata shared without fixed slots" "$run_dir/$round.log"
   rg -F "PASS generated Rust LF19 fixed derived and persistent same-name namespace isolation" "$run_dir/$round.log"
