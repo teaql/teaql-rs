@@ -11,7 +11,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         "{}.materialization",
         std::env::var("TEAQL_LOAD_STATE_DATABASE")?
     );
-    let context = service_runtime(ServiceRuntimeConfig {
+    let mut context = service_runtime(ServiceRuntimeConfig {
         database_url: database.clone(),
     })
     .await?;
@@ -43,7 +43,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Box::pin(crate::native_rollback::verify(
-        &context, &database, &name, &sibling,
+        &mut context, &database, &name, &sibling,
     ))
     .await?;
     Box::pin(verify(&context, id, &name, &sibling, &round)).await?;

@@ -10,6 +10,7 @@ use teaql_data_service::{
 
 struct ReadbackExecutor {
     fail: bool,
+    rows: Vec<teaql_core::CompactRow>,
 }
 
 impl DataServiceExecutor for ReadbackExecutor {
@@ -44,7 +45,7 @@ impl ReadbackExecutor {
             Err(std::io::Error::other("simulated readback failure"))
         } else {
             Ok(QueryResult {
-                rows: vec![],
+                rows: self.rows.clone(),
                 metadata,
             })
         }
@@ -88,7 +89,7 @@ async fn readback_masks_target_in_intent_on_success_and_failure_without_pollutin
             if !logging {
                 context.disable_sql_log();
             }
-            let executor = ReadbackExecutor { fail };
+            let executor = ReadbackExecutor { fail, rows: vec![] };
             let parent = EntityDataService::for_executor(&context, "Fixture", &executor)
                 .with_mutation_intent(MutationIntent::new("save fixture 7123").unwrap());
             let result = parent
@@ -118,6 +119,54 @@ async fn readback_masks_target_in_intent_on_success_and_failure_without_pollutin
                 parent.request_intent.as_ref().unwrap().comment(),
                 "save fixture 7123"
             );
+        }
+    }
+}
+
+#[tokio::test]
+async fn authoritative_readback_distinguishes_missing_columns_from_loaded_null() {
+    use std::collections::BTreeMap;
+    let context = UserContext::new().with_metadata(
+        InMemoryMetadataStore::new().with_entity(
+            EntityDescriptor::new("Fixture")
+                .property(PropertyDescriptor::new("record_key", DataType::U64).id())
+                .property(PropertyDescriptor::new("revision", DataType::I64).version())
+                .property(
+                    PropertyDescriptor::new("note", DataType::Text).column_name("physical_note"),
+                )
+                .audit_mask_fields(vec![]),
+        ),
+    );
+    let complete = BTreeMap::from([
+        ("record_key".to_owned(), Value::U64(7123)),
+        ("revision".to_owned(), Value::I64(1)),
+        ("note".to_owned(), Value::Null),
+    ]);
+    for missing in [None, Some("record_key"), Some("revision"), Some("note")] {
+        let mut values = complete.clone();
+        if let Some(field) = missing {
+            values.remove(field);
+        }
+        let executor = ReadbackExecutor {
+            fail: false,
+            rows: vec![values.into()],
+        };
+        let service = EntityDataService::for_executor(&context, "Fixture", &executor)
+            .with_mutation_intent(MutationIntent::new("save fixture 7123").unwrap());
+        let result = service
+            .fetch_graph_current_row_internal("Fixture", "record_key", &Value::U64(7123), vec![])
+            .await;
+        if let Some(field) = missing {
+            let error =
+                result.expect_err("authoritative readback cannot accept absent mapped columns");
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("missing mapped field Fixture.{field}"))
+            );
+        } else {
+            let row = result.unwrap().unwrap();
+            assert_eq!(row.get("note"), Some(&Value::Null));
         }
     }
 }

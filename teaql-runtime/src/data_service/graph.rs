@@ -1333,7 +1333,36 @@ where
         redactions.capture_target_id(id);
         scoped.query_log_intent = Some(std::sync::Mutex::new(redactions));
         let mut rows = scoped.fetch_all_internal(&query).await?;
-        Ok(rows.pop())
+        let row = rows.pop();
+        if let Some(row) = row.as_ref() {
+            let descriptor = self
+                .data_service
+                .metadata
+                .context
+                .require_entity(entity)
+                .map_err(DataServiceError::Runtime)?;
+            // Ordinary sparse Q results may omit fields. This full save
+            // readback may not: absence must never masquerade as loaded NULL.
+            // The normal compiler emits descriptor order, so validate that
+            // shape in one allocation-free pass. Reordered provider results
+            // remain legal and use the name-based fallback.
+            let ordered_complete = row.len() == descriptor.properties.len()
+                && row
+                    .keys()
+                    .zip(&descriptor.properties)
+                    .all(|(name, property)| name == &property.name);
+            if !ordered_complete {
+                for property in &descriptor.properties {
+                    if !row.contains_key(&property.name) {
+                        return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
+                            "authoritative readback missing mapped field {entity}.{}",
+                            property.name,
+                        ))));
+                    }
+                }
+            }
+        }
+        Ok(row)
     }
 
     pub(crate) fn order_new_ledger_keys(

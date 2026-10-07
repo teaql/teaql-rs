@@ -90,6 +90,7 @@ for round in first second; do
   rg -F "PASS generated Rust LF23 dynamic availability detaches only one view" "$run_dir/$round.log"
   rg -F "PASS generated Rust LF20 readonly total persists only through modeled materialization" "$run_dir/$round.log"
   rg -F "PASS generated Rust LF11 native readback rollback retains loaded state and retry intent" "$run_dir/$round.log"
+  rg -F "PASS generated Rust authoritative missing column rolls back without turning absence into null" "$run_dir/$round.log"
   rg -F "PASS generated Rust original baseline repeat clones allocate zero and preserve loaded state" "$run_dir/$round.log"
   if [[ "$fixture_inheritance" == true ]]; then
     rg -F "PASS generated Rust inherited indexes Q/E/save and snapshot isolation $round" "$run_dir/$round.log"
