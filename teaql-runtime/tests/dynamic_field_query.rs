@@ -948,6 +948,78 @@ async fn readonly_property_schema_survives_cache_miss_and_hit_without_extra_prov
     );
 }
 
+#[tokio::test]
+async fn root_stream_retains_one_snapshot_across_full_chunks_tail_and_cursor_drop() {
+    use futures_util::StreamExt;
+    use teaql_core::{CompactRowLayout, dynamic_properties::DynamicPropertyDefinitions};
+    let definitions = DynamicPropertyDefinitions::new([
+        ("_count".into(), DataType::I64),
+        ("_missing".into(), DataType::I64),
+    ])
+    .unwrap();
+    let layout = CompactRowLayout::new(Arc::from([
+        "id".into(), "version".into(), "name".into(), "_count".into(),
+    ]));
+    let rows = (1..=1_003)
+        .map(|id| CompactRow::with_layout(layout.clone(), vec![
+            Value::U64(id), Value::I64(1), Value::Text(format!("school-{id}")),
+            if id % 2 == 0 { Value::Null } else { Value::I64(0) },
+        ]))
+        .collect();
+    let queries: Queries = Arc::default();
+    let mut context = UserContext::new()
+        .with_metadata(InMemoryMetadataStore::new().with_entity(School::entity_descriptor()));
+    context.insert_resource(FixedRows { rows, queries: queries.clone() });
+    let mut query = SelectQuery::new("School")
+        .projects(["id", "version", "name", "_count"])
+        .limit(1_003)
+        .comment("stream readonly property values and a short final chunk")
+        .with_dynamic_property_definitions(definitions);
+    query.stream_config = Some(teaql_core::StreamConfig { chunk_size: 73 });
+    let request = PurposedSelectQuery::new(query, "verify shared geometry without sharing row values");
+    let service = context.entity_data_service::<FixedRows>("School").unwrap();
+    let mut stream = service.fetch_stream(&request).await.unwrap();
+    let mut shared = None;
+    let mut retained = Vec::new();
+    let mut seen = 0;
+    let mut chunks = 0;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.unwrap();
+        assert_eq!(chunk.chunk_index, chunks);
+        assert_eq!(chunk.rows.len(), if chunk.is_last { 54 } else { 73 });
+        chunks += 1;
+        for row in chunk.rows {
+            let entity = School::from_compact_row(row).unwrap();
+            seen += 1;
+            assert_eq!(entity.id, seen);
+            assert_eq!(entity.name, format!("school-{seen}"));
+            let snapshot = entity.loaded_state_snapshot().unwrap();
+            let first = shared.get_or_insert_with(|| snapshot.clone());
+            assert!(Arc::ptr_eq(first, &snapshot));
+            assert!(entity.has_dynamic_property("_count"));
+            assert_eq!(entity.dynamic_property("_count"),
+                if seen % 2 == 0 { None } else { Some(&Value::I64(0)) });
+            assert!(!entity.has_dynamic_property("_missing"));
+            assert!(entity.dynamic_property("_missing").is_none());
+            assert_eq!(entity.dynamic_property_type("_missing"), Some(DataType::I64));
+            assert!(!snapshot.is_loaded("_count"));
+            assert!(!snapshot.is_loaded("_missing"));
+            assert!(entity.dynamic_field_values().is_none());
+            assert!(entity.dirty_fields().is_none());
+            if seen <= 2 || seen == 1_003 { retained.push(entity); }
+        }
+    }
+    drop(stream);
+    assert_eq!((seen, chunks), (1_003, 14));
+    assert_eq!(queries.lock().unwrap().len(), 1);
+    for entity in retained {
+        assert!(Arc::ptr_eq(shared.as_ref().unwrap(), &entity.loaded_state_snapshot().unwrap()));
+        assert_eq!(entity.dynamic_property_type("_count"), Some(DataType::I64));
+        assert!(entity.has_dynamic_property("_count"));
+        assert!(entity.dirty_fields().is_none());
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Fault {
     None,
