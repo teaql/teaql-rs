@@ -394,6 +394,18 @@ fn two_relations_to_equal_identity_keep_distinct_views_and_refuse_ambiguous_look
 }
 
 #[test]
+fn inferred_foreign_keys_cannot_conflict_across_views_of_one_identity() {
+    let value = serde_json::json!({"id":1,"child_list":[
+        {"id":2,"parent_id":1,"backup_parent":{"id":7}},
+        {"id":2,"parent_id":1,"backup_parent":{"id":8}}
+    ]});
+    let error = graph_context()
+        .decode_json_entity::<GraphParent>(&value)
+        .unwrap_err();
+    assert!(error.to_string().contains("conflicting native values"));
+}
+
+#[test]
 fn graph_depth_is_bounded_before_hydration() {
     let mut value = serde_json::json!({"id":1});
     for _ in 0..66 {

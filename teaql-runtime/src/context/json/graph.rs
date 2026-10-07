@@ -81,39 +81,6 @@ fn parse_graph<'a>(
         supports
     };
     let mut row = scalar_row(descriptor, value, shapes, supports, true)?;
-    if let Some(id) = descriptor
-        .properties
-        .iter()
-        .find(|p| p.is_id)
-        .and_then(|p| row.get(&p.name))
-        .and_then(Value::try_u64)
-    {
-        let entry = plan.native_views.entry((descriptor.name.as_str(), id));
-        if let std::collections::hash_map::Entry::Occupied(mut entry) = entry {
-            let previous = entry.get_mut();
-            for input in std::iter::once(previous.first).chain(previous.additional.iter().copied())
-            {
-                let prior = scalar_row(descriptor, input, shapes, supports, true)?;
-                for property in &descriptor.properties {
-                    if let (Some(left), Some(right)) =
-                        (prior.get(&property.name), row.get(&property.name))
-                        && !same_key(left, right)
-                    {
-                        return Err(error(
-                            &descriptor.name,
-                            "conflicting native values for one identity",
-                        ));
-                    }
-                }
-            }
-            previous.additional.push(value);
-        } else {
-            entry.or_insert(NativeViews {
-                first: value,
-                additional: Vec::new(),
-            });
-        }
-    }
     let mut edges = Vec::new();
     for relation in &descriptor.relations {
         let Some(payload) = value
@@ -253,12 +220,99 @@ fn parse_graph<'a>(
             children,
         });
     }
+    if let Some(id) = descriptor
+        .properties
+        .iter()
+        .find(|p| p.is_id)
+        .and_then(|p| row.get(&p.name))
+        .and_then(Value::try_u64)
+    {
+        let entry = plan.native_views.entry((descriptor.name.as_str(), id));
+        if let std::collections::hash_map::Entry::Occupied(mut entry) = entry {
+            let previous = entry.get_mut();
+            for input in std::iter::once(previous.first).chain(previous.additional.iter().copied())
+            {
+                let prior =
+                    native_view_with_inferred_keys(context, descriptor, input, shapes, supports)?;
+                for property in &descriptor.properties {
+                    if let (Some(left), Some(right)) =
+                        (prior.get(&property.name), row.get(&property.name))
+                        && !same_key(left, right)
+                    {
+                        return Err(error(
+                            &descriptor.name,
+                            "conflicting native values for one identity",
+                        ));
+                    }
+                }
+            }
+            previous.additional.push(value);
+        } else {
+            entry.or_insert(NativeViews {
+                first: value,
+                additional: Vec::new(),
+            });
+        }
+    }
     Ok(ParsedGraph {
         view,
         descriptor,
         row,
         edges,
     })
+}
+
+// Only repeated identities take this path. Reconstruct scalar join keys without
+// reparsing their nested graph or cloning relation payloads.
+fn native_view_with_inferred_keys<'a>(
+    context: &'a UserContext,
+    descriptor: &'a EntityDescriptor,
+    value: &'a serde_json::Value,
+    shapes: &mut NativeJsonShapes<'a>,
+    supports: bool,
+) -> Result<CompactRow, EntityError> {
+    let mut row = scalar_row(descriptor, value, shapes, supports, true)?;
+    for relation in descriptor.relations.iter().filter(|r| !r.many) {
+        let Some(local) = descriptor
+            .properties
+            .iter()
+            .find(|p| p.name == relation.local_key || p.column_name == relation.local_key)
+        else {
+            continue;
+        };
+        if local.is_id || row.get(&local.name).is_some() {
+            continue;
+        }
+        let Some(payload) = value.get(&relation.name) else {
+            continue;
+        };
+        if payload.is_null() {
+            row.insert(local.name.clone(), Value::Null);
+            continue;
+        }
+        if !payload.is_object() {
+            continue;
+        }
+        let target = context
+            .entity(&relation.target_entity)
+            .ok_or_else(|| error(&descriptor.name, "relation target is not installed"))?;
+        let target_row = scalar_row(
+            target,
+            payload,
+            shapes,
+            context.json_graph_capability(target)?,
+            true,
+        )?;
+        if let Some(foreign) = target
+            .properties
+            .iter()
+            .find(|p| p.name == relation.foreign_key || p.column_name == relation.foreign_key)
+            && let Some(key) = target_row.get(&foreign.name)
+        {
+            row.insert(local.name.clone(), key.clone());
+        }
+    }
+    Ok(row)
 }
 
 fn same_key(left: &Value, right: &Value) -> bool {
