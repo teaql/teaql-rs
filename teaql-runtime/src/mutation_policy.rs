@@ -280,14 +280,16 @@ tokio::task_local! {
     static ACTIVE_MUTATION_GOVERNANCE: MutationGovernanceSnapshot;
 }
 
-pub(crate) async fn with_mutation_governance<F, T>(
+pub(crate) fn with_mutation_governance<F, T>(
     snapshot: MutationGovernanceSnapshot,
     work: F,
-) -> T
+) -> impl Future<Output = T>
 where
     F: Future<Output = T>,
 {
-    ACTIVE_MUTATION_GOVERNANCE.scope(snapshot, work).await
+    // Outer task-local scopes capture a thin pointer, not an inline transaction future.
+    let work = Box::pin(work);
+    async move { ACTIVE_MUTATION_GOVERNANCE.scope(snapshot, work).await }
 }
 
 pub(crate) fn current_mutation_governance() -> Option<MutationGovernanceSnapshot> {
@@ -513,6 +515,9 @@ pub(crate) fn ledger_policy_plan(
     let deleted = root.deleted_keys();
     let new = root.new_keys();
     let mut keys = changes.changes().keys().cloned().collect::<BTreeSet<_>>();
+    if let Some(dynamic) = changes.dynamic_changes() {
+        keys.extend(dynamic.keys().cloned());
+    }
     keys.extend(deleted.iter().cloned());
     let operations = keys
         .into_iter()
@@ -525,7 +530,18 @@ pub(crate) fn ledger_policy_plan(
             } else {
                 MutationOperationKind::Update
             };
-            let changed_values = changes.changes().get(&key).cloned().unwrap_or_default();
+            let mut changed_values = changes.changes().get(&key).cloned().unwrap_or_default();
+            if let Some(dynamic) = changes
+                .dynamic_changes()
+                .and_then(|changes| changes.get(&key))
+            {
+                for (code, mutation) in dynamic {
+                    changed_values.insert(
+                        format!("#{code}"),
+                        crate::dynamic_fields::mutation_audit_value(mutation, None),
+                    );
+                }
+            }
             MutationOperation {
                 kind,
                 original_version: root.get_original_version(&key),
@@ -547,6 +563,29 @@ pub(crate) fn ledger_policy_plan(
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn governance_scope_does_not_inline_work_future_payload() {
+        let snapshot = MutationGovernanceSnapshot {
+            execution_id: "future-size".into(),
+            request_key: "test".into(),
+            source: MutationPolicySource::GeneratedDefault,
+            policy: None,
+            approval_status: MutationPolicyApprovalStatus::NotApplicable,
+            warning_codes: Vec::new(),
+            operations: Vec::new(),
+        };
+        let padding = std::hint::black_box([0_u8; 64 * 1024]);
+        let large = async move {
+            std::future::pending::<()>().await;
+            std::hint::black_box(padding);
+        };
+        let work_size = std::mem::size_of_val(&large);
+        let small = with_mutation_governance(snapshot.clone(), async {});
+        let large = with_mutation_governance(snapshot, large);
+        assert_eq!(std::mem::size_of_val(&small), std::mem::size_of_val(&large));
+        assert!(std::mem::size_of_val(&large) < work_size);
+    }
 
     struct AllowPolicy(MutationPolicyIdentity);
 

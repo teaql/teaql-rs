@@ -27,6 +27,13 @@ use crate::{CompiledQuery, SqlCompileError, SqlDialect};
 pub trait SqlTransport: Send + Sync {
     type Error: std::error::Error + Send + Sync + 'static;
 
+    #[doc(hidden)]
+    fn dynamic_field_store(
+        &self,
+    ) -> Option<&dyn teaql_data_service::dynamic_fields::DynamicFieldStore> {
+        None
+    }
+
     fn fetch_all_compact_sql(
         &self,
         query: &CompiledQuery,
@@ -54,6 +61,22 @@ pub trait SqlTransport: Send + Sync {
 }
 
 pub trait StreamingSqlTransport: SqlTransport {
+    #[doc(hidden)]
+    fn stream_sql_with_dynamic_fields(
+        &self,
+        _query: CompiledQuery,
+        _chunk_size: usize,
+        _plan: teaql_data_service::dynamic_fields::DynamicFieldStreamPlan,
+    ) -> Result<
+        teaql_data_service::QueryStream<'_, Self::Error>,
+        teaql_core::dynamic_fields::DynamicFieldError,
+    > {
+        Err(teaql_core::dynamic_fields::DynamicFieldError {
+            code: "DYNAMIC_FIELD_STREAM_UNSUPPORTED",
+            field: "stream".into(),
+        })
+    }
+
     fn stream_sql(
         &self,
         query: CompiledQuery,
@@ -214,6 +237,7 @@ fn select_plan_matches(key: &SelectQuery, query: &SelectQuery) -> bool {
         && key.raw_sql == query.raw_sql
         && key.raw_sql_search_criteria == query.raw_sql_search_criteria
         && key.dynamic_properties == query.dynamic_properties
+        && key.dynamic_property_definitions == query.dynamic_property_definitions
         && key.raw_projections == query.raw_projections
         && key.object_group_bys == query.object_group_bys
         && key.child_enhancements == query.child_enhancements
@@ -945,6 +969,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ordinary_sql_query_future_keeps_partition_probe_state_out_of_frame() {
+        let lookups = Arc::new(AtomicUsize::new(0));
+        let repeated = Arc::new(AtomicUsize::new(0));
+        let singles = Arc::new(AtomicUsize::new(0));
+        let executor = SqlDataServiceExecutor::new(
+            ProbeDialect,
+            RepeatedProbeTransport {
+                calls: repeated.clone(),
+                single_calls: singles.clone(),
+            },
+            CountingSchemaProvider {
+                lookups: lookups.clone(),
+            },
+        );
+        let mut request = query_request(false);
+        request.capture_execution_metadata = false;
+        request.query = request
+            .query
+            .limit(1)
+            .comment("what: ordinary SQL future size");
+        let future = executor.query(request);
+        let bytes = std::mem::size_of_val(&future);
+        println!("ORDINARY_SQL_QUERY_FRAME_BYTES={bytes}");
+        assert!(
+            bytes <= 4608,
+            "ordinary SQL future retains partition-probe state: {bytes}"
+        );
+        assert_eq!(
+            lookups.load(Ordering::Relaxed),
+            0,
+            "unpolled query must not execute"
+        );
+        assert_eq!(singles.load(Ordering::Relaxed), 0);
+        future.await.unwrap();
+        assert_eq!(lookups.load(Ordering::Relaxed), 1);
+        assert_eq!(singles.load(Ordering::Relaxed), 1);
+        assert_eq!(repeated.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn partition_probe_fallback_keeps_identical_single_and_explicit_policy_queries() {
+        for (values, threshold) in [
+            (vec![Value::U64(7), Value::U64(7)], None),
+            (vec![Value::U64(7)], None),
+            (vec![Value::U64(7), Value::U64(9)], Some(32)),
+        ] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let singles = Arc::new(AtomicUsize::new(0));
+            let executor = SqlDataServiceExecutor::new(
+                ProbeDialect,
+                RepeatedProbeTransport {
+                    calls: calls.clone(),
+                    single_calls: singles.clone(),
+                },
+                CountingSchemaProvider {
+                    lookups: Arc::new(AtomicUsize::new(0)),
+                },
+            );
+            let mut request = query_request(false);
+            request.capture_execution_metadata = false;
+            request.query = request
+                .query
+                .filter(Expr::in_list("id", values))
+                .order_desc("id")
+                .limit(1)
+                .partition_by("id");
+            request.query.top_n_probe_parent_threshold = threshold;
+            assert!(executor.query(request).await.unwrap().rows.is_empty());
+            assert_eq!(calls.load(Ordering::Relaxed), 0);
+            assert_eq!(singles.load(Ordering::Relaxed), 1);
+        }
+    }
+
+    #[tokio::test]
     async fn topn_004_011_sqlite_reuses_one_repeated_probe_boundary() {
         let calls = Arc::new(AtomicUsize::new(0));
         let single_calls = Arc::new(AtomicUsize::new(0));
@@ -1365,6 +1463,11 @@ impl<
     S: teaql_data_service::SchemaProvider + Send + Sync,
 > QueryExecutor for SqlDataServiceExecutor<D, T, S>
 {
+    fn dynamic_field_store(
+        &self,
+    ) -> Option<&dyn teaql_data_service::dynamic_fields::DynamicFieldStore> {
+        self.transport.dynamic_field_store()
+    }
     fn query_log_intent(&self, query: &SelectQuery) -> teaql_data_service::SqlIntentRedactions {
         self.entity_descriptor(&query.entity)
             .and_then(|entity| self.compile_select_cached(&entity, query).ok())
@@ -1406,34 +1509,17 @@ impl<
                 && request.query.top_n_probe_parent_threshold.is_none()
                 && let Some(values) = partition_probe_values(&request.query)
                 && values.len() >= 2
-                && let (Some(first_query), Some(second_query)) = (
-                    scalar_partition_probe_query(&request.query, values[0].clone()),
-                    scalar_partition_probe_query(&request.query, values[1].clone()),
-                )
             {
-                let first = self
-                    .compile_select_cached(&entity_desc, &first_query)
-                    .map_err(SqlExecutorError::Compile)?;
-                let second_params = collect_select_params(
+                // The two cloned SelectQueries and repeated transport future
+                // belong to this optional path, not every ordinary read frame.
+                if let Some(result) = Box::pin(self.fetch_partition_probe_query(
                     &entity_desc,
-                    &second_query,
-                    self.dialect.large_in_uses_array_param(),
-                );
-                if let Some(param_index) = first
-                    .params
-                    .iter()
-                    .zip(second_params.iter())
-                    .position(|(left, right)| left != right)
+                    &request.query,
+                    &values,
+                ))
+                .await?
                 {
-                    let rows = self
-                        .transport
-                        .fetch_repeated_compact_sql(&first, param_index, &values)
-                        .await
-                        .map_err(SqlExecutorError::Transport)?;
-                    return Ok(QueryResult {
-                        metadata: ExecutionMetadata::unrecorded_query(rows.len()),
-                        rows,
-                    });
+                    return Ok(result);
                 }
             }
 
@@ -1443,6 +1529,52 @@ impl<
             execute_compiled_query(&self.dialect, &self.transport, compiled, request, observer)
                 .await
         }
+    }
+}
+
+impl<D, T, S> SqlDataServiceExecutor<D, T, S>
+where
+    D: SqlDialect + Send + Sync,
+    T: SqlTransport + Send + Sync,
+    S: teaql_data_service::SchemaProvider + Send + Sync,
+{
+    async fn fetch_partition_probe_query(
+        &self,
+        entity: &EntityDescriptor,
+        query: &SelectQuery,
+        values: &[Value],
+    ) -> Result<Option<QueryResult>, SqlExecutorError<T::Error>> {
+        let (Some(first_query), Some(second_query)) = (
+            scalar_partition_probe_query(query, values[0].clone()),
+            scalar_partition_probe_query(query, values[1].clone()),
+        ) else {
+            return Ok(None);
+        };
+        let first = self
+            .compile_select_cached(entity, &first_query)
+            .map_err(SqlExecutorError::Compile)?;
+        let second_params = collect_select_params(
+            entity,
+            &second_query,
+            self.dialect.large_in_uses_array_param(),
+        );
+        let Some(param_index) = first
+            .params
+            .iter()
+            .zip(second_params.iter())
+            .position(|(left, right)| left != right)
+        else {
+            return Ok(None);
+        };
+        let rows = self
+            .transport
+            .fetch_repeated_compact_sql(&first, param_index, values)
+            .await
+            .map_err(SqlExecutorError::Transport)?;
+        Ok(Some(QueryResult {
+            metadata: ExecutionMetadata::unrecorded_query(rows.len()),
+            rows,
+        }))
     }
 }
 
@@ -1791,6 +1923,11 @@ impl<
     S: teaql_data_service::SchemaProvider + Send + Sync,
 > QueryExecutor for SqlDataServiceTransaction<'a, D, Tx, S>
 {
+    fn dynamic_field_store(
+        &self,
+    ) -> Option<&dyn teaql_data_service::dynamic_fields::DynamicFieldStore> {
+        self.transport.dynamic_field_store()
+    }
     fn query_log_intent(&self, query: &SelectQuery) -> teaql_data_service::SqlIntentRedactions {
         self.entity_descriptor(&query.entity)
             .and_then(|entity| self.compile_select_cached(&entity, query).ok())
@@ -2002,6 +2139,57 @@ impl<
     S: teaql_data_service::SchemaProvider + Send + Sync,
 > teaql_data_service::StreamQueryExecutor for SqlDataServiceExecutor<D, T, S>
 {
+    fn query_stream_with_dynamic_fields<'a>(
+        &'a self,
+        request: QueryRequest,
+        chunk_size: usize,
+        plan: teaql_data_service::dynamic_fields::DynamicFieldStreamPlan,
+        observer: Option<teaql_data_service::ExecutionObserver<'a>>,
+    ) -> Result<
+        teaql_data_service::QueryStream<'a, Self::Error>,
+        teaql_core::dynamic_fields::DynamicFieldError,
+    > {
+        use futures_util::StreamExt;
+        if plan.definitions().owner_type() != request.query.entity {
+            return Err(teaql_core::dynamic_fields::DynamicFieldError {
+                code: "DYNAMIC_FIELD_OWNER_MISMATCH",
+                field: request.query.entity,
+            });
+        }
+        if request.query.dynamic_field_selection.as_deref() != Some(plan.selection()) {
+            return Err(teaql_core::dynamic_fields::DynamicFieldError {
+                code: "DYNAMIC_FIELD_STREAM_SELECTION_MISMATCH",
+                field: request.query.entity,
+            });
+        }
+        let compiled = self
+            .entity_descriptor(&request.query.entity)
+            .ok_or_else(|| SqlCompileError::UnknownEntity(request.query.entity.clone()))
+            .and_then(|entity| self.compile_select_cached(&entity, &request.query));
+        let compiled = match compiled {
+            Ok(compiled) => compiled,
+            Err(error) => {
+                return Ok(Box::pin(futures_util::stream::once(async move {
+                    Err(SqlExecutorError::Compile(error))
+                })));
+            }
+        };
+        let metadata = request
+            .capture_execution_metadata
+            .then(|| query_diagnostic_metadata(&self.dialect, &compiled, &request));
+        let source = Box::pin(
+            self.transport
+                .stream_sql_with_dynamic_fields(compiled, chunk_size, plan)?
+                .map(|item| item.map_err(SqlExecutorError::Transport)),
+        );
+        Ok(match (metadata, observer) {
+            (Some(metadata), Some(observer)) => {
+                crate::diagnostic_stream::DiagnosticStream::wrap(source, metadata, observer)
+            }
+            _ => source,
+        })
+    }
+
     fn query_stream_observed<'a>(
         &'a self,
         request: QueryRequest,

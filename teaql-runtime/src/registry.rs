@@ -11,6 +11,79 @@ use crate::{
     InMemoryRawAuditEventSink, Language, RawAuditEventSink, RuntimeError, UserContext,
 };
 
+/// Generated adapter bridge: decode a bounded batch without discarding read sidecars.
+#[doc(hidden)]
+pub fn decode_compact_rows_with_read_metadata<T: Entity>(
+    mut rows: Vec<CompactRow>,
+    root: &EntityRuntimeState,
+) -> Result<Vec<T>, EntityError> {
+    CompactRow::share_layouts(&mut rows);
+    let mut entities = Vec::with_capacity(rows.len());
+    let mut states = ReadHydrationShapes::default();
+    for row in rows {
+        entities.push(decode_compact_row_with_read_metadata::<T>(
+            row,
+            root,
+            &mut states,
+        )?);
+    }
+    Ok(entities)
+}
+
+#[derive(Default)]
+pub(crate) struct ReadHydrationShapes {
+    // Keep source pointers alive; an allocator-reused address must never merge
+    // different projection/selection geometry. The cache contains no row values.
+    #[allow(clippy::type_complexity)]
+    states: std::collections::HashMap<
+        (usize, usize),
+        (
+            Arc<teaql_core::LoadedSnapshot>,
+            Arc<std::collections::HashSet<String>>,
+            Arc<teaql_core::LoadedSnapshot>,
+        ),
+    >,
+}
+
+fn decode_compact_row_with_read_metadata<T: Entity>(
+    mut row: CompactRow,
+    root: &EntityRuntimeState,
+    shapes: &mut ReadHydrationShapes,
+) -> Result<T, EntityError> {
+    let fields = row.take_loaded_dynamic_fields();
+    if fields.is_some() && !T::supports_dynamic_field_load() {
+        return Err(EntityError::new(
+            T::ENTITY_NAME,
+            "dynamic fields require a runtime-owned indexed entity carrier",
+        ));
+    }
+    let mut entity = T::from_compact_row_with_context(row, root as &dyn std::any::Any)?;
+    if let Some(fields) = fields {
+        let base = entity.loaded_state_snapshot().ok_or_else(|| {
+            EntityError::new(
+                T::ENTITY_NAME,
+                "indexed load state missing during dynamic hydration",
+            )
+        })?;
+        let key = (
+            Arc::as_ptr(&base) as usize,
+            Arc::as_ptr(fields.selected_codes()) as usize,
+        );
+        let state = if let Some((_, _, state)) = shapes.states.get(&key) {
+            Arc::clone(state)
+        } else {
+            let state = teaql_core::LoadedSnapshot::with_dynamic_fields(&base, &fields)
+                .map_err(|message| EntityError::new(T::ENTITY_NAME, message))?;
+            shapes
+                .states
+                .insert(key, (base, fields.selected_codes().clone(), state.clone()));
+            state
+        };
+        entity.install_loaded_dynamic_fields(fields, state)?;
+    }
+    Ok(entity)
+}
+
 type CompactEntityGraphDecoder =
     fn(CompactRow, &EntityRuntimeState, &mut EntityGraphBuilder) -> Result<(), EntityError>;
 type CompactEntityGraphBatchDecoder =
@@ -32,8 +105,29 @@ type CompactEntityGraphOptionDecoder = fn(
     &str,
 ) -> Result<(), EntityError>;
 
+type JsonReadCapability = fn(&EntityDescriptor) -> Result<bool, EntityError>;
+pub(crate) struct JsonEdgeRequest<'a> {
+    pub owner: &'a str,
+    pub id: u64,
+    pub relation: &'a str,
+    pub many: bool,
+}
+type JsonEdgeDecoder = fn(
+    Vec<(u64, CompactRow)>,
+    &EntityRuntimeState,
+    &mut EntityGraphBuilder,
+    JsonEdgeRequest<'_>,
+) -> Result<(), EntityError>;
+
+#[derive(Clone)]
+struct JsonReadDecoder {
+    capability: JsonReadCapability,
+    edge: JsonEdgeDecoder,
+}
+
 #[derive(Default, Clone)]
 pub struct InMemoryEntityGraphDecoderRegistry {
+    json_capabilities: BTreeMap<String, JsonReadDecoder>,
     compact_decoders: BTreeMap<String, CompactEntityGraphDecoder>,
     compact_batch_decoders: BTreeMap<String, CompactEntityGraphBatchDecoder>,
     compact_list_decoders: BTreeMap<String, CompactEntityGraphListDecoder>,
@@ -49,6 +143,83 @@ impl InMemoryEntityGraphDecoderRegistry {
     where
         T: Entity + IdentifiableEntity + Send + Sync + 'static,
     {
+        fn json_capability<T: Entity>(installed: &EntityDescriptor) -> Result<bool, EntityError> {
+            let expected = T::entity_descriptor();
+            if installed.properties.len() != expected.properties.len()
+                || expected
+                    .properties
+                    .iter()
+                    .any(|p| !installed.properties.contains(p))
+                || installed.relations.len() != expected.relations.len()
+                || expected
+                    .relations
+                    .iter()
+                    .any(|r| !installed.relations.contains(r))
+                || T::field_layout()?.is_none()
+            {
+                return Err(EntityError::new(
+                    T::ENTITY_NAME,
+                    "JSON_ENTITY_INPUT: installed graph metadata does not match its typed decoder",
+                ));
+            }
+            Ok(T::supports_dynamic_property_load())
+        }
+        fn json_edge<T: Entity + IdentifiableEntity + Send + Sync + 'static>(
+            rows: Vec<(u64, CompactRow)>,
+            root: &EntityRuntimeState,
+            graph: &mut EntityGraphBuilder,
+            edge: JsonEdgeRequest<'_>,
+        ) -> Result<(), EntityError> {
+            let mut shapes = ReadHydrationShapes::default();
+            if edge.many {
+                let mut data = Vec::with_capacity(rows.len());
+                for (view, row) in rows {
+                    let scoped =
+                        EntityRuntimeState::fresh_with_weak_graph(root).with_json_view(view);
+                    data.push(decode_compact_row_with_read_metadata::<T>(
+                        row,
+                        &scoped,
+                        &mut shapes,
+                    )?);
+                }
+                graph.install_json_relation_list(
+                    root.json_view_id(),
+                    edge.owner,
+                    edge.id,
+                    edge.relation,
+                    SmartList {
+                        data,
+                        is_loaded: true,
+                        ..Default::default()
+                    },
+                );
+            } else {
+                let value = rows
+                    .into_iter()
+                    .next()
+                    .map(|(view, row)| {
+                        let scoped =
+                            EntityRuntimeState::fresh_with_weak_graph(root).with_json_view(view);
+                        decode_compact_row_with_read_metadata::<T>(row, &scoped, &mut shapes)
+                    })
+                    .transpose()?;
+                graph.install_typed_relation_option(
+                    root.json_view_id(),
+                    edge.owner,
+                    edge.id,
+                    edge.relation,
+                    value,
+                );
+            }
+            Ok(())
+        }
+        self.json_capabilities.insert(
+            T::ENTITY_NAME.to_owned(),
+            JsonReadDecoder {
+                capability: json_capability::<T>,
+                edge: json_edge::<T>,
+            },
+        );
         fn decode_compact<T>(
             row: CompactRow,
             root: &EntityRuntimeState,
@@ -58,7 +229,11 @@ impl InMemoryEntityGraphDecoderRegistry {
             T: Entity + IdentifiableEntity + Send + Sync + 'static,
         {
             let graph_root = EntityRuntimeState::fresh_with_weak_graph(root);
-            let entity = T::from_compact_row_with_context(row, &graph_root as &dyn std::any::Any)?;
+            let entity = decode_compact_row_with_read_metadata::<T>(
+                row,
+                &graph_root,
+                &mut ReadHydrationShapes::default(),
+            )?;
             let id = entity.id_value().try_u64().ok_or_else(|| {
                 EntityError::new(T::ENTITY_NAME, "identity graph requires a u64 entity id")
             })?;
@@ -83,13 +258,7 @@ impl InMemoryEntityGraphDecoderRegistry {
             // grows 4 -> 8 -> 16 even when the relation cardinality is already
             // known. Reserve the exact row count and decode directly into the
             // final SmartList allocation.
-            let mut entities = Vec::with_capacity(rows.len());
-            for row in rows.data {
-                entities.push(T::from_compact_row_with_context(
-                    row,
-                    &graph_root as &dyn std::any::Any,
-                )?);
-            }
+            let entities = decode_compact_rows_with_read_metadata::<T>(rows.data, &graph_root)?;
             graph.install_relation_list(
                 owner_entity,
                 owner_id,
@@ -107,7 +276,7 @@ impl InMemoryEntityGraphDecoderRegistry {
         }
 
         fn decode_compact_batch<T>(
-            rows: Vec<CompactRow>,
+            mut rows: Vec<CompactRow>,
             root: &EntityRuntimeState,
             graph: &mut EntityGraphBuilder,
         ) -> Result<(), EntityError>
@@ -115,9 +284,11 @@ impl InMemoryEntityGraphDecoderRegistry {
             T: Entity + IdentifiableEntity + Send + Sync + 'static,
         {
             let graph_root = EntityRuntimeState::fresh_with_weak_graph(root);
+            CompactRow::share_layouts(&mut rows);
+            let mut shapes = ReadHydrationShapes::default();
             for row in rows {
                 let entity =
-                    T::from_compact_row_with_context(row, &graph_root as &dyn std::any::Any)?;
+                    decode_compact_row_with_read_metadata::<T>(row, &graph_root, &mut shapes)?;
                 let id = entity.id_value().try_u64().ok_or_else(|| {
                     EntityError::new(T::ENTITY_NAME, "identity graph requires a u64 entity id")
                 })?;
@@ -141,9 +312,15 @@ impl InMemoryEntityGraphDecoderRegistry {
             let value = rows
                 .into_iter()
                 .next()
-                .map(|row| T::from_compact_row_with_context(row, &graph_root as &dyn std::any::Any))
+                .map(|row| {
+                    decode_compact_row_with_read_metadata::<T>(
+                        row,
+                        &graph_root,
+                        &mut ReadHydrationShapes::default(),
+                    )
+                })
                 .transpose()?;
-            graph.install_relation_option(owner_entity, owner_id, relation, value);
+            graph.install_typed_relation_option(0, owner_entity, owner_id, relation, value);
             Ok(())
         }
 
@@ -155,6 +332,39 @@ impl InMemoryEntityGraphDecoderRegistry {
             .insert(T::ENTITY_NAME.to_owned(), decode_compact_list::<T>);
         self.compact_option_decoders
             .insert(T::ENTITY_NAME.to_owned(), decode_compact_option::<T>);
+    }
+
+    pub(crate) fn json_capability(
+        &self,
+        descriptor: &EntityDescriptor,
+    ) -> Result<bool, EntityError> {
+        let decoder = self
+            .json_capabilities
+            .get(&descriptor.name)
+            .ok_or_else(|| {
+                EntityError::new(
+                    &descriptor.name,
+                    "JSON_ENTITY_INPUT: graph type has no installed typed decoder",
+                )
+            })?;
+        (decoder.capability)(descriptor)
+    }
+
+    pub(crate) fn decode_json_edge(
+        &self,
+        entity: &str,
+        rows: Vec<(u64, CompactRow)>,
+        root: &EntityRuntimeState,
+        graph: &mut EntityGraphBuilder,
+        edge: JsonEdgeRequest<'_>,
+    ) -> Result<(), EntityError> {
+        let decoder = self.json_capabilities.get(entity).ok_or_else(|| {
+            EntityError::new(
+                entity,
+                "JSON_ENTITY_INPUT: graph type has no installed typed decoder",
+            )
+        })?;
+        (decoder.edge)(rows, root, graph, edge)
     }
 
     pub fn decode_compact(

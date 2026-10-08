@@ -422,6 +422,27 @@ When the entity defines `#[teaql(id)]` or `#[teaql(version)]`, `SmartList<T>` al
 - `versions()`
 - `into_records()`
 
+### Readonly dynamic properties on the development branch
+
+Entities with a `#[teaql(dynamic)]` carrier expose the runtime `Entity` trait's
+borrowed property API. Use the full `_`-prefixed name:
+
+```rust
+let value = entity.dynamic_property("_item_count"); // Option<&teaql_core::Value>
+let present = entity.has_dynamic_property("_item_count");
+```
+
+Missing properties and explicit null both read as `None`; presence distinguishes
+them. Zero, false and empty text remain values. Reads borrow the existing payload,
+do not fetch data, and do not change loaded markers or mutation intent. JSON-loaded
+nonnull properties retain their `Value::Json` representation. Native fields and
+persistent `#` extensions use their own APIs and cannot be read through this one.
+Fixed-field NotLoaded behavior and persistent dynamic-field wrappers are unchanged.
+
+The shared-load-state example verifies the API on a generated School with zero
+allocation and provider entry in repeated reads. This is development-branch
+coverage; it does not claim a public release or query-latency improvement.
+
 ## Typed relation enhancement
 
 `fetch_enhanced_entities::<T>()` runs record-based relation enhancement first, then converts the

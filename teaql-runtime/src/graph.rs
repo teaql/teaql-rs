@@ -268,6 +268,8 @@ pub struct GraphNode {
     /// L1 Cache snapshot of the entity values exactly as they were loaded from the database.
     /// Used by the Event Engine to eliminate redundant old_value queries during auditing.
     pub original_values: Option<EntitySnapshot>,
+    #[doc(hidden)]
+    pub dynamic_fields: Option<Box<teaql_core::dynamic_fields::DynamicFieldValues>>,
 }
 
 impl GraphNode {
@@ -280,6 +282,7 @@ impl GraphNode {
             comment: None,
             dirty_fields: None,
             original_values: None,
+            dynamic_fields: None,
         }
     }
 

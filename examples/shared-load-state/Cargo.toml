@@ -1,0 +1,36 @@
+[package]
+name = "shared-load-state-example"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+inheritance = []
+
+[dependencies]
+school_management_service_core = { package = "school-management-service-core", path = "target/generated/lib" }
+teaql-core = { path = "../../teaql-core" }
+teaql-runtime = { path = "../../teaql-runtime" }
+teaql-data-service = { path = "../../teaql-data-service" }
+teaql-provider-sqlite = { path = "../../teaql-provider-sqlite" }
+teaql-sql = { path = "../../teaql-sql" }
+rusqlite = { version = "0.40", features = ["bundled"] }
+futures-util = "0.3"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+diesel = { version = "=2.3.13", default-features = false, features = ["sqlite"] }
+libsqlite3-sys = "=0.38.1"
+teaql-macros = { path = "../../teaql-macros" }
+futures-executor = "0.3"
+
+[workspace]
+
+[patch.crates-io]
+teaql-core = { path = "../../teaql-core" }
+teaql-macros = { path = "../../teaql-macros" }
+teaql-data-service = { path = "../../teaql-data-service" }
+teaql-sql = { path = "../../teaql-sql" }
+teaql-runtime = { path = "../../teaql-runtime" }
+teaql-provider-sqlite = { path = "../../teaql-provider-sqlite" }

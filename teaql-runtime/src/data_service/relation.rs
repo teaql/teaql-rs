@@ -161,6 +161,22 @@ fn relation_top_n_execution_plan(
     }
 }
 
+fn provider_owns_relation_probe_batch(
+    capabilities: &teaql_data_service::DataServiceCapabilities,
+    plan: &RelationLoadPlan,
+    parent_count: usize,
+) -> bool {
+    // The provider's repeated-probe fast path needs at least two values.
+    // A singleton partition otherwise falls back to a window scan; use the
+    // existing scalar bounded-probe path for that one parent instead.
+    parent_count >= 2
+        && capabilities.small_parent_relation_probes
+        && plan
+            .query
+            .as_ref()
+            .is_none_or(|query| query.top_n_probe_parent_threshold.is_none())
+}
+
 impl<'a, E> EntityDataService<'a, E>
 where
     E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
@@ -239,7 +255,7 @@ where
 
     pub(crate) async fn hydrate_compact_flat_plans_internal(
         &self,
-        parent_rows: &[CompactRow],
+        parent_rows: &mut [CompactRow],
         plans: &[RelationLoadPlan],
         root: &crate::EntityRuntimeState,
         graph: &mut crate::EntityGraphBuilder,
@@ -410,11 +426,21 @@ where
                 let mut query = child_query.clone();
                 ensure_projection(&mut query, "id");
                 query = query.and_filter(Expr::in_list("id", ids));
-                let child_rows = self
-                    .scoped_data_service_internal(query.entity.clone())
-                    .with_trace_context(parent_trace_chain.to_vec())
-                    .fetch_compact_all_internal(query)
-                    .await?
+                let selection = query.dynamic_field_selection.clone();
+                let owner = query.entity.clone();
+                let child_repo = self
+                    .scoped_data_service_internal(owner.clone())
+                    .with_trace_context(parent_trace_chain.to_vec());
+                let intent = child_repo
+                    .request_intent_for(&query)
+                    .map_err(DataServiceError::Runtime)?;
+                let mut fetched = child_repo.fetch_compact_all_internal(query).await?;
+                if let Some(selection) = selection {
+                    child_repo
+                        .load_dynamic_fields_into_rows(&mut fetched, &owner, &selection, &intent)
+                        .await?;
+                }
+                let child_rows = fetched
                     .into_iter()
                     .filter_map(|row| {
                         row.get("id")
@@ -422,11 +448,15 @@ where
                             .map(|id| (graph_identity_key(&id), row))
                     })
                     .collect::<BTreeMap<_, _>>();
+                let mut shapes = teaql_core::dynamic_fields::DynamicFieldMergeShapes::default();
                 for row in rows.iter_mut() {
                     if let Some(key) = row.get("id").map(graph_identity_key)
                         && let Some(child) = child_rows.get(&key)
                     {
-                        row.extend(child.clone());
+                        row.try_extend(child.clone(), &mut shapes)
+                            .map_err(|error| {
+                                DataServiceError::Runtime(RuntimeError::DynamicField(error))
+                            })?;
                     }
                 }
             }
@@ -867,7 +897,7 @@ where
 
     fn hydrate_compact_flat_plan<'b>(
         &'b self,
-        parent_rows: &'b [CompactRow],
+        parent_rows: &'b mut [CompactRow],
         plan: &'b RelationLoadPlan,
         root: &'b crate::EntityRuntimeState,
         graph: &'b mut crate::EntityGraphBuilder,
@@ -876,7 +906,7 @@ where
     > {
         Box::pin(async move {
             let child_repo = self.relation_child_repo(plan);
-            let child_rows = self
+            let mut child_rows = self
                 .fetch_relation_rows(&child_repo, plan, parent_rows, true)
                 .await?;
             // Install a forward ancestor before descendants. A descendant may
@@ -892,10 +922,24 @@ where
                     graph,
                 )
                 .await?;
-                // The selected ancestor also owns an edge view. Descendants
-                // may fetch the same identity with different fields/metrics;
-                // neither view may replace the other's explicit projection.
-                for parent in parent_rows {
+            }
+
+            for child_plan in &plan.children {
+                if child_plan.children.is_empty() {
+                    child_repo
+                        .hydrate_compact_flat_leaf(&mut child_rows, child_plan, root, graph)
+                        .await?;
+                } else {
+                    child_repo
+                        .hydrate_compact_flat_plan(&mut child_rows, child_plan, root, graph)
+                        .await?;
+                }
+            }
+
+            if installed_before_children {
+                // Keep this edge's exact projection, including the availability
+                // of newly hydrated descendants, without replacing table peers.
+                for parent in parent_rows.iter() {
                     let owner_id = parent.get("id").and_then(Value::try_u64).ok_or_else(|| {
                         DataServiceError::Entity(teaql_core::EntityError::new(
                             &plan.parent_entity,
@@ -921,21 +965,6 @@ where
                         )
                         .map_err(DataServiceError::Entity)?;
                 }
-            }
-
-            for child_plan in &plan.children {
-                if child_plan.children.is_empty() {
-                    child_repo
-                        .hydrate_compact_flat_leaf(&child_rows, child_plan, root, graph)
-                        .await?;
-                } else {
-                    child_repo
-                        .hydrate_compact_flat_plan(&child_rows, child_plan, root, graph)
-                        .await?;
-                }
-            }
-
-            if installed_before_children {
                 Ok(())
             } else {
                 self.install_compact_flat_relation(parent_rows, plan, child_rows, root, graph)
@@ -946,7 +975,7 @@ where
 
     fn hydrate_compact_flat_leaf<'b>(
         &'b self,
-        parent_rows: &'b [CompactRow],
+        parent_rows: &'b mut [CompactRow],
         plan: &'b RelationLoadPlan,
         root: &'b crate::EntityRuntimeState,
         graph: &'b mut crate::EntityGraphBuilder,
@@ -965,7 +994,7 @@ where
 
     async fn install_compact_flat_relation(
         &self,
-        parent_rows: &[CompactRow],
+        parent_rows: &mut [CompactRow],
         plan: &RelationLoadPlan,
         child_rows: Vec<CompactRow>,
         root: &crate::EntityRuntimeState,
@@ -985,7 +1014,7 @@ where
                 .as_ref()
                 .is_some_and(|query| !query.facets.is_empty())
             {
-                for parent in parent_rows {
+                for parent in parent_rows.iter() {
                     let owner_id = parent.get("id").and_then(Value::try_u64).ok_or_else(|| {
                         DataServiceError::Entity(teaql_core::EntityError::new(
                             &plan.parent_entity,
@@ -1013,12 +1042,21 @@ where
                     graph,
                 )
                 .map_err(DataServiceError::Entity)?;
-            for parent in parent_rows {
+            let mut shapes = teaql_core::RelationShapeCache::default();
+            for parent in parent_rows.iter_mut() {
                 if !parent
                     .get(&plan.local_key)
                     .is_some_and(|key| fetched_keys.contains(&FlatIdentityKey::from_value(key)))
                 {
                     self.install_unfetched_forward_detail(parent, plan, root, graph)?;
+                    if matches!(
+                        parent.get(&plan.local_key),
+                        Some(Value::Null | Value::TypedNull(_))
+                    ) {
+                        parent.mark_relation_loaded(&plan.relation_name, &mut shapes);
+                    }
+                } else {
+                    parent.mark_relation_loaded(&plan.relation_name, &mut shapes);
                 }
             }
             return Ok(());
@@ -1035,7 +1073,9 @@ where
         }
 
         let context = self.data_service.metadata.context;
+        let mut shapes = teaql_core::RelationShapeCache::default();
         for parent in parent_rows {
+            parent.mark_relation_loaded(&plan.relation_name, &mut shapes);
             let local_value = parent.get(&plan.local_key);
             let related = local_value
                 .and_then(|value| {
@@ -1197,6 +1237,32 @@ where
         parent_rows: &[CompactRow],
         compact: bool,
     ) -> Result<Vec<CompactRow>, DataServiceError<E::Error>> {
+        let mut rows = self
+            .fetch_native_relation_rows(child_repo, plan, parent_rows, compact)
+            .await?;
+        if let Some(selection) = plan
+            .query
+            .as_ref()
+            .and_then(|query| query.dynamic_field_selection.as_ref())
+        {
+            let query = self.base_relation_query(plan);
+            let intent = child_repo
+                .request_intent_for(&query)
+                .map_err(DataServiceError::Runtime)?;
+            child_repo
+                .load_dynamic_fields_into_rows(&mut rows, &plan.target_entity, selection, &intent)
+                .await?;
+        }
+        Ok(rows)
+    }
+
+    async fn fetch_native_relation_rows(
+        &self,
+        child_repo: &EntityDataService<'a, E>,
+        plan: &RelationLoadPlan,
+        parent_rows: &[CompactRow],
+        compact: bool,
+    ) -> Result<Vec<CompactRow>, DataServiceError<E::Error>> {
         let ids = unique_relation_values(parent_rows, &plan.local_key);
         if ids.is_empty() {
             return Ok(Vec::new());
@@ -1219,11 +1285,8 @@ where
         // With execution metadata disabled, retain one semantic partition query and let an
         // embedded provider execute its indexed parent probes behind one executor boundary.
         // When metadata is enabled we intentionally keep one observable result per SQL probe.
-        let provider_owns_probe_batch = capabilities.small_parent_relation_probes
-            && plan
-                .query
-                .as_ref()
-                .is_none_or(|query| query.top_n_probe_parent_threshold.is_none());
+        let provider_owns_probe_batch =
+            provider_owns_relation_probe_batch(&capabilities, plan, ids.len());
         if provider_owns_probe_batch && !self.data_service.metadata.capture_execution_metadata() {
             let query = if compact {
                 self.query_for_compact_plan(plan, parent_rows)
@@ -1513,6 +1576,26 @@ mod planner_tests {
             query: Some(SelectQuery::new("Trip").order_desc("id").limit(10)),
             children: Vec::new(),
         }
+    }
+
+    #[test]
+    fn single_parent_probe_does_not_delegate_to_a_multi_parent_provider_batch() {
+        let mut capabilities = teaql_data_service::DataServiceCapabilities {
+            small_parent_relation_probes: true,
+            ..Default::default()
+        };
+        let mut plan = limited_many_plan();
+        assert!(!provider_owns_relation_probe_batch(&capabilities, &plan, 0));
+        assert!(!provider_owns_relation_probe_batch(&capabilities, &plan, 1));
+        assert!(provider_owns_relation_probe_batch(&capabilities, &plan, 2));
+        assert!(provider_owns_relation_probe_batch(&capabilities, &plan, 32));
+        for threshold in [0, 32] {
+            plan.query.as_mut().unwrap().top_n_probe_parent_threshold = Some(threshold);
+            assert!(!provider_owns_relation_probe_batch(&capabilities, &plan, 2));
+        }
+        plan.query.as_mut().unwrap().top_n_probe_parent_threshold = None;
+        capabilities.small_parent_relation_probes = false;
+        assert!(!provider_owns_relation_probe_batch(&capabilities, &plan, 2));
     }
 
     #[test]

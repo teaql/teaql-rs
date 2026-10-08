@@ -35,6 +35,7 @@ use crate::{
 use teaql_core::business_id::BusinessIdAllocator;
 use teaql_core::{EntityDescriptor, Value};
 
+mod json;
 mod locking;
 mod logging;
 mod pagination;
@@ -515,6 +516,13 @@ impl UserContext {
         self.entity_graph_decoders.contains(entity)
     }
 
+    pub(crate) fn json_graph_capability(
+        &self,
+        descriptor: &EntityDescriptor,
+    ) -> Result<bool, teaql_core::EntityError> {
+        self.entity_graph_decoders.json_capability(descriptor)
+    }
+
     pub(crate) fn decode_compact_entity_into_graph(
         &self,
         entity: &str,
@@ -710,6 +718,9 @@ impl UserContext {
             .ok_or_else(|| RuntimeError::Schema("missing schema provider".to_owned()))?;
         let invocation = SchemaInvocation { _context_owned: () };
         provider.ensure_schema(self, &invocation).await?;
+        self.ensure_dynamic_fields_schema()
+            .await
+            .map_err(RuntimeError::DynamicField)?;
         if let Some(business_ids) = self.get_resource::<BusinessIdSchemaService>() {
             business_ids
                 .ensure_schema(self)

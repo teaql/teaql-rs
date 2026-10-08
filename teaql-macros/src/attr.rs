@@ -9,6 +9,7 @@ pub struct ContainerAttrs {
     pub audit_mask_fields_declared: bool,
     pub audit_value_max_len: Option<usize>,
     pub reverse_relations: Vec<ParsedContainerRelation>,
+    pub indexed_layout: bool,
 }
 
 #[derive(Default)]
@@ -18,6 +19,7 @@ pub struct ParsedContainerRelation {
     pub local_key: Option<String>,
     pub foreign_key: Option<String>,
     pub many: bool,
+    pub json_type: Option<syn::Type>,
 }
 
 pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> ContainerAttrs {
@@ -29,6 +31,7 @@ pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> Co
         audit_mask_fields_declared: false,
         audit_value_max_len: None,
         reverse_relations: Vec::new(),
+        indexed_layout: false,
     };
 
     for attr in attrs {
@@ -36,7 +39,9 @@ pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> Co
             continue;
         }
         let _ = attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("entity") {
+            if meta.path.is_ident("indexed_layout") {
+                attrs_out.indexed_layout = true;
+            } else if meta.path.is_ident("entity") {
                 let value = meta.value()?;
                 attrs_out.entity_name = parse_string_expr(&value.parse::<Expr>()?);
             } else if meta.path.is_ident("table") {
@@ -95,6 +100,10 @@ pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> Co
                             Some(parse_string_expr(&nested.value()?.parse::<Expr>()?));
                     } else if nested.path.is_ident("many") {
                         relation.many = true;
+                    } else if nested.path.is_ident("json_type") {
+                        relation.json_type = Some(syn::parse_str(&parse_string_expr(
+                            &nested.value()?.parse::<Expr>()?,
+                        ))?);
                     }
                     Ok(())
                 })?;

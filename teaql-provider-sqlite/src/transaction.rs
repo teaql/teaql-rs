@@ -6,9 +6,9 @@ use teaql_sql::{SqlTransaction, SqlTransactionTransport, SqlTransport, Streaming
 /// cloned; drop rolls back before releasing the asynchronous connection lease.
 /// Generated Context Q/E/save APIs retain their existing spelling.
 pub struct SqliteTransaction {
-    executor: SqliteMutationExecutor,
+    pub(super) executor: SqliteMutationExecutor,
     _lease: futures_util::lock::OwnedMutexGuard<()>,
-    active: bool,
+    pub(super) active: bool,
 }
 
 impl SqlTransactionTransport for SqliteMutationExecutor {
@@ -30,6 +30,12 @@ impl SqlTransactionTransport for SqliteMutationExecutor {
 
 impl SqlTransport for SqliteTransaction {
     type Error = MutationExecutorError;
+
+    fn dynamic_field_store(
+        &self,
+    ) -> Option<&dyn teaql_data_service::dynamic_fields::DynamicFieldStore> {
+        Some(self)
+    }
 
     async fn fetch_all_compact_sql(
         &self,

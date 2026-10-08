@@ -5,6 +5,7 @@ mod commit_audit;
 mod context;
 mod data_service;
 mod document_round_trip;
+pub mod dynamic_fields;
 mod entity_reference;
 mod entity_runtime;
 pub mod entity_save;
@@ -25,6 +26,8 @@ mod mutation_policy;
 #[allow(dead_code)]
 mod memory;
 mod registry;
+#[doc(hidden)]
+pub use registry::decode_compact_rows_with_read_metadata;
 mod round_trip_reference;
 mod telemetry;
 #[cfg(feature = "opentelemetry")]
@@ -62,8 +65,8 @@ pub use entity_reference::{
     UNSAFE_RAW_ENTITY_REFERENCES_ENVIRONMENT,
 };
 pub use entity_runtime::{
-    ChangeSetStack, EntityChangeSet, EntityGraphBuilder, EntityKey, EntityRuntimeState,
-    LedgerCompositionError, LedgerEntity, LoadedRelation, RelationHandle,
+    ChangeSetStack, DynamicFieldChanges, EntityChangeSet, EntityGraphBuilder, EntityKey,
+    EntityRuntimeState, LedgerCompositionError, LedgerEntity, LoadedRelation, RelationHandle,
 };
 pub use entity_save::{
     AuditedSaveExt, graph_node_from_entity, save_audited_ledger_entity,
@@ -4039,6 +4042,8 @@ mod tests {
             raw_sql: None,
             raw_sql_search_criteria: Vec::new(),
             dynamic_properties: Vec::new(),
+            dynamic_property_definitions: None,
+            dynamic_field_selection: None,
             raw_projections: Vec::new(),
             object_group_bys: Vec::new(),
             search_with_text: None,

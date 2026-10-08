@@ -1,5 +1,7 @@
 #![allow(async_fn_in_trait)]
 
+#[doc(hidden)]
+pub mod dynamic_fields;
 mod sql_log;
 pub use sql_log::{
     SqlExecutionOutcome, SqlIntentRedactions, SqlLogContext, SqlParameterLogPolicy,
@@ -288,6 +290,12 @@ pub trait DataServiceExecutor {
 }
 
 pub trait QueryExecutor: DataServiceExecutor {
+    /// Executor-owned storage, not a separate connection obtained from Context.
+    #[doc(hidden)]
+    fn dynamic_field_store(&self) -> Option<&dyn dynamic_fields::DynamicFieldStore> {
+        None
+    }
+
     /// Provider diagnostic SPI for a cached/rewritten query whose original
     /// statement will not execute. Must not perform I/O or emit a SQL log.
     /// Providers can derive precise policies from compilation. The default
@@ -331,6 +339,21 @@ pub type ExecutionObserver<'a> = std::sync::Arc<dyn Fn(ExecutionMetadata) + Send
 
 /// Streaming query executor. Returns rows in chunks rather than all at once.
 pub trait StreamQueryExecutor: DataServiceExecutor {
+    /// Optional cursor-local enhancement. Unsupported executors fail before opening a cursor.
+    #[doc(hidden)]
+    fn query_stream_with_dynamic_fields<'a>(
+        &'a self,
+        _request: QueryRequest,
+        _chunk_size: usize,
+        _plan: dynamic_fields::DynamicFieldStreamPlan,
+        _observer: Option<ExecutionObserver<'a>>,
+    ) -> Result<QueryStream<'a, Self::Error>, teaql_core::dynamic_fields::DynamicFieldError> {
+        Err(teaql_core::dynamic_fields::DynamicFieldError {
+            code: "DYNAMIC_FIELD_STREAM_UNSUPPORTED",
+            field: "stream".into(),
+        })
+    }
+
     fn query_stream(
         &self,
         request: QueryRequest,

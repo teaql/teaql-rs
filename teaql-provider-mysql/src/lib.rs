@@ -713,12 +713,12 @@ impl teaql_sql::StreamingSqlTransport for MysqlMutationExecutor {
             let mut stream = conn
                 .exec_stream::<mysql_async::Row, _, _>(query.sql_with_comment(), params)
                 .await?;
-            let mut columns: Option<Arc<[String]>> = None;
+            let mut columns: Option<Arc<teaql_core::CompactRowLayout>> = None;
             let mut chunk=Vec::with_capacity(chunk_size); let mut index=0;
             while let Some(row) = stream.next().await {
                 let row = row?;
-                let shared_columns = columns.get_or_insert_with(|| row.columns_ref().iter().map(|column| column.name_str().into_owned()).collect::<Vec<_>>().into()).clone();
-                chunk.push(CompactRow::new(shared_columns, decode_mysql_values(row)?));
+                let shared_columns = columns.get_or_insert_with(|| teaql_core::CompactRowLayout::new(row.columns_ref().iter().map(|column| column.name_str().into_owned()).collect::<Vec<_>>().into())).clone();
+                chunk.push(CompactRow::with_layout(shared_columns, decode_mysql_values(row)?));
                 if chunk.len()==chunk_size { yield teaql_data_service::StreamChunk { rows:std::mem::take(&mut chunk), chunk_index:index, is_last:false }; index+=1; }
             }
             if !chunk.is_empty() { yield teaql_data_service::StreamChunk { rows:chunk, chunk_index:index, is_last:true }; }
@@ -2739,8 +2739,14 @@ fn decode_mysql_compact_rows(
         .map(|column| column.name_str().into_owned())
         .collect::<Vec<_>>()
         .into();
+    let columns = teaql_core::CompactRowLayout::new(columns);
     rows.into_iter()
-        .map(|row| Ok(CompactRow::new(columns.clone(), decode_mysql_values(row)?)))
+        .map(|row| {
+            Ok(CompactRow::with_layout(
+                columns.clone(),
+                decode_mysql_values(row)?,
+            ))
+        })
         .collect()
 }
 

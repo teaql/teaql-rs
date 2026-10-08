@@ -366,7 +366,8 @@ impl RawAuditEvent {
         }
         for change in &self.changes {
             if crate::log_privacy::credential_name(&change.field)
-                || (!allow && audit_mask_fields.contains(&change.field))
+                || (!allow
+                    && (audit_mask_fields.contains(&change.field) || change.field.starts_with('#')))
                 || change
                     .old_value
                     .iter()
@@ -488,7 +489,8 @@ pub fn build_safe_audit_field(
             let raw_length = raw.chars().count();
             let credential = crate::log_privacy::credential_name(field_name);
             let should_mask = credential
-                || (audit_mask_fields.iter().any(|f| f == field_name)
+                || ((audit_mask_fields.iter().any(|f| f == field_name)
+                    || field_name.starts_with('#'))
                     && !crate::log_privacy::plaintext_enabled());
 
             let mut value = match (credential, should_mask) {
