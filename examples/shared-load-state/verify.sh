@@ -13,6 +13,17 @@ for argument in "$@"; do
     *) printf 'Usage: bash verify.sh [--generate] [--wide] [--inheritance]\n' >&2; exit 2 ;;
   esac
 done
+if [[ "$generate" == false && ! -f "$example_dir/target/generated/lib/Cargo.toml" ]]; then
+  # Frozen output from the qualified local producer is an immutable CI input,
+  # not a handwritten replacement for generated APIs. Parent patch entries
+  # resolve all TeaQL dependencies to this runtime checkout.
+  fixture="$example_dir/fixtures/narrow"
+  (cd "$fixture" && sha256sum --check --quiet SHA256SUMS)
+  mkdir -p "$example_dir/target/generated"
+  cp -R "$fixture/lib" "$example_dir/target/generated/"
+  cp "$fixture/model-under-test.xml" "$fixture/fixture-mode.txt" \
+    "$fixture/fixture-inheritance.txt" "$example_dir/target/generated/"
+fi
 if [[ "$generate" == true ]]; then
   : "${TEAQL_CODEGEN_DIR:?Set TEAQL_CODEGEN_DIR to the local generator checkout}"
   mvn -q -f "$TEAQL_CODEGEN_DIR/pom.xml" -pl generator -am \
