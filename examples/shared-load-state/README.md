@@ -176,6 +176,22 @@ masked log file. Off mode disables steady-state query logging. The runner
 rejects ambient log overrides, checks generated-source hashes before/after,
 records source/toolchain identity and verifies a single SQLite binding tree.
 
+## Process cold startup probe
+
+```bash
+bash examples/shared-load-state/benchmark-cold.sh
+bash examples/shared-load-state/benchmark-cold.sh --default-log
+```
+
+This probe prepares two Schools through generated audited mutations in a separate
+process, then launches seven fresh native processes. Each times Context creation
+and its first bounded two-row Q query separately, with E/name/version and shared
+snapshot assertions. No query warmup or schema writes occur in measured processes.
+Database and generated-source hashes must remain unchanged. Compilation and
+fixture preparation are outside CPU/timing receipts; process launch, validation
+and output are included in the external CPU receipt. OS page caches are not
+cleared, so this is process-cold, not cold-disk or a startup speedup claim.
+
 ## Matched driver logging modes
 
 ```bash
