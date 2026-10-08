@@ -233,6 +233,9 @@ pub struct SqliteMutationExecutor {
 static NEXT_STORAGE_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl SqliteMutationExecutor {
+    // Rust 1.99 renamed fetch_update; retain compatibility with supported older
+    // toolchains until the minimum Rust version is deliberately raised.
+    #[allow(deprecated)]
     pub fn new(connection: Arc<Mutex<Connection>>) -> Self {
         if let Ok(connection) = connection.lock() {
             connection

@@ -1580,8 +1580,10 @@ mod planner_tests {
 
     #[test]
     fn single_parent_probe_does_not_delegate_to_a_multi_parent_provider_batch() {
-        let mut capabilities = teaql_data_service::DataServiceCapabilities::default();
-        capabilities.small_parent_relation_probes = true;
+        let mut capabilities = teaql_data_service::DataServiceCapabilities {
+            small_parent_relation_probes: true,
+            ..Default::default()
+        };
         let mut plan = limited_many_plan();
         assert!(!provider_owns_relation_probe_batch(&capabilities, &plan, 0));
         assert!(!provider_owns_relation_probe_batch(&capabilities, &plan, 1));
