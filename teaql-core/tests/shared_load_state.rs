@@ -317,6 +317,52 @@ fn independently_built_same_shape_rows_share_snapshot_and_leave_absent_defaults_
 }
 
 #[test]
+fn predefined_payloads_keep_null_missing_empty_zero_and_false_distinct() {
+    use teaql_core::{CompactRow, CompactRowLayout, Entity, Value};
+    let decode = |columns: &[&str], cells| {
+        let layout = CompactRowLayout::new(
+            columns
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect::<Vec<_>>()
+                .into(),
+        );
+        TypedIndexedRow::from_compact_row(CompactRow::with_layout(layout, cells)).unwrap()
+    };
+    let missing = decode(&["id", "version"], vec![Value::U64(1), Value::I64(1)]);
+    assert_eq!(missing.display_name, None);
+    assert!(!missing.is_field_loaded("base_url"));
+    assert!(!missing.is_field_loaded("active"));
+    assert!(!missing.active);
+    assert!(!missing.into_values().contains_key("active"));
+
+    let null = decode(
+        &["id", "version", "base_url"],
+        vec![Value::U64(2), Value::I64(1), Value::Null],
+    );
+    assert_eq!(null.display_name, None);
+    assert!(null.is_field_loaded("base_url"));
+    assert!(!null.is_field_loaded("active"));
+
+    let empty = decode(
+        &["id", "version", "base_url", "active"],
+        vec![
+            Value::U64(3),
+            Value::I64(0),
+            Value::Text(String::new()),
+            Value::Bool(false),
+        ],
+    );
+    assert_eq!(empty.display_name.as_deref(), Some(""));
+    assert!(empty.is_field_loaded("base_url") && empty.is_field_loaded("active"));
+    assert!(!empty.active);
+    assert_eq!(empty.version, 0);
+    let values = empty.into_values();
+    assert_eq!(values.get("active"), Some(&Value::Bool(false)));
+    assert_eq!(values.get("version"), Some(&Value::I64(0)));
+}
+
+#[test]
 fn cow_rejoins_compatible_shape_without_retaining_overflow_or_cross_revision_masks() {
     let type_layout = layout("v1");
     let empty = LoadedSnapshot::projection(type_layout.clone(), []).into_shared();
