@@ -13,6 +13,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ripgrep
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Fetch committed dependencies for offline standalone replays
+        run: cargo fetch --locked --manifest-path examples/facet-trace/Cargo.toml
       - name: Verify complete example behavior
         run: ./scripts/verify-examples.sh
       - name: Verify retained runtime acceptance markers
