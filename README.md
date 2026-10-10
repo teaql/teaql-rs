@@ -6,8 +6,12 @@ TeaQL gives coding agents business-shaped APIs, model-aware guidance and
 software checks. People review the business operation instead of reconstructing
 pages of query-building, relationship-loading and persistence code.
 
+Automatic execution logs make those operations easier to debug and operate,
+without adding logging statements to every business method.
+
 [Try with your coding agent](#try-it-with-your-coding-agent) ·
-[Run the local example](#run-the-local-example)
+[Run the local example](#run-the-local-example) ·
+[See automatic logs](#automatic-logs-without-handwritten-logging-code)
 
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13608/badge)](https://www.bestpractices.dev/projects/13608)
 
@@ -40,7 +44,7 @@ and runtime.
 | A composed Q request | SQL construction and selected relation loading |
 | An E access path | Loaded-field checks and explicit NULL handling |
 | A mutation with an audit reason | Change tracking, Checker and configured Policy execution |
-| Intent and execution evidence | Query diagnostics and mutation audit delivery |
+| Business intent and audit reason | Automatic execution logs and trace context without per-operation logging code |
 
 Reviewers still decide whether the requested data, business rules and
 authorization policy are correct. They have less application plumbing to
@@ -129,11 +133,31 @@ approval emits a warning; it is not automatic rejection. Marking for deletion
 stages a change—the audited Save performs it. Atomicity is provider/route scoped,
 not a distributed transaction across unrelated databases.
 
-## Execution evidence helps the next development step
+## Automatic logs without handwritten logging code
 
-Logs are useful development context, not just an operations feature. They
-help an agent and a reviewer connect the requested behavior with what ran,
-and help an operator investigate a production change.
+**Debuggability and operability are core design goals.** The Q and Save
+examples above contain no logging calls: you declare the business intent,
+and the runtime produces the execution diagnostics and trace context.
+Configured audit sinks receive change events without each application
+method having to construct its own field-level diff.
+
+The intent declarations already belong to the business operation:
+
+- `comment` describes what the query does.
+- `purpose` explains why it runs.
+- `audit_as` gives the reason for a saved change.
+
+No-code logging means no handwritten logger calls in each business method,
+not an application without code or intent declarations. Runtime startup
+still configures any required sink; custom formats and destinations use the
+logging extension points rather than edits to every business operation.
+
+- **Debugging:** connect a query's intent to generated SQL, execution outcome
+  and the trace path when a screen or business operation behaves unexpectedly.
+- **Operations:** follow query and mutation activity and use audit reasons
+  and safely exposed changes to investigate incidents.
+- **Review:** inspect the business operation without separately checking
+  that every TeaQL execution path has a matching application logging statement.
 
 Query and Mutation diagnostic logs are enabled by default and can be switched
 off independently. Logging off does not disable intent validation or Policy.
