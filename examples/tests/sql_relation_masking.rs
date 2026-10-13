@@ -153,7 +153,7 @@ async fn fixture() -> (UserContext, SqliteMutationExecutor) {
     (context, transport)
 }
 
-fn query(shape: &str) -> PurposedSelectQuery {
+fn query_body(shape: &str) -> SelectQuery {
     let flat = shape.starts_with("flat_");
     let shape = shape.strip_prefix("flat_").unwrap_or(shape);
     let mut child = SelectQuery::new("Order").projects(["id", "version", "customer_id"]);
@@ -183,7 +183,14 @@ fn query(shape: &str) -> PurposedSelectQuery {
     if shape != "aggregate" {
         root = root.relation_query("orders", child);
     }
-    PurposedSelectQuery::new(root, format!("why: inspect {BUSINESS} {CREDENTIAL}"))
+    root
+}
+
+fn query(shape: &str) -> PurposedSelectQuery {
+    PurposedSelectQuery::new(
+        query_body(shape),
+        format!("why: inspect {BUSINESS} {CREDENTIAL}"),
+    )
 }
 
 async fn execute<E>(
@@ -517,7 +524,7 @@ async fn cached_parent(transaction: bool, failure: bool) {
         "mask-parent",
     ));
     let query = PurposedSelectQuery::new(
-        query("batch").into_query().enable_aggregation_cache(),
+        query_body("batch").enable_aggregation_cache(),
         format!("why: cached parent {BUSINESS} {CREDENTIAL}"),
     );
     let repo = context.entity_data_service::<Executor>("Customer").unwrap();
@@ -601,9 +608,7 @@ async fn cached_parent_tx_failure() {
 async fn retained_id_set_hit_preserves_binding_sources_for_typed_relations() {
     let (context, _) = fixture().await;
     let query = PurposedSelectQuery::new(
-        query("flat_nested")
-            .into_query()
-            .optimize_pagination_with_id_set_config("mask-ids", 60, 100),
+        query_body("flat_nested").optimize_pagination_with_id_set_config("mask-ids", 60, 100),
         format!("why: retained ID set {BUSINESS} {CREDENTIAL}"),
     );
     let repo = context.entity_data_service::<Executor>("Customer").unwrap();

@@ -99,7 +99,7 @@ impl LogFormatter for HumanReaderFormatter {
 
         let elapsed_us = (entry.elapsed.as_secs_f64() * 1_000_000.0).round() as u64;
         let intent = format!(
-            "outcome={} comment={:?} purpose={:?} auditReason={:?}",
+            "outcome={} comment={:?} purpose={:?} auditReason={:?} traceChain=[{}]",
             entry
                 .log_context
                 .execution_outcome
@@ -107,7 +107,8 @@ impl LogFormatter for HumanReaderFormatter {
                 .unwrap_or("unknown"),
             entry.comment,
             entry.purpose,
-            entry.audit_reason
+            entry.audit_reason,
+            self.format_trace_chain(&entry.trace_chain)
         );
         format!(
             "[{}]-[{:>5}µs]-[DEBUG]-SqlLogEntry{} - [{}] {}\n          SQL: {}",

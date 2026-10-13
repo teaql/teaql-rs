@@ -25,6 +25,604 @@ impl SchemaProvider for Schema {
 type Executor = SqlDataServiceExecutor<SqliteDialect, SqliteMutationExecutor, Schema>;
 const SECRET: &str = "FACET-PRIVATE-SCHOOL";
 
+fn business_comments(entry: &teaql_runtime::SqlLogEntry) -> Vec<&str> {
+    entry
+        .trace_chain
+        .iter()
+        .filter(|node| node.kind == TraceKind::Comment)
+        .map(|node| node.comment.as_str())
+        .collect()
+}
+
+#[test]
+fn selected_relation_retains_native_operation_and_own_comment_in_sqlite() {
+    futures_executor::block_on(async {
+        use teaql_core::{QueryOperation, QueryOperationKind, RelationLoad};
+        for logging in [false, true] {
+            let mut runtime = setup().await;
+            if !logging {
+                runtime.0.disable_sql_log();
+            }
+            for local_comment in [None, Some("load visible school types")] {
+                runtime.0.clear_sql_logs();
+                let mut child = SelectQuery::new("SchoolType").project("id").project("name");
+                if let Some(comment) = local_comment {
+                    child = child.comment(comment);
+                }
+                let template = child.clone();
+                let mut root = SelectQuery::new("School")
+                    .project("id")
+                    .project("type_id")
+                    .order_asc("id")
+                    .limit(2)
+                    .comment("load schools");
+                root.relations.push(
+                    RelationLoad::with_query("school_type", child).with_operation(
+                        QueryOperation::new(
+                            QueryOperationKind::RelationSelect,
+                            "select_school_type_with",
+                        )
+                        .with_relation("school_type"),
+                    ),
+                );
+                let query = PurposedSelectQuery::new(root, "render school list");
+                let rows = runtime
+                    .0
+                    .entity_data_service::<Executor>("School")
+                    .unwrap()
+                    .fetch_all(&query)
+                    .await
+                    .unwrap();
+                assert_eq!(rows.len(), 2);
+                let logs = runtime.0.sql_logs();
+                assert_eq!(
+                    logs.len(),
+                    if logging { 2 } else { 0 },
+                    "the operation parent is not a fake SQL statement"
+                );
+                if logging {
+                    assert_eq!(business_comments(&logs[0]), vec!["load schools"]);
+                    assert_eq!(
+                        business_comments(&logs[1]),
+                        vec![
+                            "load schools",
+                            "select_school_type_with(...)",
+                            local_comment.unwrap_or("load SchoolType")
+                        ]
+                    );
+                    assert_eq!(logs[1].comment.as_deref(), Some("load schools"));
+                    assert_eq!(logs[1].purpose.as_deref(), Some("render school list"));
+                    assert_eq!(
+                        logs[1]
+                            .trace_path
+                            .iter()
+                            .filter(|n| n.kind == TraceKind::Relation)
+                            .map(|n| n.comment.as_str())
+                            .collect::<Vec<_>>(),
+                        vec!["School.school_type"]
+                    );
+                }
+                assert_eq!(template.comment.as_deref(), local_comment);
+                assert!(template.request_scope().is_none());
+                println!(
+                    "RTC_COM_02_PASS logging={logging} explicit={}",
+                    local_comment.is_some()
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn explicit_blank_relation_is_rejected_with_logging_on_and_off() {
+    futures_executor::block_on(async {
+        for logging in [true, false] {
+            let mut runtime = setup().await;
+            if !logging {
+                runtime.0.disable_sql_log();
+            }
+            let root = SelectQuery::new("School")
+                .limit(1)
+                .comment("load schools")
+                .relation_query("school_type", SelectQuery::new("SchoolType").comment("  "));
+            let result = runtime
+                .0
+                .entity_data_service::<Executor>("School")
+                .unwrap()
+                .fetch_all(&PurposedSelectQuery::new(root, "validate nested input"))
+                .await;
+            let error = result.expect_err("blank child comment was replaced by a default");
+            let teaql_runtime::DataServiceError::Runtime(RuntimeError::RequestIntent(error)) =
+                error
+            else {
+                panic!("unexpected error instead of child intent rejection");
+            };
+            assert_eq!(error.field, "comment");
+            assert_eq!(
+                runtime.0.sql_logs().len(),
+                usize::from(logging),
+                "no invalid child SQL reaches the provider"
+            );
+            println!("RTC_COM_04_RELATION_PASS logging={logging} invalid_child_provider=0");
+        }
+    });
+}
+
+#[test]
+fn explicit_blank_facet_value_is_rejected_with_logging_on_and_off() {
+    futures_executor::block_on(async {
+        for logging in [false, true] {
+            for blank in ["", " \t", "\u{85}"] {
+                let mut runtime = setup().await;
+                if !logging {
+                    runtime.0.disable_sql_log();
+                }
+                runtime.0.clear_sql_logs();
+                let child = SelectQuery::new("SchoolType").project("id").comment(blank);
+                let root = PurposedSelectQuery::new(
+                    SelectQuery::new("School").comment("load schools"),
+                    "validate facet input",
+                );
+                let options = QueryOptions {
+                    facets: vec![FacetRequest::new(
+                        "types",
+                        "school_type",
+                        QuerySelection::new(child.clone()),
+                        true,
+                    )],
+                    ..Default::default()
+                };
+                let error = execute_facets(&runtime, root.as_query(), &options)
+                    .await
+                    .expect_err("blank facet value comment was replaced by a default");
+                let RuntimeError::RequestIntent(error) = error else {
+                    panic!("unexpected error instead of facet intent rejection");
+                };
+                assert_eq!(error.field, "comment");
+                assert!(
+                    runtime
+                        .0
+                        .sql_logs()
+                        .iter()
+                        .all(|entry| { !entry.sql.contains("FROM school_type_data") })
+                );
+                assert_eq!(child.comment.as_deref(), Some(blank));
+                println!("RTC_COM_04_FACET_PASS logging={logging} invalid_value_provider=0");
+            }
+        }
+    });
+}
+
+#[test]
+fn named_count_uses_the_alias_in_sql_and_native_operation_without_fake_relation() {
+    futures_executor::block_on(async {
+        use teaql_core::{QueryOperation, QueryOperationKind};
+        for logging in [false, true] {
+            let mut runtime = setup().await;
+            if !logging {
+                runtime.0.disable_sql_log();
+            }
+            let alias = "totalSchools'\\tail";
+            let root = PurposedSelectQuery::new(
+                SelectQuery::new("School").limit(1).comment("load schools"),
+                "render school list",
+            );
+            let count = root.clone().for_exact_count_with_operation(
+                alias,
+                QueryOperation::new(QueryOperationKind::NamedCount, "count_as").with_alias(alias),
+            );
+            let rows = runtime
+                .0
+                .entity_data_service::<Executor>("School")
+                .unwrap()
+                .fetch_all(&count)
+                .await
+                .unwrap();
+            assert_eq!(rows[0].get(alias).and_then(Value::try_i64), Some(4));
+            let logs = runtime.0.sql_logs();
+            assert_eq!(logs.len(), usize::from(logging));
+            if logging {
+                assert_eq!(
+                    business_comments(&logs[0]),
+                    vec!["load schools", "count_as(\"totalSchools'\\\\tail\")"]
+                );
+                assert!(
+                    !logs[0]
+                        .trace_path
+                        .iter()
+                        .any(|node| node.kind == TraceKind::Relation)
+                );
+            }
+            assert_eq!(root.as_query().slice.unwrap().limit, Some(1));
+            assert_eq!(
+                root.as_query().request_scope().unwrap().comment(),
+                "load schools"
+            );
+            runtime.0.clear_sql_logs();
+            let default = root.clone().for_exact_count("__teaql_total");
+            let rows = runtime
+                .0
+                .entity_data_service::<Executor>("School")
+                .unwrap()
+                .fetch_all(&default)
+                .await
+                .unwrap();
+            assert_eq!(
+                rows[0].get("__teaql_total").and_then(Value::try_i64),
+                Some(4)
+            );
+            assert_eq!(
+                default.as_query().request_scope().unwrap().comment(),
+                "framework: named-count"
+            );
+            let logs = runtime.0.sql_logs();
+            assert_eq!(logs.len(), usize::from(logging));
+            if logging {
+                assert_eq!(
+                    business_comments(&logs[0]),
+                    ["load schools", "framework: named-count"]
+                );
+                assert!(
+                    !logs[0]
+                        .trace_path
+                        .iter()
+                        .any(|node| node.kind == TraceKind::Relation)
+                );
+            }
+            println!("RTC_COM_05_PASS logging={logging} named=true unnamed=true");
+        }
+    });
+}
+
+#[test]
+fn facet_branches_share_native_parent_and_nested_facets_extend_it() {
+    futures_executor::block_on(async {
+        use teaql_core::{QueryOperation, QueryOperationKind};
+        let runtime = setup().await;
+        let root = PurposedSelectQuery::new(
+            SelectQuery::new("School").limit(10).comment("load schools"),
+            "render school list",
+        );
+        let mut options = options(true, true);
+        let types = &mut options.facets[0];
+        types.operation = Some(
+            QueryOperation::new(QueryOperationKind::Facet, "facet_by_school_type_as")
+                .with_alias("typeChoices")
+                .with_relation("school_type"),
+        );
+        types.query.query = types.query.query.clone().comment("load school type facets");
+        let platforms = &mut types.query.query_options.facets[0];
+        platforms.operation = Some(
+            QueryOperation::new(QueryOperationKind::Facet, "facet_by_platform_as")
+                .with_alias("platformChoices")
+                .with_relation("platform"),
+        );
+        platforms.query.query = platforms
+            .query
+            .query
+            .clone()
+            .comment("load platform facets");
+        let facets = execute_facets(&runtime, root.as_query(), &options)
+            .await
+            .unwrap();
+        assert_eq!(
+            counts(&facets["typeChoices"], "school_count"),
+            vec![(10, 2), (20, 2), (30, 0)]
+        );
+        let logs = runtime.0.sql_logs();
+        assert_eq!(
+            logs.len(),
+            4,
+            "two value and two aggregate statements, no parent-only records"
+        );
+        assert_eq!(
+            business_comments(&logs[0]),
+            vec![
+                "load schools",
+                "facet_by_school_type_as(\"typeChoices\")",
+                "load school type facets"
+            ]
+        );
+        assert_eq!(
+            business_comments(&logs[1]),
+            vec![
+                "load schools",
+                "facet_by_school_type_as(\"typeChoices\")",
+                "aggregate school_type"
+            ]
+        );
+        assert_eq!(
+            business_comments(&logs[2]),
+            vec![
+                "load schools",
+                "facet_by_school_type_as(\"typeChoices\")",
+                "load school type facets",
+                "facet_by_platform_as(\"platformChoices\")",
+                "load platform facets"
+            ]
+        );
+        assert_eq!(
+            business_comments(&logs[3]),
+            vec![
+                "load schools",
+                "facet_by_school_type_as(\"typeChoices\")",
+                "load school type facets",
+                "facet_by_platform_as(\"platformChoices\")",
+                "aggregate platform"
+            ]
+        );
+        assert!(
+            logs.iter()
+                .all(|log| log.purpose.as_deref() == Some("render school list"))
+        );
+    });
+}
+
+#[test]
+fn prefixes_and_alias_escaping_preserve_bindings_under_privacy_projection() {
+    futures_executor::block_on(async {
+        use teaql_core::{QueryOperation, QueryOperationKind};
+        for logging in [false, true] {
+            let mut runtime = setup().await;
+            if !logging {
+                runtime.0.disable_sql_log();
+            }
+            for private_input in [false, true] {
+                runtime.0.clear_sql_logs();
+                let alias = format!("choices\"\\\n{}", if private_input { SECRET } else { "" });
+                let native_comment = format!(
+                    "facet_by_school_type_as(\"choices\\\"\\\\\\n{}\")",
+                    if private_input { SECRET } else { "" }
+                );
+                let comment = if private_input {
+                    format!("what: load {SECRET}")
+                } else {
+                    "what: load schools".into()
+                };
+                let purpose = if private_input {
+                    format!("why: inspect {SECRET}")
+                } else {
+                    "why: inspect schools".into()
+                };
+                let mut query = SelectQuery::new("School").limit(10).comment(&comment);
+                if private_input {
+                    query = query.filter(Expr::eq("name", SECRET));
+                }
+                let root = PurposedSelectQuery::new(query, &purpose);
+                let before = root.clone();
+                let mut selection = options(false, false);
+                let facet = &mut selection.facets[0];
+                facet.facet_name = alias.clone();
+                let local = if private_input {
+                    format!("load {SECRET} types")
+                } else {
+                    "load type facets".into()
+                };
+                facet.query.query = facet.query.query.clone().comment(&local);
+                let operation =
+                    QueryOperation::new(QueryOperationKind::Facet, "facet_by_school_type_as")
+                        .with_alias(&alias)
+                        .with_relation("school_type");
+                assert_eq!(operation.comment(), native_comment);
+                facet.operation = Some(operation);
+                let result = execute_facets(&runtime, root.as_query(), &selection)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    counts(&result[&alias], "school_count"),
+                    vec![(10, 2), (20, if private_input { 1 } else { 2 })]
+                );
+                assert_eq!(root.as_query(), before.as_query());
+                let logs = runtime.0.sql_logs();
+                assert_eq!(logs.len(), if logging { 2 } else { 0 });
+                if logging {
+                    let safe_comment = if private_input {
+                        "what: load [REDACTED]"
+                    } else {
+                        &comment
+                    };
+                    let safe_purpose = if private_input {
+                        "why: inspect [REDACTED]"
+                    } else {
+                        &purpose
+                    };
+                    let safe_local = if private_input {
+                        "load [REDACTED] types"
+                    } else {
+                        &local
+                    };
+                    let safe_operation = native_comment.replace(SECRET, "[REDACTED]");
+                    for leaf in ["aggregate school_type", safe_local] {
+                        assert!(logs.iter().any(|entry| business_comments(entry)
+                            == [safe_comment, safe_operation.as_str(), leaf]));
+                    }
+                    assert!(
+                        logs.iter()
+                            .all(|entry| entry.purpose.as_deref() == Some(safe_purpose))
+                    );
+                    if private_input {
+                        assert!(!format!("{logs:?}").contains(SECRET));
+                    }
+                }
+            }
+            println!(
+                "RTC_COM_09_12_PASS logging={logging} plain=true private=true escaped=true bindings=true"
+            );
+        }
+    });
+}
+
+#[test]
+fn nested_facet_siblings_keep_native_parents_and_local_comments() {
+    futures_executor::block_on(async {
+        use teaql_core::{QueryOperation, QueryOperationKind};
+        for logging in [false, true] {
+            let mut runtime = setup().await;
+            if !logging {
+                runtime.0.disable_sql_log();
+            }
+            let root = PurposedSelectQuery::new(
+                SelectQuery::new("School")
+                    .limit(10)
+                    .comment("load branches"),
+                "render branches",
+            );
+            let mut selection = options(true, true);
+            let mut template = selection.facets.remove(0);
+            for alias in ["left", "right"] {
+                template.facet_name = alias.to_owned();
+                template.operation = Some(
+                    QueryOperation::new(QueryOperationKind::Facet, "facet_by_school_type_as")
+                        .with_alias(alias)
+                        .with_relation("school_type"),
+                );
+                template.query.query = template
+                    .query
+                    .query
+                    .clone()
+                    .comment(format!("load {alias} types"));
+                let nested = &mut template.query.query_options.facets[0];
+                nested.operation = Some(
+                    QueryOperation::new(QueryOperationKind::Facet, "facet_by_platform_as")
+                        .with_alias("platformChoices")
+                        .with_relation("platform"),
+                );
+                nested.query.query = nested
+                    .query
+                    .query
+                    .clone()
+                    .comment(format!("load {alias} platforms"));
+                selection.facets.push(template.clone());
+            }
+            let before = format!("{selection:?}");
+            let facets = execute_facets(&runtime, root.as_query(), &selection)
+                .await
+                .unwrap();
+            for alias in ["left", "right"] {
+                assert_eq!(
+                    counts(&facets[alias], "school_count"),
+                    vec![(10, 2), (20, 2), (30, 0)]
+                );
+            }
+            assert_eq!(format!("{selection:?}"), before);
+            let logs = runtime.0.sql_logs();
+            assert_eq!(logs.len(), if logging { 8 } else { 0 });
+            if logging {
+                for alias in ["left", "right"] {
+                    let operation = format!("facet_by_school_type_as(\"{alias}\")");
+                    let local = format!("load {alias} types");
+                    let nested_local = format!("load {alias} platforms");
+                    let branches: Vec<_> = logs
+                        .iter()
+                        .map(business_comments)
+                        .filter(|chain| chain.get(1).copied() == Some(operation.as_str()))
+                        .collect();
+                    assert_eq!(branches.len(), 4);
+                    assert!(branches.contains(&vec![
+                        "load branches",
+                        &operation,
+                        "aggregate school_type"
+                    ]));
+                    assert!(branches.contains(&vec!["load branches", &operation, &local]));
+                    for leaf in ["aggregate platform", nested_local.as_str()] {
+                        assert!(branches.contains(&vec![
+                            "load branches",
+                            &operation,
+                            &local,
+                            "facet_by_platform_as(\"platformChoices\")",
+                            leaf
+                        ]));
+                    }
+                }
+                assert!(
+                    logs.iter()
+                        .all(|log| log.purpose.as_deref() == Some("render branches"))
+                );
+            }
+            println!("RTC_COM_06_PASS logging={logging} nested=true siblings=true");
+        }
+    });
+}
+
+#[test]
+fn facet_reverse_sum_preserves_explicit_comment_and_rejects_blank_before_aggregate_sql() {
+    futures_executor::block_on(async {
+        use teaql_core::{Aggregate, QueryOperation, QueryOperationKind};
+        for logging in [true, false] {
+            let mut runtime = setup().await;
+            if !logging {
+                runtime.0.disable_sql_log();
+            }
+            for comment in ["sum visible school IDs", "", " \t", "\u{85}"] {
+                runtime.0.clear_sql_logs();
+                let root = PurposedSelectQuery::new(
+                    SelectQuery::new("School").limit(10).comment("load schools"),
+                    "render school list",
+                );
+                let mut selection = options(false, true);
+                let facet = &mut selection.facets[0];
+                facet.operation = Some(
+                    QueryOperation::new(QueryOperationKind::Facet, "facet_by_school_type_as")
+                        .with_alias("typeChoices")
+                        .with_relation("school_type"),
+                );
+                facet.query.query = facet.query.query.clone().comment("load school type facets");
+                let aggregate = &mut facet.query.query_options.relation_aggregates[0];
+                aggregate.query.query = SelectQuery::new("School")
+                    .aggregate(Aggregate::sum("id", "school_count"))
+                    .comment(comment);
+                let result = execute_facets(&runtime, root.as_query(), &selection).await;
+                if comment != "sum visible school IDs" {
+                    assert!(result.is_err(), "explicit blank aggregate comment accepted");
+                    assert!(
+                        runtime
+                            .0
+                            .sql_logs()
+                            .iter()
+                            .all(|entry| business_comments(entry).len() <= 3),
+                        "invalid aggregate reached the provider"
+                    );
+                    continue;
+                }
+                let facets = result.unwrap();
+                assert_eq!(
+                    counts(&facets["typeChoices"], "school_count"),
+                    vec![(10, 201), (20, 205), (30, 0)]
+                );
+                let logs = runtime.0.sql_logs();
+                assert_eq!(logs.len(), if logging { 2 } else { 0 });
+                if logging {
+                    assert_eq!(
+                        business_comments(&logs[1]),
+                        vec![
+                            "load schools",
+                            "facet_by_school_type_as(\"typeChoices\")",
+                            "aggregate school_type",
+                            comment
+                        ]
+                    );
+                    assert_eq!(logs[1].purpose.as_deref(), Some("render school list"));
+                }
+                assert_eq!(
+                    selection.facets[0].query.query_options.relation_aggregates[0]
+                        .query
+                        .query
+                        .comment
+                        .as_deref(),
+                    Some(comment)
+                );
+                assert!(
+                    selection.facets[0].query.query_options.relation_aggregates[0]
+                        .query
+                        .query
+                        .request_scope()
+                        .is_none()
+                );
+            }
+        }
+    });
+}
+
 struct Runtime(UserContext);
 impl TeaqlRuntime for Runtime {
     fn user_context(&self) -> &UserContext {

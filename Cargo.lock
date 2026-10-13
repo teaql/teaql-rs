@@ -2235,9 +2235,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.16"
+version = "0.11.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f4bfc015262b9df63c8845072ce59068853ff5872180c2ce2f13038b970e560"
+checksum = "a9746dbde176634f4f2f1faf2404e30a31b2bc1e9cafb5329c95d8177a18c9fc"
 dependencies = [
  "aws-lc-rs",
  "bytes",
@@ -3099,7 +3099,7 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
 name = "teaql-cache-integration-redis"
-version = "5.0.6"
+version = "5.0.7"
 dependencies = [
  "async-trait",
  "redis",
@@ -3111,7 +3111,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-cloud-actuator"
-version = "5.0.6"
+version = "5.0.7"
 dependencies = [
  "async-trait",
  "axum",
@@ -3124,7 +3124,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-cloud-consul"
-version = "5.0.6"
+version = "5.0.7"
 dependencies = [
  "async-trait",
  "reqwest 0.13.4",
@@ -3135,7 +3135,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-cloud-core"
-version = "5.0.6"
+version = "5.0.7"
 dependencies = [
  "async-trait",
  "serde",
@@ -3146,7 +3146,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-cloud-nacos"
-version = "5.0.6"
+version = "5.0.7"
 dependencies = [
  "async-trait",
  "nacos-sdk",
@@ -3158,7 +3158,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-cloud-starter"
-version = "5.0.6"
+version = "5.0.7"
 dependencies = [
  "axum",
  "teaql-cloud-actuator",
@@ -3170,7 +3170,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-cloud-tests"
-version = "5.0.6"
+version = "5.0.7"
 dependencies = [
  "async-trait",
  "axum",
@@ -3185,7 +3185,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-core"
-version = "5.0.6"
+version = "5.0.7"
 dependencies = [
  "chrono",
  "rust_decimal",
@@ -3197,7 +3197,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-data-service"
-version = "5.0.6"
+version = "5.0.7"
 dependencies = [
  "futures-core",
  "serde_json",
@@ -3206,7 +3206,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-examples"
-version = "5.0.6"
+version = "5.0.7"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3224,7 +3224,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-macros"
-version = "5.0.6"
+version = "5.0.7"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3233,7 +3233,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-provider-linux"
-version = "5.0.6"
+version = "5.0.7"
 dependencies = [
  "chrono",
  "futures-util",
@@ -3246,7 +3246,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-provider-meilisearch"
-version = "5.0.6"
+version = "5.0.7"
 dependencies = [
  "async-trait",
  "reqwest 0.12.28",
@@ -3259,7 +3259,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-provider-mysql"
-version = "5.0.6"
+version = "5.0.7"
 dependencies = [
  "async-stream",
  "chrono",
@@ -3277,7 +3277,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-provider-postgres"
-version = "5.0.6"
+version = "5.0.7"
 dependencies = [
  "async-stream",
  "bytes",
@@ -3297,7 +3297,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-provider-sqlite"
-version = "5.0.6"
+version = "5.0.7"
 dependencies = [
  "async-stream",
  "chrono",
@@ -3316,7 +3316,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-runtime"
-version = "5.0.6"
+version = "5.0.7"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -3328,7 +3328,10 @@ dependencies = [
  "hmac 0.12.1",
  "opentelemetry",
  "opentelemetry-otlp",
+ "opentelemetry-proto",
  "opentelemetry_sdk",
+ "prost",
+ "reqwest 0.13.4",
  "rust_decimal",
  "serde",
  "serde_json",
@@ -3339,11 +3342,12 @@ dependencies = [
  "teaql-macros",
  "teaql-sql",
  "tokio",
+ "url",
 ]
 
 [[package]]
 name = "teaql-sql"
-version = "5.0.6"
+version = "5.0.7"
 dependencies = [
  "futures-core",
  "futures-util",
@@ -3354,7 +3358,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-tfp-endpoint"
-version = "5.0.6"
+version = "5.0.7"
 dependencies = [
  "async-trait",
  "axum",
@@ -3372,7 +3376,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-web-integration-axum"
-version = "5.0.6"
+version = "5.0.7"
 dependencies = [
  "axum",
  "serde",
@@ -3389,7 +3393,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

@@ -22,6 +22,7 @@ pub struct EntityDataService<'a, E> {
     pub(super) trace_context: Vec<teaql_core::TraceNode>,
     /// Private operation scope; never inferred from caller-supplied trace nodes.
     pub(super) request_intent: Option<teaql_core::QueryIntent>,
+    pub(super) request_scope: Option<teaql_core::QueryRequestScope>,
     // Present only on a private query-tree scope. Never attached to UserContext,
     // the public reusable repository, an entity ledger or a wire request.
     pub(super) query_log_intent: Option<std::sync::Mutex<teaql_data_service::SqlIntentRedactions>>,
@@ -176,12 +177,18 @@ impl<'a, E> EntityDataService<'a, E> {
             },
             trace_context: Vec::new(),
             request_intent: None,
+            request_scope: None,
             query_log_intent: None,
         }
     }
 
     pub fn with_trace_context(mut self, trace_context: Vec<teaql_core::TraceNode>) -> Self {
         self.trace_context = trace_context;
+        self
+    }
+    pub(crate) fn with_request_scope(mut self, scope: teaql_core::QueryRequestScope) -> Self {
+        self.request_intent = Some(scope.intent().clone());
+        self.request_scope = Some(scope);
         self
     }
 
@@ -293,6 +300,7 @@ pub struct RelationLoadPlan {
     pub many: bool,
     pub query: Option<SelectQuery>,
     pub children: Vec<RelationLoadPlan>,
+    pub operation: Option<teaql_core::QueryOperation>,
 }
 
 pub(crate) struct UserContextMetadata<'a> {
@@ -315,19 +323,27 @@ impl MetadataStore for UserContextMetadata<'_> {
     fn record_metadata_log(&self, metadata: &teaql_data_service::ExecutionMetadata) {
         self.context.record_metadata_log(metadata);
     }
+    fn sql_statement_telemetry(
+        &self,
+    ) -> Option<std::sync::Arc<dyn teaql_data_service::statement_telemetry::SqlStatementTelemetry>>
+    {
+        self.context.sql_statement_factory()
+    }
 
     fn mutation_diagnostic_observer(&self) -> Option<teaql_data_service::ExecutionObserver<'_>> {
-        self.context.sql_log_options().mutation.then(|| {
-            std::sync::Arc::new(move |metadata| self.context.record_metadata_log(&metadata))
-                as teaql_data_service::ExecutionObserver<'_>
-        })
+        (self.context.sql_log_options().mutation || self.context.records_sql_diagnostics()).then(
+            || {
+                std::sync::Arc::new(move |metadata| self.context.record_metadata_log(&metadata))
+                    as teaql_data_service::ExecutionObserver<'_>
+            },
+        )
     }
 
     fn capture_query_debug(&self) -> bool {
-        self.context.sql_log_options().select
+        self.context.sql_log_options().select || self.context.records_sql_diagnostics()
     }
 
     fn capture_execution_metadata(&self) -> bool {
-        self.context.sql_log_options().select
+        self.context.sql_log_options().select || self.context.records_sql_diagnostics()
     }
 }

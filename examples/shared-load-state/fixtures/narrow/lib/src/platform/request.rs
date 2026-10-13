@@ -106,11 +106,23 @@ impl<R> PlatformRequest<R> {
     {
         let query_options = self.query_options.clone();
         let relation_aggregates = runtime_relation_aggregates(&query_options);
-        let query = authorize_query(apply_runtime_metadata(
+        let mut query = authorize_query(apply_runtime_metadata(
             self.query,
             &query_options,
             &self.child_enhancements,
         ))?;
+        let requested_count = query.take_requested_list_count(&query_options);
+        let use_id_set = query.as_query().id_set_pagination.is_some();
+        context.user_context().observe_generated_list("Platform", async {
+        let mut total = None;
+        if !use_id_set {
+            if let Some((alias, count_query)) = &requested_count {
+                let count_rows = context.fetch_compact_rows("Platform", count_query).await?;
+                total = Some(count_rows.first().and_then(|row| row.get(alias))
+                    .and_then(teaql_core::Value::try_u64)
+                    .ok_or_else(|| RuntimeError::Graph("requested list count is missing or not numeric".into()))?);
+            }
+        }
         let (mut rows, facets) = if query_options.facets.is_empty() {
             let rows = context.fetch_entity_smart_list::<R>(
                 "Platform",
@@ -128,8 +140,20 @@ impl<R> PlatformRequest<R> {
                 .await?;
             (rows, facets)
         };
+        if let Some((alias, count_query)) = requested_count {
+            if total.is_none() { total = rows.total_count; }
+            if total.is_none() {
+                let count_rows = context.fetch_compact_rows("Platform", &count_query).await?;
+                total = Some(count_rows.first().and_then(|row| row.get(&alias))
+                    .and_then(teaql_core::Value::try_u64)
+                    .ok_or_else(|| RuntimeError::Graph("requested list count is missing or not numeric".into()))?);
+            }
+            rows.total_count = total;
+            rows.aggregations.insert(alias, teaql_core::Value::U64(total.expect("requested count resolved")));
+        }
         attach_facets(&mut rows, facets);
         Ok(rows)
+        }).await
     }
 
     pub(crate) async fn _execute_for_rows<'a, C>(
@@ -160,7 +184,9 @@ impl<R> PlatformRequest<R> {
             &self.query_options,
             &self.child_enhancements,
         ))?;
-        Ok(context.fetch_entity_stream("Platform", query))
+        Ok(context.user_context().observe_generated_stream(
+            "Platform", context.fetch_entity_stream("Platform", query),
+        ))
     }
 
     pub(crate) async fn _execute_for_first<'a, C>(
@@ -187,33 +213,6 @@ impl<R> PlatformRequest<R> {
     }
 
 
-    pub(crate) async fn _execute_for_page<'a, C>(
-        self,
-        context: &'a C,
-        offset: u64,
-        limit: u64,
-    ) -> Result<SmartList<R>, RuntimeError>
-    where
-        C: TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
-    {
-        if self.query.id_set_pagination.is_some() {
-            let mut rows = self
-                .clone()
-                .page_offset(offset, limit)
-                ._execute_for_list(context)
-                .await?;
-            if rows.total_count.is_none() {
-                rows.total_count = Some(self._execute_for_count(context).await?);
-            }
-            return Ok(rows);
-        }
-        let total_count = self.clone()._execute_for_count(context).await?;
-        let mut rows = self.page_offset(offset, limit)._execute_for_list(context).await?;
-        rows.total_count = Some(total_count);
-        Ok(rows)
-    }
-
     pub(crate) async fn _execute_for_count<'a, C>(
         self,
         context: &'a C,
@@ -222,21 +221,19 @@ impl<R> PlatformRequest<R> {
         C: TeaqlRuntime + ?Sized,
     {
         let query_options = self.query_options.clone();
-        let mut query = apply_runtime_metadata(
+        let query = apply_runtime_metadata(
             self.query,
             &query_options,
             &self.child_enhancements,
         );
-        query.projection.clear();
-        query.expr_projection.clear();
-        query.order_by.clear();
-        query.slice = None;
-        query.relations.clear();
-        query = query.count(COUNT_ALIAS);
-        let query = authorize_query(query)?;
+        let operation = query_options.page_count_operation.clone().unwrap_or_else(||
+            QueryOperation::new(QueryOperationKind::NamedCount, "execute_for_count"));
+        let alias = operation.alias().unwrap_or(COUNT_ALIAS).to_owned();
+        let query = authorize_query(query)?.with_facet_diagnostics(&query_options)
+            .for_exact_count_with_operation(&alias, operation);
         let rows = context.fetch_compact_rows("Platform", &query).await?;
         rows.first()
-            .and_then(|row| row.get(COUNT_ALIAS))
+            .and_then(|row| row.get(&alias))
             .and_then(teaql_core::Value::try_u64)
             .ok_or_else(|| RuntimeError::Graph(format!("count result for Platform is missing or not numeric")))
     }
@@ -672,11 +669,14 @@ impl<R> PlatformRequest<R> {
         self
     }
 
-    pub fn count(self) -> Self {
-        self.count_as("count")
+    pub fn count(mut self) -> Self {
+        self.query_options.page_count_operation = Some(QueryOperation::new(QueryOperationKind::NamedCount, "count"));
+        self.aggregate_count("count")
     }
 
-    pub fn count_as(self, alias: impl Into<String>) -> Self {
+    pub fn count_as(mut self, alias: impl Into<String>) -> Self {
+        let alias = alias.into();
+        self.query_options.page_count_operation = Some(QueryOperation::new(QueryOperationKind::NamedCount, "count_as").with_alias(&alias));
         self.aggregate_count(alias)
     }
 
@@ -2070,13 +2070,15 @@ impl<R> PlatformRequest<R> {
     }
 
     pub fn select_school_type_list(mut self) -> Self {
-        self.query = self.query.relation("school_type_list");
+        self.query.relations.push(teaql_core::RelationLoad::new("school_type_list")
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_school_type_list").with_relation("school_type_list")));
         self
     }
 
     pub fn select_school_type_list_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("school_type_list", selection.into_query());
+        self.query.relations.push(teaql_core::RelationLoad::with_query("school_type_list", selection.into_query())
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_school_type_list_with").with_relation("school_type_list")));
         self
 }
 
@@ -2113,13 +2115,15 @@ impl<R> PlatformRequest<R> {
     }
 
     pub fn select_school_list(mut self) -> Self {
-        self.query = self.query.relation("school_list");
+        self.query.relations.push(teaql_core::RelationLoad::new("school_list")
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_school_list").with_relation("school_list")));
         self
     }
 
     pub fn select_school_list_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("school_list", selection.into_query());
+        self.query.relations.push(teaql_core::RelationLoad::with_query("school_list", selection.into_query())
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_school_list_with").with_relation("school_list")));
         self
 }
 
@@ -2156,31 +2160,42 @@ impl<R> PlatformRequest<R> {
     }
 
     pub fn select_school_capacity_summary_list(mut self) -> Self {
-        self.query = self.query.relation("school_capacity_summary_list");
+        self.query.relations.push(teaql_core::RelationLoad::new("school_capacity_summary_list")
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_school_capacity_summary_list").with_relation("school_capacity_summary_list")));
         self
     }
 
     pub fn select_school_capacity_summary_list_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("school_capacity_summary_list", selection.into_query());
+        self.query.relations.push(teaql_core::RelationLoad::with_query("school_capacity_summary_list", selection.into_query())
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_school_capacity_summary_list_with").with_relation("school_capacity_summary_list")));
         self
 }
     pub fn count_school_types(self) -> Self {
-        self.count_school_types_as("count_school_types")
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_school_types");
+        self.count_school_types_internal("count_school_types".to_owned(), crate::Q::school_types().unlimited(), operation)
     }
 
     pub fn count_school_types_as(self, alias: impl Into<String>) -> Self {
-        self.count_school_types_with(alias, crate::Q::school_types().unlimited())
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_school_types_as").with_alias(&alias);
+        self.count_school_types_internal(alias, crate::Q::school_types().unlimited(), operation)
     }
 
-    pub fn count_school_types_with(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+    pub fn count_school_types_with(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_school_types_with").with_alias(&alias);
+        self.count_school_types_internal(alias, request, operation)
+    }
+
+    fn count_school_types_internal(mut self, alias: String, request: impl Into<QuerySelection>, operation: QueryOperation) -> Self {
         let selection = request.into();
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "school_type_list",
             alias,
             selection,
             true,
-        ));
+        ).with_operation(operation.with_relation("school_type_list")));
         self
     }
 
@@ -2190,23 +2205,26 @@ impl<R> PlatformRequest<R> {
 
     pub fn stats_from_school_types_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "stats_from_school_types_as")
+            .with_alias(&alias).with_relation("school_type_list");
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "school_type_list",
             alias,
             selection,
             false,
-        ));
+        ).with_operation(operation));
         self
     }
 
-    fn scalar_from_school_types_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+    fn scalar_from_school_types_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>, operation: QueryOperation) -> Self {
         let selection = request.into();
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "school_type_list",
             alias,
             selection,
             true,
-        ));
+        ).with_operation(operation.with_relation("school_type_list")));
         self
     }
 
@@ -2216,78 +2234,119 @@ impl<R> PlatformRequest<R> {
 
 
     pub fn sum_display_order_of_school_types(self) -> Self {
-        self.sum_display_order_of_school_types_as("sum_display_order_of_school_types", crate::Q::school_types().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sum_display_order_of_school_types");
+        self.scalar_from_school_types_as("sum_display_order_of_school_types", crate::Q::school_types().unlimited().into_query().sum("display_order", "sum_display_order_of_school_types"), operation)
     }
 
     pub fn sum_display_order_of_school_types_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_types_as(alias, request.into().into_query().sum("display_order", "sum_display_order"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sum_display_order_of_school_types_as").with_alias(&alias);
+        let selection = request.into().into_query().sum("display_order", alias.clone());
+        self.scalar_from_school_types_as(alias, selection, operation)
     }
     pub fn min_display_order_of_school_types(self) -> Self {
-        self.min_display_order_of_school_types_as("min_display_order_of_school_types", crate::Q::school_types().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_display_order_of_school_types");
+        self.scalar_from_school_types_as("min_display_order_of_school_types", crate::Q::school_types().unlimited().into_query().min("display_order", "min_display_order_of_school_types"), operation)
     }
 
     pub fn min_display_order_of_school_types_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_types_as(alias, request.into().into_query().min("display_order", "min_display_order"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_display_order_of_school_types_as").with_alias(&alias);
+        let selection = request.into().into_query().min("display_order", alias.clone());
+        self.scalar_from_school_types_as(alias, selection, operation)
     }
     pub fn max_display_order_of_school_types(self) -> Self {
-        self.max_display_order_of_school_types_as("max_display_order_of_school_types", crate::Q::school_types().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_display_order_of_school_types");
+        self.scalar_from_school_types_as("max_display_order_of_school_types", crate::Q::school_types().unlimited().into_query().max("display_order", "max_display_order_of_school_types"), operation)
     }
 
     pub fn max_display_order_of_school_types_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_types_as(alias, request.into().into_query().max("display_order", "max_display_order"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_display_order_of_school_types_as").with_alias(&alias);
+        let selection = request.into().into_query().max("display_order", alias.clone());
+        self.scalar_from_school_types_as(alias, selection, operation)
     }
     pub fn avg_display_order_of_school_types(self) -> Self {
-        self.avg_display_order_of_school_types_as("avg_display_order_of_school_types", crate::Q::school_types().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "avg_display_order_of_school_types");
+        self.scalar_from_school_types_as("avg_display_order_of_school_types", crate::Q::school_types().unlimited().into_query().avg("display_order", "avg_display_order_of_school_types"), operation)
     }
 
     pub fn avg_display_order_of_school_types_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_types_as(alias, request.into().into_query().avg("display_order", "avg_display_order"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "avg_display_order_of_school_types_as").with_alias(&alias);
+        let selection = request.into().into_query().avg("display_order", alias.clone());
+        self.scalar_from_school_types_as(alias, selection, operation)
     }
     pub fn standard_deviation_display_order_of_school_types(self) -> Self {
-        self.standard_deviation_display_order_of_school_types_as("standard_deviation_display_order_of_school_types", crate::Q::school_types().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "standard_deviation_display_order_of_school_types");
+        self.scalar_from_school_types_as("standard_deviation_display_order_of_school_types", crate::Q::school_types().unlimited().into_query().stddev("display_order", "standard_deviation_display_order_of_school_types"), operation)
     }
 
     pub fn standard_deviation_display_order_of_school_types_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_types_as(alias, request.into().into_query().stddev("display_order", "stdDev_display_order"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "standard_deviation_display_order_of_school_types_as").with_alias(&alias);
+        let selection = request.into().into_query().stddev("display_order", alias.clone());
+        self.scalar_from_school_types_as(alias, selection, operation)
     }
     pub fn square_root_of_population_standard_deviation_display_order_of_school_types(self) -> Self {
-        self.square_root_of_population_standard_deviation_display_order_of_school_types_as("square_root_of_population_standard_deviation_display_order_of_school_types", crate::Q::school_types().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "square_root_of_population_standard_deviation_display_order_of_school_types");
+        self.scalar_from_school_types_as("square_root_of_population_standard_deviation_display_order_of_school_types", crate::Q::school_types().unlimited().into_query().stddev_pop("display_order", "square_root_of_population_standard_deviation_display_order_of_school_types"), operation)
     }
 
     pub fn square_root_of_population_standard_deviation_display_order_of_school_types_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_types_as(alias, request.into().into_query().stddev_pop("display_order", "stdDevPop_display_order"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "square_root_of_population_standard_deviation_display_order_of_school_types_as").with_alias(&alias);
+        let selection = request.into().into_query().stddev_pop("display_order", alias.clone());
+        self.scalar_from_school_types_as(alias, selection, operation)
     }
     pub fn sample_variance_display_order_of_school_types(self) -> Self {
-        self.sample_variance_display_order_of_school_types_as("sample_variance_display_order_of_school_types", crate::Q::school_types().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_variance_display_order_of_school_types");
+        self.scalar_from_school_types_as("sample_variance_display_order_of_school_types", crate::Q::school_types().unlimited().into_query().var_samp("display_order", "sample_variance_display_order_of_school_types"), operation)
     }
 
     pub fn sample_variance_display_order_of_school_types_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_types_as(alias, request.into().into_query().var_samp("display_order", "varSamp_display_order"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_variance_display_order_of_school_types_as").with_alias(&alias);
+        let selection = request.into().into_query().var_samp("display_order", alias.clone());
+        self.scalar_from_school_types_as(alias, selection, operation)
     }
     pub fn sample_population_variance_display_order_of_school_types(self) -> Self {
-        self.sample_population_variance_display_order_of_school_types_as("sample_population_variance_display_order_of_school_types", crate::Q::school_types().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_population_variance_display_order_of_school_types");
+        self.scalar_from_school_types_as("sample_population_variance_display_order_of_school_types", crate::Q::school_types().unlimited().into_query().var_pop("display_order", "sample_population_variance_display_order_of_school_types"), operation)
     }
 
     pub fn sample_population_variance_display_order_of_school_types_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_types_as(alias, request.into().into_query().var_pop("display_order", "varPop_display_order"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_population_variance_display_order_of_school_types_as").with_alias(&alias);
+        let selection = request.into().into_query().var_pop("display_order", alias.clone());
+        self.scalar_from_school_types_as(alias, selection, operation)
     }
 
     pub fn count_schools(self) -> Self {
-        self.count_schools_as("count_schools")
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_schools");
+        self.count_schools_internal("count_schools".to_owned(), crate::Q::schools().unlimited(), operation)
     }
 
     pub fn count_schools_as(self, alias: impl Into<String>) -> Self {
-        self.count_schools_with(alias, crate::Q::schools().unlimited())
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_schools_as").with_alias(&alias);
+        self.count_schools_internal(alias, crate::Q::schools().unlimited(), operation)
     }
 
-    pub fn count_schools_with(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+    pub fn count_schools_with(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_schools_with").with_alias(&alias);
+        self.count_schools_internal(alias, request, operation)
+    }
+
+    fn count_schools_internal(mut self, alias: String, request: impl Into<QuerySelection>, operation: QueryOperation) -> Self {
         let selection = request.into();
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "school_list",
             alias,
             selection,
             true,
-        ));
+        ).with_operation(operation.with_relation("school_list")));
         self
     }
 
@@ -2297,23 +2356,26 @@ impl<R> PlatformRequest<R> {
 
     pub fn stats_from_schools_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "stats_from_schools_as")
+            .with_alias(&alias).with_relation("school_list");
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "school_list",
             alias,
             selection,
             false,
-        ));
+        ).with_operation(operation));
         self
     }
 
-    fn scalar_from_schools_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+    fn scalar_from_schools_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>, operation: QueryOperation) -> Self {
         let selection = request.into();
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "school_list",
             alias,
             selection,
             true,
-        ));
+        ).with_operation(operation.with_relation("school_list")));
         self
     }
 
@@ -2323,120 +2385,185 @@ impl<R> PlatformRequest<R> {
 
 
     pub fn min_established_date_of_schools(self) -> Self {
-        self.min_established_date_of_schools_as("min_established_date_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_established_date_of_schools");
+        self.scalar_from_schools_as("min_established_date_of_schools", crate::Q::schools().unlimited().into_query().min("established_date", "min_established_date_of_schools"), operation)
     }
 
     pub fn min_established_date_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().min("established_date", "min_established_date"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_established_date_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().min("established_date", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn max_established_date_of_schools(self) -> Self {
-        self.max_established_date_of_schools_as("max_established_date_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_established_date_of_schools");
+        self.scalar_from_schools_as("max_established_date_of_schools", crate::Q::schools().unlimited().into_query().max("established_date", "max_established_date_of_schools"), operation)
     }
 
     pub fn max_established_date_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().max("established_date", "max_established_date"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_established_date_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().max("established_date", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn sum_student_capacity_of_schools(self) -> Self {
-        self.sum_student_capacity_of_schools_as("sum_student_capacity_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sum_student_capacity_of_schools");
+        self.scalar_from_schools_as("sum_student_capacity_of_schools", crate::Q::schools().unlimited().into_query().sum("student_capacity", "sum_student_capacity_of_schools"), operation)
     }
 
     pub fn sum_student_capacity_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().sum("student_capacity", "sum_student_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sum_student_capacity_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().sum("student_capacity", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn min_student_capacity_of_schools(self) -> Self {
-        self.min_student_capacity_of_schools_as("min_student_capacity_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_student_capacity_of_schools");
+        self.scalar_from_schools_as("min_student_capacity_of_schools", crate::Q::schools().unlimited().into_query().min("student_capacity", "min_student_capacity_of_schools"), operation)
     }
 
     pub fn min_student_capacity_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().min("student_capacity", "min_student_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_student_capacity_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().min("student_capacity", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn max_student_capacity_of_schools(self) -> Self {
-        self.max_student_capacity_of_schools_as("max_student_capacity_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_student_capacity_of_schools");
+        self.scalar_from_schools_as("max_student_capacity_of_schools", crate::Q::schools().unlimited().into_query().max("student_capacity", "max_student_capacity_of_schools"), operation)
     }
 
     pub fn max_student_capacity_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().max("student_capacity", "max_student_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_student_capacity_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().max("student_capacity", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn avg_student_capacity_of_schools(self) -> Self {
-        self.avg_student_capacity_of_schools_as("avg_student_capacity_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "avg_student_capacity_of_schools");
+        self.scalar_from_schools_as("avg_student_capacity_of_schools", crate::Q::schools().unlimited().into_query().avg("student_capacity", "avg_student_capacity_of_schools"), operation)
     }
 
     pub fn avg_student_capacity_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().avg("student_capacity", "avg_student_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "avg_student_capacity_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().avg("student_capacity", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn standard_deviation_student_capacity_of_schools(self) -> Self {
-        self.standard_deviation_student_capacity_of_schools_as("standard_deviation_student_capacity_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "standard_deviation_student_capacity_of_schools");
+        self.scalar_from_schools_as("standard_deviation_student_capacity_of_schools", crate::Q::schools().unlimited().into_query().stddev("student_capacity", "standard_deviation_student_capacity_of_schools"), operation)
     }
 
     pub fn standard_deviation_student_capacity_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().stddev("student_capacity", "stdDev_student_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "standard_deviation_student_capacity_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().stddev("student_capacity", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn square_root_of_population_standard_deviation_student_capacity_of_schools(self) -> Self {
-        self.square_root_of_population_standard_deviation_student_capacity_of_schools_as("square_root_of_population_standard_deviation_student_capacity_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "square_root_of_population_standard_deviation_student_capacity_of_schools");
+        self.scalar_from_schools_as("square_root_of_population_standard_deviation_student_capacity_of_schools", crate::Q::schools().unlimited().into_query().stddev_pop("student_capacity", "square_root_of_population_standard_deviation_student_capacity_of_schools"), operation)
     }
 
     pub fn square_root_of_population_standard_deviation_student_capacity_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().stddev_pop("student_capacity", "stdDevPop_student_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "square_root_of_population_standard_deviation_student_capacity_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().stddev_pop("student_capacity", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn sample_variance_student_capacity_of_schools(self) -> Self {
-        self.sample_variance_student_capacity_of_schools_as("sample_variance_student_capacity_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_variance_student_capacity_of_schools");
+        self.scalar_from_schools_as("sample_variance_student_capacity_of_schools", crate::Q::schools().unlimited().into_query().var_samp("student_capacity", "sample_variance_student_capacity_of_schools"), operation)
     }
 
     pub fn sample_variance_student_capacity_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().var_samp("student_capacity", "varSamp_student_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_variance_student_capacity_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().var_samp("student_capacity", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn sample_population_variance_student_capacity_of_schools(self) -> Self {
-        self.sample_population_variance_student_capacity_of_schools_as("sample_population_variance_student_capacity_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_population_variance_student_capacity_of_schools");
+        self.scalar_from_schools_as("sample_population_variance_student_capacity_of_schools", crate::Q::schools().unlimited().into_query().var_pop("student_capacity", "sample_population_variance_student_capacity_of_schools"), operation)
     }
 
     pub fn sample_population_variance_student_capacity_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().var_pop("student_capacity", "varPop_student_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_population_variance_student_capacity_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().var_pop("student_capacity", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn min_create_time_of_schools(self) -> Self {
-        self.min_create_time_of_schools_as("min_create_time_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_create_time_of_schools");
+        self.scalar_from_schools_as("min_create_time_of_schools", crate::Q::schools().unlimited().into_query().min("create_time", "min_create_time_of_schools"), operation)
     }
 
     pub fn min_create_time_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().min("create_time", "min_create_time"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_create_time_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().min("create_time", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn max_create_time_of_schools(self) -> Self {
-        self.max_create_time_of_schools_as("max_create_time_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_create_time_of_schools");
+        self.scalar_from_schools_as("max_create_time_of_schools", crate::Q::schools().unlimited().into_query().max("create_time", "max_create_time_of_schools"), operation)
     }
 
     pub fn max_create_time_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().max("create_time", "max_create_time"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_create_time_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().max("create_time", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn min_update_time_of_schools(self) -> Self {
-        self.min_update_time_of_schools_as("min_update_time_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_update_time_of_schools");
+        self.scalar_from_schools_as("min_update_time_of_schools", crate::Q::schools().unlimited().into_query().min("update_time", "min_update_time_of_schools"), operation)
     }
 
     pub fn min_update_time_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().min("update_time", "min_update_time"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_update_time_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().min("update_time", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn max_update_time_of_schools(self) -> Self {
-        self.max_update_time_of_schools_as("max_update_time_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_update_time_of_schools");
+        self.scalar_from_schools_as("max_update_time_of_schools", crate::Q::schools().unlimited().into_query().max("update_time", "max_update_time_of_schools"), operation)
     }
 
     pub fn max_update_time_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().max("update_time", "max_update_time"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_update_time_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().max("update_time", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
 
     pub fn count_school_capacity_summaries(self) -> Self {
-        self.count_school_capacity_summaries_as("count_school_capacity_summaries")
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_school_capacity_summaries");
+        self.count_school_capacity_summaries_internal("count_school_capacity_summaries".to_owned(), crate::Q::school_capacity_summaries().unlimited(), operation)
     }
 
     pub fn count_school_capacity_summaries_as(self, alias: impl Into<String>) -> Self {
-        self.count_school_capacity_summaries_with(alias, crate::Q::school_capacity_summaries().unlimited())
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_school_capacity_summaries_as").with_alias(&alias);
+        self.count_school_capacity_summaries_internal(alias, crate::Q::school_capacity_summaries().unlimited(), operation)
     }
 
-    pub fn count_school_capacity_summaries_with(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+    pub fn count_school_capacity_summaries_with(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_school_capacity_summaries_with").with_alias(&alias);
+        self.count_school_capacity_summaries_internal(alias, request, operation)
+    }
+
+    fn count_school_capacity_summaries_internal(mut self, alias: String, request: impl Into<QuerySelection>, operation: QueryOperation) -> Self {
         let selection = request.into();
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "school_capacity_summary_list",
             alias,
             selection,
             true,
-        ));
+        ).with_operation(operation.with_relation("school_capacity_summary_list")));
         self
     }
 
@@ -2446,23 +2573,26 @@ impl<R> PlatformRequest<R> {
 
     pub fn stats_from_school_capacity_summaries_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "stats_from_school_capacity_summaries_as")
+            .with_alias(&alias).with_relation("school_capacity_summary_list");
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "school_capacity_summary_list",
             alias,
             selection,
             false,
-        ));
+        ).with_operation(operation));
         self
     }
 
-    fn scalar_from_school_capacity_summaries_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+    fn scalar_from_school_capacity_summaries_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>, operation: QueryOperation) -> Self {
         let selection = request.into();
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "school_capacity_summary_list",
             alias,
             selection,
             true,
-        ));
+        ).with_operation(operation.with_relation("school_capacity_summary_list")));
         self
     }
 
@@ -2472,116 +2602,180 @@ impl<R> PlatformRequest<R> {
 
 
     pub fn sum_total_capacity_of_school_capacity_summaries(self) -> Self {
-        self.sum_total_capacity_of_school_capacity_summaries_as("sum_total_capacity_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sum_total_capacity_of_school_capacity_summaries");
+        self.scalar_from_school_capacity_summaries_as("sum_total_capacity_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited().into_query().sum("total_capacity", "sum_total_capacity_of_school_capacity_summaries"), operation)
     }
 
     pub fn sum_total_capacity_of_school_capacity_summaries_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_capacity_summaries_as(alias, request.into().into_query().sum("total_capacity", "sum_total_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sum_total_capacity_of_school_capacity_summaries_as").with_alias(&alias);
+        let selection = request.into().into_query().sum("total_capacity", alias.clone());
+        self.scalar_from_school_capacity_summaries_as(alias, selection, operation)
     }
     pub fn min_total_capacity_of_school_capacity_summaries(self) -> Self {
-        self.min_total_capacity_of_school_capacity_summaries_as("min_total_capacity_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_total_capacity_of_school_capacity_summaries");
+        self.scalar_from_school_capacity_summaries_as("min_total_capacity_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited().into_query().min("total_capacity", "min_total_capacity_of_school_capacity_summaries"), operation)
     }
 
     pub fn min_total_capacity_of_school_capacity_summaries_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_capacity_summaries_as(alias, request.into().into_query().min("total_capacity", "min_total_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_total_capacity_of_school_capacity_summaries_as").with_alias(&alias);
+        let selection = request.into().into_query().min("total_capacity", alias.clone());
+        self.scalar_from_school_capacity_summaries_as(alias, selection, operation)
     }
     pub fn max_total_capacity_of_school_capacity_summaries(self) -> Self {
-        self.max_total_capacity_of_school_capacity_summaries_as("max_total_capacity_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_total_capacity_of_school_capacity_summaries");
+        self.scalar_from_school_capacity_summaries_as("max_total_capacity_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited().into_query().max("total_capacity", "max_total_capacity_of_school_capacity_summaries"), operation)
     }
 
     pub fn max_total_capacity_of_school_capacity_summaries_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_capacity_summaries_as(alias, request.into().into_query().max("total_capacity", "max_total_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_total_capacity_of_school_capacity_summaries_as").with_alias(&alias);
+        let selection = request.into().into_query().max("total_capacity", alias.clone());
+        self.scalar_from_school_capacity_summaries_as(alias, selection, operation)
     }
     pub fn avg_total_capacity_of_school_capacity_summaries(self) -> Self {
-        self.avg_total_capacity_of_school_capacity_summaries_as("avg_total_capacity_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "avg_total_capacity_of_school_capacity_summaries");
+        self.scalar_from_school_capacity_summaries_as("avg_total_capacity_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited().into_query().avg("total_capacity", "avg_total_capacity_of_school_capacity_summaries"), operation)
     }
 
     pub fn avg_total_capacity_of_school_capacity_summaries_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_capacity_summaries_as(alias, request.into().into_query().avg("total_capacity", "avg_total_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "avg_total_capacity_of_school_capacity_summaries_as").with_alias(&alias);
+        let selection = request.into().into_query().avg("total_capacity", alias.clone());
+        self.scalar_from_school_capacity_summaries_as(alias, selection, operation)
     }
     pub fn standard_deviation_total_capacity_of_school_capacity_summaries(self) -> Self {
-        self.standard_deviation_total_capacity_of_school_capacity_summaries_as("standard_deviation_total_capacity_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "standard_deviation_total_capacity_of_school_capacity_summaries");
+        self.scalar_from_school_capacity_summaries_as("standard_deviation_total_capacity_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited().into_query().stddev("total_capacity", "standard_deviation_total_capacity_of_school_capacity_summaries"), operation)
     }
 
     pub fn standard_deviation_total_capacity_of_school_capacity_summaries_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_capacity_summaries_as(alias, request.into().into_query().stddev("total_capacity", "stdDev_total_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "standard_deviation_total_capacity_of_school_capacity_summaries_as").with_alias(&alias);
+        let selection = request.into().into_query().stddev("total_capacity", alias.clone());
+        self.scalar_from_school_capacity_summaries_as(alias, selection, operation)
     }
     pub fn square_root_of_population_standard_deviation_total_capacity_of_school_capacity_summaries(self) -> Self {
-        self.square_root_of_population_standard_deviation_total_capacity_of_school_capacity_summaries_as("square_root_of_population_standard_deviation_total_capacity_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "square_root_of_population_standard_deviation_total_capacity_of_school_capacity_summaries");
+        self.scalar_from_school_capacity_summaries_as("square_root_of_population_standard_deviation_total_capacity_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited().into_query().stddev_pop("total_capacity", "square_root_of_population_standard_deviation_total_capacity_of_school_capacity_summaries"), operation)
     }
 
     pub fn square_root_of_population_standard_deviation_total_capacity_of_school_capacity_summaries_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_capacity_summaries_as(alias, request.into().into_query().stddev_pop("total_capacity", "stdDevPop_total_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "square_root_of_population_standard_deviation_total_capacity_of_school_capacity_summaries_as").with_alias(&alias);
+        let selection = request.into().into_query().stddev_pop("total_capacity", alias.clone());
+        self.scalar_from_school_capacity_summaries_as(alias, selection, operation)
     }
     pub fn sample_variance_total_capacity_of_school_capacity_summaries(self) -> Self {
-        self.sample_variance_total_capacity_of_school_capacity_summaries_as("sample_variance_total_capacity_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_variance_total_capacity_of_school_capacity_summaries");
+        self.scalar_from_school_capacity_summaries_as("sample_variance_total_capacity_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited().into_query().var_samp("total_capacity", "sample_variance_total_capacity_of_school_capacity_summaries"), operation)
     }
 
     pub fn sample_variance_total_capacity_of_school_capacity_summaries_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_capacity_summaries_as(alias, request.into().into_query().var_samp("total_capacity", "varSamp_total_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_variance_total_capacity_of_school_capacity_summaries_as").with_alias(&alias);
+        let selection = request.into().into_query().var_samp("total_capacity", alias.clone());
+        self.scalar_from_school_capacity_summaries_as(alias, selection, operation)
     }
     pub fn sample_population_variance_total_capacity_of_school_capacity_summaries(self) -> Self {
-        self.sample_population_variance_total_capacity_of_school_capacity_summaries_as("sample_population_variance_total_capacity_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_population_variance_total_capacity_of_school_capacity_summaries");
+        self.scalar_from_school_capacity_summaries_as("sample_population_variance_total_capacity_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited().into_query().var_pop("total_capacity", "sample_population_variance_total_capacity_of_school_capacity_summaries"), operation)
     }
 
     pub fn sample_population_variance_total_capacity_of_school_capacity_summaries_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_capacity_summaries_as(alias, request.into().into_query().var_pop("total_capacity", "varPop_total_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_population_variance_total_capacity_of_school_capacity_summaries_as").with_alias(&alias);
+        let selection = request.into().into_query().var_pop("total_capacity", alias.clone());
+        self.scalar_from_school_capacity_summaries_as(alias, selection, operation)
     }
     pub fn sum_school_count_of_school_capacity_summaries(self) -> Self {
-        self.sum_school_count_of_school_capacity_summaries_as("sum_school_count_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sum_school_count_of_school_capacity_summaries");
+        self.scalar_from_school_capacity_summaries_as("sum_school_count_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited().into_query().sum("school_count", "sum_school_count_of_school_capacity_summaries"), operation)
     }
 
     pub fn sum_school_count_of_school_capacity_summaries_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_capacity_summaries_as(alias, request.into().into_query().sum("school_count", "sum_school_count"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sum_school_count_of_school_capacity_summaries_as").with_alias(&alias);
+        let selection = request.into().into_query().sum("school_count", alias.clone());
+        self.scalar_from_school_capacity_summaries_as(alias, selection, operation)
     }
     pub fn min_school_count_of_school_capacity_summaries(self) -> Self {
-        self.min_school_count_of_school_capacity_summaries_as("min_school_count_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_school_count_of_school_capacity_summaries");
+        self.scalar_from_school_capacity_summaries_as("min_school_count_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited().into_query().min("school_count", "min_school_count_of_school_capacity_summaries"), operation)
     }
 
     pub fn min_school_count_of_school_capacity_summaries_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_capacity_summaries_as(alias, request.into().into_query().min("school_count", "min_school_count"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_school_count_of_school_capacity_summaries_as").with_alias(&alias);
+        let selection = request.into().into_query().min("school_count", alias.clone());
+        self.scalar_from_school_capacity_summaries_as(alias, selection, operation)
     }
     pub fn max_school_count_of_school_capacity_summaries(self) -> Self {
-        self.max_school_count_of_school_capacity_summaries_as("max_school_count_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_school_count_of_school_capacity_summaries");
+        self.scalar_from_school_capacity_summaries_as("max_school_count_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited().into_query().max("school_count", "max_school_count_of_school_capacity_summaries"), operation)
     }
 
     pub fn max_school_count_of_school_capacity_summaries_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_capacity_summaries_as(alias, request.into().into_query().max("school_count", "max_school_count"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_school_count_of_school_capacity_summaries_as").with_alias(&alias);
+        let selection = request.into().into_query().max("school_count", alias.clone());
+        self.scalar_from_school_capacity_summaries_as(alias, selection, operation)
     }
     pub fn avg_school_count_of_school_capacity_summaries(self) -> Self {
-        self.avg_school_count_of_school_capacity_summaries_as("avg_school_count_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "avg_school_count_of_school_capacity_summaries");
+        self.scalar_from_school_capacity_summaries_as("avg_school_count_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited().into_query().avg("school_count", "avg_school_count_of_school_capacity_summaries"), operation)
     }
 
     pub fn avg_school_count_of_school_capacity_summaries_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_capacity_summaries_as(alias, request.into().into_query().avg("school_count", "avg_school_count"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "avg_school_count_of_school_capacity_summaries_as").with_alias(&alias);
+        let selection = request.into().into_query().avg("school_count", alias.clone());
+        self.scalar_from_school_capacity_summaries_as(alias, selection, operation)
     }
     pub fn standard_deviation_school_count_of_school_capacity_summaries(self) -> Self {
-        self.standard_deviation_school_count_of_school_capacity_summaries_as("standard_deviation_school_count_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "standard_deviation_school_count_of_school_capacity_summaries");
+        self.scalar_from_school_capacity_summaries_as("standard_deviation_school_count_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited().into_query().stddev("school_count", "standard_deviation_school_count_of_school_capacity_summaries"), operation)
     }
 
     pub fn standard_deviation_school_count_of_school_capacity_summaries_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_capacity_summaries_as(alias, request.into().into_query().stddev("school_count", "stdDev_school_count"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "standard_deviation_school_count_of_school_capacity_summaries_as").with_alias(&alias);
+        let selection = request.into().into_query().stddev("school_count", alias.clone());
+        self.scalar_from_school_capacity_summaries_as(alias, selection, operation)
     }
     pub fn square_root_of_population_standard_deviation_school_count_of_school_capacity_summaries(self) -> Self {
-        self.square_root_of_population_standard_deviation_school_count_of_school_capacity_summaries_as("square_root_of_population_standard_deviation_school_count_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "square_root_of_population_standard_deviation_school_count_of_school_capacity_summaries");
+        self.scalar_from_school_capacity_summaries_as("square_root_of_population_standard_deviation_school_count_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited().into_query().stddev_pop("school_count", "square_root_of_population_standard_deviation_school_count_of_school_capacity_summaries"), operation)
     }
 
     pub fn square_root_of_population_standard_deviation_school_count_of_school_capacity_summaries_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_capacity_summaries_as(alias, request.into().into_query().stddev_pop("school_count", "stdDevPop_school_count"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "square_root_of_population_standard_deviation_school_count_of_school_capacity_summaries_as").with_alias(&alias);
+        let selection = request.into().into_query().stddev_pop("school_count", alias.clone());
+        self.scalar_from_school_capacity_summaries_as(alias, selection, operation)
     }
     pub fn sample_variance_school_count_of_school_capacity_summaries(self) -> Self {
-        self.sample_variance_school_count_of_school_capacity_summaries_as("sample_variance_school_count_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_variance_school_count_of_school_capacity_summaries");
+        self.scalar_from_school_capacity_summaries_as("sample_variance_school_count_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited().into_query().var_samp("school_count", "sample_variance_school_count_of_school_capacity_summaries"), operation)
     }
 
     pub fn sample_variance_school_count_of_school_capacity_summaries_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_capacity_summaries_as(alias, request.into().into_query().var_samp("school_count", "varSamp_school_count"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_variance_school_count_of_school_capacity_summaries_as").with_alias(&alias);
+        let selection = request.into().into_query().var_samp("school_count", alias.clone());
+        self.scalar_from_school_capacity_summaries_as(alias, selection, operation)
     }
     pub fn sample_population_variance_school_count_of_school_capacity_summaries(self) -> Self {
-        self.sample_population_variance_school_count_of_school_capacity_summaries_as("sample_population_variance_school_count_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_population_variance_school_count_of_school_capacity_summaries");
+        self.scalar_from_school_capacity_summaries_as("sample_population_variance_school_count_of_school_capacity_summaries", crate::Q::school_capacity_summaries().unlimited().into_query().var_pop("school_count", "sample_population_variance_school_count_of_school_capacity_summaries"), operation)
     }
 
     pub fn sample_population_variance_school_count_of_school_capacity_summaries_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_school_capacity_summaries_as(alias, request.into().into_query().var_pop("school_count", "varPop_school_count"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_population_variance_school_count_of_school_capacity_summaries_as").with_alias(&alias);
+        let selection = request.into().into_query().var_pop("school_count", alias.clone());
+        self.scalar_from_school_capacity_summaries_as(alias, selection, operation)
     }
 }
 
@@ -2661,19 +2855,6 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<PlatformRequest<R>> {
                 .is_some_and(|comment| !comment.trim().is_empty()),
             "query comment must not be empty"
         );
-    }
-
-    pub async fn execute_for_page<'a, C>(
-        self,
-        context: &'a C,
-        offset: u64,
-        limit: u64,
-    ) -> Result<teaql_core::SmartList<R>, teaql_runtime::RuntimeError>
-    where
-        C: crate::TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
-    {
-        self.into_inner_with_trace()._execute_for_page(context, offset, limit).await
     }
 
     pub async fn execute_for_exists<'a, C>(

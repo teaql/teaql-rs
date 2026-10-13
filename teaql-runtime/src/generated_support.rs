@@ -225,6 +225,34 @@ impl std::fmt::Debug for PurposedSelectQuery {
 }
 
 impl PurposedSelectQuery {
+    /// Split an explicitly declared ungrouped count from an ordinary entity list.
+    /// Mixed/grouped aggregates remain aggregate requests, not implicit pagination.
+    #[doc(hidden)]
+    pub fn take_requested_list_count(&mut self, options: &QueryOptions) -> Option<(String, Self)> {
+        let operation = options.page_count_operation.clone()?;
+        let alias = operation
+            .alias()
+            .unwrap_or(teaql_core::request::COUNT_ALIAS);
+        if !self.query.group_by.is_empty()
+            || !self.query.object_group_bys.is_empty()
+            || self.query.having.is_some()
+            || self.query.partition_by.is_some()
+            || self.query.aggregates.len() != 1
+            || self.query.aggregates[0].function != teaql_core::AggregateFunction::Count
+            || self.query.aggregates[0].field != "*"
+            || self.query.aggregates[0].alias != alias
+        {
+            return None;
+        }
+        let alias = alias.to_owned();
+        let count = self
+            .clone()
+            .with_facet_diagnostics(options)
+            .for_exact_count_with_operation(&alias, operation);
+        self.query.aggregates.clear();
+        Some((alias, count))
+    }
+
     pub fn new(mut query: SelectQuery, purpose: impl Into<String>) -> Self {
         let purpose = purpose.into();
         assert!(
@@ -232,6 +260,13 @@ impl PurposedSelectQuery {
             "query purpose must not be empty"
         );
         query.purpose = Some(purpose.clone());
+        if query.request_scope().is_none()
+            && let Ok(intent) =
+                teaql_core::QueryIntent::from_optional(query.comment.as_deref(), Some(&purpose))
+        {
+            let scope = teaql_core::QueryRequestScope::root(query.entity.clone(), intent);
+            query = query.with_request_scope(scope);
+        }
         query.trace_chain.push(TraceNode {
             kind: teaql_core::TraceKind::Purpose,
             entity_type: query.entity.clone(),
@@ -247,7 +282,21 @@ impl PurposedSelectQuery {
     /// Derive the root count without losing removed expressions' log privacy.
     /// The original query is classified locally; it is never executed for tracing.
     #[doc(hidden)]
-    pub fn for_exact_count(mut self, alias: impl Into<String>) -> Self {
+    pub fn for_exact_count(self, alias: impl Into<String>) -> Self {
+        self.for_exact_count_with_operation(
+            alias,
+            teaql_core::QueryOperation::framework(teaql_core::QueryOperationKind::NamedCount),
+        )
+    }
+
+    /// The generator supplies the native method and caller alias. This runtime
+    /// owns the count request and never treats its SQL alias as a relation.
+    #[doc(hidden)]
+    pub fn for_exact_count_with_operation(
+        mut self,
+        alias: impl Into<String>,
+        operation: teaql_core::QueryOperation,
+    ) -> Self {
         if self.diagnostic_source.is_none() {
             self.diagnostic_source = Some(Box::new(self.query.clone()));
         }
@@ -256,6 +305,18 @@ impl PurposedSelectQuery {
         self.query.order_by.clear();
         self.query.slice = None;
         self.query.relations.clear();
+        self.query.facets.clear();
+        self.query.relation_aggregates.clear();
+        self.query.aggregates.clear();
+        self.query.group_by.clear();
+        self.query.object_group_bys.clear();
+        self.query.child_enhancements.clear();
+        self.query.partition_by = None;
+        self.query.having = None;
+        if let Some(scope) = self.query.request_scope() {
+            let count_scope = scope.derive_operation(self.query.entity.clone(), operation);
+            self.query = self.query.with_request_scope(count_scope);
+        }
         self.query = self.query.count(alias);
         self
     }
@@ -385,6 +446,9 @@ where
             outer_query.comment.as_deref(),
             outer_query.purpose.as_deref(),
         )?;
+        let parent_scope = outer_query.request_scope().cloned().unwrap_or_else(|| {
+            teaql_core::QueryRequestScope::root(outer_query.entity.clone(), intent.clone())
+        });
         let mut facets = BTreeMap::new();
         for facet in &options.facets {
             let descriptor = context
@@ -398,6 +462,20 @@ where
                     relation: facet.relation_name.clone(),
                 })?;
             let mut selection = facet.query.clone();
+            let operation = facet.operation.clone().unwrap_or_else(|| {
+                teaql_core::QueryOperation::framework(teaql_core::QueryOperationKind::Facet)
+                    .with_alias(&facet.facet_name)
+                    .with_relation(&facet.relation_name)
+            });
+            let operation_scope = parent_scope.derive_operation(&outer_query.entity, operation);
+            let local_comment = selection
+                .query_options
+                .comment
+                .as_deref()
+                .or_else(|| selection.query.request_scope().map(|scope| scope.comment()))
+                .or(selection.query.comment.as_deref());
+            let child_scope =
+                operation_scope.derive_child(&selection.query.entity, local_comment)?;
             merge_outer_filter_into_facet_aggregates(&mut selection, outer_query);
             if !facet.include_all_facets {
                 selection = restrict_facet_to_outer_query(
@@ -409,7 +487,7 @@ where
             }
             let relation_aggregates = runtime_relation_aggregates(&selection.query_options);
             let mut query = selection.clone().into_query();
-            query.comment = Some(intent.comment().to_owned());
+            query = query.with_request_scope(child_scope);
             let entity = query.entity.clone();
             query.trace_chain = outer_query.trace_chain.clone();
             query.trace_chain.push(TraceNode {

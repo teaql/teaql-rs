@@ -416,15 +416,16 @@ impl School {
         self.school_type_id() == 1002_u64
     }
     pub fn platform(&self) -> Option<&crate::Platform> {
+        if self.changed_platform_id().is_some()
+            || !self.is_loaded("platform") {
+            return None;
+        }
+        if let Some(edge) = self.__teaql_runtime_state().resolve_relation_option::<crate::Platform>(
+            <Self as teaql_core::TeaqlEntity>::ENTITY_NAME, self.id(), "platform",
+        ) {
+            return edge.as_ref();
+        }
         self.platform.as_deref().or_else(|| {
-            if !self.is_loaded("platform") {
-                return None;
-            }
-            if let Some(edge) = self.__teaql_runtime_state().resolve_relation_option::<crate::Platform>(
-                Self::ENTITY_NAME, self.id(), "platform",
-            ) {
-                return edge.as_ref();
-            }
             self.__teaql_runtime_state().resolve_entity(self.platform_id())})
     }
 
@@ -436,15 +437,16 @@ impl School {
     }
 
     pub fn school_type(&self) -> Option<&crate::SchoolType> {
+        if self.changed_school_type_id().is_some()
+            || !self.is_loaded("school_type") {
+            return None;
+        }
+        if let Some(edge) = self.__teaql_runtime_state().resolve_relation_option::<crate::SchoolType>(
+            <Self as teaql_core::TeaqlEntity>::ENTITY_NAME, self.id(), "school_type",
+        ) {
+            return edge.as_ref();
+        }
         self.school_type.as_deref().or_else(|| {
-            if !self.is_loaded("school_type") {
-                return None;
-            }
-            if let Some(edge) = self.__teaql_runtime_state().resolve_relation_option::<crate::SchoolType>(
-                Self::ENTITY_NAME, self.id(), "school_type",
-            ) {
-                return edge.as_ref();
-            }
             self.__teaql_runtime_state().resolve_entity(self.school_type_id())})
     }
 

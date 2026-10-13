@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.7] - 2026-10-13
+
+Tracking: [Rust #247](https://github.com/teaql/teaql-rs/issues/247) and
+[conformance #109](https://github.com/teaql/teaql-conformance/issues/109).
+
+- Add the optional `teaql-runtime/standard-telemetry` feature with trusted
+  environment activation, safe startup guidance and full traces, metrics and logs.
+- Keep owned SDK providers independent of customer globals. SQL logs carry the
+  original physical span identity and expanded masked parameters.
+- Preserve request-tree/entity lineage, original business errors and independent
+  audit across asynchronous lists, graph saves, scalar streams and shutdown.
+- Bound outstanding SDK work and distinguish overflow, failed exports, receiver
+  rejection and retirement. No whole-batch retry after partial acceptance.
+- Regenerate libraries to retire the separate page terminal; pagination uses
+  ordinary list execution and optional explicit count.
+
+Source and internal-candidate evidence is retained in the conformance
+`2026-10-13-standard-telemetry-onboarding` report. Final artifact verification and
+signed public delivery are distinct from those earlier candidate results.
+
 ## [5.0.2] - 2026-09-20
 
 Release tracking: [Rust #202](https://github.com/teaql/teaql-rs/issues/202).

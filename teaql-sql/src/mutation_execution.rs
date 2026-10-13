@@ -151,6 +151,7 @@ struct ObservedTransport<'a, T> {
     inherited_redactions: Option<Arc<SqlIntentRedactions>>,
     target_id: Option<teaql_core::Value>,
     successful_readbacks: std::sync::Mutex<Vec<ExecutionMetadata>>,
+    successful_write: std::sync::Mutex<Option<ExecutionMetadata>>,
 }
 impl<T> ObservedTransport<'_, T> {
     fn metadata(
@@ -232,6 +233,11 @@ impl<T> ObservedTransport<'_, T> {
     }
 
     fn retain_successful_readbacks(&self, metadata: &mut ExecutionMetadata) {
+        let write = self
+            .successful_write
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
         let readbacks = std::mem::take(
             &mut *self
                 .successful_readbacks
@@ -243,8 +249,10 @@ impl<T> ObservedTransport<'_, T> {
             // write followed by its actual SELECT; runtime sinks traverse
             // children without logging the summary again. Native batch item
             // grouping remains intact.
-            metadata.statements = vec![metadata.clone()];
+            metadata.statements = vec![write.unwrap_or_else(|| metadata.clone())];
             metadata.statements.extend(readbacks);
+        } else if let Some(write) = write {
+            *metadata = write;
         }
     }
 }
@@ -258,7 +266,9 @@ impl<T: SqlTransport> SqlTransport for ObservedTransport<'_, T> {
             Some(self.metadata(query, DataServiceOperation::Query)),
             self.observer.clone(),
         );
-        let result = self.inner.fetch_all_compact_sql(query).await;
+        let result = diagnostic
+            .run(self.inner.fetch_all_compact_sql(query))
+            .await;
         let rows = result.inspect_err(|_| {
             diagnostic.fail();
         })?;
@@ -284,12 +294,16 @@ impl<T: SqlTransport> SqlTransport for ObservedTransport<'_, T> {
             Some(self.metadata(query, self.operation)),
             self.observer.clone(),
         );
-        let result = self.inner.execute_sql(query).await;
+        let result = diagnostic.run(self.inner.execute_sql(query)).await;
         let affected = result.inspect_err(|_| {
             diagnostic.fail();
         })?;
         let mut metadata = diagnostic.success().expect("observed mutation");
         metadata.affected_rows = Some(affected);
+        *self
+            .successful_write
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(metadata.clone());
         self.emit(metadata);
         Ok(affected)
     }
@@ -441,6 +455,7 @@ where
         inherited_redactions: scope.redactions,
         target_id,
         successful_readbacks: Default::default(),
+        successful_write: Default::default(),
     };
     let mut metadata = observed.metadata(&compiled, operation);
     let affected_rows = observed
@@ -511,6 +526,7 @@ pub(super) async fn guarded<D: SqlDialect + Sync, T: SqlTransport>(
             _ => None,
         },
         successful_readbacks: Default::default(),
+        successful_write: Default::default(),
     };
     let mut result = execute_guarded_mutation(dialect, &observed, entity, cache, request).await;
     if let Ok(result) = &mut result {

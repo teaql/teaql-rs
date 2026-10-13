@@ -138,6 +138,7 @@ pub struct RelationSelection {
     pub relation_filters: Vec<RelationFilter>,
     pub child_enhancements: Vec<QuerySelection>,
     pub query_options: QueryOptions,
+    pub operation: Option<crate::QueryOperation>,
 }
 
 impl RelationSelection {
@@ -150,12 +151,17 @@ impl RelationSelection {
             relation_filters: selection.relation_filters,
             child_enhancements: selection.child_enhancements,
             query_options: selection.query_options,
+            operation: None,
         }
     }
 
     pub fn into_query(self) -> SelectQuery {
         let query = apply_relation_selections(self.query, self.relation_selections);
         apply_runtime_metadata(query, &self.query_options, &self.child_enhancements)
+    }
+    pub fn with_operation(mut self, operation: crate::QueryOperation) -> Self {
+        self.operation = Some(operation);
+        self
     }
 }
 
@@ -194,6 +200,9 @@ impl RelationFilter {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct QueryOptions {
     pub comment: Option<String>,
+    /// Native named-count operation retained for page execution; the alias is
+    /// caller supplied, never an internal COUNT column or example constant.
+    pub page_count_operation: Option<crate::QueryOperation>,
     pub raw_sql: Option<String>,
     pub raw_sql_search_criteria: Vec<String>,
     pub dynamic_properties: Vec<RawDynamicProperty>,
@@ -270,6 +279,7 @@ pub struct RelationAggregate {
     pub alias: String,
     pub query: QuerySelection,
     pub single_result: bool,
+    pub operation: Option<crate::QueryOperation>,
 }
 
 impl RelationAggregate {
@@ -284,7 +294,12 @@ impl RelationAggregate {
             alias: alias.into(),
             query: query.into(),
             single_result,
+            operation: None,
         }
+    }
+    pub fn with_operation(mut self, operation: crate::QueryOperation) -> Self {
+        self.operation = Some(operation);
+        self
     }
 }
 
@@ -298,6 +313,7 @@ pub struct FacetRequest {
     pub relation_name: String,
     pub query: QuerySelection,
     pub include_all_facets: bool,
+    pub operation: Option<crate::QueryOperation>,
 }
 
 impl FacetRequest {
@@ -312,7 +328,12 @@ impl FacetRequest {
             relation_name: relation_name.into(),
             query: query.into(),
             include_all_facets,
+            operation: None,
         }
+    }
+    pub fn with_operation(mut self, operation: crate::QueryOperation) -> Self {
+        self.operation = Some(operation);
+        self
     }
 }
 
@@ -350,7 +371,11 @@ pub fn apply_relation_selections(
     relation_selections: Vec<RelationSelection>,
 ) -> SelectQuery {
     for selection in relation_selections {
-        query = query.relation_query(selection.name.clone(), selection.into_query());
+        let operation = selection.operation.clone();
+        let name = selection.name.clone();
+        let mut load = crate::RelationLoad::with_query(name, selection.into_query());
+        load.operation = operation;
+        query.relations.push(load);
     }
     query
 }
@@ -415,12 +440,14 @@ pub fn runtime_relation_aggregates(options: &QueryOptions) -> Vec<RuntimeRelatio
         .relation_aggregates
         .iter()
         .map(|aggregate| {
-            RuntimeRelationAggregate::new(
+            let mut runtime = RuntimeRelationAggregate::new(
                 aggregate.relation_name.clone(),
                 aggregate.alias.clone(),
                 aggregate.query.clone().into_query(),
                 aggregate.single_result,
-            )
+            );
+            runtime.operation = aggregate.operation.clone();
+            runtime
         })
         .collect()
 }

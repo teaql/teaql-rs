@@ -8,6 +8,7 @@ use teaql_core::{
     BinaryOp, CompactRow, Expr,
     RelationAggregate as RuntimeRelationAggregate, SelectQuery, SmartList,
 };
+pub use teaql_core::{QueryOperation, QueryOperationKind};
 use teaql_runtime::{ContextError, GraphNode, EntityDataServiceBehavior, DataServiceError, PurposedSelectQuery, RuntimeError, UserContext};
 
 pub type TeaqlEntityStream<'a, T, E> = std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<T, E>> + 'a>>;
@@ -340,9 +341,12 @@ impl TeaqlRuntime for teaql_runtime::UserContext {
                 .map_err(|error| RuntimeError::Graph(error.to_string()))?;
             let mut chunks = repository.fetch_stream(&query).await
                 .map_err(|error| RuntimeError::Graph(error.to_string()))?;
+            let root = teaql_runtime::EntityRuntimeState::default();
             while let Some(chunk) = chunks.next().await {
-                for row in chunk.map_err(|error| RuntimeError::Graph(error.to_string()))?.rows {
-                    yield T::from_compact_row(row).map_err(|error| RuntimeError::Graph(error.to_string()))?;
+                let rows = chunk.map_err(|error| RuntimeError::Graph(error.to_string()))?.rows;
+                for entity in teaql_runtime::decode_compact_rows_with_read_metadata::<T>(rows, &root)
+                    .map_err(|error| RuntimeError::Graph(error.to_string()))? {
+                    yield entity;
                 }
             }
         })
@@ -503,9 +507,12 @@ where
                 .map_err(|error| RuntimeError::Graph(error.to_string()))?;
             let mut chunks = repository.fetch_stream(&query).await
                 .map_err(|error| RuntimeError::Graph(error.to_string()))?;
+            let root = teaql_runtime::EntityRuntimeState::default();
             while let Some(chunk) = chunks.next().await {
-                for row in chunk.map_err(|error| RuntimeError::Graph(error.to_string()))?.rows {
-                    yield T::from_compact_row(row).map_err(|error| RuntimeError::Graph(error.to_string()))?;
+                let rows = chunk.map_err(|error| RuntimeError::Graph(error.to_string()))?.rows;
+                for entity in teaql_runtime::decode_compact_rows_with_read_metadata::<T>(rows, &root)
+                    .map_err(|error| RuntimeError::Graph(error.to_string()))? {
+                    yield entity;
                 }
             }
         })
@@ -529,31 +536,39 @@ where
     }
 }
 
-// The generated module binds its executor; the runtime owns Facet semantics.
-struct FacetRuntime<'a, C: ?Sized>(&'a C);
+// Provider wiring only: ownership, defaults, facet recursion and evidence are
+// implemented once by teaql-runtime, not copied into a generated library.
+struct GeneratedFacetAdapter<'a, C: ?Sized>(&'a C);
 
-impl<C: TeaqlRuntime + ?Sized> teaql_runtime::generated_support::TeaqlRuntime
-    for FacetRuntime<'_, C>
-{
-    fn user_context(&self) -> &UserContext {
-        self.0.user_context()
-    }
+impl<C: TeaqlRuntime + ?Sized> teaql_runtime::TeaqlRuntime for GeneratedFacetAdapter<'_, C> {
+    fn user_context(&self) -> &UserContext { self.0.user_context() }
 
-    async fn fetch_facet_smart_list(
-        &self,
-        entity: &str,
-        query: &PurposedSelectQuery,
-        relation_aggregates: &[RuntimeRelationAggregate],
-        trace_context: Vec<teaql_core::TraceNode>,
-    ) -> Result<SmartList<CompactRow>, RuntimeError> {
+    async fn fetch_facet_smart_list(&self, entity: &str, query: &PurposedSelectQuery,
+        relation_aggregates: &[RuntimeRelationAggregate], trace_context: Vec<teaql_core::TraceNode>)
+        -> Result<SmartList<CompactRow>, RuntimeError> {
         self.0.fetch_facet_smart_list(entity, query, relation_aggregates, trace_context).await
     }
 }
 
-pub(crate) async fn execute_facets<C: TeaqlRuntime + ?Sized>(
+pub(crate) async fn execute_facets<C>(
     context: &C,
     outer_query: &SelectQuery,
     options: &QueryOptions,
-) -> Result<BTreeMap<String, SmartList<CompactRow>>, RuntimeError> {
-    teaql_runtime::generated_support::execute_facets(&FacetRuntime(context), outer_query, options).await
+) -> Result<BTreeMap<String, SmartList<CompactRow>>, RuntimeError>
+where
+    C: TeaqlRuntime + ?Sized,
+{
+    teaql_runtime::execute_facets(&GeneratedFacetAdapter(context), outer_query, options).await
+}
+
+pub(crate) fn restrict_facet_to_outer_query<C>(
+    context: &C,
+    mut selection: QuerySelection,
+    outer_query: &SelectQuery,
+    relation_name: &str,
+) -> Result<QuerySelection, RuntimeError>
+where
+    C: TeaqlRuntime + ?Sized,
+{
+    teaql_runtime::restrict_facet_to_outer_query(&GeneratedFacetAdapter(context), selection, outer_query, relation_name)
 }

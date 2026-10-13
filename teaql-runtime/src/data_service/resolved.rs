@@ -383,6 +383,14 @@ where
         mut query: SelectQuery,
     ) -> Result<SelectQuery, RuntimeError> {
         let intent = self.request_intent_for(&query)?;
+        let scope = query
+            .request_scope()
+            .cloned()
+            .or_else(|| self.request_scope.clone())
+            .unwrap_or_else(|| {
+                teaql_core::QueryRequestScope::root(query.entity.clone(), intent.clone())
+            });
+        query = query.with_request_scope(scope);
         query.comment = Some(intent.comment().to_owned());
         query.purpose = Some(intent.purpose().to_owned());
         let mut full_trace = self.trace_context.clone();
@@ -744,6 +752,7 @@ where
             slice.offset = 0;
         }
         normalized.comment = None;
+        normalized.clear_request_scope();
         normalized.trace_chain.clear();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         namespace.hash(&mut hasher);
@@ -765,6 +774,7 @@ where
         normalized.child_enhancements.clear();
         normalized.object_group_bys.clear();
         normalized.comment = None;
+        normalized.clear_request_scope();
         normalized.trace_chain.clear();
         normalized.id_set_pagination = None;
         normalized.continuous_page_fetch = None;
@@ -896,6 +906,23 @@ where
                     offset: 0,
                     limit: Some(options.max_ids.saturating_add(1)),
                 });
+                let intent = self
+                    .request_intent_for(&id_query)
+                    .map_err(DataServiceError::Runtime)?;
+                let parent = query
+                    .request_scope()
+                    .cloned()
+                    .or_else(|| self.request_scope.clone())
+                    .unwrap_or_else(|| {
+                        teaql_core::QueryRequestScope::root(query.entity.clone(), intent)
+                    });
+                let helper = parent
+                    .derive_helper(
+                        &query.entity,
+                        format!("collect {} IDs for pagination", query.entity),
+                    )
+                    .map_err(|error| DataServiceError::Runtime(error.into()))?;
+                id_query = id_query.with_request_scope(helper);
                 let rows = self.fetch_prepared_query_owned(id_query).await?;
                 let mut ids = Vec::with_capacity(rows.len());
                 for row in rows {
@@ -973,10 +1000,18 @@ where
             .collect::<Vec<_>>();
         query.slice = Some(teaql_core::Slice {
             offset: 0,
-            limit: Some(page_size as u64),
+            limit: Some(if page_ids.is_empty() {
+                0
+            } else {
+                page_size as u64
+            }),
         });
         query.id_set_pagination = None;
-        query = query.and_filter(Expr::in_list("id", page_ids));
+        query = if page_ids.is_empty() {
+            query.and_filter(Expr::value(false))
+        } else {
+            query.and_filter(Expr::in_list("id", page_ids))
+        };
         Ok((query, Some(retained.ids.len() as u64)))
     }
 
@@ -1022,7 +1057,7 @@ where
         // The observer owns this scoped service; no reference to a local scope
         // or mutable Context state survives into delayed cursor consumption.
         let scoped = self
-            .query_scoped_service(diagnostic_source)
+            .query_scoped_service_with_source(query, diagnostic_source, &[])
             .map_err(DataServiceError::Runtime)?;
         let query = scoped
             .prepare_select_query(query)
@@ -1376,9 +1411,11 @@ where
                 );
                 let provider_result = provider_scope
                     .run(
-                        self.data_service
-                            .executor
-                            .query_observed(request, self.query_diagnostic_observer()),
+                        self.data_service.metadata.context.observe_sql_statements(
+                            self.data_service
+                                .executor
+                                .query_observed(request, self.query_diagnostic_observer()),
+                        ),
                     )
                     .await;
                 let res = match provider_result {
@@ -1635,6 +1672,13 @@ where
                     .await;
             }
             let (mut query, id_set_total_count) = self.prepare_id_set_page(query).await?;
+            if id_set_total_count.is_some()
+                && query.slice.is_some_and(|slice| slice.limit == Some(0))
+            {
+                // The retained set already proves this page empty and owns its
+                // exact count. Do not compile an empty IN or execute a row query.
+                return Ok(with_total_count(SmartList::default(), id_set_total_count));
+            }
             if relation_aggregates.is_empty()
                 && query.relation_aggregates.is_empty()
                 && query.continuous_page_fetch.is_none()
@@ -1766,15 +1810,21 @@ where
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         let scoped = query
             .diagnostic_source()
-            .map(|source| self.query_scoped_service(source))
+            .map(|source| self.query_scoped_service_with_source(query.as_query(), source, &[]))
             .transpose()
             .map_err(DataServiceError::Runtime)?;
         // Keep one await site: duplicating the large hydration future in two
         // branches inflates native callers' stack frames even for ordinary Q.
-        scoped
-            .as_ref()
-            .unwrap_or(self)
-            .fetch_all_internal(query.as_query())
+        self.data_service
+            .metadata
+            .context
+            .observe_query_request(self.entity(), async {
+                scoped
+                    .as_ref()
+                    .unwrap_or(self)
+                    .fetch_all_internal(query.as_query())
+                    .await
+            })
             .await
     }
 
@@ -1785,13 +1835,19 @@ where
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         let scoped = query
             .diagnostic_source()
-            .map(|source| self.query_scoped_service(source))
+            .map(|source| self.query_scoped_service_with_source(query.as_query(), source, &[]))
             .transpose()
             .map_err(DataServiceError::Runtime)?;
-        scoped
-            .as_ref()
-            .unwrap_or(self)
-            .fetch_all_owned_internal(query.into_query())
+        self.data_service
+            .metadata
+            .context
+            .observe_query_request(self.entity(), async {
+                scoped
+                    .as_ref()
+                    .unwrap_or(self)
+                    .fetch_all_owned_internal(query.into_query())
+                    .await
+            })
             .await
     }
 
@@ -1812,11 +1868,17 @@ where
     where
         E: teaql_data_service::StreamQueryExecutor,
     {
-        self.fetch_stream_with_source_internal(
-            query.as_query(),
-            query.diagnostic_source().unwrap_or(query.as_query()),
-        )
-        .await
+        self.data_service
+            .metadata
+            .context
+            .observe_query_request(
+                self.entity(),
+                self.fetch_stream_with_source_internal(
+                    query.as_query(),
+                    query.diagnostic_source().unwrap_or(query.as_query()),
+                ),
+            )
+            .await
     }
 
     #[doc(hidden)]
@@ -1826,13 +1888,19 @@ where
     ) -> Result<SmartList<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         let scoped = query
             .diagnostic_source()
-            .map(|source| self.query_scoped_service(source))
+            .map(|source| self.query_scoped_service_with_source(query.as_query(), source, &[]))
             .transpose()
             .map_err(DataServiceError::Runtime)?;
-        scoped
-            .as_ref()
-            .unwrap_or(self)
-            .fetch_smart_list_internal(query.as_query())
+        self.data_service
+            .metadata
+            .context
+            .observe_query_request(self.entity(), async {
+                scoped
+                    .as_ref()
+                    .unwrap_or(self)
+                    .fetch_smart_list_internal(query.as_query())
+                    .await
+            })
             .await
     }
 
@@ -1843,16 +1911,23 @@ where
         relation_aggregates: &[RelationAggregate],
     ) -> Result<SmartList<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         let scoped = self
-            .query_scoped_service_with_aggregates(
+            .query_scoped_service_with_source(
+                query.as_query(),
                 query.diagnostic_source().unwrap_or(query.as_query()),
                 relation_aggregates,
             )
             .map_err(DataServiceError::Runtime)?;
-        scoped
-            .fetch_smart_list_with_relation_aggregates_internal(
-                query.as_query(),
-                relation_aggregates,
-            )
+        self.data_service
+            .metadata
+            .context
+            .observe_query_request(self.entity(), async {
+                scoped
+                    .fetch_smart_list_with_relation_aggregates_internal(
+                        query.as_query(),
+                        relation_aggregates,
+                    )
+                    .await
+            })
             .await
     }
 
@@ -1866,13 +1941,19 @@ where
     {
         let scoped = query
             .diagnostic_source()
-            .map(|source| self.query_scoped_service(source))
+            .map(|source| self.query_scoped_service_with_source(query.as_query(), source, &[]))
             .transpose()
             .map_err(DataServiceError::Runtime)?;
-        scoped
-            .as_ref()
-            .unwrap_or(self)
-            .fetch_entities_internal(query.as_query())
+        self.data_service
+            .metadata
+            .context
+            .observe_query_request(self.entity(), async {
+                scoped
+                    .as_ref()
+                    .unwrap_or(self)
+                    .fetch_entities_internal(query.as_query())
+                    .await
+            })
             .await
     }
 
@@ -1886,13 +1967,19 @@ where
     {
         let scoped = query
             .diagnostic_source()
-            .map(|source| self.query_scoped_service(source))
+            .map(|source| self.query_scoped_service_with_source(query.as_query(), source, &[]))
             .transpose()
             .map_err(DataServiceError::Runtime)?;
-        scoped
-            .as_ref()
-            .unwrap_or(self)
-            .fetch_enhanced_entities_internal(query.as_query())
+        self.data_service
+            .metadata
+            .context
+            .observe_query_request(self.entity(), async {
+                scoped
+                    .as_ref()
+                    .unwrap_or(self)
+                    .fetch_enhanced_entities_internal(query.as_query())
+                    .await
+            })
             .await
     }
 
@@ -1906,16 +1993,23 @@ where
         T: Entity,
     {
         let scoped = self
-            .query_scoped_service_with_aggregates(
+            .query_scoped_service_with_source(
+                query.as_query(),
                 query.diagnostic_source().unwrap_or(query.as_query()),
                 relation_aggregates,
             )
             .map_err(DataServiceError::Runtime)?;
-        scoped
-            .fetch_enhanced_entities_with_relation_aggregates_internal(
-                query.as_query(),
-                relation_aggregates,
-            )
+        self.data_service
+            .metadata
+            .context
+            .observe_query_request(self.entity(), async {
+                scoped
+                    .fetch_enhanced_entities_with_relation_aggregates_internal(
+                        query.as_query(),
+                        relation_aggregates,
+                    )
+                    .await
+            })
             .await
     }
 
@@ -1929,16 +2023,23 @@ where
         T: Entity,
     {
         let scoped = self
-            .query_scoped_service_with_aggregates(
+            .query_scoped_service_with_source(
+                query.as_query(),
                 query.diagnostic_source().unwrap_or(query.as_query()),
                 relation_aggregates,
             )
             .map_err(DataServiceError::Runtime)?;
-        scoped
-            .fetch_enhanced_entities_with_relation_aggregates_owned_internal(
-                query.into_query(),
-                relation_aggregates,
-            )
+        self.data_service
+            .metadata
+            .context
+            .observe_query_request(self.entity(), async {
+                scoped
+                    .fetch_enhanced_entities_with_relation_aggregates_owned_internal(
+                        query.into_query(),
+                        relation_aggregates,
+                    )
+                    .await
+            })
             .await
     }
 
@@ -2194,10 +2295,30 @@ where
             },
             trace_context: Vec::new(),
             request_intent: self.request_intent.clone(),
+            request_scope: self.request_scope.clone(),
             // Snapshot ancestry: descendants may add their own bindings without
             // changing their parent or an unrelated sibling relation.
             query_log_intent: self.query_intent_snapshot().map(std::sync::Mutex::new),
         }
+    }
+
+    // Classification may inspect a removed parent AST, but that AST must not
+    // replace the actual execution request's owner (count, facet or stream).
+    fn query_scoped_service_with_source(
+        &self,
+        query: &SelectQuery,
+        source: &SelectQuery,
+        aggregates: &[RelationAggregate],
+    ) -> Result<EntityDataService<'a, E>, RuntimeError> {
+        let intent = self.request_intent_for(query)?;
+        let scope = query
+            .request_scope()
+            .cloned()
+            .or_else(|| self.request_scope.clone())
+            .unwrap_or_else(|| teaql_core::QueryRequestScope::root(query.entity.clone(), intent));
+        Ok(self
+            .query_scoped_service_with_aggregates(source, aggregates)?
+            .with_request_scope(scope))
     }
 
     fn query_scoped_service_with_aggregates(
@@ -2225,6 +2346,16 @@ where
         let mut scoped = self.scoped_data_service_internal(self.entity.clone());
         scoped.trace_context = self.trace_context.clone();
         scoped.request_intent = Some(self.request_intent_for(query)?);
+        scoped.request_scope = query
+            .request_scope()
+            .cloned()
+            .or_else(|| self.request_scope.clone())
+            .or_else(|| {
+                Some(teaql_core::QueryRequestScope::root(
+                    query.entity.clone(),
+                    scoped.request_intent.clone().unwrap(),
+                ))
+            });
         let mut redactions = self.query_intent_snapshot().unwrap_or_default();
         if self.data_service.metadata.capture_execution_metadata() {
             // A root comment can quote a future relation's sensitive binding.

@@ -1,8 +1,9 @@
 {
   "kind": "raw generated minimal Rust load-state fixture",
-  "producerCommit": "45e1572c4956ca963410d8ea436ead3c8857087a",
+  "producerCommit": "9ca551def8cb06c616eadcd34d7c1c89440aa5c2",
   "modelSha256": "0664ef5b32b1126100676782ec5c6c2d56e9e491920bfdfacadb4790a66b9ca9",
   "runtimeVersion": "5.0.6",
+  "testedRuntimeVersion": "5.0.7",
   "wide": false,
   "inheritance": false,
   "handEdited": false,
@@ -49,7 +50,7 @@
     },
     {
       "path": "lib/src/platform/request.rs",
-      "sha256": "3c282c552d5d29bd4b0dd91d060baaae83ab9d7d4fffb14c58904da44f733a34"
+      "sha256": "b72f76a9e9a34457b8aa03ff449d36945395c4cff551de6ddc59c13be79f4c59"
     },
     {
       "path": "lib/src/q.rs",
@@ -57,11 +58,11 @@
     },
     {
       "path": "lib/src/request_support.rs",
-      "sha256": "8cd648a37b443a0479191e3c2c6c02d0f6b6f014329ad38edc3bad0535588298"
+      "sha256": "81c286cd669c95062b5ccfabd318f28030ac10c4b6b3d095570213ec923588db"
     },
     {
       "path": "lib/src/runtime.rs",
-      "sha256": "a6ce52e20f1044c2da50b3ceefc0b5616ad46508df1df7a917b8a6eee8d07552"
+      "sha256": "b6dffbc4895d6206b9e84222ca913f88f114279561440282f6b1222ea3666daf"
     },
     {
       "path": "lib/src/sample_data.rs",
@@ -77,7 +78,7 @@
     },
     {
       "path": "lib/src/school/entity.rs",
-      "sha256": "5b0ebc34c3aff86c2be9a3ec2e4eb67776e0a794c57983ea3c59a4963a78f063"
+      "sha256": "b2a7f392db3659bfa1e3bbda6d0dd551bb6eaa1ae42ccb7a03df9d556a9f9551"
     },
     {
       "path": "lib/src/school/expression.rs",
@@ -89,7 +90,7 @@
     },
     {
       "path": "lib/src/school/request.rs",
-      "sha256": "40c9a528df1e86a82bebfb73945b4cce9d09d879ec46049205be088ea7aff789"
+      "sha256": "ed5e4d38d832ff6b6de658bf28ee98adb495d8459f5de8c15c88be0b2bf34939"
     },
     {
       "path": "lib/src/school_capacity_summary/behavior.rs",
@@ -101,7 +102,7 @@
     },
     {
       "path": "lib/src/school_capacity_summary/entity.rs",
-      "sha256": "beb43bc7eea681599f868d33b46e496666e5ca8d7746fe000040b61876e047b5"
+      "sha256": "0c0338518424547e0f991470fc96d1c602934f766947d6acf79f6d55ad5a190d"
     },
     {
       "path": "lib/src/school_capacity_summary/expression.rs",
@@ -113,7 +114,7 @@
     },
     {
       "path": "lib/src/school_capacity_summary/request.rs",
-      "sha256": "22cf01f999b271412931018791e787a2ce5d30e6b6eb7cb3c4a27c60122ab951"
+      "sha256": "59750c407fd40557af2eea98a1d0c8bb1d06a2f2a87af1ea352e46bed10cfc1a"
     },
     {
       "path": "lib/src/school_type/behavior.rs",
@@ -125,7 +126,7 @@
     },
     {
       "path": "lib/src/school_type/entity.rs",
-      "sha256": "20c25a22d2e0e3c6893b32ad78840762a64a7f35ed773b2b85d52ad1c343da94"
+      "sha256": "d0ca5824074381424a317166704316263490d2463e5af68eaa4b02e326743896"
     },
     {
       "path": "lib/src/school_type/expression.rs",
@@ -137,7 +138,7 @@
     },
     {
       "path": "lib/src/school_type/request.rs",
-      "sha256": "3740db95ab6b41626e015b6a95e3aeed82652ac70c9d6fad8e6e322dc92f9e8e"
+      "sha256": "d48a148dd2f53f8ab224edad55e4dce8bf7c42d2cd66fe963ae1cdc19fd39480"
     },
     {
       "path": "model-under-test.xml",

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 example_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$example_dir/../../scripts/rust-test-receipt.sh"
 evidence_dir="$(mktemp -d /tmp/teaql-rust-facet-example-XXXXXX)"
 export TEAQL_FACET_DATABASE="$evidence_dir/school.db"
 unset TEAQL_ALLOW_SENSITIVE_PLAINTEXT_LOGS
@@ -24,7 +25,7 @@ for round in 1 2; do
       future_facet_binding_masks_the_first_root_statement \
       loaded_typed_relation_retains_facets_even_when_empty \
       loaded_relation_future_binding_masks_root_sql; do
-    rg -q "test $name .*ok" "$evidence_dir/run-$round.log"
+    native_case_passed "$name" "$evidence_dir/run-$round.log"
   done
   if ! cargo test --offline --locked --manifest-path "$example_dir/Cargo.toml" \
       --test counted_facets -- --show-output --test-threads=1 > "$evidence_dir/count-$round.log" 2>&1; then
@@ -36,7 +37,7 @@ for round in 1 2; do
       nested_count_retains_original_root_and_empty_parent_metadata \
       loaded_relation_count_retains_ancestor_and_empty_collection \
       future_count_binding_masks_first_statement_but_not_the_next_request; do
-    rg -q "test $name .*ok" "$evidence_dir/count-$round.log"
+    native_case_passed "$name" "$evidence_dir/count-$round.log"
   done
   printf 'PASS generated Rust Facet round %s: same database, no cleanup\n' "$round"
 done

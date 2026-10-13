@@ -459,6 +459,12 @@ impl InMemoryEntityGraphDecoderRegistry {
 }
 
 pub trait MetadataStore: Send + Sync {
+    #[doc(hidden)]
+    fn sql_statement_telemetry(
+        &self,
+    ) -> Option<Arc<dyn teaql_data_service::statement_telemetry::SqlStatementTelemetry>> {
+        None
+    }
     fn entity(&self, name: &str) -> Option<&EntityDescriptor>;
     fn all_entities(&self) -> Vec<&EntityDescriptor>;
     fn record_metadata_log(&self, _metadata: &teaql_data_service::ExecutionMetadata) {}

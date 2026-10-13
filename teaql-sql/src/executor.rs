@@ -344,6 +344,7 @@ fn expr_slice_plan_matches(left: &[Expr], right: &[Expr]) -> bool {
 
 fn select_plan_key(query: &SelectQuery) -> SelectQuery {
     let mut key = query.clone();
+    key.clear_request_scope();
     key.comment = None;
     key.trace_chain.clear();
     if key.search_with_text.is_some() {
@@ -1589,7 +1590,9 @@ async fn execute_compiled_query<D: SqlDialect + Sync, T: SqlTransport>(
         .capture_execution_metadata
         .then(|| query_diagnostic_metadata(dialect, &compiled, &request));
     let mut diagnostic = crate::diagnostic_execution::StatementDiagnostic::new(metadata, observer);
-    let result = transport.fetch_all_compact_sql(&compiled).await;
+    let result = diagnostic
+        .run(transport.fetch_all_compact_sql(&compiled))
+        .await;
     let rows = result.map_err(|error| {
         diagnostic.fail();
         SqlExecutorError::Transport(error)
@@ -1607,9 +1610,11 @@ fn query_diagnostic_metadata<D: SqlDialect>(
     request: &QueryRequest,
 ) -> ExecutionMetadata {
     let now = SystemTime::now();
+    let mut log_context = compiled.log_context.clone();
+    log_context.request_trace_chain = request.business_trace_chain();
     ExecutionMetadata {
         statements: Vec::new(),
-        sql_log: compiled.log_context.clone(),
+        sql_log: log_context,
         backend: format!("{:?}", dialect.kind()).to_ascii_lowercase(),
         operation: DataServiceOperation::Query,
         started_at: now,

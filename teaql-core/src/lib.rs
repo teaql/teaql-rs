@@ -15,6 +15,7 @@ mod naming;
 mod query;
 pub mod request;
 mod request_intent;
+mod request_tree;
 mod safe_expression;
 pub mod serde_utils;
 pub mod time;
@@ -47,6 +48,7 @@ pub use query::{
     record_to_json_value,
 };
 pub use request_intent::{MutationIntent, QueryIntent, RequestIntentError, RequestKind};
+pub use request_tree::{QueryOperation, QueryOperationKind, QueryRequestScope};
 pub use safe_expression::{SafeExpression, TeaqlEmpty};
 #[doc(hidden)]
 pub use serde_json;

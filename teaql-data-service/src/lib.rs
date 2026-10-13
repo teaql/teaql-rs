@@ -3,9 +3,11 @@
 #[doc(hidden)]
 pub mod dynamic_fields;
 mod sql_log;
+#[doc(hidden)]
+pub mod statement_telemetry;
 pub use sql_log::{
     SqlExecutionOutcome, SqlIntentRedactions, SqlLogContext, SqlParameterLogPolicy,
-    SqlProjectionState, is_credential_log_name,
+    SqlProjectionState, SqlTelemetryState, is_credential_log_name,
 };
 
 use std::time::SystemTime;
@@ -44,8 +46,27 @@ pub struct QueryRequest {
     pub capture_execution_metadata: bool,
 }
 
+/// A body captured by another invocation cannot replace this request's body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryScopeOwnerMismatch;
+
+impl std::fmt::Display for QueryScopeOwnerMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("QUERY_SCOPE_OWNER_MISMATCH: replacement belongs to another query invocation")
+    }
+}
+impl std::error::Error for QueryScopeOwnerMismatch {}
+
 impl QueryRequest {
     pub fn new(query: SelectQuery, intent: QueryIntent) -> Self {
+        let scope = query
+            .request_scope()
+            .filter(|scope| scope.intent() == &intent)
+            .cloned()
+            .unwrap_or_else(|| {
+                teaql_core::QueryRequestScope::root(query.entity.clone(), intent.clone())
+            });
+        let query = query.with_request_scope(scope);
         Self {
             trace_chain: query.trace_chain.clone(),
             query,
@@ -65,6 +86,80 @@ impl QueryRequest {
     }
     pub fn purpose(&self) -> &str {
         self.intent.purpose()
+    }
+
+    pub fn request_scope(&self) -> teaql_core::QueryRequestScope {
+        self.query.request_scope().cloned().unwrap_or_else(|| {
+            teaql_core::QueryRequestScope::root(self.query.entity.clone(), self.intent.clone())
+        })
+    }
+    pub fn business_trace_chain(&self) -> Vec<TraceNode> {
+        self.request_scope().trace_chain()
+    }
+
+    pub fn with_query(&self, query: SelectQuery) -> Result<Self, QueryScopeOwnerMismatch> {
+        if query
+            .request_scope()
+            .is_some_and(|previous| previous.root_request() != self.request_scope().root_request())
+        {
+            return Err(QueryScopeOwnerMismatch);
+        }
+        Ok(self.clone_with_body(query))
+    }
+
+    // Explicit child derivation may rebind a reusable template to a new parent.
+    // Only the public replacement path requires the same invocation owner.
+    fn clone_with_body(&self, query: SelectQuery) -> Self {
+        let mut replaced = Self::new(
+            query.with_request_scope(self.request_scope()),
+            self.intent.clone(),
+        );
+        replaced.trace_chain = self.trace_chain.clone();
+        replaced.capture_debug_query = self.capture_debug_query;
+        replaced.capture_execution_metadata = self.capture_execution_metadata;
+        replaced
+    }
+
+    pub fn derive_operation(
+        &self,
+        query: SelectQuery,
+        operation: teaql_core::QueryOperation,
+    ) -> Self {
+        let scope = self
+            .request_scope()
+            .derive_operation(query.entity.clone(), operation);
+        self.clone_with_body(query).rebind_scope(scope)
+    }
+
+    fn rebind_scope(mut self, scope: teaql_core::QueryRequestScope) -> Self {
+        self.query = self.query.with_request_scope(scope);
+        self
+    }
+
+    pub fn derive(
+        &self,
+        query: SelectQuery,
+        relation: &str,
+        operation: Option<teaql_core::QueryOperation>,
+    ) -> Result<Self, RequestIntentError> {
+        let parent = self.request_scope().derive_operation(
+            self.query.entity.clone(),
+            operation.unwrap_or_else(|| {
+                teaql_core::QueryOperation::framework(
+                    teaql_core::QueryOperationKind::RelationSelect,
+                )
+                .with_relation(relation)
+            }),
+        );
+        let scope = parent.derive_child(query.entity.clone(), query.comment.as_deref())?;
+        let mut child = self.clone_with_body(query).rebind_scope(scope);
+        child.trace_chain.push(TraceNode::typed(
+            teaql_core::TraceKind::Relation,
+            relation,
+            None,
+            format!("{}.{}", self.query.entity, relation),
+        ));
+        Ok(child)
     }
 
     /// Materialize owned intent without trusting diagnostic frames for its value.

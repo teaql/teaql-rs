@@ -59,6 +59,7 @@ impl UserContext {
             data_service: self.data_service_internal::<E>()?,
             trace_context: Vec::new(),
             request_intent: None,
+            request_scope: None,
             query_log_intent: None,
         })
     }
@@ -122,7 +123,9 @@ where
                     .attribute("teaql.provider.kind", provider_kind)
                     .attribute("teaql.provider.operation", provider_operation),
                 );
-                let result = provider_scope.run(work).await;
+                let result = provider_scope
+                    .run(self.metadata.context.observe_sql_statements(work))
+                    .await;
                 match &result {
                     Ok(_) => provider_scope.success(BTreeMap::new()),
                     Err(_) => provider_scope.failure("data_service_error"),

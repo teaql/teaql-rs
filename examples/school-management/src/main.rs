@@ -264,9 +264,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let jumped_page = Q::schools()
         .order_by_id_desc()
         .optimize_pagination_with_id_set_config("school-example", 60, 100)
+        .offset(2, 2).count()
         .comment("Jump directly to the second retained ID-set page")
         .purpose("Verify generated Rust ID-set pagination on SQLite")
-        .execute_for_page(&context, 2, 2)
+        .execute_for_list(&context)
         .await?;
     assert_eq!(jumped_page.total_count, Some(5));
     assert_eq!(
@@ -281,9 +282,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let first_page = Q::schools()
         .order_by_id_desc()
         .optimize_pagination_with_id_set_config("school-example", 60, 100)
+        .offset(0, 2).count()
         .comment("Read the first page from the retained ID set")
         .purpose("Verify generated Rust ID-set pagination on SQLite")
-        .execute_for_page(&context, 0, 2)
+        .execute_for_list(&context)
         .await?;
     assert_eq!(first_page.total_count, Some(5));
     assert_eq!(
@@ -316,6 +318,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?
         .expect("North School must exist before the isolation gate");
     let committed_id = committed.id();
+    assert!(committed.platform().is_some(), "Platform must be loaded before scalar save");
+    assert!(committed.school_type().is_some(), "SchoolType must be loaded before scalar save");
     let committed_version = committed.version();
     let abandoned_id = abandoned.id();
     let abandoned_version = abandoned.version();

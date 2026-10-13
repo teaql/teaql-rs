@@ -25,6 +25,166 @@ impl SchemaProvider for Schema {
 
 type Executor = SqlDataServiceExecutor<SqliteDialect, SqliteMutationExecutor, Schema>;
 
+#[derive(Debug, teaql_macros::TeaqlEntity)]
+#[teaql(entity = "BatchProbe")]
+struct PaginationProbe {
+    #[teaql(id)]
+    id: u64,
+    #[teaql(version)]
+    version: i64,
+    name: String,
+}
+
+#[test]
+fn compound_aggregates_emit_one_physical_statement() {
+    futures_executor::block_on(async {
+        use teaql_runtime::PurposedSelectQuery;
+        for logging in [false, true] {
+            let mut context = batch_context().await;
+            if !logging {
+                context.disable_sql_log();
+            }
+            context.clear_sql_logs();
+            let query = PurposedSelectQuery::new(
+                SelectQuery::new("BatchProbe")
+                    .count("probeCount")
+                    .sum("id", "idTotal")
+                    .comment("calculate probe totals"),
+                "render totals",
+            );
+            let rows = context
+                .entity_data_service::<Executor>("BatchProbe")
+                .unwrap()
+                .fetch_all(&query)
+                .await
+                .unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].get("probeCount").and_then(Value::try_i64), Some(2));
+            assert_eq!(rows[0].get("idTotal").and_then(Value::try_i64), Some(19));
+            let logs = context.sql_logs();
+            assert_eq!(logs.len(), usize::from(logging));
+            if logging {
+                assert!(logs[0].sql.to_uppercase().contains("COUNT("));
+                assert!(logs[0].sql.to_uppercase().contains("SUM("));
+                assert_eq!(
+                    logs[0]
+                        .trace_chain
+                        .iter()
+                        .map(|node| node.comment.as_str())
+                        .collect::<Vec<_>>(),
+                    ["render totals", "calculate probe totals"]
+                );
+            }
+            println!("RTC_COM_07_AGGREGATE_PASS logging={logging} expressions=2 statements=1");
+        }
+    });
+}
+
+#[test]
+fn id_set_collection_owns_a_helper_comment_and_cache_hits_do_not_invent_sql() {
+    futures_executor::block_on(async {
+        use teaql_runtime::{InMemoryIdSetStore, PurposedSelectQuery};
+        for logging in [true, false] {
+            let mut context = batch_context().await;
+            context.set_id_set_store(Arc::new(InMemoryIdSetStore::default()));
+            if !logging {
+                context.disable_sql_log();
+            }
+            let query = PurposedSelectQuery::new(
+                SelectQuery::new("BatchProbe")
+                    .projects(vec!["id", "version", "name"])
+                    .order_desc("id")
+                    .page(1, 1)
+                    .optimize_pagination_with_id_set_config("request-tree-probes", 60, 10)
+                    .comment("load batch probes"),
+                "render probe page",
+            );
+            let original = query.clone();
+            let repository = context
+                .entity_data_service::<Executor>("BatchProbe")
+                .unwrap();
+            context.clear_sql_logs();
+            let rows = repository
+                .fetch_enhanced_entities::<PaginationProbe>(&query)
+                .await
+                .unwrap();
+            assert_eq!(
+                rows.data.iter().map(|row| row.id).collect::<Vec<_>>(),
+                vec![9]
+            );
+            assert_eq!(rows.total_count, Some(2));
+            assert_eq!(context.id_set_plan().as_deref(), Some("ID_SET_BUILD"));
+            let logs = context.sql_logs();
+            assert_eq!(logs.len(), if logging { 2 } else { 0 });
+            if logging {
+                assert_eq!(
+                    logs[0]
+                        .trace_chain
+                        .iter()
+                        .map(|node| node.comment.as_str())
+                        .collect::<Vec<_>>(),
+                    vec![
+                        "render probe page",
+                        "load batch probes",
+                        "collect BatchProbe IDs for pagination"
+                    ]
+                );
+                assert_eq!(
+                    logs[1]
+                        .trace_chain
+                        .iter()
+                        .map(|node| node.comment.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["render probe page", "load batch probes"]
+                );
+                assert!(logs.iter().all(|entry| {
+                    !entry
+                        .trace_path
+                        .iter()
+                        .any(|node| node.kind == TraceKind::Relation)
+                }));
+            }
+            context.clear_sql_logs();
+            let next =
+                PurposedSelectQuery::new(query.as_query().clone().page(0, 1), "render probe page");
+            let rows = repository
+                .fetch_enhanced_entities::<PaginationProbe>(&next)
+                .await
+                .unwrap();
+            assert_eq!(
+                rows.data.iter().map(|row| row.id).collect::<Vec<_>>(),
+                vec![10]
+            );
+            assert_eq!(rows.total_count, Some(2));
+            assert_eq!(context.id_set_plan().as_deref(), Some("ID_SET_HIT"));
+            assert_eq!(
+                context.sql_logs().len(),
+                usize::from(logging),
+                "cache hit must not manufacture ID collection or count SQL"
+            );
+            if logging {
+                assert_eq!(
+                    context.sql_logs()[0]
+                        .trace_chain
+                        .iter()
+                        .map(|node| node.comment.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["render probe page", "load batch probes"]
+                );
+            }
+            assert_eq!(
+                query.as_query(),
+                original.as_query(),
+                "helper binding mutated caller input"
+            );
+            if logging {
+                assert!(!context.sql_logs()[0].sql.to_uppercase().contains("COUNT("));
+            }
+            println!("RTC_COM_07_CACHE_PASS logging={logging} accuracy=EXACT hit_statements=1");
+        }
+    });
+}
+
 #[test]
 fn derived_count_retains_removed_relation_privacy_without_executing_it() {
     futures_executor::block_on(async {
@@ -105,6 +265,73 @@ fn derived_count_retains_removed_relation_privacy_without_executing_it() {
                 .unwrap()
                 .contains(secret)
         );
+    });
+}
+
+#[test]
+fn sqlite_stream_retains_native_count_scope_without_a_fake_record_for_each_chunk() {
+    futures_executor::block_on(async {
+        use futures_util::StreamExt;
+        use teaql_core::{QueryOperation, QueryOperationKind};
+        use teaql_runtime::PurposedSelectQuery;
+        for logging in [true, false] {
+            let mut context = batch_context().await;
+            if !logging {
+                context.disable_sql_log();
+            }
+            let root = PurposedSelectQuery::new(
+                SelectQuery::new("BatchProbe")
+                    .stream(1)
+                    .comment("load probe totals"),
+                "render streamed totals",
+            );
+            let counted = root.for_exact_count_with_operation(
+                "totalProbes",
+                QueryOperation::new(QueryOperationKind::NamedCount, "count_as")
+                    .with_alias("totalProbes"),
+            );
+            let repository = context
+                .entity_data_service::<Executor>("BatchProbe")
+                .unwrap();
+            context.clear_sql_logs();
+            let mut stream = repository.fetch_stream(&counted).await.unwrap();
+            let mut values = Vec::new();
+            while let Some(chunk) = stream.next().await {
+                values.extend(chunk.unwrap().rows);
+            }
+            drop(stream);
+            assert_eq!(values.len(), 1);
+            assert_eq!(
+                values[0].get("totalProbes").and_then(Value::try_u64),
+                Some(2)
+            );
+            let entries = context.sql_logs();
+            assert_eq!(entries.len(), usize::from(logging));
+            if logging {
+                assert_eq!(
+                    entries[0]
+                        .trace_chain
+                        .iter()
+                        .map(|node| node.comment.as_str())
+                        .collect::<Vec<_>>(),
+                    vec![
+                        "render streamed totals",
+                        "load probe totals",
+                        "count_as(\"totalProbes\")"
+                    ]
+                );
+                assert!(
+                    !entries[0]
+                        .trace_path
+                        .iter()
+                        .any(|node| node.kind == TraceKind::Relation)
+                );
+                assert_eq!(
+                    entries[0].log_context.execution_outcome,
+                    Some(teaql_data_service::SqlExecutionOutcome::Success)
+                );
+            }
+        }
     });
 }
 

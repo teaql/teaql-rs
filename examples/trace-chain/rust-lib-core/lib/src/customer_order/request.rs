@@ -106,11 +106,23 @@ impl<R> CustomerOrderRequest<R> {
     {
         let query_options = self.query_options.clone();
         let relation_aggregates = runtime_relation_aggregates(&query_options);
-        let query = authorize_query(apply_runtime_metadata(
+        let mut query = authorize_query(apply_runtime_metadata(
             self.query,
             &query_options,
             &self.child_enhancements,
-        ))?.with_facet_diagnostics(&query_options);
+        ))?;
+        let requested_count = query.take_requested_list_count(&query_options);
+        let use_id_set = query.as_query().id_set_pagination.is_some();
+        context.user_context().observe_generated_list("CustomerOrder", async {
+        let mut total = None;
+        if !use_id_set {
+            if let Some((alias, count_query)) = &requested_count {
+                let count_rows = context.fetch_compact_rows("CustomerOrder", count_query).await?;
+                total = Some(count_rows.first().and_then(|row| row.get(alias))
+                    .and_then(teaql_core::Value::try_u64)
+                    .ok_or_else(|| RuntimeError::Graph("requested list count is missing or not numeric".into()))?);
+            }
+        }
         let (mut rows, facets) = if query_options.facets.is_empty() {
             let rows = context.fetch_entity_smart_list::<R>(
                 "CustomerOrder",
@@ -128,8 +140,20 @@ impl<R> CustomerOrderRequest<R> {
                 .await?;
             (rows, facets)
         };
+        if let Some((alias, count_query)) = requested_count {
+            if total.is_none() { total = rows.total_count; }
+            if total.is_none() {
+                let count_rows = context.fetch_compact_rows("CustomerOrder", &count_query).await?;
+                total = Some(count_rows.first().and_then(|row| row.get(&alias))
+                    .and_then(teaql_core::Value::try_u64)
+                    .ok_or_else(|| RuntimeError::Graph("requested list count is missing or not numeric".into()))?);
+            }
+            rows.total_count = total;
+            rows.aggregations.insert(alias, teaql_core::Value::U64(total.expect("requested count resolved")));
+        }
         attach_facets(&mut rows, facets);
         Ok(rows)
+        }).await
     }
 
     pub(crate) async fn _execute_for_rows<'a, C>(
@@ -143,7 +167,7 @@ impl<R> CustomerOrderRequest<R> {
             self.query,
             &self.query_options,
             &self.child_enhancements,
-        ))?.with_facet_diagnostics(&self.query_options);
+        ))?;
         context.fetch_compact_smart_list("CustomerOrder", &query).await
     }
 
@@ -159,8 +183,10 @@ impl<R> CustomerOrderRequest<R> {
             self.query,
             &self.query_options,
             &self.child_enhancements,
-        ))?.with_facet_diagnostics(&self.query_options);
-        Ok(context.fetch_entity_stream("CustomerOrder", query))
+        ))?;
+        Ok(context.user_context().observe_generated_stream(
+            "CustomerOrder", context.fetch_entity_stream("CustomerOrder", query),
+        ))
     }
 
     pub(crate) async fn _execute_for_first<'a, C>(
@@ -187,33 +213,6 @@ impl<R> CustomerOrderRequest<R> {
     }
 
 
-    pub(crate) async fn _execute_for_page<'a, C>(
-        self,
-        context: &'a C,
-        offset: u64,
-        limit: u64,
-    ) -> Result<SmartList<R>, RuntimeError>
-    where
-        C: TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
-    {
-        if self.query.id_set_pagination.is_some() {
-            let mut rows = self
-                .clone()
-                .page_offset(offset, limit)
-                ._execute_for_list(context)
-                .await?;
-            if rows.total_count.is_none() {
-                rows.total_count = Some(self._execute_for_count(context).await?);
-            }
-            return Ok(rows);
-        }
-        let total_count = self.clone()._execute_for_count(context).await?;
-        let mut rows = self.page_offset(offset, limit)._execute_for_list(context).await?;
-        rows.total_count = Some(total_count);
-        Ok(rows)
-    }
-
     pub(crate) async fn _execute_for_count<'a, C>(
         self,
         context: &'a C,
@@ -227,11 +226,14 @@ impl<R> CustomerOrderRequest<R> {
             &query_options,
             &self.child_enhancements,
         );
-        let query = authorize_query(query)?.for_exact_count(COUNT_ALIAS)
-            .with_facet_diagnostics(&query_options);
+        let operation = query_options.page_count_operation.clone().unwrap_or_else(||
+            QueryOperation::new(QueryOperationKind::NamedCount, "execute_for_count"));
+        let alias = operation.alias().unwrap_or(COUNT_ALIAS).to_owned();
+        let query = authorize_query(query)?.with_facet_diagnostics(&query_options)
+            .for_exact_count_with_operation(&alias, operation);
         let rows = context.fetch_compact_rows("CustomerOrder", &query).await?;
         rows.first()
-            .and_then(|row| row.get(COUNT_ALIAS))
+            .and_then(|row| row.get(&alias))
             .and_then(teaql_core::Value::try_u64)
             .ok_or_else(|| RuntimeError::Graph(format!("count result for CustomerOrder is missing or not numeric")))
     }
@@ -249,7 +251,7 @@ impl<R> CustomerOrderRequest<R> {
             &self.child_enhancements,
         ).limit(1);
         query.relations.clear();
-        let query = authorize_query(query)?.with_facet_diagnostics(&self.query_options);
+        let query = authorize_query(query)?;
         let rows = context.fetch_compact_rows("CustomerOrder", &query).await?;
         Ok(!rows.is_empty())
     }
@@ -637,6 +639,11 @@ impl<R> CustomerOrderRequest<R> {
         self
     }
 
+    pub fn select_dynamic_fields_with(mut self, selection: teaql_core::dynamic_fields::DynamicFieldSelection) -> Self {
+        self.query = self.query.select_dynamic_fields(selection);
+        self
+    }
+
     pub fn select_self_fields(self) -> Self {
         self.select_self()
     }
@@ -668,11 +675,14 @@ impl<R> CustomerOrderRequest<R> {
         self
     }
 
-    pub fn count(self) -> Self {
-        self.count_as("count")
+    pub fn count(mut self) -> Self {
+        self.query_options.page_count_operation = Some(QueryOperation::new(QueryOperationKind::NamedCount, "count"));
+        self.aggregate_count("count")
     }
 
-    pub fn count_as(self, alias: impl Into<String>) -> Self {
+    pub fn count_as(mut self, alias: impl Into<String>) -> Self {
+        let alias = alias.into();
+        self.query_options.page_count_operation = Some(QueryOperation::new(QueryOperationKind::NamedCount, "count_as").with_alias(&alias));
         self.aggregate_count(alias)
     }
 
@@ -1627,32 +1637,41 @@ impl<R> CustomerOrderRequest<R> {
         self
     }
     pub fn select_platform(mut self) -> Self {
-        self.query = self.query.relation("platform");
+        self.query.relations.push(teaql_core::RelationLoad::new("platform")
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_platform").with_relation("platform")));
         self
     }
 
     pub fn select_platform_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("platform", selection.into_query());
+        self.query.relations.push(teaql_core::RelationLoad::with_query("platform", selection.into_query())
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_platform_with").with_relation("platform")));
         self
 }
 
     pub fn facet_by_platform_as(self, facet_name: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.facet_by_platform_as_with_options(facet_name, request, true)
+        self.facet_by_platform_internal(facet_name, request, true, "facet_by_platform_as")
     }
 
     pub fn facet_by_platform_as_with_options(
-        mut self,
+        self,
         facet_name: impl Into<String>,
         request: impl Into<QuerySelection>,
         include_all_facets: bool,
     ) -> Self {
+        self.facet_by_platform_internal(facet_name, request, include_all_facets, "facet_by_platform_as_with_options")
+    }
+
+    fn facet_by_platform_internal(mut self, facet_name: impl Into<String>, request: impl Into<QuerySelection>, include_all_facets: bool, method: &'static str) -> Self {
+        let facet_name = facet_name.into();
+        let operation = QueryOperation::new(QueryOperationKind::Facet, method)
+            .with_alias(&facet_name).with_relation("platform");
         self.query_options.facets.push(FacetRequest::new(
             facet_name,
             "platform",
             request,
             include_all_facets,
-        ));
+        ).with_operation(operation));
         self
     }
     pub fn have_order_items(self) -> Self {
@@ -1688,13 +1707,15 @@ impl<R> CustomerOrderRequest<R> {
     }
 
     pub fn select_order_item_list(mut self) -> Self {
-        self.query = self.query.relation("order_item_list");
+        self.query.relations.push(teaql_core::RelationLoad::new("order_item_list")
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_order_item_list").with_relation("order_item_list")));
         self
     }
 
     pub fn select_order_item_list_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("order_item_list", selection.into_query());
+        self.query.relations.push(teaql_core::RelationLoad::with_query("order_item_list", selection.into_query())
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_order_item_list_with").with_relation("order_item_list")));
         self
 }
 
@@ -1731,13 +1752,15 @@ impl<R> CustomerOrderRequest<R> {
     }
 
     pub fn select_payment_list(mut self) -> Self {
-        self.query = self.query.relation("payment_list");
+        self.query.relations.push(teaql_core::RelationLoad::new("payment_list")
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_payment_list").with_relation("payment_list")));
         self
     }
 
     pub fn select_payment_list_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("payment_list", selection.into_query());
+        self.query.relations.push(teaql_core::RelationLoad::with_query("payment_list", selection.into_query())
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_payment_list_with").with_relation("payment_list")));
         self
 }
 
@@ -1774,31 +1797,42 @@ impl<R> CustomerOrderRequest<R> {
     }
 
     pub fn select_shipment_list(mut self) -> Self {
-        self.query = self.query.relation("shipment_list");
+        self.query.relations.push(teaql_core::RelationLoad::new("shipment_list")
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_shipment_list").with_relation("shipment_list")));
         self
     }
 
     pub fn select_shipment_list_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("shipment_list", selection.into_query());
+        self.query.relations.push(teaql_core::RelationLoad::with_query("shipment_list", selection.into_query())
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_shipment_list_with").with_relation("shipment_list")));
         self
 }
     pub fn count_order_items(self) -> Self {
-        self.count_order_items_as("count_order_items")
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_order_items");
+        self.count_order_items_internal("count_order_items".to_owned(), crate::Q::order_items().unlimited(), operation)
     }
 
     pub fn count_order_items_as(self, alias: impl Into<String>) -> Self {
-        self.count_order_items_with(alias, crate::Q::order_items().unlimited())
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_order_items_as").with_alias(&alias);
+        self.count_order_items_internal(alias, crate::Q::order_items().unlimited(), operation)
     }
 
-    pub fn count_order_items_with(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+    pub fn count_order_items_with(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_order_items_with").with_alias(&alias);
+        self.count_order_items_internal(alias, request, operation)
+    }
+
+    fn count_order_items_internal(mut self, alias: String, request: impl Into<QuerySelection>, operation: QueryOperation) -> Self {
         let selection = request.into();
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "order_item_list",
             alias,
             selection,
             true,
-        ));
+        ).with_operation(operation.with_relation("order_item_list")));
         self
     }
 
@@ -1808,23 +1842,26 @@ impl<R> CustomerOrderRequest<R> {
 
     pub fn stats_from_order_items_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "stats_from_order_items_as")
+            .with_alias(&alias).with_relation("order_item_list");
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "order_item_list",
             alias,
             selection,
             false,
-        ));
+        ).with_operation(operation));
         self
     }
 
-    fn scalar_from_order_items_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+    fn scalar_from_order_items_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>, operation: QueryOperation) -> Self {
         let selection = request.into();
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "order_item_list",
             alias,
             selection,
             true,
-        ));
+        ).with_operation(operation.with_relation("order_item_list")));
         self
     }
 
@@ -1836,21 +1873,30 @@ impl<R> CustomerOrderRequest<R> {
 
 
     pub fn count_payments(self) -> Self {
-        self.count_payments_as("count_payments")
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_payments");
+        self.count_payments_internal("count_payments".to_owned(), crate::Q::payments().unlimited(), operation)
     }
 
     pub fn count_payments_as(self, alias: impl Into<String>) -> Self {
-        self.count_payments_with(alias, crate::Q::payments().unlimited())
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_payments_as").with_alias(&alias);
+        self.count_payments_internal(alias, crate::Q::payments().unlimited(), operation)
     }
 
-    pub fn count_payments_with(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+    pub fn count_payments_with(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_payments_with").with_alias(&alias);
+        self.count_payments_internal(alias, request, operation)
+    }
+
+    fn count_payments_internal(mut self, alias: String, request: impl Into<QuerySelection>, operation: QueryOperation) -> Self {
         let selection = request.into();
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "payment_list",
             alias,
             selection,
             true,
-        ));
+        ).with_operation(operation.with_relation("payment_list")));
         self
     }
 
@@ -1860,23 +1906,26 @@ impl<R> CustomerOrderRequest<R> {
 
     pub fn stats_from_payments_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "stats_from_payments_as")
+            .with_alias(&alias).with_relation("payment_list");
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "payment_list",
             alias,
             selection,
             false,
-        ));
+        ).with_operation(operation));
         self
     }
 
-    fn scalar_from_payments_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+    fn scalar_from_payments_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>, operation: QueryOperation) -> Self {
         let selection = request.into();
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "payment_list",
             alias,
             selection,
             true,
-        ));
+        ).with_operation(operation.with_relation("payment_list")));
         self
     }
 
@@ -1888,21 +1937,30 @@ impl<R> CustomerOrderRequest<R> {
 
 
     pub fn count_shipments(self) -> Self {
-        self.count_shipments_as("count_shipments")
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_shipments");
+        self.count_shipments_internal("count_shipments".to_owned(), crate::Q::shipments().unlimited(), operation)
     }
 
     pub fn count_shipments_as(self, alias: impl Into<String>) -> Self {
-        self.count_shipments_with(alias, crate::Q::shipments().unlimited())
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_shipments_as").with_alias(&alias);
+        self.count_shipments_internal(alias, crate::Q::shipments().unlimited(), operation)
     }
 
-    pub fn count_shipments_with(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+    pub fn count_shipments_with(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_shipments_with").with_alias(&alias);
+        self.count_shipments_internal(alias, request, operation)
+    }
+
+    fn count_shipments_internal(mut self, alias: String, request: impl Into<QuerySelection>, operation: QueryOperation) -> Self {
         let selection = request.into();
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "shipment_list",
             alias,
             selection,
             true,
-        ));
+        ).with_operation(operation.with_relation("shipment_list")));
         self
     }
 
@@ -1912,23 +1970,26 @@ impl<R> CustomerOrderRequest<R> {
 
     pub fn stats_from_shipments_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "stats_from_shipments_as")
+            .with_alias(&alias).with_relation("shipment_list");
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "shipment_list",
             alias,
             selection,
             false,
-        ));
+        ).with_operation(operation));
         self
     }
 
-    fn scalar_from_shipments_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+    fn scalar_from_shipments_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>, operation: QueryOperation) -> Self {
         let selection = request.into();
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "shipment_list",
             alias,
             selection,
             true,
-        ));
+        ).with_operation(operation.with_relation("shipment_list")));
         self
     }
 
@@ -2016,19 +2077,6 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<CustomerOrderRequest<R>> {
                 .is_some_and(|comment| !comment.trim().is_empty()),
             "query comment must not be empty"
         );
-    }
-
-    pub async fn execute_for_page<'a, C>(
-        self,
-        context: &'a C,
-        offset: u64,
-        limit: u64,
-    ) -> Result<teaql_core::SmartList<R>, teaql_runtime::RuntimeError>
-    where
-        C: crate::TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
-    {
-        self.into_inner_with_trace()._execute_for_page(context, offset, limit).await
     }
 
     pub async fn execute_for_exists<'a, C>(

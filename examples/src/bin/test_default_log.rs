@@ -20,6 +20,7 @@ async fn main() {
         comment: Some("what: load an order".to_string()),
         purpose: Some("why: verify default SQL logging".to_string()),
         audit_reason: None,
+        trace_chain: vec![],
         trace_path: vec![],
         sql: "SELECT * FROM orders WHERE id = $1".to_string(),
         params: vec![teaql_core::Value::I64(1)],
