@@ -135,9 +135,9 @@ fn initialize(config: TelemetryStartupConfiguration) -> Arc<dyn RuntimeTelemetry
     #[cfg(feature = "standard-telemetry")]
     {
         use std::sync::Weak;
-        static PIPELINES: OnceLock<
-            Mutex<BTreeMap<(String, String), Weak<crate::telemetry_standard::StandardTelemetry>>>,
-        > = OnceLock::new();
+        type PipelineCache =
+            BTreeMap<(String, String), Weak<crate::telemetry_standard::StandardTelemetry>>;
+        static PIPELINES: OnceLock<Mutex<PipelineCache>> = OnceLock::new();
         let mut pipelines = PIPELINES
             .get_or_init(Default::default)
             .lock()
