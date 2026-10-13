@@ -13,8 +13,6 @@ mod entity_status;
 mod error;
 mod event;
 pub mod generated_support;
-#[cfg(test)]
-mod requested_list_count_tests;
 mod graph;
 mod i18n;
 mod id;
@@ -23,6 +21,8 @@ mod language;
 pub mod log_formatter;
 mod log_privacy;
 mod mutation_policy;
+#[cfg(test)]
+mod requested_list_count_tests;
 // Deterministic test oracle; the published runtime uses provider executors.
 #[cfg(test)]
 #[allow(dead_code)]
@@ -33,13 +33,13 @@ pub use registry::decode_compact_rows_with_read_metadata;
 mod round_trip_reference;
 mod telemetry;
 mod telemetry_mutation;
-mod telemetry_sql;
-mod telemetry_stream;
-mod telemetry_startup;
-#[cfg(feature = "standard-telemetry")]
-mod telemetry_standard;
 #[cfg(feature = "opentelemetry")]
 mod telemetry_opentelemetry;
+mod telemetry_sql;
+#[cfg(feature = "standard-telemetry")]
+mod telemetry_standard;
+mod telemetry_startup;
+mod telemetry_stream;
 
 pub use business_id::{
     BUSINESS_ID_V1_ALPHABET, BUSINESS_ID_V1_WIDTH, BusinessClock, BusinessDate,
@@ -128,13 +128,16 @@ pub use round_trip_reference::{
 };
 pub use telemetry::{
     FailOpenRuntimeTelemetryPropagationContext, FailOpenRuntimeTelemetryScope,
-    NoopRuntimeTelemetry, RuntimeAttributeValue, RuntimeDiagnosticEvent, RuntimeOperation, RuntimeTelemetry,
-    RuntimeTelemetryPropagationContext, RuntimeTelemetryScope, extract_runtime_context,
-    runtime_error_category, start_runtime_operation,
+    NoopRuntimeTelemetry, RuntimeAttributeValue, RuntimeDiagnosticEvent, RuntimeOperation,
+    RuntimeTelemetry, RuntimeTelemetryPropagationContext, RuntimeTelemetryScope,
+    extract_runtime_context, runtime_error_category, start_runtime_operation,
 };
 #[cfg(feature = "opentelemetry")]
 pub use telemetry_opentelemetry::OpenTelemetryRuntimeTelemetry;
-pub use telemetry_startup::{TelemetryStartupConfiguration, TELEMETRY_ENABLED, TELEMETRY_SERVICE_NAME, TELEMETRY_OTLP_ENDPOINT};
+pub use telemetry_startup::{
+    TELEMETRY_ENABLED, TELEMETRY_OTLP_ENDPOINT, TELEMETRY_SERVICE_NAME,
+    TelemetryStartupConfiguration,
+};
 
 #[cfg(test)]
 #[allow(dead_code, unused_imports)]

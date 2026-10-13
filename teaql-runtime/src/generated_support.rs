@@ -228,12 +228,11 @@ impl PurposedSelectQuery {
     /// Split an explicitly declared ungrouped count from an ordinary entity list.
     /// Mixed/grouped aggregates remain aggregate requests, not implicit pagination.
     #[doc(hidden)]
-    pub fn take_requested_list_count(
-        &mut self,
-        options: &QueryOptions,
-    ) -> Option<(String, Self)> {
+    pub fn take_requested_list_count(&mut self, options: &QueryOptions) -> Option<(String, Self)> {
         let operation = options.page_count_operation.clone()?;
-        let alias = operation.alias().unwrap_or(teaql_core::request::COUNT_ALIAS);
+        let alias = operation
+            .alias()
+            .unwrap_or(teaql_core::request::COUNT_ALIAS);
         if !self.query.group_by.is_empty()
             || !self.query.object_group_bys.is_empty()
             || self.query.having.is_some()
@@ -246,7 +245,9 @@ impl PurposedSelectQuery {
             return None;
         }
         let alias = alias.to_owned();
-        let count = self.clone().with_facet_diagnostics(options)
+        let count = self
+            .clone()
+            .with_facet_diagnostics(options)
             .for_exact_count_with_operation(&alias, operation);
         self.query.aggregates.clear();
         Some((alias, count))

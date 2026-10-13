@@ -1590,7 +1590,9 @@ async fn execute_compiled_query<D: SqlDialect + Sync, T: SqlTransport>(
         .capture_execution_metadata
         .then(|| query_diagnostic_metadata(dialect, &compiled, &request));
     let mut diagnostic = crate::diagnostic_execution::StatementDiagnostic::new(metadata, observer);
-    let result = diagnostic.run(transport.fetch_all_compact_sql(&compiled)).await;
+    let result = diagnostic
+        .run(transport.fetch_all_compact_sql(&compiled))
+        .await;
     let rows = result.map_err(|error| {
         diagnostic.fail();
         SqlExecutorError::Transport(error)

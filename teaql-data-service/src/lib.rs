@@ -7,8 +7,7 @@ mod sql_log;
 pub mod statement_telemetry;
 pub use sql_log::{
     SqlExecutionOutcome, SqlIntentRedactions, SqlLogContext, SqlParameterLogPolicy,
-    SqlProjectionState, is_credential_log_name,
-    SqlTelemetryState,
+    SqlProjectionState, SqlTelemetryState, is_credential_log_name,
 };
 
 use std::time::SystemTime;
@@ -99,9 +98,10 @@ impl QueryRequest {
     }
 
     pub fn with_query(&self, query: SelectQuery) -> Result<Self, QueryScopeOwnerMismatch> {
-        if query.request_scope().is_some_and(|previous| {
-            previous.root_request() != self.request_scope().root_request()
-        }) {
+        if query
+            .request_scope()
+            .is_some_and(|previous| previous.root_request() != self.request_scope().root_request())
+        {
             return Err(QueryScopeOwnerMismatch);
         }
         Ok(self.clone_with_body(query))

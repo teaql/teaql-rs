@@ -1000,7 +1000,11 @@ where
             .collect::<Vec<_>>();
         query.slice = Some(teaql_core::Slice {
             offset: 0,
-            limit: Some(if page_ids.is_empty() { 0 } else { page_size as u64 }),
+            limit: Some(if page_ids.is_empty() {
+                0
+            } else {
+                page_size as u64
+            }),
         });
         query.id_set_pagination = None;
         query = if page_ids.is_empty() {

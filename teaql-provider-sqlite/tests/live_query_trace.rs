@@ -169,8 +169,11 @@ fn verify_two_live_queries(shared_template: bool) {
         let context = futures_executor::block_on(fixture(logging));
         let observer = context.require_resource::<ObservedExecutor>().unwrap();
         let child_template = SelectQuery::new("LiveChild").limit(1).relation_query(
-            "children", SelectQuery::new("LiveDetail").limit(1).relation_query(
-                "children", SelectQuery::new("LiveLeaf").limit(1)));
+            "children",
+            SelectQuery::new("LiveDetail")
+                .limit(1)
+                .relation_query("children", SelectQuery::new("LiveLeaf").limit(1)),
+        );
         let template_before = format!("{child_template:?}");
         let assert_template_unchanged = || {
             assert_eq!(format!("{child_template:?}"), template_before);
@@ -179,7 +182,11 @@ fn verify_two_live_queries(shared_template: bool) {
                 assert!(cursor.request_scope().is_none());
                 assert!(cursor.comment.is_none() && cursor.purpose.is_none());
                 assert!(cursor.filter.is_none() && cursor.trace_chain.is_empty());
-                match cursor.relations.first().and_then(|relation| relation.query.as_deref()) {
+                match cursor
+                    .relations
+                    .first()
+                    .and_then(|relation| relation.query.as_deref())
+                {
                     Some(child) => cursor = child,
                     None => break,
                 }
@@ -190,10 +197,16 @@ fn verify_two_live_queries(shared_template: bool) {
             let _release = ReleaseOnDrop(observer);
             let handles = ["alpha", "beta"].map(|label| {
                 let context = &context;
-                let child = if shared_template { child_template.clone() }
-                    else { SelectQuery::new("LiveChild").limit(1).relation_query(
-                        "children", SelectQuery::new("LiveDetail").limit(1).relation_query(
-                            "children", SelectQuery::new("LiveLeaf").limit(1))) };
+                let child = if shared_template {
+                    child_template.clone()
+                } else {
+                    SelectQuery::new("LiveChild").limit(1).relation_query(
+                        "children",
+                        SelectQuery::new("LiveDetail")
+                            .limit(1)
+                            .relation_query("children", SelectQuery::new("LiveLeaf").limit(1)),
+                    )
+                };
                 // Recursive native query futures exceed the default worker
                 // stack in this unoptimized fixture; do not hide that cost.
                 std::thread::Builder::new()
@@ -205,10 +218,7 @@ fn verify_two_live_queries(shared_template: bool) {
                                 SelectQuery::new("LiveRoot")
                                     .limit(1)
                                     .comment(format!("load {label} graph"))
-                                    .relation_query(
-                                        "children",
-                                        child,
-                                    ),
+                                    .relation_query("children", child),
                                 format!("render {label} graph"),
                             );
                             context
