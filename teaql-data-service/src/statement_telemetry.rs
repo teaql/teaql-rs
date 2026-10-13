@@ -70,11 +70,7 @@ pub fn start_sql_statement(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::task::{Context, Poll, Wake, Waker};
-    struct NoopWake;
-    impl Wake for NoopWake {
-        fn wake(self: Arc<Self>) {}
-    }
+    use std::task::{Context, Poll, Waker};
     struct Factory(&'static str);
     struct Scope(&'static str);
     impl SqlStatementTelemetry for Factory {
@@ -119,8 +115,7 @@ mod tests {
             value
         });
         let mut work = std::pin::pin!(work);
-        let waker = Waker::from(Arc::new(NoopWake));
-        let mut cx = Context::from_waker(&waker);
+        let mut cx = Context::from_waker(Waker::noop());
         assert!(work.as_mut().poll(&mut cx).is_pending());
         assert!(identity().is_none());
         assert_eq!(work.as_mut().poll(&mut cx), Poll::Ready(7));
@@ -132,8 +127,7 @@ mod tests {
             panic!("controlled fixture");
         });
         let mut work = std::pin::pin!(work);
-        let waker = Waker::from(Arc::new(NoopWake));
-        let mut cx = Context::from_waker(&waker);
+        let mut cx = Context::from_waker(Waker::noop());
         assert!(
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work.as_mut().poll(&mut cx)))
                 .is_err()
