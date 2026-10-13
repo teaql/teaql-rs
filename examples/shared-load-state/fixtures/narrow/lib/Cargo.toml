@@ -16,11 +16,11 @@ serde_json = "1"
 async-stream = "0.3"
 async-trait = "0.1"
 futures-util = "0.3"
-teaql-core = "5.0.6"
-teaql-macros = "5.0.6"
-teaql-runtime = "5.0.6"
-teaql-sql = "5.0.6"
-teaql-data-service = "5.0.6"
-teaql-provider-sqlite = "5.0.6"
+teaql-core = { path = "/home/philip/workspace/teaql-rs-load-state/teaql-core" }
+teaql-macros = { path = "/home/philip/workspace/teaql-rs-load-state/teaql-macros" }
+teaql-runtime = { path = "/home/philip/workspace/teaql-rs-load-state/teaql-runtime" }
+teaql-sql = { path = "/home/philip/workspace/teaql-rs-load-state/teaql-sql" }
+teaql-data-service = { path = "/home/philip/workspace/teaql-rs-load-state/teaql-data-service" }
+teaql-provider-sqlite = { path = "/home/philip/workspace/teaql-rs-load-state/teaql-provider-sqlite" }
 rusqlite = { version = "0.40", features = ["bundled", "chrono", "column_decltype"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
