@@ -1,6 +1,6 @@
 //! Bounded generated Q/E page and chunked-stream loaded-state acceptance.
 use futures_util::StreamExt;
-use school_management_service_core::{School, E, Q};
+use school_management_service_core::{E, Q, School};
 use std::sync::Arc;
 use teaql_core::Entity;
 
@@ -13,17 +13,21 @@ pub async fn verify(
         .with_name_in([first, second])
         .select_name()
         .order_by_id_asc()
+        .offset(0, 1)
+        .count()
         .comment("what: load the first matching School page")
         .purpose("why: preserve bounded projection state in pagination")
-        .execute_for_page(context, 0, 1)
+        .execute_for_list(context)
         .await?;
     let second_page = Q::schools_minimal()
         .with_name_in([first, second])
         .select_name()
         .order_by_id_asc()
+        .offset(1, 1)
+        .count()
         .comment("what: load the second matching School page")
         .purpose("why: qualify adjacent pages and filtered totals")
-        .execute_for_page(context, 1, 1)
+        .execute_for_list(context)
         .await?;
     assert_eq!(first_page.total_count, Some(2));
     assert_eq!(second_page.total_count, Some(2));

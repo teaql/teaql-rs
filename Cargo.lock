@@ -3328,7 +3328,10 @@ dependencies = [
  "hmac 0.12.1",
  "opentelemetry",
  "opentelemetry-otlp",
+ "opentelemetry-proto",
  "opentelemetry_sdk",
+ "prost",
+ "reqwest 0.13.4",
  "rust_decimal",
  "serde",
  "serde_json",
@@ -3339,6 +3342,7 @@ dependencies = [
  "teaql-macros",
  "teaql-sql",
  "tokio",
+ "url",
 ]
 
 [[package]]

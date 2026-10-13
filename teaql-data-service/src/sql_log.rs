@@ -30,6 +30,11 @@ impl SqlExecutionOutcome {
 /// removed by the runtime before retaining or delivering the safe projection.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SqlLogContext {
+    /// Exact identity captured before physical execution, never inferred at log completion.
+    #[doc(hidden)]
+    pub telemetry: Option<std::sync::Arc<SqlTelemetryState>>,
+    /// Business Request ancestry, independent of the executor's physical route.
+    pub request_trace_chain: Vec<teaql_core::TraceNode>,
     /// Opaque runtime-only state for safe reprojection; never wire data.
     #[doc(hidden)]
     pub projection_state: SqlProjectionState,
@@ -42,6 +47,14 @@ pub struct SqlLogContext {
     pub masked_parameters: Vec<bool>,
     pub mode: Option<String>,
     pub omission_reason: Option<String>,
+}
+
+/// Rare telemetry payload stays behind one pointer to protect ordinary async frames.
+#[doc(hidden)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SqlTelemetryState {
+    pub correlation: Option<crate::statement_telemetry::SqlExecutionCorrelation>,
+    pub mutation_lineage: Vec<teaql_core::TraceNode>,
 }
 
 /// A runtime owns the private concrete type; provider/workspace code cannot

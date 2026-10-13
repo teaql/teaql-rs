@@ -13,27 +13,28 @@ use teaql_macros::{teaql_entity, TeaqlEntity};
 /// Read the method signatures in this file before proceeding.
 #[teaql_entity]
 #[derive(Clone, Debug, PartialEq, TeaqlEntity)]
-#[teaql(reverse_relation(name = "order_item_list", target = "OrderItem", local_key = "id", foreign_key = "customer_order_id", many))]
-#[teaql(reverse_relation(name = "payment_list", target = "Payment", local_key = "id", foreign_key = "customer_order_id", many))]
-#[teaql(reverse_relation(name = "shipment_list", target = "Shipment", local_key = "id", foreign_key = "customer_order_id", many))]
+#[teaql(indexed_layout)]
+#[teaql(reverse_relation(name = "order_item_list", target = "OrderItem", json_type = "crate::OrderItem", local_key = "id", foreign_key = "customer_order_id", many))]
+#[teaql(reverse_relation(name = "payment_list", target = "Payment", json_type = "crate::Payment", local_key = "id", foreign_key = "customer_order_id", many))]
+#[teaql(reverse_relation(name = "shipment_list", target = "Shipment", json_type = "crate::Shipment", local_key = "id", foreign_key = "customer_order_id", many))]
 #[teaql(entity = "CustomerOrder", table = "customer_order_data", data_service = "sqlite", audit_mask_fields = "")]
 pub struct CustomerOrder {
 #[teaql(id)]
     id: u64,
 
-// @source model.xml:8
+// @source main.xml:8
 #[teaql(max_length = 100)]
     order_number: String,
 
-// @source model.xml:8
+// @source main.xml:8
 #[teaql(max_length = 100)]
     description: String,
 #[teaql(version)]
     version: i64,
-// @source model.xml:8
+// @source main.xml:8
 #[teaql(column = "platform")]
     platform_id: u64,
-// @source model.xml:8
+// @source main.xml:8
 #[teaql(relation(target = "Platform", local_key = "platform_id", foreign_key = "id"))]
     platform: Option<Box<crate::Platform>>,
     #[teaql(dynamic)]
@@ -44,6 +45,23 @@ pub struct CustomerOrder {
 
 impl CustomerOrder {
     pub const ENTITY_NAME: &'static str = "Customer Order";
+
+    // Framework metadata: complete fixed layout, including overflow slots.
+    pub const __TEAQL_FIELD_LAYOUT_REVISION: &'static str = "f10d535b66998395625745c0c3f6032ed01350e7f851687673b5ff1eb94a4337";
+    pub const __TEAQL_FIXED_FIELD_INDEXES: &'static [(&'static str, usize)] = &[
+        ("id", 0),
+        ("platform", 1),
+        ("order_number", 2),
+        ("description", 3),
+        ("version", 4),
+    ];
+    pub const __TEAQL_FIXED_FIELD_MAPPINGS: &'static [(&'static str, &'static str, &'static str)] = &[
+        ("id", "id", "id"),
+        ("platform", "platform_id", "platform"),
+        ("order_number", "order_number", "order_number"),
+        ("description", "description", "description"),
+        ("version", "version", "version"),
+    ];
 
     pub fn with_id(id: u64) -> teaql_core::Value {
         teaql_core::Value::U64(id)
@@ -59,7 +77,9 @@ impl CustomerOrder {
             platform: None,
             dynamic: BTreeMap::new(),
             __teaql_runtime_state: root,
-            __load_state: teaql_core::eval::LoadState::FullyLoaded,
+            __load_state: teaql_core::eval::LoadState::NotLoaded.into_indexed(
+                <Self as teaql_core::TeaqlEntity>::field_layout().expect("generated field layout").expect("indexed layout")
+            ).expect("new entity load state"),
         }
     }
 
@@ -76,7 +96,9 @@ impl CustomerOrder {
     }
 
     pub fn set_load_state(&mut self, state: teaql_core::eval::LoadState) {
-        self.__load_state = state;
+        self.__load_state = state.into_indexed(
+            <Self as teaql_core::TeaqlEntity>::field_layout().expect("generated field layout").expect("indexed layout")
+        ).expect("compatible entity load state");
     }
 
     pub fn id(&self) -> u64 {
@@ -87,6 +109,7 @@ impl CustomerOrder {
         let value = value.into();
         self.id = value.try_u64().unwrap_or(self.id.clone());
         self.__teaql_runtime_state().set(self.entity_key(), "id", value);
+        self.__load_state.mark_loaded("id").expect("generated field layout");
         self
     }
 
@@ -110,6 +133,7 @@ impl CustomerOrder {
         let value = value.into();
         self.order_number = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.order_number.clone());
         self.__teaql_runtime_state().set(self.entity_key(), "order_number", value);
+        self.__load_state.mark_loaded("order_number").expect("generated field layout");
         self
     }
 
@@ -133,6 +157,7 @@ impl CustomerOrder {
         let value = value.into();
         self.description = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.description.clone());
         self.__teaql_runtime_state().set(self.entity_key(), "description", value);
+        self.__load_state.mark_loaded("description").expect("generated field layout");
         self
     }
 
@@ -156,6 +181,7 @@ impl CustomerOrder {
         let value = value.into();
         self.version = value.try_i64().unwrap_or(self.version.clone());
         self.__teaql_runtime_state().set(self.entity_key(), "version", value);
+        self.__load_state.mark_loaded("version").expect("generated field layout");
         self
     }
 
@@ -178,6 +204,7 @@ impl CustomerOrder {
         let value = value.into();
         self.platform_id = value.try_u64().unwrap_or(self.platform_id.clone());
         self.__teaql_runtime_state().set(self.entity_key(), "platform_id", value);
+        self.__load_state.mark_loaded("platform_id").expect("generated field layout");
         self
     }
 
@@ -192,12 +219,14 @@ impl CustomerOrder {
                     teaql_core::eval::EvalResult::Value(self.platform_id())
                 }}
     pub fn platform(&self) -> Option<&crate::Platform> {
-        let state = self.__teaql_runtime_state();
-        if state.has_relation_view(<Self as teaql_core::TeaqlEntity>::ENTITY_NAME, self.id(), "platform") {
-            let value: Option<&crate::Platform> = state.relation_option(<Self as teaql_core::TeaqlEntity>::ENTITY_NAME, self.id(), "platform").value();
-            if value.is_some_and(|related| related.id() == self.platform_id()) {
-                return value;
-            }
+        if self.changed_platform_id().is_some()
+            || !self.is_loaded("platform") {
+            return None;
+        }
+        if let Some(edge) = self.__teaql_runtime_state().resolve_relation_option::<crate::Platform>(
+            <Self as teaql_core::TeaqlEntity>::ENTITY_NAME, self.id(), "platform",
+        ) {
+            return edge.as_ref();
         }
         self.platform.as_deref().or_else(|| {
             self.__teaql_runtime_state().resolve_entity(self.platform_id())})
@@ -206,7 +235,6 @@ impl CustomerOrder {
     pub fn eval_platform(&self) -> teaql_core::eval::EvalResult<&crate::Platform> {
         match self.platform() {
             Some(v) => teaql_core::eval::EvalResult::Value(v),
-            None if self.is_loaded("platform") => teaql_core::eval::EvalResult::Null,
             None => teaql_core::eval::EvalResult::NotLoaded { failed_node: "platform".to_string(), attempted_path: "platform".to_string() },
         }
     }

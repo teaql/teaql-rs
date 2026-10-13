@@ -393,17 +393,16 @@ pub async fn verify(
                         Some(order_id)
                     );
                     foreign_ids.push(order_id);
-                    let parent = E::order_item(member)
-                        .get_customer_order()
-                        .eval()
-                        .ok_or("known parent identity")?;
-                    assert_eq!(E::customer_order(parent).get_id().eval(), Some(order_id));
-                    assert_eq!(
-                        parent.is_field_loaded("description"),
-                        !filtered,
-                        "filtered detail is NotLoaded, not Null"
-                    );
-                    if !filtered {
+                    if filtered {
+                        assert!(member.customer_order().is_none(), "filtered object is NotLoaded, not an identity placeholder");
+                        assert!(!member.is_field_loaded("customer_order"));
+                        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            E::order_item(member).get_customer_order().get_description().eval()
+                        })).is_err(), "E must report missing preload, not return null");
+                    } else {
+                        let parent = E::order_item(member).get_customer_order().eval().ok_or("loaded parent")?;
+                        assert_eq!(E::customer_order(parent).get_id().eval(), Some(order_id));
+                        assert!(parent.is_field_loaded("description"));
                         assert_eq!(
                             E::customer_order(parent)
                                 .get_description()
@@ -475,11 +474,8 @@ pub async fn verify(
                     );
                     for member in members.iter() {
                         assert!(
-                            !E::order_item(member)
-                                .get_customer_order()
-                                .eval()
-                                .unwrap()
-                                .is_field_loaded("description")
+                            member.customer_order().is_none(),
+                            "a later complete view must not widen the filtered edge"
                         );
                     }
                     let mut report = statements(

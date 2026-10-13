@@ -46,9 +46,11 @@ pub async fn paged_graph(
                 .limit(2),
         )
         .order_by_id_asc()
+        .offset(1, 2)
+        .count()
         .comment(format!("load {run} matching {SECRET}"))
         .purpose(format!("render {run} with {SECRET}"))
-        .execute_for_page(context, 1, 2)
+        .execute_for_list(context)
         .await?;
     assert_eq!(page.total_count, Some(3));
     assert_eq!(page.data.len(), 2);

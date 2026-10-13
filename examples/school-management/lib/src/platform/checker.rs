@@ -1,3 +1,4 @@
+
 use teaql_runtime::{CheckObjectStatus, CheckResults, ObjectLocation, TypedChecker, UserContext};
 
 pub trait PlatformCheckerLogic: Send + Sync {
@@ -19,9 +20,7 @@ pub trait PlatformCheckerLogic: Send + Sync {
         results: &mut CheckResults,
     ) {
         if !value {
-            results.push(teaql_runtime::CheckResult::required(
-                location.clone().member(field),
-            ));
+            results.push(teaql_runtime::CheckResult::required(location.clone().member(field)));
         }
     }
 
@@ -33,9 +32,7 @@ pub trait PlatformCheckerLogic: Send + Sync {
         results: &mut CheckResults,
     ) {
         if value.is_none() {
-            results.push(teaql_runtime::CheckResult::required(
-                location.clone().member(field),
-            ));
+            results.push(teaql_runtime::CheckResult::required(location.clone().member(field)));
         }
     }
 
@@ -47,9 +44,7 @@ pub trait PlatformCheckerLogic: Send + Sync {
         results: &mut CheckResults,
     ) {
         if value.trim().is_empty() {
-            results.push(teaql_runtime::CheckResult::required(
-                location.clone().member(field),
-            ));
+            results.push(teaql_runtime::CheckResult::required(location.clone().member(field)));
         }
     }
 
@@ -129,32 +124,18 @@ where
     ) {
         if status.is_create() {
             entity.update_create_time(context.fix_time());
-            context.record_fix_evidence(teaql_runtime::FixEvidence::new(
-                "Platform",
-                "create_time",
-                teaql_runtime::FixEvidenceSource::Clock,
-                "graphClock",
-            ));
+            context.record_fix_evidence(teaql_runtime::FixEvidence::new("Platform", "create_time", teaql_runtime::FixEvidenceSource::Clock, "graphClock"));
         }
 
         if status.is_create() {
             entity.update_update_time(context.fix_time());
-            context.record_fix_evidence(teaql_runtime::FixEvidence::new(
-                "Platform",
-                "update_time",
-                teaql_runtime::FixEvidenceSource::Clock,
-                "graphClock",
-            ));
+            context.record_fix_evidence(teaql_runtime::FixEvidence::new("Platform", "update_time", teaql_runtime::FixEvidenceSource::Clock, "graphClock"));
         }
         if status.is_create() || status.is_update() {
             entity.update_update_time(context.fix_time());
-            context.record_fix_evidence(teaql_runtime::FixEvidence::new(
-                "Platform",
-                "update_time",
-                teaql_runtime::FixEvidenceSource::Clock,
-                "graphClock",
-            ));
+            context.record_fix_evidence(teaql_runtime::FixEvidence::new("Platform", "update_time", teaql_runtime::FixEvidenceSource::Clock, "graphClock"));
         }
+
 
         if status.is_update() && !entity.is_loaded("id") {
             results.push(

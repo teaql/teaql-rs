@@ -3,6 +3,8 @@ set -euo pipefail
 
 example_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd "$example_dir/../.." && pwd)"
+source "$repo_dir/scripts/rust-test-receipt.sh"
+bash "$repo_dir/scripts/rust-test-receipt.test.sh"
 # A cross-checkout shared Cargo target has twice failed allocation/lineage tests
 # while the exact same source passes in an independent target. The specific
 # cache entry is not attributed here. Source verification owns its namespace.
@@ -51,7 +53,7 @@ for allocation_pass in 1 2; do
     blank_local_reasons_inherit_at_real_sinks_logging_off \
     non_white_space_local_reasons_survive_at_real_sinks_logging_on \
     non_white_space_local_reasons_survive_at_real_sinks_logging_off; do
-    if ! rg -Fq "test $allocation_case ... ok" "$allocation_log"; then
+    if ! native_case_passed "$allocation_case" "$allocation_log"; then
       printf 'FAIL missing native allocation case %s in %s\n' "$allocation_case" "$allocation_log" >&2
       exit 1
     fi
@@ -60,7 +62,7 @@ for allocation_pass in 1 2; do
   reference_log="$trace_evidence_dir/native-shared-reference-$allocation_pass.log"
   reference_status=0
   timeout 180s cargo test --locked --manifest-path "$example_dir/../../Cargo.toml" \
-    -p teaql-runtime --test flat_identity_graph \
+    -p teaql-runtime --test flat_identity_graph -- --show-output --test-threads=1 \
     >"$reference_log" 2>&1 || reference_status=$?
   if (( reference_status != 0 )); then
     sed -n '1,240p' "$reference_log" >&2
@@ -70,7 +72,7 @@ for allocation_pass in 1 2; do
   for reference_case in \
     macro_hydration_shares_identity_graph_without_reusing_mutation_ownership \
     shared_read_only_reference_preserves_snapshot_version_and_root_local_intent; do
-    if ! rg -Fq "test $reference_case ... ok" "$reference_log"; then
+    if ! native_case_passed "$reference_case" "$reference_log"; then
       printf 'FAIL missing native reference case %s in %s\n' "$reference_case" "$reference_log" >&2
       exit 1
     fi
@@ -91,7 +93,7 @@ for allocation_pass in 1 2; do
     loaded_scalar_groups_preserve_only_the_real_relation_edge_window \
     loaded_scalar_groups_preserve_only_the_real_relation_edge_probes \
     cached_partition_having_rebinds_real_sqlite_results; do
-    if ! rg -Fq "test $partition_case ... ok" "$partition_log"; then
+    if ! native_case_passed "$partition_case" "$partition_log"; then
       printf 'FAIL missing native numeric partition case %s in %s\n' "$partition_case" "$partition_log" >&2
       exit 1
     fi
@@ -110,7 +112,7 @@ for allocation_pass in 1 2; do
     explicit_forward_projection_survives_reverse_inverse_wiring_with_aggregates \
     future_aggregate_bindings_are_masked_before_parent_sql_for_all_result_shapes \
     nested_typed_selection_executes_its_related_counts_once; do
-    rg -Fq "test $membership_case ... ok" "$membership_log"
+    native_case_passed "$membership_case" "$membership_log"
   done
   rg -Fq 'test result: ok. 13 passed; 0 failed; 0 ignored' "$membership_log"
   printf 'PASS native relation membership replay %s (13 cases, including nested metrics and projection ownership)\n' "$allocation_pass"

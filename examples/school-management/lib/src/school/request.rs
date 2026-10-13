@@ -45,7 +45,9 @@ impl<R> Clone for SchoolRequest<R> {
 impl<R> SchoolRequest<R> {
     pub(crate) fn new() -> Self {
         Self {
-            query: SelectQuery::new("School").project("id").project("version"),
+            query: SelectQuery::new("School")
+                .project("id")
+                .project("version"),
             relation_selections: Vec::new(),
             relation_filters: Vec::new(),
             child_enhancements: Vec::new(),
@@ -89,6 +91,7 @@ impl<R> SchoolRequest<R> {
         self.query
     }
 
+
     pub fn purpose(self, purpose: impl Into<String>) -> crate::PurposedQuery<Self> {
         crate::PurposedQuery::new(self, purpose)
     }
@@ -103,25 +106,54 @@ impl<R> SchoolRequest<R> {
     {
         let query_options = self.query_options.clone();
         let relation_aggregates = runtime_relation_aggregates(&query_options);
-        let query = authorize_query(apply_runtime_metadata(
+        let mut query = authorize_query(apply_runtime_metadata(
             self.query,
             &query_options,
             &self.child_enhancements,
         ))?;
+        let requested_count = query.take_requested_list_count(&query_options);
+        let use_id_set = query.as_query().id_set_pagination.is_some();
+        context.user_context().observe_generated_list("School", async {
+        let mut total = None;
+        if !use_id_set {
+            if let Some((alias, count_query)) = &requested_count {
+                let count_rows = context.fetch_compact_rows("School", count_query).await?;
+                total = Some(count_rows.first().and_then(|row| row.get(alias))
+                    .and_then(teaql_core::Value::try_u64)
+                    .ok_or_else(|| RuntimeError::Graph("requested list count is missing or not numeric".into()))?);
+            }
+        }
         let (mut rows, facets) = if query_options.facets.is_empty() {
-            let rows = context
-                .fetch_entity_smart_list::<R>("School", query, relation_aggregates)
-                .await?;
+            let rows = context.fetch_entity_smart_list::<R>(
+                "School",
+                query,
+                relation_aggregates,
+            ).await?;
             (rows, std::collections::BTreeMap::new())
         } else {
-            let rows = context
-                .fetch_entity_smart_list::<R>("School", query.clone(), relation_aggregates)
+            let rows = context.fetch_entity_smart_list::<R>(
+                "School",
+                query.clone(),
+                relation_aggregates,
+            ).await?;
+            let facets = execute_facets(context, query.as_query(), &query_options)
                 .await?;
-            let facets = execute_facets(context, query.as_query(), &query_options).await?;
             (rows, facets)
         };
+        if let Some((alias, count_query)) = requested_count {
+            if total.is_none() { total = rows.total_count; }
+            if total.is_none() {
+                let count_rows = context.fetch_compact_rows("School", &count_query).await?;
+                total = Some(count_rows.first().and_then(|row| row.get(&alias))
+                    .and_then(teaql_core::Value::try_u64)
+                    .ok_or_else(|| RuntimeError::Graph("requested list count is missing or not numeric".into()))?);
+            }
+            rows.total_count = total;
+            rows.aggregations.insert(alias, teaql_core::Value::U64(total.expect("requested count resolved")));
+        }
         attach_facets(&mut rows, facets);
         Ok(rows)
+        }).await
     }
 
     pub(crate) async fn _execute_for_rows<'a, C>(
@@ -178,57 +210,30 @@ impl<R> SchoolRequest<R> {
         self._execute_for_first(context).await
     }
 
-    pub(crate) async fn _execute_for_page<'a, C>(
+
+    pub(crate) async fn _execute_for_count<'a, C>(
         self,
         context: &'a C,
-        offset: u64,
-        limit: u64,
-    ) -> Result<SmartList<R>, RuntimeError>
-    where
-        C: TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
-    {
-        if self.query.id_set_pagination.is_some() {
-            let mut rows = self
-                .clone()
-                .page_offset(offset, limit)
-                ._execute_for_list(context)
-                .await?;
-            if rows.total_count.is_none() {
-                rows.total_count = Some(self._execute_for_count(context).await?);
-            }
-            return Ok(rows);
-        }
-        let total_count = self.clone()._execute_for_count(context).await?;
-        let mut rows = self
-            .page_offset(offset, limit)
-            ._execute_for_list(context)
-            .await?;
-        rows.total_count = Some(total_count);
-        Ok(rows)
-    }
-
-    pub(crate) async fn _execute_for_count<'a, C>(self, context: &'a C) -> Result<u64, RuntimeError>
+    ) -> Result<u64, RuntimeError>
     where
         C: TeaqlRuntime + ?Sized,
     {
         let query_options = self.query_options.clone();
-        let mut query =
-            apply_runtime_metadata(self.query, &query_options, &self.child_enhancements);
-        query.projection.clear();
-        query.expr_projection.clear();
-        query.order_by.clear();
-        query.slice = None;
-        query.relations.clear();
-        query = query.count(COUNT_ALIAS);
-        let query = authorize_query(query)?;
+        let query = apply_runtime_metadata(
+            self.query,
+            &query_options,
+            &self.child_enhancements,
+        );
+        let operation = query_options.page_count_operation.clone().unwrap_or_else(||
+            QueryOperation::new(QueryOperationKind::NamedCount, "execute_for_count"));
+        let alias = operation.alias().unwrap_or(COUNT_ALIAS).to_owned();
+        let query = authorize_query(query)?.with_facet_diagnostics(&query_options)
+            .for_exact_count_with_operation(&alias, operation);
         let rows = context.fetch_compact_rows("School", &query).await?;
         rows.first()
-            .and_then(|row| row.get(COUNT_ALIAS))
+            .and_then(|row| row.get(&alias))
             .and_then(teaql_core::Value::try_u64)
-            .ok_or_else(|| {
-                RuntimeError::Graph(format!("count result for School is missing or not numeric"))
-            })
+            .ok_or_else(|| RuntimeError::Graph(format!("count result for School is missing or not numeric")))
     }
 
     pub(crate) async fn _execute_for_exists<'a, C>(
@@ -238,9 +243,11 @@ impl<R> SchoolRequest<R> {
     where
         C: TeaqlRuntime + ?Sized,
     {
-        let mut query =
-            apply_runtime_metadata(self.query, &self.query_options, &self.child_enhancements)
-                .limit(1);
+        let mut query = apply_runtime_metadata(
+            self.query,
+            &self.query_options,
+            &self.child_enhancements,
+        ).limit(1);
         query.relations.clear();
         let query = authorize_query(query)?;
         let rows = context.fetch_compact_rows("School", &query).await?;
@@ -300,11 +307,10 @@ impl<R> SchoolRequest<R> {
         mut self,
         types: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
-        self.query = self
-            .query
-            .and_filter(Expr::in_list(TYPE_FIELD, types.into_iter().map(Into::into)));
+        self.query = self.query.and_filter(Expr::in_list(TYPE_FIELD, types.into_iter().map(Into::into)));
         self
     }
+
 
     pub fn with_type_group(mut self) -> Self {
         self.query = self.query.project(TYPE_GROUP_FIELD);
@@ -314,12 +320,7 @@ impl<R> SchoolRequest<R> {
     pub fn matching_any_of(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
         let entity = EntityDescriptor::new(selection.query.entity.clone());
-        self.query = self.query.and_filter(Expr::in_subquery(
-            "id",
-            entity,
-            selection.query.clone(),
-            "id",
-        ));
+        self.query = self.query.and_filter(Expr::in_subquery("id", entity, selection.query.clone(), "id"));
         self
     }
 
@@ -336,6 +337,7 @@ impl<R> SchoolRequest<R> {
         let request = self;
         request
     }
+
 
     pub fn comment(mut self, comment: impl Into<String>) -> Self {
         self.query_options.comment = Some(comment.into());
@@ -356,9 +358,7 @@ impl<R> SchoolRequest<R> {
     }
 
     pub fn unsafe_raw_sql_filter(mut self, raw_sql: UnsafeRawSqlSegment) -> Self {
-        self.query_options
-            .raw_sql_search_criteria
-            .push(raw_sql.into_sql());
+        self.query_options.raw_sql_search_criteria.push(raw_sql.into_sql());
         self
     }
     pub fn filter_with_json(self, json_expr: impl Into<String>) -> Self {
@@ -482,12 +482,18 @@ impl<R> SchoolRequest<R> {
     fn apply_dynamic_json_chain_filter(self, head: &str, tail: &str, value: &JsonValue) -> Self {
         let _ = (tail, value);
         match head {
-            "platform" => self.with_platform_matching(
-                crate::Q::platforms_minimal().apply_dynamic_json_filter(tail, value),
-            ),
-            "school_type" => self.with_school_type_matching(
-                crate::Q::school_types_minimal().apply_dynamic_json_filter(tail, value),
-            ),
+            "platform" => {
+                self.with_platform_matching(
+                    crate::Q::platforms_minimal()
+                        .apply_dynamic_json_filter(tail, value),
+                )
+            }
+            "school_type" => {
+                self.with_school_type_matching(
+                    crate::Q::school_types_minimal()
+                        .apply_dynamic_json_filter(tail, value),
+                )
+            }
             _ => self,
         }
     }
@@ -572,9 +578,9 @@ impl<R> SchoolRequest<R> {
         ttl_seconds: u64,
         max_ids: u64,
     ) -> Self {
-        self.query =
-            self.query
-                .optimize_pagination_with_id_set_config(namespace, ttl_seconds, max_ids);
+        self.query = self
+            .query
+            .optimize_pagination_with_id_set_config(namespace, ttl_seconds, max_ids);
         self
     }
 
@@ -631,6 +637,11 @@ impl<R> SchoolRequest<R> {
         self
     }
 
+    pub fn select_dynamic_fields_with(mut self, selection: teaql_core::dynamic_fields::DynamicFieldSelection) -> Self {
+        self.query = self.query.select_dynamic_fields(selection);
+        self
+    }
+
     pub fn select_self_fields(self) -> Self {
         self.select_self()
     }
@@ -659,11 +670,14 @@ impl<R> SchoolRequest<R> {
         self
     }
 
-    pub fn count(self) -> Self {
-        self.count_as("count")
+    pub fn count(mut self) -> Self {
+        self.query_options.page_count_operation = Some(QueryOperation::new(QueryOperationKind::NamedCount, "count"));
+        self.aggregate_count("count")
     }
 
-    pub fn count_as(self, alias: impl Into<String>) -> Self {
+    pub fn count_as(mut self, alias: impl Into<String>) -> Self {
+        let alias = alias.into();
+        self.query_options.page_count_operation = Some(QueryOperation::new(QueryOperationKind::NamedCount, "count_as").with_alias(&alias));
         self.aggregate_count(alias)
     }
 
@@ -672,11 +686,7 @@ impl<R> SchoolRequest<R> {
         self
     }
 
-    pub fn aggregate_count_field(
-        mut self,
-        field: impl Into<String>,
-        alias: impl Into<String>,
-    ) -> Self {
+    pub fn aggregate_count_field(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.count_field(field, alias);
         self
     }
@@ -716,20 +726,12 @@ impl<R> SchoolRequest<R> {
         self
     }
 
-    pub fn aggregate_stddev_pop(
-        mut self,
-        field: impl Into<String>,
-        alias: impl Into<String>,
-    ) -> Self {
+    pub fn aggregate_stddev_pop(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.stddev_pop(field, alias);
         self
     }
 
-    pub fn aggregate_var_samp(
-        mut self,
-        field: impl Into<String>,
-        alias: impl Into<String>,
-    ) -> Self {
+    pub fn aggregate_var_samp(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.var_samp(field, alias);
         self
     }
@@ -760,9 +762,7 @@ impl<R> SchoolRequest<R> {
     }
 
     pub fn enable_aggregation_cache_for(mut self, cache_expired_millis: u64) -> Self {
-        self.query = self
-            .query
-            .enable_aggregation_cache_for(cache_expired_millis);
+        self.query = self.query.enable_aggregation_cache_for(cache_expired_millis);
         self
     }
 
@@ -778,7 +778,9 @@ impl<R> SchoolRequest<R> {
     pub fn group_by_id_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
         let mut request = self.group_by("id");
-        request.query = request.query.project_expr(alias, Expr::column("id"));
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column("id"));
         request
     }
 
@@ -831,6 +833,7 @@ impl<R> SchoolRequest<R> {
         self.aggregate_max("id", alias)
     }
 
+
     pub fn with_id(
         mut self,
         operator: FieldOperator,
@@ -848,13 +851,19 @@ impl<R> SchoolRequest<R> {
         operator: FieldOperator,
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
-        field_operator_expr("id", operator, values.into_iter().map(Into::into).collect())
+        field_operator_expr(
+            "id",
+            operator,
+            values.into_iter().map(Into::into).collect(),
+        )
     }
 
     pub fn with_id_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("id", value));
         self
     }
+
+
 
     pub fn with_id_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("id", value));
@@ -865,9 +874,10 @@ impl<R> SchoolRequest<R> {
         mut self,
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
-        self.query = self
-            .query
-            .and_filter(Expr::in_list("id", values.into_iter().map(Into::into)));
+        self.query = self.query.and_filter(Expr::in_list(
+            "id",
+            values.into_iter().map(Into::into),
+        ));
         self
     }
 
@@ -875,9 +885,10 @@ impl<R> SchoolRequest<R> {
         mut self,
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
-        self.query = self
-            .query
-            .and_filter(Expr::not_in_list("id", values.into_iter().map(Into::into)));
+        self.query = self.query.and_filter(Expr::not_in_list(
+            "id",
+            values.into_iter().map(Into::into),
+        ));
         self
     }
 
@@ -900,6 +911,7 @@ impl<R> SchoolRequest<R> {
         self.query = self.query.order_gbk_desc("id");
         self
     }
+
 
     pub fn select_name(mut self) -> Self {
         self.query = self.query.project("name");
@@ -928,7 +940,9 @@ impl<R> SchoolRequest<R> {
     pub fn group_by_name_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
         let mut request = self.group_by("name");
-        request.query = request.query.project_expr(alias, Expr::column("name"));
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column("name"));
         request
     }
 
@@ -983,11 +997,10 @@ impl<R> SchoolRequest<R> {
 
     pub fn unselect_name(mut self) -> Self {
         self.query.projection.retain(|field| field != "name");
-        self.query_options
-            .raw_projections
-            .retain(|projection| projection.property_name != "name");
+        self.query_options.raw_projections.retain(|projection| projection.property_name != "name");
         self
     }
+
 
     pub fn with_name(
         mut self,
@@ -1018,6 +1031,8 @@ impl<R> SchoolRequest<R> {
         self
     }
 
+
+
     pub fn with_name_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("name", value));
         self
@@ -1028,10 +1043,7 @@ impl<R> SchoolRequest<R> {
         self
     }
 
-    pub fn with_name_greater_than_or_equal_to(
-        mut self,
-        value: impl Into<teaql_core::Value>,
-    ) -> Self {
+    pub fn with_name_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("name", value));
         self
     }
@@ -1059,9 +1071,11 @@ impl<R> SchoolRequest<R> {
     where
         T: Into<teaql_core::Value>,
     {
-        self.query = self
-            .query
-            .and_filter(Expr::between("name", range.start, range.end));
+        self.query = self.query.and_filter(Expr::between(
+            "name",
+            range.start,
+            range.end,
+        ));
         self
     }
 
@@ -1069,9 +1083,10 @@ impl<R> SchoolRequest<R> {
         mut self,
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
-        self.query = self
-            .query
-            .and_filter(Expr::in_list("name", values.into_iter().map(Into::into)));
+        self.query = self.query.and_filter(Expr::in_list(
+            "name",
+            values.into_iter().map(Into::into),
+        ));
         self
     }
 
@@ -1135,10 +1150,13 @@ impl<R> SchoolRequest<R> {
         self
     }
 
+
+
     pub fn with_name_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("name"));
         self
     }
+
 
     pub fn order_by_name_asc(mut self) -> Self {
         self.query = self.query.order_asc("name");
@@ -1159,6 +1177,7 @@ impl<R> SchoolRequest<R> {
         self.query = self.query.order_gbk_desc("name");
         self
     }
+
 
     pub fn select_address(mut self) -> Self {
         self.query = self.query.project("address");
@@ -1187,7 +1206,9 @@ impl<R> SchoolRequest<R> {
     pub fn group_by_address_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
         let mut request = self.group_by("address");
-        request.query = request.query.project_expr(alias, Expr::column("address"));
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column("address"));
         request
     }
 
@@ -1242,11 +1263,10 @@ impl<R> SchoolRequest<R> {
 
     pub fn unselect_address(mut self) -> Self {
         self.query.projection.retain(|field| field != "address");
-        self.query_options
-            .raw_projections
-            .retain(|projection| projection.property_name != "address");
+        self.query_options.raw_projections.retain(|projection| projection.property_name != "address");
         self
     }
+
 
     pub fn with_address(
         mut self,
@@ -1277,6 +1297,8 @@ impl<R> SchoolRequest<R> {
         self
     }
 
+
+
     pub fn with_address_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("address", value));
         self
@@ -1287,10 +1309,7 @@ impl<R> SchoolRequest<R> {
         self
     }
 
-    pub fn with_address_greater_than_or_equal_to(
-        mut self,
-        value: impl Into<teaql_core::Value>,
-    ) -> Self {
+    pub fn with_address_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("address", value));
         self
     }
@@ -1300,10 +1319,7 @@ impl<R> SchoolRequest<R> {
         self
     }
 
-    pub fn with_address_less_than_or_equal_to(
-        mut self,
-        value: impl Into<teaql_core::Value>,
-    ) -> Self {
+    pub fn with_address_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("address", value));
         self
     }
@@ -1313,9 +1329,7 @@ impl<R> SchoolRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self
-            .query
-            .and_filter(Expr::between("address", lower, upper));
+        self.query = self.query.and_filter(Expr::between("address", lower, upper));
         self
     }
 
@@ -1323,9 +1337,11 @@ impl<R> SchoolRequest<R> {
     where
         T: Into<teaql_core::Value>,
     {
-        self.query = self
-            .query
-            .and_filter(Expr::between("address", range.start, range.end));
+        self.query = self.query.and_filter(Expr::between(
+            "address",
+            range.start,
+            range.end,
+        ));
         self
     }
 
@@ -1333,9 +1349,10 @@ impl<R> SchoolRequest<R> {
         mut self,
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
-        self.query = self
-            .query
-            .and_filter(Expr::in_list("address", values.into_iter().map(Into::into)));
+        self.query = self.query.and_filter(Expr::in_list(
+            "address",
+            values.into_iter().map(Into::into),
+        ));
         self
     }
 
@@ -1366,9 +1383,7 @@ impl<R> SchoolRequest<R> {
     }
 
     pub fn with_address_not_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self
-            .query
-            .and_filter(Expr::not_begin_with("address", value));
+        self.query = self.query.and_filter(Expr::not_begin_with("address", value));
         self
     }
 
@@ -1401,10 +1416,13 @@ impl<R> SchoolRequest<R> {
         self
     }
 
+
+
     pub fn with_address_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("address"));
         self
     }
+
 
     pub fn order_by_address_asc(mut self) -> Self {
         self.query = self.query.order_asc("address");
@@ -1426,6 +1444,7 @@ impl<R> SchoolRequest<R> {
         self
     }
 
+
     pub fn select_established_date(mut self) -> Self {
         self.query = self.query.project("established_date");
         self
@@ -1439,10 +1458,7 @@ impl<R> SchoolRequest<R> {
         self.select_established_date_unsafe_raw(UnsafeRawSqlSegment::trusted(raw_sql_segment))
     }
 
-    pub fn select_established_date_unsafe_raw(
-        mut self,
-        raw_sql_segment: UnsafeRawSqlSegment,
-    ) -> Self {
+    pub fn select_established_date_unsafe_raw(mut self, raw_sql_segment: UnsafeRawSqlSegment) -> Self {
         self.query_options
             .raw_projections
             .push(RawProjection::new("established_date", raw_sql_segment));
@@ -1467,11 +1483,8 @@ impl<R> SchoolRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("established_date").aggregate_with_function(
-            "established_date",
-            alias,
-            function,
-        )
+        self.group_by("established_date")
+            .aggregate_with_function("established_date", alias, function)
     }
 
     pub fn count_established_date(self) -> Self {
@@ -1515,14 +1528,11 @@ impl<R> SchoolRequest<R> {
     }
 
     pub fn unselect_established_date(mut self) -> Self {
-        self.query
-            .projection
-            .retain(|field| field != "established_date");
-        self.query_options
-            .raw_projections
-            .retain(|projection| projection.property_name != "established_date");
+        self.query.projection.retain(|field| field != "established_date");
+        self.query_options.raw_projections.retain(|projection| projection.property_name != "established_date");
         self
     }
+
 
     pub fn with_established_date(
         mut self,
@@ -1553,23 +1563,19 @@ impl<R> SchoolRequest<R> {
         self
     }
 
+
+
     pub fn with_established_date_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("established_date", value));
         self
     }
 
-    pub fn with_established_date_greater_than(
-        mut self,
-        value: impl Into<teaql_core::Value>,
-    ) -> Self {
+    pub fn with_established_date_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("established_date", value));
         self
     }
 
-    pub fn with_established_date_greater_than_or_equal_to(
-        mut self,
-        value: impl Into<teaql_core::Value>,
-    ) -> Self {
+    pub fn with_established_date_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("established_date", value));
         self
     }
@@ -1579,10 +1585,7 @@ impl<R> SchoolRequest<R> {
         self
     }
 
-    pub fn with_established_date_less_than_or_equal_to(
-        mut self,
-        value: impl Into<teaql_core::Value>,
-    ) -> Self {
+    pub fn with_established_date_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("established_date", value));
         self
     }
@@ -1592,9 +1595,7 @@ impl<R> SchoolRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self
-            .query
-            .and_filter(Expr::between("established_date", lower, upper));
+        self.query = self.query.and_filter(Expr::between("established_date", lower, upper));
         self
     }
 
@@ -1602,9 +1603,11 @@ impl<R> SchoolRequest<R> {
     where
         T: Into<teaql_core::Value>,
     {
-        self.query =
-            self.query
-                .and_filter(Expr::between("established_date", range.start, range.end));
+        self.query = self.query.and_filter(Expr::between(
+            "established_date",
+            range.start,
+            range.end,
+        ));
         self
     }
 
@@ -1645,10 +1648,13 @@ impl<R> SchoolRequest<R> {
         self
     }
 
+
+
     pub fn with_established_date_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("established_date"));
         self
     }
+
 
     pub fn order_by_established_date_asc(mut self) -> Self {
         self.query = self.query.order_asc("established_date");
@@ -1670,6 +1676,7 @@ impl<R> SchoolRequest<R> {
         self
     }
 
+
     pub fn select_student_capacity(mut self) -> Self {
         self.query = self.query.project("student_capacity");
         self
@@ -1683,10 +1690,7 @@ impl<R> SchoolRequest<R> {
         self.select_student_capacity_unsafe_raw(UnsafeRawSqlSegment::trusted(raw_sql_segment))
     }
 
-    pub fn select_student_capacity_unsafe_raw(
-        mut self,
-        raw_sql_segment: UnsafeRawSqlSegment,
-    ) -> Self {
+    pub fn select_student_capacity_unsafe_raw(mut self, raw_sql_segment: UnsafeRawSqlSegment) -> Self {
         self.query_options
             .raw_projections
             .push(RawProjection::new("student_capacity", raw_sql_segment));
@@ -1723,11 +1727,8 @@ impl<R> SchoolRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("student_capacity").aggregate_with_function(
-            "student_capacity",
-            alias,
-            function,
-        )
+        self.group_by("student_capacity")
+            .aggregate_with_function("student_capacity", alias, function)
     }
 
     pub fn count_student_capacity(self) -> Self {
@@ -1779,15 +1780,10 @@ impl<R> SchoolRequest<R> {
     }
 
     pub fn square_root_of_population_standard_deviation_student_capacity(self) -> Self {
-        self.square_root_of_population_standard_deviation_student_capacity_as(
-            "stdDevPop_student_capacity",
-        )
+        self.square_root_of_population_standard_deviation_student_capacity_as("stdDevPop_student_capacity")
     }
 
-    pub fn square_root_of_population_standard_deviation_student_capacity_as(
-        self,
-        alias: impl Into<String>,
-    ) -> Self {
+    pub fn square_root_of_population_standard_deviation_student_capacity_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_stddev_pop("student_capacity", alias)
     }
 
@@ -1808,14 +1804,11 @@ impl<R> SchoolRequest<R> {
     }
 
     pub fn unselect_student_capacity(mut self) -> Self {
-        self.query
-            .projection
-            .retain(|field| field != "student_capacity");
-        self.query_options
-            .raw_projections
-            .retain(|projection| projection.property_name != "student_capacity");
+        self.query.projection.retain(|field| field != "student_capacity");
+        self.query_options.raw_projections.retain(|projection| projection.property_name != "student_capacity");
         self
     }
+
 
     pub fn with_student_capacity(
         mut self,
@@ -1846,23 +1839,19 @@ impl<R> SchoolRequest<R> {
         self
     }
 
+
+
     pub fn with_student_capacity_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("student_capacity", value));
         self
     }
 
-    pub fn with_student_capacity_greater_than(
-        mut self,
-        value: impl Into<teaql_core::Value>,
-    ) -> Self {
+    pub fn with_student_capacity_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("student_capacity", value));
         self
     }
 
-    pub fn with_student_capacity_greater_than_or_equal_to(
-        mut self,
-        value: impl Into<teaql_core::Value>,
-    ) -> Self {
+    pub fn with_student_capacity_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("student_capacity", value));
         self
     }
@@ -1872,10 +1861,7 @@ impl<R> SchoolRequest<R> {
         self
     }
 
-    pub fn with_student_capacity_less_than_or_equal_to(
-        mut self,
-        value: impl Into<teaql_core::Value>,
-    ) -> Self {
+    pub fn with_student_capacity_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("student_capacity", value));
         self
     }
@@ -1885,9 +1871,7 @@ impl<R> SchoolRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self
-            .query
-            .and_filter(Expr::between("student_capacity", lower, upper));
+        self.query = self.query.and_filter(Expr::between("student_capacity", lower, upper));
         self
     }
 
@@ -1895,9 +1879,11 @@ impl<R> SchoolRequest<R> {
     where
         T: Into<teaql_core::Value>,
     {
-        self.query =
-            self.query
-                .and_filter(Expr::between("student_capacity", range.start, range.end));
+        self.query = self.query.and_filter(Expr::between(
+            "student_capacity",
+            range.start,
+            range.end,
+        ));
         self
     }
 
@@ -1938,10 +1924,13 @@ impl<R> SchoolRequest<R> {
         self
     }
 
+
+
     pub fn with_student_capacity_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("student_capacity"));
         self
     }
+
 
     pub fn order_by_student_capacity_asc(mut self) -> Self {
         self.query = self.query.order_asc("student_capacity");
@@ -1962,6 +1951,7 @@ impl<R> SchoolRequest<R> {
         self.query = self.query.order_gbk_desc("student_capacity");
         self
     }
+
 
     pub fn select_active(mut self) -> Self {
         self.query = self.query.project("active");
@@ -1990,7 +1980,9 @@ impl<R> SchoolRequest<R> {
     pub fn group_by_active_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
         let mut request = self.group_by("active");
-        request.query = request.query.project_expr(alias, Expr::column("active"));
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column("active"));
         request
     }
 
@@ -2045,9 +2037,7 @@ impl<R> SchoolRequest<R> {
 
     pub fn unselect_active(mut self) -> Self {
         self.query.projection.retain(|field| field != "active");
-        self.query_options
-            .raw_projections
-            .retain(|projection| projection.property_name != "active");
+        self.query_options.raw_projections.retain(|projection| projection.property_name != "active");
         self
     }
 
@@ -2089,6 +2079,7 @@ impl<R> SchoolRequest<R> {
         self.query = self.query.order_gbk_desc("active");
         self
     }
+
 
     pub fn select_create_time(mut self) -> Self {
         self.query = self.query.project("create_time");
@@ -2174,11 +2165,10 @@ impl<R> SchoolRequest<R> {
 
     pub fn unselect_create_time(mut self) -> Self {
         self.query.projection.retain(|field| field != "create_time");
-        self.query_options
-            .raw_projections
-            .retain(|projection| projection.property_name != "create_time");
+        self.query_options.raw_projections.retain(|projection| projection.property_name != "create_time");
         self
     }
+
 
     pub fn with_create_time(
         mut self,
@@ -2209,6 +2199,8 @@ impl<R> SchoolRequest<R> {
         self
     }
 
+
+
     pub fn with_create_time_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("create_time", value));
         self
@@ -2219,10 +2211,7 @@ impl<R> SchoolRequest<R> {
         self
     }
 
-    pub fn with_create_time_greater_than_or_equal_to(
-        mut self,
-        value: impl Into<teaql_core::Value>,
-    ) -> Self {
+    pub fn with_create_time_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("create_time", value));
         self
     }
@@ -2232,10 +2221,7 @@ impl<R> SchoolRequest<R> {
         self
     }
 
-    pub fn with_create_time_less_than_or_equal_to(
-        mut self,
-        value: impl Into<teaql_core::Value>,
-    ) -> Self {
+    pub fn with_create_time_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("create_time", value));
         self
     }
@@ -2245,9 +2231,7 @@ impl<R> SchoolRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self
-            .query
-            .and_filter(Expr::between("create_time", lower, upper));
+        self.query = self.query.and_filter(Expr::between("create_time", lower, upper));
         self
     }
 
@@ -2255,9 +2239,11 @@ impl<R> SchoolRequest<R> {
     where
         T: Into<teaql_core::Value>,
     {
-        self.query = self
-            .query
-            .and_filter(Expr::between("create_time", range.start, range.end));
+        self.query = self.query.and_filter(Expr::between(
+            "create_time",
+            range.start,
+            range.end,
+        ));
         self
     }
 
@@ -2298,10 +2284,13 @@ impl<R> SchoolRequest<R> {
         self
     }
 
+
+
     pub fn with_create_time_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("create_time"));
         self
     }
+
 
     pub fn order_by_create_time_asc(mut self) -> Self {
         self.query = self.query.order_asc("create_time");
@@ -2322,6 +2311,7 @@ impl<R> SchoolRequest<R> {
         self.query = self.query.order_gbk_desc("create_time");
         self
     }
+
 
     pub fn select_update_time(mut self) -> Self {
         self.query = self.query.project("update_time");
@@ -2407,11 +2397,10 @@ impl<R> SchoolRequest<R> {
 
     pub fn unselect_update_time(mut self) -> Self {
         self.query.projection.retain(|field| field != "update_time");
-        self.query_options
-            .raw_projections
-            .retain(|projection| projection.property_name != "update_time");
+        self.query_options.raw_projections.retain(|projection| projection.property_name != "update_time");
         self
     }
+
 
     pub fn with_update_time(
         mut self,
@@ -2442,6 +2431,8 @@ impl<R> SchoolRequest<R> {
         self
     }
 
+
+
     pub fn with_update_time_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("update_time", value));
         self
@@ -2452,10 +2443,7 @@ impl<R> SchoolRequest<R> {
         self
     }
 
-    pub fn with_update_time_greater_than_or_equal_to(
-        mut self,
-        value: impl Into<teaql_core::Value>,
-    ) -> Self {
+    pub fn with_update_time_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("update_time", value));
         self
     }
@@ -2465,10 +2453,7 @@ impl<R> SchoolRequest<R> {
         self
     }
 
-    pub fn with_update_time_less_than_or_equal_to(
-        mut self,
-        value: impl Into<teaql_core::Value>,
-    ) -> Self {
+    pub fn with_update_time_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("update_time", value));
         self
     }
@@ -2478,9 +2463,7 @@ impl<R> SchoolRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self
-            .query
-            .and_filter(Expr::between("update_time", lower, upper));
+        self.query = self.query.and_filter(Expr::between("update_time", lower, upper));
         self
     }
 
@@ -2488,9 +2471,11 @@ impl<R> SchoolRequest<R> {
     where
         T: Into<teaql_core::Value>,
     {
-        self.query = self
-            .query
-            .and_filter(Expr::between("update_time", range.start, range.end));
+        self.query = self.query.and_filter(Expr::between(
+            "update_time",
+            range.start,
+            range.end,
+        ));
         self
     }
 
@@ -2531,10 +2516,13 @@ impl<R> SchoolRequest<R> {
         self
     }
 
+
+
     pub fn with_update_time_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("update_time"));
         self
     }
+
 
     pub fn order_by_update_time_asc(mut self) -> Self {
         self.query = self.query.order_asc("update_time");
@@ -2563,7 +2551,9 @@ impl<R> SchoolRequest<R> {
     pub fn group_by_version_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
         let mut request = self.group_by("version");
-        request.query = request.query.project_expr(alias, Expr::column("version"));
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column("version"));
         request
     }
 
@@ -2636,9 +2626,7 @@ impl<R> SchoolRequest<R> {
         self
     }
     pub fn filter_by_platform(mut self, value: impl EntityReference) -> Self {
-        self.query = self
-            .query
-            .and_filter(Expr::eq("platform_id", value.entity_id_value()));
+        self.query = self.query.and_filter(Expr::eq("platform_id", value.entity_id_value()));
         self
     }
 
@@ -2650,10 +2638,10 @@ impl<R> SchoolRequest<R> {
             selection.query.clone(),
             "id",
         ));
-        self.relation_filters
-            .push(RelationFilter::new("platform", selection));
+        self.relation_filters.push(RelationFilter::new("platform", selection));
         self
     }
+
 
     pub fn without_platform_matching(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
@@ -2663,10 +2651,10 @@ impl<R> SchoolRequest<R> {
             selection.query.clone(),
             "id",
         ));
-        self.relation_filters
-            .push(RelationFilter::new("platform", selection));
+        self.relation_filters.push(RelationFilter::new("platform", selection));
         self
     }
+
 
     pub fn have_platform(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("platform_id"));
@@ -2677,6 +2665,7 @@ impl<R> SchoolRequest<R> {
         self.query = self.query.and_filter(Expr::is_null("platform_id"));
         self
     }
+
 
     pub fn group_by_platform(self) -> Self {
         self.group_by("platform_id")
@@ -2718,6 +2707,7 @@ impl<R> SchoolRequest<R> {
         self.group_by_platform_with(request)
     }
 
+
     pub fn roll_up_to_platform(self) -> Self {
         self.roll_up_to_platform_with(crate::Q::platforms().unlimited())
     }
@@ -2738,17 +2728,14 @@ impl<R> SchoolRequest<R> {
 
     pub fn unselect_platform(mut self) -> Self {
         self.query.projection.retain(|field| field != "platform_id");
-        self.query
-            .relations
-            .retain(|relation| relation.name != "platform");
+        self.query.relations.retain(|relation| relation.name != "platform");
         self
     }
 
+
     /// Please use `with_school_type_is` instead
     pub(crate) fn filter_by_school_type(mut self, value: impl EntityReference) -> Self {
-        self.query = self
-            .query
-            .and_filter(Expr::eq("school_type_id", value.entity_id_value()));
+        self.query = self.query.and_filter(Expr::eq("school_type_id", value.entity_id_value()));
         self
     }
     /// Complex relation filter for `school_type`.
@@ -2776,10 +2763,10 @@ impl<R> SchoolRequest<R> {
             selection.query.clone(),
             "id",
         ));
-        self.relation_filters
-            .push(RelationFilter::new("school_type", selection));
+        self.relation_filters.push(RelationFilter::new("school_type", selection));
         self
     }
+
 
     /// Complex relation filter for `school_type`.
     ///
@@ -2806,10 +2793,10 @@ impl<R> SchoolRequest<R> {
             selection.query.clone(),
             "id",
         ));
-        self.relation_filters
-            .push(RelationFilter::new("school_type", selection));
+        self.relation_filters.push(RelationFilter::new("school_type", selection));
         self
     }
+
 
     pub fn have_school_type(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("school_type_id"));
@@ -2820,6 +2807,7 @@ impl<R> SchoolRequest<R> {
         self.query = self.query.and_filter(Expr::is_null("school_type_id"));
         self
     }
+
 
     pub fn group_by_school_type(self) -> Self {
         self.group_by("school_type_id")
@@ -2857,12 +2845,10 @@ impl<R> SchoolRequest<R> {
         self.group_by_school_type_with_details_from(crate::Q::school_types().unlimited())
     }
 
-    pub fn group_by_school_type_with_details_from(
-        self,
-        request: impl Into<QuerySelection>,
-    ) -> Self {
+    pub fn group_by_school_type_with_details_from(self, request: impl Into<QuerySelection>) -> Self {
         self.group_by_school_type_with(request)
     }
+
 
     pub fn roll_up_to_school_type(self) -> Self {
         self.roll_up_to_school_type_with(crate::Q::school_types().unlimited())
@@ -2883,101 +2869,109 @@ impl<R> SchoolRequest<R> {
     }
 
     pub fn unselect_school_type(mut self) -> Self {
-        self.query
-            .projection
-            .retain(|field| field != "school_type_id");
-        self.query
-            .relations
-            .retain(|relation| relation.name != "school_type");
+        self.query.projection.retain(|field| field != "school_type_id");
+        self.query.relations.retain(|relation| relation.name != "school_type");
         self
     }
     pub fn with_school_type_is_primary(self) -> Self {
         self.filter_by_school_type(1001_u64)
     }
 
+
+
     pub fn with_school_type_is_not_primary(mut self) -> Self {
         self.query = self.query.and_filter(Expr::ne("school_type_id", 1001_u64));
         self
     }
 
+
     pub fn with_school_type_is_secondary(self) -> Self {
         self.filter_by_school_type(1002_u64)
     }
+
+
 
     pub fn with_school_type_is_not_secondary(mut self) -> Self {
         self.query = self.query.and_filter(Expr::ne("school_type_id", 1002_u64));
         self
     }
 
+
     pub fn select_platform(mut self) -> Self {
-        self.query = self.query.relation("platform");
+        self.query.relations.push(teaql_core::RelationLoad::new("platform")
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_platform").with_relation("platform")));
         self
     }
 
     pub fn select_platform_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self
-            .query
-            .relation_query("platform", selection.into_query());
+        self.query.relations.push(teaql_core::RelationLoad::with_query("platform", selection.into_query())
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_platform_with").with_relation("platform")));
         self
-    }
+}
 
-    pub fn facet_by_platform_as(
-        self,
-        facet_name: impl Into<String>,
-        request: impl Into<QuerySelection>,
-    ) -> Self {
-        self.facet_by_platform_as_with_options(facet_name, request, true)
+    pub fn facet_by_platform_as(self, facet_name: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+        self.facet_by_platform_internal(facet_name, request, true, "facet_by_platform_as")
     }
 
     pub fn facet_by_platform_as_with_options(
-        mut self,
+        self,
         facet_name: impl Into<String>,
         request: impl Into<QuerySelection>,
         include_all_facets: bool,
     ) -> Self {
+        self.facet_by_platform_internal(facet_name, request, include_all_facets, "facet_by_platform_as_with_options")
+    }
+
+    fn facet_by_platform_internal(mut self, facet_name: impl Into<String>, request: impl Into<QuerySelection>, include_all_facets: bool, method: &'static str) -> Self {
+        let facet_name = facet_name.into();
+        let operation = QueryOperation::new(QueryOperationKind::Facet, method)
+            .with_alias(&facet_name).with_relation("platform");
         self.query_options.facets.push(FacetRequest::new(
             facet_name,
             "platform",
             request,
             include_all_facets,
-        ));
+        ).with_operation(operation));
         self
     }
 
     pub fn select_school_type(mut self) -> Self {
-        self.query = self.query.relation("school_type");
+        self.query.relations.push(teaql_core::RelationLoad::new("school_type")
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_school_type").with_relation("school_type")));
         self
     }
 
     pub fn select_school_type_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self
-            .query
-            .relation_query("school_type", selection.into_query());
+        self.query.relations.push(teaql_core::RelationLoad::with_query("school_type", selection.into_query())
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_school_type_with").with_relation("school_type")));
         self
-    }
+}
 
-    pub fn facet_by_school_type_as(
-        self,
-        facet_name: impl Into<String>,
-        request: impl Into<QuerySelection>,
-    ) -> Self {
-        self.facet_by_school_type_as_with_options(facet_name, request, true)
+    pub fn facet_by_school_type_as(self, facet_name: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+        self.facet_by_school_type_internal(facet_name, request, true, "facet_by_school_type_as")
     }
 
     pub fn facet_by_school_type_as_with_options(
-        mut self,
+        self,
         facet_name: impl Into<String>,
         request: impl Into<QuerySelection>,
         include_all_facets: bool,
     ) -> Self {
+        self.facet_by_school_type_internal(facet_name, request, include_all_facets, "facet_by_school_type_as_with_options")
+    }
+
+    fn facet_by_school_type_internal(mut self, facet_name: impl Into<String>, request: impl Into<QuerySelection>, include_all_facets: bool, method: &'static str) -> Self {
+        let facet_name = facet_name.into();
+        let operation = QueryOperation::new(QueryOperationKind::Facet, method)
+            .with_alias(&facet_name).with_relation("school_type");
         self.query_options.facets.push(FacetRequest::new(
             facet_name,
             "school_type",
             request,
             include_all_facets,
-        ));
+        ).with_operation(operation));
         self
     }
 }
@@ -2988,13 +2982,13 @@ impl<R> Default for SchoolRequest<R> {
     }
 }
 
-impl<R> From<SchoolRequest<R>> for SelectQuery {
+impl<R> From< SchoolRequest<R> > for SelectQuery {
     fn from(request: SchoolRequest<R>) -> Self {
         QuerySelection::from(request).into_query()
     }
 }
 
-impl<R> From<SchoolRequest<R>> for QuerySelection {
+impl<R> From< SchoolRequest<R> > for QuerySelection {
     fn from(request: SchoolRequest<R>) -> Self {
         Self {
             query: request.query,
@@ -3006,19 +3000,16 @@ impl<R> From<SchoolRequest<R>> for QuerySelection {
     }
 }
 
-impl<'a, C> crate::request_support::AuditedSave<'a, C> for teaql_core::Audited<crate::School>
-where
-    C: crate::TeaqlRuntime + ?Sized + 'a,
+
+impl<'a, C> crate::request_support::AuditedSave<'a, C> for teaql_core::Audited<crate::School> 
+where C: crate::TeaqlRuntime + ?Sized + 'a
 {
     type Error = teaql_runtime::RuntimeError;
     type Entity = crate::School;
-    fn save(
-        self,
-        context: &'a C,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Self::Entity, Self::Error>> + Send + '_>,
-    > {
-        Box::pin(async move { context.save_audited_entity(self).await })
+    fn save(self, context: &'a C) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Entity, Self::Error>> + Send + '_>> {
+        Box::pin(async move {
+            context.save_audited_entity(self).await
+        })
     }
 }
 
@@ -3043,15 +3034,12 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<SchoolRequest<R>> {
 
     fn into_inner_with_trace(mut self) -> SchoolRequest<R> {
         self.require_comment();
-        self.inner
-            .query
-            .trace_chain
-            .push(teaql_core::TraceNode::typed(
-                teaql_core::TraceKind::Purpose,
-                self.inner.query.entity.clone(),
-                None,
-                self.purpose,
-            ));
+        self.inner.query.trace_chain.push(teaql_core::TraceNode::typed(
+            teaql_core::TraceKind::Purpose,
+            self.inner.query.entity.clone(),
+            None,
+            self.purpose,
+        ));
         self.inner
     }
 
@@ -3066,21 +3054,6 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<SchoolRequest<R>> {
         );
     }
 
-    pub async fn execute_for_page<'a, C>(
-        self,
-        context: &'a C,
-        offset: u64,
-        limit: u64,
-    ) -> Result<teaql_core::SmartList<R>, teaql_runtime::RuntimeError>
-    where
-        C: crate::TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
-    {
-        self.into_inner_with_trace()
-            ._execute_for_page(context, offset, limit)
-            .await
-    }
-
     pub async fn execute_for_exists<'a, C>(
         self,
         context: &'a C,
@@ -3088,71 +3061,43 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<SchoolRequest<R>> {
     where
         C: crate::TeaqlRuntime + ?Sized,
     {
-        self.into_inner_with_trace()
-            ._execute_for_exists(context)
-            .await
+        self.into_inner_with_trace()._execute_for_exists(context).await
     }
 
-    pub async fn execute_for_list<'a, C>(
-        self,
-        context: &'a C,
-    ) -> Result<teaql_core::SmartList<R>, teaql_runtime::RuntimeError>
+    pub async fn execute_for_list<'a, C>(self, context: &'a C) -> Result<teaql_core::SmartList<R>, teaql_runtime::RuntimeError>
     where
         C: crate::TeaqlRuntime + ?Sized,
         R: teaql_core::Entity + Send + 'a,
     {
-        self.into_inner_with_trace()
-            ._execute_for_list(context)
-            .await
+        self.into_inner_with_trace()._execute_for_list(context).await
     }
 
-    pub async fn execute_for_rows<'a, C>(
-        self,
-        context: &'a C,
-    ) -> Result<teaql_core::SmartList<teaql_core::CompactRow>, teaql_runtime::RuntimeError>
+    pub async fn execute_for_rows<'a, C>(self, context: &'a C) -> Result<teaql_core::SmartList<teaql_core::CompactRow>, teaql_runtime::RuntimeError>
     where
         C: crate::TeaqlRuntime + ?Sized,
     {
-        self.into_inner_with_trace()
-            ._execute_for_rows(context)
-            .await
+        self.into_inner_with_trace()._execute_for_rows(context).await
     }
 
     /// Execute query as a lazy entity stream without materializing the result set.
     /// Set chunk size via .stream(chunk_size) or .stream_default() on the query.
-    pub async fn execute_for_stream<'a, C>(
-        self,
-        context: &'a C,
-    ) -> Result<
-        crate::request_support::TeaqlEntityStream<'a, R, teaql_runtime::RuntimeError>,
-        teaql_runtime::RuntimeError,
-    >
+    pub async fn execute_for_stream<'a, C>(self, context: &'a C) -> Result<crate::request_support::TeaqlEntityStream<'a, R, teaql_runtime::RuntimeError>, teaql_runtime::RuntimeError>
     where
         C: crate::TeaqlRuntime + ?Sized,
         R: teaql_core::Entity + Send + 'a,
     {
-        self.into_inner_with_trace()
-            ._execute_for_stream(context)
-            .await
+        self.into_inner_with_trace()._execute_for_stream(context).await
     }
 
-    pub async fn execute_for_first<'a, C>(
-        self,
-        context: &'a C,
-    ) -> Result<Option<R>, teaql_runtime::RuntimeError>
+    pub async fn execute_for_first<'a, C>(self, context: &'a C) -> Result<Option<R>, teaql_runtime::RuntimeError>
     where
         C: crate::TeaqlRuntime + ?Sized,
         R: teaql_core::Entity + Send + 'a,
     {
-        self.into_inner_with_trace()
-            ._execute_for_first(context)
-            .await
+        self.into_inner_with_trace()._execute_for_first(context).await
     }
 
-    pub async fn execute_for_one<'a, C>(
-        self,
-        context: &'a C,
-    ) -> Result<Option<R>, teaql_runtime::RuntimeError>
+    pub async fn execute_for_one<'a, C>(self, context: &'a C) -> Result<Option<R>, teaql_runtime::RuntimeError>
     where
         C: crate::TeaqlRuntime + ?Sized,
         R: teaql_core::Entity + Send + 'a,
@@ -3160,15 +3105,11 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<SchoolRequest<R>> {
         self.into_inner_with_trace()._execute_for_one(context).await
     }
 
-    pub async fn execute_for_count<'a, C>(
-        self,
-        context: &'a C,
-    ) -> Result<u64, teaql_runtime::RuntimeError>
+
+    pub async fn execute_for_count<'a, C>(self, context: &'a C) -> Result<u64, teaql_runtime::RuntimeError>
     where
         C: crate::TeaqlRuntime + ?Sized,
     {
-        self.into_inner_with_trace()
-            ._execute_for_count(context)
-            .await
+        self.into_inner_with_trace()._execute_for_count(context).await
     }
 }

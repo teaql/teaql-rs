@@ -114,13 +114,34 @@ impl ServiceRuntimeExecutor {
         }
     }
 
-    /// Trusted provider/test SPI, disabled by default. Metadata can contain raw
-    /// binds: never send it to operator logs or an untrusted transport. Normal
-    /// SQL/audit sinks retain their runtime-owned safe projections.
+    /// Trusted runtime diagnostic SPI; it never changes query results or intent.
     #[doc(hidden)]
-    pub fn with_query_metadata_observer(mut self, observer: std::sync::Arc<dyn Fn(&teaql_data_service::ExecutionMetadata) + Send + Sync>) -> Self {
+    pub fn with_query_metadata_observer(mut self,
+        observer: std::sync::Arc<dyn Fn(&teaql_data_service::ExecutionMetadata) + Send + Sync>,
+    ) -> Self {
         self.query_metadata_observer = Some(observer);
         self
+    }
+
+    fn notify_query_metadata(&self, metadata: &teaql_data_service::ExecutionMetadata) {
+        if let Some(observer) = &self.query_metadata_observer {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer(metadata)));
+        }
+    }
+
+    fn query_metadata_observer<'a>(
+        &self, upstream: Option<teaql_data_service::ExecutionObserver<'a>>,
+    ) -> Option<teaql_data_service::ExecutionObserver<'a>> {
+        match &self.query_metadata_observer {
+            Some(callback) => {
+                let callback = callback.clone();
+                Some(std::sync::Arc::new(move |metadata| {
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(&metadata)));
+                    if let Some(upstream) = &upstream { upstream(metadata); }
+                }))
+            }
+            None => upstream,
+        }
     }
 
 }
@@ -137,42 +158,58 @@ impl teaql_data_service::QueryExecutor for ServiceRuntimeExecutor {
         teaql_data_service::QueryExecutor::query_log_intent(&self.inner, query)
     }
 
+    fn dynamic_field_store(&self) -> Option<&dyn teaql_data_service::dynamic_fields::DynamicFieldStore> {
+        teaql_data_service::QueryExecutor::dynamic_field_store(&self.inner)
+    }
+
     async fn query(&self, request: teaql_data_service::QueryRequest) -> Result<teaql_data_service::QueryResult, Self::Error> {
-        self.query_observed(request, None).await
+        teaql_data_service::QueryExecutor::query_observed(self, request, None).await
     }
 
-    async fn query_observed<'a>(&'a self, request: teaql_data_service::QueryRequest, observer: Option<teaql_data_service::ExecutionObserver<'a>>) -> Result<teaql_data_service::QueryResult, Self::Error> {
-        let result = self.execute_query_observed(request, observer).await?;
-        if let Some(observer) = &self.query_metadata_observer {
-            observer(&result.metadata);
-        }
+    fn query_observed<'a>(
+        &'a self,
+        request: teaql_data_service::QueryRequest,
+        observer: Option<teaql_data_service::ExecutionObserver<'a>>,
+    ) -> impl std::future::Future<Output = Result<teaql_data_service::QueryResult, Self::Error>> + Send + 'a {
+        async move {
+        let observer = self.query_metadata_observer(observer);
+        let result = teaql_data_service::QueryExecutor::query_observed(&self.inner, request, observer).await?;
+        self.notify_query_metadata(&result.metadata);
         Ok(result)
-    }
-}
-
-impl ServiceRuntimeExecutor {
-    async fn execute_query_observed<'a>(&'a self, request: teaql_data_service::QueryRequest, observer: Option<teaql_data_service::ExecutionObserver<'a>>) -> Result<teaql_data_service::QueryResult, teaql_sql::SqlExecutorError<DataServiceMutationError>> {
-        teaql_data_service::QueryExecutor::query_observed(&self.inner, request, observer).await
+        }
     }
 }
 
 impl teaql_data_service::StreamQueryExecutor for ServiceRuntimeExecutor {
-    fn query_stream_observed<'a>(&'a self, request: teaql_data_service::QueryRequest, chunk_size: usize, observer: teaql_data_service::ExecutionObserver<'a>) -> teaql_data_service::QueryStream<'a, Self::Error> {
-        let trusted_observer = self.query_metadata_observer.clone();
-        teaql_data_service::StreamQueryExecutor::query_stream_observed(
-            &self.inner, request, chunk_size,
-            std::sync::Arc::new(move |metadata| {
-                // Deliver the runtime-owned safe sink before optional trusted SPI.
-                observer(metadata.clone());
-                if let Some(trusted) = &trusted_observer {
-                    trusted(&metadata);
-                }
-            }),
+    fn query_stream_with_dynamic_fields<'a>(
+        &'a self,
+        request: teaql_data_service::QueryRequest,
+        chunk_size: usize,
+        plan: teaql_data_service::dynamic_fields::DynamicFieldStreamPlan,
+        observer: Option<teaql_data_service::ExecutionObserver<'a>>,
+    ) -> Result<teaql_data_service::QueryStream<'a, Self::Error>, teaql_core::dynamic_fields::DynamicFieldError> {
+        let observer = self.query_metadata_observer(observer);
+        teaql_data_service::StreamQueryExecutor::query_stream_with_dynamic_fields(
+            &self.inner, request, chunk_size, plan, observer,
         )
     }
 
+    fn query_stream_observed<'a>(
+        &'a self,
+        request: teaql_data_service::QueryRequest,
+        chunk_size: usize,
+        observer: teaql_data_service::ExecutionObserver<'a>,
+    ) -> teaql_data_service::QueryStream<'a, Self::Error> {
+        let observer = self.query_metadata_observer(Some(observer)).expect("caller supplied stream observer");
+        teaql_data_service::StreamQueryExecutor::query_stream_observed(&self.inner, request, chunk_size, observer)
+    }
+
     fn query_stream(&self, request: teaql_data_service::QueryRequest, chunk_size: usize) -> teaql_data_service::QueryStream<'_, Self::Error> {
-        teaql_data_service::StreamQueryExecutor::query_stream(&self.inner, request, chunk_size)
+        if let Some(observer) = self.query_metadata_observer(None) {
+            teaql_data_service::StreamQueryExecutor::query_stream_observed(&self.inner, request, chunk_size, observer)
+        } else {
+            teaql_data_service::StreamQueryExecutor::query_stream(&self.inner, request, chunk_size)
+        }
     }
 }
 

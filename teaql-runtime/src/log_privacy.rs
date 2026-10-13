@@ -217,6 +217,15 @@ fn sql_entry_inner(entry: &SqlLogEntry, allow: bool, hide_intent: bool) -> SqlLo
     }
     scrub(&mut result.result_summary, &secrets);
     scrub_trace(&mut result.trace_path, &secrets);
+    scrub_trace(&mut result.trace_chain, &secrets);
+    if let Some(telemetry) = &mut result.log_context.telemetry {
+        scrub_trace(
+            &mut std::sync::Arc::make_mut(telemetry).mutation_lineage,
+            &secrets,
+        );
+    }
+    // Do not retain a second unprojected business chain inside log provenance.
+    result.log_context.request_trace_chain.clear();
     result.log_context.intent_redactions.clear();
     result.log_context.masked_parameters = masked;
     result.log_context.mode = Some(if allow { "debug_plaintext" } else { "safe" }.into());
@@ -289,6 +298,13 @@ fn sql_entry_inner(entry: &SqlLogEntry, allow: bool, hide_intent: bool) -> SqlLo
             }
             scrub(&mut result.result_summary, &secrets);
             scrub_trace(&mut result.trace_path, &secrets);
+            scrub_trace(&mut result.trace_chain, &secrets);
+            if let Some(telemetry) = &mut result.log_context.telemetry {
+                scrub_trace(
+                    &mut std::sync::Arc::make_mut(telemetry).mutation_lineage,
+                    &secrets,
+                );
+            }
             let reason = match entry.log_context.omission_reason.as_deref() {
                 None => reason,
                 Some(
@@ -339,6 +355,16 @@ fn sql_entry_inner(entry: &SqlLogEntry, allow: bool, hide_intent: bool) -> SqlLo
         for node in &mut result.trace_path {
             node.comment = REDACTED.into();
             node.entity_type = REDACTED.into();
+        }
+        for node in &mut result.trace_chain {
+            node.comment = REDACTED.into();
+            node.entity_type = REDACTED.into();
+        }
+        if let Some(telemetry) = &mut result.log_context.telemetry {
+            for node in &mut std::sync::Arc::make_mut(telemetry).mutation_lineage {
+                node.comment = REDACTED.into();
+                node.entity_type = REDACTED.into();
+            }
         }
     }
     // Counts are execution facts, not binding values. Preserve a recognized
@@ -615,6 +641,7 @@ mod tests {
             purpose: Some("debug fixture".into()),
             audit_reason: None,
             trace_path: vec![],
+            trace_chain: vec![],
             sql: "UPDATE customer SET name = ?".into(),
             params: vec!["PRIVATE-CUSTOMER".into()],
             debug_sql: "UPDATE customer SET name = 'PRIVATE-CUSTOMER'".into(),

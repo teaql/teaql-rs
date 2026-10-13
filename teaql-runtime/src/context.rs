@@ -281,7 +281,7 @@ impl Default for UserContext {
                     .unwrap_or_default()
                     .as_nanos()
             ),
-            runtime_telemetry: Arc::new(crate::NoopRuntimeTelemetry),
+            runtime_telemetry: crate::telemetry_startup::standard_runtime_telemetry(),
             last_fix_evidence: Mutex::new(Vec::new()),
         }
     }

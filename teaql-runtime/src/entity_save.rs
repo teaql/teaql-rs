@@ -237,11 +237,30 @@ where
     }
 }
 
+fn loaded_relation_fields<T: Entity>(entity: &T) -> Vec<String> {
+    // Capture only immutable load markers before GraphNode extraction consumes
+    // the entity. No relationship objects or mutation ownership are cloned.
+    T::entity_descriptor()
+        .relations
+        .into_iter()
+        .filter(|relation| entity.is_field_loaded(&relation.name))
+        .map(|relation| relation.name)
+        .collect()
+}
+
 fn decode_saved_ledger_entity<T: Entity>(
     mut saved: GraphNode,
     root: &crate::EntityRuntimeState,
     preserve_relations: bool,
+    original_relation_fields: &[String],
 ) -> Result<T, RuntimeError> {
+    // An edge entry can be an unfetched identity-only placeholder. Only the
+    // original entity's explicit load markers prove that detail was loaded.
+    let restored_fields = (preserve_relations && !original_relation_fields.is_empty()).then(|| {
+        let mut fields = saved.values.keys().cloned().collect::<BTreeSet<_>>();
+        fields.extend(original_relation_fields.iter().cloned());
+        fields
+    });
     let fields = saved.dynamic_fields.take();
     let row = teaql_core::CompactRow::from_map(saved.values.into());
     let mut entity = if preserve_relations {
@@ -250,6 +269,11 @@ fn decode_saved_ledger_entity<T: Entity>(
         T::from_compact_row(row)
     }
     .map_err(|error| RuntimeError::Graph(error.to_string()))?;
+    if let Some(fields) = restored_fields {
+        // Authoritative scalar SQL does not repeat the relation columns. Keep
+        // loaded markers only for the immutable edges intentionally retained.
+        entity.set_checker_loaded_fields(fields);
+    }
     if let Some(fields) = fields {
         let base = entity.loaded_state_snapshot().ok_or_else(|| {
             RuntimeError::Graph("indexed state missing from dynamic save result".into())
@@ -332,6 +356,173 @@ mod save_relation_state_tests {
         let root = EntityRuntimeState::default();
         root.set(order.clone(), "customer_id", Value::I64(3));
         assert!(!can_preserve_loaded_relations(&root, &order, &descriptor()));
+    }
+
+    #[derive(Clone, Debug, PartialEq, teaql_macros::TeaqlEntity)]
+    #[teaql(entity = "ReadbackPlatform")]
+    struct Platform {
+        #[teaql(id)]
+        id: u64,
+        name: String,
+    }
+
+    #[teaql_macros::teaql_entity]
+    #[derive(Clone, Debug, PartialEq, teaql_macros::TeaqlEntity)]
+    #[teaql(entity = "ReadbackSchool")]
+    struct School {
+        #[teaql(id)]
+        id: u64,
+        #[teaql(version)]
+        version: i64,
+        name: String,
+        platform_id: Option<u64>,
+        #[teaql(relation(
+            target = "ReadbackPlatform",
+            local_key = "platform_id",
+            foreign_key = "id"
+        ))]
+        platform: Option<Box<Platform>>,
+        #[teaql(skip)]
+        __load_state: teaql_core::eval::LoadState,
+    }
+
+    fn saved(id: u64, platform_id: Value) -> crate::GraphNode {
+        let mut node = crate::GraphNode::new("ReadbackSchool");
+        node.values.insert("id".into(), Value::U64(id));
+        node.values.insert("version".into(), Value::I64(2));
+        node.values
+            .insert("name".into(), Value::Text("renamed".into()));
+        node.values.insert("platform_id".into(), platform_id);
+        node
+    }
+
+    #[test]
+    fn scalar_readback_retains_exact_loaded_edge_marker_and_readonly_graph() {
+        use crate::LedgerEntity as _;
+        use teaql_core::Entity as _;
+        let root = EntityRuntimeState::default();
+        let mut graph = crate::EntityGraphBuilder::default();
+        graph.install_relation_option(
+            "ReadbackSchool",
+            1,
+            "platform",
+            Some(Platform {
+                id: 7,
+                name: "campus".into(),
+            }),
+        );
+        root.freeze_graph(graph).unwrap();
+        let row = super::decode_saved_ledger_entity::<School>(
+            saved(1, Value::U64(7)),
+            &root,
+            true,
+            &["platform".into()],
+        )
+        .unwrap();
+        assert!(row.is_field_loaded("name"));
+        assert!(row.is_field_loaded("platform"));
+        let state = row.entity_runtime_state().unwrap();
+        assert_eq!(
+            state
+                .resolve_relation_option::<Platform>("ReadbackSchool", 1, "platform")
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .name,
+            "campus"
+        );
+        assert!(state.current_change_set().is_empty());
+        let invalidated = super::decode_saved_ledger_entity::<School>(
+            saved(1, Value::U64(9)),
+            &root,
+            false,
+            &["platform".into()],
+        )
+        .unwrap();
+        assert!(!invalidated.is_field_loaded("platform"));
+        assert!(
+            invalidated
+                .entity_runtime_state()
+                .unwrap()
+                .resolve_relation_option::<Platform>("ReadbackSchool", 1, "platform")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn readback_never_invents_loaded_relation_from_fk_or_another_owner() {
+        use teaql_core::Entity as _;
+        let root = EntityRuntimeState::default();
+        let mut graph = crate::EntityGraphBuilder::default();
+        graph.install(
+            7,
+            Platform {
+                id: 7,
+                name: "cached entity alone is insufficient".into(),
+            },
+        );
+        graph.install_relation_option("OtherOwner", 1, "platform", Some(7_u64));
+        graph.install_relation_option("ReadbackSchool", 2, "platform", Some(7_u64));
+        root.freeze_graph(graph).unwrap();
+        let row =
+            super::decode_saved_ledger_entity::<School>(saved(1, Value::U64(7)), &root, true, &[])
+                .unwrap();
+        assert!(!row.is_field_loaded("platform"));
+    }
+
+    #[test]
+    fn readback_retains_explicit_loaded_null_without_marking_absent_null_loaded() {
+        use teaql_core::Entity as _;
+        let root = EntityRuntimeState::default();
+        let mut graph = crate::EntityGraphBuilder::default();
+        graph.install_relation_option::<Platform>("ReadbackSchool", 1, "platform", None);
+        root.freeze_graph(graph).unwrap();
+        let loaded = super::decode_saved_ledger_entity::<School>(
+            saved(1, Value::Null),
+            &root,
+            true,
+            &["platform".into()],
+        )
+        .unwrap();
+        let absent =
+            super::decode_saved_ledger_entity::<School>(saved(2, Value::Null), &root, true, &[])
+                .unwrap();
+        assert!(loaded.is_field_loaded("platform"));
+        assert!(!absent.is_field_loaded("platform"));
+    }
+
+    #[test]
+    fn scalar_readback_retains_original_loaded_marker_with_legacy_flat_entity_index() {
+        use teaql_core::Entity as _;
+        let root = EntityRuntimeState::default();
+        let mut graph = crate::EntityGraphBuilder::default();
+        graph.install(
+            7,
+            Platform {
+                id: 7,
+                name: "legacy flat graph".into(),
+            },
+        );
+        root.freeze_graph(graph).unwrap();
+        let mut original =
+            super::decode_saved_ledger_entity::<School>(saved(1, Value::U64(7)), &root, true, &[])
+                .unwrap();
+        assert!(!original.is_field_loaded("platform"));
+        original.set_checker_loaded_fields(
+            ["id", "version", "name", "platform_id", "platform"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        );
+        let snapshot = super::loaded_relation_fields(&original);
+        let row = super::decode_saved_ledger_entity::<School>(
+            saved(1, Value::U64(7)),
+            &root,
+            true,
+            &snapshot,
+        )
+        .unwrap();
+        assert!(row.is_field_loaded("platform"));
     }
 }
 
@@ -1742,46 +1933,48 @@ where
         self,
         context: &'a UserContext,
     ) -> Pin<Box<dyn Future<Output = Result<Self::Entity, RuntimeError>> + Send + 'a>> {
-        Box::pin(async move {
-            let _entity_name = T::entity_descriptor().name;
-            let entity = self.into_entity(); // applies comment onto the entity
-            if entity.has_pending_dynamic_mutations() || entity.dynamic_field_values().is_some() {
-                let root = entity
-                    .__teaql_runtime_state_any()
-                    .and_then(|state| state.downcast_ref::<crate::EntityRuntimeState>())
-                    .cloned();
-                if root.is_none() {
-                    return Err(RuntimeError::Graph(
-                        "dynamic save requires the runtime mutation ledger carrier".into(),
-                    ));
+        Box::pin(
+            context.observe_mutation_request(|| T::entity_descriptor().name, async move {
+                let entity = self.into_entity(); // applies comment onto the entity
+                if entity.has_pending_dynamic_mutations() || entity.dynamic_field_values().is_some()
+                {
+                    let root = entity
+                        .__teaql_runtime_state_any()
+                        .and_then(|state| state.downcast_ref::<crate::EntityRuntimeState>())
+                        .cloned();
+                    if root.is_none() {
+                        return Err(RuntimeError::Graph(
+                            "dynamic save requires the runtime mutation ledger carrier".into(),
+                        ));
+                    }
+                    let evidence = Arc::new(std::sync::Mutex::new(Vec::new()));
+                    let result = GRAPH_FIX_TIME
+                        .scope(
+                            teaql_core::time::Timestamp::now(),
+                            GRAPH_FIX_EVIDENCE.scope(
+                                evidence.clone(),
+                                Box::pin(save_ledger_entity_body(entity, root, context)),
+                            ),
+                        )
+                        .await;
+                    context.replace_last_fix_evidence(evidence.lock().unwrap().clone());
+                    return result;
                 }
-                let evidence = Arc::new(std::sync::Mutex::new(Vec::new()));
-                let result = GRAPH_FIX_TIME
-                    .scope(
-                        teaql_core::time::Timestamp::now(),
-                        GRAPH_FIX_EVIDENCE.scope(
-                            evidence.clone(),
-                            Box::pin(save_ledger_entity_body(entity, root, context)),
-                        ),
-                    )
-                    .await;
-                context.replace_last_fix_evidence(evidence.lock().unwrap().clone());
-                return result;
-            }
-            let mut node = graph_node_from_entity(context, entity)?;
-            preflight_graph(context, &mut node, &ObjectLocation::root(), None)?;
-            let saver = context
-                .require_resource::<Arc<dyn DynGraphSaver>>()
-                .map_err(|e| {
-                    RuntimeError::Graph(format!(
-                        "no DynGraphSaver registered — did you call register_executor()? ({})",
-                        e
-                    ))
-                })?;
-            let saved = saver.save_graph_dyn(context, node).await?;
-            T::from_compact_row(teaql_core::CompactRow::from_map(saved.values.into()))
-                .map_err(|e| RuntimeError::Graph(e.to_string()))
-        })
+                let mut node = graph_node_from_entity(context, entity)?;
+                preflight_graph(context, &mut node, &ObjectLocation::root(), None)?;
+                let saver = context
+                    .require_resource::<Arc<dyn DynGraphSaver>>()
+                    .map_err(|e| {
+                        RuntimeError::Graph(format!(
+                            "no DynGraphSaver registered — did you call register_executor()? ({})",
+                            e
+                        ))
+                    })?;
+                let saved = saver.save_graph_dyn(context, node).await?;
+                T::from_compact_row(teaql_core::CompactRow::from_map(saved.values.into()))
+                    .map_err(|e| RuntimeError::Graph(e.to_string()))
+            }),
+        )
     }
 }
 
@@ -1800,12 +1993,15 @@ where
     T: crate::LedgerEntity + Send + 'static,
 {
     let evidence = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let result = GRAPH_FIX_TIME
-        .scope(
-            teaql_core::time::Timestamp::now(),
-            GRAPH_FIX_EVIDENCE.scope(
-                evidence.clone(),
-                save_audited_ledger_entity_inner(audited, context),
+    let result = context
+        .observe_mutation_request(
+            || T::entity_descriptor().name,
+            GRAPH_FIX_TIME.scope(
+                teaql_core::time::Timestamp::now(),
+                GRAPH_FIX_EVIDENCE.scope(
+                    evidence.clone(),
+                    save_audited_ledger_entity_inner(audited, context),
+                ),
             ),
         )
         .await;
@@ -1830,12 +2026,15 @@ where
     E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
 {
     let evidence = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let result = GRAPH_FIX_TIME
-        .scope(
-            teaql_core::time::Timestamp::now(),
-            GRAPH_FIX_EVIDENCE.scope(
-                evidence.clone(),
-                save_audited_ledger_entity_with_executor_inner(audited, context, executor),
+    let result = context
+        .observe_mutation_request(
+            || T::entity_descriptor().name,
+            GRAPH_FIX_TIME.scope(
+                teaql_core::time::Timestamp::now(),
+                GRAPH_FIX_EVIDENCE.scope(
+                    evidence.clone(),
+                    save_audited_ledger_entity_with_executor_inner(audited, context, executor),
+                ),
             ),
         )
         .await;
@@ -1868,6 +2067,7 @@ where
     {
         context.dynamic_graph_provider()?;
     }
+    let original_relation_fields = loaded_relation_fields(&entity);
     let mut node = extract_graph_node(context, entity)?;
 
     if let Some(root) = root {
@@ -1943,7 +2143,12 @@ where
                         "persisted {entity_name} record could not be read back"
                     ))
                 })?;
-            let entity = decode_saved_ledger_entity::<T>(node, &root, preserve_relations)?;
+            let entity = decode_saved_ledger_entity::<T>(
+                node,
+                &root,
+                preserve_relations,
+                &original_relation_fields,
+            )?;
             return Ok((entity, Some(root)));
         }
     }
@@ -1999,6 +2204,7 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
     {
         context.dynamic_graph_provider()?;
     }
+    let original_relation_fields = loaded_relation_fields(&entity);
     let mut node = extract_graph_node(context, entity)?;
     let saver = context
         .require_resource::<Arc<dyn DynGraphSaver>>()
@@ -2030,13 +2236,18 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
             let descriptor = context.require_entity(&node.entity)?;
             let preserve_relations = can_preserve_loaded_relations(&root, &root_key, descriptor);
             let saved = saver.save_ledger_dyn(context, node, root.clone()).await?;
-            return decode_saved_ledger_entity::<T>(saved, &root, preserve_relations);
+            return decode_saved_ledger_entity::<T>(
+                saved,
+                &root,
+                preserve_relations,
+                &original_relation_fields,
+            );
         }
     }
 
     preflight_graph(context, &mut node, &ObjectLocation::root(), None)?;
     let saved = saver.save_graph_dyn(context, node).await?;
-    decode_saved_ledger_entity::<T>(saved, &crate::EntityRuntimeState::default(), false)
+    decode_saved_ledger_entity::<T>(saved, &crate::EntityRuntimeState::default(), false, &[])
 }
 
 #[cfg(test)]

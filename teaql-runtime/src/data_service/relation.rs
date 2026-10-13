@@ -232,6 +232,10 @@ where
         let traced = self
             .scoped_data_service_internal(query.entity.clone())
             .with_trace_context(parent_trace);
+        let traced = match query.request_scope() {
+            Some(scope) => traced.with_request_scope(scope.clone()),
+            None => traced,
+        };
         let keys = relation_key_rows(parent_rows, &plans);
         for plan in plans {
             traced.enhance_plan(parent_rows, &keys, &plan).await?;
@@ -503,8 +507,60 @@ where
         let parent_repo = self
             .scoped_data_service_internal(self.entity.clone())
             .with_trace_context(chain);
-        let child_repo = parent_repo.relation_child_repo(&plan);
+        // A relation aggregate is a real helper request, not a selected-entity
+        // load. Facet helpers share the facet operation parent with value SQL.
+        let mut trace = parent_repo.trace_context.clone();
+        trace.push(teaql_core::TraceNode::typed(
+            teaql_core::TraceKind::Relation,
+            &plan.relation_name,
+            None,
+            format!("{}.{}", plan.parent_entity, plan.relation_name),
+        ));
+        let mut child_repo = parent_repo
+            .scoped_data_service_internal(plan.target_entity.clone())
+            .with_trace_context(trace);
+        if let Some(parent) = &parent_repo.request_scope {
+            let facet_parent = parent.parent_request().filter(|scope| {
+                scope
+                    .operation()
+                    .is_some_and(|op| op.kind() == teaql_core::QueryOperationKind::Facet)
+            });
+            let operation_scope = if let Some(facet) = facet_parent {
+                facet
+                    .derive_helper(
+                        &plan.target_entity,
+                        format!(
+                            "aggregate {}",
+                            facet
+                                .operation()
+                                .and_then(|op| op.relation())
+                                .unwrap_or(&plan.relation_name)
+                        ),
+                    )
+                    .map_err(|error| DataServiceError::Runtime(error.into()))?
+            } else {
+                let operation = aggregate.operation.clone().unwrap_or_else(|| {
+                    teaql_core::QueryOperation::framework(teaql_core::QueryOperationKind::Aggregate)
+                        .with_alias(&aggregate.alias)
+                        .with_relation(&aggregate.relation_name)
+                });
+                parent.derive_operation(&plan.target_entity, operation)
+            };
+            let comment = aggregate
+                .query
+                .request_scope()
+                .map(|scope| scope.comment())
+                .or(aggregate.query.comment.as_deref());
+            let scope = match comment {
+                Some(comment) => operation_scope
+                    .derive_child(&plan.target_entity, Some(comment))
+                    .map_err(|error| DataServiceError::Runtime(error.into()))?,
+                None => operation_scope,
+            };
+            child_repo = child_repo.with_request_scope(scope);
+        }
         let mut query = aggregate.query.clone();
+        query.clear_request_scope();
         query.entity = plan.target_entity.clone();
         if query.aggregation_cache.is_none()
             && let Some(options) = parent_cache_options.filter(|options| options.propagate)
@@ -601,6 +657,7 @@ where
                     foreign_key: relation.foreign_key.clone(),
                     many: relation.many,
                     query: None,
+                    operation: None,
                     children,
                 })
             })
@@ -639,6 +696,7 @@ where
                     foreign_key: relation.foreign_key.clone(),
                     many: relation.many,
                     query: relation_query,
+                    operation: load.operation.clone(),
                     children,
                 })
             })
@@ -662,7 +720,9 @@ where
             );
             let result = scope
                 .run(async {
-                    let child_repo = self.relation_child_repo(plan);
+                    let child_repo = self
+                        .relation_child_repo(plan)
+                        .map_err(DataServiceError::Runtime)?;
                     let mut child_rows = self
                         .fetch_relation_rows(&child_repo, plan, parent_keys, false)
                         .await?;
@@ -728,7 +788,9 @@ where
         Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
     > {
         Box::pin(async move {
-            let child_repo = self.relation_child_repo(plan);
+            let child_repo = self
+                .relation_child_repo(plan)
+                .map_err(DataServiceError::Runtime)?;
             let mut child_rows = self
                 .fetch_relation_rows(&child_repo, plan, parent_rows, false)
                 .await?;
@@ -778,6 +840,7 @@ where
             }
 
             let context = self.data_service.metadata.context;
+            let mut shapes = teaql_core::RelationShapeCache::default();
             for parent in parent_rows {
                 let local_value = parent.get(&plan.local_key);
                 let related = local_value
@@ -792,6 +855,20 @@ where
                     .unwrap_or_default();
 
                 let facets = self.relation_facets(plan, local_value).await?;
+                // The general path is used with relation aggregates and nested
+                // plans too. It must publish the same loaded-edge marker as the
+                // compact leaf path, without turning a filtered non-null target
+                // into loaded Null. Shapes are shared across the parent rows.
+                if plan.many
+                    || plan.local_key == "id"
+                    || !related.is_empty()
+                    || matches!(
+                        parent.get(&plan.local_key),
+                        Some(Value::Null | Value::TypedNull(_))
+                    )
+                {
+                    parent.mark_relation_loaded(&plan.relation_name, &mut shapes);
+                }
                 if !plan.many && !facets.is_empty() {
                     let owner_id = parent.get("id").and_then(Value::try_u64).ok_or_else(|| {
                         DataServiceError::Entity(teaql_core::EntityError::new(
@@ -905,7 +982,9 @@ where
         Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
     > {
         Box::pin(async move {
-            let child_repo = self.relation_child_repo(plan);
+            let child_repo = self
+                .relation_child_repo(plan)
+                .map_err(DataServiceError::Runtime)?;
             let mut child_rows = self
                 .fetch_relation_rows(&child_repo, plan, parent_rows, true)
                 .await?;
@@ -983,7 +1062,9 @@ where
         Box<dyn std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send + 'b>,
     > {
         Box::pin(async move {
-            let child_repo = self.relation_child_repo(plan);
+            let child_repo = self
+                .relation_child_repo(plan)
+                .map_err(DataServiceError::Runtime)?;
             let child_rows = self
                 .fetch_relation_rows(&child_repo, plan, parent_rows, true)
                 .await?;
@@ -1190,7 +1271,10 @@ where
             .map_err(DataServiceError::Entity)
     }
 
-    fn relation_child_repo(&self, plan: &RelationLoadPlan) -> EntityDataService<'a, E> {
+    fn relation_child_repo(
+        &self,
+        plan: &RelationLoadPlan,
+    ) -> Result<EntityDataService<'a, E>, RuntimeError> {
         let mut trace = self.trace_context.clone();
         trace.push(teaql_core::TraceNode::typed(
             teaql_core::TraceKind::Relation,
@@ -1198,8 +1282,29 @@ where
             None,
             format!("{}.{}", plan.parent_entity, plan.relation_name),
         ));
-        self.scoped_data_service_internal(plan.target_entity.clone())
-            .with_trace_context(trace)
+        let child = self
+            .scoped_data_service_internal(plan.target_entity.clone())
+            .with_trace_context(trace);
+        match &self.request_scope {
+            Some(parent) => {
+                let operation = plan.operation.clone().unwrap_or_else(|| {
+                    teaql_core::QueryOperation::framework(
+                        teaql_core::QueryOperationKind::RelationSelect,
+                    )
+                    .with_relation(&plan.relation_name)
+                });
+                let operation_scope = parent.derive_operation(&plan.parent_entity, operation);
+                let comment = plan.query.as_ref().and_then(|query| {
+                    query
+                        .request_scope()
+                        .map(|scope| scope.comment())
+                        .or(query.comment.as_deref())
+                });
+                let scope = operation_scope.derive_child(&plan.target_entity, comment)?;
+                Ok(child.with_request_scope(scope))
+            }
+            None => Ok(child),
+        }
     }
 
     fn query_for_plan(&self, plan: &RelationLoadPlan, parent_rows: &[CompactRow]) -> SelectQuery {
@@ -1213,6 +1318,7 @@ where
             .clone()
             .unwrap_or_else(|| SelectQuery::new(plan.target_entity.clone()));
         query.entity = plan.target_entity.clone();
+        query.clear_request_scope();
         // The relation planner, not fetch_prepared_all, executes nested loads.
         query.relations.clear();
         query.facets.clear();
@@ -1315,7 +1421,9 @@ where
         let Some(source) = plan.query.as_ref().filter(|query| !query.facets.is_empty()) else {
             return Ok(BTreeMap::new());
         };
-        let child_repo = self.relation_child_repo(plan);
+        let child_repo = self
+            .relation_child_repo(plan)
+            .map_err(DataServiceError::Runtime)?;
         let mut outer = source.clone();
         let options = teaql_core::request::QueryOptions {
             facets: std::mem::take(&mut outer.facets),
@@ -1337,6 +1445,9 @@ where
             .map_err(DataServiceError::Runtime)?;
         outer.comment = Some(intent.comment().to_owned());
         outer.purpose = Some(intent.purpose().to_owned());
+        if let Some(scope) = &child_repo.request_scope {
+            outer = outer.with_request_scope(scope.clone());
+        }
         let mut trace = child_repo.trace_context.clone();
         trace.extend(outer.trace_chain);
         outer.trace_chain = trace;
@@ -1351,6 +1462,7 @@ where
             .clone()
             .unwrap_or_else(|| SelectQuery::new(plan.target_entity.clone()));
         query.entity = plan.target_entity.clone();
+        query.clear_request_scope();
         query.relations.clear();
         query.facets.clear();
         ensure_projection(&mut query, &plan.foreign_key);
@@ -1574,6 +1686,7 @@ mod planner_tests {
             foreign_key: "vendor_id".to_owned(),
             many: true,
             query: Some(SelectQuery::new("Trip").order_desc("id").limit(10)),
+            operation: None,
             children: Vec::new(),
         }
     }

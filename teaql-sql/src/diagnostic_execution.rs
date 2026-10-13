@@ -7,17 +7,68 @@ use teaql_data_service::{ExecutionMetadata, ExecutionObserver, SqlExecutionOutco
 pub(crate) struct StatementDiagnostic<'a> {
     metadata: Option<ExecutionMetadata>,
     observer: Option<ExecutionObserver<'a>>,
+    scope: Option<Box<dyn teaql_data_service::statement_telemetry::SqlStatementTelemetryScope>>,
 }
 
 impl<'a> StatementDiagnostic<'a> {
     pub(crate) fn new(
-        metadata: Option<ExecutionMetadata>,
+        mut metadata: Option<ExecutionMetadata>,
         observer: Option<ExecutionObserver<'a>>,
     ) -> Self {
-        Self { metadata, observer }
+        let scope = metadata.as_mut().and_then(|metadata| {
+            let scope = teaql_data_service::statement_telemetry::start_sql_statement(
+                &metadata.backend,
+                metadata.operation,
+            )?;
+            metadata.sql_log.telemetry = Some(Arc::new(teaql_data_service::SqlTelemetryState {
+                correlation: std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    scope.correlation()
+                }))
+                .ok()
+                .flatten(),
+                ..Default::default()
+            }));
+            Some(scope)
+        });
+        Self {
+            metadata,
+            observer,
+            scope,
+        }
+    }
+
+    pub(crate) async fn run<F: std::future::Future>(&self, future: F) -> F::Output {
+        let mut future = std::pin::pin!(future);
+        std::future::poll_fn(|task| {
+            let Some(scope) = &self.scope else {
+                return future.as_mut().poll(task);
+            };
+            let mut result = None;
+            let mut invoked = false;
+            let mut callback = || {
+                invoked = true;
+                result = Some(future.as_mut().poll(task));
+            };
+            let attempted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                scope.with_context(&mut callback)
+            }));
+            match (attempted, result) {
+                (_, Some(result)) => result,
+                (Err(payload), None) if invoked => std::panic::resume_unwind(payload),
+                _ => future.as_mut().poll(task),
+            }
+        })
+        .await
+    }
+    fn finish_scope(&mut self, outcome: SqlExecutionOutcome) {
+        if let Some(scope) = self.scope.take() {
+            let _ =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scope.finish(outcome)));
+        }
     }
 
     pub(crate) fn success(&mut self) -> Option<ExecutionMetadata> {
+        self.finish_scope(SqlExecutionOutcome::Success);
         self.metadata.take().map(|mut metadata| {
             metadata.ended_at = SystemTime::now();
             metadata.sql_log.execution_outcome = Some(SqlExecutionOutcome::Success);
@@ -30,6 +81,7 @@ impl<'a> StatementDiagnostic<'a> {
     }
 
     fn notify(&mut self, outcome: SqlExecutionOutcome) {
+        self.finish_scope(outcome);
         if let Some(mut metadata) = self.metadata.take() {
             metadata.ended_at = SystemTime::now();
             metadata.sql_log.execution_outcome = Some(outcome);

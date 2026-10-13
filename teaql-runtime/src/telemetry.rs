@@ -94,6 +94,7 @@ fn is_forbidden_attribute(key: &str) -> bool {
 pub fn runtime_error_category(error_type: &str) -> &'static str {
     let error_type = error_type.to_ascii_lowercase();
     for (category, terms) in [
+        ("cancelled", &["cancelled", "canceled", "cancellation"][..]),
         ("timeout", &["timeout", "deadline"][..]),
         (
             "authorization",
@@ -146,11 +147,23 @@ pub fn runtime_error_category(error_type: &str) -> &'static str {
 }
 
 pub trait RuntimeTelemetryScope: Send {
+    fn correlation(
+        &self,
+    ) -> Option<teaql_data_service::statement_telemetry::SqlExecutionCorrelation> {
+        None
+    }
     fn with_context(&self, callback: &mut dyn FnMut()) {
         callback();
     }
     fn success(&mut self, attributes: BTreeMap<String, RuntimeAttributeValue>);
     fn failure(&mut self, error_type: &str);
+    fn failure_with_attributes(
+        &mut self,
+        error_type: &str,
+        _attributes: BTreeMap<String, RuntimeAttributeValue>,
+    ) {
+        self.failure(error_type);
+    }
 }
 
 pub trait RuntimeTelemetry: Send + Sync {
@@ -158,6 +171,10 @@ pub trait RuntimeTelemetry: Send + Sync {
     fn is_noop(&self) -> bool {
         false
     }
+    fn records_sql_diagnostics(&self) -> bool {
+        false
+    }
+    fn record_diagnostic(&self, _event: RuntimeDiagnosticEvent) {}
     fn extract_context(
         &self,
         _carrier: &BTreeMap<String, String>,
@@ -239,30 +256,63 @@ pub struct FailOpenRuntimeTelemetryScope {
     delegate: Mutex<Option<Box<dyn RuntimeTelemetryScope>>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct RuntimeDiagnosticEvent {
+    pub correlation: teaql_data_service::statement_telemetry::SqlExecutionCorrelation,
+    pub attributes: BTreeMap<String, RuntimeAttributeValue>,
+}
+
 impl FailOpenRuntimeTelemetryScope {
+    pub fn correlation(
+        &self,
+    ) -> Option<teaql_data_service::statement_telemetry::SqlExecutionCorrelation> {
+        let delegate = self.delegate.lock().ok()?;
+        catch_unwind(AssertUnwindSafe(|| delegate.as_ref()?.correlation()))
+            .ok()
+            .flatten()
+    }
+    pub fn with_context(&self, callback: &mut dyn FnMut()) {
+        let Ok(delegate) = self.delegate.lock() else {
+            callback();
+            return;
+        };
+        let Some(scope) = delegate.as_ref() else {
+            callback();
+            return;
+        };
+        let mut invoked = false;
+        let mut completed = false;
+        let mut observed = || {
+            if invoked {
+                return;
+            }
+            invoked = true;
+            callback();
+            completed = true;
+        };
+        let result = catch_unwind(AssertUnwindSafe(|| scope.with_context(&mut observed)));
+        // Resume a business panic only after releasing our lock. The adapter
+        // mutex must not become poisoned by a caller's stream/future panic.
+        drop(delegate);
+        if let Err(payload) = result {
+            if invoked && !completed {
+                std::panic::resume_unwind(payload);
+            }
+            if !invoked {
+                callback();
+            }
+        } else if !invoked {
+            callback();
+        }
+    }
     pub async fn run<F: Future>(&self, future: F) -> F::Output {
         futures_util::pin_mut!(future);
         futures_util::future::poll_fn(|task_context| {
             let mut result = None;
-            let Ok(delegate) = self.delegate.lock() else {
-                return future.as_mut().poll(task_context);
-            };
-            let Some(scope) = delegate.as_ref() else {
-                return future.as_mut().poll(task_context);
-            };
-            let mut invoked = false;
-            let mut callback = || {
-                invoked = true;
+            self.with_context(&mut || {
                 result = Some(future.as_mut().poll(task_context));
-            };
-            let context_result = catch_unwind(AssertUnwindSafe(|| {
-                scope.with_context(&mut callback);
-            }));
-            match (context_result, result) {
-                (_, Some(result)) => result,
-                (Err(payload), None) if invoked => std::panic::resume_unwind(payload),
-                _ => future.as_mut().poll(task_context),
-            }
+            });
+            result.expect("fail-open telemetry must poll once")
         })
         .await
     }
@@ -273,6 +323,14 @@ impl FailOpenRuntimeTelemetryScope {
 
     pub fn failure(&self, error_type: &str) {
         self.finish(|scope| scope.failure(error_type));
+    }
+
+    pub fn failure_with_attributes(
+        &self,
+        error_type: &str,
+        attributes: BTreeMap<String, RuntimeAttributeValue>,
+    ) {
+        self.finish(|scope| scope.failure_with_attributes(error_type, attributes));
     }
 
     fn finish(&self, action: impl FnOnce(&mut dyn RuntimeTelemetryScope)) {
@@ -305,6 +363,10 @@ mod tests {
         assert_eq!(runtime_error_category("DatabaseTimeoutError"), "timeout");
         assert_eq!(runtime_error_category("PermissionError"), "authorization");
         assert_eq!(runtime_error_category("UnknownTeaQLError"), "internal");
+        assert_eq!(
+            runtime_error_category("sql_execution_cancelled"),
+            "cancelled"
+        );
     }
 
     struct BrokenTelemetry;
@@ -352,5 +414,43 @@ mod tests {
         let scope =
             start_runtime_operation(&telemetry, RuntimeOperation::new("query", "School.list"));
         assert_eq!(scope.run(async { 42 }).await, 42);
+    }
+
+    struct DuplicateContextTelemetry;
+    struct DuplicateContextScope;
+    impl RuntimeTelemetry for DuplicateContextTelemetry {
+        fn start(&self, _: RuntimeOperation) -> Box<dyn RuntimeTelemetryScope> {
+            Box::new(DuplicateContextScope)
+        }
+    }
+    impl RuntimeTelemetryScope for DuplicateContextScope {
+        fn with_context(&self, callback: &mut dyn FnMut()) {
+            callback();
+            callback();
+            panic!("adapter failed after callback");
+        }
+        fn success(&mut self, _: BTreeMap<String, RuntimeAttributeValue>) {}
+        fn failure(&mut self, _: &str) {}
+    }
+
+    #[tokio::test]
+    async fn duplicate_or_post_callback_adapter_fault_cannot_repeat_business_work() {
+        let telemetry: Arc<dyn RuntimeTelemetry> = Arc::new(DuplicateContextTelemetry);
+        let scope = start_runtime_operation(&telemetry, RuntimeOperation::new("query", "Probe"));
+        let mut polls = 0;
+        assert_eq!(
+            scope
+                .run(async {
+                    polls += 1;
+                    42
+                })
+                .await,
+            42
+        );
+        assert_eq!(polls, 1);
+        let mut calls = 0;
+        scope.with_context(&mut || calls += 1);
+        assert_eq!(calls, 1);
+        scope.success(BTreeMap::new());
     }
 }

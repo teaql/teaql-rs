@@ -13,6 +13,8 @@ mod entity_status;
 mod error;
 mod event;
 pub mod generated_support;
+#[cfg(test)]
+mod requested_list_count_tests;
 mod graph;
 mod i18n;
 mod id;
@@ -30,6 +32,12 @@ mod registry;
 pub use registry::decode_compact_rows_with_read_metadata;
 mod round_trip_reference;
 mod telemetry;
+mod telemetry_mutation;
+mod telemetry_sql;
+mod telemetry_stream;
+mod telemetry_startup;
+#[cfg(feature = "standard-telemetry")]
+mod telemetry_standard;
 #[cfg(feature = "opentelemetry")]
 mod telemetry_opentelemetry;
 
@@ -120,12 +128,13 @@ pub use round_trip_reference::{
 };
 pub use telemetry::{
     FailOpenRuntimeTelemetryPropagationContext, FailOpenRuntimeTelemetryScope,
-    NoopRuntimeTelemetry, RuntimeAttributeValue, RuntimeOperation, RuntimeTelemetry,
+    NoopRuntimeTelemetry, RuntimeAttributeValue, RuntimeDiagnosticEvent, RuntimeOperation, RuntimeTelemetry,
     RuntimeTelemetryPropagationContext, RuntimeTelemetryScope, extract_runtime_context,
     runtime_error_category, start_runtime_operation,
 };
 #[cfg(feature = "opentelemetry")]
 pub use telemetry_opentelemetry::OpenTelemetryRuntimeTelemetry;
+pub use telemetry_startup::{TelemetryStartupConfiguration, TELEMETRY_ENABLED, TELEMETRY_SERVICE_NAME, TELEMETRY_OTLP_ENDPOINT};
 
 #[cfg(test)]
 #[allow(dead_code, unused_imports)]
@@ -3402,6 +3411,23 @@ mod tests {
         assert_eq!(second.first().map(|entity| entity.id), Some(51));
         assert_eq!(context.id_set_plan().as_deref(), Some("ID_SET_HIT"));
 
+        let beyond = repo
+            .fetch_enhanced_entities_with_relation_aggregates_internal::<Order>(
+                &fixture_select(
+                    "Order",
+                    "id_set_pagination_reuses_ordered_ids_and_returns_exact_count",
+                )
+                .projects(["id", "version", "name"])
+                .order_asc("name")
+                .page(100, 10)
+                .optimize_pagination_with_id_set_config("orders", 60, 1_000),
+                &[],
+            )
+            .await
+            .unwrap();
+        assert!(beyond.is_empty());
+        assert_eq!(beyond.total_count, Some(100));
+
         let queries = &context
             .get_resource::<IdSetQueueExecutor>()
             .unwrap()
@@ -4008,50 +4034,9 @@ mod tests {
             ],
         );
 
-        let query = teaql_core::SelectQuery {
-            hard_limit: 10_000,
-            entity: String::from("Order"),
-            projection: Vec::new(),
-            expr_projection: Vec::new(),
-            filter: None,
-            having: None,
-            order_by: Vec::new(),
-            slice: None,
-            partition_by: None,
-            top_n_probe_parent_threshold: None,
-            trace_chain: Vec::new(),
-            aggregates: vec![
-                Aggregate {
-                    function: AggregateFunction::Count,
-                    field: String::from("id"),
-                    alias: String::from("count"),
-                },
-                Aggregate {
-                    function: AggregateFunction::Sum,
-                    field: String::from("version"),
-                    alias: String::from("versionSum"),
-                },
-            ],
-            group_by: Vec::new(),
-            relations: Vec::new(),
-            facets: Vec::new(),
-            relation_aggregates: Vec::new(),
-            aggregation_cache: None,
-            comment: None,
-            purpose: None,
-            raw_sql: None,
-            raw_sql_search_criteria: Vec::new(),
-            dynamic_properties: Vec::new(),
-            dynamic_property_definitions: None,
-            dynamic_field_selection: None,
-            raw_projections: Vec::new(),
-            object_group_bys: Vec::new(),
-            search_with_text: None,
-            child_enhancements: Vec::new(),
-            stream_config: None,
-            continuous_page_fetch: None,
-            id_set_pagination: None,
-        };
+        let query = teaql_core::SelectQuery::new("Order")
+            .count("count")
+            .sum("version", "versionSum");
 
         let rows = data_service.fetch_all(&query).unwrap();
 

@@ -42,6 +42,22 @@ where
     M: MetadataStore,
     E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Sync,
 {
+    async fn mutate_observed(
+        &self,
+        request: MutationRequest,
+        observer: Option<teaql_data_service::ExecutionObserver<'_>>,
+    ) -> Result<teaql_data_service::MutationResult, E::Error> {
+        let future = self.executor.mutate_observed(request, observer);
+        match self.metadata.sql_statement_telemetry() {
+            Some(factory) => {
+                teaql_data_service::statement_telemetry::with_sql_statement_telemetry(
+                    factory, future,
+                )
+                .await
+            }
+            None => future.await,
+        }
+    }
     pub(crate) fn new(metadata: &'a M, executor: &'a E) -> Self {
         Self {
             metadata,
@@ -179,7 +195,6 @@ where
             self.required_mutation_intent()?,
         );
         let res = self
-            .executor
             .mutate_observed(
                 request.with_diagnostic_redactions(self.mutation_privacy.clone()),
                 self.metadata.mutation_diagnostic_observer(),
@@ -205,7 +220,6 @@ where
             self.required_mutation_intent()?,
         );
         let res = self
-            .executor
             .mutate_observed(
                 request.with_diagnostic_redactions(self.mutation_privacy.clone()),
                 self.metadata.mutation_diagnostic_observer(),
@@ -242,7 +256,6 @@ where
             self.required_mutation_intent()?,
         );
         let res = self
-            .executor
             .mutate_observed(
                 request.with_diagnostic_redactions(self.mutation_privacy.clone()),
                 self.metadata.mutation_diagnostic_observer(),
@@ -285,7 +298,6 @@ where
                     .and_then(teaql_core::Value::try_u64),
             );
             let res = self
-                .executor
                 .mutate_observed(
                     MutationRequest::with_intent(
                         teaql_data_service::MutationCommand::Insert(insert_cmd),
@@ -334,7 +346,6 @@ where
             );
             let expected_version = update_cmd.expected_version;
             let res = self
-                .executor
                 .mutate_observed(
                     MutationRequest::with_intent(
                         teaql_data_service::MutationCommand::Update(update_cmd),
@@ -386,7 +397,6 @@ where
             self.required_mutation_intent()?,
         );
         let res = self
-            .executor
             .mutate_observed(
                 request.with_diagnostic_redactions(self.mutation_privacy.clone()),
                 self.metadata.mutation_diagnostic_observer(),

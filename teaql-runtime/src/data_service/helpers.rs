@@ -94,6 +94,7 @@ fn canonical_aggregation_query(query: &SelectQuery) -> SelectQuery {
     // based on TTL, comments, tracing, or streaming configuration.
     query.aggregation_cache = None;
     query.comment = None;
+    query.clear_request_scope();
     query.trace_chain.clear();
     query.stream_config = None;
     query.continuous_page_fetch = None;

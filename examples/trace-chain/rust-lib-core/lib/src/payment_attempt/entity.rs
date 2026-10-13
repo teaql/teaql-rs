@@ -13,20 +13,21 @@ use teaql_macros::{teaql_entity, TeaqlEntity};
 /// Read the method signatures in this file before proceeding.
 #[teaql_entity]
 #[derive(Clone, Debug, PartialEq, TeaqlEntity)]
+#[teaql(indexed_layout)]
 #[teaql(entity = "PaymentAttempt", table = "payment_attempt_data", data_service = "sqlite", audit_mask_fields = "")]
 pub struct PaymentAttempt {
 #[teaql(id)]
     id: u64,
 
-// @source model.xml:15
+// @source main.xml:15
 #[teaql(max_length = 100)]
     reference_code: String,
 #[teaql(version)]
     version: i64,
-// @source model.xml:15
+// @source main.xml:15
 #[teaql(column = "payment")]
     payment_id: u64,
-// @source model.xml:15
+// @source main.xml:15
 #[teaql(relation(target = "Payment", local_key = "payment_id", foreign_key = "id"))]
     payment: Option<Box<crate::Payment>>,
     #[teaql(dynamic)]
@@ -37,6 +38,21 @@ pub struct PaymentAttempt {
 
 impl PaymentAttempt {
     pub const ENTITY_NAME: &'static str = "Payment Attempt";
+
+    // Framework metadata: complete fixed layout, including overflow slots.
+    pub const __TEAQL_FIELD_LAYOUT_REVISION: &'static str = "e8c46db1ccaafe0f9d90335a74f7dd234482731b27d51dbebb2e9f07bebc02eb";
+    pub const __TEAQL_FIXED_FIELD_INDEXES: &'static [(&'static str, usize)] = &[
+        ("id", 0),
+        ("payment", 1),
+        ("reference_code", 2),
+        ("version", 3),
+    ];
+    pub const __TEAQL_FIXED_FIELD_MAPPINGS: &'static [(&'static str, &'static str, &'static str)] = &[
+        ("id", "id", "id"),
+        ("payment", "payment_id", "payment"),
+        ("reference_code", "reference_code", "reference_code"),
+        ("version", "version", "version"),
+    ];
 
     pub fn with_id(id: u64) -> teaql_core::Value {
         teaql_core::Value::U64(id)
@@ -51,7 +67,9 @@ impl PaymentAttempt {
             payment: None,
             dynamic: BTreeMap::new(),
             __teaql_runtime_state: root,
-            __load_state: teaql_core::eval::LoadState::FullyLoaded,
+            __load_state: teaql_core::eval::LoadState::NotLoaded.into_indexed(
+                <Self as teaql_core::TeaqlEntity>::field_layout().expect("generated field layout").expect("indexed layout")
+            ).expect("new entity load state"),
         }
     }
 
@@ -68,7 +86,9 @@ impl PaymentAttempt {
     }
 
     pub fn set_load_state(&mut self, state: teaql_core::eval::LoadState) {
-        self.__load_state = state;
+        self.__load_state = state.into_indexed(
+            <Self as teaql_core::TeaqlEntity>::field_layout().expect("generated field layout").expect("indexed layout")
+        ).expect("compatible entity load state");
     }
 
     pub fn id(&self) -> u64 {
@@ -79,6 +99,7 @@ impl PaymentAttempt {
         let value = value.into();
         self.id = value.try_u64().unwrap_or(self.id.clone());
         self.__teaql_runtime_state().set(self.entity_key(), "id", value);
+        self.__load_state.mark_loaded("id").expect("generated field layout");
         self
     }
 
@@ -102,6 +123,7 @@ impl PaymentAttempt {
         let value = value.into();
         self.reference_code = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.reference_code.clone());
         self.__teaql_runtime_state().set(self.entity_key(), "reference_code", value);
+        self.__load_state.mark_loaded("reference_code").expect("generated field layout");
         self
     }
 
@@ -125,6 +147,7 @@ impl PaymentAttempt {
         let value = value.into();
         self.version = value.try_i64().unwrap_or(self.version.clone());
         self.__teaql_runtime_state().set(self.entity_key(), "version", value);
+        self.__load_state.mark_loaded("version").expect("generated field layout");
         self
     }
 
@@ -147,6 +170,7 @@ impl PaymentAttempt {
         let value = value.into();
         self.payment_id = value.try_u64().unwrap_or(self.payment_id.clone());
         self.__teaql_runtime_state().set(self.entity_key(), "payment_id", value);
+        self.__load_state.mark_loaded("payment_id").expect("generated field layout");
         self
     }
 
@@ -161,12 +185,14 @@ impl PaymentAttempt {
                     teaql_core::eval::EvalResult::Value(self.payment_id())
                 }}
     pub fn payment(&self) -> Option<&crate::Payment> {
-        let state = self.__teaql_runtime_state();
-        if state.has_relation_view(<Self as teaql_core::TeaqlEntity>::ENTITY_NAME, self.id(), "payment") {
-            let value: Option<&crate::Payment> = state.relation_option(<Self as teaql_core::TeaqlEntity>::ENTITY_NAME, self.id(), "payment").value();
-            if value.is_some_and(|related| related.id() == self.payment_id()) {
-                return value;
-            }
+        if self.changed_payment_id().is_some()
+            || !self.is_loaded("payment") {
+            return None;
+        }
+        if let Some(edge) = self.__teaql_runtime_state().resolve_relation_option::<crate::Payment>(
+            <Self as teaql_core::TeaqlEntity>::ENTITY_NAME, self.id(), "payment",
+        ) {
+            return edge.as_ref();
         }
         self.payment.as_deref().or_else(|| {
             self.__teaql_runtime_state().resolve_entity(self.payment_id())})
@@ -175,7 +201,6 @@ impl PaymentAttempt {
     pub fn eval_payment(&self) -> teaql_core::eval::EvalResult<&crate::Payment> {
         match self.payment() {
             Some(v) => teaql_core::eval::EvalResult::Value(v),
-            None if self.is_loaded("payment") => teaql_core::eval::EvalResult::Null,
             None => teaql_core::eval::EvalResult::NotLoaded { failed_node: "payment".to_string(), attempted_path: "payment".to_string() },
         }
     }
