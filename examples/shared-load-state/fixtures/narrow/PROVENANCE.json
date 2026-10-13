@@ -18,7 +18,7 @@
     },
     {
       "path": "lib/Cargo.toml",
-      "sha256": "00ced67c406a1cf159d20247436ee4e6a888ed49e2a33d3db02c5a4539c65400"
+      "sha256": "12f90a61ebf8193b99542c47a62be30a498e79fab182f98ab23bf6ad04922b92"
     },
     {
       "path": "lib/src/e.rs",
