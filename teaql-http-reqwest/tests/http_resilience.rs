@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -25,7 +25,9 @@ struct Inner {
     closed: AtomicBool,
     requests: AtomicUsize,
     flaky: AtomicUsize,
+    retry_post: AtomicUsize,
     traceparents: Mutex<Vec<String>>,
+    retry_bodies: Mutex<Vec<Vec<u8>>>,
 }
 
 impl Fixture {
@@ -97,6 +99,7 @@ fn handle(mut stream: TcpStream, inner: &Inner) {
         .nth(1)
         .unwrap_or_default()
         .to_owned();
+    let mut content_length = 0;
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line).is_err() || line == "\r\n" || line.is_empty() {
@@ -109,6 +112,16 @@ fn handle(mut stream: TcpStream, inner: &Inner) {
                 .unwrap()
                 .push(line[12..].trim().to_owned());
         }
+        if line.to_ascii_lowercase().starts_with("content-length:") {
+            content_length = line[15..].trim().parse::<usize>().unwrap();
+        }
+    }
+    if path.contains("/retry-post") {
+        let mut body = vec![0; content_length];
+        if reader.read_exact(&mut body).is_err() {
+            return;
+        }
+        inner.retry_bodies.lock().unwrap().push(body);
     }
     if path.contains("/close") {
         return;
@@ -122,6 +135,7 @@ fn handle(mut stream: TcpStream, inner: &Inner) {
         404
     } else if path.contains("/fail")
         || path.contains("/flaky") && inner.flaky.fetch_add(1, Ordering::SeqCst) < 2
+        || path.contains("/retry-post") && inner.retry_post.fetch_add(1, Ordering::SeqCst) == 0
     {
         503
     } else {
@@ -283,6 +297,78 @@ async fn retry_is_explicit_and_non_idempotent_transport_failure_is_ambiguous() {
 }
 
 #[tokio::test]
+async fn replayable_post_preserves_bytes_and_backoff_respects_the_whole_call_budget() {
+    let fixture = Fixture::new();
+    let service = Arc::new(
+        ReqwestHttpRequestService::new(vec![
+            fixture
+                .profile()
+                .retry(
+                    3,
+                    Duration::from_millis(1),
+                    BTreeSet::from([HttpMethod::Post]),
+                )
+                .unwrap(),
+        ])
+        .unwrap(),
+    );
+    let request_context = context(service.clone());
+    let payload = b"REPLAY-PAYLOAD-CANARY".to_vec();
+    let replayable = HttpCall::new(
+        "orders",
+        HttpMethod::Post,
+        "retry-post",
+        BTreeMap::new(),
+        payload.clone(),
+        Some("text/plain".to_owned()),
+        "submit idempotent request",
+        teaql_runtime::HttpIntentKind::Purpose,
+        "verify request replay",
+        HttpRetryMode::ConfirmedIdempotent,
+    )
+    .unwrap();
+    let response = service
+        .execute(&request_context, &replayable)
+        .await
+        .unwrap();
+    assert_eq!((response.status(), response.attempts()), (200, 2));
+    assert_eq!(fixture.requests(), 2);
+    assert_eq!(
+        *fixture.inner.retry_bodies.lock().unwrap(),
+        vec![payload.clone(), payload]
+    );
+
+    let clock = Arc::new(FakeClock::new());
+    let budgeted = Arc::new(
+        ReqwestHttpRequestService::with_clock(
+            vec![
+                fixture
+                    .profile()
+                    .budgets(
+                        Duration::from_millis(500),
+                        Duration::from_millis(500),
+                        Duration::from_millis(500),
+                    )
+                    .unwrap()
+                    .retry(3, Duration::from_secs(1), BTreeSet::from([HttpMethod::Get]))
+                    .unwrap(),
+            ],
+            clock,
+        )
+        .unwrap(),
+    );
+    let before = fixture.requests();
+    let result = budgeted
+        .execute(
+            &context(budgeted.clone()),
+            &get("fail").with_retry_mode(HttpRetryMode::ConfirmedIdempotent),
+        )
+        .await;
+    assert_eq!(result, Err(HttpFailure::Timeout));
+    assert_eq!(fixture.requests(), before + 1);
+}
+
+#[tokio::test]
 async fn stalled_headers_body_overflow_and_malformed_decoding_fail_closed() {
     let fixture = Fixture::new();
     let profile = fixture
@@ -365,7 +451,10 @@ async fn circuit_rate_and_cancelled_half_open_probe_use_operational_time() {
         .unwrap();
     let service =
         Arc::new(ReqwestHttpRequestService::with_clock(vec![profile], clock.clone()).unwrap());
-    let circuit_context = Arc::new(context(service.clone()));
+    let circuit_context = Arc::new(context(service.clone()).with_business_clock(
+        teaql_runtime::FixedBusinessClock::new("1999-01-01T00:00:00Z".parse().unwrap()),
+    ));
+    assert_eq!(circuit_context.business_date().to_string(), "1999-01-01");
     assert_eq!(
         service
             .execute(&circuit_context, &get("missing"))
