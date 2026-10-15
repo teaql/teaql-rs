@@ -822,13 +822,20 @@ fn decode_model_value(
             .ok_or(CommittedEventError::InvalidEnvelope(
                 "f64 field has wrong type",
             )),
-        DataType::Decimal => value
-            .as_str()
-            .and_then(|value| Decimal::from_str(value).ok())
-            .map(|value| SqliteValue::Text(value.to_string()))
-            .ok_or(CommittedEventError::InvalidEnvelope(
-                "Decimal field has wrong type",
-            )),
+        DataType::Decimal => {
+            let decimal = value
+                .as_str()
+                .and_then(|value| Decimal::from_str(value).ok())
+                .ok_or(CommittedEventError::InvalidEnvelope(
+                    "Decimal field has wrong type",
+                ))?;
+            if !decimal_fits_model(decimal, property) {
+                return Err(CommittedEventError::InvalidEnvelope(
+                    "Decimal lacks or exceeds modeled precision or scale",
+                ));
+            }
+            Ok(SqliteValue::Text(decimal.to_string()))
+        }
         DataType::Text | DataType::LargeText => {
             let text = value.as_str().ok_or(CommittedEventError::InvalidEnvelope(
                 "text field has wrong type",
@@ -863,6 +870,21 @@ fn decode_model_value(
                 "Timestamp field has wrong type",
             )),
     }
+}
+
+fn decimal_fits_model(value: Decimal, property: &PropertyDescriptor) -> bool {
+    let (Some(precision), Some(scale)) = (property.numeric_precision, property.numeric_scale)
+    else {
+        return false;
+    };
+    if precision == 0 || scale > precision {
+        return false;
+    }
+    let normalized = value.normalize().to_string();
+    let unsigned = normalized.strip_prefix('-').unwrap_or(&normalized);
+    let (integer, fractional) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+    let integer_digits = integer.trim_start_matches('0').len();
+    integer_digits <= (precision - scale) as usize && fractional.len() <= scale as usize
 }
 
 fn apply_model_mutation(
@@ -1095,7 +1117,11 @@ mod tests {
             .property(PropertyDescriptor::new("status", DataType::Text).not_null())
             .property(PropertyDescriptor::new("planned_date", DataType::Date))
             .property(PropertyDescriptor::new("occurred_at", DataType::Timestamp).not_null())
-            .property(PropertyDescriptor::new("amount", DataType::Decimal))
+            .property(
+                PropertyDescriptor::new("amount", DataType::Decimal)
+                    .numeric_precision(19)
+                    .numeric_scale(7),
+            )
             .property(PropertyDescriptor::new("active", DataType::Bool).not_null())
             .property(PropertyDescriptor::new("ratio", DataType::F64).not_null())
             .property(PropertyDescriptor::new("optional_note", DataType::Text))
@@ -1644,10 +1670,46 @@ mod tests {
     }
 
     #[test]
+    fn modeled_decimal_bounds_accept_equivalent_trailing_zeros() {
+        let property = PropertyDescriptor::new("amount", DataType::Decimal)
+            .numeric_precision(19)
+            .numeric_scale(7);
+        for value in ["0", "0.100000000", "123456789012.1234567", "-0.0000001"] {
+            assert!(decimal_fits_model(
+                Decimal::from_str(value).unwrap(),
+                &property
+            ));
+        }
+        for value in ["1234567890123", "0.12345678", "-1234567890123.01"] {
+            assert!(!decimal_fits_model(
+                Decimal::from_str(value).unwrap(),
+                &property
+            ));
+        }
+        for property in [
+            PropertyDescriptor::new("amount", DataType::Decimal),
+            PropertyDescriptor::new("amount", DataType::Decimal).numeric_precision(19),
+            PropertyDescriptor::new("amount", DataType::Decimal).numeric_scale(7),
+        ] {
+            assert!(!decimal_fits_model(Decimal::ZERO, &property));
+        }
+    }
+
+    #[test]
     fn model_checked_target_rejects_sqlite_real_coercion_of_exact_decimal() {
         futures_executor::block_on(async {
             let (executor, context) = model_target().await;
-            for decimal in ["0.1", "123456789012345.6789"] {
+            for (decimal, reason) in [
+                ("0.1", "target did not retain committed field value"),
+                (
+                    "123456789012345.6789",
+                    "Decimal lacks or exceeds modeled precision or scale",
+                ),
+                (
+                    "0.12345678",
+                    "Decimal lacks or exceeds modeled precision or scale",
+                ),
+            ] {
                 let mut inexact = order_set(1);
                 let mut body: JsonValue = serde_json::from_str(&inexact.payload_json).unwrap();
                 body["mutations"][0]["fields"]["amount"] = serde_json::json!(decimal);
@@ -1657,9 +1719,7 @@ mod tests {
                     executor
                         .apply_model_checked_committed_set(&context, &inexact)
                         .await,
-                    Err(CommittedEventError::InvalidEnvelope(
-                        "target did not retain committed field value"
-                    ))
+                    Err(CommittedEventError::InvalidEnvelope(actual)) if actual == reason
                 ));
                 let connection = executor.lock().unwrap();
                 let row_count: i64 = connection
