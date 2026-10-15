@@ -181,7 +181,9 @@ fn handle(mut stream: TcpStream, inner: &Inner) {
     if path.ends_with("/slow") {
         thread::sleep(Duration::from_millis(350));
     }
-    let status = if path.contains("/redirect") {
+    let status = if path.contains("/private-response") {
+        503
+    } else if path.contains("/redirect") {
         302
     } else if path.contains("/missing") {
         404
@@ -193,7 +195,9 @@ fn handle(mut stream: TcpStream, inner: &Inner) {
     } else {
         200
     };
-    let body = if path.contains("/large") {
+    let body = if path.contains("/private-response") {
+        b"REMOTE_RESPONSE_CANARY".to_vec()
+    } else if path.contains("/large") {
         vec![b'L'; 4096]
     } else if path.contains("/invalid-utf8") {
         vec![0xc3, 0x28]
@@ -207,8 +211,13 @@ fn handle(mut stream: TcpStream, inner: &Inner) {
     } else {
         ""
     };
+    let reason = if path.contains("/private-response") {
+        "REMOTE_REASON_CANARY"
+    } else {
+        "Result"
+    };
     let head = format!(
-        "HTTP/1.1 {status} Result\r\nContent-Length: {}\r\nConnection: close\r\n{redirect}\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n{redirect}\r\n",
         body.len()
     );
     if stream.write_all(head.as_bytes()).is_err() {
@@ -657,6 +666,67 @@ async fn shared_client_keeps_concurrent_carriers_independent() {
     assert!(!second_diagnostic.contains("first request"));
     assert!(!first_diagnostic.contains("PRIVATE-QUERY"));
     assert!(!second_diagnostic.contains("PRIVATE-QUERY"));
+}
+
+#[tokio::test]
+async fn private_transport_matrix_stays_out_of_telemetry_and_public_types() {
+    let fixture = Fixture::new();
+    let service = Arc::new(ReqwestHttpRequestService::new(vec![fixture.profile()]).unwrap());
+    let operations = Arc::new(Mutex::new(Vec::new()));
+    let context = context(service.clone()).with_runtime_telemetry(Arc::new(CarrierTelemetry {
+        trace: "00-33333333333333333333333333333333-cccccccccccccccc-01",
+        operations: operations.clone(),
+    }));
+
+    for index in 0..12 {
+        let canary = format!("HTTP_PRIVACY_{index}_CANARY");
+        let call = HttpCall::new(
+            "orders",
+            HttpMethod::Post,
+            format!("private-response/{canary}?token={canary}"),
+            BTreeMap::from([
+                ("authorization".to_owned(), format!("Bearer {canary}")),
+                ("cookie".to_owned(), format!("sid={canary}")),
+            ]),
+            canary.as_bytes().to_vec(),
+            Some(format!("application/x-{canary}")),
+            "check remote order",
+            teaql_runtime::HttpIntentKind::Purpose,
+            "show order status",
+            HttpRetryMode::None,
+        )
+        .unwrap();
+        let response = service.execute(&context, &call).await.unwrap();
+        assert_eq!(response.status(), 503);
+        assert_eq!(response.text().unwrap(), "REMOTE_RESPONSE_CANARY");
+        assert!(!format!("{call:?}").contains(&canary));
+        assert!(!format!("{response:?}").contains("REMOTE_RESPONSE_CANARY"));
+
+        let invalid = HttpCall::get("orders", format!("../{canary}"), "check", "show").unwrap();
+        let failure = service.execute(&context, &invalid).await.unwrap_err();
+        assert_eq!(failure, HttpFailure::InvalidInput);
+        assert!(!format!("{failure:?} {failure}").contains(&canary));
+
+        let dropped = HttpCall::post_text(
+            "orders",
+            format!("close?token={canary}"),
+            canary.clone(),
+            "check remote order",
+            "show order status",
+        )
+        .unwrap();
+        let failure = service.execute(&context, &dropped).await.unwrap_err();
+        assert_eq!(failure, HttpFailure::AmbiguousOutcome);
+        assert!(!format!("{failure:?} {failure}").contains(&canary));
+    }
+
+    let exported = format!("{:?}", operations.lock().unwrap());
+    assert!(exported.contains("check remote order"));
+    assert!(!exported.contains("REMOTE_REASON_CANARY"));
+    assert!(!exported.contains("REMOTE_RESPONSE_CANARY"));
+    for index in 0..12 {
+        assert!(!exported.contains(&format!("HTTP_PRIVACY_{index}_CANARY")));
+    }
 }
 
 struct SlowSleepClock {
