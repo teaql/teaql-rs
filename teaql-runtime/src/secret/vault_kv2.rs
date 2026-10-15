@@ -84,6 +84,12 @@ impl SecretProvider for VaultKv2SecretProvider {
             .bindings
             .get(reference)
             .ok_or(SecretFailure::UnknownBinding)?;
+        let http = context
+            .http_requests()
+            .map_err(|_| SecretFailure::Unavailable)?;
+        if !http.profile_is_encrypted_or_loopback(&self.http_profile) {
+            return Err(SecretFailure::Unavailable);
+        }
         let token = self
             .token_provider
             .resolve(context, &self.token_reference)
@@ -106,9 +112,7 @@ impl SecretProvider for VaultKv2SecretProvider {
             HttpRetryMode::None,
         )
         .map_err(|_| SecretFailure::Unavailable)?;
-        let response = context
-            .http_requests()
-            .map_err(|_| SecretFailure::Unavailable)?
+        let response = http
             .execute(context, &call)
             .await
             .map_err(|_| SecretFailure::Unavailable)?;
@@ -189,6 +193,7 @@ mod tests {
     use super::*;
     use crate::{HttpFailure, HttpRequestService, HttpResponse};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct FixedToken;
 
@@ -204,12 +209,17 @@ mod tests {
     }
 
     struct ScriptedHttp {
+        secure: bool,
         result: Result<HttpResponse, HttpFailure>,
         call: Mutex<Option<HttpCall>>,
     }
 
     #[async_trait]
     impl HttpRequestService for ScriptedHttp {
+        fn profile_is_encrypted_or_loopback(&self, profile: &str) -> bool {
+            self.secure && profile == "vault"
+        }
+
         async fn execute(
             &self,
             _context: &UserContext,
@@ -282,6 +292,7 @@ mod tests {
         let (provider, reference) = provider();
         let response = br#"{"data":{"data":{"value":"PRIVATE-VAULT-VALUE"},"metadata":{"version":7,"destroyed":false,"deletion_time":""}}}"#;
         let http = Arc::new(ScriptedHttp {
+            secure: true,
             result: Ok(HttpResponse::new(200, response.to_vec(), 1).unwrap()),
             call: Mutex::new(None),
         });
@@ -333,6 +344,7 @@ mod tests {
             let (provider, reference) = provider();
             let context = UserContext::new()
                 .with_http_request_service(Arc::new(ScriptedHttp {
+                    secure: true,
                     result,
                     call: Mutex::new(None),
                 }))
@@ -344,5 +356,42 @@ mod tests {
             assert_eq!(failure, expected);
             assert!(!format!("{failure:?} {failure}").contains("PRIVATE-VAULT"));
         }
+    }
+
+    #[tokio::test]
+    async fn insecure_profile_cannot_resolve_bootstrap_token_or_send_request() {
+        struct CountingToken(Arc<AtomicUsize>);
+        #[async_trait]
+        impl SecretProvider for CountingToken {
+            async fn resolve(
+                &self,
+                _context: &UserContext,
+                _reference: &SecretRef,
+            ) -> Result<SecretValue, SecretFailure> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                SecretValue::new(b"PRIVATE-VAULT-TOKEN".to_vec(), None, None)
+            }
+        }
+
+        let (mut provider, reference) = provider();
+        let resolved = Arc::new(AtomicUsize::new(0));
+        provider.token_provider = Arc::new(CountingToken(resolved.clone()));
+        let http = Arc::new(ScriptedHttp {
+            secure: false,
+            result: Ok(HttpResponse::new(200, b"{}".to_vec(), 1).unwrap()),
+            call: Mutex::new(None),
+        });
+        let context = UserContext::new()
+            .with_http_request_service(http.clone())
+            .with_secret_provider(Arc::new(provider));
+        assert_eq!(
+            context
+                .resolve_secret(&reference, "read payment credential")
+                .await
+                .unwrap_err(),
+            SecretFailure::Unavailable
+        );
+        assert_eq!(resolved.load(Ordering::SeqCst), 0);
+        assert!(http.call.lock().unwrap().is_none());
     }
 }
