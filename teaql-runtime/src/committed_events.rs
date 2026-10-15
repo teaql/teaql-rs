@@ -362,4 +362,14 @@ mod tests {
         assert!(field_json(&entity, "unsigned_long", DataType::U64, &Value::I64(-1)).is_err());
         assert!(field_json(&entity, "signed_long", DataType::I64, &Value::U64(u64::MAX)).is_err());
     }
+
+    #[test]
+    fn committed_calendar_date_is_iso_text_without_time_zone() {
+        let entity = EntityDescriptor::new("value_probe");
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 16).unwrap();
+        assert_eq!(
+            field_json(&entity, "planned_date", DataType::Date, &Value::Date(date)).unwrap(),
+            json!("2026-10-16")
+        );
+    }
 }

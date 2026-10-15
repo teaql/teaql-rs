@@ -848,7 +848,10 @@ fn decode_model_value(
             .map_err(|_| CommittedEventError::InvalidEnvelope("JSON field cannot be encoded")),
         DataType::Date => value
             .as_str()
-            .filter(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok())
+            .filter(|value| {
+                NaiveDate::parse_from_str(value, "%Y-%m-%d")
+                    .is_ok_and(|date| date.to_string() == *value)
+            })
             .map(|value| SqliteValue::Text(value.to_owned()))
             .ok_or(CommittedEventError::InvalidEnvelope(
                 "Date field has wrong type",
@@ -1097,7 +1100,8 @@ mod tests {
                     .not_null(),
             )
             .property(PropertyDescriptor::new("order_number", DataType::Text).not_null())
-            .property(PropertyDescriptor::new("status", DataType::Text).not_null());
+            .property(PropertyDescriptor::new("status", DataType::Text).not_null())
+            .property(PropertyDescriptor::new("planned_date", DataType::Date));
         let item = EntityDescriptor::new("order_item")
             .table_name("replica_order_item")
             .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
@@ -1135,7 +1139,11 @@ mod tests {
                         "operation": "create",
                         "base_version": null,
                         "committed_version": "1",
-                        "fields": { "order_number": "ORD-0001", "status": "DRAFT" }
+                        "fields": {
+                            "order_number": "ORD-0001",
+                            "status": "DRAFT",
+                            "planned_date": "2026-10-16"
+                        }
                     },
                     {
                         "entity_type": "order_item",
@@ -1253,6 +1261,14 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(order, (2, "SUBMITTED".into()));
+            let planned_date: String = connection
+                .query_row(
+                    "SELECT planned_date FROM replica_order WHERE id = ?1",
+                    params![9_007_199_254_740_993_i64],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(planned_date, "2026-10-16");
             let item_version: i64 = connection
                 .query_row(
                     "SELECT version FROM replica_order_item WHERE id = ?1",
@@ -1489,6 +1505,62 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(stored, 9_007_199_254_740_993_i64);
+        });
+    }
+
+    #[test]
+    fn model_checked_target_accepts_only_canonical_calendar_date() {
+        futures_executor::block_on(async {
+            let (executor, context) = model_target().await;
+            for invalid in [
+                serde_json::json!("2026-2-3"),
+                serde_json::json!("2026-02-30"),
+                serde_json::json!("2026-10-16T00:00:00Z"),
+                serde_json::json!(20261016),
+            ] {
+                let mut malformed = order_set(1);
+                let mut body: JsonValue = serde_json::from_str(&malformed.payload_json).unwrap();
+                body["mutations"][0]["fields"]["planned_date"] = invalid;
+                malformed.payload_json = body.to_string();
+                malformed.payload_sha256 = digest(malformed.payload_json.as_bytes());
+                assert!(matches!(
+                    executor
+                        .apply_model_checked_committed_set(&context, &malformed)
+                        .await,
+                    Err(CommittedEventError::InvalidEnvelope(
+                        "Date field has wrong type"
+                    ))
+                ));
+            }
+            let count: i64 = executor
+                .lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM replica_order", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(count, 0);
+
+            let mut valid = order_set(1);
+            let mut body: JsonValue = serde_json::from_str(&valid.payload_json).unwrap();
+            body["mutations"][0]["fields"]["planned_date"] = serde_json::json!("2026-10-16");
+            valid.payload_json = body.to_string();
+            valid.payload_sha256 = digest(valid.payload_json.as_bytes());
+            assert_eq!(
+                executor
+                    .apply_model_checked_committed_set(&context, &valid)
+                    .await
+                    .unwrap(),
+                InboxOutcome::Applied { checkpoint: 1 }
+            );
+            let date: String = executor
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT planned_date FROM replica_order WHERE id = ?1",
+                    params![9_007_199_254_740_993_i64],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(date, "2026-10-16");
         });
     }
 
