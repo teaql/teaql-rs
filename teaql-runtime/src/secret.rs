@@ -165,13 +165,22 @@ struct Binding {
     expires_at: Option<SystemTime>,
 }
 
+#[derive(Clone)]
+struct FileRoot {
+    path: PathBuf,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+}
+
 /// A no-cache baseline. File bindings are a single owner-only filename below
 /// an owner-controlled directory. Every resolution re-reads its configured
 /// source; replace the provider binding when rotating version metadata.
 type EnvironmentLookup = dyn Fn(&str) -> Result<Vec<u8>, SecretFailure> + Send + Sync;
 
 pub struct BoundSecretProvider {
-    root: Option<PathBuf>,
+    root: Option<FileRoot>,
     bindings: BTreeMap<SecretRef, Binding>,
     environment: Arc<EnvironmentLookup>,
 }
@@ -192,7 +201,32 @@ impl BoundSecretProvider {
                         return Err(SecretFailure::Denied);
                     }
                 }
-                Some(std::fs::canonicalize(path).map_err(|_| SecretFailure::Unavailable)?)
+                let resolved =
+                    std::fs::canonicalize(path).map_err(|_| SecretFailure::Unavailable)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+                    let directory = std::fs::OpenOptions::new()
+                        .read(true)
+                        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                        .open(&resolved)
+                        .map_err(|_| SecretFailure::Unavailable)?;
+                    let opened = directory
+                        .metadata()
+                        .map_err(|_| SecretFailure::Unavailable)?;
+                    if !opened.is_dir() || opened.permissions().mode() & 0o022 != 0 {
+                        return Err(SecretFailure::Denied);
+                    }
+                    Some(FileRoot {
+                        path: resolved,
+                        device: opened.dev(),
+                        inode: opened.ino(),
+                    })
+                }
+                #[cfg(not(unix))]
+                {
+                    Some(FileRoot { path: resolved })
+                }
             }
             None => None,
         };
@@ -305,51 +339,48 @@ impl SecretProvider for BoundSecretProvider {
 }
 
 #[cfg(unix)]
-fn read_bound_file(root: &Path, relative: &Path) -> Result<Vec<u8>, SecretFailure> {
+fn read_bound_file(root: &FileRoot, relative: &Path) -> Result<Vec<u8>, SecretFailure> {
+    use std::ffi::CString;
     use std::io::Read;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
-    let mut candidate = root.to_path_buf();
-    for part in relative.components() {
-        candidate.push(part);
-        let metadata = std::fs::symlink_metadata(&candidate).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                SecretFailure::Missing
-            } else {
-                SecretFailure::Unavailable
-            }
+    let directory = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&root.path)
+        .map_err(|error| match error.raw_os_error() {
+            Some(libc::ELOOP) | Some(libc::ENOTDIR) => SecretFailure::Denied,
+            _ => SecretFailure::Unavailable,
         })?;
-        if metadata.file_type().is_symlink() {
-            return Err(SecretFailure::Denied);
-        }
-    }
-    let actual = std::fs::canonicalize(&candidate).map_err(|_| SecretFailure::Unavailable)?;
-    if !actual.starts_with(root) {
-        return Err(SecretFailure::Denied);
-    }
-    let metadata = std::fs::metadata(&candidate).map_err(|_| SecretFailure::Unavailable)?;
-    if !metadata.is_file() || metadata.len() > MAX_SECRET_BYTES as u64 {
-        return Err(SecretFailure::Denied);
-    }
+    let directory_metadata = directory
+        .metadata()
+        .map_err(|_| SecretFailure::Unavailable)?;
+    if !directory_metadata.is_dir()
+        || directory_metadata.dev() != root.device
+        || directory_metadata.ino() != root.inode
+        || directory_metadata.permissions().mode() & 0o022 != 0
     {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o077 != 0 {
-            return Err(SecretFailure::Denied);
-        }
+        return Err(SecretFailure::Denied);
     }
-    let file = {
-        use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(candidate)
-            .map_err(|error| {
-                if error.raw_os_error() == Some(libc::ELOOP) {
-                    SecretFailure::Denied
-                } else {
-                    SecretFailure::Unavailable
-                }
-            })?
+    let name =
+        CString::new(relative.as_os_str().as_bytes()).map_err(|_| SecretFailure::InvalidInput)?;
+    let descriptor = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
+        )
     };
+    if descriptor < 0 {
+        return Err(match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::ELOOP) => SecretFailure::Denied,
+            Some(libc::ENOENT) => SecretFailure::Missing,
+            _ => SecretFailure::Unavailable,
+        });
+    }
+    let file = unsafe { std::fs::File::from_raw_fd(descriptor) };
     {
         use std::os::unix::fs::PermissionsExt;
         let opened = file.metadata().map_err(|_| SecretFailure::Unavailable)?;
@@ -371,7 +402,7 @@ fn read_bound_file(root: &Path, relative: &Path) -> Result<Vec<u8>, SecretFailur
 }
 
 #[cfg(not(unix))]
-fn read_bound_file(_root: &Path, _relative: &Path) -> Result<Vec<u8>, SecretFailure> {
+fn read_bound_file(_root: &FileRoot, _relative: &Path) -> Result<Vec<u8>, SecretFailure> {
     Err(SecretFailure::Denied)
 }
 
@@ -641,11 +672,80 @@ mod tests {
         );
         std::fs::remove_file(&file).unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o770)).unwrap();
+        assert_eq!(
+            context
+                .resolve_secret(&reference, "read after root permission change")
+                .await
+                .unwrap_err(),
+            SecretFailure::Denied
+        );
         assert!(matches!(
             BoundSecretProvider::new(Some(root.clone())),
             Err(SecretFailure::Denied)
         ));
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn replacing_bound_root_with_another_private_directory_fails_closed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = std::env::temp_dir().join(format!(
+            "teaql-secret-root-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let root = parent.join("keys");
+        let parked = parent.join("parked-keys");
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(root.join("key"), b"original").unwrap();
+        std::fs::set_permissions(root.join("key"), std::fs::Permissions::from_mode(0o600)).unwrap();
+        let reference = SecretRef::new("signing", "key").unwrap();
+        let mut provider = BoundSecretProvider::new(Some(root.clone())).unwrap();
+        provider
+            .bind_file(reference.clone(), "key", Some("v1".into()), None)
+            .unwrap();
+        let context = UserContext::new().with_secret_provider(Arc::new(provider));
+        assert_eq!(
+            context
+                .resolve_secret(&reference, "read")
+                .await
+                .unwrap()
+                .expose_bytes()
+                .unwrap(),
+            b"original"
+        );
+
+        std::fs::rename(&root, &parked).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(root.join("key"), b"replacement").unwrap();
+        std::fs::set_permissions(root.join("key"), std::fs::Permissions::from_mode(0o600)).unwrap();
+        let result = context
+            .resolve_secret(&reference, "read after root replacement")
+            .await;
+
+        std::fs::remove_file(root.join("key")).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+        std::os::unix::fs::symlink(&parked, &root).unwrap();
+        let symlink_result = context
+            .resolve_secret(&reference, "read through replacement symlink")
+            .await;
+        std::fs::remove_file(&root).unwrap();
+        std::fs::remove_file(parked.join("key")).unwrap();
+        std::fs::remove_dir(&parked).unwrap();
+        std::fs::remove_dir(&parent).unwrap();
+        assert!(
+            matches!(result, Err(SecretFailure::Denied)),
+            "replacement root must be denied"
+        );
+        assert!(
+            matches!(symlink_result, Err(SecretFailure::Denied)),
+            "replacement symlink must be denied"
+        );
     }
 }
