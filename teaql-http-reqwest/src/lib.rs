@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use rustls::pki_types::{CertificateDer, pem::PemObject};
 use teaql_runtime::{
     HttpCall, HttpFailure, HttpMethod, HttpRequestService, HttpResponse, HttpRetryMode,
     RuntimeAttributeValue, RuntimeOperation, UserContext,
@@ -30,6 +31,7 @@ fn valid_alias(value: &str) -> bool {
 pub struct HttpServiceProfile {
     alias: String,
     base: Url,
+    trusted_root: Option<reqwest::Certificate>,
     connect_timeout: Duration,
     request_timeout: Duration,
     total_timeout: Duration,
@@ -73,6 +75,7 @@ impl HttpServiceProfile {
         Ok(Self {
             alias,
             base,
+            trusted_root: None,
             connect_timeout: Duration::from_secs(2),
             request_timeout: Duration::from_secs(5),
             total_timeout: Duration::from_secs(10),
@@ -107,6 +110,22 @@ impl HttpServiceProfile {
             return Err(HttpFailure::InvalidInput);
         }
         self.max_response_bytes = value;
+        Ok(self)
+    }
+
+    /// Use only this profile's trusted root for HTTPS, without changing
+    /// process-wide trust or disabling peer/hostname verification.
+    pub fn trusted_root_pem(mut self, pem: &[u8]) -> Result<Self, HttpFailure> {
+        if self.base.scheme() != "https" || pem.is_empty() || pem.len() > 64 * 1024 {
+            return Err(HttpFailure::InvalidInput);
+        }
+        let der = CertificateDer::from_pem_slice(pem).map_err(|_| HttpFailure::InvalidInput)?;
+        rustls::RootCertStore::empty()
+            .add(der.clone())
+            .map_err(|_| HttpFailure::InvalidInput)?;
+        self.trusted_root = Some(
+            reqwest::Certificate::from_der(der.as_ref()).map_err(|_| HttpFailure::InvalidInput)?,
+        );
         Ok(self)
     }
 
@@ -229,11 +248,13 @@ impl ReqwestHttpRequestService {
     ) -> Result<Self, HttpFailure> {
         let mut states = HashMap::new();
         for profile in profiles {
-            let client = reqwest::Client::builder()
+            let mut builder = reqwest::Client::builder()
                 .connect_timeout(profile.connect_timeout)
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .map_err(|_| HttpFailure::InvalidInput)?;
+                .redirect(reqwest::redirect::Policy::none());
+            if let Some(root) = &profile.trusted_root {
+                builder = builder.tls_certs_only([root.clone()]);
+            }
+            let client = builder.build().map_err(|_| HttpFailure::InvalidInput)?;
             let now = clock.now();
             let gate = Gate {
                 open_until: None,

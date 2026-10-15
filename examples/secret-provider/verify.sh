@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+command -v openssl >/dev/null || { echo 'OpenSSL CLI is required for the local TLS fixture' >&2; exit 1; }
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo_dir"
 for round in 1 2; do
@@ -17,7 +18,7 @@ for round in 1 2; do
     printf 'Rust Vault KV v2 example round %s failed\n%s\n' "$round" "$output" >&2
     exit 1
   fi
-  if [[ "$output" != *"VAULT_KV2_PASS path=1 token=1 version=1 timeout=1 masking=1"* ]] ||
+  if [[ "$output" != *"VAULT_KV2_PASS path=1 token=1 version=1 timeout=1 masking=1 tls=1"* ]] ||
      [[ "$output" == *"PRIVATE-VAULT"* ]]; then
     printf 'Rust Vault KV v2 example round %s lacked evidence or leaked a canary\n' "$round" >&2
     exit 1
