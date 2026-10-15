@@ -5,7 +5,7 @@ use std::time::Instant;
 use opentelemetry::global::BoxedTracer;
 use opentelemetry::logs::{AnyValue, LogRecord, Logger, Severity};
 use opentelemetry::metrics::{Counter, Histogram, Meter};
-use opentelemetry::propagation::{Extractor, TextMapPropagator};
+use opentelemetry::propagation::{Extractor, Injector, TextMapPropagator};
 use opentelemetry::trace::{Span, Status, TraceContextExt, Tracer};
 use opentelemetry::{Context, KeyValue, Value, global};
 
@@ -128,6 +128,15 @@ impl OpenTelemetryRuntimeTelemetry {
 }
 
 impl RuntimeTelemetry for OpenTelemetryRuntimeTelemetry {
+    fn inject_context(&self, carrier: &mut BTreeMap<String, String>) {
+        if let Some(propagator) = &self.propagator {
+            propagator.inject_context(&Context::current(), &mut MapCarrier(carrier));
+        } else {
+            global::get_text_map_propagator(|propagator| {
+                propagator.inject_context(&Context::current(), &mut MapCarrier(carrier));
+            });
+        }
+    }
     fn records_sql_diagnostics(&self) -> bool {
         self.diagnostic_emitter.is_some()
     }
@@ -177,6 +186,14 @@ impl RuntimeTelemetry for OpenTelemetryRuntimeTelemetry {
 }
 
 struct CaseInsensitiveCarrier<'a>(&'a BTreeMap<String, String>);
+
+struct MapCarrier<'a>(&'a mut BTreeMap<String, String>);
+
+impl Injector for MapCarrier<'_> {
+    fn set(&mut self, key: &str, value: String) {
+        self.0.insert(key.to_owned(), value);
+    }
+}
 
 impl Extractor for CaseInsensitiveCarrier<'_> {
     fn get(&self, key: &str) -> Option<&str> {
@@ -322,6 +339,28 @@ mod tests {
     use opentelemetry_sdk::logs::{InMemoryLogExporter, SdkLoggerProvider};
     use opentelemetry_sdk::propagation::TraceContextPropagator;
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+
+    #[test]
+    fn outbound_carrier_uses_the_active_runtime_span() {
+        let traces = SdkTracerProvider::builder().build();
+        let telemetry: Arc<dyn RuntimeTelemetry> = Arc::new(
+            OpenTelemetryRuntimeTelemetry::new(
+                opentelemetry::global::BoxedTracer::new(Box::new(traces.tracer("http"))),
+                global::meter("http"),
+            )
+            .with_propagator(TraceContextPropagator::new()),
+        );
+        let scope = start_runtime_operation(&telemetry, RuntimeOperation::new("http", "orders"));
+        let mut carrier = BTreeMap::new();
+        scope.with_context(&mut || telemetry.inject_context(&mut carrier));
+        scope.success(BTreeMap::new());
+        let parent = carrier
+            .get("traceparent")
+            .expect("active runtime span should propagate");
+        assert!(parent.starts_with("00-"));
+        assert_eq!(parent.len(), 55);
+        traces.shutdown().unwrap();
+    }
 
     #[cfg(feature = "standard-telemetry")]
     #[tokio::test(flavor = "current_thread")]

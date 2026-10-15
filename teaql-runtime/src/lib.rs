@@ -14,6 +14,7 @@ mod error;
 mod event;
 pub mod generated_support;
 mod graph;
+pub mod http;
 mod i18n;
 mod id;
 pub mod inmemory_engine;
@@ -91,6 +92,10 @@ pub use generated_support::*;
 pub use graph::{
     EntityValues, GraphMutationBatch, GraphMutationKind, GraphMutationPlan, GraphMutationPlanItem,
     GraphNode, GraphOperation, ScopedCommentNode, TraceScopeToken, sorted_update_fields,
+};
+pub use http::{
+    HttpCall, HttpCancellation, HttpFailure, HttpIntentKind, HttpMethod, HttpRequestService,
+    HttpResponse, HttpRetryMode,
 };
 pub use i18n::I18nCatalog;
 pub(crate) use id::local_id_generator;

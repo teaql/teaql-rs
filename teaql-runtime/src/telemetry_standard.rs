@@ -182,6 +182,9 @@ impl StandardTelemetry {
     }
 }
 impl RuntimeTelemetry for StandardTelemetry {
+    fn inject_context(&self, carrier: &mut std::collections::BTreeMap<String, String>) {
+        self.delegate.inject_context(carrier);
+    }
     fn records_sql_diagnostics(&self) -> bool {
         self.delegate.records_sql_diagnostics()
     }

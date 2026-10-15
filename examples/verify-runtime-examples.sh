@@ -39,6 +39,7 @@ run_example "security-foundations" "$repo_dir/examples/Cargo.toml" \
 run_example "round-trip-reference-governed" "$repo_dir/examples/Cargo.toml" \
   "PASS Rust round-trip reference governed mode" \
   "round_trip_references"
+bash "$repo_dir/examples/http-resilience/verify.sh"
 
 cargo test --quiet --manifest-path "$repo_dir/examples/Cargo.toml" \
   --test context_bound_order_document

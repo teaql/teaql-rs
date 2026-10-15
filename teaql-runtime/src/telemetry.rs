@@ -175,6 +175,7 @@ pub trait RuntimeTelemetry: Send + Sync {
         false
     }
     fn record_diagnostic(&self, _event: RuntimeDiagnosticEvent) {}
+    fn inject_context(&self, _carrier: &mut BTreeMap<String, String>) {}
     fn extract_context(
         &self,
         _carrier: &BTreeMap<String, String>,

@@ -3620,11 +3620,24 @@ dependencies = [
  "serde_json",
  "teaql-core",
  "teaql-data-service",
+ "teaql-http-reqwest",
  "teaql-macros",
  "teaql-provider-sqlite",
  "teaql-runtime",
  "teaql-sql",
  "tokio",
+ "url",
+]
+
+[[package]]
+name = "teaql-http-reqwest"
+version = "5.0.7"
+dependencies = [
+ "async-trait",
+ "reqwest 0.13.4",
+ "teaql-runtime",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -3761,6 +3774,7 @@ dependencies = [
  "teaql-macros",
  "teaql-sql",
  "tokio",
+ "tokio-util",
  "url",
 ]
 
@@ -3996,6 +4010,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]
