@@ -4,11 +4,20 @@
 //! source/target transaction rules. It does not infer business mutations from
 //! an Entity Mutation Ledger or expose replication through Query/Mutation APIs.
 
-use rusqlite::{Connection, OptionalExtension, params};
+use std::str::FromStr;
+
+use chrono::{DateTime, NaiveDate};
+use rusqlite::{Connection, OptionalExtension, params, types::Value as SqliteValue};
+use rust_decimal::Decimal;
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
+use teaql_core::{DataType, EntityDescriptor, PropertyDescriptor};
+use teaql_runtime::UserContext;
 
-use crate::{MutationExecutorError, SqliteMutationExecutor, SqliteTransaction};
+use crate::{
+    MutationExecutorError, SqliteMutationExecutor, SqliteTransaction, quote_ident,
+    strip_identifier_quotes,
+};
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct OutboxRecord {
@@ -37,13 +46,55 @@ pub enum InboxOutcome {
     Duplicate { checkpoint: u64 },
 }
 
+/// Startup-owned target authority for one source stream and one accepted
+/// semantic model. This is not a wire token or a business-facing request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommittedEventTarget {
+    pub source_runtime_id: String,
+    pub model_hash: String,
+}
+
+impl CommittedEventTarget {
+    pub fn new(
+        source_runtime_id: impl Into<String>,
+        model_hash: impl Into<String>,
+    ) -> Result<Self, CommittedEventError> {
+        let source_runtime_id = source_runtime_id.into();
+        let model_hash = model_hash.into();
+        if source_runtime_id.trim().is_empty()
+            || !model_hash.strip_prefix("sha256:").is_some_and(|hex| {
+                hex.len() == 64
+                    && hex
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            })
+        {
+            return Err(CommittedEventError::InvalidEnvelope(
+                "target source identity or SHA-256 model hash is invalid",
+            ));
+        }
+        Ok(Self {
+            source_runtime_id,
+            model_hash,
+        })
+    }
+}
+
 #[derive(Debug)]
 pub enum CommittedEventError {
     Storage(MutationExecutorError),
     Json(serde_json::Error),
     InvalidEnvelope(&'static str),
+    UnauthorizedSource,
     ModelMismatch,
-    SequenceGap { expected: u64, received: u64 },
+    VersionConflict {
+        expected: Option<i64>,
+        received: Option<i64>,
+    },
+    SequenceGap {
+        expected: u64,
+        received: u64,
+    },
     DuplicateConflict,
     SequenceExhausted,
 }
@@ -56,7 +107,14 @@ impl std::fmt::Display for CommittedEventError {
             Self::InvalidEnvelope(reason) => {
                 write!(formatter, "invalid committed-event envelope: {reason}")
             }
+            Self::UnauthorizedSource => {
+                write!(formatter, "committed-event source is not authorized")
+            }
             Self::ModelMismatch => write!(formatter, "committed-event model hash mismatch"),
+            Self::VersionConflict { expected, received } => write!(
+                formatter,
+                "committed-event version conflict: expected {expected:?}, received {received:?}"
+            ),
             Self::SequenceGap { expected, received } => write!(
                 formatter,
                 "committed-event sequence gap: expected {expected}, received {received}"
@@ -113,6 +171,13 @@ impl SqliteMutationExecutor {
                 source_sequence INTEGER NOT NULL CHECK(source_sequence > 0), \
                 payload_sha256 TEXT NOT NULL, \
                 PRIMARY KEY(source_runtime_id, change_set_id));\
+             CREATE TABLE IF NOT EXISTS teaql_event_applied_payload (\
+                source_runtime_id TEXT NOT NULL, \
+                source_sequence INTEGER NOT NULL CHECK(source_sequence > 0), \
+                change_set_id TEXT NOT NULL, \
+                payload_json TEXT NOT NULL, \
+                PRIMARY KEY(source_runtime_id, source_sequence), \
+                UNIQUE(source_runtime_id, change_set_id));\
              CREATE TABLE IF NOT EXISTS teaql_event_checkpoint (\
                 source_runtime_id TEXT PRIMARY KEY, \
                 source_sequence INTEGER NOT NULL CHECK(source_sequence >= 0), \
@@ -153,6 +218,47 @@ impl SqliteMutationExecutor {
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Apply a trusted logical set through metadata-checked SQL, atomically
+    /// with its Inbox identity and checkpoint. Ordinary Query/Mutation/TFP
+    /// requests never route to this infrastructure-only entry point.
+    pub async fn apply_model_checked_committed_set(
+        &self,
+        context: &UserContext,
+        record: &OutboxRecord,
+    ) -> Result<InboxOutcome, CommittedEventError> {
+        use teaql_sql::{SqlTransaction, SqlTransactionTransport};
+
+        let target = context.get_resource::<CommittedEventTarget>().ok_or(
+            CommittedEventError::InvalidEnvelope("target authority is not configured"),
+        )?;
+        let installed = context.get_resource::<SqliteMutationExecutor>().ok_or(
+            CommittedEventError::InvalidEnvelope("target SQLite provider is not configured"),
+        )?;
+        if !std::sync::Arc::ptr_eq(&self.connection, &installed.connection) {
+            return Err(CommittedEventError::InvalidEnvelope(
+                "target provider does not match Context",
+            ));
+        }
+        if record.source_runtime_id != target.source_runtime_id {
+            return Err(CommittedEventError::UnauthorizedSource);
+        }
+        let transaction = self.begin_sql().await?;
+        let result =
+            transaction.apply_committed_event(record, &target.model_hash, |connection, payload| {
+                materialize_model_checked_set(connection, context, payload)
+            });
+        match result {
+            Ok(outcome) => {
+                transaction.commit_sql().await?;
+                Ok(outcome)
+            }
+            Err(error) => {
+                transaction.rollback_sql().await?;
+                Err(error)
+            }
+        }
     }
 }
 
@@ -231,7 +337,7 @@ impl SqliteTransaction {
     /// projection rows from validated committed facts; it must not call normal
     /// audited entity save or rerun Checker/Fix/business behavior. The savepoint
     /// prevents a caller from committing partial projection writes on failure.
-    pub fn apply_committed_event<F>(
+    pub(crate) fn apply_committed_event<F>(
         &self,
         record: &OutboxRecord,
         expected_model_hash: &str,
@@ -285,9 +391,28 @@ impl SqliteTransaction {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        if let Some((sequence, digest)) = prior {
-            if sequence as u64 == record.source_sequence && digest == record.payload_sha256 {
-                return Ok(InboxOutcome::Duplicate { checkpoint: last });
+        if let Some((sequence, prior_digest)) = prior {
+            if sequence as u64 == record.source_sequence && prior_digest == record.payload_sha256 {
+                let retained: Option<(i64, String)> = connection
+                    .query_row(
+                        "SELECT source_sequence, payload_json FROM teaql_event_applied_payload \
+                         WHERE source_runtime_id = ?1 AND change_set_id = ?2",
+                        params![record.source_runtime_id, record.change_set_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?;
+                if !retained.is_some_and(|(retained_sequence, payload)| {
+                    retained_sequence == sequence && digest(payload.as_bytes()) == prior_digest
+                }) {
+                    return Err(CommittedEventError::InvalidEnvelope(
+                        "prior Inbox identity lacks retained source evidence",
+                    ));
+                }
+                // A retry must receive the acknowledgement for its original
+                // set, even if the stream has since advanced further.
+                return Ok(InboxOutcome::Duplicate {
+                    checkpoint: record.source_sequence,
+                });
             }
             return Err(CommittedEventError::DuplicateConflict);
         }
@@ -302,6 +427,17 @@ impl SqliteTransaction {
         }
         with_savepoint(&connection, "teaql_event_apply", || {
             materialize(&connection, &payload)?;
+            connection.execute(
+                "INSERT INTO teaql_event_applied_payload \
+                 (source_runtime_id, source_sequence, change_set_id, payload_json) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    record.source_runtime_id,
+                    sequence,
+                    record.change_set_id,
+                    record.payload_json
+                ],
+            )?;
             connection.execute(
                 "INSERT INTO teaql_event_inbox \
                  (source_runtime_id, change_set_id, source_sequence, payload_sha256) VALUES (?1, ?2, ?3, ?4)",
@@ -318,6 +454,477 @@ impl SqliteTransaction {
             })
         })
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ModelOperation {
+    Create,
+    Update,
+    Delete,
+    Recover,
+}
+
+struct ModelMutation {
+    table: String,
+    id_column: String,
+    version_column: String,
+    id: i64,
+    base_version: Option<i64>,
+    committed_version: i64,
+    operation: ModelOperation,
+    fields: Vec<ModelField>,
+}
+
+struct ModelField {
+    column: String,
+    data_type: DataType,
+    value: SqliteValue,
+}
+
+fn materialize_model_checked_set(
+    connection: &Connection,
+    context: &UserContext,
+    payload: &JsonValue,
+) -> Result<(), CommittedEventError> {
+    let audit = payload
+        .get("audit")
+        .and_then(JsonValue::as_object)
+        .ok_or(CommittedEventError::InvalidEnvelope("audit is missing"))?;
+    for field in ["comment", "purpose"] {
+        if !audit
+            .get(field)
+            .and_then(JsonValue::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            return Err(CommittedEventError::InvalidEnvelope(
+                "audit intent is missing",
+            ));
+        }
+    }
+    if !payload
+        .get("source_transaction_id")
+        .and_then(JsonValue::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+        || !payload
+            .get("committed_at")
+            .and_then(JsonValue::as_str)
+            .is_some_and(|value| DateTime::parse_from_rfc3339(value).is_ok())
+    {
+        return Err(CommittedEventError::InvalidEnvelope(
+            "source transaction or commit time is invalid",
+        ));
+    }
+    let facts = payload
+        .get("mutations")
+        .and_then(JsonValue::as_array)
+        .ok_or(CommittedEventError::InvalidEnvelope(
+            "mutations are missing",
+        ))?;
+    let mut mutations = Vec::with_capacity(facts.len());
+    let mut seen = std::collections::BTreeSet::new();
+    for fact in facts {
+        let mutation = decode_model_mutation(context, fact)?;
+        if !seen.insert((mutation.table.clone(), mutation.id)) {
+            return Err(CommittedEventError::InvalidEnvelope(
+                "one set mutates the same entity twice",
+            ));
+        }
+        mutations.push(mutation);
+    }
+    for mutation in &mutations {
+        apply_model_mutation(connection, mutation)?;
+    }
+    Ok(())
+}
+
+fn decode_model_mutation(
+    context: &UserContext,
+    fact: &JsonValue,
+) -> Result<ModelMutation, CommittedEventError> {
+    let fact = fact
+        .as_object()
+        .ok_or(CommittedEventError::InvalidEnvelope(
+            "mutation must be an object",
+        ))?;
+    let entity_type = fact.get("entity_type").and_then(JsonValue::as_str).ok_or(
+        CommittedEventError::InvalidEnvelope("entity type is missing"),
+    )?;
+    let descriptor = context
+        .require_entity(entity_type)
+        .map_err(|_| CommittedEventError::InvalidEnvelope("unknown entity type"))?;
+    let id_property = descriptor
+        .id_property()
+        .ok_or(CommittedEventError::InvalidEnvelope(
+            "entity has no ID property",
+        ))?;
+    let version_property =
+        descriptor
+            .version_property()
+            .ok_or(CommittedEventError::InvalidEnvelope(
+                "entity has no version property",
+            ))?;
+    let id = parse_positive_i64(fact.get("entity_id"))?;
+    let operation = match fact.get("operation").and_then(JsonValue::as_str) {
+        Some("create") => ModelOperation::Create,
+        Some("update") => ModelOperation::Update,
+        Some("delete") => ModelOperation::Delete,
+        Some("recover") => ModelOperation::Recover,
+        _ => {
+            return Err(CommittedEventError::InvalidEnvelope(
+                "unknown mutation operation",
+            ));
+        }
+    };
+    let base_version = match fact.get("base_version") {
+        Some(JsonValue::Null) if operation == ModelOperation::Create => None,
+        Some(value) if operation != ModelOperation::Create => Some(parse_i64_text(value)?),
+        _ => {
+            return Err(CommittedEventError::InvalidEnvelope(
+                "base version is invalid",
+            ));
+        }
+    };
+    let committed_version = parse_i64_text(fact.get("committed_version").ok_or(
+        CommittedEventError::InvalidEnvelope("committed version is missing"),
+    )?)?;
+    let valid_version = match (operation, base_version) {
+        (ModelOperation::Create, None) => committed_version == 1,
+        (ModelOperation::Update, Some(base)) if base > 0 => {
+            base.checked_add(1) == Some(committed_version)
+        }
+        (ModelOperation::Delete, Some(base)) if base > 0 => {
+            base.checked_add(1).and_then(|next| next.checked_neg()) == Some(committed_version)
+        }
+        (ModelOperation::Recover, Some(base)) if base < 0 => {
+            base.checked_neg()
+                .and_then(|positive| positive.checked_add(1))
+                == Some(committed_version)
+        }
+        _ => false,
+    };
+    if !valid_version {
+        return Err(CommittedEventError::InvalidEnvelope(
+            "invalid version transition",
+        ));
+    }
+    let supplied = fact.get("fields").and_then(JsonValue::as_object).ok_or(
+        CommittedEventError::InvalidEnvelope("mutation fields are missing"),
+    )?;
+    for field in supplied.keys() {
+        let property = descriptor
+            .property_by_name(field)
+            .ok_or(CommittedEventError::InvalidEnvelope("unknown model field"))?;
+        if property.is_id || property.is_version {
+            return Err(CommittedEventError::InvalidEnvelope(
+                "identity/version must not be fields",
+            ));
+        }
+    }
+    if operation == ModelOperation::Delete && !supplied.is_empty() {
+        return Err(CommittedEventError::InvalidEnvelope(
+            "delete must be a tombstone",
+        ));
+    }
+    let mut fields = Vec::new();
+    for property in &descriptor.properties {
+        if property.is_id || property.is_version {
+            continue;
+        }
+        match supplied.get(&property.name) {
+            Some(value) => fields.push(ModelField {
+                column: quote_ident(strip_identifier_quotes(&property.column_name)),
+                data_type: property.data_type,
+                value: decode_model_value(context, descriptor, property, value)?,
+            }),
+            None if operation == ModelOperation::Create => {
+                return Err(CommittedEventError::InvalidEnvelope(
+                    "create omitted a modeled field",
+                ));
+            }
+            None => {}
+        }
+    }
+    Ok(ModelMutation {
+        table: quote_ident(&descriptor.table_name),
+        id_column: quote_ident(strip_identifier_quotes(&id_property.column_name)),
+        version_column: quote_ident(strip_identifier_quotes(&version_property.column_name)),
+        id,
+        base_version,
+        committed_version,
+        operation,
+        fields,
+    })
+}
+
+fn parse_i64_text(value: &JsonValue) -> Result<i64, CommittedEventError> {
+    value
+        .as_str()
+        .and_then(|value| value.parse::<i64>().ok())
+        .ok_or(CommittedEventError::InvalidEnvelope(
+            "version must be a decimal string",
+        ))
+}
+
+fn parse_positive_i64(value: Option<&JsonValue>) -> Result<i64, CommittedEventError> {
+    value
+        .and_then(JsonValue::as_str)
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .and_then(|value| i64::try_from(value).ok())
+        .ok_or(CommittedEventError::InvalidEnvelope(
+            "identity is outside the SQLite ID range",
+        ))
+}
+
+fn decode_model_value(
+    context: &UserContext,
+    descriptor: &EntityDescriptor,
+    property: &PropertyDescriptor,
+    value: &JsonValue,
+) -> Result<SqliteValue, CommittedEventError> {
+    if value.is_null() {
+        return if property.nullable {
+            Ok(SqliteValue::Null)
+        } else {
+            Err(CommittedEventError::InvalidEnvelope(
+                "non-null field is null",
+            ))
+        };
+    }
+    if let Some(relation) = descriptor
+        .relations
+        .iter()
+        .find(|relation| !relation.many && relation.local_key == property.name)
+    {
+        context
+            .require_entity(&relation.target_entity)
+            .map_err(|_| CommittedEventError::InvalidEnvelope("reference target is unknown"))?;
+        let reference = value
+            .as_object()
+            .ok_or(CommittedEventError::InvalidEnvelope(
+                "reference must be typed",
+            ))?;
+        if reference.len() != 2
+            || reference.get("entity_type").and_then(JsonValue::as_str)
+                != Some(relation.target_entity.as_str())
+        {
+            return Err(CommittedEventError::InvalidEnvelope(
+                "reference target does not match model",
+            ));
+        }
+        return Ok(SqliteValue::Integer(parse_positive_i64(
+            reference.get("entity_id"),
+        )?));
+    }
+    match property.data_type {
+        DataType::Bool => value
+            .as_bool()
+            .map(|value| SqliteValue::Integer(i64::from(value)))
+            .ok_or(CommittedEventError::InvalidEnvelope(
+                "Boolean field has wrong type",
+            )),
+        DataType::I64 => {
+            value
+                .as_i64()
+                .map(SqliteValue::Integer)
+                .ok_or(CommittedEventError::InvalidEnvelope(
+                    "i64 field has wrong type",
+                ))
+        }
+        DataType::U64 => value
+            .as_u64()
+            .and_then(|value| i64::try_from(value).ok())
+            .map(SqliteValue::Integer)
+            .ok_or(CommittedEventError::InvalidEnvelope(
+                "u64 field exceeds SQLite range",
+            )),
+        DataType::F64 => value
+            .as_f64()
+            .filter(|value| value.is_finite())
+            .map(SqliteValue::Real)
+            .ok_or(CommittedEventError::InvalidEnvelope(
+                "f64 field has wrong type",
+            )),
+        DataType::Decimal => value
+            .as_str()
+            .and_then(|value| Decimal::from_str(value).ok())
+            .map(|value| SqliteValue::Text(value.to_string()))
+            .ok_or(CommittedEventError::InvalidEnvelope(
+                "Decimal field has wrong type",
+            )),
+        DataType::Text | DataType::LargeText => {
+            let text = value.as_str().ok_or(CommittedEventError::InvalidEnvelope(
+                "text field has wrong type",
+            ))?;
+            if property
+                .max_length
+                .is_some_and(|max| text.chars().count() > max as usize)
+            {
+                return Err(CommittedEventError::InvalidEnvelope(
+                    "text exceeds modeled length",
+                ));
+            }
+            Ok(SqliteValue::Text(text.to_owned()))
+        }
+        DataType::Json => serde_json::to_string(value)
+            .map(SqliteValue::Text)
+            .map_err(|_| CommittedEventError::InvalidEnvelope("JSON field cannot be encoded")),
+        DataType::Date => value
+            .as_str()
+            .filter(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok())
+            .map(|value| SqliteValue::Text(value.to_owned()))
+            .ok_or(CommittedEventError::InvalidEnvelope(
+                "Date field has wrong type",
+            )),
+        DataType::Timestamp => {
+            let milliseconds = value.as_i64().or_else(|| {
+                value.as_str().and_then(|value| {
+                    DateTime::parse_from_rfc3339(value)
+                        .ok()
+                        .map(|time| time.timestamp_millis())
+                })
+            });
+            milliseconds
+                .map(SqliteValue::Integer)
+                .ok_or(CommittedEventError::InvalidEnvelope(
+                    "Timestamp field has wrong type",
+                ))
+        }
+    }
+}
+
+fn apply_model_mutation(
+    connection: &Connection,
+    mutation: &ModelMutation,
+) -> Result<(), CommittedEventError> {
+    let lookup = format!(
+        "SELECT {} FROM {} WHERE {} = ?1",
+        mutation.version_column, mutation.table, mutation.id_column
+    );
+    let current: Option<i64> = connection
+        .query_row(&lookup, params![mutation.id], |row| row.get(0))
+        .optional()?;
+    if current != mutation.base_version {
+        return Err(CommittedEventError::VersionConflict {
+            expected: mutation.base_version,
+            received: current,
+        });
+    }
+    match mutation.operation {
+        ModelOperation::Create => {
+            let mut columns = vec![mutation.id_column.clone(), mutation.version_column.clone()];
+            let mut values = vec![
+                SqliteValue::Integer(mutation.id),
+                SqliteValue::Integer(mutation.committed_version),
+            ];
+            for field in &mutation.fields {
+                columns.push(field.column.clone());
+                values.push(field.value.clone());
+            }
+            let placeholders = (1..=values.len())
+                .map(|index| format!("?{index}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "INSERT INTO {} ({}) VALUES ({})",
+                mutation.table,
+                columns.join(", "),
+                placeholders
+            );
+            connection.execute(&sql, rusqlite::params_from_iter(values))?;
+        }
+        ModelOperation::Update | ModelOperation::Delete | ModelOperation::Recover => {
+            let mut assignments = vec![format!("{} = ?1", mutation.version_column)];
+            let mut values = vec![SqliteValue::Integer(mutation.committed_version)];
+            for field in &mutation.fields {
+                assignments.push(format!("{} = ?{}", field.column, values.len() + 1));
+                values.push(field.value.clone());
+            }
+            let id_index = values.len() + 1;
+            values.push(SqliteValue::Integer(mutation.id));
+            let base_index = values.len() + 1;
+            values.push(SqliteValue::Integer(
+                mutation.base_version.expect("validated version"),
+            ));
+            let sql = format!(
+                "UPDATE {} SET {} WHERE {} = ?{} AND {} = ?{}",
+                mutation.table,
+                assignments.join(", "),
+                mutation.id_column,
+                id_index,
+                mutation.version_column,
+                base_index
+            );
+            let changed = connection.execute(&sql, rusqlite::params_from_iter(values))?;
+            if changed != 1 {
+                return Err(CommittedEventError::VersionConflict {
+                    expected: mutation.base_version,
+                    received: None,
+                });
+            }
+        }
+    }
+    verify_committed_row(connection, mutation)
+}
+
+fn verify_committed_row(
+    connection: &Connection,
+    mutation: &ModelMutation,
+) -> Result<(), CommittedEventError> {
+    let columns = std::iter::once(mutation.version_column.as_str())
+        .chain(mutation.fields.iter().map(|field| field.column.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT {} FROM {} WHERE {} = ?1",
+        columns, mutation.table, mutation.id_column
+    );
+    let row = connection
+        .query_row(&sql, params![mutation.id], |row| {
+            let version: i64 = row.get(0)?;
+            let values = (0..mutation.fields.len())
+                .map(|index| row.get::<_, SqliteValue>(index + 1))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok((version, values))
+        })
+        .optional()?
+        .ok_or(CommittedEventError::InvalidEnvelope(
+            "target row disappeared after application",
+        ))?;
+    if row.0 != mutation.committed_version {
+        return Err(CommittedEventError::InvalidEnvelope(
+            "target did not retain committed version",
+        ));
+    }
+    for (field, actual) in mutation.fields.iter().zip(row.1.iter()) {
+        if !same_committed_value(field, actual) {
+            return Err(CommittedEventError::InvalidEnvelope(
+                "target did not retain committed field value",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn same_committed_value(field: &ModelField, actual: &SqliteValue) -> bool {
+    if field.data_type == DataType::Decimal {
+        if field.value == SqliteValue::Null {
+            return *actual == SqliteValue::Null;
+        }
+        let as_decimal = |value: &SqliteValue| match value {
+            SqliteValue::Text(value) => Decimal::from_str(value).ok(),
+            SqliteValue::Integer(value) => Some(Decimal::from(*value)),
+            SqliteValue::Real(value) if value.is_finite() => {
+                Decimal::from_str(&value.to_string()).ok()
+            }
+            _ => None,
+        };
+        return match (as_decimal(&field.value), as_decimal(actual)) {
+            (Some(expected), Some(actual)) => expected == actual,
+            _ => false,
+        };
+    }
+    field.value == *actual
 }
 
 fn validate_header(
@@ -392,12 +999,415 @@ fn with_savepoint<T>(
 mod tests {
     use super::*;
     use rusqlite::Connection;
+    use teaql_core::{EntityDescriptor, PropertyDescriptor, RelationDescriptor};
     use teaql_data_service::CommittedSetAppend;
     use teaql_runtime::InMemoryMetadataStore;
-    use teaql_sql::{SqlTransaction, SqlTransactionTransport};
 
     const MODEL_HASH: &str =
         "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+
+    async fn model_target() -> (SqliteMutationExecutor, UserContext) {
+        use crate::SqliteProviderExt;
+
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        let order = EntityDescriptor::new("order")
+            .table_name("replica_order")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(
+                PropertyDescriptor::new("version", DataType::I64)
+                    .version()
+                    .not_null(),
+            )
+            .property(PropertyDescriptor::new("order_number", DataType::Text).not_null())
+            .property(PropertyDescriptor::new("status", DataType::Text).not_null());
+        let item = EntityDescriptor::new("order_item")
+            .table_name("replica_order_item")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(
+                PropertyDescriptor::new("version", DataType::I64)
+                    .version()
+                    .not_null(),
+            )
+            .property(
+                PropertyDescriptor::new("order", DataType::U64)
+                    .column_name("order_id")
+                    .not_null(),
+            )
+            .property(PropertyDescriptor::new("quantity", DataType::I64).not_null())
+            .relation(RelationDescriptor::new("order_ref", "order").local_key("order"));
+        let metadata = InMemoryMetadataStore::new()
+            .with_entity(order)
+            .with_entity(item);
+        let mut context = UserContext::new().with_metadata(metadata);
+        context
+            .insert_resource(CommittedEventTarget::new("sqlite-order-source", MODEL_HASH).unwrap());
+        context.use_sqlite_provider(executor.clone());
+        context.ensure_schema().await.unwrap();
+        (executor, context)
+    }
+
+    fn order_set(sequence: u64) -> OutboxRecord {
+        let (change_set_id, mutations) = match sequence {
+            1 => (
+                "order-graph-0001",
+                serde_json::json!([
+                    {
+                        "entity_type": "order",
+                        "entity_id": "9007199254740993",
+                        "operation": "create",
+                        "base_version": null,
+                        "committed_version": "1",
+                        "fields": { "order_number": "ORD-0001", "status": "DRAFT" }
+                    },
+                    {
+                        "entity_type": "order_item",
+                        "entity_id": "9007199254740994",
+                        "operation": "create",
+                        "base_version": null,
+                        "committed_version": "1",
+                        "fields": {
+                            "order": { "entity_type": "order", "entity_id": "9007199254740993" },
+                            "quantity": 2
+                        }
+                    }
+                ]),
+            ),
+            2 => (
+                "order-graph-0002",
+                serde_json::json!([
+                    {
+                        "entity_type": "order",
+                        "entity_id": "9007199254740993",
+                        "operation": "update",
+                        "base_version": "1",
+                        "committed_version": "2",
+                        "fields": { "status": "SUBMITTED" }
+                    },
+                    {
+                        "entity_type": "order_item",
+                        "entity_id": "9007199254740994",
+                        "operation": "delete",
+                        "base_version": "1",
+                        "committed_version": "-2",
+                        "fields": {}
+                    }
+                ]),
+            ),
+            _ => unreachable!(),
+        };
+        make_record(sequence, change_set_id, mutations)
+    }
+
+    fn make_record(sequence: u64, change_set_id: &str, mutations: JsonValue) -> OutboxRecord {
+        let payload_json = serde_json::json!({
+            "protocol_version": 1,
+            "change_set_id": change_set_id,
+            "source_runtime_id": "sqlite-order-source",
+            "source_sequence": sequence.to_string(),
+            "source_model_hash": MODEL_HASH,
+            "source_transaction_id": format!("source-tx-{sequence}"),
+            "committed_at": "2026-10-16T00:00:00Z",
+            "audit": {
+                "actor_ref": "fixture:operator",
+                "comment": "Apply order graph",
+                "purpose": "Verify model-checked target application",
+                "trace_id": "fixture-trace"
+            },
+            "mutations": mutations,
+        })
+        .to_string();
+        OutboxRecord {
+            source_runtime_id: "sqlite-order-source".into(),
+            source_sequence: sequence,
+            change_set_id: change_set_id.into(),
+            model_hash: MODEL_HASH.into(),
+            payload_sha256: digest(payload_json.as_bytes()),
+            payload_json,
+        }
+    }
+
+    #[test]
+    fn model_checked_target_applies_order_graph_and_rejects_gap_and_duplicate() {
+        futures_executor::block_on(async {
+            let (executor, context) = model_target().await;
+            let first = order_set(1);
+            let second = order_set(2);
+            assert!(matches!(
+                executor
+                    .apply_model_checked_committed_set(&context, &second)
+                    .await,
+                Err(CommittedEventError::SequenceGap {
+                    expected: 1,
+                    received: 2
+                })
+            ));
+            assert_eq!(
+                executor
+                    .apply_model_checked_committed_set(&context, &first)
+                    .await
+                    .unwrap(),
+                InboxOutcome::Applied { checkpoint: 1 }
+            );
+            assert_eq!(
+                executor
+                    .apply_model_checked_committed_set(&context, &first)
+                    .await
+                    .unwrap(),
+                InboxOutcome::Duplicate { checkpoint: 1 }
+            );
+            assert_eq!(
+                executor
+                    .apply_model_checked_committed_set(&context, &second)
+                    .await
+                    .unwrap(),
+                InboxOutcome::Applied { checkpoint: 2 }
+            );
+            assert_eq!(
+                executor
+                    .apply_model_checked_committed_set(&context, &first)
+                    .await
+                    .unwrap(),
+                InboxOutcome::Duplicate { checkpoint: 1 }
+            );
+            let connection = executor.lock().unwrap();
+            let order: (i64, String, String) = connection
+                .query_row(
+                    "SELECT version, order_number, status FROM replica_order WHERE id = ?1",
+                    params![9_007_199_254_740_993_i64],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(order, (2, "ORD-0001".into(), "SUBMITTED".into()));
+            let item: (i64, i64, i64) = connection
+                .query_row(
+                    "SELECT version, order_id, quantity FROM replica_order_item WHERE id = ?1",
+                    params![9_007_199_254_740_994_i64],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(item, (-2, 9_007_199_254_740_993_i64, 2));
+            let retained: String = connection
+                .query_row(
+                    "SELECT payload_json FROM teaql_event_applied_payload \
+                 WHERE source_runtime_id = ?1 AND source_sequence = 2",
+                    params!["sqlite-order-source"],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let retained: JsonValue = serde_json::from_str(&retained).unwrap();
+            assert_eq!(retained["audit"]["comment"], "Apply order graph");
+            assert_eq!(retained["audit"]["trace_id"], "fixture-trace");
+        });
+    }
+
+    #[test]
+    fn model_checked_target_rejects_unknown_fields_wrong_source_and_partial_graph() {
+        futures_executor::block_on(async {
+            let (executor, context) = model_target().await;
+            let mut unauthorized = order_set(1);
+            unauthorized.source_runtime_id = "other-source".into();
+            assert!(matches!(
+                executor
+                    .apply_model_checked_committed_set(&context, &unauthorized)
+                    .await,
+                Err(CommittedEventError::UnauthorizedSource)
+            ));
+            let mut unknown = order_set(1);
+            let mut body: JsonValue = serde_json::from_str(&unknown.payload_json).unwrap();
+            body["mutations"][1]["fields"]["not_in_model"] = serde_json::json!(1);
+            unknown.payload_json = body.to_string();
+            unknown.payload_sha256 = digest(unknown.payload_json.as_bytes());
+            assert!(matches!(
+                executor
+                    .apply_model_checked_committed_set(&context, &unknown)
+                    .await,
+                Err(CommittedEventError::InvalidEnvelope("unknown model field"))
+            ));
+            let mut unknown_entity = order_set(1);
+            let mut body: JsonValue = serde_json::from_str(&unknown_entity.payload_json).unwrap();
+            body["mutations"][1]["entity_type"] = serde_json::json!("not_in_model");
+            unknown_entity.payload_json = body.to_string();
+            unknown_entity.payload_sha256 = digest(unknown_entity.payload_json.as_bytes());
+            assert!(matches!(
+                executor
+                    .apply_model_checked_committed_set(&context, &unknown_entity)
+                    .await,
+                Err(CommittedEventError::InvalidEnvelope("unknown entity type"))
+            ));
+            let mut unsupported = order_set(1);
+            let mut body: JsonValue = serde_json::from_str(&unsupported.payload_json).unwrap();
+            body["protocol_version"] = serde_json::json!(2);
+            unsupported.payload_json = body.to_string();
+            unsupported.payload_sha256 = digest(unsupported.payload_json.as_bytes());
+            assert!(matches!(
+                executor
+                    .apply_model_checked_committed_set(&context, &unsupported)
+                    .await,
+                Err(CommittedEventError::InvalidEnvelope(
+                    "required v1 header or mutations mismatch"
+                ))
+            ));
+            let connection = executor.lock().unwrap();
+            let count: i64 = connection
+                .query_row("SELECT COUNT(*) FROM replica_order", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(count, 0);
+            let checkpoint: i64 = connection
+                .query_row("SELECT COUNT(*) FROM teaql_event_checkpoint", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(checkpoint, 0);
+        });
+    }
+
+    #[test]
+    fn model_checked_target_rolls_back_partial_set_and_rejects_version_and_model_mismatch() {
+        futures_executor::block_on(async {
+            let (executor, context) = model_target().await;
+            executor
+                .apply_model_checked_committed_set(&context, &order_set(1))
+                .await
+                .unwrap();
+            executor
+                .apply_model_checked_committed_set(&context, &order_set(2))
+                .await
+                .unwrap();
+
+            let partial = make_record(
+                3,
+                "order-graph-0003",
+                serde_json::json!([
+                    {
+                        "entity_type": "order",
+                        "entity_id": "9007199254740993",
+                        "operation": "update",
+                        "base_version": "2",
+                        "committed_version": "3",
+                        "fields": { "status": "FULFILLED" }
+                    },
+                    {
+                        "entity_type": "order_item",
+                        "entity_id": "9007199254740995",
+                        "operation": "create",
+                        "base_version": null,
+                        "committed_version": "1",
+                        "fields": {
+                            "order": { "entity_type": "order", "entity_id": "999" },
+                            "quantity": 1
+                        }
+                    }
+                ]),
+            );
+            assert!(matches!(
+                executor
+                    .apply_model_checked_committed_set(&context, &partial)
+                    .await,
+                Err(CommittedEventError::Storage(_))
+            ));
+
+            let stale = make_record(
+                3,
+                "order-graph-0003-stale",
+                serde_json::json!([{
+                    "entity_type": "order",
+                    "entity_id": "9007199254740993",
+                    "operation": "update",
+                    "base_version": "1",
+                    "committed_version": "2",
+                    "fields": { "status": "STALE" }
+                }]),
+            );
+            assert!(matches!(
+                executor
+                    .apply_model_checked_committed_set(&context, &stale)
+                    .await,
+                Err(CommittedEventError::VersionConflict {
+                    expected: Some(1),
+                    received: Some(2)
+                })
+            ));
+
+            let mut wrong_model = stale.clone();
+            wrong_model.model_hash = format!("sha256:{}", "1".repeat(64));
+            assert!(matches!(
+                executor
+                    .apply_model_checked_committed_set(&context, &wrong_model)
+                    .await,
+                Err(CommittedEventError::ModelMismatch)
+            ));
+            let connection = executor.lock().unwrap();
+            let actual: (i64, String) = connection
+                .query_row(
+                    "SELECT version, status FROM replica_order WHERE id = ?1",
+                    params![9_007_199_254_740_993_i64],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(actual, (2, "SUBMITTED".into()));
+            let checkpoint: i64 = connection.query_row(
+                "SELECT source_sequence FROM teaql_event_checkpoint WHERE source_runtime_id = ?1",
+                params!["sqlite-order-source"],
+                |row| row.get(0),
+            ).unwrap();
+            assert_eq!(checkpoint, 2);
+            let inbox: i64 = connection
+                .query_row("SELECT COUNT(*) FROM teaql_event_inbox", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(inbox, 2);
+            let retained: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM teaql_event_applied_payload",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(retained, 2);
+        });
+    }
+
+    #[test]
+    fn model_checked_target_rejects_storage_that_rewrites_committed_values() {
+        futures_executor::block_on(async {
+            let (executor, context) = model_target().await;
+            {
+                let connection = executor.lock().unwrap();
+                connection
+                    .execute_batch(
+                        "CREATE TRIGGER override_committed_status AFTER INSERT ON replica_order \
+                         BEGIN UPDATE replica_order SET status = 'TARGET_OVERRIDE' WHERE id = NEW.id; END;",
+                    )
+                    .unwrap();
+            }
+            assert!(matches!(
+                executor
+                    .apply_model_checked_committed_set(&context, &order_set(1))
+                    .await,
+                Err(CommittedEventError::InvalidEnvelope(
+                    "target did not retain committed field value"
+                ))
+            ));
+            let connection = executor.lock().unwrap();
+            for table in [
+                "replica_order",
+                "replica_order_item",
+                "teaql_event_inbox",
+                "teaql_event_applied_payload",
+                "teaql_event_checkpoint",
+            ] {
+                let count: i64 = connection
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                assert_eq!(count, 0, "{table} must roll back with the graph");
+            }
+        });
+    }
+    use teaql_sql::{SqlTransaction, SqlTransactionTransport};
 
     fn payload(source: &str, sequence: u64, change_set_id: &str, status: &str) -> String {
         let mutations = if status == "DRAFT" {

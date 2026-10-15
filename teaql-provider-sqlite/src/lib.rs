@@ -1093,7 +1093,11 @@ impl SchemaProvider for SqliteSchemaProvider {
         Box::pin(async move {
             ensure_sqlite_schema_for(context)
                 .map_err(|err| RuntimeError::Schema(err.to_string()))?;
-            if context.committed_event_source().is_some() {
+            if context.committed_event_source().is_some()
+                || context
+                    .get_resource::<committed_events::CommittedEventTarget>()
+                    .is_some()
+            {
                 context
                     .get_resource::<SqliteMutationExecutor>()
                     .ok_or_else(|| {
