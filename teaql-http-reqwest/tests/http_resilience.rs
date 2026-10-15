@@ -132,6 +132,37 @@ async fn stalled_tls_handshake_obeys_connection_budget() {
     );
 }
 
+#[tokio::test]
+#[ignore = "requires the isolated SYN-drop network fixture"]
+async fn dropped_tcp_syn_obeys_connection_budget() {
+    let profile = HttpServiceProfile::new(
+        "blackhole",
+        Url::parse("http://127.0.0.2:54321/api/").unwrap(),
+    )
+    .unwrap()
+    .budgets(
+        Duration::from_millis(100),
+        Duration::from_secs(2),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let service = Arc::new(ReqwestHttpRequestService::new(vec![profile]).unwrap());
+    let context = context(service.clone());
+    let started = Instant::now();
+    let result = service
+        .execute(
+            &context,
+            &HttpCall::get("blackhole", "health", "check upstream", "assess health").unwrap(),
+        )
+        .await;
+    let elapsed = started.elapsed();
+    assert_eq!(result, Err(HttpFailure::Timeout));
+    assert!(
+        elapsed < Duration::from_millis(900),
+        "connect budget was not enforced: {elapsed:?}"
+    );
+}
+
 fn handle(mut stream: TcpStream, inner: &Inner) {
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
