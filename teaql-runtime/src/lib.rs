@@ -133,7 +133,10 @@ pub use round_trip_reference::{
     TrustedReferencePrincipal, UNSAFE_EXPOSE_RAW_ENTITY_IDS_ACKNOWLEDGEMENT,
     UNSAFE_EXPOSE_RAW_ENTITY_IDS_ENVIRONMENT,
 };
-pub use secret::{BoundSecretProvider, SecretFailure, SecretProvider, SecretRef, SecretValue};
+pub use secret::{
+    BoundSecretProvider, SecretFailure, SecretProvider, SecretRef, SecretValue,
+    VaultKv2SecretProvider,
+};
 pub use telemetry::{
     FailOpenRuntimeTelemetryPropagationContext, FailOpenRuntimeTelemetryScope,
     NoopRuntimeTelemetry, RuntimeAttributeValue, RuntimeDiagnosticEvent, RuntimeOperation,

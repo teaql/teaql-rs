@@ -11,6 +11,9 @@ use async_trait::async_trait;
 
 use crate::UserContext;
 
+mod vault_kv2;
+pub use vault_kv2::VaultKv2SecretProvider;
+
 pub const MAX_SECRET_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]

@@ -13,4 +13,14 @@ for round in 1 2; do
     exit 1
   fi
   printf 'PASS Rust Secret Provider example round %s\n' "$round"
+  if ! output="$(cargo run --quiet -p teaql-examples --bin vault_kv2 2>&1)"; then
+    printf 'Rust Vault KV v2 example round %s failed\n%s\n' "$round" "$output" >&2
+    exit 1
+  fi
+  if [[ "$output" != *"VAULT_KV2_PASS path=1 token=1 version=1 timeout=1 masking=1"* ]] ||
+     [[ "$output" == *"PRIVATE-VAULT"* ]]; then
+    printf 'Rust Vault KV v2 example round %s lacked evidence or leaked a canary\n' "$round" >&2
+    exit 1
+  fi
+  printf 'PASS Rust Vault KV v2 example round %s\n' "$round"
 done
