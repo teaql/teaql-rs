@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value as JsonValue, json};
-use teaql_core::{DataType, EntityDescriptor, Value};
+use teaql_core::{CompactRow, DataType, EntityDescriptor, Value};
 use teaql_data_service::{CommittedSetAppend, MutationExecutor, QueryExecutor};
 
 use crate::{
@@ -57,11 +57,55 @@ impl CommittedEventSource {
     }
 }
 
+pub(crate) async fn capture_update_preimages<E>(
+    context: &UserContext,
+    service: &EntityDataService<'_, E>,
+    root: &EntityRuntimeState,
+) -> Result<BTreeMap<EntityKey, CompactRow>, DataServiceError<E::Error>>
+where
+    E: QueryExecutor + MutationExecutor + Send + Sync,
+{
+    let new = root.new_keys();
+    let deleted = root.deleted_keys();
+    let mut rows = BTreeMap::new();
+    for key in root.current_change_set().changes().keys() {
+        if new.contains(key) || deleted.contains(key) {
+            continue;
+        }
+        let descriptor = context
+            .require_entity(&key.entity)
+            .map_err(DataServiceError::Runtime)?;
+        let id_property = descriptor.id_property().ok_or_else(|| {
+            DataServiceError::Runtime(RuntimeError::Graph(format!(
+                "entity {} has no ID property",
+                key.entity
+            )))
+        })?;
+        let row = service
+            .fetch_graph_current_row_internal(
+                &key.entity,
+                &id_property.name,
+                &key.id,
+                root.get_trace_chain(key),
+            )
+            .await?
+            .ok_or_else(|| {
+                DataServiceError::Runtime(RuntimeError::Graph(format!(
+                    "pre-commit {} row could not be read inside its transaction",
+                    key.entity
+                )))
+            })?;
+        rows.insert(key.clone(), row);
+    }
+    Ok(rows)
+}
+
 pub(crate) async fn freeze_ledger_set<E>(
     context: &UserContext,
     service: &EntityDataService<'_, E>,
     root: &EntityRuntimeState,
     generated_ids: &BTreeMap<EntityKey, Value>,
+    update_preimages: &BTreeMap<EntityKey, CompactRow>,
     source: &CommittedEventSource,
 ) -> Result<Option<CommittedSetAppend>, DataServiceError<E::Error>>
 where
@@ -160,11 +204,30 @@ where
                         key.entity, property.name
                     )))
                 })?;
-                fields.insert(
-                    property.name.clone(),
+                let committed_value =
                     field_json(descriptor, &property.name, property.data_type, value)
-                        .map_err(DataServiceError::Runtime)?,
-                );
+                        .map_err(DataServiceError::Runtime)?;
+                if !is_create {
+                    let prior_row = update_preimages.get(&key).ok_or_else(|| {
+                        DataServiceError::Runtime(RuntimeError::Graph(format!(
+                            "committed {} update has no transaction preimage",
+                            key.entity
+                        )))
+                    })?;
+                    let prior_value = prior_row.get(&property.name).ok_or_else(|| {
+                        DataServiceError::Runtime(RuntimeError::Graph(format!(
+                            "committed {}.{} preimage field is missing",
+                            key.entity, property.name
+                        )))
+                    })?;
+                    let prior_value =
+                        field_json(descriptor, &property.name, property.data_type, prior_value)
+                            .map_err(DataServiceError::Runtime)?;
+                    if prior_value == committed_value {
+                        continue;
+                    }
+                }
+                fields.insert(property.name.clone(), committed_value);
             }
         }
         let chain = root

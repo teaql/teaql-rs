@@ -1890,6 +1890,8 @@ mod tests {
         #[teaql(version)]
         version: i64,
         name: String,
+        memo: String,
+        stable: String,
     }
 
     #[derive(Debug, PartialEq, TeaqlEntity)]
@@ -1929,12 +1931,16 @@ mod tests {
             let key = teaql_runtime::EntityKey::new("TransactionSchool", id);
             state.mark_as_new(key.clone());
             state.set(key.clone(), "id", id);
-            state.set(key, "name", name);
+            state.set(key.clone(), "name", name);
+            state.set(key.clone(), "memo", "initial memo");
+            state.set(key, "stable", "unchanged");
             (
                 Self {
                     id,
                     version: 0,
                     name: name.to_owned(),
+                    memo: "initial memo".to_owned(),
+                    stable: "unchanged".to_owned(),
                     __teaql_runtime_state: state.clone(),
                 },
                 state,
@@ -2014,6 +2020,16 @@ mod tests {
             );
 
             let key = teaql_runtime::EntityKey::new("TransactionSchool", 101_u64);
+            executor
+                .lock()
+                .unwrap()
+                .execute_batch(
+                    "CREATE TRIGGER committed_school_update AFTER UPDATE OF name ON transaction_school \
+                     WHEN NEW.name = 'reviewed' \
+                     BEGIN UPDATE transaction_school SET memo = 'database update' \
+                     WHERE id = NEW.id; END",
+                )
+                .unwrap();
             saved
                 .__teaql_runtime_state
                 .set_original_version(key.clone(), 1);
@@ -2036,6 +2052,8 @@ mod tests {
             assert_eq!(body["mutations"][0]["base_version"], "1");
             assert_eq!(body["mutations"][0]["committed_version"], "2");
             assert_eq!(body["mutations"][0]["fields"]["name"], "reviewed");
+            assert_eq!(body["mutations"][0]["fields"]["memo"], "database update");
+            assert!(body["mutations"][0]["fields"].get("stable").is_none());
 
             updated
                 .__teaql_runtime_state
@@ -2884,7 +2902,7 @@ mod tests {
             .lock()
             .expect("lock audited transaction fixture")
             .execute_batch(
-                "CREATE TABLE transaction_school (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name TEXT NOT NULL)",
+                "CREATE TABLE transaction_school (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name TEXT NOT NULL, memo TEXT NOT NULL, stable TEXT NOT NULL)",
             )
             .expect("create audited transaction fixture");
 

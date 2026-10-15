@@ -178,6 +178,12 @@ where
                                 .map_err(RuntimeError::from)
                                 .map_err(DataServiceError::Runtime)?,
                         );
+                    let update_preimages = if context.committed_event_source().is_some() {
+                        crate::committed_events::capture_update_preimages(context, &eds, &root)
+                            .await?
+                    } else {
+                        BTreeMap::new()
+                    };
                     let locations = ledger_object_locations(&node);
                     let mut generated_ids = eds
                         .execute_ledger_plan_internal(root.clone(), &locations)
@@ -222,6 +228,7 @@ where
                             &eds,
                             &root,
                             &generated_ids,
+                            &update_preimages,
                             source,
                         )
                         .await?
