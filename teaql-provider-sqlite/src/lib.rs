@@ -25,8 +25,8 @@ use teaql_sql::{
     quote_identifier_if_needed, schema_index_specs,
 };
 
-mod dynamic_fields;
 pub mod committed_events;
+mod dynamic_fields;
 mod transaction;
 pub use transaction::SqliteTransaction;
 
@@ -1091,7 +1091,20 @@ impl SchemaProvider for SqliteSchemaProvider {
         _invocation: &'a teaql_runtime::SchemaInvocation,
     ) -> Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
-            ensure_sqlite_schema_for(context).map_err(|err| RuntimeError::Schema(err.to_string()))
+            ensure_sqlite_schema_for(context)
+                .map_err(|err| RuntimeError::Schema(err.to_string()))?;
+            if context.committed_event_source().is_some() {
+                context
+                    .get_resource::<SqliteMutationExecutor>()
+                    .ok_or_else(|| {
+                        RuntimeError::Schema(
+                            "committed-event SQLite executor is not installed".into(),
+                        )
+                    })?
+                    .ensure_committed_event_schema()
+                    .map_err(|err| RuntimeError::Schema(err.to_string()))?;
+            }
+            Ok(())
         })
     }
 }
@@ -1866,7 +1879,7 @@ mod tests {
         SelectQuery, TeaqlEntity as _, UpdateCommand,
     };
     use teaql_macros::{TeaqlEntity, teaql_entity};
-    use teaql_runtime::{GraphNode, InMemoryMetadataStore};
+    use teaql_runtime::{CommittedEventSource, GraphNode, InMemoryMetadataStore};
 
     #[teaql_entity]
     #[derive(Debug, TeaqlEntity)]
@@ -1927,6 +1940,149 @@ mod tests {
                 state,
             )
         }
+    }
+
+    #[test]
+    fn audited_graph_save_captures_authoritative_sqlite_row_before_commit() {
+        futures_executor::block_on(async {
+            let executor = SqliteMutationExecutor::from_connection(
+                Connection::open_in_memory().expect("open committed graph fixture"),
+            );
+            let metadata = InMemoryMetadataStore::new()
+                .with_entity(TransactionSchool::entity_descriptor().clone());
+            let data_service = teaql_sql::SqlDataServiceExecutor::new(
+                SqliteDialect,
+                executor.clone(),
+                metadata.clone(),
+            );
+            let mut context = UserContext::new()
+                .with_metadata(metadata)
+                .with_committed_event_source(
+                    CommittedEventSource::new(
+                        "rust-graph-source",
+                        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                    )
+                    .unwrap(),
+                );
+            context.use_sqlite_provider(executor.clone());
+            context.register_executor(data_service);
+            context.ensure_schema().await.unwrap();
+            executor
+                .lock()
+                .unwrap()
+                .execute_batch(
+                    "CREATE TRIGGER committed_school_default AFTER INSERT ON transaction_school \
+                 BEGIN UPDATE transaction_school SET name = 'database trigger value' \
+                 WHERE id = NEW.id; END",
+                )
+                .unwrap();
+
+            let (school, _) = TransactionSchool::new(101, "pre-save value");
+            let mut saved = teaql_runtime::save_audited_ledger_entity(
+                school.audit_as("create committed school"),
+                &context,
+            )
+            .await
+            .unwrap();
+            assert_eq!(saved.name, "database trigger value");
+            let outbox = executor
+                .committed_outbox_after("rust-graph-source", 0, 10)
+                .unwrap();
+            assert_eq!(outbox.len(), 1);
+            let body: serde_json::Value = serde_json::from_str(&outbox[0].payload_json).unwrap();
+            assert_eq!(body["source_sequence"], "1");
+            assert_eq!(body["audit"]["comment"], "create committed school");
+            assert_eq!(
+                body["mutations"][0]["fields"]["name"],
+                "database trigger value"
+            );
+            assert_eq!(body["mutations"][0]["committed_version"], "1");
+
+            saved = teaql_runtime::save_audited_ledger_entity(
+                saved.audit_as("no-op committed school"),
+                &context,
+            )
+            .await
+            .unwrap();
+            assert_eq!(saved.version, 1);
+            assert_eq!(
+                executor
+                    .committed_outbox_after("rust-graph-source", 0, 10)
+                    .unwrap()
+                    .len(),
+                1
+            );
+
+            let key = teaql_runtime::EntityKey::new("TransactionSchool", 101_u64);
+            saved
+                .__teaql_runtime_state
+                .set_original_version(key.clone(), 1);
+            saved
+                .__teaql_runtime_state
+                .set(key.clone(), "name", "reviewed");
+            saved.name = "reviewed".into();
+            let updated = teaql_runtime::save_audited_ledger_entity(
+                saved.audit_as("review committed school"),
+                &context,
+            )
+            .await
+            .unwrap();
+            let next = executor
+                .committed_outbox_after("rust-graph-source", 1, 10)
+                .unwrap();
+            assert_eq!(next.len(), 1);
+            let body: serde_json::Value = serde_json::from_str(&next[0].payload_json).unwrap();
+            assert_eq!(body["mutations"][0]["operation"], "update");
+            assert_eq!(body["mutations"][0]["base_version"], "1");
+            assert_eq!(body["mutations"][0]["committed_version"], "2");
+            assert_eq!(body["mutations"][0]["fields"]["name"], "reviewed");
+
+            updated
+                .__teaql_runtime_state
+                .set_original_version(key.clone(), 2);
+            updated.__teaql_runtime_state.mark_as_delete(key);
+            let deleted = teaql_runtime::save_audited_ledger_entity(
+                updated.audit_as("delete committed school"),
+                &context,
+            )
+            .await
+            .unwrap();
+            assert_eq!(deleted.version, -3);
+            let next = executor
+                .committed_outbox_after("rust-graph-source", 2, 10)
+                .unwrap();
+            assert_eq!(next.len(), 1);
+            let body: serde_json::Value = serde_json::from_str(&next[0].payload_json).unwrap();
+            assert_eq!(body["mutations"][0]["operation"], "delete");
+            assert_eq!(body["mutations"][0]["base_version"], "2");
+            assert_eq!(body["mutations"][0]["committed_version"], "-3");
+            assert_eq!(body["mutations"][0]["fields"].as_object().unwrap().len(), 0);
+
+            executor
+                .lock()
+                .unwrap()
+                .execute_batch("DROP TABLE teaql_event_outbox")
+                .unwrap();
+            let (second, _) = TransactionSchool::new(102, "must roll back");
+            assert!(
+                teaql_runtime::save_audited_ledger_entity(
+                    second.audit_as("reject broken outbox"),
+                    &context,
+                )
+                .await
+                .is_err()
+            );
+            let count: i64 = executor
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM transaction_school WHERE id = 102",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0);
+        });
     }
 
     #[test]

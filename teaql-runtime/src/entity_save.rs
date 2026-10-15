@@ -84,6 +84,12 @@ where
         node: GraphNode,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
+            if context.committed_event_source().is_some() {
+                return Err(RuntimeError::Graph(
+                    "committed-event capture requires the audited Entity Mutation Ledger save path"
+                        .into(),
+                ));
+            }
             teaql_core::MutationIntent::from_optional(node.comment.as_deref())?;
             let entity = node.entity.clone();
             let executor = context
@@ -210,6 +216,30 @@ where
                                 "persisted {entity} record could not be read back"
                             )))
                         })?;
+                    if let Some(source) = context.committed_event_source()
+                        && let Some(append) = crate::committed_events::freeze_ledger_set(
+                            context,
+                            &eds,
+                            &root,
+                            &generated_ids,
+                            source,
+                        )
+                        .await?
+                    {
+                        let recorded =
+                            teaql_data_service::Transaction::append_committed_set(&tx, &append)
+                                .await
+                                .map_err(|error| {
+                                    DataServiceError::Runtime(RuntimeError::Graph(format!(
+                                        "committed-event append failed: {error}"
+                                    )))
+                                })?;
+                        if !recorded {
+                            return Err(DataServiceError::Runtime(RuntimeError::Graph(
+                                "committed-event capture is unsupported by this transaction".into(),
+                            )));
+                        }
+                    }
                     Ok(())
                 }),
             )
@@ -2238,6 +2268,19 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
             let saved = saver.save_ledger_dyn(context, node, root.clone()).await?;
             return decode_saved_ledger_entity::<T>(
                 saved,
+                &root,
+                preserve_relations,
+                &original_relation_fields,
+            );
+        }
+        if context.committed_event_source().is_some() {
+            // The ledger has no mutation to commit. Preserve the loaded
+            // entity and emit no Outbox set; the legacy graph path is not a
+            // valid substitute for a change-free audited save.
+            let descriptor = context.require_entity(&node.entity)?;
+            let preserve_relations = can_preserve_loaded_relations(&root, &root_key, descriptor);
+            return decode_saved_ledger_entity::<T>(
+                node,
                 &root,
                 preserve_relations,
                 &original_relation_fields,
