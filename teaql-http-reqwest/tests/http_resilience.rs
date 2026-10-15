@@ -80,6 +80,58 @@ impl Drop for Fixture {
     }
 }
 
+#[tokio::test]
+async fn stalled_tls_handshake_obeys_connection_budget() {
+    let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match listener.accept() {
+                Ok((_stream, _)) => {
+                    thread::sleep(Duration::from_millis(1200));
+                    break;
+                }
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && Instant::now() < deadline =>
+                {
+                    thread::sleep(Duration::from_millis(2));
+                }
+                Err(error) => panic!("TLS handshake fixture failed: {error}"),
+            }
+        }
+    });
+    let profile = HttpServiceProfile::new(
+        "secure",
+        Url::parse(&format!("https://127.0.0.1:{port}/api/")).unwrap(),
+    )
+    .unwrap()
+    .budgets(
+        Duration::from_millis(100),
+        Duration::from_secs(2),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let service = Arc::new(ReqwestHttpRequestService::new(vec![profile]).unwrap());
+    let context = context(service.clone());
+    let started = Instant::now();
+    let result = service
+        .execute(
+            &context,
+            &HttpCall::get("secure", "health", "check upstream", "assess health").unwrap(),
+        )
+        .await;
+    let elapsed = started.elapsed();
+    server.join().unwrap();
+    assert_eq!(result, Err(HttpFailure::Timeout));
+    assert!(
+        elapsed < Duration::from_millis(900),
+        "connection phase used request budget: {elapsed:?}"
+    );
+}
+
 fn handle(mut stream: TcpStream, inner: &Inner) {
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
