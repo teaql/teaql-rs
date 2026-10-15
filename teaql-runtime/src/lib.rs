@@ -33,6 +33,7 @@ mod registry;
 #[doc(hidden)]
 pub use registry::decode_compact_rows_with_read_metadata;
 mod round_trip_reference;
+pub mod secret;
 mod telemetry;
 mod telemetry_mutation;
 #[cfg(feature = "opentelemetry")]
@@ -132,6 +133,7 @@ pub use round_trip_reference::{
     TrustedReferencePrincipal, UNSAFE_EXPOSE_RAW_ENTITY_IDS_ACKNOWLEDGEMENT,
     UNSAFE_EXPOSE_RAW_ENTITY_IDS_ENVIRONMENT,
 };
+pub use secret::{BoundSecretProvider, SecretFailure, SecretProvider, SecretRef, SecretValue};
 pub use telemetry::{
     FailOpenRuntimeTelemetryPropagationContext, FailOpenRuntimeTelemetryScope,
     NoopRuntimeTelemetry, RuntimeAttributeValue, RuntimeDiagnosticEvent, RuntimeOperation,

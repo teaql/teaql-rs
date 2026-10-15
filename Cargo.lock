@@ -3625,6 +3625,7 @@ dependencies = [
  "teaql-provider-sqlite",
  "teaql-runtime",
  "teaql-sql",
+ "tempfile",
  "tokio",
  "url",
 ]
@@ -3758,6 +3759,7 @@ dependencies = [
  "futures-util",
  "hkdf",
  "hmac 0.12.1",
+ "libc",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-proto",
