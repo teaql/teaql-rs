@@ -4,6 +4,7 @@ use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use teaql_core::{TraceKind, TraceNode};
 use teaql_http_reqwest::{HttpServiceProfile, ReqwestHttpRequestService};
 use teaql_runtime::{
     HttpCall, HttpIntentKind, HttpMethod, HttpRetryMode, NoopRuntimeTelemetry, RuntimeOperation,
@@ -101,6 +102,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "load order status",
         "render order details",
     )?;
+    let call = call.with_parent_trace_chain(vec![
+        TraceNode::typed(TraceKind::Purpose, "Order", None, "render order details"),
+        TraceNode::typed(TraceKind::Comment, "Order", None, "load order graph"),
+    ])?;
     let response = context.http_requests()?.execute(&context, &call).await?;
     assert_eq!(response.status(), 200);
     assert_eq!(response.attempts(), 1);
@@ -136,9 +141,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let diagnostic = format!("{observed:?}");
     assert!(diagnostic.contains("load order status"));
     assert!(diagnostic.contains("notify order service"));
+    let first_trace = observed[0].attributes.get("teaql.http.trace_chain");
+    assert_eq!(
+        first_trace,
+        Some(&teaql_runtime::RuntimeAttributeValue::String(
+            call.business_trace_projection()
+        ))
+    );
+    assert_eq!(call.business_trace_chain().len(), 3);
     assert!(!diagnostic.contains("PRIVATE_QUERY"));
     assert!(!diagnostic.contains("PRIVATE_HEADER"));
     assert!(!diagnostic.contains("PRIVATE_BODY"));
-    println!("HTTP_RESILIENCE_PASS status=200 attempts=1 requests=2 trace=2");
+    println!("HTTP_RESILIENCE_PASS status=200 attempts=1 requests=2 trace=2 lineage=3");
     Ok(())
 }

@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use teaql_core::{QueryRequestScope, TraceKind, TraceNode};
 
 use crate::UserContext;
 
@@ -102,6 +103,7 @@ pub struct HttpCall {
     intent_kind: HttpIntentKind,
     intent: String,
     retry_mode: HttpRetryMode,
+    parent_trace_chain: Vec<TraceNode>,
 }
 
 impl std::fmt::Debug for HttpCall {
@@ -140,6 +142,7 @@ impl HttpCall {
             intent_kind,
             intent: intent.into(),
             retry_mode,
+            parent_trace_chain: Vec::new(),
         };
         call.validate()?;
         Ok(call)
@@ -189,6 +192,68 @@ impl HttpCall {
     pub fn with_retry_mode(mut self, retry_mode: HttpRetryMode) -> Self {
         self.retry_mode = retry_mode;
         self
+    }
+
+    /// Attach a snapshot of the initiating request's business lineage.
+    /// Never read an ambient Context trace stack while executing the call.
+    pub fn with_parent_trace_chain(mut self, parent: Vec<TraceNode>) -> Result<Self, HttpFailure> {
+        if !valid_parent_trace_chain(&parent) {
+            return Err(HttpFailure::InvalidInput);
+        }
+        self.parent_trace_chain = parent;
+        Ok(self)
+    }
+
+    /// Capture the canonical lineage from an immutable query request header.
+    pub fn with_parent_request_scope(self, scope: &QueryRequestScope) -> Result<Self, HttpFailure> {
+        self.with_parent_trace_chain(scope.trace_chain())
+    }
+
+    /// The HTTP call is one immutable child of its initiating request. Its
+    /// separate intent remains available through `intent()`.
+    pub fn business_trace_chain(&self) -> Vec<TraceNode> {
+        let mut chain = if self.parent_trace_chain.is_empty() {
+            vec![TraceNode::typed(
+                match self.intent_kind {
+                    HttpIntentKind::Purpose => TraceKind::Purpose,
+                    HttpIntentKind::Audit => TraceKind::AuditReason,
+                },
+                &self.profile,
+                None,
+                &self.intent,
+            )]
+        } else {
+            self.parent_trace_chain.clone()
+        };
+        chain.push(TraceNode::typed(
+            TraceKind::Comment,
+            &self.profile,
+            None,
+            &self.comment,
+        ));
+        chain
+    }
+
+    /// Structured diagnostic projection: only business kind and comment are
+    /// exported. Internal IDs, URLs, headers, and bodies never enter it.
+    pub fn business_trace_projection(&self) -> String {
+        let nodes: Vec<_> = self
+            .business_trace_chain()
+            .iter()
+            .map(|node| {
+                serde_json::json!({
+                    "kind": match node.kind {
+                        TraceKind::Purpose => "PURPOSE",
+                        TraceKind::AuditReason => "AUDIT_REASON",
+                        _ => "COMMENT",
+                    },
+                    "comment": node.comment.chars().map(|character| {
+                        if character.is_control() { ' ' } else { character }
+                    }).collect::<String>(),
+                })
+            })
+            .collect();
+        serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".to_owned())
     }
 
     pub fn profile(&self) -> &str {
@@ -245,6 +310,18 @@ impl HttpCall {
         }
         Ok(())
     }
+}
+
+fn valid_parent_trace_chain(parent: &[TraceNode]) -> bool {
+    parent.len() <= 63
+        && parent.iter().enumerate().all(|(index, node)| {
+            (if index == 0 {
+                matches!(node.kind, TraceKind::Purpose | TraceKind::AuditReason)
+            } else {
+                node.kind == TraceKind::Comment
+            }) && node.entity_id.is_none()
+                && !node.comment.trim().is_empty()
+        })
 }
 
 pub fn contains_control(value: &str) -> bool {
@@ -386,5 +463,67 @@ mod tests {
         assert!(!format!("{response:?}").contains("PRIVATE"));
         assert_eq!(response.text().unwrap(), "PRIVATE-RESPONSE");
         assert_eq!(HttpFailure::InvalidInput.to_string(), "HTTP invalid input");
+    }
+
+    #[test]
+    fn http_business_trace_is_an_immutable_request_child_not_an_ambient_context_stack() {
+        let parent = vec![
+            TraceNode::typed(TraceKind::Purpose, "School", None, "render school"),
+            TraceNode::typed(TraceKind::Comment, "School", None, "load school"),
+        ];
+        let first = HttpCall::get("orders", "orders/1", "check inventory", "contact inventory")
+            .unwrap()
+            .with_parent_trace_chain(parent.clone())
+            .unwrap();
+        let second = HttpCall::get("orders", "orders/2", "check payment", "contact payment")
+            .unwrap()
+            .with_parent_trace_chain(parent.clone())
+            .unwrap();
+        let mut changed_parent = parent;
+        changed_parent[1].comment = "changed later".to_owned();
+        let first_chain = first.business_trace_chain();
+        assert_eq!(first_chain.len(), 3);
+        assert_eq!(first_chain[0].comment, "render school");
+        assert_eq!(first_chain[1].comment, "load school");
+        assert_eq!(first_chain[2].comment, "check inventory");
+        assert_eq!(
+            first.business_trace_projection(),
+            "[{\"comment\":\"render school\",\"kind\":\"PURPOSE\"},{\"comment\":\"load school\",\"kind\":\"COMMENT\"},{\"comment\":\"check inventory\",\"kind\":\"COMMENT\"}]"
+        );
+        assert_eq!(second.business_trace_chain()[2].comment, "check payment");
+        let direct = HttpCall::get("orders", "orders/3", "load order", "render order").unwrap();
+        assert_eq!(direct.business_trace_chain()[0].kind, TraceKind::Purpose);
+        assert_eq!(direct.business_trace_chain()[1].comment, "load order");
+        assert!(!format!("{first:?}").contains("render school"));
+        let request = QueryRequestScope::root(
+            "Order",
+            teaql_core::QueryIntent::new("load order graph", "render order details").unwrap(),
+        );
+        let from_request = direct.with_parent_request_scope(&request).unwrap();
+        assert_eq!(
+            from_request.business_trace_chain()[0].comment,
+            "render order details"
+        );
+        assert_eq!(from_request.business_trace_chain()[2].comment, "load order");
+    }
+
+    #[test]
+    fn http_parent_trace_rejects_non_business_or_identity_nodes() {
+        let call = HttpCall::get("orders", "orders/1", "check", "render").unwrap();
+        for parent in [
+            vec![TraceNode::typed(TraceKind::Sql, "sqlite", None, "select")],
+            vec![TraceNode::typed(
+                TraceKind::Purpose,
+                "School",
+                Some(7),
+                "render",
+            )],
+            vec![TraceNode::typed(TraceKind::Purpose, "School", None, " ")],
+        ] {
+            assert_eq!(
+                call.clone().with_parent_trace_chain(parent),
+                Err(HttpFailure::InvalidInput)
+            );
+        }
     }
 }

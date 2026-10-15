@@ -492,7 +492,8 @@ impl HttpRequestService for ReqwestHttpRequestService {
             RuntimeOperation::new("http", call.profile())
                 .attribute("teaql.http.method", format!("{:?}", call.method()))
                 .attribute("teaql.http.comment", safe_text(call.comment()))
-                .attribute("teaql.http.intent", safe_text(call.intent())),
+                .attribute("teaql.http.intent", safe_text(call.intent()))
+                .attribute("teaql.http.trace_chain", call.business_trace_projection()),
         );
         let started = self.clock.now();
         let mut attempts = 0;
