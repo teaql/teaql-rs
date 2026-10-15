@@ -436,37 +436,40 @@ mod tests {
         let custom = Arc::new(CustomProvider);
         let first = UserContext::new().with_secret_provider(custom.clone());
         let second = UserContext::new().with_secret_provider(custom);
-        assert_eq!(
-            first
-                .resolve_secret(&reference, "first")
-                .await
-                .unwrap()
-                .expose_bytes()
-                .unwrap(),
-            b"custom"
+        let (one, two) = tokio::join!(
+            first.resolve_secret(&reference, "first"),
+            second.resolve_secret(&reference, "second")
         );
-        assert_eq!(
-            second
-                .resolve_secret(&reference, "second")
-                .await
-                .unwrap()
-                .expose_bytes()
-                .unwrap(),
-            b"custom"
-        );
+        assert_eq!(one.unwrap().expose_bytes().unwrap(), b"custom");
+        assert_eq!(two.unwrap().expose_bytes().unwrap(), b"custom");
     }
 
     #[tokio::test]
     async fn expiration_and_unknown_binding_fail_closed() {
         let reference = SecretRef::new("signing", "key").unwrap();
-        let provider = BoundSecretProvider::new(None).unwrap();
-        let context = UserContext::new().with_secret_provider(Arc::new(provider));
+        let mut provider = BoundSecretProvider::new(None).unwrap();
+        provider.environment = Arc::new(|_| Ok(b"secret".to_vec()));
+        let expired = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+        provider
+            .bind_environment(reference.clone(), "CONFIGURED_KEY", None, Some(expired))
+            .unwrap();
+        let business_time = chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap();
+        let context = UserContext::new()
+            .with_business_clock(crate::FixedBusinessClock::new(business_time))
+            .with_secret_provider(Arc::new(provider));
+        assert_eq!(
+            context
+                .resolve_secret(&SecretRef::new("signing", "absent").unwrap(), "read")
+                .await
+                .unwrap_err(),
+            SecretFailure::UnknownBinding
+        );
         assert_eq!(
             context
                 .resolve_secret(&reference, "read")
                 .await
                 .unwrap_err(),
-            SecretFailure::UnknownBinding
+            SecretFailure::Expired
         );
         assert_eq!(
             SecretValue::new(b"x".to_vec(), None, Some(SystemTime::UNIX_EPOCH)).unwrap_err(),
@@ -484,7 +487,12 @@ mod tests {
             if variable != "CONFIGURED_KEY" {
                 return Err(SecretFailure::UnknownBinding);
             }
-            Ok(lookup.lock().unwrap().clone())
+            let value = lookup.lock().unwrap().clone();
+            if value.is_empty() {
+                Err(SecretFailure::Unavailable)
+            } else {
+                Ok(value)
+            }
         });
         provider
             .bind_environment(reference.clone(), "CONFIGURED_KEY", None, None)
@@ -508,6 +516,14 @@ mod tests {
                 .expose_bytes()
                 .unwrap(),
             b"second"
+        );
+        *current.lock().unwrap() = Vec::new();
+        assert_eq!(
+            context
+                .resolve_secret(&reference, "unavailable")
+                .await
+                .unwrap_err(),
+            SecretFailure::Unavailable
         );
     }
 
@@ -578,6 +594,22 @@ mod tests {
             SecretFailure::Denied
         );
         std::fs::remove_file(&file).unwrap();
+        std::fs::write(&file, vec![b'x'; MAX_SECRET_BYTES + 1]).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            context
+                .resolve_secret(&reference, "oversized file")
+                .await
+                .unwrap_err(),
+            SecretFailure::Denied
+        );
+        std::fs::remove_file(&file).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o770)).unwrap();
+        assert!(matches!(
+            BoundSecretProvider::new(Some(root.clone())),
+            Err(SecretFailure::Denied)
+        ));
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::remove_dir(&root).unwrap();
     }
 }
