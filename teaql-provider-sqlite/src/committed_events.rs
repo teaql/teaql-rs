@@ -1128,6 +1128,60 @@ mod tests {
     }
 
     #[test]
+    fn model_checked_target_applies_shared_fixture_when_configured() {
+        let Some(path) = std::env::var_os("TEAQL_COMMITTED_EVENT_FIXTURE") else {
+            eprintln!("shared fixture test skipped: TEAQL_COMMITTED_EVENT_FIXTURE is unset");
+            return;
+        };
+        futures_executor::block_on(async {
+            let fixture: JsonValue =
+                serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+            assert_eq!(fixture["fixture_version"], 1);
+            let sets = fixture["sets"].as_array().unwrap();
+            assert_eq!(sets.len(), 2);
+            let (executor, context) = model_target().await;
+            for set in sets {
+                let sequence = set["source_sequence"].as_str().unwrap().parse().unwrap();
+                let payload_json = set.to_string();
+                let record = OutboxRecord {
+                    source_runtime_id: set["source_runtime_id"].as_str().unwrap().into(),
+                    source_sequence: sequence,
+                    change_set_id: set["change_set_id"].as_str().unwrap().into(),
+                    model_hash: set["source_model_hash"].as_str().unwrap().into(),
+                    payload_sha256: digest(payload_json.as_bytes()),
+                    payload_json,
+                };
+                assert_eq!(
+                    executor
+                        .apply_model_checked_committed_set(&context, &record)
+                        .await
+                        .unwrap(),
+                    InboxOutcome::Applied {
+                        checkpoint: sequence
+                    }
+                );
+            }
+            let connection = executor.lock().unwrap();
+            let order: (i64, String) = connection
+                .query_row(
+                    "SELECT version, status FROM replica_order WHERE id = ?1",
+                    params![9_007_199_254_740_993_i64],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(order, (2, "SUBMITTED".into()));
+            let item_version: i64 = connection
+                .query_row(
+                    "SELECT version FROM replica_order_item WHERE id = ?1",
+                    params![9_007_199_254_740_994_i64],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(item_version, -2);
+        });
+    }
+
+    #[test]
     fn model_checked_target_applies_order_graph_and_rejects_gap_and_duplicate() {
         futures_executor::block_on(async {
             let (executor, context) = model_target().await;
