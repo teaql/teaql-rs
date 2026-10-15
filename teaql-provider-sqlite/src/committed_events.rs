@@ -392,6 +392,8 @@ fn with_savepoint<T>(
 mod tests {
     use super::*;
     use rusqlite::Connection;
+    use teaql_data_service::CommittedSetAppend;
+    use teaql_runtime::InMemoryMetadataStore;
     use teaql_sql::{SqlTransaction, SqlTransactionTransport};
 
     const MODEL_HASH: &str =
@@ -418,6 +420,97 @@ mod tests {
             "mutations": mutations
         })
         .to_string()
+    }
+
+    #[tokio::test]
+    async fn provider_neutral_transaction_append_allocates_sequence_and_rolls_back() {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        executor.ensure_committed_event_schema().unwrap();
+        let mut logical: JsonValue =
+            serde_json::from_str(&payload("source-a", 0, "change-a", "DRAFT")).unwrap();
+        logical.as_object_mut().unwrap().remove("source_sequence");
+        let append = CommittedSetAppend {
+            source_runtime_id: "source-a".into(),
+            change_set_id: "change-a".into(),
+            model_hash: MODEL_HASH.into(),
+            payload_json: logical.to_string(),
+        };
+        assert!(!format!("{append:?}").contains("DRAFT"));
+
+        let transaction = executor.begin_sql().await.unwrap();
+        assert!(transaction.append_committed_set_sql(&append).await.unwrap());
+        assert_eq!(
+            executor
+                .committed_outbox_after("source-a", 0, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        transaction.rollback_sql().await.unwrap();
+        assert!(
+            executor
+                .committed_outbox_after("source-a", 0, 10)
+                .unwrap()
+                .is_empty()
+        );
+
+        let transaction = executor.begin_sql().await.unwrap();
+        assert!(transaction.append_committed_set_sql(&append).await.unwrap());
+        transaction.commit_sql().await.unwrap();
+        let retained = executor.committed_outbox_after("source-a", 0, 10).unwrap();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].source_sequence, 1);
+        assert_eq!(
+            serde_json::from_str::<JsonValue>(&retained[0].payload_json).unwrap()["source_sequence"],
+            "1"
+        );
+
+        // This is the actual generic transaction type seen by GraphSaverFor.
+        let service = teaql_sql::SqlDataServiceExecutor::new(
+            crate::SqliteDialect,
+            executor.clone(),
+            InMemoryMetadataStore::new(),
+        );
+        let mut next_payload: JsonValue =
+            serde_json::from_str(&payload("source-a", 0, "change-b", "SUBMITTED")).unwrap();
+        next_payload
+            .as_object_mut()
+            .unwrap()
+            .remove("source_sequence");
+        let next = CommittedSetAppend {
+            change_set_id: "change-b".into(),
+            payload_json: next_payload.to_string(),
+            ..append.clone()
+        };
+        let transaction = teaql_data_service::TransactionExecutor::begin(&service)
+            .await
+            .unwrap();
+        assert!(
+            teaql_data_service::Transaction::append_committed_set(&transaction, &next)
+                .await
+                .unwrap()
+        );
+        teaql_data_service::Transaction::commit(transaction)
+            .await
+            .unwrap();
+        assert_eq!(
+            executor.committed_outbox_after("source-a", 0, 10).unwrap()[1].source_sequence,
+            2
+        );
+
+        let transaction = executor.begin_sql().await.unwrap();
+        let mut forged = append.clone();
+        forged.payload_json = payload("source-a", 99, "change-a", "DRAFT");
+        assert!(transaction.append_committed_set_sql(&forged).await.is_err());
+        transaction.rollback_sql().await.unwrap();
+        assert_eq!(
+            executor
+                .committed_outbox_after("source-a", 0, 10)
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[tokio::test]
