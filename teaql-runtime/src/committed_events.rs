@@ -319,8 +319,12 @@ fn field_json(
     }
     match (data_type, value) {
         (DataType::Bool, Value::Bool(value)) => Ok(json!(value)),
-        (DataType::I64 | DataType::U64, Value::I64(value)) => Ok(json!(value)),
-        (DataType::I64 | DataType::U64, Value::U64(value)) => Ok(json!(value)),
+        (DataType::I64, Value::I64(value)) => Ok(json!(value.to_string())),
+        (DataType::I64, Value::U64(value)) if i64::try_from(*value).is_ok() => {
+            Ok(json!(value.to_string()))
+        }
+        (DataType::U64, Value::U64(value)) => Ok(json!(value.to_string())),
+        (DataType::U64, Value::I64(value)) if *value >= 0 => Ok(json!(value.to_string())),
         (DataType::F64, Value::F64(value)) if value.is_finite() => Ok(json!(value)),
         (DataType::Decimal, Value::Decimal(value)) => Ok(json!(value.to_string())),
         (DataType::Text | DataType::LargeText, Value::Text(value)) => Ok(json!(value)),
@@ -330,5 +334,32 @@ fn field_json(
         _ => Err(RuntimeError::Graph(format!(
             "committed field {field} has unsupported readback type"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn committed_64_bit_fields_are_lossless_decimal_strings() {
+        let entity = EntityDescriptor::new("value_probe");
+        let beyond_js_safe_integer = 9_007_199_254_740_993_u64;
+        assert_eq!(
+            field_json(
+                &entity,
+                "required_long",
+                DataType::U64,
+                &Value::U64(beyond_js_safe_integer),
+            )
+            .unwrap(),
+            json!("9007199254740993")
+        );
+        assert_eq!(
+            field_json(&entity, "signed_long", DataType::I64, &Value::I64(-42)).unwrap(),
+            json!("-42")
+        );
+        assert!(field_json(&entity, "unsigned_long", DataType::U64, &Value::I64(-1)).is_err());
+        assert!(field_json(&entity, "signed_long", DataType::I64, &Value::U64(u64::MAX)).is_err());
     }
 }

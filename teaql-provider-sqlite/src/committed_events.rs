@@ -738,6 +738,23 @@ fn parse_positive_i64(value: Option<&JsonValue>) -> Result<i64, CommittedEventEr
         ))
 }
 
+fn canonical_decimal_text(value: &JsonValue, signed: bool) -> Option<&str> {
+    let text = value.as_str()?;
+    let digits = if signed && text.starts_with('-') {
+        &text[1..]
+    } else {
+        text
+    };
+    if digits.is_empty()
+        || digits.len() > 1 && digits.starts_with('0')
+        || text == "-0"
+        || !digits.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    Some(text)
+}
+
 fn decode_model_value(
     context: &UserContext,
     descriptor: &EntityDescriptor,
@@ -785,16 +802,14 @@ fn decode_model_value(
             .ok_or(CommittedEventError::InvalidEnvelope(
                 "Boolean field has wrong type",
             )),
-        DataType::I64 => {
-            value
-                .as_i64()
-                .map(SqliteValue::Integer)
-                .ok_or(CommittedEventError::InvalidEnvelope(
-                    "i64 field has wrong type",
-                ))
-        }
-        DataType::U64 => value
-            .as_u64()
+        DataType::I64 => canonical_decimal_text(value, true)
+            .and_then(|value| value.parse::<i64>().ok())
+            .map(SqliteValue::Integer)
+            .ok_or(CommittedEventError::InvalidEnvelope(
+                "i64 field has wrong type",
+            )),
+        DataType::U64 => canonical_decimal_text(value, false)
+            .and_then(|value| value.parse::<u64>().ok())
             .and_then(|value| i64::try_from(value).ok())
             .map(SqliteValue::Integer)
             .ok_or(CommittedEventError::InvalidEnvelope(
@@ -1130,7 +1145,7 @@ mod tests {
                         "committed_version": "1",
                         "fields": {
                             "order": { "entity_type": "order", "entity_id": "9007199254740993" },
-                            "quantity": 2
+                            "quantity": "2"
                         }
                     }
                 ]),
@@ -1419,6 +1434,65 @@ mod tests {
     }
 
     #[test]
+    fn model_checked_target_preserves_large_i64_without_json_number_rounding() {
+        futures_executor::block_on(async {
+            let (executor, context) = model_target().await;
+            let mut numeric = order_set(1);
+            let mut body: JsonValue = serde_json::from_str(&numeric.payload_json).unwrap();
+            body["mutations"][1]["fields"]["quantity"] =
+                serde_json::json!(9_007_199_254_740_993_i64);
+            numeric.payload_json = body.to_string();
+            numeric.payload_sha256 = digest(numeric.payload_json.as_bytes());
+            assert!(matches!(
+                executor
+                    .apply_model_checked_committed_set(&context, &numeric)
+                    .await,
+                Err(CommittedEventError::InvalidEnvelope(
+                    "i64 field has wrong type"
+                ))
+            ));
+            for invalid in ["02", "-0", "9223372036854775808"] {
+                let mut malformed = order_set(1);
+                let mut body: JsonValue = serde_json::from_str(&malformed.payload_json).unwrap();
+                body["mutations"][1]["fields"]["quantity"] = serde_json::json!(invalid);
+                malformed.payload_json = body.to_string();
+                malformed.payload_sha256 = digest(malformed.payload_json.as_bytes());
+                assert!(matches!(
+                    executor
+                        .apply_model_checked_committed_set(&context, &malformed)
+                        .await,
+                    Err(CommittedEventError::InvalidEnvelope(
+                        "i64 field has wrong type"
+                    ))
+                ));
+            }
+
+            let mut textual = order_set(1);
+            let mut body: JsonValue = serde_json::from_str(&textual.payload_json).unwrap();
+            body["mutations"][1]["fields"]["quantity"] = serde_json::json!("9007199254740993");
+            textual.payload_json = body.to_string();
+            textual.payload_sha256 = digest(textual.payload_json.as_bytes());
+            assert_eq!(
+                executor
+                    .apply_model_checked_committed_set(&context, &textual)
+                    .await
+                    .unwrap(),
+                InboxOutcome::Applied { checkpoint: 1 }
+            );
+            let stored: i64 = executor
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT quantity FROM replica_order_item WHERE id = ?1",
+                    params![9_007_199_254_740_994_i64],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(stored, 9_007_199_254_740_993_i64);
+        });
+    }
+
+    #[test]
     fn model_checked_target_rolls_back_partial_set_and_rejects_version_and_model_mismatch() {
         futures_executor::block_on(async {
             let (executor, context) = model_target().await;
@@ -1451,7 +1525,7 @@ mod tests {
                         "committed_version": "1",
                         "fields": {
                             "order": { "entity_type": "order", "entity_id": "999" },
-                            "quantity": 1
+                            "quantity": "1"
                         }
                     }
                 ]),
@@ -1734,7 +1808,7 @@ mod tests {
         let mutations = if status == "DRAFT" {
             serde_json::json!([
                 {"entity_type": "order", "entity_id": "42", "operation": "create", "base_version": null, "committed_version": "1", "fields": {"status": status}},
-                {"entity_type": "order_item", "entity_id": "43", "operation": "create", "base_version": null, "committed_version": "1", "fields": {"order": {"entity_type": "order", "entity_id": "42"}, "quantity": 2}}
+                {"entity_type": "order_item", "entity_id": "43", "operation": "create", "base_version": null, "committed_version": "1", "fields": {"order": {"entity_type": "order", "entity_id": "42"}, "quantity": "2"}}
             ])
         } else {
             serde_json::json!([

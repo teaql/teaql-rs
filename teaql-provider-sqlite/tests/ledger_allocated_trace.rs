@@ -220,7 +220,7 @@ fn one_graph_save_captures_root_and_child_authoritative_rows_in_one_set() {
         assert_eq!(parent["fields"]["name"], "submitted");
         assert_eq!(child["operation"], "create");
         assert_eq!(child["fields"]["name"], "database child value");
-        assert_eq!(child["fields"]["root_id"], 42);
+        assert_eq!(child["fields"]["root_id"], "42");
         for fact in [parent, child] {
             let chain = fact["trace_chain"].as_array().unwrap();
             assert!(!chain.is_empty());
