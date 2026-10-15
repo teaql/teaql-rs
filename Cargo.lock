@@ -3739,11 +3739,14 @@ dependencies = [
  "rusqlite",
  "rust_decimal",
  "serde_json",
+ "sha2 0.10.9",
  "teaql-core",
  "teaql-data-service",
  "teaql-macros",
  "teaql-runtime",
  "teaql-sql",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

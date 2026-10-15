@@ -26,6 +26,7 @@ use teaql_sql::{
 };
 
 mod dynamic_fields;
+pub mod committed_events;
 mod transaction;
 pub use transaction::SqliteTransaction;
 
