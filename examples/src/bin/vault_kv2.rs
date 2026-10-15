@@ -7,8 +7,9 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use teaql_http_reqwest::{HttpServiceProfile, ReqwestHttpRequestService};
 use teaql_runtime::{
-    RuntimeAttributeValue, RuntimeOperation, RuntimeTelemetry, RuntimeTelemetryScope,
-    SecretFailure, SecretProvider, SecretRef, SecretValue, UserContext, VaultKv2SecretProvider,
+    BoundSecretProvider, RuntimeAttributeValue, RuntimeOperation, RuntimeTelemetry,
+    RuntimeTelemetryScope, SecretFailure, SecretProvider, SecretRef, SecretValue, UserContext,
+    VaultKv2SecretProvider,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
@@ -253,6 +254,120 @@ async fn verify_tls_vault() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn live_context(
+    endpoint: &url::Url,
+    root_pem: Option<&[u8]>,
+    token_variable: &str,
+    path: &str,
+    telemetry_events: Arc<Mutex<Vec<String>>>,
+) -> Result<(UserContext, SecretRef), Box<dyn std::error::Error>> {
+    let mut profile = HttpServiceProfile::new("vault", endpoint.clone())?
+        .budgets(
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+            Duration::from_secs(4),
+        )?
+        .max_response_bytes(64 * 1024)?;
+    if let Some(root) = root_pem {
+        profile = profile.trusted_root_pem(root)?;
+    }
+    let token_reference = SecretRef::new("bootstrap", "vault_token")?;
+    let mut bootstrap = BoundSecretProvider::new(None)?;
+    bootstrap.bind_environment(token_reference.clone(), token_variable, None, None)?;
+    let reference = SecretRef::new("payment", "api_key")?;
+    let mut vault =
+        VaultKv2SecretProvider::new("vault", "secret", Arc::new(bootstrap), token_reference)?;
+    vault.bind(reference.clone(), path, "value")?;
+    Ok((
+        UserContext::new()
+            .with_runtime_telemetry(Arc::new(CapturedTelemetry(telemetry_events)))
+            .with_http_request_service(Arc::new(ReqwestHttpRequestService::new(vec![profile])?))
+            .with_secret_provider(Arc::new(vault)),
+        reference,
+    ))
+}
+
+async fn verify_live_vault() -> Result<(), Box<dyn std::error::Error>> {
+    let endpoint = url::Url::parse(&std::env::var("TEAQL_TEST_VAULT_URL")?)?;
+    if endpoint.scheme() != "https" || endpoint.host() != Some(url::Host::Ipv4(Ipv4Addr::LOCALHOST))
+    {
+        return Err("live Vault test requires a literal-loopback HTTPS endpoint".into());
+    }
+    let root_pem = std::fs::read(std::env::var("TEAQL_TEST_VAULT_CA_PEM")?)?;
+    let expected = std::env::var("TEAQL_TEST_VAULT_EXPECTED_VALUE")?;
+    let version = std::env::var("TEAQL_TEST_VAULT_EXPECTED_VERSION")?;
+    let telemetry_events = Arc::new(Mutex::new(Vec::new()));
+
+    let (context, reference) = live_context(
+        &endpoint,
+        Some(&root_pem),
+        "TEAQL_TEST_VAULT_TOKEN",
+        "payment/api",
+        telemetry_events.clone(),
+    )?;
+    let value = context
+        .resolve_secret(&reference, "verify live Vault credential")
+        .await?;
+    assert_eq!(value.expose_bytes()?, expected.as_bytes());
+    assert_eq!(
+        value.version(),
+        Some(format!("vault-kv2:{version}").as_str())
+    );
+
+    let (denied_context, reference) = live_context(
+        &endpoint,
+        Some(&root_pem),
+        "TEAQL_TEST_VAULT_BAD_TOKEN",
+        "payment/api",
+        telemetry_events.clone(),
+    )?;
+    assert_eq!(
+        denied_context
+            .resolve_secret(&reference, "verify denied Vault credential")
+            .await
+            .unwrap_err(),
+        SecretFailure::Denied
+    );
+
+    let (missing_context, reference) = live_context(
+        &endpoint,
+        Some(&root_pem),
+        "TEAQL_TEST_VAULT_TOKEN",
+        "payment/absent",
+        telemetry_events.clone(),
+    )?;
+    assert_eq!(
+        missing_context
+            .resolve_secret(&reference, "verify missing Vault credential")
+            .await
+            .unwrap_err(),
+        SecretFailure::Missing
+    );
+
+    let (untrusted_context, reference) = live_context(
+        &endpoint,
+        None,
+        "TEAQL_TEST_VAULT_TOKEN",
+        "payment/api",
+        telemetry_events.clone(),
+    )?;
+    assert_eq!(
+        untrusted_context
+            .resolve_secret(&reference, "verify untrusted Vault certificate")
+            .await
+            .unwrap_err(),
+        SecretFailure::Unavailable
+    );
+    let diagnostics = telemetry_events.lock().unwrap().join("\n");
+    assert!(diagnostics.contains("success:"));
+    assert!(diagnostics.contains("failure:"));
+    assert!(!diagnostics.contains(&std::env::var("TEAQL_TEST_VAULT_TOKEN")?));
+    assert!(!diagnostics.contains(&std::env::var("TEAQL_TEST_VAULT_BAD_TOKEN")?));
+    assert!(!diagnostics.contains(&expected));
+    println!("VAULT_LIVE_PASS success=1 denied=1 missing=1 unknown_ca=1 diagnostics=1");
+    Ok(())
+}
+
 fn listener() -> Result<TcpListener, Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
     listener.set_nonblocking(true)?;
@@ -348,5 +463,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("slow Vault fixture should complete");
     verify_tls_vault().await?;
     println!("VAULT_KV2_PASS path=1 token=1 version=1 timeout=1 masking=1 tls=1 diagnostics=1");
+    if std::env::var_os("TEAQL_TEST_VAULT_URL").is_some() {
+        verify_live_vault().await?;
+    }
     Ok(())
 }
