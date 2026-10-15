@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{MutationExecutorError, SqliteMutationExecutor, SqliteTransaction};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct OutboxRecord {
     pub source_runtime_id: String,
     pub source_sequence: u64,
@@ -18,6 +18,17 @@ pub struct OutboxRecord {
     pub model_hash: String,
     pub payload_sha256: String,
     pub payload_json: String,
+}
+
+impl std::fmt::Debug for OutboxRecord {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OutboxRecord")
+            .field("source_runtime_id", &self.source_runtime_id)
+            .field("source_sequence", &self.source_sequence)
+            .field("payload", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -497,6 +508,8 @@ mod tests {
                 Ok(payload("source-a", sequence, "change-a", "DRAFT"))
             })
             .unwrap();
+        assert!(!format!("{first:?}").contains("DRAFT"));
+        assert!(!format!("{first:?}").contains("order_item"));
         assert_eq!(
             first.source_sequence, 1,
             "rolled-back sequence must be reused"
