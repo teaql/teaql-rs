@@ -1,11 +1,31 @@
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use teaql_http_reqwest::{HttpServiceProfile, ReqwestHttpRequestService};
-use teaql_runtime::{HttpCall, HttpIntentKind, HttpMethod, HttpRetryMode, UserContext};
+use teaql_runtime::{
+    HttpCall, HttpIntentKind, HttpMethod, HttpRetryMode, NoopRuntimeTelemetry, RuntimeOperation,
+    RuntimeTelemetry, RuntimeTelemetryScope, UserContext,
+};
+
+const TRACEPARENT: &str = "00-11111111111111111111111111111111-aaaaaaaaaaaaaaaa-01";
+
+struct ExampleTelemetry {
+    operations: Arc<Mutex<Vec<RuntimeOperation>>>,
+}
+
+impl RuntimeTelemetry for ExampleTelemetry {
+    fn start(&self, operation: RuntimeOperation) -> Box<dyn RuntimeTelemetryScope> {
+        self.operations.lock().unwrap().push(operation.clone());
+        NoopRuntimeTelemetry.start(operation)
+    }
+
+    fn inject_context(&self, carrier: &mut BTreeMap<String, String>) {
+        carrier.insert("traceparent".to_owned(), TRACEPARENT.to_owned());
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -31,12 +51,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     first.clear();
                     let mut content_length = 0;
+                    let mut traceparent = None;
                     while reader.read_line(&mut first).unwrap() > 0 && first != "\r\n" {
                         if first.to_ascii_lowercase().starts_with("content-length:") {
                             content_length = first[15..].trim().parse::<usize>().unwrap();
                         }
+                        if first.to_ascii_lowercase().starts_with("traceparent:") {
+                            traceparent = Some(first[12..].trim().to_owned());
+                        }
                         first.clear();
                     }
+                    assert_eq!(traceparent.as_deref(), Some(TRACEPARENT));
                     let mut incoming_body = vec![0; content_length];
                     reader.read_exact(&mut incoming_body).unwrap();
                     let body = b"{\"status\":\"submitted\"}";
@@ -64,7 +89,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         url::Url::parse(&format!("http://127.0.0.1:{port}/api/"))?,
     )?;
     let service = Arc::new(ReqwestHttpRequestService::new(vec![profile])?);
-    let context = UserContext::new().with_http_request_service(service);
+    let operations = Arc::new(Mutex::new(Vec::new()));
+    let context = UserContext::new()
+        .with_http_request_service(service)
+        .with_runtime_telemetry(Arc::new(ExampleTelemetry {
+            operations: operations.clone(),
+        }));
     let call = HttpCall::get(
         "orders",
         "orders/1?token=PRIVATE_QUERY_CANARY",
@@ -96,6 +126,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     assert_eq!((written.status(), written.attempts()), (200, 1));
     server.join().expect("fixture thread should complete");
-    println!("HTTP_RESILIENCE_PASS status=200 attempts=1 requests=2");
+    let observed = operations.lock().unwrap();
+    assert_eq!(observed.len(), 2);
+    assert!(
+        observed
+            .iter()
+            .all(|operation| operation.family == "http" && operation.name == "orders")
+    );
+    let diagnostic = format!("{observed:?}");
+    assert!(diagnostic.contains("load order status"));
+    assert!(diagnostic.contains("notify order service"));
+    assert!(!diagnostic.contains("PRIVATE_QUERY"));
+    assert!(!diagnostic.contains("PRIVATE_HEADER"));
+    assert!(!diagnostic.contains("PRIVATE_BODY"));
+    println!("HTTP_RESILIENCE_PASS status=200 attempts=1 requests=2 trace=2");
     Ok(())
 }
