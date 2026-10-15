@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value as JsonValue, json};
-use teaql_core::{CompactRow, DataType, EntityDescriptor, Value};
+use teaql_core::{CompactRow, DataType, EntityDescriptor, TraceKind, Value};
 use teaql_data_service::{CommittedSetAppend, MutationExecutor, QueryExecutor};
 
 use crate::{
@@ -234,9 +234,20 @@ where
             .get_trace_chain(&key)
             .into_iter()
             .map(|node| {
+                let kind = match node.kind {
+                    TraceKind::Operation => "OPERATION",
+                    TraceKind::Request => "REQUEST",
+                    TraceKind::Relation => "RELATION",
+                    TraceKind::Entity => "ENTITY",
+                    TraceKind::Provider => "PROVIDER",
+                    TraceKind::Sql => "SQL",
+                    TraceKind::Comment => "COMMENT",
+                    TraceKind::Purpose => "PURPOSE",
+                    TraceKind::AuditReason => "AUDIT_REASON",
+                };
                 json!({
-                    "kind": format!("{:?}", node.kind),
-                    "entity_type": node.entity_type,
+                    "kind": kind,
+                    "name": node.entity_type,
                     "entity_id": node.entity_id.map(|id| id.to_string()),
                     "comment": node.comment,
                 })

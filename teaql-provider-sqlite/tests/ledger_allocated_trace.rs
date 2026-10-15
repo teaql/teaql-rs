@@ -221,6 +221,25 @@ fn one_graph_save_captures_root_and_child_authoritative_rows_in_one_set() {
         assert_eq!(child["operation"], "create");
         assert_eq!(child["fields"]["name"], "database child value");
         assert_eq!(child["fields"]["root_id"], 42);
+        for fact in [parent, child] {
+            let chain = fact["trace_chain"].as_array().unwrap();
+            assert!(!chain.is_empty());
+            for node in chain {
+                let fields = node.as_object().unwrap();
+                assert_eq!(fields.len(), 4);
+                assert!(fields.contains_key("kind"));
+                assert!(fields.contains_key("name"));
+                assert!(fields.contains_key("entity_id"));
+                assert!(fields.contains_key("comment"));
+                assert!(
+                    node["kind"]
+                        .as_str()
+                        .unwrap()
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c == '_')
+                );
+            }
+        }
     });
 }
 

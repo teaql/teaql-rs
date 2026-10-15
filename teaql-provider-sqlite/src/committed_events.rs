@@ -561,6 +561,7 @@ fn decode_model_mutation(
         .ok_or(CommittedEventError::InvalidEnvelope(
             "mutation must be an object",
         ))?;
+    validate_trace_chain(fact.get("trace_chain"))?;
     let entity_type = fact.get("entity_type").and_then(JsonValue::as_str).ok_or(
         CommittedEventError::InvalidEnvelope("entity type is missing"),
     )?;
@@ -669,6 +670,52 @@ fn decode_model_mutation(
         operation,
         fields,
     })
+}
+
+fn validate_trace_chain(value: Option<&JsonValue>) -> Result<(), CommittedEventError> {
+    let nodes = value
+        .and_then(JsonValue::as_array)
+        .ok_or(CommittedEventError::InvalidEnvelope(
+            "mutation trace chain is missing",
+        ))?;
+    for node in nodes {
+        let fields = node
+            .as_object()
+            .ok_or(CommittedEventError::InvalidEnvelope(
+                "trace node has wrong shape",
+            ))?;
+        if fields.len() != 4
+            || !matches!(
+                fields.get("kind").and_then(JsonValue::as_str),
+                Some(
+                    "OPERATION"
+                        | "REQUEST"
+                        | "RELATION"
+                        | "ENTITY"
+                        | "PROVIDER"
+                        | "SQL"
+                        | "COMMENT"
+                        | "PURPOSE"
+                        | "AUDIT_REASON"
+                )
+            )
+            || !fields.get("name").is_some_and(JsonValue::is_string)
+            || !fields.get("comment").is_some_and(JsonValue::is_string)
+            || !fields.get("entity_id").is_some_and(|id| {
+                id.is_null()
+                    || id.as_str().is_some_and(|text| {
+                        !text.is_empty()
+                            && !text.starts_with('0')
+                            && text.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+            })
+        {
+            return Err(CommittedEventError::InvalidEnvelope(
+                "trace node has wrong shape",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn parse_i64_text(value: &JsonValue) -> Result<i64, CommittedEventError> {
@@ -1114,7 +1161,13 @@ mod tests {
         make_record(sequence, change_set_id, mutations)
     }
 
-    fn make_record(sequence: u64, change_set_id: &str, mutations: JsonValue) -> OutboxRecord {
+    fn make_record(sequence: u64, change_set_id: &str, mut mutations: JsonValue) -> OutboxRecord {
+        for fact in mutations
+            .as_array_mut()
+            .expect("test mutations must be an array")
+        {
+            fact["trace_chain"] = serde_json::json!([]);
+        }
         let payload_json = serde_json::json!({
             "protocol_version": 1,
             "change_set_id": change_set_id,
@@ -1303,6 +1356,40 @@ mod tests {
                     .apply_model_checked_committed_set(&context, &unknown_entity)
                     .await,
                 Err(CommittedEventError::InvalidEnvelope("unknown entity type"))
+            ));
+            let mut invalid_trace = order_set(1);
+            let mut body: JsonValue = serde_json::from_str(&invalid_trace.payload_json).unwrap();
+            body["mutations"][0]["trace_chain"] = serde_json::json!([{
+                "kind": "AuditReason",
+                "entity_type": "order",
+                "entity_id": "9007199254740993",
+                "comment": "Create order"
+            }]);
+            invalid_trace.payload_json = body.to_string();
+            invalid_trace.payload_sha256 = digest(invalid_trace.payload_json.as_bytes());
+            assert!(matches!(
+                executor
+                    .apply_model_checked_committed_set(&context, &invalid_trace)
+                    .await,
+                Err(CommittedEventError::InvalidEnvelope(
+                    "trace node has wrong shape"
+                ))
+            ));
+            let mut missing_trace = order_set(1);
+            let mut body: JsonValue = serde_json::from_str(&missing_trace.payload_json).unwrap();
+            body["mutations"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("trace_chain");
+            missing_trace.payload_json = body.to_string();
+            missing_trace.payload_sha256 = digest(missing_trace.payload_json.as_bytes());
+            assert!(matches!(
+                executor
+                    .apply_model_checked_committed_set(&context, &missing_trace)
+                    .await,
+                Err(CommittedEventError::InvalidEnvelope(
+                    "mutation trace chain is missing"
+                ))
             ));
             let mut unsupported = order_set(1);
             let mut body: JsonValue = serde_json::from_str(&unsupported.payload_json).unwrap();
