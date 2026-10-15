@@ -44,3 +44,31 @@ let config = cloud.get_config(&config_id).await?;
 ## Version Pinning
 
 `nacos-sdk` is pinned to `=0.8` to avoid breaking changes in the 0.x series.
+
+## Real-server conformance
+
+Run the retained executable example against a disposable Nacos 2.x/3.x
+standalone server. The HTTP port and its `+1000` gRPC port must both be
+reachable.
+
+```bash
+TEAQL_TEST_NACOS_ADDR=127.0.0.1:8848 \
+  cargo run -p teaql-cloud-nacos --example nacos_conformance
+```
+
+For an authentication-enabled Nacos deployment, provide credentials only
+through the environment:
+
+```bash
+TEAQL_TEST_NACOS_ADDR=127.0.0.1:8848 \
+TEAQL_TEST_NACOS_USERNAME=nacos \
+TEAQL_TEST_NACOS_PASSWORD='<test-password>' \
+  cargo run -p teaql-cloud-nacos --example nacos_conformance
+```
+
+The example rejects a partial credential pair and never logs the credentials.
+
+The example verifies explicit instance identity, metadata and weight discovery,
+service-change push, configuration publish/read and change push, functional
+subscription cancellation, health and metrics, then removes both the instance
+and configuration evidence.
