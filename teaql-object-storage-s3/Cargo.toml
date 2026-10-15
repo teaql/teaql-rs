@@ -1,0 +1,23 @@
+[package]
+name = "teaql-object-storage-s3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "S3-compatible provider for context-owned TeaQL object storage"
+
+[dependencies]
+teaql-core = { workspace = true }
+teaql-runtime = { workspace = true }
+async-trait = { workspace = true }
+aws-sdk-s3 = { version = "=1.152.0", default-features = false, features = ["rt-tokio", "rustls", "default-https-client"] }
+tokio = { workspace = true, features = ["fs", "io-util"] }
+futures-util = "0.3"
+tempfile = "3"
+
+[dev-dependencies]
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
+
+[[example]]
+name = "object_storage"
+path = "../examples/object-storage/main.rs"

@@ -316,6 +316,7 @@ Request JSON is not allowed to replace those trusted capabilities.
 - [Workspace and provider details](RUNTIME_GUIDE.md#workspace-layout)
 - [SQLite transactions](teaql-provider-sqlite/README.md)
 - [Shared load state](examples/shared-load-state/README.md)
+- [Binary object storage and temporary S3 URLs](examples/object-storage/README.md)
 - [Trace Chain example](examples/trace-chain/README.md)
 - [Benchmarks and reproduction](https://github.com/teaql/teaql-runtime-benchmark)
 
