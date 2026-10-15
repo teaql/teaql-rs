@@ -265,6 +265,16 @@ mod tests {
             parse_vault_response(deleted, "value").unwrap_err(),
             SecretFailure::Expired
         );
+        let destroyed = br#"{"data":{"data":{"value":"secret"},"metadata":{"version":7,"destroyed":true,"deletion_time":""}}}"#;
+        assert_eq!(
+            parse_vault_response(destroyed, "value").unwrap_err(),
+            SecretFailure::Missing
+        );
+        let bad_lease = br#"{"lease_duration":-1,"data":{"data":{"value":"secret"},"metadata":{"version":7,"destroyed":false,"deletion_time":""}}}"#;
+        assert_eq!(
+            parse_vault_response(bad_lease, "value").unwrap_err(),
+            SecretFailure::Unavailable
+        );
     }
 
     #[tokio::test]
