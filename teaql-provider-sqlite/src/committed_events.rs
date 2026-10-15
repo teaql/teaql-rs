@@ -994,9 +994,9 @@ fn same_committed_value(field: &ModelField, actual: &SqliteValue) -> bool {
         let as_decimal = |value: &SqliteValue| match value {
             SqliteValue::Text(value) => Decimal::from_str(value).ok(),
             SqliteValue::Integer(value) => Some(Decimal::from(*value)),
-            SqliteValue::Real(value) if value.is_finite() => {
-                Decimal::from_str(&value.to_string()).ok()
-            }
+            // A REAL readback is approximate even when its shortest decimal
+            // rendering matches the source text (for example, 0.1).
+            SqliteValue::Real(_) => None,
             _ => None,
         };
         return match (as_decimal(&field.value), as_decimal(actual)) {
@@ -1101,7 +1101,8 @@ mod tests {
             )
             .property(PropertyDescriptor::new("order_number", DataType::Text).not_null())
             .property(PropertyDescriptor::new("status", DataType::Text).not_null())
-            .property(PropertyDescriptor::new("planned_date", DataType::Date));
+            .property(PropertyDescriptor::new("planned_date", DataType::Date))
+            .property(PropertyDescriptor::new("amount", DataType::Decimal));
         let item = EntityDescriptor::new("order_item")
             .table_name("replica_order_item")
             .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
@@ -1142,7 +1143,8 @@ mod tests {
                         "fields": {
                             "order_number": "ORD-0001",
                             "status": "DRAFT",
-                            "planned_date": "2026-10-16"
+                            "planned_date": "2026-10-16",
+                            "amount": "0"
                         }
                     },
                     {
@@ -1561,6 +1563,71 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(date, "2026-10-16");
+        });
+    }
+
+    #[test]
+    fn model_checked_target_rejects_sqlite_real_coercion_of_exact_decimal() {
+        futures_executor::block_on(async {
+            let (executor, context) = model_target().await;
+            for decimal in ["0.1", "123456789012345.6789"] {
+                let mut inexact = order_set(1);
+                let mut body: JsonValue = serde_json::from_str(&inexact.payload_json).unwrap();
+                body["mutations"][0]["fields"]["amount"] = serde_json::json!(decimal);
+                inexact.payload_json = body.to_string();
+                inexact.payload_sha256 = digest(inexact.payload_json.as_bytes());
+                assert!(matches!(
+                    executor
+                        .apply_model_checked_committed_set(&context, &inexact)
+                        .await,
+                    Err(CommittedEventError::InvalidEnvelope(
+                        "target did not retain committed field value"
+                    ))
+                ));
+                let connection = executor.lock().unwrap();
+                let row_count: i64 = connection
+                    .query_row("SELECT COUNT(*) FROM replica_order", [], |row| row.get(0))
+                    .unwrap();
+                let inbox_count: i64 = connection
+                    .query_row("SELECT COUNT(*) FROM teaql_event_inbox", [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                let checkpoint_count: i64 = connection
+                    .query_row("SELECT COUNT(*) FROM teaql_event_checkpoint", [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                let retained_count: i64 = connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM teaql_event_applied_payload",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    (row_count, inbox_count, checkpoint_count, retained_count),
+                    (0, 0, 0, 0)
+                );
+            }
+
+            assert_eq!(
+                executor
+                    .apply_model_checked_committed_set(&context, &order_set(1))
+                    .await
+                    .unwrap(),
+                InboxOutcome::Applied { checkpoint: 1 }
+            );
+            let storage: (String, i64) = executor
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT typeof(amount), amount FROM replica_order WHERE id = ?1",
+                    params![9_007_199_254_740_993_i64],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(storage, ("integer".into(), 0));
         });
     }
 
