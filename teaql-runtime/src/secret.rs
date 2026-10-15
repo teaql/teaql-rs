@@ -378,6 +378,8 @@ mod tests {
 
     struct CustomProvider;
 
+    struct ConcurrentProvider(Arc<tokio::sync::Barrier>);
+
     #[async_trait]
     impl SecretProvider for CustomProvider {
         async fn resolve(
@@ -386,6 +388,18 @@ mod tests {
             _reference: &SecretRef,
         ) -> Result<SecretValue, SecretFailure> {
             SecretValue::new(b"custom".to_vec(), None, None)
+        }
+    }
+
+    #[async_trait]
+    impl SecretProvider for ConcurrentProvider {
+        async fn resolve(
+            &self,
+            _context: &UserContext,
+            _reference: &SecretRef,
+        ) -> Result<SecretValue, SecretFailure> {
+            self.0.wait().await;
+            SecretValue::new(b"shared".to_vec(), None, None)
         }
     }
 
@@ -475,6 +489,25 @@ mod tests {
             SecretValue::new(b"x".to_vec(), None, Some(SystemTime::UNIX_EPOCH)).unwrap_err(),
             SecretFailure::Expired
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn independent_contexts_enter_one_provider_concurrently() {
+        let provider = Arc::new(ConcurrentProvider(Arc::new(tokio::sync::Barrier::new(2))));
+        let first = UserContext::new().with_secret_provider(provider.clone());
+        let second = UserContext::new().with_secret_provider(provider);
+        let reference = SecretRef::new("signing", "key").unwrap();
+        let other_reference = reference.clone();
+        let one = tokio::spawn(async move { first.resolve_secret(&reference, "first").await });
+        let two =
+            tokio::spawn(async move { second.resolve_secret(&other_reference, "second").await });
+        let (one, two) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::join!(one, two)
+        })
+        .await
+        .expect("both contexts must reach the provider");
+        assert_eq!(one.unwrap().unwrap().expose_bytes().unwrap(), b"shared");
+        assert_eq!(two.unwrap().unwrap().expose_bytes().unwrap(), b"shared");
     }
 
     #[tokio::test]
