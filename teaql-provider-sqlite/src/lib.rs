@@ -1897,6 +1897,7 @@ mod tests {
         name: String,
         memo: String,
         stable: String,
+        optional_note: Option<String>,
     }
 
     #[derive(Debug, PartialEq, TeaqlEntity)]
@@ -1938,7 +1939,8 @@ mod tests {
             state.set(key.clone(), "id", id);
             state.set(key.clone(), "name", name);
             state.set(key.clone(), "memo", "initial memo");
-            state.set(key, "stable", "unchanged");
+            state.set(key.clone(), "stable", "unchanged");
+            state.set(key, "optional_note", teaql_core::Value::Null);
             (
                 Self {
                     id,
@@ -1946,6 +1948,7 @@ mod tests {
                     name: name.to_owned(),
                     memo: "initial memo".to_owned(),
                     stable: "unchanged".to_owned(),
+                    optional_note: None,
                     __teaql_runtime_state: state.clone(),
                 },
                 state,
@@ -2007,6 +2010,7 @@ mod tests {
                 body["mutations"][0]["fields"]["name"],
                 "database trigger value"
             );
+            assert!(body["mutations"][0]["fields"]["optional_note"].is_null());
             assert_eq!(body["mutations"][0]["committed_version"], "1");
 
             saved = teaql_runtime::save_audited_ledger_entity(
@@ -2063,6 +2067,55 @@ mod tests {
             updated
                 .__teaql_runtime_state
                 .set_original_version(key.clone(), 2);
+            updated
+                .__teaql_runtime_state
+                .set(key.clone(), "optional_note", "submitted note");
+            let mut updated = updated;
+            updated.optional_note = Some("submitted note".into());
+            let updated = teaql_runtime::save_audited_ledger_entity(
+                updated.audit_as("set optional note"),
+                &context,
+            )
+            .await
+            .unwrap();
+            let next = executor
+                .committed_outbox_after("rust-graph-source", 2, 10)
+                .unwrap();
+            assert_eq!(next.len(), 1);
+            let body: serde_json::Value = serde_json::from_str(&next[0].payload_json).unwrap();
+            assert_eq!(
+                body["mutations"][0]["fields"]["optional_note"],
+                "submitted note"
+            );
+            assert_eq!(body["mutations"][0]["fields"].as_object().unwrap().len(), 1);
+
+            updated
+                .__teaql_runtime_state
+                .set_original_version(key.clone(), 3);
+            updated.__teaql_runtime_state.set(
+                key.clone(),
+                "optional_note",
+                teaql_core::Value::Null,
+            );
+            let mut updated = updated;
+            updated.optional_note = None;
+            let updated = teaql_runtime::save_audited_ledger_entity(
+                updated.audit_as("clear optional note"),
+                &context,
+            )
+            .await
+            .unwrap();
+            let next = executor
+                .committed_outbox_after("rust-graph-source", 3, 10)
+                .unwrap();
+            assert_eq!(next.len(), 1);
+            let body: serde_json::Value = serde_json::from_str(&next[0].payload_json).unwrap();
+            assert!(body["mutations"][0]["fields"]["optional_note"].is_null());
+            assert_eq!(body["mutations"][0]["fields"].as_object().unwrap().len(), 1);
+
+            updated
+                .__teaql_runtime_state
+                .set_original_version(key.clone(), 4);
             updated.__teaql_runtime_state.mark_as_delete(key);
             let deleted = teaql_runtime::save_audited_ledger_entity(
                 updated.audit_as("delete committed school"),
@@ -2070,15 +2123,15 @@ mod tests {
             )
             .await
             .unwrap();
-            assert_eq!(deleted.version, -3);
+            assert_eq!(deleted.version, -5);
             let next = executor
-                .committed_outbox_after("rust-graph-source", 2, 10)
+                .committed_outbox_after("rust-graph-source", 4, 10)
                 .unwrap();
             assert_eq!(next.len(), 1);
             let body: serde_json::Value = serde_json::from_str(&next[0].payload_json).unwrap();
             assert_eq!(body["mutations"][0]["operation"], "delete");
-            assert_eq!(body["mutations"][0]["base_version"], "2");
-            assert_eq!(body["mutations"][0]["committed_version"], "-3");
+            assert_eq!(body["mutations"][0]["base_version"], "4");
+            assert_eq!(body["mutations"][0]["committed_version"], "-5");
             assert_eq!(body["mutations"][0]["fields"].as_object().unwrap().len(), 0);
 
             executor
@@ -2907,7 +2960,7 @@ mod tests {
             .lock()
             .expect("lock audited transaction fixture")
             .execute_batch(
-                "CREATE TABLE transaction_school (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name TEXT NOT NULL, memo TEXT NOT NULL, stable TEXT NOT NULL)",
+                "CREATE TABLE transaction_school (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name TEXT NOT NULL, memo TEXT NOT NULL, stable TEXT NOT NULL, optional_note TEXT)",
             )
             .expect("create audited transaction fixture");
 

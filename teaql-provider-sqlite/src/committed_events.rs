@@ -1105,7 +1105,8 @@ mod tests {
             .property(PropertyDescriptor::new("amount", DataType::Decimal))
             .property(PropertyDescriptor::new("active", DataType::Bool).not_null())
             .property(PropertyDescriptor::new("ratio", DataType::F64).not_null())
-            .property(PropertyDescriptor::new("optional_note", DataType::Text));
+            .property(PropertyDescriptor::new("optional_note", DataType::Text))
+            .property(PropertyDescriptor::new("optional_label", DataType::Text));
         let item = EntityDescriptor::new("order_item")
             .table_name("replica_order_item")
             .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
@@ -1150,7 +1151,8 @@ mod tests {
                             "amount": "0",
                             "active": true,
                             "ratio": 0.5,
-                            "optional_note": null
+                            "optional_note": null,
+                            "optional_label": "initial label"
                         }
                     },
                     {
@@ -1175,7 +1177,11 @@ mod tests {
                         "operation": "update",
                         "base_version": "1",
                         "committed_version": "2",
-                        "fields": { "status": "SUBMITTED" }
+                        "fields": {
+                            "status": "SUBMITTED",
+                            "optional_note": "submitted note",
+                            "optional_label": null
+                        }
                     },
                     {
                         "entity_type": "order_item",
@@ -1277,6 +1283,14 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(planned_date, "2026-10-16");
+            let scalars: (i64, f64, Option<String>, Option<String>) = connection
+                .query_row(
+                    "SELECT active, ratio, optional_note, optional_label FROM replica_order WHERE id = ?1",
+                    params![9_007_199_254_740_993_i64],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .unwrap();
+            assert_eq!(scalars, (1, 0.5, Some("submitted note".into()), None));
             let item_version: i64 = connection
                 .query_row(
                     "SELECT version FROM replica_order_item WHERE id = ?1",
@@ -1709,6 +1723,64 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(stored, (1, 0.5, None));
+        });
+    }
+
+    #[test]
+    fn model_checked_target_applies_nullable_transitions_without_clearing_omitted_fields() {
+        futures_executor::block_on(async {
+            let (executor, context) = model_target().await;
+            executor
+                .apply_model_checked_committed_set(&context, &order_set(1))
+                .await
+                .unwrap();
+            for (field, value, reason) in [
+                ("active", JsonValue::Null, "non-null field is null"),
+                (
+                    "optional_note",
+                    serde_json::json!(123),
+                    "text field has wrong type",
+                ),
+            ] {
+                let mut malformed = order_set(2);
+                let mut body: JsonValue = serde_json::from_str(&malformed.payload_json).unwrap();
+                body["mutations"][0]["fields"][field] = value;
+                malformed.payload_json = body.to_string();
+                malformed.payload_sha256 = digest(malformed.payload_json.as_bytes());
+                assert!(matches!(
+                    executor
+                        .apply_model_checked_committed_set(&context, &malformed)
+                        .await,
+                    Err(CommittedEventError::InvalidEnvelope(message)) if message == reason
+                ));
+            }
+            let prior: (i64, Option<String>, Option<String>) = executor
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT version, optional_note, optional_label FROM replica_order WHERE id = ?1",
+                    params![9_007_199_254_740_993_i64],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(prior, (1, None, Some("initial label".into())));
+            assert_eq!(
+                executor
+                    .apply_model_checked_committed_set(&context, &order_set(2))
+                    .await
+                    .unwrap(),
+                InboxOutcome::Applied { checkpoint: 2 }
+            );
+            let final_values: (i64, i64, Option<String>, Option<String>) = executor
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT version, active, optional_note, optional_label FROM replica_order WHERE id = ?1",
+                    params![9_007_199_254_740_993_i64],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .unwrap();
+            assert_eq!(final_values, (2, 1, Some("submitted note".into()), None));
         });
     }
 
