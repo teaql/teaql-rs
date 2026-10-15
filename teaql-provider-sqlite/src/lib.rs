@@ -25,6 +25,7 @@ use teaql_sql::{
     quote_identifier_if_needed, schema_index_specs,
 };
 
+pub mod committed_delivery;
 pub mod committed_events;
 mod dynamic_fields;
 mod transaction;

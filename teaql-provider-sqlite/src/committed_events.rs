@@ -97,6 +97,8 @@ pub enum CommittedEventError {
     },
     DuplicateConflict,
     SequenceExhausted,
+    CursorConflict,
+    TransportUnavailable,
 }
 
 impl std::fmt::Display for CommittedEventError {
@@ -125,6 +127,13 @@ impl std::fmt::Display for CommittedEventError {
             ),
             Self::SequenceExhausted => {
                 write!(formatter, "committed-event source sequence exhausted")
+            }
+            Self::CursorConflict => write!(
+                formatter,
+                "committed-event delivery cursor changed concurrently"
+            ),
+            Self::TransportUnavailable => {
+                write!(formatter, "committed-event delivery transport unavailable")
             }
         }
     }
@@ -181,7 +190,13 @@ impl SqliteMutationExecutor {
              CREATE TABLE IF NOT EXISTS teaql_event_checkpoint (\
                 source_runtime_id TEXT PRIMARY KEY, \
                 source_sequence INTEGER NOT NULL CHECK(source_sequence >= 0), \
-                model_hash TEXT NOT NULL);",
+                model_hash TEXT NOT NULL);\
+             CREATE TABLE IF NOT EXISTS teaql_event_delivery_cursor (\
+                source_runtime_id TEXT NOT NULL, \
+                target_id TEXT NOT NULL, \
+                acked_sequence INTEGER NOT NULL CHECK(acked_sequence >= 0), \
+                model_hash TEXT NOT NULL, \
+                PRIMARY KEY(source_runtime_id, target_id));",
         )?;
         Ok(())
     }
@@ -1459,6 +1474,171 @@ mod tests {
                     .unwrap();
                 assert_eq!(count, 0, "{table} must roll back with the graph");
             }
+        });
+    }
+
+    #[test]
+    fn ordered_publisher_recovers_ambiguous_ack_after_source_restart() {
+        use teaql_sql::{SqlTransaction, SqlTransactionTransport};
+
+        futures_executor::block_on(async {
+            let directory = tempfile::tempdir().unwrap();
+            let source_path = directory.path().join("source.sqlite");
+            let source =
+                SqliteMutationExecutor::from_connection(Connection::open(&source_path).unwrap());
+            source.ensure_committed_event_schema().unwrap();
+            for change in ["order-graph-0001", "order-graph-0002"] {
+                let transaction = source.begin_sql().await.unwrap();
+                transaction
+                    .append_committed_event("sqlite-order-source", change, MODEL_HASH, |sequence| {
+                        Ok(order_set(sequence).payload_json)
+                    })
+                    .unwrap();
+                transaction.commit_sql().await.unwrap();
+            }
+            let (target, context) = model_target().await;
+            assert_eq!(
+                source
+                    .committed_delivery_status("sqlite-order-source", "analytics", MODEL_HASH)
+                    .unwrap()
+                    .backlog,
+                2
+            );
+            assert!(matches!(
+                source
+                    .publish_committed_batch(
+                        "sqlite-order-source",
+                        "analytics",
+                        MODEL_HASH,
+                        2,
+                        |_record| async { Ok(InboxOutcome::Applied { checkpoint: 99 }) },
+                    )
+                    .await,
+                Err(CommittedEventError::InvalidEnvelope(
+                    "target acknowledgement does not match delivered sequence"
+                ))
+            ));
+            assert_eq!(
+                source
+                    .committed_delivery_status("sqlite-order-source", "analytics", MODEL_HASH)
+                    .unwrap()
+                    .acked_sequence,
+                0
+            );
+
+            assert!(matches!(
+                source
+                    .publish_committed_batch(
+                        "sqlite-order-source",
+                        "analytics",
+                        MODEL_HASH,
+                        2,
+                        |record| {
+                            let target = &target;
+                            let context = &context;
+                            async move {
+                                let _ = target
+                                    .apply_model_checked_committed_set(context, &record)
+                                    .await?;
+                                Err(CommittedEventError::TransportUnavailable)
+                            }
+                        },
+                    )
+                    .await,
+                Err(CommittedEventError::TransportUnavailable)
+            ));
+            assert_eq!(
+                source
+                    .committed_delivery_status("sqlite-order-source", "analytics", MODEL_HASH)
+                    .unwrap()
+                    .acked_sequence,
+                0
+            );
+            drop(source);
+
+            let restarted =
+                SqliteMutationExecutor::from_connection(Connection::open(&source_path).unwrap());
+            let outcome = restarted
+                .publish_committed_batch(
+                    "sqlite-order-source",
+                    "analytics",
+                    MODEL_HASH,
+                    2,
+                    |record| {
+                        let target = &target;
+                        let context = &context;
+                        async move {
+                            target
+                                .apply_model_checked_committed_set(context, &record)
+                                .await
+                        }
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(outcome.acknowledged, 2);
+            assert_eq!(outcome.status.acked_sequence, 2);
+            assert_eq!(outcome.status.backlog, 0);
+            let empty = restarted
+                .publish_committed_batch(
+                    "sqlite-order-source",
+                    "analytics",
+                    MODEL_HASH,
+                    2,
+                    |_record| async {
+                        panic!("an acknowledged Outbox record must not be delivered again")
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(empty.acknowledged, 0);
+            assert_eq!(
+                restarted
+                    .committed_delivery_status("sqlite-order-source", "second-target", MODEL_HASH)
+                    .unwrap()
+                    .backlog,
+                2
+            );
+            assert!(matches!(
+                restarted.committed_delivery_status(
+                    "sqlite-order-source",
+                    "analytics",
+                    &format!("sha256:{}", "1".repeat(64)),
+                ),
+                Err(CommittedEventError::ModelMismatch)
+            ));
+            restarted
+                .lock()
+                .unwrap()
+                .execute(
+                    "DELETE FROM teaql_event_outbox WHERE source_runtime_id = ?1 AND source_sequence = 1",
+                    params!["sqlite-order-source"],
+                )
+                .unwrap();
+            assert!(matches!(
+                restarted
+                    .publish_committed_batch(
+                        "sqlite-order-source",
+                        "second-target",
+                        MODEL_HASH,
+                        2,
+                        |_record| async { panic!("a gap must be rejected before delivery") },
+                    )
+                    .await,
+                Err(CommittedEventError::SequenceGap {
+                    expected: 1,
+                    received: 2
+                })
+            ));
+            let connection = target.lock().unwrap();
+            let status: String = connection
+                .query_row(
+                    "SELECT status FROM replica_order WHERE id = ?1",
+                    params![9_007_199_254_740_993_i64],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(status, "SUBMITTED");
         });
     }
     use teaql_sql::{SqlTransaction, SqlTransactionTransport};

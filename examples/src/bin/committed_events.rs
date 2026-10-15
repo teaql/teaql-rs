@@ -4,6 +4,7 @@ use rusqlite::Connection;
 use teaql_core::{CompactRow, Entity, TeaqlEntity as _, Value};
 use teaql_macros::{TeaqlEntity, teaql_entity};
 use teaql_provider_sqlite::{SqliteDialect, SqliteMutationExecutor, SqliteProviderExt};
+use teaql_provider_sqlite::committed_events::CommittedEventTarget;
 use teaql_runtime::{
     CommittedEventSource, EntityKey, InMemoryMetadataStore, LedgerEntity, UserContext,
     save_audited_ledger_entity,
@@ -68,6 +69,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     assert_eq!(first["mutations"][0]["fields"]["name"], "database accepted");
     assert_eq!(first["audit"]["comment"], "create example order");
 
+    let target_transport = SqliteMutationExecutor::from_connection(Connection::open_in_memory()?);
+    let target_metadata = InMemoryMetadataStore::new().with_entity(ExampleOrder::entity_descriptor());
+    let target_service = SqlDataServiceExecutor::new(
+        SqliteDialect,
+        target_transport.clone(),
+        target_metadata.clone(),
+    );
+    let mut target_context = UserContext::new().with_metadata(target_metadata);
+    target_context.insert_resource(CommittedEventTarget::new(
+        "example-rust-source",
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    )?);
+    target_context.use_sqlite_provider(target_transport.clone());
+    target_context.register_executor(target_service);
+    target_context.ensure_schema().await?;
+    let delivered = transport
+        .publish_committed_batch(
+            "example-rust-source",
+            "example-analytics",
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            10,
+            |record| {
+                let target = &target_transport;
+                let target_context = &target_context;
+                async move {
+                    target
+                        .apply_model_checked_committed_set(target_context, &record)
+                        .await
+                }
+            },
+        )
+        .await?;
+    assert_eq!(delivered.acknowledged, 1);
+    assert_eq!(delivered.status.backlog, 0);
+    let replicated_name: String = target_transport.connection().lock().unwrap().query_row(
+        "SELECT name FROM committed_example_order WHERE id = 71",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(replicated_name, "database accepted");
+
     transport
         .connection()
         .lock()
@@ -88,6 +130,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     )?;
     assert_eq!(count, 0);
 
-    println!("COMMITTED_EVENTS_PASS authoritative=database accepted outbox=1 rollback=1");
+    println!("COMMITTED_EVENTS_PASS authoritative=database accepted outbox=1 target=1 rollback=1");
     Ok(())
 }

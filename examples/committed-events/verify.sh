@@ -7,7 +7,7 @@ for round in 1 2; do
     printf 'Rust committed-events example round %s failed\n%s\n' "$round" "$output" >&2
     exit 1
   fi
-  if [[ "$output" != *"COMMITTED_EVENTS_PASS authoritative=database accepted outbox=1 rollback=1"* ]]; then
+  if [[ "$output" != *"COMMITTED_EVENTS_PASS authoritative=database accepted outbox=1 target=1 rollback=1"* ]]; then
     printf 'Rust committed-events example round %s failed or lacked evidence\n%s\n' "$round" "$output" >&2
     exit 1
   fi
