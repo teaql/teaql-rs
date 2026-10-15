@@ -330,7 +330,7 @@ fn field_json(
         (DataType::Text | DataType::LargeText, Value::Text(value)) => Ok(json!(value)),
         (DataType::Json, Value::Json(value)) => Ok(value.clone()),
         (DataType::Date, Value::Date(value)) => Ok(json!(value.to_string())),
-        (DataType::Timestamp, Value::Timestamp(value)) => Ok(json!(value.as_millis())),
+        (DataType::Timestamp, Value::Timestamp(value)) => Ok(json!(value.as_millis().to_string())),
         _ => Err(RuntimeError::Graph(format!(
             "committed field {field} has unsupported readback type"
         ))),
@@ -370,6 +370,31 @@ mod tests {
         assert_eq!(
             field_json(&entity, "planned_date", DataType::Date, &Value::Date(date)).unwrap(),
             json!("2026-10-16")
+        );
+    }
+
+    #[test]
+    fn committed_instant_is_lossless_epoch_millisecond_text() {
+        let entity = EntityDescriptor::new("value_probe");
+        assert_eq!(
+            field_json(
+                &entity,
+                "occurred_at",
+                DataType::Timestamp,
+                &Value::Timestamp(teaql_core::time::Timestamp(-315_619_199_877)),
+            )
+            .unwrap(),
+            json!("-315619199877")
+        );
+        assert_eq!(
+            field_json(
+                &entity,
+                "occurred_at",
+                DataType::Timestamp,
+                &Value::Timestamp(teaql_core::time::Timestamp(i64::MAX)),
+            )
+            .unwrap(),
+            json!(i64::MAX.to_string())
         );
     }
 

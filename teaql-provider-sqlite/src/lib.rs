@@ -1716,6 +1716,7 @@ fn decode_sqlite_values(
 fn decode_sqlite_integer(value: i64, column: &ColumnInfo) -> Value {
     match column.decode_kind {
         SqliteDecodeKind::Bool => Value::Bool(value != 0),
+        SqliteDecodeKind::Timestamp => Value::Timestamp(teaql_core::time::Timestamp(value)),
         _ => Value::I64(value),
     }
 }
@@ -1898,6 +1899,7 @@ mod tests {
         memo: String,
         stable: String,
         optional_note: Option<String>,
+        occurred_at: teaql_core::time::Timestamp,
     }
 
     #[derive(Debug, PartialEq, TeaqlEntity)]
@@ -1940,7 +1942,12 @@ mod tests {
             state.set(key.clone(), "name", name);
             state.set(key.clone(), "memo", "initial memo");
             state.set(key.clone(), "stable", "unchanged");
-            state.set(key, "optional_note", teaql_core::Value::Null);
+            state.set(key.clone(), "optional_note", teaql_core::Value::Null);
+            state.set(
+                key,
+                "occurred_at",
+                teaql_core::time::Timestamp(-315_619_199_877),
+            );
             (
                 Self {
                     id,
@@ -1949,6 +1956,7 @@ mod tests {
                     memo: "initial memo".to_owned(),
                     stable: "unchanged".to_owned(),
                     optional_note: None,
+                    occurred_at: teaql_core::time::Timestamp(-315_619_199_877),
                     __teaql_runtime_state: state.clone(),
                 },
                 state,
@@ -2011,6 +2019,10 @@ mod tests {
                 "database trigger value"
             );
             assert!(body["mutations"][0]["fields"]["optional_note"].is_null());
+            assert_eq!(
+                body["mutations"][0]["fields"]["occurred_at"],
+                "-315619199877"
+            );
             assert_eq!(body["mutations"][0]["committed_version"], "1");
 
             saved = teaql_runtime::save_audited_ledger_entity(
@@ -2960,7 +2972,7 @@ mod tests {
             .lock()
             .expect("lock audited transaction fixture")
             .execute_batch(
-                "CREATE TABLE transaction_school (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name TEXT NOT NULL, memo TEXT NOT NULL, stable TEXT NOT NULL, optional_note TEXT)",
+                "CREATE TABLE transaction_school (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name TEXT NOT NULL, memo TEXT NOT NULL, stable TEXT NOT NULL, optional_note TEXT, occurred_at TIMESTAMP NOT NULL)",
             )
             .expect("create audited transaction fixture");
 

@@ -856,20 +856,12 @@ fn decode_model_value(
             .ok_or(CommittedEventError::InvalidEnvelope(
                 "Date field has wrong type",
             )),
-        DataType::Timestamp => {
-            let milliseconds = value.as_i64().or_else(|| {
-                value.as_str().and_then(|value| {
-                    DateTime::parse_from_rfc3339(value)
-                        .ok()
-                        .map(|time| time.timestamp_millis())
-                })
-            });
-            milliseconds
-                .map(SqliteValue::Integer)
-                .ok_or(CommittedEventError::InvalidEnvelope(
-                    "Timestamp field has wrong type",
-                ))
-        }
+        DataType::Timestamp => canonical_decimal_text(value, true)
+            .and_then(|value| value.parse::<i64>().ok())
+            .map(SqliteValue::Integer)
+            .ok_or(CommittedEventError::InvalidEnvelope(
+                "Timestamp field has wrong type",
+            )),
     }
 }
 
@@ -1102,6 +1094,7 @@ mod tests {
             .property(PropertyDescriptor::new("order_number", DataType::Text).not_null())
             .property(PropertyDescriptor::new("status", DataType::Text).not_null())
             .property(PropertyDescriptor::new("planned_date", DataType::Date))
+            .property(PropertyDescriptor::new("occurred_at", DataType::Timestamp).not_null())
             .property(PropertyDescriptor::new("amount", DataType::Decimal))
             .property(PropertyDescriptor::new("active", DataType::Bool).not_null())
             .property(PropertyDescriptor::new("ratio", DataType::F64).not_null())
@@ -1148,6 +1141,7 @@ mod tests {
                             "order_number": "ORD-0001",
                             "status": "DRAFT",
                             "planned_date": "2026-10-16",
+                            "occurred_at": "-315619199877",
                             "amount": "0",
                             "active": true,
                             "ratio": 0.5,
@@ -1283,6 +1277,14 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(planned_date, "2026-10-16");
+            let occurred_at: (String, i64) = connection
+                .query_row(
+                    "SELECT typeof(occurred_at), occurred_at FROM replica_order WHERE id = ?1",
+                    params![9_007_199_254_740_993_i64],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(occurred_at, ("integer".into(), -315_619_199_877));
             let scalars: (i64, f64, Option<String>, Option<String>) = connection
                 .query_row(
                     "SELECT active, ratio, optional_note, optional_label FROM replica_order WHERE id = ?1",
@@ -1583,6 +1585,61 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(date, "2026-10-16");
+        });
+    }
+
+    #[test]
+    fn model_checked_target_accepts_only_lossless_instant_millisecond_text() {
+        futures_executor::block_on(async {
+            let (executor, context) = model_target().await;
+            for invalid in [
+                serde_json::json!(-315619199877_i64),
+                serde_json::json!("1960-01-01T00:00:00.123Z"),
+                serde_json::json!("1960-01-01T00:00:00.123"),
+                serde_json::json!("-0315619199877"),
+                serde_json::json!("-0"),
+                serde_json::json!("9223372036854775808"),
+            ] {
+                let mut malformed = order_set(1);
+                let mut body: JsonValue = serde_json::from_str(&malformed.payload_json).unwrap();
+                body["mutations"][0]["fields"]["occurred_at"] = invalid;
+                malformed.payload_json = body.to_string();
+                malformed.payload_sha256 = digest(malformed.payload_json.as_bytes());
+                assert!(matches!(
+                    executor
+                        .apply_model_checked_committed_set(&context, &malformed)
+                        .await,
+                    Err(CommittedEventError::InvalidEnvelope(
+                        "Timestamp field has wrong type"
+                    ))
+                ));
+            }
+            assert_eq!(
+                executor
+                    .lock()
+                    .unwrap()
+                    .query_row("SELECT count(*) FROM replica_order", [], |row| row
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                executor
+                    .apply_model_checked_committed_set(&context, &order_set(1))
+                    .await
+                    .unwrap(),
+                InboxOutcome::Applied { checkpoint: 1 }
+            );
+            let stored: (String, i64) = executor
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT typeof(occurred_at), occurred_at FROM replica_order WHERE id = ?1",
+                    params![9_007_199_254_740_993_i64],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(stored, ("integer".into(), -315_619_199_877));
         });
     }
 
