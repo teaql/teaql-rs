@@ -1,12 +1,13 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use teaql_http_reqwest::{HttpServiceProfile, ReqwestHttpRequestService};
 use teaql_runtime::{
+    RuntimeAttributeValue, RuntimeOperation, RuntimeTelemetry, RuntimeTelemetryScope,
     SecretFailure, SecretProvider, SecretRef, SecretValue, UserContext, VaultKv2SecretProvider,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -14,6 +15,41 @@ use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObj
 use tokio_rustls::{TlsAcceptor, rustls::ServerConfig};
 
 struct BootstrapToken;
+
+struct CapturedTelemetry(Arc<Mutex<Vec<String>>>);
+
+impl RuntimeTelemetry for CapturedTelemetry {
+    fn start(&self, operation: RuntimeOperation) -> Box<dyn RuntimeTelemetryScope> {
+        self.0.lock().unwrap().push(format!("start:{operation:?}"));
+        Box::new(CapturedScope(self.0.clone()))
+    }
+}
+
+struct CapturedScope(Arc<Mutex<Vec<String>>>);
+
+impl RuntimeTelemetryScope for CapturedScope {
+    fn success(&mut self, attributes: std::collections::BTreeMap<String, RuntimeAttributeValue>) {
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("success:{attributes:?}"));
+    }
+
+    fn failure(&mut self, error_type: &str) {
+        self.0.lock().unwrap().push(format!("failure:{error_type}"));
+    }
+
+    fn failure_with_attributes(
+        &mut self,
+        error_type: &str,
+        attributes: std::collections::BTreeMap<String, RuntimeAttributeValue>,
+    ) {
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("failure:{error_type}:{attributes:?}"));
+    }
+}
 
 #[async_trait]
 impl SecretProvider for BootstrapToken {
@@ -55,6 +91,7 @@ fn vault_context(
 fn tls_context(
     port: u16,
     root_pem: Option<&[u8]>,
+    telemetry_events: Arc<Mutex<Vec<String>>>,
 ) -> Result<(UserContext, SecretRef), Box<dyn std::error::Error>> {
     let mut profile = HttpServiceProfile::new(
         "vault",
@@ -78,6 +115,7 @@ fn tls_context(
     provider.bind(reference.clone(), "payment/api", "value")?;
     Ok((
         UserContext::new()
+            .with_runtime_telemetry(Arc::new(CapturedTelemetry(telemetry_events)))
             .with_http_request_service(Arc::new(ReqwestHttpRequestService::new(vec![profile])?))
             .with_secret_provider(Arc::new(provider)),
         reference,
@@ -189,7 +227,8 @@ async fn verify_tls_vault() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let (untrusted_context, reference) = tls_context(port, None)?;
+    let telemetry_events = Arc::new(Mutex::new(Vec::new()));
+    let (untrusted_context, reference) = tls_context(port, None, telemetry_events.clone())?;
     assert_eq!(
         untrusted_context
             .resolve_secret(&reference, "read configured credential")
@@ -197,13 +236,20 @@ async fn verify_tls_vault() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_err(),
         SecretFailure::Unavailable
     );
-    let (trusted_context, reference) = tls_context(port, Some(&root_pem))?;
+    let (trusted_context, reference) =
+        tls_context(port, Some(&root_pem), telemetry_events.clone())?;
     let value = trusted_context
         .resolve_secret(&reference, "read configured credential")
         .await?;
     assert_eq!(value.expose_bytes()?, b"PRIVATE-VAULT-VALUE");
     assert_eq!(value.version(), Some("vault-kv2:7"));
     tokio::time::timeout(Duration::from_secs(5), server).await??;
+    let captured = telemetry_events.lock().unwrap().join("\n");
+    assert!(captured.contains("start:RuntimeOperation"));
+    assert!(captured.contains("success:"));
+    assert!(captured.contains("failure:"));
+    assert!(!captured.contains("PRIVATE-VAULT-TOKEN"));
+    assert!(!captured.contains("PRIVATE-VAULT-VALUE"));
     Ok(())
 }
 
@@ -301,6 +347,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .join()
         .expect("slow Vault fixture should complete");
     verify_tls_vault().await?;
-    println!("VAULT_KV2_PASS path=1 token=1 version=1 timeout=1 masking=1 tls=1");
+    println!("VAULT_KV2_PASS path=1 token=1 version=1 timeout=1 masking=1 tls=1 diagnostics=1");
     Ok(())
 }

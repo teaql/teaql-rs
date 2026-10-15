@@ -18,7 +18,7 @@ for round in 1 2; do
     printf 'Rust Vault KV v2 example round %s failed\n%s\n' "$round" "$output" >&2
     exit 1
   fi
-  if [[ "$output" != *"VAULT_KV2_PASS path=1 token=1 version=1 timeout=1 masking=1 tls=1"* ]] ||
+  if [[ "$output" != *"VAULT_KV2_PASS path=1 token=1 version=1 timeout=1 masking=1 tls=1 diagnostics=1"* ]] ||
      [[ "$output" == *"PRIVATE-VAULT"* ]]; then
     printf 'Rust Vault KV v2 example round %s lacked evidence or leaked a canary\n' "$round" >&2
     exit 1
