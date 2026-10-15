@@ -372,4 +372,23 @@ mod tests {
             json!("2026-10-16")
         );
     }
+
+    #[test]
+    fn committed_bool_finite_float_and_explicit_null_keep_their_json_kinds() {
+        let entity = EntityDescriptor::new("value_probe");
+        assert_eq!(
+            field_json(&entity, "active", DataType::Bool, &Value::Bool(true)).unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            field_json(&entity, "ratio", DataType::F64, &Value::F64(0.5)).unwrap(),
+            json!(0.5)
+        );
+        assert_eq!(
+            field_json(&entity, "optional_note", DataType::Text, &Value::Null).unwrap(),
+            JsonValue::Null
+        );
+        assert!(field_json(&entity, "ratio", DataType::F64, &Value::F64(f64::NAN)).is_err());
+        assert!(field_json(&entity, "ratio", DataType::F64, &Value::F64(f64::INFINITY)).is_err());
+    }
 }

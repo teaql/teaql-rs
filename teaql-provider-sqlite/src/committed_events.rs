@@ -1102,7 +1102,10 @@ mod tests {
             .property(PropertyDescriptor::new("order_number", DataType::Text).not_null())
             .property(PropertyDescriptor::new("status", DataType::Text).not_null())
             .property(PropertyDescriptor::new("planned_date", DataType::Date))
-            .property(PropertyDescriptor::new("amount", DataType::Decimal));
+            .property(PropertyDescriptor::new("amount", DataType::Decimal))
+            .property(PropertyDescriptor::new("active", DataType::Bool).not_null())
+            .property(PropertyDescriptor::new("ratio", DataType::F64).not_null())
+            .property(PropertyDescriptor::new("optional_note", DataType::Text));
         let item = EntityDescriptor::new("order_item")
             .table_name("replica_order_item")
             .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
@@ -1144,7 +1147,10 @@ mod tests {
                             "order_number": "ORD-0001",
                             "status": "DRAFT",
                             "planned_date": "2026-10-16",
-                            "amount": "0"
+                            "amount": "0",
+                            "active": true,
+                            "ratio": 0.5,
+                            "optional_note": null
                         }
                     },
                     {
@@ -1628,6 +1634,81 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(storage, ("integer".into(), 0));
+        });
+    }
+
+    #[test]
+    fn model_checked_target_preserves_bool_float_and_explicit_null() {
+        futures_executor::block_on(async {
+            let (executor, context) = model_target().await;
+            for (field, wrong, expected) in [
+                (
+                    "active",
+                    serde_json::json!("true"),
+                    "Boolean field has wrong type",
+                ),
+                (
+                    "ratio",
+                    serde_json::json!("0.5"),
+                    "f64 field has wrong type",
+                ),
+                ("active", JsonValue::Null, "non-null field is null"),
+            ] {
+                let mut malformed = order_set(1);
+                let mut body: JsonValue = serde_json::from_str(&malformed.payload_json).unwrap();
+                body["mutations"][0]["fields"][field] = wrong;
+                malformed.payload_json = body.to_string();
+                malformed.payload_sha256 = digest(malformed.payload_json.as_bytes());
+                match executor
+                    .apply_model_checked_committed_set(&context, &malformed)
+                    .await
+                {
+                    Err(CommittedEventError::InvalidEnvelope(message)) => {
+                        assert_eq!(message, expected)
+                    }
+                    other => panic!("expected {expected}, got {other:?}"),
+                }
+            }
+            let mut omitted = order_set(1);
+            let mut body: JsonValue = serde_json::from_str(&omitted.payload_json).unwrap();
+            body["mutations"][0]["fields"]
+                .as_object_mut()
+                .unwrap()
+                .remove("optional_note");
+            omitted.payload_json = body.to_string();
+            omitted.payload_sha256 = digest(omitted.payload_json.as_bytes());
+            assert!(matches!(
+                executor
+                    .apply_model_checked_committed_set(&context, &omitted)
+                    .await,
+                Err(CommittedEventError::InvalidEnvelope(
+                    "create omitted a modeled field"
+                ))
+            ));
+            let rows: i64 = executor
+                .lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM replica_order", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(rows, 0);
+
+            assert_eq!(
+                executor
+                    .apply_model_checked_committed_set(&context, &order_set(1))
+                    .await
+                    .unwrap(),
+                InboxOutcome::Applied { checkpoint: 1 }
+            );
+            let stored: (i64, f64, Option<String>) = executor
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT active, ratio, optional_note FROM replica_order WHERE id = ?1",
+                    params![9_007_199_254_740_993_i64],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(stored, (1, 0.5, None));
         });
     }
 
