@@ -497,7 +497,7 @@ impl HttpRequestService for ReqwestHttpRequestService {
         );
         let started = self.clock.now();
         let mut attempts = 0;
-        let result = scope
+        let mut result = scope
             .run(async {
                 tokio::time::timeout(
                     state.profile.total_timeout,
@@ -507,6 +507,18 @@ impl HttpRequestService for ReqwestHttpRequestService {
                 .map_err(|_| HttpFailure::Timeout)?
             })
             .await;
+        // Once a POST attempt begins, a transport timeout or truncated
+        // response cannot prove that the upstream effect did not commit.
+        // Preserve Timeout before the first attempt (for example, rate wait).
+        if attempts > 0
+            && call.method() == HttpMethod::Post
+            && matches!(
+                &result,
+                Err(HttpFailure::Timeout | HttpFailure::UpstreamFailure)
+            )
+        {
+            result = Err(HttpFailure::AmbiguousOutcome);
+        }
         let attributes = BTreeMap::from([
             (
                 "teaql.http.outcome".to_owned(),

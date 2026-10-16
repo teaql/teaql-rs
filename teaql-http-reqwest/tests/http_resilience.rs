@@ -505,6 +505,34 @@ async fn stalled_headers_body_overflow_and_malformed_decoding_fail_closed() {
     );
 }
 
+#[tokio::test]
+async fn posted_request_with_stalled_response_body_reports_ambiguous_outcome() {
+    let fixture = Fixture::new();
+    let profile = fixture
+        .profile()
+        .budgets(
+            Duration::from_millis(200),
+            Duration::from_millis(120),
+            Duration::from_millis(180),
+        )
+        .unwrap();
+    let service = Arc::new(ReqwestHttpRequestService::new(vec![profile]).unwrap());
+    let context = context(service.clone());
+    let call = HttpCall::post_text(
+        "orders",
+        "slowbody",
+        "PRIVATE_BODY_CANARY",
+        "submit payment",
+        "confirm external effect",
+    )
+    .unwrap();
+    assert_eq!(
+        service.execute(&context, &call).await,
+        Err(HttpFailure::AmbiguousOutcome)
+    );
+    assert_eq!(fixture.requests(), 1);
+}
+
 struct FakeClock {
     origin: Instant,
     nanos: AtomicU64,
