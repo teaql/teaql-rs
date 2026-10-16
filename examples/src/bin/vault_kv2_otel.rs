@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("enable the controlled live Secret Provider OTLP probe explicitly".into());
     }
     let outcome = std::env::var("TEAQL_SECRET_PROBE_OUTCOME").unwrap_or_else(|_| "success".into());
-    if !matches!(outcome.as_str(), "success" | "denied" | "missing" | "malformed" | "expired") {
+    if !matches!(outcome.as_str(), "success" | "denied" | "missing" | "malformed" | "expired" | "timeout") {
         return Err("unsupported Secret Provider probe outcome".into());
     }
     let server_outcome = outcome.clone();
@@ -83,6 +83,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .expect("the active runtime span must propagate");
         assert!(carrier.starts_with("00-") && carrier.len() == 55);
+        if server_outcome == "timeout" {
+            std::thread::sleep(Duration::from_millis(1800));
+            return carrier;
+        }
         let (status, body) = match server_outcome.as_str() {
             "denied" => ("403 Forbidden", format!("{{\"errors\":[\"{VALUE}\"]}}")),
             "missing" => ("404 Not Found", format!("{{\"errors\":[\"{VALUE}\"]}}")),
@@ -102,10 +106,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap();
         carrier
     });
-    let profile = HttpServiceProfile::new(
+    let mut profile = HttpServiceProfile::new(
         "vault",
         url::Url::parse(&format!("http://127.0.0.1:{port}/"))?,
     )?;
+    if outcome == "timeout" {
+        profile = profile.budgets(
+            Duration::from_secs(2),
+            Duration::from_millis(700),
+            Duration::from_secs(3),
+        )?;
+    }
     let reference = SecretRef::new("payment", "api_key")?;
     let mut provider = VaultKv2SecretProvider::new(
         "vault",
