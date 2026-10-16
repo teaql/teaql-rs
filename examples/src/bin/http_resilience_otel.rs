@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use teaql_core::{TraceKind, TraceNode};
 use teaql_http_reqwest::{HttpServiceProfile, ReqwestHttpRequestService};
-use teaql_runtime::{HttpCall, UserContext};
+use teaql_runtime::{HttpCall, HttpFailure, UserContext};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,6 +19,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
+    let post_listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
+    post_listener.set_nonblocking(true)?;
+    let post_port = post_listener.local_addr()?.port();
+    let post_server = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut stream = loop {
+            match post_listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Err(error) => panic!("loopback POST probe failed: {error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut first = String::new();
+        reader.read_line(&mut first).unwrap();
+        assert!(first.starts_with("POST /api/payments "));
+        first.clear();
+        while reader.read_line(&mut first).unwrap() > 0 && first != "\r\n" {
+            first.clear();
+        }
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nx")
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(350));
+    });
     let server = std::thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(8);
         let mut stream = loop {
@@ -64,8 +97,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "orders",
         url::Url::parse(&format!("http://127.0.0.1:{port}/api/"))?,
     )?;
-    let context = UserContext::new()
-        .with_http_request_service(Arc::new(ReqwestHttpRequestService::new(vec![profile])?));
+    let post_profile = HttpServiceProfile::new(
+        "payments",
+        url::Url::parse(&format!("http://127.0.0.1:{post_port}/api/"))?,
+    )?
+    .budgets(
+        Duration::from_millis(200),
+        Duration::from_millis(120),
+        Duration::from_millis(180),
+    )?;
+    let context = UserContext::new().with_http_request_service(Arc::new(
+        ReqwestHttpRequestService::new(vec![profile, post_profile])?,
+    ));
     let call = HttpCall::get(
         "orders",
         "orders/1?token=PRIVATE_QUERY_CANARY",
@@ -80,6 +123,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(result.status(), 200);
     assert_eq!(result.json_value()?["status"], "submitted");
     let carrier = server.join().expect("loopback probe thread failed");
+    let post = HttpCall::post_text(
+        "payments",
+        "payments",
+        "PRIVATE_BODY_CANARY",
+        "submit payment",
+        "confirm external effect",
+    )?;
+    assert_eq!(
+        context.http_requests()?.execute(&context, &post).await,
+        Err(HttpFailure::AmbiguousOutcome)
+    );
+    post_server
+        .join()
+        .expect("loopback POST probe thread failed");
     context.runtime_telemetry().flush();
     context.runtime_telemetry().shutdown();
     println!("HTTP_OTLP_PROBE_PASS traceparent={carrier} lineage=3");
