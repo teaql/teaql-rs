@@ -533,6 +533,72 @@ async fn posted_request_with_stalled_response_body_reports_ambiguous_outcome() {
     assert_eq!(fixture.requests(), 1);
 }
 
+struct ExpireBeforeSendClock {
+    origin: Instant,
+    reads: AtomicU64,
+}
+
+#[async_trait]
+impl HttpOperationalClock for ExpireBeforeSendClock {
+    fn now(&self) -> Instant {
+        // Profile construction, execute start, inner start and the first
+        // budget read are valid. The last read expires before one_attempt.
+        if self.reads.fetch_add(1, Ordering::SeqCst) < 4 {
+            self.origin
+        } else {
+            self.origin + Duration::from_secs(2)
+        }
+    }
+
+    async fn sleep(&self, _duration: Duration) {
+        panic!("a request that never started must not back off");
+    }
+}
+
+#[tokio::test]
+async fn post_budget_expiry_before_send_remains_timeout_without_retry() {
+    let fixture = Fixture::new();
+    let service = Arc::new(
+        ReqwestHttpRequestService::with_clock(
+            vec![
+                fixture
+                    .profile()
+                    .budgets(
+                        Duration::from_millis(200),
+                        Duration::from_millis(200),
+                        Duration::from_secs(1),
+                    )
+                    .unwrap()
+                    .retry(
+                        2,
+                        Duration::from_millis(1),
+                        BTreeSet::from([HttpMethod::Post]),
+                    )
+                    .unwrap(),
+            ],
+            Arc::new(ExpireBeforeSendClock {
+                origin: Instant::now(),
+                reads: AtomicU64::new(0),
+            }),
+        )
+        .unwrap(),
+    );
+    let call = HttpCall::post_text(
+        "orders",
+        "ok",
+        "PRIVATE_BODY_CANARY",
+        "submit payment",
+        "confirm external effect",
+    )
+    .unwrap()
+    .with_retry_mode(HttpRetryMode::ConfirmedIdempotent);
+    assert_eq!(
+        service.execute(&context(service.clone()), &call).await,
+        Err(HttpFailure::Timeout)
+    );
+    assert_eq!(fixture.requests(), 0);
+}
+
 struct FakeClock {
     origin: Instant,
     nanos: AtomicU64,

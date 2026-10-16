@@ -362,15 +362,12 @@ impl ReqwestHttpRequestService {
                 probe,
                 settled: false,
             };
+            let budget = self.remaining(started, total)?;
+            // Reaching the profile gate is not a physical attempt. Only mark
+            // one after the final pre-send budget check has succeeded.
             *attempts += 1;
             let result = self
-                .one_attempt(
-                    state,
-                    call,
-                    &target,
-                    &headers,
-                    self.remaining(started, total)?,
-                )
+                .one_attempt(state, call, &target, &headers, budget)
                 .await;
             match result {
                 Ok((status, body)) => {
