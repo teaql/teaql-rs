@@ -33,6 +33,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         return Err("enable the controlled live Secret Provider OTLP probe explicitly".into());
     }
+    let outcome = std::env::var("TEAQL_SECRET_PROBE_OUTCOME").unwrap_or_else(|_| "success".into());
+    if outcome != "success" && outcome != "denied" {
+        return Err("unsupported Secret Provider probe outcome".into());
+    }
+    let denied = outcome == "denied";
     let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
@@ -78,12 +83,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .expect("the active runtime span must propagate");
         assert!(carrier.starts_with("00-") && carrier.len() == 55);
-        let body = format!(
-            "{{\"data\":{{\"data\":{{\"value\":\"{VALUE}\"}},\"metadata\":{{\"version\":7,\"destroyed\":false,\"deletion_time\":\"\"}}}}}}"
-        );
+        let body = if denied {
+            format!("{{\"errors\":[\"{VALUE}\"]}}")
+        } else {
+            format!(
+                "{{\"data\":{{\"data\":{{\"value\":\"{VALUE}\"}},\"metadata\":{{\"version\":7,\"destroyed\":false,\"deletion_time\":\"\"}}}}}}"
+            )
+        };
+        let status = if denied { "403 Forbidden" } else { "200 OK" };
         write!(
             stream,
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         )
         .unwrap();
@@ -104,13 +114,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let context = UserContext::new()
         .with_http_request_service(Arc::new(ReqwestHttpRequestService::new(vec![profile])?))
         .with_secret_provider(Arc::new(provider));
-    let value = context
-        .resolve_secret(&reference, "verify Vault adapter")
-        .await?;
-    assert_eq!(value.expose_bytes()?, VALUE.as_bytes());
+    if denied {
+        assert_eq!(
+            context
+                .resolve_secret(&reference, "verify Vault adapter")
+                .await
+                .unwrap_err(),
+            SecretFailure::Denied
+        );
+    } else {
+        let value = context
+            .resolve_secret(&reference, "verify Vault adapter")
+            .await?;
+        assert_eq!(value.expose_bytes()?, VALUE.as_bytes());
+    }
     let carrier = server.join().expect("loopback Vault probe thread failed");
     context.runtime_telemetry().flush();
     context.runtime_telemetry().shutdown();
-    println!("SECRET_OTLP_PROBE_PASS traceparent={carrier}");
+    println!("SECRET_OTLP_PROBE_PASS outcome={outcome} traceparent={carrier}");
     Ok(())
 }
