@@ -43,10 +43,10 @@ fn translate<E: aws_sdk_s3::error::ProvideErrorMetadata>(
     error: &aws_sdk_s3::error::SdkError<E>,
 ) -> StorageError {
     use StorageErrorCode::*;
-    if let Some(service) = error.as_service_error() {
-        if service.code() == Some("NoSuchBucket") {
-            return StorageError(Unavailable);
-        }
+    if let Some(service) = error.as_service_error()
+        && service.code() == Some("NoSuchBucket")
+    {
+        return StorageError(Unavailable);
     }
     let code = match error
         .raw_response()
