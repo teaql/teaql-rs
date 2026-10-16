@@ -10,7 +10,9 @@ description = "S3-compatible provider for context-owned TeaQL object storage"
 teaql-core = { workspace = true }
 teaql-runtime = { workspace = true }
 async-trait = { workspace = true }
-aws-sdk-s3 = { version = "=1.152.0", default-features = false, features = ["rt-tokio", "rustls", "default-https-client"] }
+# Keep only the current Hyper 1 / rustls HTTPS client. The legacy `rustls`
+# feature also compiles Hyper 0.14 and rustls 0.21, even with default features off.
+aws-sdk-s3 = { version = "=1.152.0", default-features = false, features = ["rt-tokio", "default-https-client"] }
 tokio = { workspace = true, features = ["fs", "io-util"] }
 futures-util = "0.3"
 tempfile = "3"
