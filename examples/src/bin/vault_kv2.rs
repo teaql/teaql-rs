@@ -12,8 +12,8 @@ use teaql_runtime::{
     VaultKv2SecretProvider,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
-use tokio_rustls::{TlsAcceptor, rustls::ServerConfig};
+use tokio_rustls::rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
+use tokio_rustls::{rustls::ServerConfig, TlsAcceptor};
 
 struct BootstrapToken;
 
@@ -89,11 +89,10 @@ fn vault_context(
     ))
 }
 
-fn tls_context(
+fn tls_http_service(
     port: u16,
     root_pem: Option<&[u8]>,
-    telemetry_events: Arc<Mutex<Vec<String>>>,
-) -> Result<(UserContext, SecretRef), Box<dyn std::error::Error>> {
+) -> Result<Arc<ReqwestHttpRequestService>, Box<dyn std::error::Error>> {
     let mut profile = HttpServiceProfile::new(
         "vault",
         url::Url::parse(&format!("https://127.0.0.1:{port}/"))?,
@@ -106,6 +105,14 @@ fn tls_context(
     if let Some(root) = root_pem {
         profile = profile.trusted_root_pem(root)?;
     }
+    Ok(Arc::new(ReqwestHttpRequestService::new(vec![profile])?))
+}
+
+fn tls_context(
+    port: u16,
+    root_pem: Option<&[u8]>,
+    telemetry_events: Arc<Mutex<Vec<String>>>,
+) -> Result<(UserContext, SecretRef), Box<dyn std::error::Error>> {
     let reference = SecretRef::new("payment", "api_key")?;
     let mut provider = VaultKv2SecretProvider::new(
         "vault",
@@ -117,7 +124,7 @@ fn tls_context(
     Ok((
         UserContext::new()
             .with_runtime_telemetry(Arc::new(CapturedTelemetry(telemetry_events)))
-            .with_http_request_service(Arc::new(ReqwestHttpRequestService::new(vec![profile])?))
+            .with_http_request_service(tls_http_service(port, root_pem)?)
             .with_secret_provider(Arc::new(provider)),
         reference,
     ))
@@ -188,11 +195,11 @@ async fn verify_tls_vault() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let port = listener.local_addr()?.port();
     let server = tokio::spawn(async move {
-        for connection in 0..2 {
+        for connection in 0..3 {
             let (stream, _) = listener.accept().await.unwrap();
             let mut tls = match acceptor.accept(stream).await {
                 Ok(tls) => tls,
-                Err(_) if connection == 0 => continue,
+                Err(_) if connection != 1 => continue,
                 Err(error) => panic!("trusted TLS handshake failed: {error:?}"),
             };
             let mut request = Vec::new();
@@ -204,7 +211,7 @@ async fn verify_tls_vault() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 request.extend_from_slice(&buffer[..count]);
             }
-            if connection == 0 {
+            if connection != 1 {
                 assert!(
                     request.is_empty(),
                     "untrusted peer received an HTTP request"
@@ -213,10 +220,9 @@ async fn verify_tls_vault() -> Result<(), Box<dyn std::error::Error>> {
             }
             let text = String::from_utf8(request).unwrap();
             assert!(text.starts_with("GET /v1/secret/data/payment/api HTTP/1.1"));
-            assert!(
-                text.to_ascii_lowercase()
-                    .contains("x-vault-token: private-vault-token")
-            );
+            assert!(text
+                .to_ascii_lowercase()
+                .contains("x-vault-token: private-vault-token"));
             let body = br#"{"data":{"data":{"value":"PRIVATE-VAULT-VALUE"},"metadata":{"version":7,"destroyed":false,"deletion_time":""}}}"#;
             let header = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -229,21 +235,28 @@ async fn verify_tls_vault() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let telemetry_events = Arc::new(Mutex::new(Vec::new()));
-    let (untrusted_context, reference) = tls_context(port, None, telemetry_events.clone())?;
+    let (mut context, reference) = tls_context(port, None, telemetry_events.clone())?;
     assert_eq!(
-        untrusted_context
+        context
             .resolve_secret(&reference, "read configured credential")
             .await
             .unwrap_err(),
         SecretFailure::Unavailable
     );
-    let (trusted_context, reference) =
-        tls_context(port, Some(&root_pem), telemetry_events.clone())?;
-    let value = trusted_context
+    context.set_http_request_service(tls_http_service(port, Some(&root_pem))?);
+    let value = context
         .resolve_secret(&reference, "read configured credential")
         .await?;
     assert_eq!(value.expose_bytes()?, b"PRIVATE-VAULT-VALUE");
     assert_eq!(value.version(), Some("vault-kv2:7"));
+    context.set_http_request_service(tls_http_service(port, None)?);
+    assert_eq!(
+        context
+            .resolve_secret(&reference, "reject removed TLS trust")
+            .await
+            .unwrap_err(),
+        SecretFailure::Unavailable
+    );
     tokio::time::timeout(Duration::from_secs(5), server).await??;
     let captured = telemetry_events.lock().unwrap().join("\n");
     assert!(captured.contains("start:RuntimeOperation"));
