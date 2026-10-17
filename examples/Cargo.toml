@@ -20,7 +20,8 @@ teaql-http-reqwest = { path = "../teaql-http-reqwest" }
 teaql-sql = { workspace = true }
 rusqlite = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["io-util", "net"] }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net", "process"] }
 tokio-rustls = "0.26.4"
 url = "2"
 

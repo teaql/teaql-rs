@@ -28,6 +28,13 @@ together, advances independent Contexts through mixed and overlap profiles,
 rejects an old endpoint after trust retirement, then restores the old
 instance by routing it to the new endpoint. It checks exact server-side HTTP
 request counts; it is not a separate-host production rollout.
+The process-rollover fixture additionally starts separate executable clients
+against both live certificate endpoints. The old route is moved to the new
+endpoint while overlap trust is still active, before new-only trust is
+installed. After retirement, a deliberately stale old route is rejected
+before HTTP. The servers observe two old and five new HTTP requests, and
+each child process must report its own PID and a canary-free result. This is
+loopback process isolation, not multi-host traffic management.
 The example also accepts an old-CA Vault read but deliberately never returns
 its response. The read ends within its 900 ms whole-call budget as
 `Unavailable`, without a second HTTP request; only after the borrow ends is

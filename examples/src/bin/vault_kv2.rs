@@ -201,6 +201,81 @@ async fn rollover_tls_server(
     Ok((port, received, server))
 }
 
+async fn rollover_child_probe(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    assert_eq!(args.len(), 7, "expected rollover child fixture arguments");
+    let mode = args[2].as_str();
+    let port: u16 = args[3].parse()?;
+    let root_pem = std::fs::read(&args[4])?;
+    let next_root_pem = std::fs::read(&args[5])?;
+    let expected = args[6].as_str();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let (mut context, reference) = tls_context(port, Some(&root_pem), events.clone())?;
+    let service = match mode {
+        "old-only" => tls_http_service(port, &[&root_pem])?,
+        "overlap" => tls_http_service(port, &[&root_pem, &next_root_pem])?,
+        "new-only" => tls_http_service(port, &[&next_root_pem])?,
+        _ => panic!("unknown rollover trust mode"),
+    };
+    context.set_http_request_service(service);
+    let result = context
+        .resolve_secret(&reference, "rollover process trust probe")
+        .await;
+    if expected == "unavailable" {
+        assert_eq!(result.unwrap_err(), SecretFailure::Unavailable);
+    } else {
+        assert_eq!(result?.version(), Some(expected));
+    }
+    let diagnostics = events.lock().unwrap().join("\n");
+    assert!(!diagnostics.contains("PRIVATE-VAULT-TOKEN"));
+    assert!(!diagnostics.contains("PRIVATE-VAULT-VALUE"));
+    println!(
+        "ROLLOVER_CHILD_PASS pid={} mode={mode} outcome={expected}",
+        std::process::id()
+    );
+    Ok(())
+}
+
+async fn run_rollover_child(
+    mode: &str,
+    port: u16,
+    root_path: &std::path::Path,
+    next_root_path: &std::path::Path,
+    expected: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut command = tokio::process::Command::new(std::env::current_exe()?);
+    command
+        .arg("--tls-rollover-child")
+        .arg(mode)
+        .arg(port.to_string())
+        .arg(root_path)
+        .arg(next_root_path)
+        .arg(expected)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let child = command.spawn()?;
+    let pid = child.id().expect("rollover child must have a process ID");
+    let output = tokio::time::timeout(Duration::from_secs(15), child.wait_with_output()).await??;
+    let diagnostics = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.status.success(),
+        "rollover child mode {mode} failed: {diagnostics}"
+    );
+    assert!(
+        diagnostics.contains(&format!(
+            "ROLLOVER_CHILD_PASS pid={pid} mode={mode} outcome={expected}"
+        )),
+        "rollover child lacked process evidence: {diagnostics}"
+    );
+    assert!(!diagnostics.contains("PRIVATE-VAULT-TOKEN"));
+    assert!(!diagnostics.contains("PRIVATE-VAULT-VALUE"));
+    Ok(())
+}
+
 async fn verify_tls_vault() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let root_path = directory.path().join("root.pem");
@@ -296,8 +371,8 @@ async fn verify_tls_vault() -> Result<(), Box<dyn std::error::Error>> {
         next_signed.status.success(),
         "next TLS server signing failed"
     );
-    let root_pem = std::fs::read(root_path)?;
-    let next_root_pem = std::fs::read(next_root_path)?;
+    let root_pem = std::fs::read(&root_path)?;
+    let next_root_pem = std::fs::read(&next_root_path)?;
     let configured_profile =
         HttpServiceProfile::new("vault", url::Url::parse("https://127.0.0.1:8443/")?)?;
     assert!(
@@ -522,6 +597,100 @@ async fn verify_tls_vault() -> Result<(), Box<dyn std::error::Error>> {
         assert!(!captured.contains("PRIVATE-VAULT-VALUE"));
     }
 
+    // A rolling deployment replaces whole client processes. Keep both
+    // certificate endpoints online while old-only and overlap clients run in
+    // distinct OS processes, then retire the old route.
+    let (old_process_port, old_process_requests, old_process_server) =
+        rollover_tls_server(&certificate_pem, &key_pem, 2, true, 7).await?;
+    let (new_process_port, new_process_requests, new_process_server) =
+        rollover_tls_server(&next_certificate_pem, &key_pem, 5, false, 8).await?;
+    let (old_result, new_result) = tokio::join!(
+        run_rollover_child(
+            "old-only",
+            old_process_port,
+            &root_path,
+            &next_root_path,
+            "vault-kv2:7"
+        ),
+        run_rollover_child(
+            "overlap",
+            new_process_port,
+            &root_path,
+            &next_root_path,
+            "vault-kv2:8"
+        )
+    );
+    old_result?;
+    new_result?;
+    assert_eq!(old_process_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(new_process_requests.load(Ordering::SeqCst), 1);
+
+    let (old_result, new_result) = tokio::join!(
+        run_rollover_child(
+            "overlap",
+            old_process_port,
+            &root_path,
+            &next_root_path,
+            "vault-kv2:7"
+        ),
+        run_rollover_child(
+            "overlap",
+            new_process_port,
+            &root_path,
+            &next_root_path,
+            "vault-kv2:8"
+        )
+    );
+    old_result?;
+    new_result?;
+    assert_eq!(old_process_requests.load(Ordering::SeqCst), 2);
+    assert_eq!(new_process_requests.load(Ordering::SeqCst), 2);
+
+    // Drain the old route while overlap trust is still live.
+    run_rollover_child(
+        "overlap",
+        new_process_port,
+        &root_path,
+        &next_root_path,
+        "vault-kv2:8",
+    )
+    .await?;
+    assert_eq!(new_process_requests.load(Ordering::SeqCst), 3);
+
+    let (old_result, new_result) = tokio::join!(
+        run_rollover_child(
+            "new-only",
+            old_process_port,
+            &root_path,
+            &next_root_path,
+            "unavailable"
+        ),
+        run_rollover_child(
+            "new-only",
+            new_process_port,
+            &root_path,
+            &next_root_path,
+            "vault-kv2:8"
+        )
+    );
+    old_result?;
+    new_result?;
+    assert_eq!(old_process_requests.load(Ordering::SeqCst), 2);
+    assert_eq!(new_process_requests.load(Ordering::SeqCst), 4);
+    run_rollover_child(
+        "new-only",
+        new_process_port,
+        &root_path,
+        &next_root_path,
+        "vault-kv2:8",
+    )
+    .await?;
+    tokio::time::timeout(Duration::from_secs(20), old_process_server).await??;
+    tokio::time::timeout(Duration::from_secs(20), new_process_server).await??;
+    assert_eq!(old_process_requests.load(Ordering::SeqCst), 2);
+    assert_eq!(new_process_requests.load(Ordering::SeqCst), 5);
+    println!("PROCESS_ROLLOVER_PASS language=rust old_requests=2 new_requests=5");
+
     // An accepted old-CA request whose response never arrives must finish at
     // its whole-call budget. Only after that borrow ends can this Context be
     // switched to a new trust profile.
@@ -720,6 +889,10 @@ fn listener() -> Result<TcpListener, Box<dyn std::error::Error>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let arguments = std::env::args().collect::<Vec<_>>();
+    if arguments.get(1).map(String::as_str) == Some("--tls-rollover-child") {
+        return rollover_child_probe(&arguments).await;
+    }
     let success_listener = listener()?;
     let success_port = success_listener.local_addr()?.port();
     let server = std::thread::spawn(move || {
