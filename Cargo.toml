@@ -2,6 +2,7 @@
 members = [
     "teaql-core",
     "teaql-object-storage-s3",
+    "teaql-http-reqwest",
     "teaql-sql",
     "teaql-runtime",
     "teaql-provider-postgres",

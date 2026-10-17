@@ -19,6 +19,7 @@ use crate::entity_reference::{
     EntityReferenceClaims, EntityReferenceCodec, EntityReferenceCodecResource,
     EntityReferenceTokenError,
 };
+use crate::http::{HttpFailure, HttpRequestService, HttpRequestServiceResource};
 use crate::round_trip_reference::{
     ContextBoundReferenceRuntime, ContextBoundReferenceRuntimeResource, ExternalEntityReference,
     ReferenceDocumentScope, ReferenceIdentity, ReferenceMode, ReferenceStartupNotice,
@@ -399,6 +400,17 @@ impl UserContext {
 
     pub fn runtime_telemetry(&self) -> &Arc<dyn crate::RuntimeTelemetry> {
         &self.runtime_telemetry
+    }
+
+    pub fn runtime_propagation_carrier(&self) -> BTreeMap<String, String> {
+        let mut carrier = BTreeMap::new();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.runtime_telemetry.inject_context(&mut carrier);
+        }));
+        if result.is_err() {
+            carrier.clear();
+        }
+        carrier
     }
 
     pub(crate) fn runtime_telemetry_is_noop(&self) -> bool {
@@ -837,6 +849,21 @@ impl UserContext {
     {
         self.typed_resources
             .insert(TypeId::of::<T>(), Box::new(resource));
+    }
+
+    pub fn with_http_request_service(mut self, service: Arc<dyn HttpRequestService>) -> Self {
+        self.set_http_request_service(service);
+        self
+    }
+
+    pub fn set_http_request_service(&mut self, service: Arc<dyn HttpRequestService>) {
+        self.insert_resource(HttpRequestServiceResource(service));
+    }
+
+    pub fn http_requests(&self) -> Result<&Arc<dyn HttpRequestService>, HttpFailure> {
+        self.get_resource::<HttpRequestServiceResource>()
+            .map(|resource| &resource.0)
+            .ok_or(HttpFailure::ProfileNotConfigured)
     }
 
     pub fn with_entity_reference_codec(mut self, codec: Arc<dyn EntityReferenceCodec>) -> Self {

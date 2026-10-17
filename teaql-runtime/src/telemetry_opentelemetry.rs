@@ -5,7 +5,7 @@ use std::time::Instant;
 use opentelemetry::global::BoxedTracer;
 use opentelemetry::logs::{AnyValue, LogRecord, Logger, Severity};
 use opentelemetry::metrics::{Counter, Histogram, Meter};
-use opentelemetry::propagation::{Extractor, TextMapPropagator};
+use opentelemetry::propagation::{Extractor, Injector, TextMapPropagator};
 use opentelemetry::trace::{Span, Status, TraceContextExt, Tracer};
 use opentelemetry::{Context, KeyValue, Value, global};
 
@@ -128,6 +128,15 @@ impl OpenTelemetryRuntimeTelemetry {
 }
 
 impl RuntimeTelemetry for OpenTelemetryRuntimeTelemetry {
+    fn inject_context(&self, carrier: &mut BTreeMap<String, String>) {
+        if let Some(propagator) = &self.propagator {
+            propagator.inject_context(&Context::current(), &mut MapCarrier(carrier));
+        } else {
+            global::get_text_map_propagator(|propagator| {
+                propagator.inject_context(&Context::current(), &mut MapCarrier(carrier));
+            });
+        }
+    }
     fn records_sql_diagnostics(&self) -> bool {
         self.diagnostic_emitter.is_some()
     }
@@ -177,6 +186,14 @@ impl RuntimeTelemetry for OpenTelemetryRuntimeTelemetry {
 }
 
 struct CaseInsensitiveCarrier<'a>(&'a BTreeMap<String, String>);
+
+struct MapCarrier<'a>(&'a mut BTreeMap<String, String>);
+
+impl Injector for MapCarrier<'_> {
+    fn set(&mut self, key: &str, value: String) {
+        self.0.insert(key.to_owned(), value);
+    }
+}
 
 impl Extractor for CaseInsensitiveCarrier<'_> {
     fn get(&self, key: &str) -> Option<&str> {
@@ -270,7 +287,7 @@ impl RuntimeTelemetryScope for OpenTelemetryScope {
     fn success(&mut self, attributes: BTreeMap<String, RuntimeAttributeValue>) {
         self.finish("success", None, |span| {
             for (key, value) in attributes {
-                if key == "teaql.result.cardinality" || key == "teaql.cache.result" {
+                if allowed_completion_attribute(&key) {
                     span.set_attribute(KeyValue::new(key, otel_value(&value)));
                 }
             }
@@ -290,7 +307,7 @@ impl RuntimeTelemetryScope for OpenTelemetryScope {
         let category = runtime_error_category(error_type);
         self.finish("failure", Some(category), |span| {
             for (key, value) in attributes {
-                if key == "teaql.result.cardinality" || key == "teaql.cache.result" {
+                if allowed_completion_attribute(&key) {
                     span.set_attribute(KeyValue::new(key, otel_value(&value)));
                 }
             }
@@ -299,6 +316,17 @@ impl RuntimeTelemetryScope for OpenTelemetryScope {
             span.set_status(Status::error("TeaQL operation failed"));
         });
     }
+}
+
+fn allowed_completion_attribute(key: &str) -> bool {
+    matches!(
+        key,
+        "teaql.result.cardinality"
+            | "teaql.cache.result"
+            | "teaql.http.outcome"
+            | "teaql.http.attempts"
+            | "teaql.http.elapsed_ms"
+    )
 }
 
 fn otel_value(value: &RuntimeAttributeValue) -> Value {
@@ -322,6 +350,105 @@ mod tests {
     use opentelemetry_sdk::logs::{InMemoryLogExporter, SdkLoggerProvider};
     use opentelemetry_sdk::propagation::TraceContextPropagator;
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+
+    #[test]
+    fn outbound_carrier_uses_the_active_runtime_span() {
+        let exporter = InMemorySpanExporter::default();
+        let traces = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let telemetry: Arc<dyn RuntimeTelemetry> = Arc::new(
+            OpenTelemetryRuntimeTelemetry::new(
+                opentelemetry::global::BoxedTracer::new(Box::new(traces.tracer("http"))),
+                global::meter("http"),
+            )
+            .with_propagator(TraceContextPropagator::new()),
+        );
+        let call = crate::HttpCall::get(
+            "orders",
+            "orders/1?token=PRIVATE_QUERY_CANARY",
+            "check inventory",
+            "render order",
+        )
+        .unwrap()
+        .with_parent_trace_chain(vec![
+            teaql_core::TraceNode::typed(
+                teaql_core::TraceKind::Purpose,
+                "Order",
+                None,
+                "render order",
+            ),
+            teaql_core::TraceNode::typed(
+                teaql_core::TraceKind::Comment,
+                "Order",
+                None,
+                "load order graph",
+            ),
+        ])
+        .unwrap();
+        let scope = start_runtime_operation(
+            &telemetry,
+            RuntimeOperation::new("http", "orders")
+                .attribute("teaql.http.trace_chain", call.business_trace_projection()),
+        );
+        let mut carrier = BTreeMap::new();
+        scope.with_context(&mut || telemetry.inject_context(&mut carrier));
+        scope.success(BTreeMap::from([
+            (
+                "teaql.http.outcome".to_owned(),
+                RuntimeAttributeValue::String("success".to_owned()),
+            ),
+            (
+                "teaql.http.attempts".to_owned(),
+                RuntimeAttributeValue::Integer(1),
+            ),
+        ]));
+        let parent = carrier
+            .get("traceparent")
+            .expect("active runtime span should propagate");
+        assert!(parent.starts_with("00-"));
+        assert_eq!(parent.len(), 55);
+        let spans = exporter.get_finished_spans().unwrap();
+        let trace = spans[0]
+            .attributes
+            .iter()
+            .find(|attribute| attribute.key.as_str() == "teaql.http.trace_chain")
+            .unwrap()
+            .value
+            .to_string();
+        assert!(trace.contains("load order graph"));
+        assert!(!trace.contains("PRIVATE_QUERY_CANARY"));
+        assert!(
+            spans[0]
+                .attributes
+                .iter()
+                .any(|attribute| attribute.key.as_str() == "teaql.http.outcome"
+                    && attribute.value.to_string().contains("success"))
+        );
+        let failed = start_runtime_operation(&telemetry, RuntimeOperation::new("http", "orders"));
+        failed.failure_with_attributes(
+            "Timeout",
+            BTreeMap::from([
+                (
+                    "teaql.http.outcome".to_owned(),
+                    RuntimeAttributeValue::String("TIMEOUT".to_owned()),
+                ),
+                (
+                    "teaql.http.attempts".to_owned(),
+                    RuntimeAttributeValue::Integer(1),
+                ),
+            ]),
+        );
+        let spans = exporter.get_finished_spans().unwrap();
+        assert!(
+            spans[1]
+                .attributes
+                .iter()
+                .any(|attribute| attribute.key.as_str() == "teaql.http.outcome"
+                    && attribute.value.to_string().contains("TIMEOUT"))
+        );
+        traces.shutdown().unwrap();
+    }
 
     #[cfg(feature = "standard-telemetry")]
     #[tokio::test(flavor = "current_thread")]

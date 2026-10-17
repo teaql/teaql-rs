@@ -1,0 +1,15 @@
+[package]
+name = "teaql-http-reqwest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Controlled Reqwest HTTP provider for TeaQL runtime"
+repository.workspace = true
+
+[dependencies]
+teaql-runtime = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
+url = "2"

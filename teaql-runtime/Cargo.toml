@@ -20,6 +20,7 @@ teaql-sql = { workspace = true }
 teaql-data-service = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { version = "0.7", features = ["rt"] }
 opentelemetry = { version = "0.32.0", optional = true }
 opentelemetry_sdk = { version = "0.32.1", optional = true, default-features = false, features = ["trace", "metrics", "logs"] }
 opentelemetry-proto = { version = "0.32.0", optional = true, default-features = false, features = ["gen-tonic-messages", "trace", "metrics", "logs"] }
