@@ -8,7 +8,7 @@ for round in 1 2; do
     printf 'Rust Secret Provider example round %s failed\n%s\n' "$round" "$output" >&2
     exit 1
   fi
-  if [[ "$output" != *"SECRET_PROVIDER_PASS binding=1 rotation=1 masking=1"* ]] ||
+  if [[ "$output" != *"SECRET_PROVIDER_PASS binding=1 rotation=1 masking=1 operational_expiry=1 shared_custom_spi=1"* ]] ||
      [[ "$output" == *"private-example-key"* ]]; then
     printf 'Rust Secret Provider example round %s lacked evidence or leaked a canary\n' "$round" >&2
     exit 1
