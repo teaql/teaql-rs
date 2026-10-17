@@ -72,6 +72,40 @@ impl StreamingSqlTransport for SqliteTransaction {
 impl SqlTransaction for SqliteTransaction {
     type Error = MutationExecutorError;
 
+    async fn append_committed_set_sql(
+        &self,
+        append: &teaql_data_service::CommittedSetAppend,
+    ) -> Result<bool, Self::Error> {
+        let mut payload: serde_json::Value = serde_json::from_str(&append.payload_json)
+            .map_err(|_| MutationExecutorError::Bind("invalid committed-event JSON".into()))?;
+        let fields = payload.as_object().ok_or_else(|| {
+            MutationExecutorError::Bind("committed-event payload must be an object".into())
+        })?;
+        if fields.contains_key("source_sequence") {
+            return Err(MutationExecutorError::Bind(
+                "committed-event sequence must be allocated by the transaction".into(),
+            ));
+        }
+        SqliteTransaction::append_committed_event(
+            self,
+            &append.source_runtime_id,
+            &append.change_set_id,
+            &append.model_hash,
+            |sequence| {
+                payload
+                    .as_object_mut()
+                    .expect("validated JSON object")
+                    .insert(
+                        "source_sequence".into(),
+                        serde_json::Value::String(sequence.to_string()),
+                    );
+                serde_json::to_string(&payload).map_err(Into::into)
+            },
+        )
+        .map_err(|_| MutationExecutorError::Bind("committed-event append failed".into()))?;
+        Ok(true)
+    }
+
     async fn commit_sql(mut self) -> Result<(), Self::Error> {
         self.executor.commit_transaction()?;
         self.active = false;
