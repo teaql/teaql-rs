@@ -859,6 +859,9 @@ impl UserContext {
         self
     }
 
+    /// Replaces the service for later calls. The exclusive Context borrow keeps
+    /// replacement from racing with an in-flight call on this same Context;
+    /// independent Contexts still require coordinated profile rollout.
     pub fn set_http_request_service(&mut self, service: Arc<dyn HttpRequestService>) {
         self.insert_resource(HttpRequestServiceResource(service));
     }

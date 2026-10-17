@@ -18,5 +18,8 @@ roots rather than expanding process-wide trust. A later profile with only
 example checks reads through both CA-signed server certificates during
 overlap and rejects the old certificate after retirement. Each slice element
 contains one PEM certificate; the bounded profile accepts at most four roots.
-In-flight requests and production certificate rollout require separate
-coordination.
+Replacing the service requires `&mut UserContext`, so safe Rust cannot replace
+it while an async secret resolution borrows that same Context. Replacement is
+performed after the call completes; separate Contexts need coordinated rollout.
+Production certificate rollout and requests in other instances require
+separate draining and verification.
