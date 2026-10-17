@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 
-use super::{MAX_SECRET_BYTES, SecretFailure, SecretProvider, SecretRef, SecretValue, safe_name};
+use super::{safe_name, SecretFailure, SecretProvider, SecretRef, SecretValue, MAX_SECRET_BYTES};
 use crate::{HttpCall, HttpIntentKind, HttpMethod, HttpRetryMode, UserContext};
 
 struct VaultBinding {
@@ -192,8 +192,8 @@ fn parse_vault_response(body: &[u8], field: &str) -> Result<SecretValue, SecretF
 mod tests {
     use super::*;
     use crate::{HttpFailure, HttpRequestService, HttpResponse};
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
     struct FixedToken;
 
@@ -322,6 +322,96 @@ mod tests {
                 .unwrap_err(),
             SecretFailure::UnknownBinding
         );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_credential_rotation_is_read_each_time_and_expiry_blocks_transport() {
+        struct RotatingToken(Arc<Mutex<String>>, Arc<AtomicUsize>);
+
+        #[async_trait]
+        impl SecretProvider for RotatingToken {
+            async fn resolve(
+                &self,
+                _context: &UserContext,
+                _reference: &SecretRef,
+            ) -> Result<SecretValue, SecretFailure> {
+                self.1.fetch_add(1, Ordering::SeqCst);
+                let token = self.0.lock().unwrap().clone();
+                if token == "expired" {
+                    return Err(SecretFailure::Expired);
+                }
+                SecretValue::new(token.into_bytes(), None, None)
+            }
+        }
+
+        struct TokenAwareHttp(Arc<AtomicUsize>);
+
+        #[async_trait]
+        impl HttpRequestService for TokenAwareHttp {
+            fn profile_is_encrypted_or_loopback(&self, profile: &str) -> bool {
+                profile == "vault"
+            }
+
+            async fn execute(
+                &self,
+                _context: &UserContext,
+                call: &HttpCall,
+            ) -> Result<HttpResponse, HttpFailure> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                let body = match call.headers().get("X-Vault-Token").map(String::as_str) {
+                    Some("PRIVATE-VAULT-TOKEN-A") => br#"{"data":{"data":{"value":"FIRST-VALUE"},"metadata":{"version":7,"destroyed":false,"deletion_time":""}}}"#.to_vec(),
+                    Some("PRIVATE-VAULT-TOKEN-B") => br#"{"data":{"data":{"value":"ROTATED-VALUE"},"metadata":{"version":8,"destroyed":false,"deletion_time":""}}}"#.to_vec(),
+                    _ => return Err(HttpFailure::InvalidInput),
+                };
+                HttpResponse::new(200, body, 1)
+            }
+        }
+
+        let token = Arc::new(Mutex::new("PRIVATE-VAULT-TOKEN-A".to_owned()));
+        let resolutions = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let reference = SecretRef::new("payments", "api_key").unwrap();
+        let mut provider = VaultKv2SecretProvider::new(
+            "vault",
+            "secret",
+            Arc::new(RotatingToken(token.clone(), resolutions.clone())),
+            SecretRef::new("bootstrap", "vault_token").unwrap(),
+        )
+        .unwrap();
+        provider
+            .bind(reference.clone(), "payments/api", "value")
+            .unwrap();
+        let context = UserContext::new()
+            .with_http_request_service(Arc::new(TokenAwareHttp(calls.clone())))
+            .with_secret_provider(Arc::new(provider));
+        assert_eq!(
+            context
+                .resolve_secret(&reference, "read before rotation")
+                .await
+                .unwrap()
+                .version(),
+            Some("vault-kv2:7")
+        );
+        *token.lock().unwrap() = "PRIVATE-VAULT-TOKEN-B".to_owned();
+        let rotated = context
+            .resolve_secret(&reference, "read after rotation")
+            .await
+            .unwrap();
+        assert_eq!(rotated.version(), Some("vault-kv2:8"));
+        assert_eq!(rotated.expose_bytes().unwrap(), b"ROTATED-VALUE");
+        assert_eq!(resolutions.load(Ordering::SeqCst), 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        *token.lock().unwrap() = "expired".to_owned();
+        assert_eq!(
+            context
+                .resolve_secret(&reference, "reject expired bootstrap token")
+                .await
+                .unwrap_err(),
+            SecretFailure::Expired
+        );
+        assert_eq!(resolutions.load(Ordering::SeqCst), 3);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
