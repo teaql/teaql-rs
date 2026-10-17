@@ -23,3 +23,8 @@ it while an async secret resolution borrows that same Context. Replacement is
 performed after the call completes; separate Contexts need coordinated rollout.
 Production certificate rollout and requests in other instances require
 separate draining and verification.
+The controlled two-instance fixture keeps old- and new-CA servers online
+together, advances independent Contexts through mixed and overlap profiles,
+rejects an old endpoint after trust retirement, then restores the old
+instance by routing it to the new endpoint. It checks exact server-side HTTP
+request counts; it is not a separate-host production rollout.

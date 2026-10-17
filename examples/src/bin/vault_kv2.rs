@@ -1,7 +1,10 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -129,6 +132,73 @@ fn tls_context(
             .with_secret_provider(Arc::new(provider)),
         reference,
     ))
+}
+
+async fn rollover_tls_server(
+    certificate_pem: &[u8],
+    key_pem: &[u8],
+    successful_calls: usize,
+    reject_last: bool,
+    version: u64,
+) -> Result<(u16, Arc<AtomicUsize>, tokio::task::JoinHandle<()>), Box<dyn std::error::Error>> {
+    let certificate = CertificateDer::from_pem_slice(certificate_pem)?;
+    let key = PrivateKeyDer::from_pem_slice(key_pem)?;
+    let server_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![certificate], key)?;
+    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let port = listener.local_addr()?.port();
+    let received = Arc::new(AtomicUsize::new(0));
+    let received_by_server = received.clone();
+    let server = tokio::spawn(async move {
+        let attempts = successful_calls + usize::from(reject_last);
+        for attempt in 0..attempts {
+            let (stream, _) = tokio::time::timeout(Duration::from_secs(8), listener.accept())
+                .await
+                .expect("rollover fixture did not receive a connection")
+                .expect("rollover fixture accept failed");
+            let negotiation = tokio::time::timeout(Duration::from_secs(6), acceptor.accept(stream))
+                .await
+                .expect("rollover fixture TLS handshake did not finish");
+            let mut tls = match negotiation {
+                Ok(tls) => tls,
+                Err(_) if reject_last && attempt == successful_calls => continue,
+                Err(error) => panic!("rollover fixture trusted handshake failed: {error:?}"),
+            };
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            while !request.ends_with(b"\r\n\r\n") && request.len() < 8192 {
+                let count = tls.read(&mut buffer).await.unwrap_or(0);
+                if count == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..count]);
+            }
+            if reject_last && attempt == successful_calls {
+                assert!(request.is_empty(), "retired CA received an HTTP request");
+                continue;
+            }
+            let text = String::from_utf8(request).expect("rollover request must be UTF-8");
+            assert!(text.starts_with("GET /v1/secret/data/payment/api HTTP/1.1"));
+            assert!(
+                text.to_ascii_lowercase()
+                    .contains("x-vault-token: private-vault-token")
+            );
+            received_by_server.fetch_add(1, Ordering::SeqCst);
+            let body = format!(
+                "{{\"data\":{{\"data\":{{\"value\":\"PRIVATE-VAULT-VALUE\"}},\"metadata\":{{\"version\":{version},\"destroyed\":false,\"deletion_time\":\"\"}}}}}}"
+            );
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            tls.write_all(header.as_bytes()).await.unwrap();
+            tls.write_all(body.as_bytes()).await.unwrap();
+            tls.flush().await.unwrap();
+        }
+    });
+    Ok((port, received, server))
 }
 
 async fn verify_tls_vault() -> Result<(), Box<dyn std::error::Error>> {
@@ -395,6 +465,62 @@ async fn verify_tls_vault() -> Result<(), Box<dyn std::error::Error>> {
     let complete_diagnostics = telemetry_events.lock().unwrap().join("\n");
     assert!(!complete_diagnostics.contains("PRIVATE-VAULT-TOKEN"));
     assert!(!complete_diagnostics.contains("PRIVATE-VAULT-VALUE"));
+
+    // Two independent Contexts model a rolling deployment: the old and new
+    // certificate endpoints stay live together while client profiles advance.
+    let (old_port, old_requests, old_server) =
+        rollover_tls_server(&certificate_pem, &key_pem, 2, true, 7).await?;
+    let (new_port, new_requests, new_server) =
+        rollover_tls_server(&next_certificate_pem, &key_pem, 4, false, 8).await?;
+    let old_events = Arc::new(Mutex::new(Vec::new()));
+    let new_events = Arc::new(Mutex::new(Vec::new()));
+    let (mut old_instance, old_reference) =
+        tls_context(old_port, Some(&root_pem), old_events.clone())?;
+    let (mut new_instance, new_reference) =
+        tls_context(new_port, Some(&next_root_pem), new_events.clone())?;
+    new_instance
+        .set_http_request_service(tls_http_service(new_port, &[&root_pem, &next_root_pem])?);
+    let (old_result, new_result) = tokio::join!(
+        old_instance.resolve_secret(&old_reference, "old instance before overlap"),
+        new_instance.resolve_secret(&new_reference, "new instance during overlap"),
+    );
+    assert_eq!(old_result?.version(), Some("vault-kv2:7"));
+    assert_eq!(new_result?.version(), Some("vault-kv2:8"));
+
+    old_instance
+        .set_http_request_service(tls_http_service(old_port, &[&root_pem, &next_root_pem])?);
+    let (old_result, new_result) = tokio::join!(
+        old_instance.resolve_secret(&old_reference, "old instance during overlap"),
+        new_instance.resolve_secret(&new_reference, "new instance remains on overlap"),
+    );
+    assert_eq!(old_result?.version(), Some("vault-kv2:7"));
+    assert_eq!(new_result?.version(), Some("vault-kv2:8"));
+
+    old_instance.set_http_request_service(tls_http_service(old_port, &[&next_root_pem])?);
+    new_instance.set_http_request_service(tls_http_service(new_port, &[&next_root_pem])?);
+    let (old_result, new_result) = tokio::join!(
+        old_instance.resolve_secret(&old_reference, "old route after CA retirement"),
+        new_instance.resolve_secret(&new_reference, "new route after CA retirement"),
+    );
+    assert_eq!(old_result.unwrap_err(), SecretFailure::Unavailable);
+    assert_eq!(new_result?.version(), Some("vault-kv2:8"));
+    old_instance.set_http_request_service(tls_http_service(new_port, &[&next_root_pem])?);
+    assert_eq!(
+        old_instance
+            .resolve_secret(&old_reference, "old instance after route migration")
+            .await?
+            .version(),
+        Some("vault-kv2:8")
+    );
+    tokio::time::timeout(Duration::from_secs(8), old_server).await??;
+    tokio::time::timeout(Duration::from_secs(8), new_server).await??;
+    assert_eq!(old_requests.load(Ordering::SeqCst), 2);
+    assert_eq!(new_requests.load(Ordering::SeqCst), 4);
+    for events in [old_events, new_events] {
+        let captured = events.lock().unwrap().join("\n");
+        assert!(!captured.contains("PRIVATE-VAULT-TOKEN"));
+        assert!(!captured.contains("PRIVATE-VAULT-VALUE"));
+    }
     Ok(())
 }
 
