@@ -12,6 +12,7 @@ mod load_state;
 mod meta;
 mod mutation;
 mod naming;
+pub mod object_storage;
 mod query;
 pub mod request;
 mod request_intent;

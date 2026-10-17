@@ -1668,7 +1668,9 @@ dependencies = [
 name = "teaql-core"
 version = "5.0.7"
 dependencies = [
+ "bytes",
  "chrono",
+ "futures-core",
  "rust_decimal",
  "serde",
  "serde_json",

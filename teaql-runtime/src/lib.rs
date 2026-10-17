@@ -21,6 +21,7 @@ mod language;
 pub mod log_formatter;
 mod log_privacy;
 mod mutation_policy;
+pub mod object_storage;
 #[cfg(test)]
 mod requested_list_count_tests;
 // Deterministic test oracle; the published runtime uses provider executors.

@@ -7,6 +7,11 @@ on:
 jobs:
   examples:
     runs-on: ubuntu-latest
+    env:
+      TEAQL_S3_ENDPOINT: http://127.0.0.1:19010
+      TEAQL_S3_BUCKET: teaql-rust-example-ci
+      TEAQL_S3_ACCESS_KEY: teaql-rust-example-ci
+      TEAQL_S3_SECRET_KEY: teaql-rust-example-ci-fixture-only
     steps:
       - uses: actions/checkout@v4
       - name: Install example verification tools
@@ -17,7 +22,30 @@ jobs:
         run: |
           cargo fetch --locked --manifest-path examples/facet-trace/Cargo.toml
           cargo fetch --locked --manifest-path examples/trace-chain/Cargo.toml
+      - name: Start dedicated S3 example fixture
+        run: |
+          docker run -d --name teaql-rust-example-s3 \
+            -p 127.0.0.1:19010:9000 \
+            -e RUSTFS_ACCESS_KEY="$TEAQL_S3_ACCESS_KEY" \
+            -e RUSTFS_SECRET_KEY="$TEAQL_S3_SECRET_KEY" \
+            -e RUSTFS_CONSOLE_ENABLE=false \
+            rustfs/rustfs@sha256:41fe89380f4120a337790c02af192c3fe7bb55c3edc2e6e9357b487b47c6ab21 /data
+          for attempt in {1..30}; do
+            if curl -sS -o /dev/null --max-time 2 "$TEAQL_S3_ENDPOINT/"; then
+              exit 0
+            fi
+            if [[ "$(docker inspect --format '{{.State.Running}}' teaql-rust-example-s3)" != true ]]; then
+              docker logs teaql-rust-example-s3
+              exit 1
+            fi
+            sleep 1
+          done
+          docker logs teaql-rust-example-s3
+          exit 1
       - name: Verify complete example behavior
         run: ./scripts/verify-examples.sh
       - name: Verify retained runtime acceptance markers
         run: ./examples/verify-runtime-examples.sh
+      - name: Stop dedicated S3 example fixture
+        if: always()
+        run: docker rm -f teaql-rust-example-s3 || true

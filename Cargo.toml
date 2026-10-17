@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "teaql-core",
+    "teaql-object-storage-s3",
     "teaql-sql",
     "teaql-runtime",
     "teaql-provider-postgres",
