@@ -5,8 +5,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::Arc;
     use std::time::SystemTime;
     use teaql_runtime::{
-        BoundSecretProvider, FixedBusinessClock, SecretFailure, SecretProvider, SecretRef,
-        SecretValue, UserContext,
+        BoundSecretProvider, EntityKey, FixedBusinessClock, SecretFailure, SecretProvider,
+        SecretRef, SecretValue, UserContext,
     };
 
     struct ContextDateProvider(tokio::sync::Barrier);
@@ -87,17 +87,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .expect("valid second business time"),
         ))
         .with_secret_provider(custom);
+    // The two graphs intentionally use the same type and ID. Sharing the
+    // provider must not cause their pending mutation ledgers to alias.
+    let first_state = first_context.entity_runtime_state();
+    let second_state = second_context.entity_runtime_state();
+    let first_task_state = first_state.clone();
+    let second_task_state = second_state.clone();
+    let key = EntityKey::new("School", 42_u64);
+    let first_key = key.clone();
+    let second_key = key.clone();
     let first_reference = reference.clone();
     let second_reference = reference.clone();
     let first_call = tokio::spawn(async move {
-        first_context
+        let resolved = first_context
             .resolve_secret(&first_reference, "first custom context")
-            .await
+            .await?;
+        first_task_state.set(first_key, "name", "first pending");
+        Ok::<_, SecretFailure>(resolved)
     });
     let second_call = tokio::spawn(async move {
-        second_context
+        let resolved = second_context
             .resolve_secret(&second_reference, "second custom context")
-            .await
+            .await?;
+        second_task_state.set(second_key, "name", "second pending");
+        Ok::<_, SecretFailure>(resolved)
     });
     let (first_value, second_value) =
         tokio::time::timeout(std::time::Duration::from_secs(3), async {
@@ -106,9 +119,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     assert_eq!(first_value??.expose_bytes()?, b"2000-01-01");
     assert_eq!(second_value??.expose_bytes()?, b"2100-01-01");
+    assert_eq!(first_state.get(&key, "name"), Some("first pending".into()));
+    assert_eq!(
+        second_state.get(&key, "name"),
+        Some("second pending".into())
+    );
+    first_state.clear_current_change_set();
+    assert_eq!(first_state.get(&key, "name"), None);
+    assert_eq!(
+        second_state.get(&key, "name"),
+        Some("second pending".into())
+    );
+    assert!(second_state.changed_field_names(&key).contains("name"));
 
     println!(
-        "SECRET_PROVIDER_PASS binding=1 rotation=1 masking=1 operational_expiry=1 shared_custom_spi=1"
+        "SECRET_PROVIDER_PASS binding=1 rotation=1 masking=1 operational_expiry=1 shared_custom_spi=1 ledger_isolation=1"
     );
     Ok(())
 }
