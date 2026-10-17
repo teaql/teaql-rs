@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use rusqlite::Connection;
 use teaql_core::{CompactRow, Entity, TeaqlEntity as _, Value};
 use teaql_macros::{TeaqlEntity, teaql_entity};
-use teaql_provider_sqlite::{SqliteDialect, SqliteMutationExecutor, SqliteProviderExt};
 use teaql_provider_sqlite::committed_events::CommittedEventTarget;
+use teaql_provider_sqlite::{SqliteDialect, SqliteMutationExecutor, SqliteProviderExt};
 use teaql_runtime::{
     CommittedEventSource, EntityKey, InMemoryMetadataStore, LedgerEntity, UserContext,
     save_audited_ledger_entity,
@@ -70,7 +70,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     assert_eq!(first["audit"]["comment"], "create example order");
 
     let target_transport = SqliteMutationExecutor::from_connection(Connection::open_in_memory()?);
-    let target_metadata = InMemoryMetadataStore::new().with_entity(ExampleOrder::entity_descriptor());
+    let target_metadata =
+        InMemoryMetadataStore::new().with_entity(ExampleOrder::entity_descriptor());
     let target_service = SqlDataServiceExecutor::new(
         SqliteDialect,
         target_transport.clone(),
