@@ -4,7 +4,7 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 verification_dir="$(mktemp -d)"
 trap 'status=$?; if (( status == 0 )); then rm -rf -- "$verification_dir"; else echo "FAILED: example evidence retained at $verification_dir" >&2; fi' EXIT
-expected=(business-id-runtime conformance context-bound-order-document facet-trace http-resilience object-storage order-management school-management shared-load-state tests trace-chain)
+expected=(business-id-runtime conformance context-bound-order-document facet-trace http-resilience object-storage order-management school-management secret-provider shared-load-state tests trace-chain)
 mapfile -t actual < <(find "$repo/examples" -mindepth 1 -maxdepth 1 -type d ! -name src -printf '%f\n' | sort)
 if [[ "${actual[*]}" != "${expected[*]}" ]]; then
   echo "example inventory changed; update scripts/verify-examples.sh: ${actual[*]}" >&2
@@ -13,6 +13,7 @@ fi
 
 cd "$repo"
 bash examples/http-resilience/verify.sh
+bash examples/secret-provider/verify.sh
 bash examples/object-storage/verify.sh
 bash examples/trace-chain/verify-standard-telemetry.sh
 cargo test -p teaql-provider-sqlite --test relation_membership -- --nocapture

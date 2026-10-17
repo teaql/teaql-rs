@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 
-use super::{safe_name, SecretFailure, SecretProvider, SecretRef, SecretValue, MAX_SECRET_BYTES};
+use super::{MAX_SECRET_BYTES, SecretFailure, SecretProvider, SecretRef, SecretValue, safe_name};
 use crate::{HttpCall, HttpIntentKind, HttpMethod, HttpRetryMode, UserContext};
 
 struct VaultBinding {
@@ -192,8 +192,8 @@ fn parse_vault_response(body: &[u8], field: &str) -> Result<SecretValue, SecretF
 mod tests {
     use super::*;
     use crate::{HttpFailure, HttpRequestService, HttpResponse};
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct FixedToken;
 

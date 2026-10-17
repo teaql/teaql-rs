@@ -517,6 +517,24 @@ impl ReqwestHttpRequestService {
 
 #[async_trait]
 impl HttpRequestService for ReqwestHttpRequestService {
+    fn profile_is_encrypted_or_loopback(&self, profile: &str) -> bool {
+        let Some(state) = self.profiles.get(profile) else {
+            return false;
+        };
+        let base = &state.profile.base;
+        if base.scheme() == "https" {
+            return true;
+        }
+        if base.scheme() != "http" {
+            return false;
+        }
+        match base.host() {
+            Some(url::Host::Ipv4(address)) => address == std::net::Ipv4Addr::LOCALHOST,
+            Some(url::Host::Ipv6(address)) => address == std::net::Ipv6Addr::LOCALHOST,
+            _ => false,
+        }
+    }
+
     async fn execute(
         &self,
         context: &UserContext,

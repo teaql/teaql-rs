@@ -34,7 +34,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("enable the controlled live Secret Provider OTLP probe explicitly".into());
     }
     let outcome = std::env::var("TEAQL_SECRET_PROBE_OUTCOME").unwrap_or_else(|_| "success".into());
-    if !matches!(outcome.as_str(), "success" | "denied" | "missing" | "malformed" | "expired" | "timeout") {
+    if !matches!(
+        outcome.as_str(),
+        "success" | "denied" | "missing" | "malformed" | "expired" | "timeout"
+    ) {
         return Err("unsupported Secret Provider probe outcome".into());
     }
     let server_outcome = outcome.clone();
@@ -91,12 +94,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "denied" => ("403 Forbidden", format!("{{\"errors\":[\"{VALUE}\"]}}")),
             "missing" => ("404 Not Found", format!("{{\"errors\":[\"{VALUE}\"]}}")),
             "malformed" => ("200 OK", format!("{{\"data\":\"{VALUE}\",")),
-            "expired" => ("200 OK", format!(
-                "{{\"data\":{{\"data\":{{\"value\":\"{VALUE}\"}},\"metadata\":{{\"version\":7,\"destroyed\":false,\"deletion_time\":\"2020-01-01T00:00:00Z\"}}}}}}"
-            )),
-            _ => ("200 OK", format!(
-                "{{\"data\":{{\"data\":{{\"value\":\"{VALUE}\"}},\"metadata\":{{\"version\":7,\"destroyed\":false,\"deletion_time\":\"\"}}}}}}"
-            )),
+            "expired" => (
+                "200 OK",
+                format!(
+                    "{{\"data\":{{\"data\":{{\"value\":\"{VALUE}\"}},\"metadata\":{{\"version\":7,\"destroyed\":false,\"deletion_time\":\"2020-01-01T00:00:00Z\"}}}}}}"
+                ),
+            ),
+            _ => (
+                "200 OK",
+                format!(
+                    "{{\"data\":{{\"data\":{{\"value\":\"{VALUE}\"}},\"metadata\":{{\"version\":7,\"destroyed\":false,\"deletion_time\":\"\"}}}}}}"
+                ),
+            ),
         };
         write!(
             stream,
