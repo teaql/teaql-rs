@@ -14,3 +14,9 @@ complete cross-language codec, snapshot-plus-tail, or a production replication
 guarantee. Dynamic fields fail closed while capture is enabled. Updates carry
 changed modeled fields; the companion provider test covers ambiguous
 acknowledgement and restart recovery.
+
+The verifier also runs the application-owned School example twice on separate
+SQLite source/target files. It uses generated audited Save and Q APIs for
+replicated readback, and checks that generated-library source hashes do not
+change. Both examples use local runtime source; public-package qualification
+is separate.
