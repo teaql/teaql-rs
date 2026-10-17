@@ -41,6 +41,7 @@ run_example "round-trip-reference-governed" "$repo_dir/examples/Cargo.toml" \
   "round_trip_references"
 bash "$repo_dir/examples/http-resilience/verify.sh"
 bash "$repo_dir/examples/committed-events/verify.sh"
+bash "$repo_dir/examples/secret-provider/verify.sh"
 
 cargo test --quiet --manifest-path "$repo_dir/examples/Cargo.toml" \
   --test context_bound_order_document
@@ -181,4 +182,4 @@ if [[ -n "${TEAQL_CODEGEN_DIR:-}" ]]; then
 else
   bash "$repo_dir/examples/shared-load-state/verify.sh"
 fi
-printf 'PASS Rust runtime examples: 15/15\n'
+printf 'PASS Rust runtime examples: 16/16\n'
