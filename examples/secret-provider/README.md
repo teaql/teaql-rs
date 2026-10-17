@@ -28,3 +28,8 @@ together, advances independent Contexts through mixed and overlap profiles,
 rejects an old endpoint after trust retirement, then restores the old
 instance by routing it to the new endpoint. It checks exact server-side HTTP
 request counts; it is not a separate-host production rollout.
+The example also accepts an old-CA Vault read but deliberately never returns
+its response. The read ends within its 900 ms whole-call budget as
+`Unavailable`, without a second HTTP request; only after the borrow ends is
+the Context switched to new-only trust. This is a bounded-drain test, not
+proof that changing trust immediately cancels in-flight requests.

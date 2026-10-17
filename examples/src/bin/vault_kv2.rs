@@ -521,6 +521,80 @@ async fn verify_tls_vault() -> Result<(), Box<dyn std::error::Error>> {
         assert!(!captured.contains("PRIVATE-VAULT-TOKEN"));
         assert!(!captured.contains("PRIVATE-VAULT-VALUE"));
     }
+
+    // An accepted old-CA request whose response never arrives must finish at
+    // its whole-call budget. Only after that borrow ends can this Context be
+    // switched to a new trust profile.
+    let slow_certificate = CertificateDer::from_pem_slice(&certificate_pem)?;
+    let slow_key = PrivateKeyDer::from_pem_slice(&key_pem)?;
+    let slow_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![slow_certificate], slow_key)?;
+    let slow_acceptor = TlsAcceptor::from(Arc::new(slow_config));
+    let slow_listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let slow_port = slow_listener.local_addr()?.port();
+    let (received_tx, received_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let slow_server = tokio::spawn(async move {
+        let (stream, _) = slow_listener.accept().await.unwrap();
+        let mut tls = slow_acceptor.accept(stream).await.unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0u8; 1024];
+        while !request.ends_with(b"\r\n\r\n") && request.len() < 8192 {
+            let count = tls.read(&mut buffer).await.unwrap_or(0);
+            if count == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..count]);
+        }
+        let text = String::from_utf8(request).unwrap();
+        assert!(text.starts_with("GET /v1/secret/data/payment/api HTTP/1.1"));
+        assert!(
+            text.to_ascii_lowercase()
+                .contains("x-vault-token: private-vault-token")
+        );
+        received_tx.send(()).unwrap();
+        release_rx.await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), slow_listener.accept())
+                .await
+                .is_err(),
+            "stalled Vault read started another connection"
+        );
+    });
+    let slow_events = Arc::new(Mutex::new(Vec::new()));
+    let (mut slow_context, slow_reference) =
+        tls_context(slow_port, Some(&root_pem), slow_events.clone())?;
+    let slow_profile = HttpServiceProfile::new(
+        "vault",
+        url::Url::parse(&format!("https://127.0.0.1:{slow_port}/"))?,
+    )?
+    .budgets(
+        Duration::from_secs(2),
+        Duration::from_secs(2),
+        Duration::from_millis(900),
+    )?
+    .trusted_root_pem(&root_pem)?;
+    slow_context.set_http_request_service(Arc::new(ReqwestHttpRequestService::new(vec![
+        slow_profile,
+    ])?));
+    let started_at = Instant::now();
+    let (received, timed_out) = tokio::time::timeout(Duration::from_secs(4), async {
+        tokio::join!(
+            received_rx,
+            slow_context.resolve_secret(&slow_reference, "bound stalled old-CA read")
+        )
+    })
+    .await?;
+    received?;
+    assert_eq!(timed_out.unwrap_err(), SecretFailure::Unavailable);
+    assert!(started_at.elapsed() < Duration::from_secs(4));
+    slow_context.set_http_request_service(tls_http_service(slow_port, &[&next_root_pem])?);
+    release_tx.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(4), slow_server).await??;
+    let slow_diagnostics = slow_events.lock().unwrap().join("\n");
+    assert!(!slow_diagnostics.contains("PRIVATE-VAULT-TOKEN"));
+    assert!(!slow_diagnostics.contains("PRIVATE-VAULT-VALUE"));
     Ok(())
 }
 
