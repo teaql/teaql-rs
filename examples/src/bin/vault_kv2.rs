@@ -12,8 +12,8 @@ use teaql_runtime::{
     VaultKv2SecretProvider,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio_rustls::rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
-use tokio_rustls::{rustls::ServerConfig, TlsAcceptor};
+use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
+use tokio_rustls::{TlsAcceptor, rustls::ServerConfig};
 
 struct BootstrapToken;
 
@@ -91,7 +91,7 @@ fn vault_context(
 
 fn tls_http_service(
     port: u16,
-    root_pem: Option<&[u8]>,
+    roots: &[&[u8]],
 ) -> Result<Arc<ReqwestHttpRequestService>, Box<dyn std::error::Error>> {
     let mut profile = HttpServiceProfile::new(
         "vault",
@@ -102,8 +102,8 @@ fn tls_http_service(
         Duration::from_secs(2),
         Duration::from_secs(3),
     )?;
-    if let Some(root) = root_pem {
-        profile = profile.trusted_root_pem(root)?;
+    if !roots.is_empty() {
+        profile = profile.trusted_roots_pem(roots)?;
     }
     Ok(Arc::new(ReqwestHttpRequestService::new(vec![profile])?))
 }
@@ -121,10 +121,11 @@ fn tls_context(
         SecretRef::new("bootstrap", "vault_token")?,
     )?;
     provider.bind(reference.clone(), "payment/api", "value")?;
+    let roots = root_pem.into_iter().collect::<Vec<_>>();
     Ok((
         UserContext::new()
             .with_runtime_telemetry(Arc::new(CapturedTelemetry(telemetry_events)))
-            .with_http_request_service(tls_http_service(port, root_pem)?)
+            .with_http_request_service(tls_http_service(port, &roots)?)
             .with_secret_provider(Arc::new(provider)),
         reference,
     ))
@@ -134,8 +135,11 @@ async fn verify_tls_vault() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let root_path = directory.path().join("root.pem");
     let root_key_path = directory.path().join("root.key");
+    let next_root_path = directory.path().join("next-root.pem");
+    let next_root_key_path = directory.path().join("next-root.key");
     let request_path = directory.path().join("server.csr");
     let certificate_path = directory.path().join("server.pem");
+    let next_certificate_path = directory.path().join("next-server.pem");
     let key_path = directory.path().join("server.key");
     let root = Command::new("openssl")
         .args([
@@ -150,6 +154,22 @@ async fn verify_tls_vault() -> Result<(), Box<dyn std::error::Error>> {
         .arg(&root_path)
         .output()?;
     assert!(root.status.success(), "local TLS root generation failed");
+    let next_root = Command::new("openssl")
+        .args([
+            "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+        ])
+        .args(["-subj", "/CN=TeaQL next test root"])
+        .args(["-addext", "basicConstraints=critical,CA:TRUE"])
+        .args(["-addext", "keyUsage=critical,keyCertSign,cRLSign"])
+        .arg("-keyout")
+        .arg(&next_root_key_path)
+        .arg("-out")
+        .arg(&next_root_path)
+        .output()?;
+    assert!(
+        next_root.status.success(),
+        "next TLS root generation failed"
+    );
     let request = Command::new("openssl")
         .args(["req", "-new", "-newkey", "rsa:2048", "-nodes"])
         .args(["-subj", "/CN=127.0.0.1"])
@@ -183,8 +203,55 @@ async fn verify_tls_vault() -> Result<(), Box<dyn std::error::Error>> {
         .arg(&certificate_path)
         .output()?;
     assert!(signed.status.success(), "local TLS server signing failed");
+    let next_signed = Command::new("openssl")
+        .args([
+            "x509",
+            "-req",
+            "-days",
+            "1",
+            "-CAcreateserial",
+            "-copy_extensions",
+            "copy",
+        ])
+        .arg("-in")
+        .arg(&request_path)
+        .arg("-CA")
+        .arg(&next_root_path)
+        .arg("-CAkey")
+        .arg(&next_root_key_path)
+        .arg("-out")
+        .arg(&next_certificate_path)
+        .output()?;
+    assert!(
+        next_signed.status.success(),
+        "next TLS server signing failed"
+    );
     let root_pem = std::fs::read(root_path)?;
+    let next_root_pem = std::fs::read(next_root_path)?;
+    let configured_profile =
+        HttpServiceProfile::new("vault", url::Url::parse("https://127.0.0.1:8443/")?)?;
+    assert!(
+        configured_profile
+            .clone()
+            .trusted_roots_pem(&[&root_pem, &root_pem])
+            .is_err()
+    );
+    assert!(
+        configured_profile
+            .clone()
+            .trusted_roots_pem(&[
+                &root_pem,
+                &next_root_pem,
+                &root_pem,
+                &next_root_pem,
+                &root_pem
+            ])
+            .is_err()
+    );
+    let bundled_roots = [root_pem.as_slice(), next_root_pem.as_slice()].concat();
+    assert!(configured_profile.trusted_root_pem(&bundled_roots).is_err());
     let certificate_pem = std::fs::read(certificate_path)?;
+    let next_certificate_pem = std::fs::read(next_certificate_path)?;
     let key_pem = std::fs::read(key_path)?;
     let certificate = CertificateDer::from_pem_slice(&certificate_pem)?;
     let key = PrivateKeyDer::from_pem_slice(&key_pem)?;
@@ -195,11 +262,11 @@ async fn verify_tls_vault() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let port = listener.local_addr()?.port();
     let server = tokio::spawn(async move {
-        for connection in 0..3 {
+        for connection in 0..4 {
             let (stream, _) = listener.accept().await.unwrap();
             let mut tls = match acceptor.accept(stream).await {
                 Ok(tls) => tls,
-                Err(_) if connection != 1 => continue,
+                Err(_) if connection != 1 && connection != 2 => continue,
                 Err(error) => panic!("trusted TLS handshake failed: {error:?}"),
             };
             let mut request = Vec::new();
@@ -211,7 +278,7 @@ async fn verify_tls_vault() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 request.extend_from_slice(&buffer[..count]);
             }
-            if connection != 1 {
+            if connection != 1 && connection != 2 {
                 assert!(
                     request.is_empty(),
                     "untrusted peer received an HTTP request"
@@ -220,9 +287,10 @@ async fn verify_tls_vault() -> Result<(), Box<dyn std::error::Error>> {
             }
             let text = String::from_utf8(request).unwrap();
             assert!(text.starts_with("GET /v1/secret/data/payment/api HTTP/1.1"));
-            assert!(text
-                .to_ascii_lowercase()
-                .contains("x-vault-token: private-vault-token"));
+            assert!(
+                text.to_ascii_lowercase()
+                    .contains("x-vault-token: private-vault-token")
+            );
             let body = br#"{"data":{"data":{"value":"PRIVATE-VAULT-VALUE"},"metadata":{"version":7,"destroyed":false,"deletion_time":""}}}"#;
             let header = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -243,13 +311,18 @@ async fn verify_tls_vault() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_err(),
         SecretFailure::Unavailable
     );
-    context.set_http_request_service(tls_http_service(port, Some(&root_pem))?);
+    context.set_http_request_service(tls_http_service(port, &[&root_pem])?);
     let value = context
         .resolve_secret(&reference, "read configured credential")
         .await?;
     assert_eq!(value.expose_bytes()?, b"PRIVATE-VAULT-VALUE");
     assert_eq!(value.version(), Some("vault-kv2:7"));
-    context.set_http_request_service(tls_http_service(port, None)?);
+    context.set_http_request_service(tls_http_service(port, &[&root_pem, &next_root_pem])?);
+    let overlap = context
+        .resolve_secret(&reference, "read during TLS root overlap")
+        .await?;
+    assert_eq!(overlap.version(), Some("vault-kv2:7"));
+    context.set_http_request_service(tls_http_service(port, &[&next_root_pem])?);
     assert_eq!(
         context
             .resolve_secret(&reference, "reject removed TLS trust")
@@ -264,6 +337,64 @@ async fn verify_tls_vault() -> Result<(), Box<dyn std::error::Error>> {
     assert!(captured.contains("failure:"));
     assert!(!captured.contains("PRIVATE-VAULT-TOKEN"));
     assert!(!captured.contains("PRIVATE-VAULT-VALUE"));
+
+    let next_certificate = CertificateDer::from_pem_slice(&next_certificate_pem)?;
+    let next_key = PrivateKeyDer::from_pem_slice(&key_pem)?;
+    let next_server_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![next_certificate], next_key)?;
+    let next_acceptor = TlsAcceptor::from(Arc::new(next_server_config));
+    let next_listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let next_port = next_listener.local_addr()?.port();
+    let next_server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (stream, _) = next_listener.accept().await.unwrap();
+            let mut tls = next_acceptor.accept(stream).await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            while !request.ends_with(b"\r\n\r\n") && request.len() < 8192 {
+                let count = tls.read(&mut buffer).await.unwrap_or(0);
+                if count == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..count]);
+            }
+            let text = String::from_utf8(request).unwrap();
+            assert!(text.starts_with("GET /v1/secret/data/payment/api HTTP/1.1"));
+            assert!(
+                text.to_ascii_lowercase()
+                    .contains("x-vault-token: private-vault-token")
+            );
+            let body = br#"{"data":{"data":{"value":"PRIVATE-VAULT-VALUE"},"metadata":{"version":8,"destroyed":false,"deletion_time":""}}}"#;
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            tls.write_all(header.as_bytes()).await.unwrap();
+            tls.write_all(body).await.unwrap();
+            tls.flush().await.unwrap();
+        }
+    });
+    context.set_http_request_service(tls_http_service(next_port, &[&root_pem, &next_root_pem])?);
+    assert_eq!(
+        context
+            .resolve_secret(&reference, "read next CA during overlap")
+            .await?
+            .version(),
+        Some("vault-kv2:8")
+    );
+    context.set_http_request_service(tls_http_service(next_port, &[&next_root_pem])?);
+    assert_eq!(
+        context
+            .resolve_secret(&reference, "read next CA after retirement")
+            .await?
+            .version(),
+        Some("vault-kv2:8")
+    );
+    tokio::time::timeout(Duration::from_secs(5), next_server).await??;
+    let complete_diagnostics = telemetry_events.lock().unwrap().join("\n");
+    assert!(!complete_diagnostics.contains("PRIVATE-VAULT-TOKEN"));
+    assert!(!complete_diagnostics.contains("PRIVATE-VAULT-VALUE"));
     Ok(())
 }
 

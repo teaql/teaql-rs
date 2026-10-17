@@ -31,7 +31,7 @@ fn valid_alias(value: &str) -> bool {
 pub struct HttpServiceProfile {
     alias: String,
     base: Url,
-    trusted_root: Option<reqwest::Certificate>,
+    trusted_roots: Vec<reqwest::Certificate>,
     connect_timeout: Duration,
     request_timeout: Duration,
     total_timeout: Duration,
@@ -75,7 +75,7 @@ impl HttpServiceProfile {
         Ok(Self {
             alias,
             base,
-            trusted_root: None,
+            trusted_roots: Vec::new(),
             connect_timeout: Duration::from_secs(2),
             request_timeout: Duration::from_secs(5),
             total_timeout: Duration::from_secs(10),
@@ -113,19 +113,41 @@ impl HttpServiceProfile {
         Ok(self)
     }
 
-    /// Use only this profile's trusted root for HTTPS, without changing
-    /// process-wide trust or disabling peer/hostname verification.
-    pub fn trusted_root_pem(mut self, pem: &[u8]) -> Result<Self, HttpFailure> {
-        if self.base.scheme() != "https" || pem.is_empty() || pem.len() > 64 * 1024 {
+    /// Replace this profile's custom trust set with exactly one PEM root.
+    pub fn trusted_root_pem(self, pem: &[u8]) -> Result<Self, HttpFailure> {
+        self.trusted_roots_pem(&[pem])
+    }
+
+    /// Explicit short overlap for CA rotation; custom roots replace system roots
+    /// for this profile without disabling peer or hostname verification.
+    pub fn trusted_roots_pem(mut self, pems: &[&[u8]]) -> Result<Self, HttpFailure> {
+        if self.base.scheme() != "https" || pems.is_empty() || pems.len() > 4 {
             return Err(HttpFailure::InvalidInput);
         }
-        let der = CertificateDer::from_pem_slice(pem).map_err(|_| HttpFailure::InvalidInput)?;
-        rustls::RootCertStore::empty()
-            .add(der.clone())
-            .map_err(|_| HttpFailure::InvalidInput)?;
-        self.trusted_root = Some(
-            reqwest::Certificate::from_der(der.as_ref()).map_err(|_| HttpFailure::InvalidInput)?,
-        );
+        let mut parsed = Vec::with_capacity(pems.len());
+        let mut seen = BTreeSet::new();
+        let mut store = rustls::RootCertStore::empty();
+        for pem in pems {
+            if pem.is_empty() || pem.len() > 64 * 1024 {
+                return Err(HttpFailure::InvalidInput);
+            }
+            let mut certificates = CertificateDer::pem_slice_iter(pem);
+            let der = certificates
+                .next()
+                .ok_or(HttpFailure::InvalidInput)?
+                .map_err(|_| HttpFailure::InvalidInput)?;
+            if certificates.next().is_some() || !seen.insert(der.as_ref().to_vec()) {
+                return Err(HttpFailure::InvalidInput);
+            }
+            store
+                .add(der.clone())
+                .map_err(|_| HttpFailure::InvalidInput)?;
+            parsed.push(
+                reqwest::Certificate::from_der(der.as_ref())
+                    .map_err(|_| HttpFailure::InvalidInput)?,
+            );
+        }
+        self.trusted_roots = parsed;
         Ok(self)
     }
 
@@ -251,8 +273,8 @@ impl ReqwestHttpRequestService {
             let mut builder = reqwest::Client::builder()
                 .connect_timeout(profile.connect_timeout)
                 .redirect(reqwest::redirect::Policy::none());
-            if let Some(root) = &profile.trusted_root {
-                builder = builder.tls_certs_only([root.clone()]);
+            if !profile.trusted_roots.is_empty() {
+                builder = builder.tls_certs_only(profile.trusted_roots.clone());
             }
             let client = builder.build().map_err(|_| HttpFailure::InvalidInput)?;
             let now = clock.now();
