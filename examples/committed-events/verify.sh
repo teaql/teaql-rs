@@ -11,6 +11,10 @@ for round in 1 2; do
     printf 'Rust committed-events example round %s failed or lacked evidence\n%s\n' "$round" "$output" >&2
     exit 1
   fi
+  if [[ "$output" != *"COMMITTED_DELIVERY_RECOVERY_PASS language=rust ordered=2 lost_ack=1 restart=1 duplicate=1"* ]]; then
+    printf 'Rust committed-events example round %s lacked recovery evidence\n%s\n' "$round" "$output" >&2
+    exit 1
+  fi
   printf 'PASS Rust committed-events example round %s\n' "$round"
 done
 

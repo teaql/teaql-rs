@@ -1,9 +1,14 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
 use teaql_core::{CompactRow, Entity, TeaqlEntity as _, Value};
 use teaql_macros::{TeaqlEntity, teaql_entity};
-use teaql_provider_sqlite::committed_events::CommittedEventTarget;
+use teaql_provider_sqlite::committed_events::{
+    CommittedEventError, CommittedEventTarget, InboxOutcome,
+};
 use teaql_provider_sqlite::{SqliteDialect, SqliteMutationExecutor, SqliteProviderExt};
 use teaql_runtime::{
     CommittedEventSource, EntityKey, InMemoryMetadataStore, LedgerEntity, UserContext,
@@ -131,6 +136,107 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     )?;
     assert_eq!(count, 0);
 
+    verify_delivery_recovery().await?;
     println!("COMMITTED_EVENTS_PASS authoritative=database accepted outbox=1 target=1 rollback=1");
+    Ok(())
+}
+
+async fn verify_delivery_recovery() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    const SOURCE: &str = "example-rust-recovery-source";
+    const MODEL: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let source_path = std::env::temp_dir().join(format!(
+        "teaql-committed-recovery-{}-{nonce}.sqlite",
+        std::process::id()
+    ));
+    let source = SqliteMutationExecutor::from_connection(Connection::open(&source_path)?);
+    let metadata = InMemoryMetadataStore::new().with_entity(ExampleOrder::entity_descriptor());
+    let service = SqlDataServiceExecutor::new(SqliteDialect, source.clone(), metadata.clone());
+    let mut context = UserContext::new()
+        .with_metadata(metadata)
+        .with_committed_event_source(CommittedEventSource::new(SOURCE, MODEL)?);
+    context.use_sqlite_provider(source.clone());
+    context.register_executor(service);
+    context.ensure_schema().await?;
+    for id in [81, 82] {
+        save_audited_ledger_entity(
+            new_order(id, "pending").audit_as("create ordered recovery example"),
+            &context,
+        )
+        .await?;
+    }
+    let outbox = source.committed_outbox_after(SOURCE, 0, 10)?;
+    assert_eq!(
+        outbox
+            .iter()
+            .map(|event| event.source_sequence)
+            .collect::<Vec<_>>(),
+        [1, 2]
+    );
+
+    let target = SqliteMutationExecutor::from_connection(Connection::open_in_memory()?);
+    let target_metadata =
+        InMemoryMetadataStore::new().with_entity(ExampleOrder::entity_descriptor());
+    let target_service =
+        SqlDataServiceExecutor::new(SqliteDialect, target.clone(), target_metadata.clone());
+    let mut target_context = UserContext::new().with_metadata(target_metadata);
+    target_context.insert_resource(CommittedEventTarget::new(SOURCE, MODEL)?);
+    target_context.use_sqlite_provider(target.clone());
+    target_context.register_executor(target_service);
+    target_context.ensure_schema().await?;
+
+    let lost = source
+        .publish_committed_batch(SOURCE, "example-analytics", MODEL, 10, |record| {
+            let target = &target;
+            let target_context = &target_context;
+            async move {
+                let _ = target
+                    .apply_model_checked_committed_set(target_context, &record)
+                    .await?;
+                Err::<InboxOutcome, CommittedEventError>(CommittedEventError::TransportUnavailable)
+            }
+        })
+        .await;
+    assert!(matches!(
+        lost,
+        Err(CommittedEventError::TransportUnavailable)
+    ));
+    let pending = source.committed_delivery_status(SOURCE, "example-analytics", MODEL)?;
+    assert_eq!(pending.acked_sequence, 0);
+    assert_eq!(pending.backlog, 2);
+    drop(context);
+    drop(source);
+
+    let restarted = SqliteMutationExecutor::from_connection(Connection::open(&source_path)?);
+    let duplicates = Arc::new(AtomicUsize::new(0));
+    let outcome = restarted
+        .publish_committed_batch(SOURCE, "example-analytics", MODEL, 10, |record| {
+            let target = &target;
+            let target_context = &target_context;
+            let duplicates = Arc::clone(&duplicates);
+            async move {
+                let outcome = target
+                    .apply_model_checked_committed_set(target_context, &record)
+                    .await?;
+                if matches!(outcome, InboxOutcome::Duplicate { .. }) {
+                    duplicates.fetch_add(1, Ordering::SeqCst);
+                }
+                Ok(outcome)
+            }
+        })
+        .await?;
+    assert_eq!(outcome.acknowledged, 2);
+    assert_eq!(outcome.status.acked_sequence, 2);
+    assert_eq!(outcome.status.backlog, 0);
+    assert_eq!(duplicates.load(Ordering::SeqCst), 1);
+    let count: i64 = target.connection().lock().unwrap().query_row(
+        "SELECT COUNT(*) FROM committed_example_order",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(count, 2);
+    println!(
+        "COMMITTED_DELIVERY_RECOVERY_PASS language=rust ordered=2 lost_ack=1 restart=1 duplicate=1"
+    );
     Ok(())
 }

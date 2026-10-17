@@ -9,10 +9,16 @@ through model-checked application and advances its durable source cursor only
 after the target acknowledges it. With the source Outbox table unavailable,
 the next save rolls back its domain row. The script runs the complete flow twice.
 
+The same binary also uses a separate file-backed source with two ordered
+events. It loses the first target acknowledgement after target commit, confirms
+that the source cursor stays at zero, reopens the source, then accepts the
+target's duplicate acknowledgement before applying sequence 2. This recovery
+flow runs in both verifier rounds and in the installed-artifact consumer.
+
 This is an **in-process** delivery example, not authenticated network transport,
 complete cross-language codec, snapshot-plus-tail, or a production replication
 guarantee. Dynamic fields fail closed while capture is enabled. Updates carry
-changed modeled fields; the companion provider test covers ambiguous
+changed modeled fields; provider tests add adversarial cases around ambiguous
 acknowledgement and restart recovery.
 
 The verifier also runs the application-owned School example twice on separate
