@@ -415,6 +415,118 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shared_provider_keeps_overlapping_context_http_requests_isolated() {
+        struct ContextToken;
+
+        #[async_trait]
+        impl SecretProvider for ContextToken {
+            async fn resolve(
+                &self,
+                context: &UserContext,
+                _reference: &SecretRef,
+            ) -> Result<SecretValue, SecretFailure> {
+                let token = match context.user_identifier() {
+                    Some("alpha") => b"PRIVATE-VAULT-TOKEN-A".to_vec(),
+                    Some("beta") => b"PRIVATE-VAULT-TOKEN-B".to_vec(),
+                    _ => return Err(SecretFailure::InvalidInput),
+                };
+                SecretValue::new(token, None, None)
+            }
+        }
+
+        struct OverlappingHttp {
+            entered: AtomicUsize,
+            active: AtomicUsize,
+            max_active: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl HttpRequestService for OverlappingHttp {
+            fn profile_is_encrypted_or_loopback(&self, profile: &str) -> bool {
+                profile == "vault"
+            }
+
+            async fn execute(
+                &self,
+                context: &UserContext,
+                call: &HttpCall,
+            ) -> Result<HttpResponse, HttpFailure> {
+                let (actor, suffix) = match context.user_identifier() {
+                    Some("alpha") => ("alpha", "A"),
+                    Some("beta") => ("beta", "B"),
+                    _ => return Err(HttpFailure::InvalidInput),
+                };
+                assert_eq!(
+                    call.relative_path(),
+                    format!("v1/secret/data/payments/{actor}")
+                );
+                let expected_token = format!("PRIVATE-VAULT-TOKEN-{suffix}");
+                assert_eq!(
+                    call.headers().get("X-Vault-Token").map(String::as_str),
+                    Some(expected_token.as_str())
+                );
+                self.entered.fetch_add(1, Ordering::SeqCst);
+                let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+                self.max_active.fetch_max(active, Ordering::SeqCst);
+                tokio::task::yield_now().await;
+                assert_eq!(
+                    call.relative_path(),
+                    format!("v1/secret/data/payments/{actor}")
+                );
+                assert_eq!(
+                    call.headers().get("X-Vault-Token").map(String::as_str),
+                    Some(expected_token.as_str())
+                );
+                self.active.fetch_sub(1, Ordering::SeqCst);
+                let body = format!(
+                    "{{\"data\":{{\"data\":{{\"value\":\"VALUE-{suffix}\"}},\"metadata\":{{\"version\":7,\"destroyed\":false,\"deletion_time\":\"\"}}}}}}"
+                );
+                HttpResponse::new(200, body.into_bytes(), 1)
+            }
+        }
+
+        let alpha = SecretRef::new("payments", "alpha").unwrap();
+        let beta = SecretRef::new("payments", "beta").unwrap();
+        let mut provider = VaultKv2SecretProvider::new(
+            "vault",
+            "secret",
+            Arc::new(ContextToken),
+            SecretRef::new("bootstrap", "vault_token").unwrap(),
+        )
+        .unwrap();
+        provider
+            .bind(alpha.clone(), "payments/alpha", "value")
+            .unwrap();
+        provider
+            .bind(beta.clone(), "payments/beta", "value")
+            .unwrap();
+        let provider = Arc::new(provider);
+        let http = Arc::new(OverlappingHttp {
+            entered: AtomicUsize::new(0),
+            active: AtomicUsize::new(0),
+            max_active: AtomicUsize::new(0),
+        });
+        let context_a = UserContext::new()
+            .with_user_identifier("alpha")
+            .with_http_request_service(http.clone())
+            .with_secret_provider(provider.clone());
+        let context_b = UserContext::new()
+            .with_user_identifier("beta")
+            .with_http_request_service(http.clone())
+            .with_secret_provider(provider);
+
+        let (first, second) = tokio::join!(
+            context_a.resolve_secret(&alpha, "read alpha credential"),
+            context_b.resolve_secret(&beta, "read beta credential")
+        );
+        assert_eq!(first.unwrap().expose_bytes().unwrap(), b"VALUE-A");
+        assert_eq!(second.unwrap().expose_bytes().unwrap(), b"VALUE-B");
+        assert_eq!(http.entered.load(Ordering::SeqCst), 2);
+        assert_eq!(http.max_active.load(Ordering::SeqCst), 2);
+        assert_eq!(http.active.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
     async fn vault_failures_are_distinct_and_never_reveal_payloads() {
         for (result, expected) in [
             (
