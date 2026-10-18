@@ -423,6 +423,11 @@ impl SqliteTransaction {
                         "prior Inbox identity lacks retained source evidence",
                     ));
                 }
+                if last < record.source_sequence {
+                    return Err(CommittedEventError::InvalidEnvelope(
+                        "prior Inbox identity is ahead of target checkpoint",
+                    ));
+                }
                 // A retry must receive the acknowledgement for its original
                 // set, even if the stream has since advanced further.
                 return Ok(InboxOutcome::Duplicate {
@@ -1401,6 +1406,54 @@ mod tests {
             let retained: JsonValue = serde_json::from_str(&retained).unwrap();
             assert_eq!(retained["audit"]["comment"], "Apply order graph");
             assert_eq!(retained["audit"]["trace_id"], "fixture-trace");
+        });
+    }
+
+    #[test]
+    fn duplicate_requires_checkpoint_covering_retained_inbox() {
+        futures_executor::block_on(async {
+            let (executor, context) = model_target().await;
+            let first = order_set(1);
+            let second = order_set(2);
+            executor
+                .apply_model_checked_committed_set(&context, &first)
+                .await
+                .unwrap();
+            executor
+                .apply_model_checked_committed_set(&context, &second)
+                .await
+                .unwrap();
+            {
+                let connection = executor.lock().unwrap();
+                connection
+                    .execute(
+                        "UPDATE teaql_event_checkpoint SET source_sequence = 1 \
+                         WHERE source_runtime_id = ?1",
+                        params!["sqlite-order-source"],
+                    )
+                    .unwrap();
+            }
+            assert!(matches!(
+                executor
+                    .apply_model_checked_committed_set(&context, &second)
+                    .await,
+                Err(CommittedEventError::InvalidEnvelope(_))
+            ));
+            {
+                let connection = executor.lock().unwrap();
+                connection
+                    .execute(
+                        "DELETE FROM teaql_event_checkpoint WHERE source_runtime_id = ?1",
+                        params!["sqlite-order-source"],
+                    )
+                    .unwrap();
+            }
+            assert!(matches!(
+                executor
+                    .apply_model_checked_committed_set(&context, &first)
+                    .await,
+                Err(CommittedEventError::InvalidEnvelope(_))
+            ));
         });
     }
 
