@@ -1,0 +1,40 @@
+name: HTTP resilience macOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/http-macos.yml
+      - Cargo.toml
+      - Cargo.lock
+      - teaql-core/**
+      - teaql-runtime/**
+      - teaql-http-reqwest/**
+      - examples/**
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/http-macos.yml
+      - Cargo.toml
+      - Cargo.lock
+      - teaql-core/**
+      - teaql-runtime/**
+      - teaql-http-reqwest/**
+      - examples/**
+
+permissions:
+  contents: read
+
+jobs:
+  http-resilience:
+    name: HTTP contract and example (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up stable Rust
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run HTTP contract and Context-owned example twice
+        run: bash examples/http-resilience/verify.sh
