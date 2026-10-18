@@ -2284,7 +2284,10 @@ mod tests {
             assert_eq!(status, "SUBMITTED");
         });
     }
-    use teaql_sql::{CompiledQuery, SqlTransaction, SqlTransactionTransport, SqlTransport};
+    use futures_util::StreamExt;
+    use teaql_sql::{
+        CompiledQuery, SqlTransaction, SqlTransactionTransport, SqlTransport, StreamingSqlTransport,
+    };
 
     fn payload(source: &str, sequence: u64, change_set_id: &str, status: &str) -> String {
         let mutations = if status == "DRAFT" {
@@ -2521,6 +2524,48 @@ mod tests {
             .query_row("SELECT count(*) FROM business_order", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn caught_stream_failure_cannot_commit_earlier_business_write() {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        executor
+            .lock()
+            .unwrap()
+            .execute_batch("CREATE TABLE business_order (id INTEGER PRIMARY KEY)")
+            .unwrap();
+        let transaction = executor.begin_sql().await.unwrap();
+        transaction
+            .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
+                sql: "INSERT INTO business_order (id) VALUES (1)".into(),
+                params: vec![],
+                comment: None,
+            })
+            .await
+            .unwrap();
+        let mut stream = transaction.stream_sql(
+            CompiledQuery {
+                log_context: Default::default(),
+                sql: "SELECT id FROM missing_business_table".into(),
+                params: vec![],
+                comment: None,
+            },
+            1,
+        );
+        assert!(stream.next().await.unwrap().is_err());
+        drop(stream);
+        assert!(matches!(
+            transaction.commit_sql().await,
+            Err(MutationExecutorError::RollbackOnly)
+        ));
+        let count: i64 = executor
+            .lock()
+            .unwrap()
+            .query_row("SELECT count(*) FROM business_order", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[tokio::test]

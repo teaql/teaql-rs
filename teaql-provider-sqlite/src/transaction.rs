@@ -1,5 +1,6 @@
 //! Operation-owned connection lease, not a Context/global transaction flag (#240).
 use super::{CompactRow, CompiledQuery, MutationExecutorError, SqliteMutationExecutor, Value};
+use futures_util::StreamExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use teaql_sql::{SqlTransaction, SqlTransactionTransport, SqlTransport, StreamingSqlTransport};
 
@@ -75,7 +76,14 @@ impl StreamingSqlTransport for SqliteTransaction {
         query: CompiledQuery,
         chunk_size: usize,
     ) -> teaql_data_service::QueryStream<'_, Self::Error> {
-        self.executor.stream_sql_unleased(query, chunk_size, false)
+        Box::pin(
+            self.executor
+                .stream_sql_unleased(query, chunk_size, false)
+                .map(|result| {
+                    self.mark_failed_operation(&result);
+                    result
+                }),
+        )
     }
 }
 
