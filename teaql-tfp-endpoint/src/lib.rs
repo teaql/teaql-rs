@@ -112,13 +112,13 @@ impl WireEntityMetadata {
         if self.canonical_types.is_empty() {
             return Ok(None);
         }
-        self.canonical_types
+        canonical_policy
             .iter()
-            .map(|(canonical, data_type)| {
-                canonical_policy
+            .map(|(canonical, internal)| {
+                self.canonical_types
                     .get(canonical)
-                    .map(|internal| (internal.clone(), *data_type))
-                    .ok_or_else(|| format!("Missing trusted field policy for {canonical}"))
+                    .map(|data_type| (internal.clone(), *data_type))
+                    .ok_or_else(|| format!("Missing trusted scalar type for {canonical}"))
             })
             .collect::<Result<_, _>>()
             .map(Some)
@@ -141,7 +141,8 @@ pub fn wire_metadata_from_generated(
 }
 
 /// Binds generated wire names to the generated runtime's trusted model types.
-/// A mapping that is not a modeled scalar property fails closed at startup.
+/// A mapping that is neither a modeled scalar property nor a forward
+/// relation with a modeled local foreign key fails closed at startup.
 pub fn wire_metadata_from_generated_with_model(
     mappings: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
     aliases: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
@@ -158,6 +159,12 @@ pub fn wire_metadata_from_generated_with_model(
             .map(|canonical| {
                 descriptor
                     .property_by_name(canonical)
+                    .or_else(|| {
+                        descriptor
+                            .relation_by_name(canonical)
+                            .filter(|relation| !relation.many)
+                            .and_then(|relation| descriptor.property_by_name(&relation.local_key))
+                    })
                     .map(|property| (canonical.clone(), property.data_type))
                     .ok_or_else(|| {
                         format!("Missing generated scalar property {entity}.{canonical}")
@@ -2682,6 +2689,48 @@ mod tests {
                 .unwrap_err()
                 .contains("Missing generated scalar property")
         );
+    }
+
+    #[test]
+    fn generated_forward_relation_uses_modeled_local_foreign_key_type() {
+        let model = teaql_runtime::InMemoryMetadataStore::new().with_entity(
+            teaql_core::EntityDescriptor::new("ScalarOrder")
+                .property(teaql_core::PropertyDescriptor::new(
+                    "id",
+                    teaql_core::DataType::U64,
+                ))
+                .property(teaql_core::PropertyDescriptor::new(
+                    "type_platform_id",
+                    teaql_core::DataType::U64,
+                ))
+                .relation(
+                    teaql_core::RelationDescriptor::new("type_platform", "TypePlatform")
+                        .local_key("type_platform_id")
+                        .foreign_key("id"),
+                ),
+        );
+        let metadata = wire_metadata_from_generated_with_model(
+            BTreeMap::from([(
+                "ScalarOrder".into(),
+                BTreeMap::from([
+                    ("id".into(), "id".into()),
+                    ("type_platform".into(), "typePlatform".into()),
+                ]),
+            )]),
+            BTreeMap::new(),
+            &model,
+        )
+        .expect("generated forward relation resolves to its local FK");
+        let allowed_subset = BTreeMap::from([("type_platform".into(), "type_platform_id".into())]);
+        let types = metadata["ScalarOrder"]
+            .internal_field_types(&allowed_subset)
+            .expect("allowed fields have trusted types")
+            .expect("typed metadata");
+        assert_eq!(
+            types.get("type_platform_id"),
+            Some(&teaql_core::DataType::U64)
+        );
+        assert_eq!(types.len(), 1, "host policy may allow a strict subset");
     }
 
     #[tokio::test]
