@@ -101,7 +101,7 @@ impl SqlDialect for SqliteDialect {
                     .to_owned(),
             ));
         }
-        if decimal_field && !matches!(function, "SUM" | "MIN" | "MAX") {
+        if decimal_field && !matches!(function, "COUNT" | "SUM" | "MIN" | "MAX") {
             return Err(SqlCompileError::InvalidFunctionArguments(
                 "SQLite exact Decimal expression aggregate is not supported for this function"
                     .to_owned(),
@@ -2716,6 +2716,15 @@ mod tests {
             unsupported_literal,
             Err(SqlCompileError::InvalidFunctionArguments(_))
         ));
+        let count = SqliteDialect.compile_select(
+            &entity,
+            &SelectQuery::new("DecimalFixture")
+                .project_expr("counted", Expr::count_expr(Expr::column("amount"))),
+        );
+        assert!(
+            count.is_ok(),
+            "Decimal COUNT must not be blocked: {count:?}"
+        );
     }
 
     #[test]
@@ -2811,6 +2820,87 @@ mod tests {
             )
             .unwrap();
         assert_eq!(total, "3.50");
+    }
+
+    #[test]
+    fn exact_decimal_grouped_aggregates_keep_numeric_order_and_typed_values() {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        let entity = EntityDescriptor::new("DecimalGroup")
+            .table_name("decimal_group")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(PropertyDescriptor::new("bucket", DataType::Text).not_null())
+            .property(
+                PropertyDescriptor::new("amount", DataType::Decimal)
+                    .numeric_precision(19)
+                    .numeric_scale(7)
+                    .not_null(),
+            );
+        executor.ensure_schema(&SqliteDialect, &[&entity]).unwrap();
+        executor
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO decimal_group (id, bucket, amount) VALUES
+                   (1, 'A', '3.50'), (2, 'A', '10.25'),
+                   (3, 'B', '123456789012.3456789')",
+            )
+            .unwrap();
+        let service = teaql_sql::SqlDataServiceExecutor::new(
+            SqliteDialect,
+            executor,
+            InMemoryMetadataStore::new().with_entity(entity),
+        );
+        let result = futures_executor::block_on(teaql_data_service::QueryExecutor::query(
+            &service,
+            teaql_data_service::QueryRequest {
+                query: SelectQuery::new("DecimalGroup")
+                    .group_by("bucket")
+                    .sum("amount", "total")
+                    .min("amount", "smallest")
+                    .max("amount", "largest")
+                    .count_field("amount", "items"),
+                trace_chain: Vec::new(),
+                intent: teaql_core::QueryIntent::new(
+                    "aggregate exact Decimal groups",
+                    "verify grouped aggregate semantics",
+                )
+                .unwrap(),
+                capture_debug_query: false,
+                capture_execution_metadata: false,
+            },
+        ))
+        .unwrap();
+        assert_eq!(result.rows.len(), 2);
+        let a = result
+            .rows
+            .iter()
+            .find(|row| row.get("bucket") == Some(&Value::Text("A".into())))
+            .unwrap();
+        assert_eq!(
+            a.get("total"),
+            Some(&Value::Decimal(Decimal::from_str("13.75").unwrap()))
+        );
+        assert_eq!(
+            a.get("smallest"),
+            Some(&Value::Decimal(Decimal::from_str("3.50").unwrap()))
+        );
+        assert_eq!(
+            a.get("largest"),
+            Some(&Value::Decimal(Decimal::from_str("10.25").unwrap()))
+        );
+        assert_eq!(a.get("items"), Some(&Value::I64(2)));
+        let b = result
+            .rows
+            .iter()
+            .find(|row| row.get("bucket") == Some(&Value::Text("B".into())))
+            .unwrap();
+        assert_eq!(
+            b.get("total"),
+            Some(&Value::Decimal(
+                Decimal::from_str("123456789012.3456789").unwrap()
+            ))
+        );
     }
 
     #[test]

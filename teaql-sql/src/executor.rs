@@ -995,7 +995,9 @@ mod tests {
         let bytes = std::mem::size_of_val(&future);
         println!("ORDINARY_SQL_QUERY_FRAME_BYTES={bytes}");
         assert!(
-            bytes <= 4608,
+            // Exact Decimal result normalization retains one descriptor
+            // reference; the partition-probe buffers must still stay out.
+            bytes <= 4624,
             "ordinary SQL future retains partition-probe state: {bytes}"
         );
         assert_eq!(
@@ -1610,11 +1612,11 @@ async fn execute_compiled_query<D: SqlDialect + Sync, T: SqlTransport>(
         diagnostic.fail();
         SqlExecutorError::Transport(error)
     })?;
-    if dialect.kind() == DatabaseKind::Sqlite {
-        if let Err(error) = normalize_exact_decimal_aggregates(entity, &request.query, &mut rows) {
-            diagnostic.fail();
-            return Err(SqlExecutorError::PersistedRecord(error));
-        }
+    if dialect.kind() == DatabaseKind::Sqlite
+        && let Err(error) = normalize_exact_decimal_aggregates(entity, &request.query, &mut rows)
+    {
+        diagnostic.fail();
+        return Err(SqlExecutorError::PersistedRecord(error));
     }
     let mut metadata = diagnostic
         .success()
