@@ -172,99 +172,107 @@ fn handle(mut stream: TcpStream, inner: &Inner) {
         Err(_) => return,
     };
     let mut reader = BufReader::new(reader_stream);
-    let mut first = String::new();
-    if reader.read_line(&mut first).is_err() || first.is_empty() {
-        return;
-    }
-    inner.requests.fetch_add(1, Ordering::SeqCst);
-    let path = first
-        .split_whitespace()
-        .nth(1)
-        .unwrap_or_default()
-        .to_owned();
-    let mut content_length = 0;
+    // The production client reuses connections. Keep the fixture's successful
+    // connections alive and consume every request body before the next request.
     loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line).is_err() || line == "\r\n" || line.is_empty() {
-            break;
-        }
-        if line.to_ascii_lowercase().starts_with("traceparent:") {
-            inner
-                .traceparents
-                .lock()
-                .unwrap()
-                .push(line[12..].trim().to_owned());
-        }
-        if line.to_ascii_lowercase().starts_with("content-length:") {
-            content_length = line[15..].trim().parse::<usize>().unwrap();
-        }
-    }
-    if path.contains("/retry-post") {
-        let mut body = vec![0; content_length];
-        if reader.read_exact(&mut body).is_err() {
+        let mut first = String::new();
+        if !matches!(reader.read_line(&mut first), Ok(n) if n > 0) {
             return;
         }
-        inner.retry_bodies.lock().unwrap().push(body);
-    }
-    if path.contains("/close") {
-        return;
-    }
-    if path.ends_with("/slow") {
-        thread::sleep(Duration::from_millis(350));
-    }
-    let status = if path.contains("/private-response") {
-        503
-    } else if path.contains("/redirect") {
-        302
-    } else if path.contains("/missing") {
-        404
-    } else if path.contains("/fail")
-        || path.contains("/flaky") && inner.flaky.fetch_add(1, Ordering::SeqCst) < 2
-        || path.contains("/retry-post") && inner.retry_post.fetch_add(1, Ordering::SeqCst) == 0
-    {
-        503
-    } else {
-        200
-    };
-    let body = if path.contains("/private-response") {
-        b"REMOTE_RESPONSE_CANARY".to_vec()
-    } else if path.contains("/large") {
-        vec![b'L'; 4096]
-    } else if path.contains("/invalid-utf8") {
-        vec![0xc3, 0x28]
-    } else if path.contains("/bad-json") {
-        b"{bad".to_vec()
-    } else {
-        b"okay".to_vec()
-    };
-    let redirect = if status == 302 {
-        "Location: https://elsewhere.example/private\r\n"
-    } else {
-        ""
-    };
-    let reason = if path.contains("/private-response") {
-        "REMOTE_REASON_CANARY"
-    } else {
-        "Result"
-    };
-    let head = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n{redirect}\r\n",
-        body.len()
-    );
-    if stream.write_all(head.as_bytes()).is_err() {
-        return;
-    }
-    if path.contains("/slowbody") {
-        if stream.write_all(&body[..1]).is_err() {
+        inner.requests.fetch_add(1, Ordering::SeqCst);
+        let path = first
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or_default()
+            .to_owned();
+        let mut content_length = 0;
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_err() || line == "\r\n" || line.is_empty() {
+                break;
+            }
+            if line.to_ascii_lowercase().starts_with("traceparent:") {
+                inner
+                    .traceparents
+                    .lock()
+                    .unwrap()
+                    .push(line[12..].trim().to_owned());
+            }
+            if line.to_ascii_lowercase().starts_with("content-length:") {
+                content_length = line[15..].trim().parse::<usize>().unwrap();
+            }
+        }
+        if path.contains("/close") {
             return;
         }
-        let _ = stream.flush();
-        thread::sleep(Duration::from_millis(350));
-        let _ = stream.write_all(&body[1..]);
-    } else {
-        let _ = stream.write_all(&body);
+        if content_length > 0 {
+            let mut body = vec![0; content_length];
+            if reader.read_exact(&mut body).is_err() {
+                return;
+            }
+            if path.contains("/retry-post") {
+                inner.retry_bodies.lock().unwrap().push(body);
+            }
+        }
+        if path.ends_with("/slow") {
+            thread::sleep(Duration::from_millis(350));
+        }
+        let status = if path.contains("/private-response") {
+            503
+        } else if path.contains("/redirect") {
+            302
+        } else if path.contains("/missing") {
+            404
+        } else if path.contains("/fail")
+            || path.contains("/flaky") && inner.flaky.fetch_add(1, Ordering::SeqCst) < 2
+            || path.contains("/retry-post") && inner.retry_post.fetch_add(1, Ordering::SeqCst) == 0
+        {
+            503
+        } else {
+            200
+        };
+        let body = if path.contains("/private-response") {
+            b"REMOTE_RESPONSE_CANARY".to_vec()
+        } else if path.contains("/large") {
+            vec![b'L'; 4096]
+        } else if path.contains("/invalid-utf8") {
+            vec![0xc3, 0x28]
+        } else if path.contains("/bad-json") {
+            b"{bad".to_vec()
+        } else {
+            b"okay".to_vec()
+        };
+        let redirect = if status == 302 {
+            "Location: https://elsewhere.example/private\r\n"
+        } else {
+            ""
+        };
+        let reason = if path.contains("/private-response") {
+            "REMOTE_REASON_CANARY"
+        } else {
+            "Result"
+        };
+        let head = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: keep-alive\r\n{redirect}\r\n",
+            body.len()
+        );
+        if stream.write_all(head.as_bytes()).is_err() {
+            return;
+        }
+        if path.contains("/slowbody") {
+            if stream.write_all(&body[..1]).is_err() {
+                return;
+            }
+            let _ = stream.flush();
+            thread::sleep(Duration::from_millis(350));
+            let _ = stream.write_all(&body[1..]);
+        } else {
+            let _ = stream.write_all(&body);
+        }
+        if stream.flush().is_err() {
+            return;
+        }
     }
-    let _ = stream.flush();
 }
 
 fn get(path: &str) -> HttpCall {
