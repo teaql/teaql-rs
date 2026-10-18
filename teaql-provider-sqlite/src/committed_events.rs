@@ -2569,6 +2569,150 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn caught_dynamic_storage_failure_cannot_commit_partial_business_write() {
+        use teaql_core::dynamic_fields::{DynamicFieldDefinitions, DynamicFieldMutation};
+        use teaql_data_service::dynamic_fields::DynamicFieldWrite;
+
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        executor
+            .lock()
+            .unwrap()
+            .execute_batch("CREATE TABLE business_order (id INTEGER PRIMARY KEY)")
+            .unwrap();
+        SqlTransport::dynamic_field_store(&executor)
+            .unwrap()
+            .ensure_schema()
+            .await
+            .unwrap();
+        executor
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER fail_second_dynamic_write
+                 BEFORE INSERT ON teaql_dynamic_field_storage_v1
+                 WHEN NEW.code = 'second'
+                 BEGIN SELECT RAISE(ABORT, 'PRIVATE-DRIVER-CANARY'); END",
+            )
+            .unwrap();
+        let transaction = executor.begin_sql().await.unwrap();
+        transaction
+            .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
+                sql: "INSERT INTO business_order (id) VALUES (1)".into(),
+                params: vec![],
+                comment: None,
+            })
+            .await
+            .unwrap();
+        let definitions = DynamicFieldDefinitions::new(
+            "business_order",
+            "test-v1",
+            [
+                ("first".into(), teaql_core::DataType::Text),
+                ("second".into(), teaql_core::DataType::Text),
+            ],
+        )
+        .unwrap();
+        let writes = [DynamicFieldWrite {
+            namespace: "test".into(),
+            definitions,
+            owner_id: 1,
+            changes: std::collections::BTreeMap::from([
+                (
+                    "first".into(),
+                    DynamicFieldMutation::Set(teaql_core::Value::Text("stored-first".into())),
+                ),
+                (
+                    "second".into(),
+                    DynamicFieldMutation::Set(teaql_core::Value::Text("must-fail".into())),
+                ),
+            ]),
+        }];
+        let error = SqlTransport::dynamic_field_store(&transaction)
+            .unwrap()
+            .apply_writes(
+                &writes,
+                &teaql_core::MutationIntent::new("test transactional dynamic write").unwrap(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "DYNAMIC_FIELD_STORAGE_FAILED");
+        assert!(!error.to_string().contains("PRIVATE-DRIVER-CANARY"));
+        assert!(matches!(
+            transaction.commit_sql().await,
+            Err(MutationExecutorError::RollbackOnly)
+        ));
+        let connection = executor.lock().unwrap();
+        let business_count: i64 = connection
+            .query_row("SELECT count(*) FROM business_order", [], |row| row.get(0))
+            .unwrap();
+        let dynamic_count: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM teaql_dynamic_field_storage_v1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!((business_count, dynamic_count), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn caught_dynamic_load_failure_cannot_commit_earlier_business_write() {
+        use teaql_core::dynamic_fields::{DynamicFieldDefinitions, DynamicFieldSelection};
+
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        executor
+            .lock()
+            .unwrap()
+            .execute_batch("CREATE TABLE business_order (id INTEGER PRIMARY KEY)")
+            .unwrap();
+        let transaction = executor.begin_sql().await.unwrap();
+        transaction
+            .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
+                sql: "INSERT INTO business_order (id) VALUES (1)".into(),
+                params: vec![],
+                comment: None,
+            })
+            .await
+            .unwrap();
+        let definitions = DynamicFieldDefinitions::new(
+            "business_order",
+            "test-v1",
+            [("note".into(), teaql_core::DataType::Text)],
+        )
+        .unwrap();
+        let error = SqlTransport::dynamic_field_store(&transaction)
+            .unwrap()
+            .load_values(
+                "test",
+                &definitions,
+                &[1],
+                &DynamicFieldSelection::All,
+                &teaql_core::QueryIntent::new(
+                    "read dynamic values",
+                    "verify caught read failure rollback",
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "DYNAMIC_FIELD_STORAGE_FAILED");
+        assert!(matches!(
+            transaction.commit_sql().await,
+            Err(MutationExecutorError::RollbackOnly)
+        ));
+        let count: i64 = executor
+            .lock()
+            .unwrap()
+            .query_row("SELECT count(*) FROM business_order", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
     async fn source_rollback_and_restart_keep_outbox_atomic_and_ordered() {
         let directory = tempfile::tempdir().unwrap();
         let database = directory.path().join("source.sqlite");
