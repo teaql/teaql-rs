@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use std::str::FromStr;
 use teaql_core::{
-    Aggregate, AggregateFunction, DeleteCommand, Expr, InsertCommand, OrderBy, Record,
+    Aggregate, AggregateFunction, DataType, DeleteCommand, Expr, InsertCommand, OrderBy, Record,
     RecoverCommand, SelectQuery, SortDirection, TraceNode, UpdateCommand, Value,
 };
 use teaql_data_service::MutationRequest;
@@ -291,6 +292,137 @@ impl TfpSelectQuery {
         }
 
         Ok(q)
+    }
+
+    pub fn to_core_with_field_types(
+        &self,
+        types: Option<&std::collections::BTreeMap<String, DataType>>,
+    ) -> Result<SelectQuery, String> {
+        let mut query = self.to_core()?;
+        if let Some(types) = types {
+            query.filter = query
+                .filter
+                .take()
+                .map(|filter| coerce_filter_values(filter, types))
+                .transpose()?;
+        }
+        Ok(query)
+    }
+}
+
+fn coerce_filter_values(
+    expression: Expr,
+    types: &std::collections::BTreeMap<String, DataType>,
+) -> Result<Expr, String> {
+    match expression {
+        Expr::And(items) => Ok(Expr::And(
+            items
+                .into_iter()
+                .map(|item| coerce_filter_values(item, types))
+                .collect::<Result<_, _>>()?,
+        )),
+        Expr::Or(items) => Ok(Expr::Or(
+            items
+                .into_iter()
+                .map(|item| coerce_filter_values(item, types))
+                .collect::<Result<_, _>>()?,
+        )),
+        Expr::Binary { left, op, right } => {
+            let Expr::Column(field) = left.as_ref() else {
+                return Err("TFP filter has an unsupported typed left operand".into());
+            };
+            let data_type = types
+                .get(field)
+                .ok_or_else(|| format!("Missing trusted scalar type for field: {field}"))?;
+            let right = match *right {
+                Expr::Value(value) => Expr::Value(coerce_typed_value(value, *data_type)?),
+                pattern @ Expr::LikePattern { .. }
+                    if matches!(data_type, DataType::Text | DataType::LargeText) =>
+                {
+                    pattern
+                }
+                _ => return Err(format!("Invalid typed predicate for field: {field}")),
+            };
+            Ok(Expr::Binary {
+                left,
+                op,
+                right: Box::new(right),
+            })
+        }
+        Expr::Between { expr, lower, upper } => {
+            let Expr::Column(field) = expr.as_ref() else {
+                return Err("TFP between has an unsupported typed field".into());
+            };
+            let field = field.clone();
+            let data_type = *types
+                .get(&field)
+                .ok_or_else(|| format!("Missing trusted scalar type for field: {field}"))?;
+            let coerce_bound = |bound: Box<Expr>| match *bound {
+                Expr::Value(value) => coerce_typed_value(value, data_type).map(Expr::Value),
+                _ => Err(format!("Invalid typed range bound for field: {field}")),
+            };
+            Ok(Expr::Between {
+                expr,
+                lower: Box::new(coerce_bound(lower)?),
+                upper: Box::new(coerce_bound(upper)?),
+            })
+        }
+        Expr::IsNull(_) | Expr::IsNotNull(_) => Ok(expression),
+        _ => Err("TFP filter has an unsupported typed expression".into()),
+    }
+}
+
+fn coerce_typed_value(value: Value, data_type: DataType) -> Result<Value, String> {
+    if let Value::List(items) = value {
+        return items
+            .into_iter()
+            .map(|item| coerce_typed_value(item, data_type))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::List);
+    }
+    let invalid = || format!("Invalid TFP operand for modeled type {data_type:?}");
+    match (data_type, value) {
+        (DataType::Decimal, Value::Text(value)) => teaql_core::Decimal::from_str(&value)
+            .map(Value::Decimal)
+            .map_err(|_| invalid()),
+        (DataType::I64, Value::Text(value)) => {
+            value.parse::<i64>().map(Value::I64).map_err(|_| invalid())
+        }
+        (DataType::I64, value @ Value::I64(_)) => Ok(value),
+        (DataType::I64, Value::U64(value)) => {
+            i64::try_from(value).map(Value::I64).map_err(|_| invalid())
+        }
+        (DataType::U64, Value::Text(value)) => {
+            value.parse::<u64>().map(Value::U64).map_err(|_| invalid())
+        }
+        (DataType::U64, value @ Value::U64(_)) => Ok(value),
+        (DataType::U64, Value::I64(value)) => {
+            u64::try_from(value).map(Value::U64).map_err(|_| invalid())
+        }
+        (DataType::Bool, value @ Value::Bool(_)) => Ok(value),
+        (DataType::Text | DataType::LargeText | DataType::Json, value @ Value::Text(_)) => {
+            Ok(value)
+        }
+        (DataType::Date, Value::Text(value)) => {
+            chrono::NaiveDate::parse_from_str(&value, "%Y-%m-%d")
+                .map(Value::Date)
+                .map_err(|_| invalid())
+        }
+        (DataType::Timestamp, Value::Text(value)) => value
+            .parse::<i64>()
+            .map(|value| Value::Timestamp(teaql_core::time::Timestamp(value)))
+            .map_err(|_| invalid()),
+        (DataType::Timestamp, Value::I64(value)) => {
+            Ok(Value::Timestamp(teaql_core::time::Timestamp(value)))
+        }
+        (DataType::F64, value @ Value::F64(_)) => Ok(value),
+        (DataType::F64, Value::I64(value)) if value.unsigned_abs() <= (1_u64 << 53) => {
+            Ok(Value::F64(value as f64))
+        }
+        (DataType::F64, Value::U64(value)) if value <= (1_u64 << 53) => {
+            Ok(Value::F64(value as f64))
+        }
+        _ => Err(invalid()),
     }
 }
 
@@ -799,6 +931,70 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn typed_decimal_set_and_range_keep_exact_values() {
+        let types = BTreeMap::from([("amount".into(), DataType::Decimal)]);
+        let set = parse_json_filter(&json!({
+            "amount": {"$in": ["123456789012.3456789", "3.50"]}
+        }))
+        .unwrap();
+        let Expr::Binary { right, .. } = coerce_filter_values(set, &types).unwrap() else {
+            panic!("expected typed set predicate")
+        };
+        let Expr::Value(Value::List(values)) = *right else {
+            panic!("expected typed set values")
+        };
+        assert_eq!(values.len(), 2);
+        assert_eq!(
+            values[0],
+            Value::Decimal(teaql_core::Decimal::from_str("123456789012.3456789").unwrap())
+        );
+        assert_eq!(
+            values[1],
+            Value::Decimal(teaql_core::Decimal::from_str("3.50").unwrap())
+        );
+        let Value::Decimal(scale) = &values[1] else {
+            panic!("expected Decimal")
+        };
+        assert_eq!(scale.scale(), 2);
+
+        let range = parse_json_filter(&json!({
+            "amount": {"$between": ["3.50", "123456789012.3456789"]}
+        }))
+        .unwrap();
+        let Expr::Between { lower, upper, .. } = coerce_filter_values(range, &types).unwrap()
+        else {
+            panic!("expected typed range predicate")
+        };
+        assert!(matches!(*lower, Expr::Value(Value::Decimal(_))));
+        assert!(matches!(*upper, Expr::Value(Value::Decimal(_))));
+    }
+
+    #[test]
+    fn typed_scalars_reject_ambiguous_or_malformed_input() {
+        for (data_type, value) in [
+            (DataType::Decimal, Value::F64(3.5)),
+            (DataType::Decimal, Value::Text("1.2.3".into())),
+            (DataType::I64, Value::Text("9223372036854775808".into())),
+            (DataType::I64, Value::F64(9007199254740992.0)),
+            (DataType::Date, Value::Text("2026-02-30".into())),
+            (DataType::Timestamp, Value::Text("tomorrow".into())),
+        ] {
+            assert!(coerce_typed_value(value, data_type).is_err());
+        }
+        assert_eq!(
+            coerce_typed_value(Value::Text("123.45".into()), DataType::Text).unwrap(),
+            Value::Text("123.45".into())
+        );
+        let missing_types = BTreeMap::new();
+        let predicate = parse_json_filter(&json!({"amount": {"$eq": "3.50"}})).unwrap();
+        assert!(
+            coerce_filter_values(predicate, &missing_types)
+                .unwrap_err()
+                .contains("Missing trusted scalar type")
+        );
+    }
 
     #[test]
     fn translates_generated_typescript_query_without_broadening() {
