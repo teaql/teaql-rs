@@ -2625,6 +2625,28 @@ mod tests {
             Some(&Value::Decimal(Decimal::from_str("3.50").unwrap()))
         );
 
+        let range = SelectQuery::new("DecimalFixture")
+            .project("amount")
+            .filter(Expr::between(
+                "amount",
+                Decimal::from_str("3.49").unwrap(),
+                Decimal::from_str("10").unwrap(),
+            ))
+            .order_asc("amount");
+        let range_rows = executor
+            .fetch_all_compact(&SqliteDialect.compile_select(&entity, &range).unwrap())
+            .unwrap();
+        assert_eq!(
+            range_rows
+                .iter()
+                .map(|row| row.get("amount").cloned().unwrap())
+                .collect::<Vec<_>>(),
+            ["3.50", "10"]
+                .into_iter()
+                .map(|text| Value::Decimal(Decimal::from_str(text).unwrap()))
+                .collect::<Vec<_>>()
+        );
+
         let query = SelectQuery::new("DecimalFixture")
             .project("amount")
             .order_asc("amount");
@@ -2901,6 +2923,64 @@ mod tests {
                 Decimal::from_str("123456789012.3456789").unwrap()
             ))
         );
+    }
+
+    #[test]
+    fn exact_decimal_grouping_combines_equal_values_with_different_scales() {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        let entity = EntityDescriptor::new("DecimalFacet")
+            .table_name("decimal_facet")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(
+                PropertyDescriptor::new("amount", DataType::Decimal)
+                    .numeric_precision(19)
+                    .numeric_scale(7)
+                    .not_null(),
+            );
+        executor.ensure_schema(&SqliteDialect, &[&entity]).unwrap();
+        executor
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO decimal_facet (id, amount) VALUES
+                   (1, '3.50'), (2, '3.5'), (3, '10')",
+            )
+            .unwrap();
+        let service = teaql_sql::SqlDataServiceExecutor::new(
+            SqliteDialect,
+            executor,
+            InMemoryMetadataStore::new().with_entity(entity),
+        );
+        let response = futures_executor::block_on(teaql_data_service::QueryExecutor::query(
+            &service,
+            teaql_data_service::QueryRequest {
+                query: SelectQuery::new("DecimalFacet")
+                    .group_by("amount")
+                    .count_field("id", "items")
+                    .order_asc("amount"),
+                trace_chain: Vec::new(),
+                intent: teaql_core::QueryIntent::new(
+                    "group numeric Decimal facet values",
+                    "verify equivalent scale values share one facet bucket",
+                )
+                .unwrap(),
+                capture_debug_query: false,
+                capture_execution_metadata: false,
+            },
+        ))
+        .unwrap();
+        assert_eq!(response.rows.len(), 2);
+        assert_eq!(
+            response.rows[0].get("amount"),
+            Some(&Value::Decimal(Decimal::from_str("3.50").unwrap()))
+        );
+        assert_eq!(response.rows[0].get("items"), Some(&Value::I64(2)));
+        assert_eq!(
+            response.rows[1].get("amount"),
+            Some(&Value::Decimal(Decimal::from_str("10").unwrap()))
+        );
+        assert_eq!(response.rows[1].get("items"), Some(&Value::I64(1)));
     }
 
     #[test]
