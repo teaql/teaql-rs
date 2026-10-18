@@ -26,6 +26,7 @@ struct Inner {
     connections: AtomicUsize,
     requests: AtomicUsize,
     responses: AtomicUsize,
+    pre_request_failures: Mutex<Vec<String>>,
     flaky: AtomicUsize,
     retry_post: AtomicUsize,
     traceparents: Mutex<Vec<String>>,
@@ -86,6 +87,10 @@ impl Drop for Fixture {
                 self.inner.connections.load(Ordering::SeqCst),
                 self.inner.requests.load(Ordering::SeqCst),
                 self.inner.responses.load(Ordering::SeqCst),
+            );
+            eprintln!(
+                "HTTP fixture pre-request failures: {:?}",
+                self.inner.pre_request_failures.lock().unwrap(),
             );
         }
     }
@@ -180,15 +185,38 @@ fn handle(mut stream: TcpStream, inner: &Inner) {
         .unwrap();
     let reader_stream = match stream.try_clone() {
         Ok(value) => value,
-        Err(_) => return,
+        Err(error) => {
+            inner
+                .pre_request_failures
+                .lock()
+                .unwrap()
+                .push(format!("clone: {:?}", error.kind()));
+            return;
+        }
     };
     let mut reader = BufReader::new(reader_stream);
     // The production client reuses connections. Keep the fixture's successful
     // connections alive and consume every request body before the next request.
     loop {
         let mut first = String::new();
-        if !matches!(reader.read_line(&mut first), Ok(n) if n > 0) {
-            return;
+        match reader.read_line(&mut first) {
+            Ok(0) => {
+                inner
+                    .pre_request_failures
+                    .lock()
+                    .unwrap()
+                    .push("eof".to_owned());
+                return;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                inner
+                    .pre_request_failures
+                    .lock()
+                    .unwrap()
+                    .push(format!("read: {:?}", error.kind()));
+                return;
+            }
         }
         inner.requests.fetch_add(1, Ordering::SeqCst);
         let path = first
