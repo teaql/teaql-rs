@@ -411,6 +411,42 @@ fn generated_values_to_wire_json(
     Ok(JsonValue::Object(output))
 }
 
+/// The opt-in exact Long wire profile uses decimal strings, but the mutation
+/// executor must receive an integer Value rather than a text Value. Convert
+/// only fields identified by trusted generated logical metadata; never infer
+/// a Long from a digit-shaped string or from a client-supplied field name.
+fn normalize_modeled_long_mutation_values(
+    payload: &mut JsonValue,
+    long_fields: &std::collections::BTreeSet<String>,
+) -> Result<(), String> {
+    let object = payload
+        .as_object_mut()
+        .ok_or_else(|| "Mutation payload must be an object".to_owned())?;
+    for field in long_fields {
+        let Some(value) = object.get_mut(field) else {
+            continue;
+        };
+        if value.is_null() {
+            continue;
+        }
+        let Some(text) = value.as_str() else {
+            return Err(format!(
+                "Modeled Long mutation value must be a decimal string: {field}"
+            ));
+        };
+        let parsed = text.parse::<i64>().map_err(|_| {
+            format!("Modeled Long mutation value is outside signed 64-bit range: {field}")
+        })?;
+        if parsed.to_string() != text {
+            return Err(format!(
+                "Modeled Long mutation value is not canonical decimal: {field}"
+            ));
+        }
+        *value = JsonValue::from(parsed);
+    }
+    Ok(())
+}
+
 fn governed_query_result_limit(query: &teaql_core::SelectQuery) -> u64 {
     query
         .slice
@@ -989,6 +1025,16 @@ where
         tfp_mutation
             .map_writable_fields(mappings)
             .map_err(TfpEndpointError::TranslationError)?;
+        if let Some(metadata) = trusted.wire_metadata.get(&tfp_mutation.entity) {
+            let writable_long_fields = metadata
+                .internal_long_fields(mappings)
+                .map_err(TfpEndpointError::TranslationError)?;
+            normalize_modeled_long_mutation_values(
+                &mut tfp_mutation.payload,
+                &writable_long_fields,
+            )
+            .map_err(TfpEndpointError::TranslationError)?;
+        }
         if tfp_mutation.payload.get(&trusted.tenant_field).is_some() {
             return Err(TfpEndpointError::TranslationError(
                 "Tenant field is server-owned and not allowed".into(),
@@ -1979,6 +2025,46 @@ mod tests {
             )
             .expect("order wire metadata"),
         );
+        context
+    }
+
+    fn trusted_with_exact_long_wire_metadata() -> TrustedQueryContext {
+        let mut context = trusted_with_generated_wire_metadata();
+        context
+            .field_mappings
+            .get_mut("CustomerOrder")
+            .expect("order read policy")
+            .insert("long_value".into(), "long_value".into());
+        context
+            .writable_field_mappings
+            .get_mut("CustomerOrder")
+            .expect("order write policy")
+            .insert("long_value".into(), "long_value".into());
+        let mut metadata = WireEntityMetadata::new(
+            BTreeMap::from([
+                ("id".into(), "id".into()),
+                ("order_number".into(), "orderNumber".into()),
+                ("status".into(), "status".into()),
+                ("long_value".into(), "longValue".into()),
+            ]),
+            BTreeMap::new(),
+        )
+        .expect("exact Long wire metadata");
+        metadata.canonical_types = BTreeMap::from([
+            ("id".into(), teaql_core::DataType::I64),
+            ("order_number".into(), teaql_core::DataType::Text),
+            ("status".into(), teaql_core::DataType::I64),
+            ("long_value".into(), teaql_core::DataType::I64),
+        ]);
+        metadata.canonical_logical_types = BTreeMap::from([
+            ("id".into(), "id".into()),
+            ("order_number".into(), "string".into()),
+            ("status".into(), "reference".into()),
+            ("long_value".into(), "long".into()),
+        ]);
+        context
+            .wire_metadata
+            .insert("CustomerOrder".into(), metadata);
         context
     }
 
@@ -3358,6 +3444,108 @@ mod tests {
             .expect("exact mutation values");
         assert_eq!(generated_wire["longValue"], i64::MAX.to_string());
         assert_eq!(generated_wire["integerValue"], 7);
+    }
+
+    #[tokio::test]
+    async fn modeled_long_mutation_input_is_exact_and_rejects_unsafe_encodings_before_execution() {
+        let mutations = Arc::new(RecordingMutationExecutor::new(1));
+        let endpoint = TfpEndpoint::new(Arc::new(StubExecutor), mutations.clone());
+        let policy = trusted_with_exact_long_wire_metadata();
+
+        for (index, value) in [i64::MAX, i64::MIN, 9_007_199_254_740_993]
+            .into_iter()
+            .enumerate()
+        {
+            let payload = if index == 1 {
+                json!({
+                    "entity":"CustomerOrder", "action":"Update", "id":42,
+                    "expectedVersion":3,
+                    "payload":{"longValue":value.to_string()},
+                    "comment":"update exact Long"
+                })
+            } else {
+                json!({
+                    "entity":"CustomerOrder", "action":"Create",
+                    "payload":{
+                        "longValue":value.to_string(),
+                        "orderNumber":"9007199254740993"
+                    },
+                    "comment":"create exact Long"
+                })
+            };
+            endpoint
+                .handle_mutation(&policy, payload)
+                .await
+                .expect("exact Long mutation");
+        }
+        {
+            let ordinary = mutations.ordinary.lock().expect("ordinary mutations");
+            let guarded = mutations.guarded.lock().expect("guarded mutations");
+            assert_eq!(ordinary.len(), 2);
+            assert_eq!(guarded.len(), 1);
+            for (request, expected) in ordinary.iter().zip([i64::MAX, 9_007_199_254_740_993]) {
+                let teaql_data_service::MutationCommand::Insert(insert) = &request.command else {
+                    panic!("expected insert");
+                };
+                assert_eq!(
+                    insert.values.get("long_value"),
+                    Some(&teaql_core::Value::I64(expected))
+                );
+                assert_eq!(
+                    insert.values.get("order_number"),
+                    Some(&teaql_core::Value::Text("9007199254740993".into()))
+                );
+            }
+            let teaql_data_service::MutationCommand::Update(update) = &guarded[0].mutation.command
+            else {
+                panic!("expected update");
+            };
+            assert_eq!(
+                update.values.get("long_value"),
+                Some(&teaql_core::Value::I64(i64::MIN))
+            );
+        }
+
+        let mut null_long = json!({"long_value": null, "order_number": "7"});
+        normalize_modeled_long_mutation_values(
+            &mut null_long,
+            &BTreeSet::from(["long_value".to_owned()]),
+        )
+        .expect("nullable Long remains null");
+        assert_eq!(null_long, json!({"long_value": null, "order_number": "7"}));
+
+        for invalid in [
+            json!(9_007_199_254_740_993_i64),
+            json!(7),
+            json!("9223372036854775808"),
+            json!("+7"),
+            json!("07"),
+            json!("-0"),
+            json!(" 7"),
+            json!(7.5),
+            json!(true),
+        ] {
+            let error = endpoint
+                .handle_mutation(
+                    &policy,
+                    json!({
+                        "entity":"CustomerOrder", "action":"Create",
+                        "payload":{"longValue":invalid},
+                        "comment":"reject unsafe Long"
+                    }),
+                )
+                .await
+                .expect_err("unsafe Long mutation must fail before execution");
+            assert!(matches!(error, TfpEndpointError::TranslationError(_)));
+        }
+        assert_eq!(
+            mutations.ordinary.lock().expect("ordinary mutations").len(),
+            2
+        );
+        assert_eq!(
+            mutations.guarded.lock().expect("guarded mutations").len(),
+            1
+        );
     }
 
     #[tokio::test]

@@ -84,8 +84,14 @@ fn trusted(entity: &EntityDescriptor) -> TrustedQueryContext {
         approved_purpose: "typed-scalar-query".into(),
         allowed_entities: BTreeSet::from(["ScalarOrder".into()]),
         field_mappings: BTreeMap::from([("ScalarOrder".into(), canonical)]),
-        writable_field_mappings: BTreeMap::new(),
-        allowed_actions: BTreeMap::new(),
+        writable_field_mappings: BTreeMap::from([(
+            "ScalarOrder".into(),
+            BTreeMap::from([("required_long".into(), "required_long".into())]),
+        )]),
+        allowed_actions: BTreeMap::from([(
+            "ScalarOrder".into(),
+            BTreeSet::from(["Update".into()]),
+        )]),
         wire_metadata,
         max_page_size: 10,
         max_offset: 100,
@@ -204,4 +210,34 @@ async fn tfp_scalar_strings_use_model_types_in_real_sqlite_query() {
             .expect_err("invalid scalar predicate");
         assert_eq!(error.code(), "TFP_INVALID_REQUEST");
     }
+
+    endpoint
+        .handle_mutation(
+            &trusted,
+            json!({
+                "entity": "ScalarOrder",
+                "action": "Update",
+                "id": 1,
+                "expectedVersion": 1,
+                "payload": {"requiredLong": i64::MAX.to_string()},
+                "comment": "write exact Long through the modeled mutation boundary"
+            }),
+        )
+        .await
+        .expect("real SQLite exact Long update");
+    let after = endpoint
+        .handle_query(
+            &trusted,
+            json!({
+                "entity": "ScalarOrder",
+                "filterCondition": {"id": {"$eq": 1}},
+                "selectItems": ["id", "requiredLong"],
+                "limitValue": 1,
+                "commentText": "reload the exact Long after mutation",
+                "purposeText": "verify signed 64-bit storage and wire readback"
+            }),
+        )
+        .await
+        .expect("read updated Long");
+    assert_eq!(after["data"][0]["requiredLong"], i64::MAX.to_string());
 }
