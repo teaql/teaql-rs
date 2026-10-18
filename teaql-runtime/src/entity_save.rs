@@ -565,7 +565,10 @@ mod save_relation_state_tests {
 
 #[cfg(test)]
 mod transactional_ledger_readback_tests {
-    use super::{DynGraphSaver, GraphSaverFor};
+    use super::{
+        DynGraphSaver, GraphSaverFor, save_audited_ledger_entity,
+        save_audited_ledger_entity_with_executor,
+    };
     use crate::{
         EntityKey, EntityRuntimeState, GraphNode, InMemoryMetadataStore, MutationDecision,
         MutationPlan, MutationPolicy, MutationPolicyIdentity, MutationPolicySource, RawAuditEvent,
@@ -573,7 +576,10 @@ mod transactional_ledger_readback_tests {
     };
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
-    use teaql_core::{DataType, EntityDescriptor, PropertyDescriptor, Value};
+    use teaql_core::{
+        CompactRow, DataType, Entity, EntityDescriptor, EntityError, MutationValues,
+        PropertyDescriptor, TeaqlEntity, Value,
+    };
     use teaql_data_service::{
         DataServiceCapabilities, DataServiceExecutor, ExecutionMetadata, MutationExecutor,
         MutationRequest, MutationResult, QueryExecutor, QueryRequest, QueryResult, Transaction,
@@ -922,6 +928,175 @@ mod transactional_ledger_readback_tests {
     }
 
     struct FailingAuditSink;
+
+    struct RejectAfterCommitTask {
+        root: EntityRuntimeState,
+        comment: Option<String>,
+    }
+
+    impl TeaqlEntity for RejectAfterCommitTask {
+        const ENTITY_NAME: &'static str = "Task";
+
+        fn entity_descriptor() -> EntityDescriptor {
+            EntityDescriptor::new("Task")
+                .property(PropertyDescriptor::new("id", DataType::I64).id())
+                .property(PropertyDescriptor::new("version", DataType::I64).version())
+                .property(PropertyDescriptor::new("name", DataType::Text))
+        }
+    }
+
+    impl Entity for RejectAfterCommitTask {
+        fn from_compact_row(_row: CompactRow) -> Result<Self, EntityError> {
+            Err(EntityError::new(
+                "Task",
+                "synthetic entity hydration rejected",
+            ))
+        }
+
+        fn into_values(self) -> MutationValues {
+            BTreeMap::from([
+                ("id".to_owned(), Value::I64(1)),
+                ("version".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::Text("before".to_owned())),
+            ])
+            .into()
+        }
+
+        fn get_comment(&self) -> Option<String> {
+            self.comment.clone()
+        }
+
+        fn set_comment(&mut self, comment: String) {
+            self.comment = Some(comment);
+        }
+    }
+
+    impl crate::LedgerEntity for RejectAfterCommitTask {
+        fn entity_runtime_state(&self) -> Option<EntityRuntimeState> {
+            Some(self.root.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn committed_save_reports_reconciliation_failure_as_non_retryable() {
+        let state = Arc::new(Mutex::new(State {
+            row: BTreeMap::from([
+                ("id".to_owned(), Value::I64(1)),
+                ("version".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::Text("before".to_owned())),
+            ]),
+            ..Default::default()
+        }));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut context = UserContext::default()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(RejectAfterCommitTask::entity_descriptor()),
+            )
+            .with_event_sink(CaptureEvents(events.clone()));
+        context.register_executor(Ambient(state.clone()));
+        let root = EntityRuntimeState::default();
+        let key = EntityKey::new_static("Task", 1_i64);
+        root.set_original_version(key.clone(), 1);
+        root.set(key, "name", Value::Text("updated".to_owned()));
+        let entity = RejectAfterCommitTask {
+            root: root.clone(),
+            comment: None,
+        };
+
+        let error = match save_audited_ledger_entity(
+            entity.audit_as("verify committed hydration failure"),
+            &context,
+        )
+        .await
+        {
+            Ok(_) => panic!("synthetic hydration must reject"),
+            Err(error) => error,
+        };
+        assert!(state.lock().unwrap().calls.contains(&"commit"));
+        assert!(root.current_change_set().changes().is_empty());
+        assert_eq!(events.lock().unwrap().len(), 1);
+        assert!(
+            error
+                .to_string()
+                .contains("COMMITTED_STATE_RELOAD_REQUIRED")
+        );
+        assert!(matches!(error, RuntimeError::CommittedStateReconciliation));
+    }
+
+    #[tokio::test]
+    async fn outer_transaction_hydration_failure_does_not_claim_commit() {
+        let state = Arc::new(Mutex::new(State {
+            row: BTreeMap::from([
+                ("id".to_owned(), Value::I64(1)),
+                ("version".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::Text("before".to_owned())),
+            ]),
+            ..Default::default()
+        }));
+        let context = UserContext::default().with_metadata(
+            InMemoryMetadataStore::new().with_entity(RejectAfterCommitTask::entity_descriptor()),
+        );
+        let root = EntityRuntimeState::default();
+        let key = EntityKey::new_static("Task", 1_i64);
+        root.set_original_version(key.clone(), 1);
+        root.set(key, "name", Value::Text("updated".to_owned()));
+        let entity = RejectAfterCommitTask {
+            root: root.clone(),
+            comment: None,
+        };
+
+        let error = match save_audited_ledger_entity_with_executor(
+            entity.audit_as("verify caller-owned transaction boundary"),
+            &context,
+            &Tx(state.clone()),
+        )
+        .await
+        {
+            Ok(_) => panic!("synthetic hydration must reject before owner commit"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, RuntimeError::Graph(_)));
+        assert!(!state.lock().unwrap().calls.contains(&"commit"));
+        assert!(!root.current_change_set().changes().is_empty());
+    }
+
+    #[tokio::test]
+    async fn legacy_graph_save_hydration_failure_reports_committed_outcome() {
+        let state = Arc::new(Mutex::new(State {
+            row: BTreeMap::from([
+                ("id".to_owned(), Value::I64(1)),
+                ("version".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::Text("before".to_owned())),
+            ]),
+            ..Default::default()
+        }));
+        let mut context = UserContext::default().with_metadata(
+            InMemoryMetadataStore::new().with_entity(RejectAfterCommitTask::entity_descriptor()),
+        );
+        context.register_executor(Ambient(state.clone()));
+        let entity = RejectAfterCommitTask {
+            root: EntityRuntimeState::default(),
+            comment: None,
+        };
+
+        let error = match crate::AuditedSaveExt::save(
+            entity.audit_as("verify legacy committed hydration failure"),
+            &context,
+        )
+        .await
+        {
+            Ok(_) => panic!("synthetic hydration must reject after graph commit"),
+            Err(error) => error,
+        };
+        assert!(state.lock().unwrap().calls.contains(&"commit"));
+        assert!(
+            error
+                .to_string()
+                .contains("COMMITTED_STATE_RELOAD_REQUIRED")
+        );
+        assert!(matches!(error, RuntimeError::CommittedStateReconciliation));
+    }
 
     impl RawAuditEventSink for FailingAuditSink {
         fn on_event(&self, _: &UserContext, _: &RawAuditEvent) -> Result<(), RuntimeError> {
@@ -2009,7 +2184,7 @@ where
                     })?;
                 let saved = saver.save_graph_dyn(context, node).await?;
                 T::from_compact_row(teaql_core::CompactRow::from_map(saved.values.into()))
-                    .map_err(|e| RuntimeError::Graph(e.to_string()))
+                    .map_err(|_| RuntimeError::CommittedStateReconciliation)
             }),
         )
     }
@@ -2278,7 +2453,8 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
                 &root,
                 preserve_relations,
                 &original_relation_fields,
-            );
+            )
+            .map_err(|_| RuntimeError::CommittedStateReconciliation);
         }
         if context.committed_event_source().is_some() {
             // The ledger has no mutation to commit. Preserve the loaded
@@ -2298,6 +2474,7 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
     preflight_graph(context, &mut node, &ObjectLocation::root(), None)?;
     let saved = saver.save_graph_dyn(context, node).await?;
     decode_saved_ledger_entity::<T>(saved, &crate::EntityRuntimeState::default(), false, &[])
+        .map_err(|_| RuntimeError::CommittedStateReconciliation)
 }
 
 #[cfg(test)]
