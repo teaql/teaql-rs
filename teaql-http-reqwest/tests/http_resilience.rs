@@ -23,7 +23,9 @@ struct Fixture {
 #[derive(Default)]
 struct Inner {
     closed: AtomicBool,
+    connections: AtomicUsize,
     requests: AtomicUsize,
+    responses: AtomicUsize,
     flaky: AtomicUsize,
     retry_post: AtomicUsize,
     traceparents: Mutex<Vec<String>>,
@@ -42,6 +44,7 @@ impl Fixture {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         let inner = copy.clone();
+                        inner.connections.fetch_add(1, Ordering::SeqCst);
                         thread::spawn(move || handle(stream, &inner));
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -76,6 +79,14 @@ impl Drop for Fixture {
         self.inner.closed.store(true, Ordering::SeqCst);
         if let Some(server) = self.server.take() {
             server.join().unwrap();
+        }
+        if thread::panicking() {
+            eprintln!(
+                "HTTP fixture counters: connections={} requests={} responses={}",
+                self.inner.connections.load(Ordering::SeqCst),
+                self.inner.requests.load(Ordering::SeqCst),
+                self.inner.responses.load(Ordering::SeqCst),
+            );
         }
     }
 }
@@ -272,6 +283,7 @@ fn handle(mut stream: TcpStream, inner: &Inner) {
         if stream.flush().is_err() {
             return;
         }
+        inner.responses.fetch_add(1, Ordering::SeqCst);
     }
 }
 
