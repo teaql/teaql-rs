@@ -9,7 +9,7 @@ use teaql_runtime::InMemoryMetadataStore;
 use teaql_sql::{SqlDataServiceExecutor, SqlDialect};
 use teaql_tfp_endpoint::{
     TfpEndpoint, TrustedEntityVisibility, TrustedQueryContext,
-    wire_metadata_from_generated_with_model,
+    wire_metadata_from_generated_with_model_and_logical_types,
 };
 
 #[derive(Clone)]
@@ -33,6 +33,7 @@ fn scalar_order() -> EntityDescriptor {
         .property(PropertyDescriptor::new("commerce_platform_id", DataType::I64).not_null())
         .property(PropertyDescriptor::new("amount", DataType::Decimal).not_null())
         .property(PropertyDescriptor::new("required_long", DataType::I64).not_null())
+        .property(PropertyDescriptor::new("required_integer", DataType::I64).not_null())
         .property(PropertyDescriptor::new("order_number", DataType::Text).not_null())
 }
 
@@ -41,20 +42,32 @@ fn trusted(entity: &EntityDescriptor) -> TrustedQueryContext {
         ("id".into(), "id".into()),
         ("amount".into(), "amount".into()),
         ("required_long".into(), "required_long".into()),
+        ("required_integer".into(), "required_integer".into()),
         ("order_number".into(), "order_number".into()),
     ]);
     let model = InMemoryMetadataStore::new().with_entity(entity.clone());
-    let wire_metadata = wire_metadata_from_generated_with_model(
+    let wire_metadata = wire_metadata_from_generated_with_model_and_logical_types(
         BTreeMap::from([(
             "ScalarOrder".into(),
             BTreeMap::from([
                 ("id".into(), "id".into()),
                 ("amount".into(), "amount".into()),
                 ("required_long".into(), "requiredLong".into()),
+                ("required_integer".into(), "requiredInteger".into()),
                 ("order_number".into(), "orderNumber".into()),
             ]),
         )]),
         BTreeMap::new(),
+        BTreeMap::from([(
+            "ScalarOrder".into(),
+            BTreeMap::from([
+                ("id".into(), "id".into()),
+                ("amount".into(), "decimal".into()),
+                ("required_long".into(), "long".into()),
+                ("required_integer".into(), "integer".into()),
+                ("order_number".into(), "string".into()),
+            ]),
+        )]),
         &model,
     )
     .expect("generated model field types");
@@ -96,6 +109,7 @@ async fn tfp_scalar_strings_use_model_types_in_real_sqlite_query() {
                 commerce_platform_id INTEGER NOT NULL, \
                 amount TEXT NOT NULL, \
                 required_long INTEGER NOT NULL, \
+                required_integer INTEGER NOT NULL, \
                 order_number TEXT NOT NULL\
             )",
         )
@@ -107,6 +121,7 @@ async fn tfp_scalar_strings_use_model_types_in_real_sqlite_query() {
         .value("commerce_platform_id", 1_i64)
         .value("amount", teaql_core::Value::Decimal(amount))
         .value("required_long", 9007199254740993_i64)
+        .value("required_integer", 7_i64)
         .value("order_number", "123.45");
     transport
         .execute(
@@ -129,7 +144,19 @@ async fn tfp_scalar_strings_use_model_types_in_real_sqlite_query() {
             {"requiredLong": {"$eq": "9007199254740993"}},
             {"orderNumber": {"$eq": "123.45"}}
         ]},
-        "selectItems": ["id", "amount", "requiredLong", "orderNumber"],
+        "selectItems": ["id", "amount", "requiredLong", "requiredInteger", "orderNumber"],
+        "facets": [{
+            "facetName": "matchingOrders",
+            "relationName": "id",
+            "query": {
+                "entity": "ScalarOrder",
+                "selectItems": ["id", "requiredLong", "requiredInteger"],
+                "aggregateItems": [{"function": "Count", "field": "id", "alias": "matchingCount"}],
+                "limitValue": 10,
+                "commentText": "load matching scalar order labels",
+                "purposeText": "verify exact nested facet values"
+            }
+        }],
         "limitValue": 1,
         "commentText": "load one scalar order",
         "purposeText": "verify model-typed TFP predicates against SQLite"
@@ -142,8 +169,20 @@ async fn tfp_scalar_strings_use_model_types_in_real_sqlite_query() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["id"], 1);
     assert_eq!(rows[0]["amount"], "123456789012.3456789");
-    assert_eq!(rows[0]["requiredLong"], 9007199254740993_i64);
+    assert_eq!(rows[0]["requiredLong"], "9007199254740993");
+    assert_eq!(rows[0]["requiredInteger"], 7);
     assert_eq!(rows[0]["orderNumber"], "123.45");
+    assert_eq!(
+        result["facets"]["matchingOrders"][0]["requiredLong"],
+        "9007199254740993"
+    );
+    assert_eq!(result["facets"]["matchingOrders"][0]["requiredInteger"], 7);
+    assert_eq!(result["facets"]["matchingOrders"][0]["matchingCount"], 1);
+    assert!(
+        result
+            .to_string()
+            .contains("\"requiredLong\":\"9007199254740993\"")
+    );
 
     for invalid in [
         json!({"amount": {"$eq": 3.5}}),
