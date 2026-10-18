@@ -3043,6 +3043,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
+ "log",
  "once_cell",
  "rustls-pki-types",
  "rustls-webpki",
@@ -3618,6 +3619,7 @@ dependencies = [
  "futures-util",
  "rusqlite",
  "serde_json",
+ "sha2 0.10.9",
  "teaql-core",
  "teaql-data-service",
  "teaql-http-reqwest",
@@ -3625,7 +3627,9 @@ dependencies = [
  "teaql-provider-sqlite",
  "teaql-runtime",
  "teaql-sql",
+ "tempfile",
  "tokio",
+ "tokio-rustls",
  "url",
 ]
 
@@ -3635,6 +3639,7 @@ version = "5.0.7"
 dependencies = [
  "async-trait",
  "reqwest 0.13.4",
+ "rustls",
  "teaql-runtime",
  "tokio",
  "url",
@@ -3761,6 +3766,7 @@ dependencies = [
  "futures-util",
  "hkdf",
  "hmac 0.12.1",
+ "libc",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-proto",
