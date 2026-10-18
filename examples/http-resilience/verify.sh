@@ -2,6 +2,13 @@
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo"
+# The fixture is loopback-only. Preserve existing proxy exclusions while
+# preventing a hosted runner's system proxy from intercepting its requests.
+export NO_PROXY="${NO_PROXY:+$NO_PROXY,}127.0.0.1,localhost"
+export no_proxy="$NO_PROXY"
+if [[ -n "${HTTP_PROXY:-}${http_proxy:-}" ]]; then
+  printf 'HTTP fixture: system proxy present; loopback bypass configured\n'
+fi
 cargo test --quiet -p teaql-http-reqwest
 safe_diagnostic() {
   sed -E 's/PRIVATE_(QUERY|HEADER|BODY)[_[:alnum:]]*/[REDACTED]/g'
