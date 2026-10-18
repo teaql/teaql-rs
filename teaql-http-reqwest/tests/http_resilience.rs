@@ -198,24 +198,34 @@ fn handle(mut stream: TcpStream, inner: &Inner) {
     // The production client reuses connections. Keep the fixture's successful
     // connections alive and consume every request body before the next request.
     loop {
+        if inner.closed.load(Ordering::SeqCst) {
+            return;
+        }
         let mut first = String::new();
-        match reader.read_line(&mut first) {
-            Ok(0) => {
-                inner
-                    .pre_request_failures
-                    .lock()
-                    .unwrap()
-                    .push("eof".to_owned());
-                return;
-            }
-            Ok(_) => {}
-            Err(error) => {
-                inner
-                    .pre_request_failures
-                    .lock()
-                    .unwrap()
-                    .push(format!("read: {:?}", error.kind()));
-                return;
+        loop {
+            match reader.read_line(&mut first) {
+                Ok(0) => {
+                    inner
+                        .pre_request_failures
+                        .lock()
+                        .unwrap()
+                        .push("eof".to_owned());
+                    return;
+                }
+                Ok(_) => break,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) && !inner.closed.load(Ordering::SeqCst) => {}
+                Err(error) => {
+                    inner
+                        .pre_request_failures
+                        .lock()
+                        .unwrap()
+                        .push(format!("read: {:?}", error.kind()));
+                    return;
+                }
             }
         }
         inner.requests.fetch_add(1, Ordering::SeqCst);
@@ -225,10 +235,21 @@ fn handle(mut stream: TcpStream, inner: &Inner) {
             .unwrap_or_default()
             .to_owned();
         let mut content_length = 0;
+        let mut line = String::new();
         loop {
-            let mut line = String::new();
-            if reader.read_line(&mut line).is_err() || line == "\r\n" || line.is_empty() {
-                break;
+            match reader.read_line(&mut line) {
+                Ok(0) => return,
+                Ok(_) if line == "\r\n" => break,
+                Ok(_) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) && !inner.closed.load(Ordering::SeqCst) =>
+                {
+                    continue;
+                }
+                Err(_) => return,
             }
             if line.to_ascii_lowercase().starts_with("traceparent:") {
                 inner
@@ -240,6 +261,7 @@ fn handle(mut stream: TcpStream, inner: &Inner) {
             if line.to_ascii_lowercase().starts_with("content-length:") {
                 content_length = line[15..].trim().parse::<usize>().unwrap();
             }
+            line.clear();
         }
         if path.contains("/close") {
             return;
