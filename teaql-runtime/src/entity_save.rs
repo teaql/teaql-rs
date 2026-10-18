@@ -925,7 +925,7 @@ mod transactional_ledger_readback_tests {
 
     impl RawAuditEventSink for FailingAuditSink {
         fn on_event(&self, _: &UserContext, _: &RawAuditEvent) -> Result<(), RuntimeError> {
-            Err(RuntimeError::Event("simulated sink failure".to_owned()))
+            Err(RuntimeError::Event("P1-AUDIT-SECRET-CANARY".to_owned()))
         }
     }
 
@@ -960,8 +960,13 @@ mod transactional_ledger_readback_tests {
             .save_ledger_dyn(&context, node, root.clone())
             .await
             .unwrap_err();
-        assert!(matches!(error, RuntimeError::AuditAfterCommit { .. }));
+        assert!(matches!(
+            error,
+            RuntimeError::AuditAfterCommit { failures: 1 }
+        ));
         assert!(error.to_string().contains("AUDIT_DELIVERY_AFTER_COMMIT"));
+        assert!(!error.to_string().contains("P1-AUDIT-SECRET-CANARY"));
+        assert!(!format!("{error:?}").contains("P1-AUDIT-SECRET-CANARY"));
         assert!(state.lock().unwrap().calls.contains(&"commit"));
         assert!(!state.lock().unwrap().calls.contains(&"rollback"));
         assert!(root.current_change_set().changes().is_empty());

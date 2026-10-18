@@ -9,7 +9,8 @@ pub enum RuntimeError {
     RequestIntent(teaql_core::RequestIntentError),
     /// The mutation is committed; callers must not blindly retry the write.
     AuditAfterCommit {
-        source: Box<RuntimeError>,
+        /// Number of failed deliveries; the sink error itself may contain secrets.
+        failures: usize,
     },
     MissingEntity(String),
     SqlCompile(SqlCompileError),
