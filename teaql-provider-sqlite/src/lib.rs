@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, TimeZone};
@@ -292,6 +293,7 @@ impl From<SqlCompileError> for MutationExecutorError {
 #[derive(Clone)]
 pub struct SqliteMutationExecutor {
     connection: Arc<Mutex<Connection>>,
+    functions_registered: Arc<AtomicBool>,
     column_layout_cache: Arc<Mutex<HashMap<String, Arc<ColumnLayout>>>>,
     transaction_lease: Arc<futures_util::lock::Mutex<()>>,
     storage_instance_id: u64,
@@ -310,6 +312,7 @@ impl SqliteMutationExecutor {
         }
         Self {
             connection,
+            functions_registered: Arc::new(AtomicBool::new(false)),
             column_layout_cache: Arc::new(Mutex::new(HashMap::new())),
             transaction_lease: Arc::new(futures_util::lock::Mutex::new(())),
             storage_instance_id: NEXT_STORAGE_INSTANCE
@@ -337,8 +340,6 @@ impl SqliteMutationExecutor {
         entities: &[&EntityDescriptor],
     ) -> Result<(), MutationExecutorError> {
         let connection = self.lock()?;
-        Self::ensure_soundex_function(&connection)?;
-        decimal_functions::register(&connection)?;
         connection.pragma_update(None, "foreign_keys", true)?;
         connection.execute("BEGIN IMMEDIATE", [])?;
         let result = Self::ensure_schema_with_connection(&connection, dialect, entities);
@@ -704,9 +705,19 @@ impl SqliteMutationExecutor {
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, Connection>, MutationExecutorError> {
-        self.connection
+        let connection = self
+            .connection
             .lock()
-            .map_err(|err| MutationExecutorError::Lock(err.to_string()))
+            .map_err(|err| MutationExecutorError::Lock(err.to_string()))?;
+        // A new Context can attach to an existing database without calling
+        // ensure_schema. Install connection-local SQL functions before its
+        // first query or write; clones share this one-time flag and mutex.
+        if !self.functions_registered.load(Ordering::Acquire) {
+            Self::ensure_soundex_function(&connection)?;
+            decimal_functions::register(&connection)?;
+            self.functions_registered.store(true, Ordering::Release);
+        }
+        Ok(connection)
     }
 }
 
@@ -1282,8 +1293,6 @@ pub(crate) fn ensure_sqlite_physical_schema_for(
 
     let entities = context.all_entities();
     let connection = executor.lock()?;
-    SqliteMutationExecutor::ensure_soundex_function(&connection)?;
-    decimal_functions::register(&connection)?;
     connection.pragma_update(None, "foreign_keys", true)?;
     connection.execute("BEGIN IMMEDIATE", [])?;
     let result = (|| -> Result<(), MutationExecutorError> {
@@ -2797,7 +2806,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_decimal_schema_reopens_with_connection_local_functions() {
+    fn exact_decimal_reopened_connection_registers_functions_before_first_write() {
         let database = tempfile::NamedTempFile::new().unwrap();
         let entity = EntityDescriptor::new("DecimalFixture")
             .table_name("decimal_fixture")
@@ -2824,16 +2833,25 @@ mod tests {
 
         let reopened =
             SqliteMutationExecutor::from_connection(Connection::open(database.path()).unwrap());
-        reopened.ensure_schema(&SqliteDialect, &[&entity]).unwrap();
+        // A new UserContext may reuse an existing schema without calling
+        // ensure_schema. The first write must still have the column CHECK UDF.
+        reopened
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE decimal_fixture SET amount = '3.75' WHERE id = 1",
+                [],
+            )
+            .unwrap();
         let connection = reopened.lock().unwrap();
         let matched: String = connection
             .query_row(
-                "SELECT amount FROM decimal_fixture WHERE amount > '3.49'",
+                "SELECT amount FROM decimal_fixture WHERE amount > '3.74'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(matched, "3.50");
+        assert_eq!(matched, "3.75");
         let total: String = connection
             .query_row(
                 "SELECT teaql_decimal_sum(amount) FROM decimal_fixture",
@@ -2841,7 +2859,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(total, "3.50");
+        assert_eq!(total, "3.75");
     }
 
     #[test]
