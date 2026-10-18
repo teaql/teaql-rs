@@ -64,7 +64,7 @@ if [[ ! -f "$example_dir/target/generated/lib/Cargo.toml" ]]; then
 fi
 run_dir="$(mktemp -d -t teaql-generated-load-state.XXXXXXXX)"
 printf 'Evidence retained at %s\n' "$run_dir"
-cargo metadata --manifest-path "$example_dir/Cargo.toml" --format-version 1 >"$run_dir/dependencies.json"
+cargo metadata --locked --manifest-path "$example_dir/Cargo.toml" --format-version 1 >"$run_dir/dependencies.json"
 jq -e --arg root "$runtime_dir/" '
   [.packages[] | select(.name | startswith("teaql-"))] |
   length > 0 and all(.[]; .source == null and (.manifest_path | startswith($root)))
@@ -74,7 +74,7 @@ rg --files --hidden --no-ignore "$example_dir/target/generated/lib/src" -0 |
 export TEAQL_LOAD_STATE_DATABASE="$run_dir/school.sqlite"
 for round in first second; do
   export TEAQL_LOAD_STATE_ROUND="$round"
-  cargo test --manifest-path "$example_dir/Cargo.toml" "${test_targets[@]}" -- --nocapture \
+  cargo test --locked --manifest-path "$example_dir/Cargo.toml" "${test_targets[@]}" -- --nocapture \
     >"$run_dir/$round.log" 2>&1 || {
       tail -80 "$run_dir/$round.log" >&2
       exit 1
