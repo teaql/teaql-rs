@@ -292,6 +292,26 @@ impl SqliteTransaction {
     where
         F: FnOnce(u64) -> Result<String, CommittedEventError>,
     {
+        let result = self.append_committed_event_inner(
+            source_runtime_id,
+            change_set_id,
+            model_hash,
+            build_payload,
+        );
+        self.mark_failed_operation(&result);
+        result
+    }
+
+    fn append_committed_event_inner<F>(
+        &self,
+        source_runtime_id: &str,
+        change_set_id: &str,
+        model_hash: &str,
+        build_payload: F,
+    ) -> Result<OutboxRecord, CommittedEventError>
+    where
+        F: FnOnce(u64) -> Result<String, CommittedEventError>,
+    {
         if !self.active
             || source_runtime_id.is_empty()
             || change_set_id.is_empty()
@@ -2264,7 +2284,7 @@ mod tests {
             assert_eq!(status, "SUBMITTED");
         });
     }
-    use teaql_sql::{SqlTransaction, SqlTransactionTransport};
+    use teaql_sql::{CompiledQuery, SqlTransaction, SqlTransactionTransport, SqlTransport};
 
     fn payload(source: &str, sequence: u64, change_set_id: &str, status: &str) -> String {
         let mutations = if status == "DRAFT" {
@@ -2378,6 +2398,129 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[tokio::test]
+    async fn caught_append_failure_cannot_commit_earlier_business_write() {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        executor.ensure_committed_event_schema().unwrap();
+        executor
+            .lock()
+            .unwrap()
+            .execute_batch("CREATE TABLE business_order (id INTEGER PRIMARY KEY)")
+            .unwrap();
+        let transaction = executor.begin_sql().await.unwrap();
+        transaction
+            .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
+                sql: "INSERT INTO business_order (id) VALUES (1)".into(),
+                params: vec![],
+                comment: None,
+            })
+            .await
+            .unwrap();
+        let invalid_append = CommittedSetAppend {
+            source_runtime_id: "source-a".into(),
+            change_set_id: "change-a".into(),
+            model_hash: MODEL_HASH.into(),
+            payload_json: r#"{"source_sequence":"99"}"#.into(),
+        };
+        assert!(
+            transaction
+                .append_committed_set_sql(&invalid_append)
+                .await
+                .is_err()
+        );
+        assert!(matches!(
+            transaction.commit_sql().await,
+            Err(MutationExecutorError::RollbackOnly)
+        ));
+        let count: i64 = executor
+            .lock()
+            .unwrap()
+            .query_row("SELECT count(*) FROM business_order", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn caught_direct_append_builder_failure_cannot_commit_earlier_business_write() {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        executor.ensure_committed_event_schema().unwrap();
+        executor
+            .lock()
+            .unwrap()
+            .execute_batch("CREATE TABLE business_order (id INTEGER PRIMARY KEY)")
+            .unwrap();
+        let transaction = executor.begin_sql().await.unwrap();
+        transaction
+            .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
+                sql: "INSERT INTO business_order (id) VALUES (1)".into(),
+                params: vec![],
+                comment: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            transaction
+                .append_committed_event("source-a", "change-a", MODEL_HASH, |_| {
+                    Err(CommittedEventError::InvalidEnvelope("builder failed"))
+                })
+                .is_err()
+        );
+        assert!(matches!(
+            transaction.commit_sql().await,
+            Err(MutationExecutorError::RollbackOnly)
+        ));
+        let count: i64 = executor
+            .lock()
+            .unwrap()
+            .query_row("SELECT count(*) FROM business_order", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn caught_sql_failure_cannot_commit_earlier_business_write() {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        executor
+            .lock()
+            .unwrap()
+            .execute_batch("CREATE TABLE business_order (id INTEGER PRIMARY KEY)")
+            .unwrap();
+        let transaction = executor.begin_sql().await.unwrap();
+        let insert = CompiledQuery {
+            log_context: Default::default(),
+            sql: "INSERT INTO business_order (id) VALUES (1)".into(),
+            params: vec![],
+            comment: None,
+        };
+        transaction.execute_sql(&insert).await.unwrap();
+        assert!(transaction.execute_sql(&insert).await.is_err());
+        assert!(matches!(
+            transaction.commit_sql().await,
+            Err(MutationExecutorError::RollbackOnly)
+        ));
+        let count: i64 = executor
+            .lock()
+            .unwrap()
+            .query_row("SELECT count(*) FROM business_order", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+
+        let next = executor.begin_sql().await.unwrap();
+        next.execute_sql(&insert).await.unwrap();
+        next.commit_sql().await.unwrap();
+        let count: i64 = executor
+            .lock()
+            .unwrap()
+            .query_row("SELECT count(*) FROM business_order", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[tokio::test]

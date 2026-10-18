@@ -181,6 +181,7 @@ fn compile_sqlite_create_table(
 pub enum MutationExecutorError {
     Sqlite(rusqlite::Error),
     SqlCompile(SqlCompileError),
+    RollbackOnly,
     UnsupportedValue(&'static str),
     UnsupportedColumnType(String),
     Bind(String),
@@ -192,6 +193,10 @@ impl std::fmt::Display for MutationExecutorError {
         match self {
             Self::Sqlite(err) => err.fmt(f),
             Self::SqlCompile(err) => err.fmt(f),
+            Self::RollbackOnly => write!(
+                f,
+                "SQLite transaction is rollback-only after a failed operation"
+            ),
             Self::UnsupportedValue(kind) => {
                 write!(
                     f,

@@ -1,5 +1,6 @@
 //! Operation-owned connection lease, not a Context/global transaction flag (#240).
 use super::{CompactRow, CompiledQuery, MutationExecutorError, SqliteMutationExecutor, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 use teaql_sql::{SqlTransaction, SqlTransactionTransport, SqlTransport, StreamingSqlTransport};
 
 /// One exclusive transaction on the provider's shared connection. It cannot be
@@ -9,6 +10,7 @@ pub struct SqliteTransaction {
     pub(super) executor: SqliteMutationExecutor,
     _lease: futures_util::lock::OwnedMutexGuard<()>,
     pub(super) active: bool,
+    rollback_only: AtomicBool,
 }
 
 impl SqlTransactionTransport for SqliteMutationExecutor {
@@ -24,6 +26,7 @@ impl SqlTransactionTransport for SqliteMutationExecutor {
             executor: self.clone(),
             _lease: lease,
             active: true,
+            rollback_only: AtomicBool::new(false),
         })
     }
 }
@@ -41,7 +44,9 @@ impl SqlTransport for SqliteTransaction {
         &self,
         query: &CompiledQuery,
     ) -> Result<Vec<CompactRow>, Self::Error> {
-        self.executor.fetch_all_compact(query)
+        let result = self.executor.fetch_all_compact(query);
+        self.mark_failed_operation(&result);
+        result
     }
 
     async fn fetch_repeated_compact_sql(
@@ -50,12 +55,17 @@ impl SqlTransport for SqliteTransaction {
         param_index: usize,
         values: &[Value],
     ) -> Result<Vec<CompactRow>, Self::Error> {
-        self.executor
-            .fetch_repeated_compact_unleased(template, param_index, values)
+        let result = self
+            .executor
+            .fetch_repeated_compact_unleased(template, param_index, values);
+        self.mark_failed_operation(&result);
+        result
     }
 
     async fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
-        self.executor.execute(query)
+        let result = self.executor.execute(query);
+        self.mark_failed_operation(&result);
+        result
     }
 }
 
@@ -76,37 +86,46 @@ impl SqlTransaction for SqliteTransaction {
         &self,
         append: &teaql_data_service::CommittedSetAppend,
     ) -> Result<bool, Self::Error> {
-        let mut payload: serde_json::Value = serde_json::from_str(&append.payload_json)
-            .map_err(|_| MutationExecutorError::Bind("invalid committed-event JSON".into()))?;
-        let fields = payload.as_object().ok_or_else(|| {
-            MutationExecutorError::Bind("committed-event payload must be an object".into())
-        })?;
-        if fields.contains_key("source_sequence") {
-            return Err(MutationExecutorError::Bind(
-                "committed-event sequence must be allocated by the transaction".into(),
-            ));
-        }
-        SqliteTransaction::append_committed_event(
-            self,
-            &append.source_runtime_id,
-            &append.change_set_id,
-            &append.model_hash,
-            |sequence| {
-                payload
-                    .as_object_mut()
-                    .expect("validated JSON object")
-                    .insert(
-                        "source_sequence".into(),
-                        serde_json::Value::String(sequence.to_string()),
-                    );
-                serde_json::to_string(&payload).map_err(Into::into)
-            },
-        )
-        .map_err(|_| MutationExecutorError::Bind("committed-event append failed".into()))?;
-        Ok(true)
+        let result: Result<bool, MutationExecutorError> = (|| {
+            let mut payload: serde_json::Value = serde_json::from_str(&append.payload_json)
+                .map_err(|_| MutationExecutorError::Bind("invalid committed-event JSON".into()))?;
+            let fields = payload.as_object().ok_or_else(|| {
+                MutationExecutorError::Bind("committed-event payload must be an object".into())
+            })?;
+            if fields.contains_key("source_sequence") {
+                return Err(MutationExecutorError::Bind(
+                    "committed-event sequence must be allocated by the transaction".into(),
+                ));
+            }
+            SqliteTransaction::append_committed_event(
+                self,
+                &append.source_runtime_id,
+                &append.change_set_id,
+                &append.model_hash,
+                |sequence| {
+                    payload
+                        .as_object_mut()
+                        .expect("validated JSON object")
+                        .insert(
+                            "source_sequence".into(),
+                            serde_json::Value::String(sequence.to_string()),
+                        );
+                    serde_json::to_string(&payload).map_err(Into::into)
+                },
+            )
+            .map_err(|_| MutationExecutorError::Bind("committed-event append failed".into()))?;
+            Ok(true)
+        })();
+        self.mark_failed_operation(&result);
+        result
     }
 
     async fn commit_sql(mut self) -> Result<(), Self::Error> {
+        if self.rollback_only.load(Ordering::Acquire) {
+            self.executor.rollback_transaction()?;
+            self.active = false;
+            return Err(MutationExecutorError::RollbackOnly);
+        }
         self.executor.commit_transaction()?;
         self.active = false;
         Ok(())
@@ -116,6 +135,14 @@ impl SqlTransaction for SqliteTransaction {
         self.executor.rollback_transaction()?;
         self.active = false;
         Ok(())
+    }
+}
+
+impl SqliteTransaction {
+    pub(super) fn mark_failed_operation<T, E>(&self, result: &Result<T, E>) {
+        if result.is_err() {
+            self.rollback_only.store(true, Ordering::Release);
+        }
     }
 }
 
