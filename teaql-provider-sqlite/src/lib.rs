@@ -25,6 +25,7 @@ use teaql_sql::{
     quote_identifier_if_needed, schema_index_specs,
 };
 
+mod decimal_functions;
 mod dynamic_fields;
 mod transaction;
 pub use transaction::SqliteTransaction;
@@ -271,6 +272,7 @@ impl SqliteMutationExecutor {
     ) -> Result<(), MutationExecutorError> {
         let connection = self.lock()?;
         Self::ensure_soundex_function(&connection)?;
+        decimal_functions::register(&connection)?;
         connection.pragma_update(None, "foreign_keys", true)?;
         connection.execute("BEGIN IMMEDIATE", [])?;
         let result = Self::ensure_schema_with_connection(&connection, dialect, entities);
@@ -985,6 +987,7 @@ pub(crate) fn ensure_sqlite_physical_schema_for(
     let entities = context.all_entities();
     let connection = executor.lock()?;
     SqliteMutationExecutor::ensure_soundex_function(&connection)?;
+    decimal_functions::register(&connection)?;
     connection.pragma_update(None, "foreign_keys", true)?;
     connection.execute("BEGIN IMMEDIATE", [])?;
     let result = (|| -> Result<(), MutationExecutorError> {
@@ -1950,6 +1953,28 @@ mod tests {
         assert_eq!(encoded, "R163");
         assert_eq!(matches, 1);
         assert_eq!(empty, "?000");
+    }
+
+    #[test]
+    fn ensure_schema_registers_exact_decimal_functions_idempotently() {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        executor.ensure_schema(&SqliteDialect, &[]).unwrap();
+        executor.ensure_schema(&SqliteDialect, &[]).unwrap();
+        let connection = executor.connection();
+        let guard = connection.lock().unwrap();
+        let valid: bool = guard
+            .query_row("SELECT teaql_decimal_valid('3.50')", [], |row| row.get(0))
+            .unwrap();
+        assert!(valid);
+        let total: String = guard
+            .query_row(
+                "SELECT teaql_decimal_sum(value) FROM (SELECT '3.50' AS value UNION ALL SELECT '0.25')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(total, "3.75");
     }
 
     #[test]
