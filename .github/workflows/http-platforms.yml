@@ -1,11 +1,11 @@
-name: HTTP resilience macOS
+name: HTTP resilience cross-OS
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
     paths:
-      - .github/workflows/http-macos.yml
+      - .github/workflows/http-platforms.yml
       - Cargo.toml
       - Cargo.lock
       - teaql-core/**
@@ -15,7 +15,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - .github/workflows/http-macos.yml
+      - .github/workflows/http-platforms.yml
       - Cargo.toml
       - Cargo.lock
       - teaql-core/**
@@ -28,9 +28,16 @@ permissions:
 
 jobs:
   http-resilience:
-    name: HTTP contract and example (macOS)
-    runs-on: macos-latest
+    name: HTTP contract and example (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - name: Set up stable Rust
