@@ -14,7 +14,8 @@ use teaql_core::business_id::{
     BusinessIdAllocation, BusinessIdAllocator, BusinessIdError, BusinessIdErrorCode, BusinessIdPlan,
 };
 use teaql_core::{
-    CompactRow, CompactRowLayout, DataType, EntityDescriptor, PropertyDescriptor, Value,
+    Aggregate, AggregateFunction, CompactRow, CompactRowLayout, DataType, EntityDescriptor, Expr,
+    PropertyDescriptor, Value,
 };
 use teaql_runtime::{
     InternalIdGenerator, RawAuditEvent, RuntimeError, SchemaProvider, UserContext,
@@ -55,6 +56,65 @@ impl SqlDialect for SqliteDialect {
         true
     }
 
+    fn aggregate_call_sql_for(
+        &self,
+        entity: &EntityDescriptor,
+        aggregate: &Aggregate,
+        field: &str,
+    ) -> Result<String, SqlCompileError> {
+        if aggregate.function != AggregateFunction::Count
+            && entity
+                .property_by_name(&aggregate.field)
+                .is_some_and(|property| property.data_type == DataType::Decimal)
+        {
+            return match aggregate.function {
+                AggregateFunction::Sum => Ok(format!("teaql_decimal_sum({field})")),
+                AggregateFunction::Min | AggregateFunction::Max => {
+                    Ok(self.aggregate_call_sql(aggregate.function, field))
+                }
+                _ => Err(SqlCompileError::InvalidFunctionArguments(
+                    "SQLite exact Decimal aggregate is not supported for this function".to_owned(),
+                )),
+            };
+        }
+        Ok(self.aggregate_call_sql(aggregate.function, field))
+    }
+
+    fn compile_single_arg_function(
+        &self,
+        entity: &EntityDescriptor,
+        function: &str,
+        args: &[Expr],
+        params: &mut teaql_sql::SqlBindings,
+    ) -> Result<String, SqlCompileError> {
+        let [arg] = args else {
+            return Err(SqlCompileError::InvalidFunctionArguments(format!(
+                "{function} expects exactly one argument"
+            )));
+        };
+        let decimal_field = matches!(arg, Expr::Column(name) if entity
+            .property_by_name(name)
+            .is_some_and(|property| property.data_type == DataType::Decimal));
+        if function != "COUNT" && !decimal_field && expr_references_decimal(entity, arg) {
+            return Err(SqlCompileError::InvalidFunctionArguments(
+                "SQLite exact Decimal expression aggregate requires a direct Decimal column"
+                    .to_owned(),
+            ));
+        }
+        if decimal_field && !matches!(function, "SUM" | "MIN" | "MAX") {
+            return Err(SqlCompileError::InvalidFunctionArguments(
+                "SQLite exact Decimal expression aggregate is not supported for this function"
+                    .to_owned(),
+            ));
+        }
+        let arg = self.compile_expr(entity, arg, params)?;
+        if decimal_field && function == "SUM" {
+            Ok(format!("teaql_decimal_sum({arg})"))
+        } else {
+            Ok(format!("{function}({arg})"))
+        }
+    }
+
     fn schema_type_sql(
         &self,
         data_type: DataType,
@@ -65,10 +125,16 @@ impl SqlDialect for SqliteDialect {
             DataType::I64 | DataType::U64 if property.is_id => Ok("INTEGER".to_owned()),
             DataType::I64 | DataType::U64 => Ok("INTEGER".to_owned()),
             DataType::F64 => Ok("REAL".to_owned()),
-            DataType::Decimal => match (property.numeric_precision, property.numeric_scale) {
-                (Some(precision), Some(scale)) => Ok(format!("NUMERIC({precision},{scale})")),
-                _ => Ok("NUMERIC".to_owned()),
-            },
+            DataType::Decimal => {
+                let declared_type = match (property.numeric_precision, property.numeric_scale) {
+                    (Some(precision), Some(scale)) => format!("DECIMAL_TEXT({precision},{scale})"),
+                    _ => "DECIMAL_TEXT".to_owned(),
+                };
+                let column = self.quote_ident(&property.column_name);
+                Ok(format!(
+                    "{declared_type} COLLATE TEAQL_DECIMAL CHECK ({column} IS NULL OR teaql_decimal_valid({column}))"
+                ))
+            }
             DataType::Text => Ok(format!("VARCHAR({})", property.max_length.unwrap_or(255))),
             DataType::LargeText => Ok("TEXT".to_owned()),
             DataType::Json => Ok("JSON".to_owned()),
@@ -329,6 +395,7 @@ impl SqliteMutationExecutor {
             for sql in dialect.schema_indexes_sqls(entity)? {
                 connection.execute(&sql, [])?;
             }
+            ensure_sqlite_decimal_collations(connection, entity)?;
             ensure_sqlite_declared_index_shapes(connection, entity)?;
         }
         Self::ensure_foreign_keys_with_connection(connection, entities)?;
@@ -654,7 +721,10 @@ fn ensure_sqlite_column_compatibility(
         DataType::Bool => matches!(actual_family.as_str(), "boolean" | "integer"),
         DataType::I64 | DataType::U64 => actual_family == "integer",
         DataType::F64 => actual_family == "real",
-        DataType::Decimal => actual_family == "numeric",
+        DataType::Decimal => actual
+            .split('(')
+            .next()
+            .is_some_and(|base| base.trim().eq_ignore_ascii_case("DECIMAL_TEXT")),
         DataType::Text | DataType::LargeText => actual_family == "text",
         DataType::Json => matches!(actual_family.as_str(), "json" | "text"),
         DataType::Date => matches!(actual_family.as_str(), "date" | "text"),
@@ -700,6 +770,232 @@ fn ensure_sqlite_column_compatibility(
         }
     }
     Ok(())
+}
+
+fn ensure_sqlite_decimal_collations(
+    connection: &Connection,
+    entity: &EntityDescriptor,
+) -> Result<(), MutationExecutorError> {
+    for property in entity
+        .properties
+        .iter()
+        .filter(|property| property.data_type == DataType::Decimal)
+    {
+        // table_info does not expose a column's collation. Inspect the
+        // read-only, non-indexed comparison program to verify the collation
+        // TeaQL queries will actually use; no fixture row is inserted.
+        let sql = format!(
+            "EXPLAIN SELECT 1 FROM {} NOT INDEXED WHERE {} = ?1",
+            quote_ident(&entity.table_name),
+            quote_ident(&property.column_name),
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let operations = statement.query_map(["0"], |row| {
+            Ok((row.get::<_, String>(1)?, row.get::<_, Option<String>>(5)?))
+        })?;
+        let mut correct = false;
+        for operation in operations {
+            let (opcode, p4) = operation?;
+            if matches!(opcode.as_str(), "Eq" | "Ne")
+                && p4.is_some_and(|value| value.starts_with("TEAQL_DECIMAL"))
+            {
+                correct = true;
+            }
+        }
+        if !correct {
+            return Err(MutationExecutorError::Bind(format!(
+                "ensure schema Decimal column lacks TEAQL_DECIMAL collation: entity={}, table={}, column={}; migrate the column explicitly before retrying",
+                entity.name, entity.table_name, property.column_name
+            )));
+        }
+        ensure_sqlite_decimal_validation(connection, entity, property)?;
+    }
+    Ok(())
+}
+
+fn ensure_sqlite_decimal_validation(
+    connection: &Connection,
+    entity: &EntityDescriptor,
+    property: &PropertyDescriptor,
+) -> Result<(), MutationExecutorError> {
+    // PRAGMA table_info omits CHECK constraints. Inspect the actual column
+    // declaration, rather than accepting a matching phrase in a different
+    // column, a SQL string literal, or a schema comment.
+    let ddl: String = connection.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+        [&entity.table_name],
+        |row| row.get(0),
+    )?;
+    let column = strip_identifier_quotes(&property.column_name).to_ascii_lowercase();
+    let required_check = [
+        "check",
+        "(",
+        &column,
+        "is",
+        "null",
+        "or",
+        "teaql_decimal_valid",
+        "(",
+        &column,
+        ")",
+        ")",
+    ];
+    let has_validation = sqlite_schema_column_tokens(&ddl).into_iter().any(|tokens| {
+        tokens.first().is_some_and(|name| name == &column)
+            && tokens.get(1).is_some_and(|kind| kind == "decimal_text")
+            && sqlite_column_has_check(&tokens, &required_check)
+    });
+    if !has_validation {
+        return Err(MutationExecutorError::Bind(format!(
+            "ensure schema Decimal column lacks required Decimal validation: entity={}, table={}, column={}; migrate the column explicitly before retrying",
+            entity.name, entity.table_name, property.column_name
+        )));
+    }
+    Ok(())
+}
+
+fn sqlite_column_has_check(tokens: &[String], required_check: &[&str]) -> bool {
+    let mut depth = 0_u32;
+    for (index, token) in tokens.iter().enumerate() {
+        if depth == 0
+            && token == "check"
+            && tokens[index..]
+                .iter()
+                .take(required_check.len())
+                .map(String::as_str)
+                .eq(required_check.iter().copied())
+        {
+            return true;
+        }
+        match token.as_str() {
+            "(" => depth += 1,
+            ")" => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    false
+}
+
+fn expr_references_decimal(entity: &EntityDescriptor, expr: &Expr) -> bool {
+    match expr {
+        Expr::Column(name) => entity
+            .property_by_name(name)
+            .is_some_and(|property| property.data_type == DataType::Decimal),
+        Expr::Value(Value::Decimal(_)) => true,
+        Expr::Function { args, .. } | Expr::And(args) | Expr::Or(args) => {
+            args.iter().any(|arg| expr_references_decimal(entity, arg))
+        }
+        Expr::Binary { left, right, .. } => {
+            expr_references_decimal(entity, left) || expr_references_decimal(entity, right)
+        }
+        Expr::SubQuery { left, .. } => expr_references_decimal(entity, left),
+        Expr::Between { expr, lower, upper } => {
+            expr_references_decimal(entity, expr)
+                || expr_references_decimal(entity, lower)
+                || expr_references_decimal(entity, upper)
+        }
+        Expr::IsNull(expr) | Expr::IsNotNull(expr) | Expr::Not(expr) => {
+            expr_references_decimal(entity, expr)
+        }
+        Expr::Value(_) | Expr::LikePattern { .. } => false,
+    }
+}
+
+fn sqlite_schema_column_tokens(ddl: &str) -> Vec<Vec<String>> {
+    let tokens = sqlite_schema_tokens(ddl);
+    let Some(open) = tokens.iter().position(|token| token == "(") else {
+        return Vec::new();
+    };
+    let mut columns = Vec::new();
+    let mut column = Vec::new();
+    let mut depth = 1_u32;
+    for token in tokens.into_iter().skip(open + 1) {
+        match token.as_str() {
+            "(" => depth += 1,
+            ")" => {
+                depth -= 1;
+                if depth == 0 {
+                    columns.push(column);
+                    break;
+                }
+            }
+            "," if depth == 1 => {
+                columns.push(std::mem::take(&mut column));
+                continue;
+            }
+            _ => {}
+        }
+        column.push(token);
+    }
+    columns
+}
+
+fn sqlite_schema_tokens(sql: &str) -> Vec<String> {
+    let bytes = sql.as_bytes();
+    let mut tokens = Vec::new();
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let current = bytes[offset];
+        if current.is_ascii_whitespace() {
+            offset += 1;
+        } else if current == b'-' && bytes.get(offset + 1) == Some(&b'-') {
+            offset += 2;
+            while offset < bytes.len() && bytes[offset] != b'\n' {
+                offset += 1;
+            }
+        } else if current == b'/' && bytes.get(offset + 1) == Some(&b'*') {
+            offset += 2;
+            while offset + 1 < bytes.len() && &bytes[offset..offset + 2] != b"*/" {
+                offset += 1;
+            }
+            offset = (offset + 2).min(bytes.len());
+        } else if matches!(current, b'\'' | b'"' | b'`' | b'[') {
+            let close = if current == b'[' { b']' } else { current };
+            let mut segment_start = offset + 1;
+            offset = segment_start;
+            let mut value = String::new();
+            while offset < bytes.len() {
+                if bytes[offset] == close {
+                    if bytes.get(offset + 1) == Some(&close) {
+                        value.push_str(&sql[segment_start..offset]);
+                        value.push(close as char);
+                        offset += 2;
+                        segment_start = offset;
+                        continue;
+                    }
+                    break;
+                }
+                offset += 1;
+            }
+            if current == b'\'' {
+                tokens.push("<sql-string>".to_owned());
+            } else {
+                value.push_str(&sql[segment_start..offset.min(bytes.len())]);
+                tokens.push(value.to_ascii_lowercase());
+            }
+            offset = (offset + 1).min(bytes.len());
+        } else if current.is_ascii_alphanumeric()
+            || current == b'_'
+            || current == b'$'
+            || current >= 0x80
+        {
+            let start = offset;
+            offset += 1;
+            while offset < bytes.len()
+                && (bytes[offset].is_ascii_alphanumeric()
+                    || bytes[offset] == b'_'
+                    || bytes[offset] == b'$'
+                    || bytes[offset] >= 0x80)
+            {
+                offset += 1;
+            }
+            tokens.push(sql[start..offset].to_ascii_lowercase());
+        } else {
+            tokens.push((current as char).to_string());
+            offset += 1;
+        }
+    }
+    tokens
 }
 
 fn sqlite_declared_type_args(data_type: &str) -> Vec<u32> {
@@ -1045,6 +1341,7 @@ pub(crate) fn ensure_sqlite_physical_schema_for(
             for sql in dialect.schema_indexes_sqls(entity)? {
                 connection.execute(&sql, [])?;
             }
+            ensure_sqlite_decimal_collations(&connection, entity)?;
             ensure_sqlite_declared_index_shapes(&connection, entity)?;
             let _ = context.send_event(RawAuditEvent::schema_verified(
                 &entity.name,
@@ -1656,7 +1953,10 @@ fn sqlite_decode_kind(decl_type: Option<&str>) -> SqliteDecodeKind {
     let base = decl_type.split('(').next().unwrap_or(decl_type).trim();
     if base.eq_ignore_ascii_case("BOOLEAN") || base.eq_ignore_ascii_case("BOOL") {
         SqliteDecodeKind::Bool
-    } else if base.eq_ignore_ascii_case("NUMERIC") || base.eq_ignore_ascii_case("DECIMAL") {
+    } else if base.eq_ignore_ascii_case("NUMERIC")
+        || base.eq_ignore_ascii_case("DECIMAL")
+        || base.eq_ignore_ascii_case("DECIMAL_TEXT")
+    {
         SqliteDecodeKind::Decimal
     } else if base.eq_ignore_ascii_case("JSON") {
         SqliteDecodeKind::Json
@@ -2186,6 +2486,7 @@ mod tests {
         let executor = SqliteMutationExecutor::from_connection(
             Connection::open_in_memory().expect("open shape mismatch fixture"),
         );
+        decimal_functions::register(&executor.lock().unwrap()).unwrap();
         executor
             .lock()
             .unwrap()
@@ -2194,7 +2495,8 @@ mod tests {
                    id INTEGER PRIMARY KEY,
                    version INTEGER NOT NULL,
                    name VARCHAR(255),
-                   amount NUMERIC(38,10)
+                   amount DECIMAL_TEXT(38,10) COLLATE TEAQL_DECIMAL
+                     CHECK (amount IS NULL OR teaql_decimal_valid(amount))
                  )",
             )
             .unwrap();
@@ -2226,7 +2528,7 @@ mod tests {
             );
         executor
             .ensure_schema(&SqliteDialect, &[&numeric_model])
-            .expect("wider NUMERIC storage must cover the model");
+            .expect("wider exact Decimal storage must cover the model");
 
         executor
             .lock()
@@ -2237,7 +2539,8 @@ mod tests {
                    id INTEGER PRIMARY KEY,
                    version INTEGER NOT NULL,
                    name VARCHAR(32),
-                   amount NUMERIC(18,2)
+                   amount DECIMAL_TEXT(18,2) COLLATE TEAQL_DECIMAL
+                     CHECK (amount IS NULL OR teaql_decimal_valid(amount))
                  )",
             )
             .unwrap();
@@ -2270,8 +2573,244 @@ mod tests {
             );
         assert_eq!(
             SqliteDialect.compile_create_table(&shaped).unwrap(),
-            "CREATE TABLE IF NOT EXISTS shape_fixture (name VARCHAR(100), amount NUMERIC(19,7))"
+            "CREATE TABLE IF NOT EXISTS shape_fixture (name VARCHAR(100), amount DECIMAL_TEXT(19,7) COLLATE TEAQL_DECIMAL CHECK (amount IS NULL OR teaql_decimal_valid(amount)))"
         );
+    }
+
+    #[test]
+    fn exact_decimal_schema_query_and_compact_hydration_preserve_scale() {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        let entity = EntityDescriptor::new("DecimalFixture")
+            .table_name("decimal_fixture")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(
+                PropertyDescriptor::new("amount", DataType::Decimal)
+                    .numeric_precision(19)
+                    .numeric_scale(7)
+                    .not_null(),
+            );
+        executor.ensure_schema(&SqliteDialect, &[&entity]).unwrap();
+        let connection = executor.connection();
+        let guard = connection.lock().unwrap();
+        for (id, amount) in [(1_i64, "3.50"), (2, "10"), (3, "123456789012.3456789")] {
+            let bound =
+                bind_sqlite_value(&Value::Decimal(Decimal::from_str(amount).unwrap())).unwrap();
+            guard
+                .execute(
+                    "INSERT INTO decimal_fixture (id, amount) VALUES (?1, ?2)",
+                    params![id, bound],
+                )
+                .unwrap();
+        }
+        let stored: (String, String) = guard
+            .query_row(
+                "SELECT typeof(amount), amount FROM decimal_fixture WHERE id = 3",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(stored, ("text".into(), "123456789012.3456789".into()));
+        drop(guard);
+
+        let query = SelectQuery::new("DecimalFixture")
+            .project("amount")
+            .filter(Expr::eq("amount", Decimal::from_str("3.5").unwrap()));
+        let rows = executor
+            .fetch_all_compact(&SqliteDialect.compile_select(&entity, &query).unwrap())
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("amount"),
+            Some(&Value::Decimal(Decimal::from_str("3.50").unwrap()))
+        );
+
+        let query = SelectQuery::new("DecimalFixture")
+            .project("amount")
+            .order_asc("amount");
+        let ordered = executor
+            .fetch_all_compact(&SqliteDialect.compile_select(&entity, &query).unwrap())
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get("amount").cloned().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ordered,
+            ["3.50", "10", "123456789012.3456789"]
+                .into_iter()
+                .map(|text| Value::Decimal(Decimal::from_str(text).unwrap()))
+                .collect::<Vec<_>>()
+        );
+
+        let schema = InMemoryMetadataStore::new().with_entity(entity.clone());
+        let service = teaql_sql::SqlDataServiceExecutor::new(SqliteDialect, executor, schema);
+        let aggregate = SelectQuery::new("DecimalFixture")
+            .sum("amount", "total")
+            .comment("calculate exact Decimal total");
+        let response = futures_executor::block_on(teaql_data_service::QueryExecutor::query(
+            &service,
+            teaql_data_service::QueryRequest {
+                query: aggregate,
+                trace_chain: Vec::new(),
+                intent: teaql_core::QueryIntent::new(
+                    "calculate exact Decimal total",
+                    "verify exact aggregate through Q",
+                )
+                .unwrap(),
+                capture_debug_query: false,
+                capture_execution_metadata: false,
+            },
+        ))
+        .unwrap();
+        assert_eq!(response.rows.len(), 1);
+        assert_eq!(
+            response.rows[0].get("total"),
+            Some(&Value::Decimal(
+                Decimal::from_str("123456789025.8456789").unwrap()
+            ))
+        );
+
+        let expression = SelectQuery::new("DecimalFixture")
+            .project_expr("expression_total", Expr::sum_expr(Expr::column("amount")))
+            .comment("calculate exact Decimal expression total");
+        let expression_response =
+            futures_executor::block_on(teaql_data_service::QueryExecutor::query(
+                &service,
+                teaql_data_service::QueryRequest {
+                    query: expression,
+                    trace_chain: Vec::new(),
+                    intent: teaql_core::QueryIntent::new(
+                        "calculate exact Decimal expression total",
+                        "verify typed expression aggregate through Q",
+                    )
+                    .unwrap(),
+                    capture_debug_query: false,
+                    capture_execution_metadata: false,
+                },
+            ))
+            .unwrap();
+        assert_eq!(expression_response.rows.len(), 1);
+        assert_eq!(
+            expression_response.rows[0].get("expression_total"),
+            Some(&Value::Decimal(
+                Decimal::from_str("123456789025.8456789").unwrap()
+            ))
+        );
+
+        let unsupported = SqliteDialect.compile_select(
+            &entity,
+            &SelectQuery::new("DecimalFixture").avg("amount", "average"),
+        );
+        assert!(matches!(
+            unsupported,
+            Err(SqlCompileError::InvalidFunctionArguments(_))
+        ));
+        let unsupported_literal = SqliteDialect.compile_select(
+            &entity,
+            &SelectQuery::new("DecimalFixture").project_expr(
+                "literal_total",
+                Expr::sum_expr(Expr::value(Decimal::from_str("0.1").unwrap())),
+            ),
+        );
+        assert!(matches!(
+            unsupported_literal,
+            Err(SqlCompileError::InvalidFunctionArguments(_))
+        ));
+    }
+
+    #[test]
+    fn exact_decimal_schema_rejects_legacy_numeric_and_missing_collation() {
+        let entity = EntityDescriptor::new("DecimalFixture")
+            .table_name("decimal_fixture")
+            .property(
+                PropertyDescriptor::new("amount", DataType::Decimal)
+                    .numeric_precision(19)
+                    .numeric_scale(7),
+            );
+        for (declaration, expected) in [
+            ("NUMERIC(19,7)", "incompatible column type"),
+            ("DECIMAL_TEXT(19,7)", "lacks TEAQL_DECIMAL collation"),
+            (
+                "DECIMAL_TEXT(19,7) COLLATE TEAQL_DECIMAL",
+                "lacks required Decimal validation",
+            ),
+            (
+                "DECIMAL_TEXT(19,7) COLLATE TEAQL_DECIMAL /* CHECK (amount IS NULL OR teaql_decimal_valid(amount)) */",
+                "lacks required Decimal validation",
+            ),
+            (
+                "DECIMAL_TEXT(19,7) COLLATE TEAQL_DECIMAL DEFAULT 'CHECK (amount IS NULL OR teaql_decimal_valid(amount))'",
+                "lacks required Decimal validation",
+            ),
+            (
+                "DECIMAL_TEXT(19,7) COLLATE TEAQL_DECIMAL CHECK ((amount IS NULL OR teaql_decimal_valid(amount)) OR 1)",
+                "lacks required Decimal validation",
+            ),
+        ] {
+            let executor =
+                SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+            decimal_functions::register(&executor.lock().unwrap()).unwrap();
+            executor
+                .lock()
+                .unwrap()
+                .execute_batch(&format!(
+                    "CREATE TABLE decimal_fixture (amount {declaration})"
+                ))
+                .unwrap();
+            let error = executor
+                .ensure_schema(&SqliteDialect, &[&entity])
+                .expect_err("unsafe Decimal storage must not pass ensure schema")
+                .to_string();
+            assert!(error.contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn exact_decimal_schema_reopens_with_connection_local_functions() {
+        let database = tempfile::NamedTempFile::new().unwrap();
+        let entity = EntityDescriptor::new("DecimalFixture")
+            .table_name("decimal_fixture")
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(
+                PropertyDescriptor::new("amount", DataType::Decimal)
+                    .numeric_precision(19)
+                    .numeric_scale(7)
+                    .not_null(),
+            );
+
+        let first =
+            SqliteMutationExecutor::from_connection(Connection::open(database.path()).unwrap());
+        first.ensure_schema(&SqliteDialect, &[&entity]).unwrap();
+        first
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO decimal_fixture (id, amount) VALUES (1, '3.50')",
+                [],
+            )
+            .unwrap();
+        drop(first);
+
+        let reopened =
+            SqliteMutationExecutor::from_connection(Connection::open(database.path()).unwrap());
+        reopened.ensure_schema(&SqliteDialect, &[&entity]).unwrap();
+        let connection = reopened.lock().unwrap();
+        let matched: String = connection
+            .query_row(
+                "SELECT amount FROM decimal_fixture WHERE amount > '3.49'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(matched, "3.50");
+        let total: String = connection
+            .query_row(
+                "SELECT teaql_decimal_sum(amount) FROM decimal_fixture",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(total, "3.50");
     }
 
     #[test]

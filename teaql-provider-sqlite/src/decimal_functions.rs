@@ -1,9 +1,8 @@
 //! Connection-local exact Decimal primitives for the SQLite provider.
 //!
-//! These functions are deliberately not yet used by generated schema or Q
-//! compilation. A later change must atomically qualify physical storage,
-//! scalar queries, aggregates, and migration before switching away from
-//! SQLite's existing NUMERIC-affinity Decimal representation.
+//! Generated SQLite schema and modeled Q aggregation use these functions.
+//! Existing NUMERIC-affinity columns require explicit migration; their
+//! already-rounded REAL values cannot be reinterpreted as exact Decimal.
 
 use std::io::{Error as IoError, ErrorKind};
 use std::str::FromStr;
@@ -18,8 +17,8 @@ pub(crate) fn register(connection: &Connection) -> Result<()> {
     connection.create_collation("TEAQL_DECIMAL", |left, right| {
         match (Decimal::from_str(left), Decimal::from_str(right)) {
             (Ok(left), Ok(right)) => left.cmp(&right),
-            // Existing corrupt text is rejected by the decoder and by the
-            // planned schema CHECK. A SQLite collation cannot return an error;
+            // Existing corrupt text is rejected by the decoder and the
+            // schema CHECK. A SQLite collation cannot return an error;
             // keep its comparison total without exposing the bad value.
             _ => left.cmp(right),
         }
