@@ -10,6 +10,7 @@ use teaql_core::{
 };
 
 use crate::entity_status::EntityStatus;
+use crate::ledger_keys::storage_values_from_ledger;
 use crate::{
     DataServiceError, GraphMutationKind, GraphMutationPlan, GraphNode, GraphOperation,
     RuntimeError, ScopedCommentNode, TraceScopeToken, sorted_update_fields,
@@ -1622,7 +1623,14 @@ where
             if deleted_keys.contains(key) {
                 continue;
             }
-            let mut checked: crate::EntityValues = record.clone().into();
+            let descriptor = self
+                .data_service
+                .metadata
+                .context
+                .require_entity(&key.entity)
+                .map_err(DataServiceError::Runtime)?;
+            let mut checked = storage_values_from_ledger(descriptor, record)
+                .map_err(DataServiceError::Runtime)?;
             checked
                 .entry("id".to_owned())
                 .or_insert_with(|| key.id.clone());

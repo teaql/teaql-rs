@@ -67,6 +67,54 @@ pub struct BootstrapAuditIdentity {
 }
 
 impl RawAuditEvent {
+    pub(crate) fn map_field_names(&mut self, resolve: impl Fn(&str) -> String) {
+        let mut names = std::collections::BTreeMap::new();
+        for field in self
+            .values
+            .keys()
+            .chain(self.old_values.iter().flat_map(|values| values.keys()))
+            .chain(self.new_values.iter().flat_map(|values| values.keys()))
+            .chain(self.updated_fields.iter())
+            .chain(self.changes.iter().map(|change| &change.field))
+        {
+            names.entry(field.clone()).or_insert_with(|| resolve(field));
+        }
+        let mut targets = std::collections::BTreeMap::<String, usize>::new();
+        for target in names.values() {
+            *targets.entry(target.clone()).or_default() += 1;
+        }
+        // If a direct provider caller supplied both aliases, retain both
+        // original keys rather than silently losing one in an audit record.
+        for (source, target) in &mut names {
+            if targets.get(target).copied().unwrap_or_default() > 1 {
+                *target = source.clone();
+            }
+        }
+        let remap = |values: &mut Record| {
+            *values = std::mem::take(values)
+                .into_iter()
+                .map(|(field, value)| (names.get(&field).cloned().unwrap_or(field), value))
+                .collect();
+        };
+        remap(&mut self.values);
+        if let Some(values) = &mut self.old_values {
+            remap(values);
+        }
+        if let Some(values) = &mut self.new_values {
+            remap(values);
+        }
+        for field in &mut self.updated_fields {
+            if let Some(name) = names.get(field) {
+                *field = name.clone();
+            }
+        }
+        for change in &mut self.changes {
+            if let Some(name) = names.get(&change.field) {
+                change.field = name.clone();
+            }
+        }
+    }
+
     pub fn created(entity: impl Into<String>, values: Record) -> Self {
         let changes = values
             .iter()
@@ -604,4 +652,60 @@ pub trait SafeAuditEventSink: Send + Sync {
         context: &crate::UserContext,
         event: &SafeAuditEvent,
     ) -> Result<(), crate::RuntimeError>;
+}
+
+#[cfg(test)]
+mod field_name_tests {
+    use super::RawAuditEvent;
+    use std::collections::BTreeMap;
+    use teaql_core::Value;
+
+    #[test]
+    fn audit_rekeys_all_views_without_losing_alias_collisions() {
+        let mut event = RawAuditEvent::updated_with_old_values(
+            "School",
+            BTreeMap::from([("school_type_id".into(), Value::U64(1001))]),
+            Some(BTreeMap::from([(
+                "school_type_id".into(),
+                Value::U64(1002),
+            )])),
+            BTreeMap::from([("school_type_id".into(), Value::U64(1001))]),
+            vec!["school_type_id".into()],
+        );
+        event.map_field_names(|field| {
+            if field == "school_type_id" {
+                "school_type".into()
+            } else {
+                field.into()
+            }
+        });
+        assert_eq!(event.values.get("school_type"), Some(&Value::U64(1001)));
+        assert_eq!(
+            event.old_values.as_ref().unwrap().get("school_type"),
+            Some(&Value::U64(1002))
+        );
+        assert_eq!(event.updated_fields, ["school_type"]);
+        assert_eq!(event.changes[0].field, "school_type");
+
+        let mut collision = RawAuditEvent::created(
+            "School",
+            BTreeMap::from([
+                ("school_type".into(), Value::U64(1001)),
+                ("school_type_id".into(), Value::U64(1002)),
+            ]),
+        );
+        collision.map_field_names(|field| {
+            if field == "school_type_id" {
+                "school_type".into()
+            } else {
+                field.into()
+            }
+        });
+        assert_eq!(collision.values.len(), 2);
+        assert_eq!(collision.values.get("school_type"), Some(&Value::U64(1001)));
+        assert_eq!(
+            collision.values.get("school_type_id"),
+            Some(&Value::U64(1002))
+        );
+    }
 }
