@@ -62,6 +62,10 @@ pub(crate) fn storage_fields_from_ledger(
             field.as_str()
         } else if let Some(relation) = descriptor.relation_by_name(field) {
             writable_forward_relation(descriptor, relation)?
+        } else if field.starts_with('#') && field.len() > 1 {
+            // Dynamic-field dirty markers share this set with model fields.
+            // Their mutations are saved through the separate dynamic store.
+            field.as_str()
         } else {
             return Err(RuntimeError::Graph(format!(
                 "unknown ledger field {}.{}",
@@ -129,8 +133,10 @@ pub(crate) fn canonical_values_from_storage(
 
 #[cfg(test)]
 mod tests {
-    use super::{canonical_values_from_storage, storage_values_from_ledger};
-    use std::collections::BTreeMap;
+    use super::{
+        canonical_values_from_storage, storage_fields_from_ledger, storage_values_from_ledger,
+    };
+    use std::collections::{BTreeMap, BTreeSet};
     use teaql_core::{
         DataType, EntityDescriptor, MutationValues, PropertyDescriptor, RelationDescriptor, Value,
     };
@@ -202,5 +208,15 @@ mod tests {
             let input: MutationValues = BTreeMap::from([(name.to_owned(), Value::U64(1))]).into();
             assert!(storage_values_from_ledger(&school(), &input).is_err());
         }
+    }
+
+    #[test]
+    fn preserves_dynamic_dirty_markers_separately_from_relation_mapping() {
+        let fields = BTreeSet::from(["school_type".to_owned(), "#note".to_owned()]);
+        let storage = storage_fields_from_ledger(&school(), &fields).unwrap();
+        assert_eq!(
+            storage,
+            BTreeSet::from(["school_type_id".to_owned(), "#note".to_owned()])
+        );
     }
 }
