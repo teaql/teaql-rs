@@ -8,6 +8,10 @@ use std::sync::Arc;
 
 use teaql_core::{Entity, MutationValues, Value};
 
+use crate::ledger_keys::{
+    canonical_field_from_storage, canonical_values_from_storage, storage_fields_from_ledger,
+    storage_values_from_ledger,
+};
 use crate::{
     DataServiceError, GraphNode, GraphOperation, ObjectLocation, RuntimeError, UserContext,
 };
@@ -324,7 +328,7 @@ fn can_preserve_loaded_relations(
                 !descriptor
                     .relations
                     .iter()
-                    .any(|relation| relation.local_key == *field)
+                    .any(|relation| relation.name == *field || relation.local_key == *field)
             })
     })
 }
@@ -355,6 +359,10 @@ mod save_relation_state_tests {
 
         let root = EntityRuntimeState::default();
         root.set(order.clone(), "customer_id", Value::I64(3));
+        assert!(!can_preserve_loaded_relations(&root, &order, &descriptor()));
+
+        let root = EntityRuntimeState::default();
+        root.set(order.clone(), "customer", Value::I64(3));
         assert!(!can_preserve_loaded_relations(&root, &order, &descriptor()));
     }
 
@@ -1153,6 +1161,7 @@ fn graph_node_from_values(
 }
 
 fn merge_relation_mutations_into_root(
+    context: &UserContext,
     root: &crate::EntityRuntimeState,
     node: &GraphNode,
 ) -> Result<(), RuntimeError> {
@@ -1165,11 +1174,14 @@ fn merge_relation_mutations_into_root(
                 ))
             })?;
             let key = crate::EntityKey::new(child.entity.clone(), id);
+            let descriptor = context.require_entity(&child.entity)?;
 
             match child.operation {
                 GraphOperation::Create => {
                     root.mark_as_new(key.clone());
-                    for (field, value) in &child.values {
+                    for (field, value) in
+                        canonical_values_from_storage(descriptor, &child.values)?.iter()
+                    {
                         root.set(key.clone(), field, value.clone());
                     }
                 }
@@ -1177,7 +1189,8 @@ fn merge_relation_mutations_into_root(
                     if let Some(fields) = &child.dirty_fields {
                         for field in fields {
                             if let Some(value) = child.values.get(field) {
-                                root.set(key.clone(), field, value.clone());
+                                let name = canonical_field_from_storage(descriptor, field)?;
+                                root.set(key.clone(), name, value.clone());
                             }
                         }
                     }
@@ -1194,10 +1207,65 @@ fn merge_relation_mutations_into_root(
             {
                 root.set_original_version(key, version);
             }
-            merge_relation_mutations_into_root(root, child)?;
+            merge_relation_mutations_into_root(context, root, child)?;
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod relation_ledger_key_tests {
+    use super::merge_relation_mutations_into_root;
+    use crate::{
+        EntityKey, EntityRuntimeState, GraphNode, GraphOperation, InMemoryMetadataStore,
+        UserContext,
+    };
+    use std::collections::BTreeSet;
+    use teaql_core::{DataType, EntityDescriptor, PropertyDescriptor, RelationDescriptor, Value};
+
+    fn context() -> UserContext {
+        UserContext::default().with_metadata(
+            InMemoryMetadataStore::new().with_entity(
+                EntityDescriptor::new("School")
+                    .property(PropertyDescriptor::new("id", DataType::U64).id())
+                    .property(PropertyDescriptor::new("school_type_id", DataType::U64))
+                    .relation(
+                        RelationDescriptor::new("school_type", "SchoolType")
+                            .local_key("school_type_id"),
+                    ),
+            ),
+        )
+    }
+
+    #[test]
+    fn created_and_updated_child_graphs_merge_only_canonical_relation_keys() {
+        let key = EntityKey::new("School", 8_u64);
+        let root = EntityRuntimeState::default();
+        let parent = GraphNode::new("Platform").relation(
+            "schools",
+            GraphNode::new("School")
+                .operation(GraphOperation::Create)
+                .value("id", 8_u64)
+                .value("school_type_id", 1001_u64),
+        );
+        merge_relation_mutations_into_root(&context(), &root, &parent).unwrap();
+        let changes = root.current_change_set();
+        let values = changes.changes().get(&key).unwrap();
+        assert_eq!(values.get("school_type"), Some(&Value::U64(1001)));
+        assert!(!values.contains_key("school_type_id"));
+
+        let root = EntityRuntimeState::default();
+        let mut child = GraphNode::new("School")
+            .value("id", 8_u64)
+            .value("school_type_id", 1002_u64);
+        child.dirty_fields = Some(BTreeSet::from(["school_type_id".to_owned()]));
+        let parent = GraphNode::new("Platform").relation("schools", child);
+        merge_relation_mutations_into_root(&context(), &root, &parent).unwrap();
+        let changes = root.current_change_set();
+        let values = changes.changes().get(&key).unwrap();
+        assert_eq!(values.get("school_type"), Some(&Value::U64(1002)));
+        assert!(!values.contains_key("school_type_id"));
+    }
 }
 
 /// Build real graph ancestry once before policy/execution, not on UserContext.
@@ -1622,6 +1690,8 @@ mod trace_scope_capture_tests {
                 .with_entity(
                     EntityDescriptor::new("Payment")
                         .property(PropertyDescriptor::new("id", DataType::U64).id())
+                        .property(PropertyDescriptor::new("order", DataType::U64))
+                        .property(PropertyDescriptor::new("reference_code", DataType::Text))
                         .relation(
                             RelationDescriptor::new("attempts", "PaymentAttempt")
                                 .local_key("id")
@@ -1631,7 +1701,8 @@ mod trace_scope_capture_tests {
                 )
                 .with_entity(
                     EntityDescriptor::new("PaymentAttempt")
-                        .property(PropertyDescriptor::new("id", DataType::U64).id()),
+                        .property(PropertyDescriptor::new("id", DataType::U64).id())
+                        .property(PropertyDescriptor::new("payment", DataType::U64)),
                 ),
         );
         let mut graph = GraphNode::new("Order")
@@ -1706,12 +1777,13 @@ fn hydrate_ledger_relations(
                 continue;
             }
             let original_values = root.original_values_for(key);
+            let target_descriptor = context.require_entity(&key.entity)?;
             let mut values: crate::EntityValues = original_values
                 .clone()
                 .map(|values| BTreeMap::from(values).into())
                 .unwrap_or_default();
             if let Some(changes) = changes.changes().get(key) {
-                values.extend(changes.clone());
+                values.extend(storage_values_from_ledger(target_descriptor, changes)?);
             }
             let foreign_value = if relation.foreign_key == "id" {
                 Some(&key.id)
@@ -1747,7 +1819,10 @@ fn hydrate_ledger_relations(
             child.operation = operation;
             child.comment = root.get_entity_comment(key);
             child.original_values = original_values;
-            child.dirty_fields = Some(root.changed_field_names(key));
+            child.dirty_fields = Some(storage_fields_from_ledger(
+                target_descriptor,
+                &root.changed_field_names(key),
+            )?);
             if operation != GraphOperation::Remove {
                 hydrate_ledger_relations(context, root, &mut child, visited)?;
             }
@@ -1790,9 +1865,11 @@ fn preflight_graph(
             && let Some(id) = node.values.get("id").cloned()
         {
             let key = crate::EntityKey::new(node.entity.clone(), id);
+            let descriptor = context.require_entity(&node.entity)?;
             for (field, value) in &node.values {
                 if before.get(field) != Some(value) {
-                    root.set(key.clone(), field.clone(), value.clone());
+                    let name = canonical_field_from_storage(descriptor, field)?;
+                    root.set(key.clone(), name, value.clone());
                 }
             }
         }
@@ -1829,7 +1906,10 @@ fn preflight_pending_dynamic_entities(
             .map(|values| BTreeMap::from(values).into())
             .unwrap_or_default();
         if let Some(values) = changes.changes().get(key) {
-            pending.values.extend(values.clone());
+            let descriptor = context.require_entity(&key.entity)?;
+            pending
+                .values
+                .extend(storage_values_from_ledger(descriptor, values)?);
         }
         pending.values.insert("id".into(), key.id.clone());
         let loaded = pending
@@ -1842,7 +1922,11 @@ fn preflight_pending_dynamic_entities(
         pending
             .values
             .insert("_loaded_fields".into(), Value::List(loaded));
-        pending.dirty_fields = Some(root.changed_field_names(key));
+        let descriptor = context.require_entity(&key.entity)?;
+        pending.dirty_fields = Some(storage_fields_from_ledger(
+            descriptor,
+            &root.changed_field_names(key),
+        )?);
         pending.operation = if root.new_keys().contains(key) {
             GraphOperation::Create
         } else {
@@ -1936,12 +2020,14 @@ where
         Box::pin(
             context.observe_mutation_request(|| T::entity_descriptor().name, async move {
                 let entity = self.into_entity(); // applies comment onto the entity
-                if entity.has_pending_dynamic_mutations() || entity.dynamic_field_values().is_some()
+                let root = entity
+                    .__teaql_runtime_state_any()
+                    .and_then(|state| state.downcast_ref::<crate::EntityRuntimeState>())
+                    .cloned();
+                if root.is_some()
+                    || entity.has_pending_dynamic_mutations()
+                    || entity.dynamic_field_values().is_some()
                 {
-                    let root = entity
-                        .__teaql_runtime_state_any()
-                        .and_then(|state| state.downcast_ref::<crate::EntityRuntimeState>())
-                        .cloned();
                     if root.is_none() {
                         return Err(RuntimeError::Graph(
                             "dynamic save requires the runtime mutation ledger carrier".into(),
@@ -2075,14 +2161,14 @@ where
         let root_key = crate::EntityKey::new(node.entity.clone(), root_id);
         reject_cancelled_new_root(&root, &root_key)?;
         if let Some(changes) = root.current_change_set().changes().get(&root_key) {
-            for (field, value) in changes {
-                node.values.insert(field.clone(), value.clone());
-            }
+            let descriptor = context.require_entity(&node.entity)?;
+            node.values
+                .extend(storage_values_from_ledger(descriptor, changes)?);
         }
         let mut visited = BTreeSet::from([root_key.clone()]);
         hydrate_ledger_relations(context, &root, &mut node, &mut visited)?;
         preflight_graph(context, &mut node, &ObjectLocation::root(), Some(&root))?;
-        merge_relation_mutations_into_root(&root, &node)?;
+        merge_relation_mutations_into_root(context, &root, &node)?;
         preflight_pending_dynamic_entities(context, &root, &node)?;
         capture_ledger_trace_scopes(&root, &node)?;
         let has_ledger_changes = !root.current_change_set().is_empty()
@@ -2219,14 +2305,14 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
         let root_key = crate::EntityKey::new(node.entity.clone(), root_id);
         reject_cancelled_new_root(&root, &root_key)?;
         if let Some(changes) = root.current_change_set().changes().get(&root_key) {
-            for (field, value) in changes {
-                node.values.insert(field.clone(), value.clone());
-            }
+            let descriptor = context.require_entity(&node.entity)?;
+            node.values
+                .extend(storage_values_from_ledger(descriptor, changes)?);
         }
         let mut visited = BTreeSet::from([root_key.clone()]);
         hydrate_ledger_relations(context, &root, &mut node, &mut visited)?;
         preflight_graph(context, &mut node, &ObjectLocation::root(), Some(&root))?;
-        merge_relation_mutations_into_root(&root, &node)?;
+        merge_relation_mutations_into_root(context, &root, &node)?;
         preflight_pending_dynamic_entities(context, &root, &node)?;
         capture_ledger_trace_scopes(&root, &node)?;
         let has_ledger_changes = !root.current_change_set().is_empty()

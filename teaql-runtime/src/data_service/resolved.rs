@@ -2137,6 +2137,17 @@ where
     }
 
     fn emit_event(&self, mut event: RawAuditEvent) -> Result<(), RuntimeError> {
+        if let Ok(descriptor) = self
+            .data_service
+            .metadata
+            .context
+            .require_entity(&event.entity)
+        {
+            event.map_field_names(|field| {
+                crate::ledger_keys::canonical_field_from_storage(descriptor, field)
+                    .unwrap_or_else(|_| field.to_owned())
+            });
+        }
         event.diagnostic_redactions = self.data_service.mutation_privacy.clone();
         self.data_service.metadata.context.send_event(event)
     }
