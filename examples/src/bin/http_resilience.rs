@@ -36,8 +36,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let port = listener.local_addr()?.port();
     let fixture_started = Instant::now();
     let accepted_connections = Arc::new(AtomicUsize::new(0));
+    let request_lines = Arc::new(AtomicUsize::new(0));
+    let parsed_headers = Arc::new(AtomicUsize::new(0));
     let sent_responses = Arc::new(AtomicUsize::new(0));
     let server_accepted = accepted_connections.clone();
+    let server_lines = request_lines.clone();
+    let server_headers = parsed_headers.clone();
     let server_sent = sent_responses.clone();
     let server = std::thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -57,6 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if !matches!(reader.read_line(&mut first), Ok(n) if n > 0) {
                             break;
                         }
+                        server_lines.fetch_add(1, Ordering::SeqCst);
                         if served == 0 {
                             assert!(first.starts_with("GET /api/orders/1?"));
                         } else {
@@ -75,6 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             first.clear();
                         }
                         assert_eq!(traceparent.as_deref(), Some(TRACEPARENT));
+                        server_headers.fetch_add(1, Ordering::SeqCst);
                         let mut incoming_body = vec![0; content_length];
                         reader.read_exact(&mut incoming_body).unwrap();
                         let body = b"{\"status\":\"submitted\"}";
@@ -124,10 +130,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let response = match context.http_requests()?.execute(&context, &call).await {
         Ok(response) => response,
         Err(error) => {
+            let server_finished = server.join().is_ok();
             eprintln!(
-                "HTTP fixture first GET failed: accepted={} responses={} elapsed_ms={}",
+                "HTTP fixture first GET failed: accepted={} request_lines={} parsed_headers={} responses={} server_finished={} elapsed_ms={}",
                 accepted_connections.load(Ordering::SeqCst),
+                request_lines.load(Ordering::SeqCst),
+                parsed_headers.load(Ordering::SeqCst),
                 sent_responses.load(Ordering::SeqCst),
+                server_finished,
                 fixture_started.elapsed().as_millis(),
             );
             return Err(error.into());
