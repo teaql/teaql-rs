@@ -6,7 +6,7 @@ use teaql_core::{
 };
 use teaql_data_service::SqlExecutionOutcome;
 use teaql_provider_sqlite::{SqliteDialect, SqliteMutationExecutor, SqliteProviderExt as _};
-use teaql_runtime::{InMemoryMetadataStore, PurposedSelectQuery, UserContext};
+use teaql_runtime::{InMemoryMetadataStore, PurposedSelectQuery, RuntimeError, UserContext};
 
 type Executor =
     teaql_sql::SqlDataServiceExecutor<SqliteDialect, SqliteMutationExecutor, InMemoryMetadataStore>;
@@ -276,17 +276,13 @@ async fn run(shape: &str, transaction: bool, failure: bool) {
         context
             .execute_in_transaction::<Executor, _, _>(|scope| {
                 Box::pin(async move {
-                    // Return the query result separately: this fixture tests statement diagnostics,
-                    // not whether a successful parent SQL implies a committed business operation.
-                    Ok(
-                        execute(&scope.entity_data_service("Customer").unwrap(), shape)
-                            .await
-                            .map_err(|error| error.to_string()),
-                    )
+                    execute(&scope.entity_data_service("Customer").unwrap(), shape)
+                        .await
+                        .map_err(|error| RuntimeError::Transaction(error.to_string()))
                 })
             })
             .await
-            .unwrap()
+            .map_err(|error| error.to_string())
     } else {
         execute(&repository, shape)
             .await
@@ -499,22 +495,24 @@ async fn relation_file_fixture() {
         .unwrap()
         .execute_batch("ALTER TABLE items RENAME TO unavailable_relation")
         .unwrap();
-    context
-        .execute_in_transaction::<Executor, _, _>(|scope| {
-            Box::pin(async move {
-                assert!(
-                    execute(
-                        &scope.entity_data_service("Customer").unwrap(),
-                        "flat_nested"
-                    )
-                    .await
-                    .is_err()
-                );
-                Ok(())
+    assert!(
+        context
+            .execute_in_transaction::<Executor, _, _>(|scope| {
+                Box::pin(async move {
+                    assert!(
+                        execute(
+                            &scope.entity_data_service("Customer").unwrap(),
+                            "flat_nested"
+                        )
+                        .await
+                        .is_err()
+                    );
+                    Ok(())
+                })
             })
-        })
-        .await
-        .unwrap();
+            .await
+            .is_err()
+    );
     assert_eq!(context.sql_logs().len(), 3);
 }
 
@@ -543,16 +541,16 @@ async fn cached_parent(transaction: bool, failure: bool) {
         context
             .execute_in_transaction::<Executor, _, _>(|scope| {
                 Box::pin(async move {
-                    Ok(scope
+                    scope
                         .entity_data_service("Customer")
                         .unwrap()
                         .fetch_all(&query)
                         .await
-                        .map_err(|e| e.to_string()))
+                        .map_err(|error| RuntimeError::Transaction(error.to_string()))
                 })
             })
             .await
-            .unwrap()
+            .map_err(|error| error.to_string())
     } else {
         repo.fetch_all(&query).await.map_err(|e| e.to_string())
     };

@@ -284,11 +284,13 @@ impl DynamicFieldStore for SqliteTransaction {
     }
     fn ensure_schema(&self) -> DynamicStorageFuture<'_, ()> {
         Box::pin(async move {
-            self.executor
+            let result = self
+                .executor
                 .lock()
-                .map_err(database_error)?
-                .execute_batch(SCHEMA)
                 .map_err(database_error)
+                .and_then(|connection| connection.execute_batch(SCHEMA).map_err(database_error));
+            self.mark_failed_operation(&result);
+            result
         })
     }
     fn load_values<'a>(
@@ -300,13 +302,15 @@ impl DynamicFieldStore for SqliteTransaction {
         _intent: &'a QueryIntent,
     ) -> DynamicStorageFuture<'a, DynamicStorageRows> {
         Box::pin(async move {
-            load(
-                &*self.executor.lock().map_err(database_error)?,
-                namespace,
-                definitions,
-                ids,
-                selection,
-            )
+            check_namespace(namespace)?;
+            selection.validate(definitions)?;
+            let result = self
+                .executor
+                .lock()
+                .map_err(database_error)
+                .and_then(|connection| load(&connection, namespace, definitions, ids, selection));
+            self.mark_failed_operation(&result);
+            result
         })
     }
     fn validate_writes(&self, writes: &[DynamicFieldWrite]) -> Result<(), DynamicFieldError> {
@@ -322,7 +326,13 @@ impl DynamicFieldStore for SqliteTransaction {
     ) -> DynamicStorageFuture<'a, ()> {
         Box::pin(async move {
             self.validate_writes(writes)?;
-            apply(&*self.executor.lock().map_err(database_error)?, writes)
+            let result = self
+                .executor
+                .lock()
+                .map_err(database_error)
+                .and_then(|connection| apply(&connection, writes));
+            self.mark_failed_operation(&result);
+            result
         })
     }
 }
