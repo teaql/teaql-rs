@@ -14,6 +14,29 @@ use url::Url;
 
 const MAX_DURATION: Duration = Duration::from_secs(3600);
 
+fn local_fixture_transport_diagnostic(stage: &str, error: &reqwest::Error) {
+    if std::env::var_os("TEAQL_HTTP_LOCAL_FIXTURE_DIAGNOSTICS").is_none() {
+        return;
+    }
+    let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    let mut io_kind = None;
+    while let Some(current) = cause {
+        if let Some(io) = current.downcast_ref::<std::io::Error>() {
+            io_kind = Some(io.kind());
+            break;
+        }
+        cause = current.source();
+    }
+    // Never render the reqwest error: it can include the request URL or body.
+    eprintln!(
+        "TeaQL HTTP local fixture stage={stage} connect={} request={} body={} timeout={} io_kind={io_kind:?}",
+        error.is_connect(),
+        error.is_request(),
+        error.is_body(),
+        error.is_timeout(),
+    );
+}
+
 fn valid_duration(value: Duration) -> bool {
     !value.is_zero() && value <= MAX_DURATION
 }
@@ -434,6 +457,7 @@ impl ReqwestHttpRequestService {
             .await
             .map_err(|_| HttpFailure::Timeout)?
             .map_err(|error| {
+                local_fixture_transport_diagnostic("send", &error);
                 if error.is_timeout() {
                     HttpFailure::Timeout
                 } else if call.method() == HttpMethod::Post {
@@ -454,6 +478,7 @@ impl ReqwestHttpRequestService {
                 .await
                 .map_err(|_| HttpFailure::Timeout)?
                 .map_err(|error| {
+                    local_fixture_transport_diagnostic("body", &error);
                     if error.is_timeout() {
                         HttpFailure::Timeout
                     } else {

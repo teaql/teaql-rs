@@ -20,7 +20,7 @@ cargo build --quiet -p teaql-examples --bin http_resilience
 loopback_env=(
   env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY
   -u http_proxy -u https_proxy -u all_proxy
-  NO_PROXY='*' no_proxy='*'
+  NO_PROXY='*' no_proxy='*' TEAQL_HTTP_LOCAL_FIXTURE_DIAGNOSTICS=1
 )
 safe_diagnostic() {
   sed -E 's/PRIVATE_(QUERY|HEADER|BODY)[_[:alnum:]]*/[REDACTED]/g'
