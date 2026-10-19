@@ -16,6 +16,7 @@ if (( ${#proxy_vars[@]} > 0 )); then
   printf 'HTTP fixture: proxy variables present (%s); loopback example will not inherit them\n' "${proxy_vars[*]}"
 fi
 cargo test --quiet -p teaql-http-reqwest
+cargo test --quiet -p teaql-examples --bin http_resilience
 cargo build --quiet -p teaql-examples --bin http_resilience
 loopback_env=(
   env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY
