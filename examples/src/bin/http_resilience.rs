@@ -43,37 +43,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .set_read_timeout(Some(Duration::from_secs(2)))
                         .unwrap();
                     let mut reader = BufReader::new(stream.try_clone().unwrap());
-                    let mut first = String::new();
-                    reader.read_line(&mut first).unwrap();
-                    if served == 0 {
-                        assert!(first.starts_with("GET /api/orders/1?"));
-                    } else {
-                        assert!(first.starts_with("POST /api/orders/1?"));
-                    }
-                    first.clear();
-                    let mut content_length = 0;
-                    let mut traceparent = None;
-                    while reader.read_line(&mut first).unwrap() > 0 && first != "\r\n" {
-                        if first.to_ascii_lowercase().starts_with("content-length:") {
-                            content_length = first[15..].trim().parse::<usize>().unwrap();
+                    // Reqwest may reuse the connection for the POST. Handle both
+                    // requests on one socket, or accept another after read timeout.
+                    while served < 2 {
+                        let mut first = String::new();
+                        if !matches!(reader.read_line(&mut first), Ok(n) if n > 0) {
+                            break;
                         }
-                        if first.to_ascii_lowercase().starts_with("traceparent:") {
-                            traceparent = Some(first[12..].trim().to_owned());
+                        if served == 0 {
+                            assert!(first.starts_with("GET /api/orders/1?"));
+                        } else {
+                            assert!(first.starts_with("POST /api/orders/1?"));
                         }
                         first.clear();
-                    }
-                    assert_eq!(traceparent.as_deref(), Some(TRACEPARENT));
-                    let mut incoming_body = vec![0; content_length];
-                    reader.read_exact(&mut incoming_body).unwrap();
-                    let body = b"{\"status\":\"submitted\"}";
-                    write!(
+                        let mut content_length = 0;
+                        let mut traceparent = None;
+                        while reader.read_line(&mut first).unwrap() > 0 && first != "\r\n" {
+                            if first.to_ascii_lowercase().starts_with("content-length:") {
+                                content_length = first[15..].trim().parse::<usize>().unwrap();
+                            }
+                            if first.to_ascii_lowercase().starts_with("traceparent:") {
+                                traceparent = Some(first[12..].trim().to_owned());
+                            }
+                            first.clear();
+                        }
+                        assert_eq!(traceparent.as_deref(), Some(TRACEPARENT));
+                        let mut incoming_body = vec![0; content_length];
+                        reader.read_exact(&mut incoming_body).unwrap();
+                        let body = b"{\"status\":\"submitted\"}";
+                        write!(
                         stream,
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
                         body.len()
                     )
                     .unwrap();
-                    stream.write_all(body).unwrap();
-                    served += 1;
+                        stream.write_all(body).unwrap();
+                        stream.flush().unwrap();
+                        served += 1;
+                    }
                 }
                 Err(error)
                     if error.kind() == std::io::ErrorKind::WouldBlock
