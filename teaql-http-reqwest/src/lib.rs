@@ -20,16 +20,31 @@ fn local_fixture_transport_diagnostic(stage: &str, error: &reqwest::Error) {
     }
     let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(error);
     let mut io_kind = None;
+    let mut client_kind = None;
     while let Some(current) = cause {
         if let Some(io) = current.downcast_ref::<std::io::Error>() {
             io_kind = Some(io.kind());
+        }
+        // hyper-util's Display text is a fixed error-kind enum. Match only
+        // known literals; never print a source string that might hold a URL.
+        client_kind = client_kind.or(match current.to_string().as_str() {
+            "client error (Canceled)" => Some("canceled"),
+            "client error (ChannelClosed)" => Some("channel_closed"),
+            "client error (Connect)" => Some("connect"),
+            "client error (SendRequest)" => Some("send_request"),
+            "client error (UserUnsupportedRequestMethod)" => Some("bad_method"),
+            "client error (UserUnsupportedVersion)" => Some("bad_version"),
+            "client error (UserAbsoluteUriRequired)" => Some("bad_uri"),
+            _ => None,
+        });
+        if io_kind.is_some() && client_kind.is_some() {
             break;
         }
         cause = current.source();
     }
     // Never render the reqwest error: it can include the request URL or body.
     eprintln!(
-        "TeaQL HTTP local fixture stage={stage} connect={} request={} body={} timeout={} io_kind={io_kind:?}",
+        "TeaQL HTTP local fixture stage={stage} connect={} request={} body={} timeout={} io_kind={io_kind:?} client_kind={client_kind:?}",
         error.is_connect(),
         error.is_request(),
         error.is_body(),

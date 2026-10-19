@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -33,12 +34,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
+    let fixture_started = Instant::now();
+    let accepted_connections = Arc::new(AtomicUsize::new(0));
+    let sent_responses = Arc::new(AtomicUsize::new(0));
+    let server_accepted = accepted_connections.clone();
+    let server_sent = sent_responses.clone();
     let server = std::thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut served = 0;
         while served < 2 {
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    server_accepted.fetch_add(1, Ordering::SeqCst);
                     stream
                         .set_read_timeout(Some(Duration::from_secs(2)))
                         .unwrap();
@@ -80,6 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         stream.write_all(body).unwrap();
                         stream.flush().unwrap();
                         served += 1;
+                        server_sent.fetch_add(1, Ordering::SeqCst);
                     }
                 }
                 Err(error)
@@ -113,7 +121,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         TraceNode::typed(TraceKind::Purpose, "Order", None, "render order details"),
         TraceNode::typed(TraceKind::Comment, "Order", None, "load order graph"),
     ])?;
-    let response = context.http_requests()?.execute(&context, &call).await?;
+    let response = match context.http_requests()?.execute(&context, &call).await {
+        Ok(response) => response,
+        Err(error) => {
+            eprintln!(
+                "HTTP fixture first GET failed: accepted={} responses={} elapsed_ms={}",
+                accepted_connections.load(Ordering::SeqCst),
+                sent_responses.load(Ordering::SeqCst),
+                fixture_started.elapsed().as_millis(),
+            );
+            return Err(error.into());
+        }
+    };
     assert_eq!(response.status(), 200);
     assert_eq!(response.attempts(), 1);
     assert_eq!(response.json_value()?["status"], "submitted");
