@@ -22,6 +22,8 @@ where
 {
     context: &'context UserContext,
     transaction: Option<E::Tx<'context>>,
+    // A failed save may have written part of its graph before rollback fails.
+    attempted_ledgers: Mutex<Vec<crate::EntityRuntimeState>>,
     flushed_ledgers: Mutex<Vec<crate::EntityRuntimeState>>,
 }
 
@@ -41,6 +43,7 @@ impl UserContext {
         Ok(TransactionScope {
             context: self,
             transaction: Some(transaction),
+            attempted_ledgers: Mutex::new(Vec::new()),
             flushed_ledgers: Mutex::new(Vec::new()),
         })
     }
@@ -182,14 +185,17 @@ where
 
     /// Save one audited generated entity through this transaction.
     ///
-    /// Its mutation ledger remains pending until the enclosing scope commits,
-    /// so a later failure can roll back the database without losing retryable
-    /// in-memory mutation intent.
+    /// Its mutation ledger remains pending until the enclosing scope commits.
+    /// A confirmed rollback preserves retryable intent; an unknown commit or
+    /// rollback result marks every attempted graph as requiring a reload.
     pub async fn save_audited<T>(&self, audited: teaql_core::Audited<T>) -> Result<T, RuntimeError>
     where
         T: crate::LedgerEntity + Send + 'static,
         E::Tx<'context>: QueryExecutor + MutationExecutor + Send + Sync,
     {
+        if let Some(ledger) = audited.entity().entity_runtime_state() {
+            self.track_ledger(&self.attempted_ledgers, ledger);
+        }
         let (entity, ledger) = crate::save_audited_ledger_entity_with_executor(
             audited,
             self.context,
@@ -197,13 +203,7 @@ where
         )
         .await?;
         if let Some(ledger) = ledger {
-            let mut ledgers = self
-                .flushed_ledgers
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if !ledgers.iter().any(|pending| pending == &ledger) {
-                ledgers.push(ledger);
-            }
+            self.track_ledger(&self.flushed_ledgers, ledger);
         }
         Ok(entity)
     }
@@ -253,9 +253,10 @@ where
                     .transaction
                     .take()
                     .expect("transaction scope cannot be completed twice");
-                Transaction::commit(transaction)
-                    .await
-                    .map_err(|error| RuntimeError::Transaction(error.to_string()))?;
+                Transaction::commit(transaction).await.map_err(|_| {
+                    self.mark_attempted_ledgers_unknown();
+                    RuntimeError::TransactionOutcomeUnknown
+                })?;
                 for ledger in self
                     .flushed_ledgers
                     .lock()
@@ -271,14 +272,138 @@ where
                     .transaction
                     .take()
                     .expect("transaction scope cannot be completed twice");
-                Transaction::rollback(transaction)
-                    .await
-                    .map_err(|rollback| {
-                        RuntimeError::Transaction(format!(
-                            "operation failed ({error}); rollback also failed ({rollback})"
-                        ))
-                    })?;
+                Transaction::rollback(transaction).await.map_err(|_| {
+                    self.mark_attempted_ledgers_unknown();
+                    RuntimeError::TransactionOutcomeUnknown
+                })?;
                 Err(error)
+            }
+        }
+    }
+
+    fn track_ledger(
+        &self,
+        collection: &Mutex<Vec<crate::EntityRuntimeState>>,
+        ledger: crate::EntityRuntimeState,
+    ) {
+        let mut ledgers = collection.lock().unwrap_or_else(|error| error.into_inner());
+        if !ledgers.iter().any(|pending| pending == &ledger) {
+            ledgers.push(ledger);
+        }
+    }
+
+    fn mark_attempted_ledgers_unknown(&self) {
+        let ledgers = self
+            .attempted_ledgers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        for ledger in ledgers.iter() {
+            ledger.mark_transaction_outcome_unknown();
+        }
+    }
+}
+
+#[cfg(test)]
+mod transaction_outcome_tests {
+    use super::*;
+    use teaql_data_service::{DataServiceCapabilities, DataServiceExecutor, MutationResult};
+
+    #[derive(Clone, Copy)]
+    enum FailureMode {
+        Commit,
+        Rollback,
+    }
+
+    struct FailingExecutor;
+    struct FailingTransaction(FailureMode);
+
+    impl DataServiceExecutor for FailingExecutor {
+        type Error = std::io::Error;
+
+        fn capabilities(&self) -> DataServiceCapabilities {
+            DataServiceCapabilities::default()
+        }
+    }
+
+    impl DataServiceExecutor for FailingTransaction {
+        type Error = std::io::Error;
+
+        fn capabilities(&self) -> DataServiceCapabilities {
+            DataServiceCapabilities::default()
+        }
+    }
+
+    impl QueryExecutor for FailingTransaction {
+        async fn query(&self, _request: QueryRequest) -> Result<QueryResult, Self::Error> {
+            unreachable!("transaction-outcome test never issues a query")
+        }
+    }
+
+    impl MutationExecutor for FailingTransaction {
+        async fn mutate(&self, _request: MutationRequest) -> Result<MutationResult, Self::Error> {
+            unreachable!("transaction-outcome test never issues a mutation")
+        }
+    }
+
+    impl TransactionExecutor for FailingExecutor {
+        type Tx<'a> = FailingTransaction;
+
+        async fn begin(&self) -> Result<Self::Tx<'_>, Self::Error> {
+            unreachable!("transaction-outcome test constructs the scope directly")
+        }
+    }
+
+    impl Transaction for FailingTransaction {
+        type Error = std::io::Error;
+
+        async fn commit(self) -> Result<(), Self::Error> {
+            match self.0 {
+                FailureMode::Commit => Err(std::io::Error::other("COMMIT-SECRET-CANARY")),
+                FailureMode::Rollback => unreachable!("wrong test branch"),
+            }
+        }
+
+        async fn rollback(self) -> Result<(), Self::Error> {
+            match self.0 {
+                FailureMode::Rollback => Err(std::io::Error::other("ROLLBACK-SECRET-CANARY")),
+                FailureMode::Commit => unreachable!("wrong test branch"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_outer_transaction_poison_all_attempted_ledgers_without_leaking_errors() {
+        let context = UserContext::default();
+        for mode in [FailureMode::Commit, FailureMode::Rollback] {
+            let first = crate::EntityRuntimeState::default();
+            let second = crate::EntityRuntimeState::default();
+            let scope = TransactionScope::<FailingExecutor> {
+                context: &context,
+                transaction: Some(FailingTransaction(mode)),
+                attempted_ledgers: Mutex::new(vec![first.clone(), second.clone()]),
+                // The second graph wrote before its save returned an error, so
+                // it is attempted but not eligible for confirmed-commit cleanup.
+                flushed_ledgers: Mutex::new(vec![first.clone()]),
+            };
+            let result = match mode {
+                FailureMode::Commit => scope.complete(Ok(())).await,
+                FailureMode::Rollback => {
+                    scope
+                        .complete::<()>(Err(RuntimeError::Graph("OP-SECRET-CANARY".into())))
+                        .await
+                }
+            };
+            let error = result.unwrap_err();
+            assert!(matches!(error, RuntimeError::TransactionOutcomeUnknown));
+            assert_eq!(
+                error.to_string(),
+                "TRANSACTION_OUTCOME_UNKNOWN: commit or rollback could not confirm the transaction outcome; reload the graph before any retry"
+            );
+            for ledger in [&first, &second] {
+                assert!(matches!(
+                    ledger.require_known_transaction_outcome(),
+                    Err(RuntimeError::TransactionOutcomeUnknownReloadRequired)
+                ));
             }
         }
     }

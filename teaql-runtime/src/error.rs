@@ -15,6 +15,11 @@ pub enum RuntimeError {
     /// A provider commit succeeded, but its typed return value could not be
     /// reconstructed. The caller must reload rather than repeat the mutation.
     CommittedStateReconciliation,
+    /// Commit or rollback returned an error without proving whether the write
+    /// became durable. Provider diagnostics may contain secrets.
+    TransactionOutcomeUnknown,
+    /// The same mutation graph must not be saved again after an unknown outcome.
+    TransactionOutcomeUnknownReloadRequired,
     MissingEntity(String),
     SqlCompile(SqlCompileError),
     Behavior(String),
@@ -49,6 +54,14 @@ impl std::fmt::Display for RuntimeError {
             Self::CommittedStateReconciliation => write!(
                 f,
                 "COMMITTED_STATE_RELOAD_REQUIRED: transaction committed but entity reconstruction failed; reload the graph and do not retry the mutation blindly"
+            ),
+            Self::TransactionOutcomeUnknown => write!(
+                f,
+                "TRANSACTION_OUTCOME_UNKNOWN: commit or rollback could not confirm the transaction outcome; reload the graph before any retry"
+            ),
+            Self::TransactionOutcomeUnknownReloadRequired => write!(
+                f,
+                "TRANSACTION_OUTCOME_UNKNOWN_RELOAD_REQUIRED: this mutation graph has an unknown transaction outcome; reload it before saving again"
             ),
             Self::MissingEntity(entity) => write!(f, "missing entity descriptor: {entity}"),
             Self::SqlCompile(err) => err.fmt(f),
