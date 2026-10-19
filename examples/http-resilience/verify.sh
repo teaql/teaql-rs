@@ -2,19 +2,33 @@
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo"
-# The fixture is loopback-only. Preserve existing proxy exclusions while
-# preventing a hosted runner's system proxy from intercepting its requests.
+# The fixture is loopback-only. Preserve exclusions for the contract tests;
+# the example process below uses a proxy-free environment.
 export NO_PROXY="${NO_PROXY:+$NO_PROXY,}127.0.0.1,localhost"
 export no_proxy="$NO_PROXY"
-if [[ -n "${HTTP_PROXY:-}${http_proxy:-}" ]]; then
-  printf 'HTTP fixture: system proxy present; loopback bypass configured\n'
+proxy_vars=()
+for name in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; do
+  if [[ -n "${!name:-}" ]]; then
+    proxy_vars+=("$name")
+  fi
+done
+if (( ${#proxy_vars[@]} > 0 )); then
+  printf 'HTTP fixture: proxy variables present (%s); loopback example will not inherit them\n' "${proxy_vars[*]}"
 fi
 cargo test --quiet -p teaql-http-reqwest
+cargo test --quiet -p teaql-examples --bin http_resilience
+cargo build --quiet -p teaql-examples --bin http_resilience
+loopback_env=(
+  env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY
+  -u http_proxy -u https_proxy -u all_proxy
+  NO_PROXY='*' no_proxy='*'
+)
 safe_diagnostic() {
   sed -E 's/PRIVATE_(QUERY|HEADER|BODY)[_[:alnum:]]*/[REDACTED]/g'
 }
 for round in 1 2; do
-  if output="$(cargo run --quiet -p teaql-examples --bin http_resilience 2>&1)"; then
+  # Build with the runner's network settings; execute without ambient proxies.
+  if output="$("${loopback_env[@]}" cargo run --offline --quiet -p teaql-examples --bin http_resilience 2>&1)"; then
     :
   else
     status=$?
