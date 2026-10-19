@@ -719,6 +719,17 @@ impl UserContext {
         self
     }
 
+    /// Enable trusted source-side committed-event capture for graph saves.
+    /// A provider must also install its Outbox schema through ensure_schema().
+    pub fn with_committed_event_source(mut self, source: crate::CommittedEventSource) -> Self {
+        self.insert_resource(source);
+        self
+    }
+
+    pub fn committed_event_source(&self) -> Option<&crate::CommittedEventSource> {
+        self.get_resource::<crate::CommittedEventSource>()
+    }
+
     pub fn set_schema_provider(&mut self, provider: impl SchemaProvider + 'static) {
         self.schema_provider = Some(Box::new(provider));
     }
