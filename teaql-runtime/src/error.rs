@@ -12,6 +12,9 @@ pub enum RuntimeError {
         /// Number of failed deliveries; the sink error itself may contain secrets.
         failures: usize,
     },
+    /// A provider commit succeeded, but its typed return value could not be
+    /// reconstructed. The caller must reload rather than repeat the mutation.
+    CommittedStateReconciliation,
     MissingEntity(String),
     SqlCompile(SqlCompileError),
     Behavior(String),
@@ -42,6 +45,10 @@ impl std::fmt::Display for RuntimeError {
             Self::AuditAfterCommit { .. } => write!(
                 f,
                 "AUDIT_DELIVERY_AFTER_COMMIT: transaction committed but audit delivery failed; do not retry the mutation blindly"
+            ),
+            Self::CommittedStateReconciliation => write!(
+                f,
+                "COMMITTED_STATE_RELOAD_REQUIRED: transaction committed but entity reconstruction failed; reload the graph and do not retry the mutation blindly"
             ),
             Self::MissingEntity(entity) => write!(f, "missing entity descriptor: {entity}"),
             Self::SqlCompile(err) => err.fmt(f),
