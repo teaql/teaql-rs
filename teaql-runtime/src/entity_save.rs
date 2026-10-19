@@ -1179,18 +1179,19 @@ fn merge_relation_mutations_into_root(
             match child.operation {
                 GraphOperation::Create => {
                     root.mark_as_new(key.clone());
-                    for (field, value) in
-                        canonical_values_from_storage(descriptor, &child.values)?.iter()
-                    {
-                        root.set(key.clone(), field, value.clone());
+                    // Validate aliases before writing any part of this child.
+                    canonical_values_from_storage(descriptor, &child.values)?;
+                    for (field, value) in &child.values {
+                        merge_graph_value_into_ledger(root, &key, descriptor, field, value)?;
                     }
                 }
                 GraphOperation::Upsert => {
                     if let Some(fields) = &child.dirty_fields {
                         for field in fields {
                             if let Some(value) = child.values.get(field) {
-                                let name = canonical_field_from_storage(descriptor, field)?;
-                                root.set(key.clone(), name, value.clone());
+                                merge_graph_value_into_ledger(
+                                    root, &key, descriptor, field, value,
+                                )?;
                             }
                         }
                     }
@@ -1210,6 +1211,32 @@ fn merge_relation_mutations_into_root(
             merge_relation_mutations_into_root(context, root, child)?;
         }
     }
+    Ok(())
+}
+
+fn merge_graph_value_into_ledger(
+    root: &crate::EntityRuntimeState,
+    key: &crate::EntityKey,
+    descriptor: &teaql_core::EntityDescriptor,
+    storage_field: &str,
+    value: &Value,
+) -> Result<(), RuntimeError> {
+    let canonical_field = canonical_field_from_storage(descriptor, storage_field)?;
+    if canonical_field != storage_field
+        && let Some(existing) = root.get(key, storage_field)
+    {
+        // Libraries generated before canonical relation keys wrote the local
+        // FK name into the Ledger. Do not add a second alias for the same value.
+        // New libraries write only the canonical relation name.
+        if existing == *value {
+            return Ok(());
+        }
+        return Err(RuntimeError::Graph(format!(
+            "conflicting relation ledger aliases {}.{} and {}.{}",
+            descriptor.name, storage_field, descriptor.name, canonical_field
+        )));
+    }
+    root.set(key.clone(), canonical_field, value.clone());
     Ok(())
 }
 
@@ -1265,6 +1292,45 @@ mod relation_ledger_key_tests {
         let values = changes.changes().get(&key).unwrap();
         assert_eq!(values.get("school_type"), Some(&Value::U64(1002)));
         assert!(!values.contains_key("school_type_id"));
+    }
+
+    #[test]
+    fn old_storage_key_is_not_duplicated_when_child_graph_agrees() {
+        let key = EntityKey::new("School", 8_u64);
+        let root = EntityRuntimeState::default();
+        root.set(key.clone(), "school_type_id", Value::U64(1001));
+        let parent = GraphNode::new("Platform").relation(
+            "schools",
+            GraphNode::new("School")
+                .operation(GraphOperation::Create)
+                .value("id", 8_u64)
+                .value("school_type_id", 1001_u64),
+        );
+        merge_relation_mutations_into_root(&context(), &root, &parent).unwrap();
+        let changes = root.current_change_set();
+        let values = changes.changes().get(&key).unwrap();
+        assert_eq!(values.get("school_type_id"), Some(&Value::U64(1001)));
+        assert!(!values.contains_key("school_type"));
+    }
+
+    #[test]
+    fn old_storage_key_conflict_is_not_silently_accepted() {
+        let key = EntityKey::new("School", 8_u64);
+        let root = EntityRuntimeState::default();
+        root.set(key, "school_type_id", Value::U64(1001));
+        let parent = GraphNode::new("Platform").relation(
+            "schools",
+            GraphNode::new("School")
+                .operation(GraphOperation::Create)
+                .value("id", 8_u64)
+                .value("school_type_id", 1002_u64),
+        );
+        assert!(
+            merge_relation_mutations_into_root(&context(), &root, &parent)
+                .unwrap_err()
+                .to_string()
+                .contains("conflicting relation ledger aliases")
+        );
     }
 }
 
