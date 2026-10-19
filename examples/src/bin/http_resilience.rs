@@ -13,6 +13,13 @@ use teaql_runtime::{
 
 const TRACEPARENT: &str = "00-11111111111111111111111111111111-aaaaaaaaaaaaaaaa-01";
 
+fn prepare_fixture_stream(stream: &std::net::TcpStream) -> std::io::Result<()> {
+    // Accepted sockets can inherit the listener's nonblocking mode. This raw
+    // HTTP fixture deliberately uses blocking reads with a bounded timeout.
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(Duration::from_secs(2)))
+}
+
 struct ExampleTelemetry {
     operations: Arc<Mutex<Vec<RuntimeOperation>>>,
 }
@@ -39,9 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         while served < 2 {
             match listener.accept() {
                 Ok((mut stream, _)) => {
-                    stream
-                        .set_read_timeout(Some(Duration::from_secs(2)))
-                        .unwrap();
+                    prepare_fixture_stream(&stream).unwrap();
                     let mut reader = BufReader::new(stream.try_clone().unwrap());
                     // Reqwest may reuse the connection for the POST. Handle both
                     // requests on one socket, or accept another after read timeout.
@@ -161,4 +166,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(!diagnostic.contains("PRIVATE_BODY"));
     println!("HTTP_RESILIENCE_PASS status=200 attempts=1 requests=2 trace=2 lineage=3");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpStream;
+
+    #[test]
+    fn accepted_fixture_stream_waits_for_delayed_request_bytes() {
+        let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let sender = std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).unwrap();
+            std::thread::sleep(Duration::from_millis(40));
+            stream.write_all(b"GET /probe HTTP/1.1\r\n").unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("fixture accept failed: {error}"),
+            }
+        };
+        prepare_fixture_stream(&stream).unwrap();
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).unwrap();
+        assert_eq!(line, "GET /probe HTTP/1.1\r\n");
+        sender.join().unwrap();
+    }
 }
