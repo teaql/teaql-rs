@@ -2,6 +2,7 @@ extern crate self as teaql_runtime;
 mod business_id;
 mod checker;
 mod commit_audit;
+mod committed_events;
 mod context;
 mod data_service;
 mod document_round_trip;
@@ -51,6 +52,7 @@ pub use business_id::{
     FixedBusinessClock, InMemoryBusinessIdAllocator, PermutedDailyBusinessIdProfile,
     StaticBusinessIdKeyProvider, SystemBusinessClock,
 };
+pub use committed_events::CommittedEventSource;
 pub use context::{
     ContextEntityRef, ContextRootError, ContinuousPageCursor, ContinuousPageCursorStore, DataStore,
     FixEvidence, FixEvidenceSource, GeneratedSchemaBootstrap, GeneratedSchemaBootstrapFuture,
