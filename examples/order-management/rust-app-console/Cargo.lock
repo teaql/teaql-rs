@@ -1398,6 +1398,7 @@ dependencies = [
  "futures-util",
  "hkdf",
  "hmac",
+ "libc",
  "rust_decimal",
  "serde",
  "serde_json",

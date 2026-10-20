@@ -26,6 +26,9 @@ use crate::round_trip_reference::{
     ReferenceWireCodec, ResolvedEntityReference, RoundTripReferenceError,
     TrustedReferencePrincipal, TrustedReferencePrincipalResource,
 };
+use crate::secret::{
+    SecretFailure, SecretProvider, SecretProviderResource, SecretRef, SecretValue,
+};
 use crate::{
     BusinessIdSchemaContributor, BusinessIdService, CheckObjectStatus, CheckResult, CheckResults,
     CheckerRegistry, ContextError, EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry,
@@ -867,6 +870,9 @@ impl UserContext {
         self
     }
 
+    /// Replaces the service for later calls. The exclusive Context borrow keeps
+    /// replacement from racing with an in-flight call on this same Context;
+    /// independent Contexts still require coordinated profile rollout.
     pub fn set_http_request_service(&mut self, service: Arc<dyn HttpRequestService>) {
         self.insert_resource(HttpRequestServiceResource(service));
     }
@@ -875,6 +881,29 @@ impl UserContext {
         self.get_resource::<HttpRequestServiceResource>()
             .map(|resource| &resource.0)
             .ok_or(HttpFailure::ProfileNotConfigured)
+    }
+
+    pub fn with_secret_provider(mut self, provider: Arc<dyn SecretProvider>) -> Self {
+        self.set_secret_provider(provider);
+        self
+    }
+
+    pub fn set_secret_provider(&mut self, provider: Arc<dyn SecretProvider>) {
+        self.insert_resource(SecretProviderResource(provider));
+    }
+
+    pub async fn resolve_secret(
+        &self,
+        reference: &SecretRef,
+        comment: &str,
+    ) -> Result<SecretValue, SecretFailure> {
+        if comment.trim().is_empty() {
+            return Err(SecretFailure::InvalidInput);
+        }
+        let provider = self
+            .get_resource::<SecretProviderResource>()
+            .ok_or(SecretFailure::ProviderNotConfigured)?;
+        provider.0.resolve(self, reference).await
     }
 
     pub fn with_entity_reference_codec(mut self, codec: Arc<dyn EntityReferenceCodec>) -> Self {
