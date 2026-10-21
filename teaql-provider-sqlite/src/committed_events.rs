@@ -19,6 +19,9 @@ use crate::{
     strip_identifier_quotes,
 };
 
+#[path = "committed_snapshot.rs"]
+pub mod snapshot;
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct OutboxRecord {
     pub source_runtime_id: String,
@@ -196,7 +199,11 @@ impl SqliteMutationExecutor {
                 target_id TEXT NOT NULL, \
                 acked_sequence INTEGER NOT NULL CHECK(acked_sequence >= 0), \
                 model_hash TEXT NOT NULL, \
-                PRIMARY KEY(source_runtime_id, target_id));",
+                PRIMARY KEY(source_runtime_id, target_id));\
+             CREATE TABLE IF NOT EXISTS teaql_event_snapshot (\
+                source_runtime_id TEXT PRIMARY KEY, snapshot_id TEXT NOT NULL,\
+                source_sequence INTEGER NOT NULL CHECK(source_sequence >= 0),\
+                model_hash TEXT NOT NULL,payload_sha256 TEXT NOT NULL,payload_json TEXT NOT NULL);",
         )?;
         Ok(())
     }
@@ -581,6 +588,55 @@ fn decode_model_mutation(
     context: &UserContext,
     fact: &JsonValue,
 ) -> Result<ModelMutation, CommittedEventError> {
+    decode_model_mutation_mode(context, fact, false)
+}
+
+// Only the separate snapshot decoder can restore arbitrary committed versions.
+fn decode_snapshot_row(
+    context: &UserContext,
+    row: &JsonValue,
+) -> Result<ModelMutation, CommittedEventError> {
+    let object = row.as_object().ok_or(CommittedEventError::InvalidEnvelope(
+        "snapshot row shape is invalid",
+    ))?;
+    if object.len() != 4
+        || !["entity_type", "entity_id", "version", "fields"]
+            .iter()
+            .all(|key| object.contains_key(*key))
+    {
+        return Err(CommittedEventError::InvalidEnvelope(
+            "snapshot row shape is invalid",
+        ));
+    }
+    let id = parse_positive_i64(row.get("entity_id"))?;
+    let version = parse_i64_text(&row["version"])?;
+    if row["entity_id"].as_str() != Some(id.to_string().as_str())
+        || row["version"].as_str() != Some(version.to_string().as_str())
+        || version == 0
+        || version == i64::MIN
+    {
+        return Err(CommittedEventError::InvalidEnvelope(
+            "snapshot identity/version is invalid",
+        ));
+    }
+    let mut fact = row.clone();
+    let object = fact.as_object_mut().unwrap();
+    object.remove("version");
+    object.insert(
+        "committed_version".into(),
+        JsonValue::String(version.to_string()),
+    );
+    object.insert("operation".into(), JsonValue::String("create".into()));
+    object.insert("base_version".into(), JsonValue::Null);
+    object.insert("trace_chain".into(), serde_json::json!([]));
+    decode_model_mutation_mode(context, &fact, true)
+}
+
+fn decode_model_mutation_mode(
+    context: &UserContext,
+    fact: &JsonValue,
+    snapshot: bool,
+) -> Result<ModelMutation, CommittedEventError> {
     let fact = fact
         .as_object()
         .ok_or(CommittedEventError::InvalidEnvelope(
@@ -629,7 +685,13 @@ fn decode_model_mutation(
         CommittedEventError::InvalidEnvelope("committed version is missing"),
     )?)?;
     let valid_version = match (operation, base_version) {
-        (ModelOperation::Create, None) => committed_version == 1,
+        (ModelOperation::Create, None) => {
+            if snapshot {
+                committed_version != 0 && committed_version != i64::MIN
+            } else {
+                committed_version == 1
+            }
+        }
         (ModelOperation::Update, Some(base)) if base > 0 => {
             base.checked_add(1) == Some(committed_version)
         }

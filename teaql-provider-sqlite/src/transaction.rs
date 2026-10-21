@@ -14,6 +14,33 @@ pub struct SqliteTransaction {
     rollback_only: AtomicBool,
 }
 
+impl SqliteMutationExecutor {
+    /// Snapshot bootstrap cannot nest inside a caller-owned transaction. Reject
+    /// a busy provider instead of deadlocking on this operation's own lease.
+    pub(super) fn begin_snapshot_transaction(
+        &self,
+        read_only: bool,
+    ) -> Result<SqliteTransaction, MutationExecutorError> {
+        let lease = self.transaction_lease.try_lock_owned().ok_or_else(|| {
+            MutationExecutorError::Bind("snapshot requires an idle standalone provider".into())
+        })?;
+        self.lock()?.execute(
+            if read_only {
+                "BEGIN DEFERRED"
+            } else {
+                "BEGIN IMMEDIATE"
+            },
+            [],
+        )?;
+        Ok(SqliteTransaction {
+            executor: self.clone(),
+            _lease: lease,
+            active: true,
+            rollback_only: AtomicBool::new(false),
+        })
+    }
+}
+
 impl SqlTransactionTransport for SqliteMutationExecutor {
     type Tx<'a>
         = SqliteTransaction
