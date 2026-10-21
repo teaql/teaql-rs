@@ -3767,6 +3767,7 @@ dependencies = [
  "opentelemetry_sdk",
  "prost",
  "reqwest 0.13.4",
+ "rusqlite",
  "rust_decimal",
  "serde",
  "serde_json",

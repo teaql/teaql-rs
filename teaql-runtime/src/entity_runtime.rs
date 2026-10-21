@@ -571,6 +571,9 @@ impl ChangeSetStack {
 #[derive(Debug, Clone, Default)]
 struct EntityMutationLedger {
     change_sets: ChangeSetStack,
+    /// A commit/rollback error may have left this graph durable. Do not retry
+    /// its retained mutation intent until the caller reloads authoritative data.
+    transaction_outcome_unknown_requires_reload: bool,
     /// Annotation comment for observability during graph save.
     comment: Option<String>,
     /// Local entity reasons are distinct from the root request reason.
@@ -951,6 +954,11 @@ impl EntityRuntimeState {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone();
+        // A poisoned child must never be made retryable by composing it into
+        // another graph, including when the composition later fails.
+        if snapshot.transaction_outcome_unknown_requires_reload {
+            self.mark_transaction_outcome_unknown();
+        }
         let loaded_version = source
             .loaded_snapshot
             .with(|loaded| {
@@ -1280,7 +1288,8 @@ impl EntityRuntimeState {
     }
 
     /// Clear all state consumed by a successfully committed ledger save.
-    /// Failed saves must not call this method so their pending intent remains retryable.
+    /// Only confirmed failures before commit remain retryable. An unknown
+    /// transaction outcome requires an authoritative reload instead.
     pub fn clear_committed(&self) {
         if self.inner.get().is_some() {
             self.write_context(|context| {
@@ -1296,6 +1305,25 @@ impl EntityRuntimeState {
                 context.entity_comments.clear();
                 context.is_new = false;
             });
+        }
+    }
+
+    /// Mark a caller-owned transaction's commit/rollback result as unknown.
+    /// The retained graph must be reloaded, not replayed. Normal audited saves
+    /// set this automatically; callers of `save_audited_ledger_entity_with_executor`
+    /// must set it when their outer transaction cannot confirm its outcome.
+    #[doc(hidden)]
+    pub fn mark_transaction_outcome_unknown(&self) {
+        self.write_context(|context| context.transaction_outcome_unknown_requires_reload = true);
+    }
+
+    pub(crate) fn require_known_transaction_outcome(&self) -> Result<(), crate::RuntimeError> {
+        if self.read_context(false, |context| {
+            context.transaction_outcome_unknown_requires_reload
+        }) {
+            Err(crate::RuntimeError::TransactionOutcomeUnknownReloadRequired)
+        } else {
+            Ok(())
         }
     }
 
@@ -1699,7 +1727,8 @@ pub trait LedgerEntity: teaql_core::Entity {
     /// Include another entity's pending mutation intent in this entity's save boundary.
     ///
     /// This is explicit: it does not load a relation, query the database, or save either
-    /// entity. The source keeps its ledger so a failed save can be retried. Set the
+    /// entity. The source keeps its ledger so confirmed pre-commit failures can
+    /// be retried. An unknown commit/rollback outcome requires a reload. Set the
     /// modeled relationship on the source before composing it into the target graph.
     fn include_pending_mutations_from<E: LedgerEntity>(
         &self,
@@ -1797,6 +1826,27 @@ mod composition_api_tests {
             target_state.get(&key, "name"),
             Some(Value::Text("second".to_owned()))
         );
+    }
+
+    #[test]
+    fn composing_unknown_outcome_cannot_make_a_poisoned_child_retryable() {
+        let target_state = EntityRuntimeState::default();
+        let source_state = EntityRuntimeState::default();
+        source_state.set(
+            EntityKey::new_static("Child", 42_u64),
+            "name",
+            Value::Text("pending".to_owned()),
+        );
+        source_state.mark_transaction_outcome_unknown();
+        let target = TestEntity(Some(target_state.clone()));
+        let source = TestEntity(Some(source_state));
+        target.include_pending_mutations_from(&source).unwrap();
+        assert!(matches!(
+            target_state.require_known_transaction_outcome(),
+            Err(crate::RuntimeError::TransactionOutcomeUnknownReloadRequired)
+        ));
+        target_state.clear_committed();
+        assert!(target_state.require_known_transaction_outcome().is_err());
     }
 
     #[test]
