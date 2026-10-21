@@ -626,6 +626,20 @@ fn snapshot_does_not_bypass_context_or_caller_transaction_or_normal_version_rule
 
 #[test]
 fn source_json_null_and_ambiguous_metadata_fail_closed_without_poisoning_the_connection() {
+    async fn export(
+        executor: &SqliteMutationExecutor,
+        context: &UserContext,
+    ) -> Result<SnapshotRecord, teaql_provider_sqlite::committed_events::CommittedEventError> {
+        executor
+            .export_model_checked_snapshot(
+                context,
+                "json-probe",
+                "preserve JSON semantics",
+                "verify lossless export",
+                SnapshotLimits::default(),
+            )
+            .await
+    }
     block_on(async {
         let executor =
             SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
@@ -644,24 +658,15 @@ fn source_json_null_and_ambiguous_metadata_fail_closed_without_poisoning_the_con
             .with_metadata(InMemoryMetadataStore::new().with_entity(descriptor.clone()))
             .with_committed_event_source(CommittedEventSource::new(SOURCE, MODEL).unwrap());
         context.use_sqlite_provider(executor.clone());
-        let export = |context| {
-            executor.export_model_checked_snapshot(
-                context,
-                "json-probe",
-                "preserve JSON semantics",
-                "verify lossless export",
-                SnapshotLimits::default(),
-            )
-        };
         // JSON-text null must not be silently restored as SQL NULL.
-        assert!(export(&context).await.is_err());
+        assert!(export(&executor, &context).await.is_err());
         executor
             .connection()
             .lock()
             .unwrap()
             .execute("UPDATE json_probe_data SET payload=NULL", [])
             .unwrap();
-        let snapshot = export(&context).await.unwrap();
+        let snapshot = export(&executor, &context).await.unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&snapshot.payload_json).unwrap()["rows"][0]["fields"]["payload"],
             Value::Null
@@ -673,16 +678,16 @@ fn source_json_null_and_ambiguous_metadata_fail_closed_without_poisoning_the_con
             .execute("UPDATE json_probe_data SET payload=?1", [" {\"a\" : 1} "])
             .unwrap();
         assert_eq!(
-            serde_json::from_str::<Value>(&export(&context).await.unwrap().payload_json).unwrap()["rows"]
-                [0]["fields"]["payload"],
+            serde_json::from_str::<Value>(&export(&executor, &context).await.unwrap().payload_json)
+                .unwrap()["rows"][0]["fields"]["payload"],
             json!({"a":1})
         );
         let ambiguous = descriptor.clone().property(
             PropertyDescriptor::new("payload", DataType::Text).column_name("other_payload"),
         );
         context.set_metadata(InMemoryMetadataStore::new().with_entity(ambiguous));
-        assert!(export(&context).await.is_err());
+        assert!(export(&executor, &context).await.is_err());
         context.set_metadata(InMemoryMetadataStore::new().with_entity(descriptor));
-        assert!(export(&context).await.is_ok());
+        assert!(export(&executor, &context).await.is_ok());
     });
 }
