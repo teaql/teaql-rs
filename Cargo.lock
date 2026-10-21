@@ -3735,6 +3735,7 @@ name = "teaql-provider-sqlite"
 version = "5.0.7"
 dependencies = [
  "async-stream",
+ "async-trait",
  "chrono",
  "futures-core",
  "futures-executor",
