@@ -193,10 +193,10 @@ fn committed_target_does_not_replay_positively_wired_business_effects() {
 
         // Positive controls through the installed Context services. Do not merely
         // assert zeros on unwired mocks. Check/Fix deliberately changes a value.
-        let mut values = EntityValues::from([
+        let mut values = EntityValues::from(std::collections::BTreeMap::from([
             ("name".into(), Value::Text("control".into())),
             ("occurred_at".into(), Value::I64(1)),
-        ]);
+        ]));
         context.check_and_fix_values("order", &mut values).unwrap();
         assert_eq!(values["name"], Value::Text("REPLAYED FIX".into()));
         context
