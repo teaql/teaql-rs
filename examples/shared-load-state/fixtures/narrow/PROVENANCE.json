@@ -1,6 +1,6 @@
 {
   "kind": "raw generated minimal Rust load-state fixture",
-  "producerCommit": "301b1898bae49c16aadfe88ee54cb625c0f6dbea",
+  "producerCommit": "c3336f5f7e0f1329a4d953d9d4486978ab2119e4",
   "modelSha256": "0664ef5b32b1126100676782ec5c6c2d56e9e491920bfdfacadb4790a66b9ca9",
   "runtimeVersion": "5.0.7",
   "qualification": "generated source only; local runtime execution is a separate gate",
@@ -42,7 +42,7 @@
     },
     {
       "path": "lib/src/platform/expression.rs",
-      "sha256": "a1dee6f1d98bcd551be56a3f1639651658382e315f8eb76e28010cf95e4d6e0e"
+      "sha256": "14d8194513a72651d0c03ab446ca38e266e5c5d1437e86390a6923cde457884b"
     },
     {
       "path": "lib/src/platform/mod.rs",
@@ -82,7 +82,7 @@
     },
     {
       "path": "lib/src/school_capacity_summary/expression.rs",
-      "sha256": "4ef3abcf785360112135998632fc4391d125d70eae4a8442ddff225ecf3798b6"
+      "sha256": "71fc3b5d1f6424e3094ff2982c33beec09682244c38821a644fb48ae3b166016"
     },
     {
       "path": "lib/src/school_capacity_summary/mod.rs",
@@ -106,7 +106,7 @@
     },
     {
       "path": "lib/src/school_type/expression.rs",
-      "sha256": "731f0bd03e624588e5eeabd4d1368a68b4731bd6b0ca3613f5d7e9e433764b82"
+      "sha256": "2c763eda3ffccb49c449344f32891a0b012252b83c7d11d9777c8df67d79d35b"
     },
     {
       "path": "lib/src/school_type/mod.rs",
@@ -130,7 +130,7 @@
     },
     {
       "path": "lib/src/school/expression.rs",
-      "sha256": "ba8b64f62ddbeb46cfc69e5d33ac71f8da3f4ae23838491870f6dd2112c1eae0"
+      "sha256": "9000faa548829bcdc0efee2c085671daa60eea5a1b9f8bff2a71f10c86109c6d"
     },
     {
       "path": "lib/src/school/mod.rs",

@@ -26,7 +26,7 @@ impl<'a> PlatformExpression<'a> {
         match &self.result {
             teaql_core::eval::EvalResult::Value(value) => Ok(Some(*value)),
             teaql_core::eval::EvalResult::Null => Ok(None),
-            teaql_core::eval::EvalResult::NotLoaded { failed_node, .. } => Err(teaql_core::eval_location::NotLoadedDiagnostic::new(self.path.failure_location(), self.path.missing_member().unwrap_or(failed_node.as_str())).with_profile(teaql_core::object_location::JsonFieldNamingProfile::from_model_value("").expect("validated model JSON naming"))),
+            teaql_core::eval::EvalResult::NotLoaded { failed_node, .. } => Err(teaql_core::eval_location::NotLoadedDiagnostic::new(self.path.failure_location(), self.path.missing_member().unwrap_or(failed_node.as_str())).with_profile(teaql_core::object_location::JsonFieldNamingProfile::from_model_value("camelCase").expect("validated model JSON naming"))),
         }
     }
 
@@ -111,7 +111,7 @@ impl<'a> PlatformListExpression<'a> {
         match &self.result {
             teaql_core::eval::EvalResult::Value(value) => Ok(Some(*value)),
             teaql_core::eval::EvalResult::Null => Ok(None),
-            teaql_core::eval::EvalResult::NotLoaded { failed_node, .. } => Err(teaql_core::eval_location::NotLoadedDiagnostic::new(self.path.failure_location(), self.path.missing_member().unwrap_or(failed_node.as_str())).with_profile(teaql_core::object_location::JsonFieldNamingProfile::from_model_value("").expect("validated model JSON naming"))),
+            teaql_core::eval::EvalResult::NotLoaded { failed_node, .. } => Err(teaql_core::eval_location::NotLoadedDiagnostic::new(self.path.failure_location(), self.path.missing_member().unwrap_or(failed_node.as_str())).with_profile(teaql_core::object_location::JsonFieldNamingProfile::from_model_value("camelCase").expect("validated model JSON naming"))),
         }
     }
 
