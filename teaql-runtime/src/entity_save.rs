@@ -27,6 +27,35 @@ pub(crate) fn record_graph_fix_evidence(evidence: crate::FixEvidence) {
     let _ = GRAPH_FIX_EVIDENCE.try_with(|current| current.lock().unwrap().push(evidence));
 }
 
+// An async save can be cancelled after the provider starts committing or
+// rolling back. Without a confirmed acknowledgement, retrying its retained
+// mutation ledger could duplicate durable business rows or Outbox events.
+struct LedgerTransactionOutcomeGuard {
+    root: crate::EntityRuntimeState,
+    confirmed: bool,
+}
+
+impl LedgerTransactionOutcomeGuard {
+    fn new(root: crate::EntityRuntimeState) -> Self {
+        Self {
+            root,
+            confirmed: false,
+        }
+    }
+
+    fn confirm(&mut self) {
+        self.confirmed = true;
+    }
+}
+
+impl Drop for LedgerTransactionOutcomeGuard {
+    fn drop(&mut self) {
+        if !self.confirmed {
+            self.root.mark_transaction_outcome_unknown();
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // DynGraphSaver — type-erased graph save capability
 // ---------------------------------------------------------------------------
@@ -168,6 +197,7 @@ where
             let tx = teaql_data_service::TransactionExecutor::begin(executor)
                 .await
                 .map_err(|e| RuntimeError::Graph(e.to_string()))?;
+            let mut outcome = LedgerTransactionOutcomeGuard::new(root.clone());
             let (result, audit_events) = crate::commit_audit::collect(
                 context,
                 crate::with_mutation_governance(governance, async {
@@ -268,6 +298,7 @@ where
                             root.mark_transaction_outcome_unknown();
                             RuntimeError::TransactionOutcomeUnknown
                         })?;
+                    outcome.confirm();
                     return Err(match error {
                         DataServiceError::Runtime(r) => r,
                         other => RuntimeError::Graph(other.to_string()),
@@ -275,6 +306,7 @@ where
                 }
             }
             root.clear_committed();
+            outcome.confirm();
             crate::commit_audit::deliver(context, audit_events)?;
             Ok(node)
         })
@@ -715,15 +747,15 @@ mod transactional_ledger_readback_tests {
                 teaql_data_service::MutationCommand::Update(command) => {
                     assert_eq!(command.expected_version, Some(1));
                     for (field, value) in command.values {
-                        if field == "name" {
-                            if let Some(connection) = &state.sqlite {
-                                connection
-                                    .execute(
-                                        "UPDATE task SET name = ?1, version = 2 WHERE id = 1 AND version = 1",
-                                        [value.try_text().expect("text fixture")],
-                                    )
-                                    .map_err(std::io::Error::other)?;
-                            }
+                        if field == "name"
+                            && let Some(connection) = &state.sqlite
+                        {
+                            connection
+                                .execute(
+                                    "UPDATE task SET name = ?1, version = 2 WHERE id = 1 AND version = 1",
+                                    [value.try_text().expect("text fixture")],
+                                )
+                                .map_err(std::io::Error::other)?;
                         }
                         state.row.insert(field, value);
                     }
@@ -780,37 +812,49 @@ mod transactional_ledger_readback_tests {
         }
 
         async fn commit(self) -> Result<(), Self::Error> {
-            let mut state = self.0.lock().unwrap();
-            if state.calls.contains(&"simulate-commit-failure") {
-                if let Some(connection) = &state.sqlite {
-                    connection
-                        .execute_batch("ROLLBACK")
-                        .map_err(std::io::Error::other)?;
+            {
+                let mut state = self.0.lock().unwrap();
+                if state.calls.contains(&"simulate-commit-failure") {
+                    if let Some(connection) = &state.sqlite {
+                        connection
+                            .execute_batch("ROLLBACK")
+                            .map_err(std::io::Error::other)?;
+                    }
+                    state.calls.push("commit-failed");
+                    return Err(std::io::Error::other("COMMIT-SECRET-CANARY"));
                 }
-                state.calls.push("commit-failed");
-                return Err(std::io::Error::other("COMMIT-SECRET-CANARY"));
-            }
-            if state.calls.contains(&"simulate-commit-ack-loss") {
-                if let Some(connection) = &state.sqlite {
-                    connection
-                        .execute_batch("COMMIT")
-                        .map_err(std::io::Error::other)?;
+                if state.calls.contains(&"simulate-commit-ack-loss") {
+                    if let Some(connection) = &state.sqlite {
+                        connection
+                            .execute_batch("COMMIT")
+                            .map_err(std::io::Error::other)?;
+                    }
+                    state.calls.push("commit-durable-ack-lost");
+                    return Err(std::io::Error::other("COMMIT-SECRET-CANARY"));
                 }
-                state.calls.push("commit-durable-ack-lost");
-                return Err(std::io::Error::other("COMMIT-SECRET-CANARY"));
+                if state.calls.contains(&"simulate-commit-ack-pending") {
+                    if let Some(connection) = &state.sqlite {
+                        connection
+                            .execute_batch("COMMIT")
+                            .map_err(std::io::Error::other)?;
+                    }
+                    state.calls.push("commit-durable-ack-pending");
+                } else {
+                    if let Some(connection) = &state.sqlite {
+                        connection
+                            .execute_batch("COMMIT")
+                            .map_err(std::io::Error::other)?;
+                    }
+                    state.calls.push("commit");
+                    // Simulate a concurrent writer becoming visible just after commit.
+                    state.row.insert("version".to_owned(), Value::I64(3));
+                    state
+                        .row
+                        .insert("name".to_owned(), Value::Text("other writer".to_owned()));
+                    return Ok(());
+                }
             }
-            if let Some(connection) = &state.sqlite {
-                connection
-                    .execute_batch("COMMIT")
-                    .map_err(std::io::Error::other)?;
-            }
-            state.calls.push("commit");
-            // Simulate a concurrent writer becoming visible just after commit.
-            state.row.insert("version".to_owned(), Value::I64(3));
-            state
-                .row
-                .insert("name".to_owned(), Value::Text("other writer".to_owned()));
-            Ok(())
+            std::future::pending().await
         }
 
         async fn rollback(self) -> Result<(), Self::Error> {
@@ -1138,6 +1182,87 @@ mod transactional_ledger_readback_tests {
             .unwrap();
         assert_eq!(persisted_name, "updated");
         let calls_before_retry = state.lock().unwrap().calls.len();
+        let retry_error = GraphSaverFor::<Ambient>::new()
+            .save_ledger_dyn(&context, node, root)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            retry_error,
+            RuntimeError::TransactionOutcomeUnknownReloadRequired
+        ));
+        assert_eq!(state.lock().unwrap().calls.len(), calls_before_retry);
+    }
+
+    #[tokio::test]
+    async fn cancelled_commit_after_durable_sqlite_write_requires_reload() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE task (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name TEXT NOT NULL); \
+                 CREATE TABLE outbox (payload_json TEXT NOT NULL); \
+                 INSERT INTO task (id, version, name) VALUES (1, 1, 'before')",
+            )
+            .unwrap();
+        let state = Arc::new(Mutex::new(State {
+            row: BTreeMap::from([
+                ("id".to_owned(), Value::I64(1)),
+                ("version".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::Text("before".to_owned())),
+            ]),
+            calls: vec!["simulate-commit-ack-pending"],
+            fail_readback: false,
+            sqlite: Some(connection),
+        }));
+        let descriptor = EntityDescriptor::new("Task")
+            .property(PropertyDescriptor::new("id", DataType::I64).id())
+            .property(PropertyDescriptor::new("version", DataType::I64).version())
+            .property(PropertyDescriptor::new("name", DataType::Text));
+        let mut context = UserContext::default()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(descriptor))
+            .with_committed_event_source(
+                CommittedEventSource::new(
+                    "transaction-cancelled-test",
+                    "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                )
+                .unwrap(),
+            );
+        context.insert_resource(Ambient(state.clone()));
+        let root = EntityRuntimeState::default();
+        let key = EntityKey::new_static("Task", 1_i64);
+        root.set_original_version(key.clone(), 1);
+        root.set(key, "name", Value::Text("updated".to_owned()));
+        let node = GraphNode::new("Task")
+            .comment("verify cancelled commit acknowledgement")
+            .value("id", 1_i64)
+            .value("version", 1_i64)
+            .value("name", "before");
+        let cancelled = tokio::time::timeout(
+            std::time::Duration::from_millis(10),
+            GraphSaverFor::<Ambient>::new().save_ledger_dyn(&context, node.clone(), root.clone()),
+        )
+        .await;
+        assert!(
+            cancelled.is_err(),
+            "fixture must cancel the pending commit acknowledgement"
+        );
+        let calls_before_retry = {
+            let state_guard = state.lock().unwrap();
+            assert!(state_guard.calls.contains(&"commit-durable-ack-pending"));
+            let connection = state_guard.sqlite.as_ref().unwrap();
+            let persisted_name: String = connection
+                .query_row("SELECT name FROM task WHERE id = 1", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(persisted_name, "updated");
+            let outbox_count: i64 = connection
+                .query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(outbox_count, 1);
+            state_guard.calls.len()
+        };
+        assert!(matches!(
+            root.require_known_transaction_outcome(),
+            Err(RuntimeError::TransactionOutcomeUnknownReloadRequired)
+        ));
         let retry_error = GraphSaverFor::<Ambient>::new()
             .save_ledger_dyn(&context, node, root)
             .await

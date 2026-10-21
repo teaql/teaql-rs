@@ -25,6 +25,8 @@ where
     // A failed save may have written part of its graph before rollback fails.
     attempted_ledgers: Mutex<Vec<crate::EntityRuntimeState>>,
     flushed_ledgers: Mutex<Vec<crate::EntityRuntimeState>>,
+    // Dropping an in-flight commit/rollback future may lose its acknowledgement.
+    completion_confirmed: bool,
 }
 
 impl UserContext {
@@ -45,6 +47,7 @@ impl UserContext {
             transaction: Some(transaction),
             attempted_ledgers: Mutex::new(Vec::new()),
             flushed_ledgers: Mutex::new(Vec::new()),
+            completion_confirmed: false,
         })
     }
 
@@ -265,6 +268,7 @@ where
                 {
                     ledger.clear_committed();
                 }
+                self.completion_confirmed = true;
                 Ok(value)
             }
             Err(error) => {
@@ -276,6 +280,7 @@ where
                     self.mark_attempted_ledgers_unknown();
                     RuntimeError::TransactionOutcomeUnknown
                 })?;
+                self.completion_confirmed = true;
                 Err(error)
             }
         }
@@ -303,6 +308,20 @@ where
     }
 }
 
+impl<E> Drop for TransactionScope<'_, E>
+where
+    E: TransactionExecutor,
+{
+    fn drop(&mut self) {
+        // A cancelled future can disappear while the provider is committing or
+        // rolling back. There is no portable proof of the durable outcome at
+        // that point, so surviving graph ledgers must not remain replayable.
+        if !self.completion_confirmed {
+            self.mark_attempted_ledgers_unknown();
+        }
+    }
+}
+
 #[cfg(test)]
 mod transaction_outcome_tests {
     use super::*;
@@ -312,6 +331,10 @@ mod transaction_outcome_tests {
     enum FailureMode {
         Commit,
         Rollback,
+        CommitSuccess,
+        RollbackSuccess,
+        PendingCommit,
+        PendingRollback,
     }
 
     struct FailingExecutor;
@@ -359,14 +382,24 @@ mod transaction_outcome_tests {
         async fn commit(self) -> Result<(), Self::Error> {
             match self.0 {
                 FailureMode::Commit => Err(std::io::Error::other("COMMIT-SECRET-CANARY")),
-                FailureMode::Rollback => unreachable!("wrong test branch"),
+                FailureMode::CommitSuccess => Ok(()),
+                FailureMode::PendingCommit => std::future::pending().await,
+                FailureMode::Rollback
+                | FailureMode::RollbackSuccess
+                | FailureMode::PendingRollback => {
+                    unreachable!("wrong test branch")
+                }
             }
         }
 
         async fn rollback(self) -> Result<(), Self::Error> {
             match self.0 {
                 FailureMode::Rollback => Err(std::io::Error::other("ROLLBACK-SECRET-CANARY")),
-                FailureMode::Commit => unreachable!("wrong test branch"),
+                FailureMode::RollbackSuccess => Ok(()),
+                FailureMode::PendingRollback => std::future::pending().await,
+                FailureMode::Commit | FailureMode::CommitSuccess | FailureMode::PendingCommit => {
+                    unreachable!("wrong test branch")
+                }
             }
         }
     }
@@ -384,6 +417,7 @@ mod transaction_outcome_tests {
                 // The second graph wrote before its save returned an error, so
                 // it is attempted but not eligible for confirmed-commit cleanup.
                 flushed_ledgers: Mutex::new(vec![first.clone()]),
+                completion_confirmed: false,
             };
             let result = match mode {
                 FailureMode::Commit => scope.complete(Ok(())).await,
@@ -392,12 +426,97 @@ mod transaction_outcome_tests {
                         .complete::<()>(Err(RuntimeError::Graph("OP-SECRET-CANARY".into())))
                         .await
                 }
+                FailureMode::CommitSuccess
+                | FailureMode::RollbackSuccess
+                | FailureMode::PendingCommit
+                | FailureMode::PendingRollback => unreachable!(),
             };
             let error = result.unwrap_err();
             assert!(matches!(error, RuntimeError::TransactionOutcomeUnknown));
             assert_eq!(
                 error.to_string(),
                 "TRANSACTION_OUTCOME_UNKNOWN: commit or rollback could not confirm the transaction outcome; reload the graph before any retry"
+            );
+            for ledger in [&first, &second] {
+                assert!(matches!(
+                    ledger.require_known_transaction_outcome(),
+                    Err(RuntimeError::TransactionOutcomeUnknownReloadRequired)
+                ));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn confirmed_completion_preserves_known_graph_outcomes() {
+        let context = UserContext::default();
+        for mode in [FailureMode::CommitSuccess, FailureMode::RollbackSuccess] {
+            let ledger = crate::EntityRuntimeState::default();
+            let scope = TransactionScope::<FailingExecutor> {
+                context: &context,
+                transaction: Some(FailingTransaction(mode)),
+                attempted_ledgers: Mutex::new(vec![ledger.clone()]),
+                flushed_ledgers: Mutex::new(vec![ledger.clone()]),
+                completion_confirmed: false,
+            };
+            let result = match mode {
+                FailureMode::CommitSuccess => scope.complete(Ok(())).await,
+                FailureMode::RollbackSuccess => {
+                    scope
+                        .complete::<()>(Err(RuntimeError::Graph("original failure".into())))
+                        .await
+                }
+                FailureMode::Commit
+                | FailureMode::Rollback
+                | FailureMode::PendingCommit
+                | FailureMode::PendingRollback => unreachable!(),
+            };
+            match mode {
+                FailureMode::CommitSuccess => assert!(result.is_ok()),
+                FailureMode::RollbackSuccess => {
+                    assert!(matches!(result, Err(RuntimeError::Graph(_))))
+                }
+                _ => unreachable!(),
+            }
+            assert!(ledger.require_known_transaction_outcome().is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_in_flight_completion_requires_reloading_every_attempted_graph() {
+        let context = UserContext::default();
+        for mode in [FailureMode::PendingCommit, FailureMode::PendingRollback] {
+            let first = crate::EntityRuntimeState::default();
+            let second = crate::EntityRuntimeState::default();
+            let scope = TransactionScope::<FailingExecutor> {
+                context: &context,
+                transaction: Some(FailingTransaction(mode)),
+                attempted_ledgers: Mutex::new(vec![first.clone(), second.clone()]),
+                flushed_ledgers: Mutex::new(vec![first.clone()]),
+                completion_confirmed: false,
+            };
+            let result = match mode {
+                FailureMode::PendingCommit => {
+                    tokio::time::timeout(
+                        std::time::Duration::from_millis(10),
+                        scope.complete(Ok(())),
+                    )
+                    .await
+                }
+                FailureMode::PendingRollback => {
+                    tokio::time::timeout(
+                        std::time::Duration::from_millis(10),
+                        scope.complete::<()>(Err(RuntimeError::Graph("test failure".into()))),
+                    )
+                    .await
+                }
+                FailureMode::Commit
+                | FailureMode::Rollback
+                | FailureMode::CommitSuccess
+                | FailureMode::RollbackSuccess => unreachable!(),
+            };
+            assert!(
+                result.is_err(),
+                "fixture must cancel an in-flight provider call"
             );
             for ledger in [&first, &second] {
                 assert!(matches!(
