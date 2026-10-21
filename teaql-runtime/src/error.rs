@@ -9,8 +9,17 @@ pub enum RuntimeError {
     RequestIntent(teaql_core::RequestIntentError),
     /// The mutation is committed; callers must not blindly retry the write.
     AuditAfterCommit {
-        source: Box<RuntimeError>,
+        /// Number of failed deliveries; the sink error itself may contain secrets.
+        failures: usize,
     },
+    /// A provider commit succeeded, but its typed return value could not be
+    /// reconstructed. The caller must reload rather than repeat the mutation.
+    CommittedStateReconciliation,
+    /// Commit or rollback returned an error without proving whether the write
+    /// became durable. Provider diagnostics may contain secrets.
+    TransactionOutcomeUnknown,
+    /// The same mutation graph must not be saved again after an unknown outcome.
+    TransactionOutcomeUnknownReloadRequired,
     MissingEntity(String),
     SqlCompile(SqlCompileError),
     Behavior(String),
@@ -41,6 +50,18 @@ impl std::fmt::Display for RuntimeError {
             Self::AuditAfterCommit { .. } => write!(
                 f,
                 "AUDIT_DELIVERY_AFTER_COMMIT: transaction committed but audit delivery failed; do not retry the mutation blindly"
+            ),
+            Self::CommittedStateReconciliation => write!(
+                f,
+                "COMMITTED_STATE_RELOAD_REQUIRED: transaction committed but entity reconstruction failed; reload the graph and do not retry the mutation blindly"
+            ),
+            Self::TransactionOutcomeUnknown => write!(
+                f,
+                "TRANSACTION_OUTCOME_UNKNOWN: commit or rollback could not confirm the transaction outcome; reload the graph before any retry"
+            ),
+            Self::TransactionOutcomeUnknownReloadRequired => write!(
+                f,
+                "TRANSACTION_OUTCOME_UNKNOWN_RELOAD_REQUIRED: this mutation graph has an unknown transaction outcome; reload it before saving again"
             ),
             Self::MissingEntity(entity) => write!(f, "missing entity descriptor: {entity}"),
             Self::SqlCompile(err) => err.fmt(f),

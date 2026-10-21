@@ -31,6 +31,35 @@ pub(crate) fn record_graph_fix_evidence(evidence: crate::FixEvidence) {
     let _ = GRAPH_FIX_EVIDENCE.try_with(|current| current.lock().unwrap().push(evidence));
 }
 
+// An async save can be cancelled after the provider starts committing or
+// rolling back. Without a confirmed acknowledgement, retrying its retained
+// mutation ledger could duplicate durable business rows or Outbox events.
+struct LedgerTransactionOutcomeGuard {
+    root: crate::EntityRuntimeState,
+    confirmed: bool,
+}
+
+impl LedgerTransactionOutcomeGuard {
+    fn new(root: crate::EntityRuntimeState) -> Self {
+        Self {
+            root,
+            confirmed: false,
+        }
+    }
+
+    fn confirm(&mut self) {
+        self.confirmed = true;
+    }
+}
+
+impl Drop for LedgerTransactionOutcomeGuard {
+    fn drop(&mut self) {
+        if !self.confirmed {
+            self.root.mark_transaction_outcome_unknown();
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // DynGraphSaver — type-erased graph save capability
 // ---------------------------------------------------------------------------
@@ -88,6 +117,12 @@ where
         node: GraphNode,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
+            if context.committed_event_source().is_some() {
+                return Err(RuntimeError::Graph(
+                    "committed-event capture requires the audited Entity Mutation Ledger save path"
+                        .into(),
+                ));
+            }
             teaql_core::MutationIntent::from_optional(node.comment.as_deref())?;
             let entity = node.entity.clone();
             let executor = context
@@ -117,14 +152,14 @@ where
                 Ok(saved) => {
                     teaql_data_service::Transaction::commit(tx)
                         .await
-                        .map_err(|e| RuntimeError::Graph(e.to_string()))?;
+                        .map_err(|_| RuntimeError::TransactionOutcomeUnknown)?;
                     crate::commit_audit::deliver(context, audit_events)?;
                     Ok(saved)
                 }
                 Err(error) => {
                     teaql_data_service::Transaction::rollback(tx)
                         .await
-                        .map_err(|e| RuntimeError::Graph(e.to_string()))?;
+                        .map_err(|_| RuntimeError::TransactionOutcomeUnknown)?;
                     Err(match error {
                         DataServiceError::Runtime(r) => r,
                         other => RuntimeError::Graph(other.to_string()),
@@ -141,6 +176,7 @@ where
         root: crate::EntityRuntimeState,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
+            root.require_known_transaction_outcome()?;
             if root.has_pending_dynamic_mutations() {
                 context.dynamic_graph_provider()?;
             }
@@ -165,6 +201,7 @@ where
             let tx = teaql_data_service::TransactionExecutor::begin(executor)
                 .await
                 .map_err(|e| RuntimeError::Graph(e.to_string()))?;
+            let mut outcome = LedgerTransactionOutcomeGuard::new(root.clone());
             let (result, audit_events) = crate::commit_audit::collect(
                 context,
                 crate::with_mutation_governance(governance, async {
@@ -176,6 +213,12 @@ where
                                 .map_err(RuntimeError::from)
                                 .map_err(DataServiceError::Runtime)?,
                         );
+                    let update_preimages = if context.committed_event_source().is_some() {
+                        crate::committed_events::capture_update_preimages(context, &eds, &root)
+                            .await?
+                    } else {
+                        BTreeMap::new()
+                    };
                     let locations = ledger_object_locations(&node);
                     let mut generated_ids = eds
                         .execute_ledger_plan_internal(root.clone(), &locations)
@@ -214,6 +257,31 @@ where
                                 "persisted {entity} record could not be read back"
                             )))
                         })?;
+                    if let Some(source) = context.committed_event_source()
+                        && let Some(append) = crate::committed_events::freeze_ledger_set(
+                            context,
+                            &eds,
+                            &root,
+                            &generated_ids,
+                            &update_preimages,
+                            source,
+                        )
+                        .await?
+                    {
+                        let recorded =
+                            teaql_data_service::Transaction::append_committed_set(&tx, &append)
+                                .await
+                                .map_err(|error| {
+                                    DataServiceError::Runtime(RuntimeError::Graph(format!(
+                                        "committed-event append failed: {error}"
+                                    )))
+                                })?;
+                        if !recorded {
+                            return Err(DataServiceError::Runtime(RuntimeError::Graph(
+                                "committed-event capture is unsupported by this transaction".into(),
+                            )));
+                        }
+                    }
                     Ok(())
                 }),
             )
@@ -222,12 +290,19 @@ where
                 Ok(()) => {
                     teaql_data_service::Transaction::commit(tx)
                         .await
-                        .map_err(|e| RuntimeError::Graph(e.to_string()))?;
+                        .map_err(|_| {
+                            root.mark_transaction_outcome_unknown();
+                            RuntimeError::TransactionOutcomeUnknown
+                        })?;
                 }
                 Err(error) => {
                     teaql_data_service::Transaction::rollback(tx)
                         .await
-                        .map_err(|e| RuntimeError::Graph(e.to_string()))?;
+                        .map_err(|_| {
+                            root.mark_transaction_outcome_unknown();
+                            RuntimeError::TransactionOutcomeUnknown
+                        })?;
+                    outcome.confirm();
                     return Err(match error {
                         DataServiceError::Runtime(r) => r,
                         other => RuntimeError::Graph(other.to_string()),
@@ -235,6 +310,7 @@ where
                 }
             }
             root.clear_committed();
+            outcome.confirm();
             crate::commit_audit::deliver(context, audit_events)?;
             Ok(node)
         })
@@ -536,19 +612,25 @@ mod save_relation_state_tests {
 
 #[cfg(test)]
 mod transactional_ledger_readback_tests {
-    use super::{DynGraphSaver, GraphSaverFor};
+    use super::{
+        DynGraphSaver, GraphSaverFor, save_audited_ledger_entity,
+        save_audited_ledger_entity_with_executor,
+    };
     use crate::{
-        EntityKey, EntityRuntimeState, GraphNode, InMemoryMetadataStore, MutationDecision,
-        MutationPlan, MutationPolicy, MutationPolicyIdentity, MutationPolicySource, RawAuditEvent,
-        RawAuditEventSink, RuntimeError, UserContext,
+        CommittedEventSource, EntityKey, EntityRuntimeState, GraphNode, InMemoryMetadataStore,
+        MutationDecision, MutationPlan, MutationPolicy, MutationPolicyIdentity,
+        MutationPolicySource, RawAuditEvent, RawAuditEventSink, RuntimeError, UserContext,
     };
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
-    use teaql_core::{DataType, EntityDescriptor, PropertyDescriptor, Value};
+    use teaql_core::{
+        CompactRow, DataType, Entity, EntityDescriptor, EntityError, MutationValues,
+        PropertyDescriptor, TeaqlEntity, Value,
+    };
     use teaql_data_service::{
-        DataServiceCapabilities, DataServiceExecutor, ExecutionMetadata, MutationExecutor,
-        MutationRequest, MutationResult, QueryExecutor, QueryRequest, QueryResult, Transaction,
-        TransactionExecutor,
+        CommittedSetAppend, DataServiceCapabilities, DataServiceExecutor, ExecutionMetadata,
+        MutationExecutor, MutationRequest, MutationResult, QueryExecutor, QueryRequest,
+        QueryResult, Transaction, TransactionExecutor,
     };
 
     #[derive(Default)]
@@ -556,6 +638,7 @@ mod transactional_ledger_readback_tests {
         row: BTreeMap<String, Value>,
         calls: Vec<&'static str>,
         fail_readback: bool,
+        sqlite: Option<rusqlite::Connection>,
     }
 
     #[derive(Clone)]
@@ -637,6 +720,23 @@ mod transactional_ledger_readback_tests {
                     metadata: ExecutionMetadata::unrecorded_query(0),
                 });
             }
+            if let Some(connection) = &state.sqlite {
+                let (id, version, name): (i64, i64, String) = connection
+                    .query_row(
+                        "SELECT id, version, name FROM task WHERE id = 1",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .map_err(std::io::Error::other)?;
+                return Ok(QueryResult {
+                    rows: vec![CompactRow::from_map(BTreeMap::from([
+                        ("id".to_owned(), Value::I64(id)),
+                        ("version".to_owned(), Value::I64(version)),
+                        ("name".to_owned(), Value::Text(name)),
+                    ]))],
+                    metadata: ExecutionMetadata::unrecorded_query(1),
+                });
+            }
             Ok(row_result(&state))
         }
     }
@@ -655,6 +755,16 @@ mod transactional_ledger_readback_tests {
                 teaql_data_service::MutationCommand::Update(command) => {
                     assert_eq!(command.expected_version, Some(1));
                     for (field, value) in command.values {
+                        if field == "name"
+                            && let Some(connection) = &state.sqlite
+                        {
+                            connection
+                                .execute(
+                                    "UPDATE task SET name = ?1, version = 2 WHERE id = 1 AND version = 1",
+                                    [value.try_text().expect("text fixture")],
+                                )
+                                .map_err(std::io::Error::other)?;
+                        }
                         state.row.insert(field, value);
                     }
                 }
@@ -677,7 +787,13 @@ mod transactional_ledger_readback_tests {
         type Tx<'a> = Tx;
 
         async fn begin(&self) -> Result<Self::Tx<'_>, Self::Error> {
-            self.0.lock().unwrap().calls.push("begin");
+            let mut state = self.0.lock().unwrap();
+            state.calls.push("begin");
+            if let Some(connection) = &state.sqlite {
+                connection
+                    .execute_batch("BEGIN IMMEDIATE")
+                    .map_err(std::io::Error::other)?;
+            }
             Ok(Tx(self.0.clone()))
         }
     }
@@ -685,24 +801,89 @@ mod transactional_ledger_readback_tests {
     impl Transaction for Tx {
         type Error = std::io::Error;
 
-        async fn commit(self) -> Result<(), Self::Error> {
+        async fn append_committed_set(
+            &self,
+            append: &CommittedSetAppend,
+        ) -> Result<bool, Self::Error> {
             let mut state = self.0.lock().unwrap();
-            if state.calls.contains(&"simulate-commit-failure") {
-                state.calls.push("commit-failed");
-                return Err(std::io::Error::other("simulated commit failure"));
+            state.calls.push("transaction-outbox-append");
+            let Some(connection) = &state.sqlite else {
+                return Ok(false);
+            };
+            connection
+                .execute(
+                    "INSERT INTO outbox (payload_json) VALUES (?1)",
+                    [&append.payload_json],
+                )
+                .map_err(std::io::Error::other)?;
+            Ok(true)
+        }
+
+        async fn commit(self) -> Result<(), Self::Error> {
+            {
+                let mut state = self.0.lock().unwrap();
+                if state.calls.contains(&"simulate-commit-failure") {
+                    if let Some(connection) = &state.sqlite {
+                        connection
+                            .execute_batch("ROLLBACK")
+                            .map_err(std::io::Error::other)?;
+                    }
+                    state.calls.push("commit-failed");
+                    return Err(std::io::Error::other("COMMIT-SECRET-CANARY"));
+                }
+                if state.calls.contains(&"simulate-commit-ack-loss") {
+                    if let Some(connection) = &state.sqlite {
+                        connection
+                            .execute_batch("COMMIT")
+                            .map_err(std::io::Error::other)?;
+                    }
+                    state.calls.push("commit-durable-ack-lost");
+                    return Err(std::io::Error::other("COMMIT-SECRET-CANARY"));
+                }
+                if state.calls.contains(&"simulate-commit-ack-pending") {
+                    if let Some(connection) = &state.sqlite {
+                        connection
+                            .execute_batch("COMMIT")
+                            .map_err(std::io::Error::other)?;
+                    }
+                    state.calls.push("commit-durable-ack-pending");
+                } else {
+                    if let Some(connection) = &state.sqlite {
+                        connection
+                            .execute_batch("COMMIT")
+                            .map_err(std::io::Error::other)?;
+                    }
+                    state.calls.push("commit");
+                    // Simulate a concurrent writer becoming visible just after commit.
+                    state.row.insert("version".to_owned(), Value::I64(3));
+                    state
+                        .row
+                        .insert("name".to_owned(), Value::Text("other writer".to_owned()));
+                    return Ok(());
+                }
             }
-            state.calls.push("commit");
-            // Simulate a concurrent writer becoming visible just after commit.
-            state.row.insert("version".to_owned(), Value::I64(3));
-            state
-                .row
-                .insert("name".to_owned(), Value::Text("other writer".to_owned()));
-            Ok(())
+            std::future::pending().await
         }
 
         async fn rollback(self) -> Result<(), Self::Error> {
             let mut state = self.0.lock().unwrap();
             state.calls.push("rollback");
+            if state.calls.contains(&"simulate-rollback-ack-loss") {
+                // A transport/provider can fail to confirm rollback after the
+                // database has already committed. The caller cannot infer the
+                // durable state from the rollback error.
+                if let Some(connection) = &state.sqlite {
+                    connection
+                        .execute_batch("COMMIT")
+                        .map_err(std::io::Error::other)?;
+                }
+                return Err(std::io::Error::other("ROLLBACK-SECRET-CANARY"));
+            }
+            if let Some(connection) = &state.sqlite {
+                connection
+                    .execute_batch("ROLLBACK")
+                    .map_err(std::io::Error::other)?;
+            }
             state.row.insert("version".to_owned(), Value::I64(1));
             state
                 .row
@@ -722,6 +903,7 @@ mod transactional_ledger_readback_tests {
             ]),
             calls: Vec::new(),
             fail_readback: false,
+            sqlite: None,
         }));
         let descriptor = EntityDescriptor::new("Task")
             .property(PropertyDescriptor::new("id", DataType::I64).id())
@@ -777,6 +959,7 @@ mod transactional_ledger_readback_tests {
             ]),
             calls: Vec::new(),
             fail_readback: true,
+            sqlite: None,
         }));
         let descriptor = EntityDescriptor::new("Task")
             .property(PropertyDescriptor::new("id", DataType::I64).id())
@@ -813,6 +996,8 @@ mod transactional_ledger_readback_tests {
             root.get_original_version(&EntityKey::new_static("Task", 1_i64)),
             Some(1)
         );
+        assert!(root.require_known_transaction_outcome().is_ok());
+        assert!(!root.current_change_set().changes().is_empty());
     }
 
     #[tokio::test]
@@ -825,6 +1010,7 @@ mod transactional_ledger_readback_tests {
             ]),
             calls: Vec::new(),
             fail_readback: false,
+            sqlite: None,
         }));
         let descriptor = EntityDescriptor::new("Task")
             .property(PropertyDescriptor::new("id", DataType::I64).id())
@@ -854,16 +1040,186 @@ mod transactional_ledger_readback_tests {
     }
 
     #[tokio::test]
-    async fn failed_commit_does_not_deliver_audit_or_clear_retryable_ledger() {
-        let events = Arc::new(Mutex::new(Vec::new()));
+    async fn failed_commit_requires_reload_before_any_retry() {
+        for failure_mode in ["simulate-commit-failure", "simulate-commit-ack-loss"] {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let connection = rusqlite::Connection::open_in_memory().unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE task (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name TEXT NOT NULL); \
+                     CREATE TABLE outbox (payload_json TEXT NOT NULL); \
+                     INSERT INTO task (id, version, name) VALUES (1, 1, 'before')",
+                )
+                .unwrap();
+            let state = Arc::new(Mutex::new(State {
+                row: BTreeMap::from([
+                    ("id".to_owned(), Value::I64(1)),
+                    ("version".to_owned(), Value::I64(1)),
+                    ("name".to_owned(), Value::Text("before".to_owned())),
+                ]),
+                calls: vec![failure_mode],
+                fail_readback: false,
+                sqlite: Some(connection),
+            }));
+            let descriptor = EntityDescriptor::new("Task")
+                .property(PropertyDescriptor::new("id", DataType::I64).id())
+                .property(PropertyDescriptor::new("version", DataType::I64).version())
+                .property(PropertyDescriptor::new("name", DataType::Text));
+            let mut context = UserContext::default()
+                .with_metadata(InMemoryMetadataStore::new().with_entity(descriptor))
+                .with_committed_event_source(
+                    CommittedEventSource::new(
+                        "transaction-unknown-test",
+                        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                    )
+                    .unwrap(),
+                )
+                .with_event_sink(CaptureEvents(events.clone()));
+            context.insert_resource(Ambient(state.clone()));
+            let root = EntityRuntimeState::default();
+            let key = EntityKey::new_static("Task", 1_i64);
+            root.set_original_version(key.clone(), 1);
+            root.set(key, "name", Value::Text("updated".to_owned()));
+            let node = GraphNode::new("Task")
+                .comment("verify failed commit audit boundary")
+                .value("id", 1_i64)
+                .value("version", 1_i64)
+                .value("name", "before");
+            let error = GraphSaverFor::<Ambient>::new()
+                .save_ledger_dyn(&context, node.clone(), root.clone())
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("TRANSACTION_OUTCOME_UNKNOWN"));
+            assert!(!error.to_string().contains("COMMIT-SECRET-CANARY"));
+            assert!(events.lock().unwrap().is_empty());
+            assert!(!root.current_change_set().changes().is_empty());
+            let persisted_name: String = state
+                .lock()
+                .unwrap()
+                .sqlite
+                .as_ref()
+                .unwrap()
+                .query_row("SELECT name FROM task WHERE id = 1", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(
+                persisted_name,
+                if failure_mode == "simulate-commit-ack-loss" {
+                    "updated"
+                } else {
+                    "before"
+                }
+            );
+            let durable_outbox_count: i64 = state
+                .lock()
+                .unwrap()
+                .sqlite
+                .as_ref()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(
+                durable_outbox_count,
+                if failure_mode == "simulate-commit-ack-loss" {
+                    1
+                } else {
+                    0
+                }
+            );
+            let calls_before_retry = state.lock().unwrap().calls.len();
+            let retry_error = GraphSaverFor::<Ambient>::new()
+                .save_ledger_dyn(&context, node, root.clone())
+                .await
+                .unwrap_err();
+            assert!(
+                retry_error
+                    .to_string()
+                    .contains("TRANSACTION_OUTCOME_UNKNOWN_RELOAD_REQUIRED")
+            );
+            assert_eq!(state.lock().unwrap().calls.len(), calls_before_retry);
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_rollback_after_sqlite_durable_write_requires_reload() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE task (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name TEXT NOT NULL); \
+                 INSERT INTO task (id, version, name) VALUES (1, 1, 'before')",
+            )
+            .unwrap();
         let state = Arc::new(Mutex::new(State {
             row: BTreeMap::from([
                 ("id".to_owned(), Value::I64(1)),
                 ("version".to_owned(), Value::I64(1)),
                 ("name".to_owned(), Value::Text("before".to_owned())),
             ]),
-            calls: vec!["simulate-commit-failure"],
+            calls: vec!["simulate-rollback-ack-loss"],
+            fail_readback: true,
+            sqlite: Some(connection),
+        }));
+        let descriptor = EntityDescriptor::new("Task")
+            .property(PropertyDescriptor::new("id", DataType::I64).id())
+            .property(PropertyDescriptor::new("version", DataType::I64).version())
+            .property(PropertyDescriptor::new("name", DataType::Text));
+        let mut context = UserContext::default()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(descriptor));
+        context.insert_resource(Ambient(state.clone()));
+        let root = EntityRuntimeState::default();
+        let key = EntityKey::new_static("Task", 1_i64);
+        root.set_original_version(key.clone(), 1);
+        root.set(key, "name", Value::Text("updated".to_owned()));
+        let node = GraphNode::new("Task")
+            .comment("verify failed rollback audit boundary")
+            .value("id", 1_i64)
+            .value("version", 1_i64)
+            .value("name", "before");
+        let error = GraphSaverFor::<Ambient>::new()
+            .save_ledger_dyn(&context, node.clone(), root.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, RuntimeError::TransactionOutcomeUnknown));
+        assert!(!error.to_string().contains("ROLLBACK-SECRET-CANARY"));
+        let persisted_name: String = state
+            .lock()
+            .unwrap()
+            .sqlite
+            .as_ref()
+            .unwrap()
+            .query_row("SELECT name FROM task WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(persisted_name, "updated");
+        let calls_before_retry = state.lock().unwrap().calls.len();
+        let retry_error = GraphSaverFor::<Ambient>::new()
+            .save_ledger_dyn(&context, node, root)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            retry_error,
+            RuntimeError::TransactionOutcomeUnknownReloadRequired
+        ));
+        assert_eq!(state.lock().unwrap().calls.len(), calls_before_retry);
+    }
+
+    #[tokio::test]
+    async fn cancelled_commit_after_durable_sqlite_write_requires_reload() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE task (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name TEXT NOT NULL); \
+                 CREATE TABLE outbox (payload_json TEXT NOT NULL); \
+                 INSERT INTO task (id, version, name) VALUES (1, 1, 'before')",
+            )
+            .unwrap();
+        let state = Arc::new(Mutex::new(State {
+            row: BTreeMap::from([
+                ("id".to_owned(), Value::I64(1)),
+                ("version".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::Text("before".to_owned())),
+            ]),
+            calls: vec!["simulate-commit-ack-pending"],
             fail_readback: false,
+            sqlite: Some(connection),
         }));
         let descriptor = EntityDescriptor::new("Task")
             .property(PropertyDescriptor::new("id", DataType::I64).id())
@@ -871,32 +1227,272 @@ mod transactional_ledger_readback_tests {
             .property(PropertyDescriptor::new("name", DataType::Text));
         let mut context = UserContext::default()
             .with_metadata(InMemoryMetadataStore::new().with_entity(descriptor))
-            .with_event_sink(CaptureEvents(events.clone()));
+            .with_committed_event_source(
+                CommittedEventSource::new(
+                    "transaction-cancelled-test",
+                    "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                )
+                .unwrap(),
+            );
         context.insert_resource(Ambient(state.clone()));
         let root = EntityRuntimeState::default();
         let key = EntityKey::new_static("Task", 1_i64);
         root.set_original_version(key.clone(), 1);
         root.set(key, "name", Value::Text("updated".to_owned()));
         let node = GraphNode::new("Task")
-            .comment("verify failed commit audit boundary")
+            .comment("verify cancelled commit acknowledgement")
             .value("id", 1_i64)
             .value("version", 1_i64)
             .value("name", "before");
-        let error = GraphSaverFor::<Ambient>::new()
-            .save_ledger_dyn(&context, node, root.clone())
+        let cancelled = tokio::time::timeout(
+            std::time::Duration::from_millis(10),
+            GraphSaverFor::<Ambient>::new().save_ledger_dyn(&context, node.clone(), root.clone()),
+        )
+        .await;
+        assert!(
+            cancelled.is_err(),
+            "fixture must cancel the pending commit acknowledgement"
+        );
+        let calls_before_retry = {
+            let state_guard = state.lock().unwrap();
+            assert!(state_guard.calls.contains(&"commit-durable-ack-pending"));
+            let connection = state_guard.sqlite.as_ref().unwrap();
+            let persisted_name: String = connection
+                .query_row("SELECT name FROM task WHERE id = 1", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(persisted_name, "updated");
+            let outbox_count: i64 = connection
+                .query_row("SELECT COUNT(*) FROM outbox", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(outbox_count, 1);
+            state_guard.calls.len()
+        };
+        assert!(matches!(
+            root.require_known_transaction_outcome(),
+            Err(RuntimeError::TransactionOutcomeUnknownReloadRequired)
+        ));
+        let retry_error = GraphSaverFor::<Ambient>::new()
+            .save_ledger_dyn(&context, node, root)
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("simulated commit failure"));
-        assert!(events.lock().unwrap().is_empty());
-        assert!(!root.current_change_set().changes().is_empty());
-        assert!(state.lock().unwrap().calls.contains(&"commit-failed"));
+        assert!(matches!(
+            retry_error,
+            RuntimeError::TransactionOutcomeUnknownReloadRequired
+        ));
+        assert_eq!(state.lock().unwrap().calls.len(), calls_before_retry);
     }
 
     struct FailingAuditSink;
 
+    struct RejectAfterCommitTask {
+        root: EntityRuntimeState,
+        comment: Option<String>,
+    }
+
+    impl TeaqlEntity for RejectAfterCommitTask {
+        const ENTITY_NAME: &'static str = "Task";
+
+        fn entity_descriptor() -> EntityDescriptor {
+            EntityDescriptor::new("Task")
+                .property(PropertyDescriptor::new("id", DataType::I64).id())
+                .property(PropertyDescriptor::new("version", DataType::I64).version())
+                .property(PropertyDescriptor::new("name", DataType::Text))
+        }
+    }
+
+    impl Entity for RejectAfterCommitTask {
+        fn from_compact_row(_row: CompactRow) -> Result<Self, EntityError> {
+            Err(EntityError::new(
+                "Task",
+                "synthetic entity hydration rejected",
+            ))
+        }
+
+        fn into_values(self) -> MutationValues {
+            BTreeMap::from([
+                ("id".to_owned(), Value::I64(1)),
+                ("version".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::Text("before".to_owned())),
+            ])
+            .into()
+        }
+
+        fn get_comment(&self) -> Option<String> {
+            self.comment.clone()
+        }
+
+        fn set_comment(&mut self, comment: String) {
+            self.comment = Some(comment);
+        }
+    }
+
+    impl crate::LedgerEntity for RejectAfterCommitTask {
+        fn entity_runtime_state(&self) -> Option<EntityRuntimeState> {
+            Some(self.root.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn public_audited_save_paths_reject_unknown_graph_before_provider_io() {
+        let state = Arc::new(Mutex::new(State::default()));
+        let mut context = UserContext::default().with_metadata(
+            InMemoryMetadataStore::new().with_entity(RejectAfterCommitTask::entity_descriptor()),
+        );
+        context.register_executor(Ambient(state.clone()));
+        let root = EntityRuntimeState::default();
+        root.mark_transaction_outcome_unknown();
+        let entity = || RejectAfterCommitTask {
+            root: root.clone(),
+            comment: None,
+        };
+        let error =
+            save_audited_ledger_entity(entity().audit_as("reject unknown-outcome graph"), &context)
+                .await
+                .err()
+                .expect("audited save must reject unknown transaction outcome");
+        assert!(matches!(
+            error,
+            RuntimeError::TransactionOutcomeUnknownReloadRequired
+        ));
+        let error = save_audited_ledger_entity_with_executor(
+            entity().audit_as("reject caller-owned unknown-outcome graph"),
+            &context,
+            &Ambient(state.clone()),
+        )
+        .await
+        .err()
+        .expect("caller-owned save must reject unknown transaction outcome");
+        assert!(matches!(
+            error,
+            RuntimeError::TransactionOutcomeUnknownReloadRequired
+        ));
+        assert!(state.lock().unwrap().calls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn committed_save_reports_reconciliation_failure_as_non_retryable() {
+        let state = Arc::new(Mutex::new(State {
+            row: BTreeMap::from([
+                ("id".to_owned(), Value::I64(1)),
+                ("version".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::Text("before".to_owned())),
+            ]),
+            ..Default::default()
+        }));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut context = UserContext::default()
+            .with_metadata(
+                InMemoryMetadataStore::new()
+                    .with_entity(RejectAfterCommitTask::entity_descriptor()),
+            )
+            .with_event_sink(CaptureEvents(events.clone()));
+        context.register_executor(Ambient(state.clone()));
+        let root = EntityRuntimeState::default();
+        let key = EntityKey::new_static("Task", 1_i64);
+        root.set_original_version(key.clone(), 1);
+        root.set(key, "name", Value::Text("updated".to_owned()));
+        let entity = RejectAfterCommitTask {
+            root: root.clone(),
+            comment: None,
+        };
+
+        let error = match save_audited_ledger_entity(
+            entity.audit_as("verify committed hydration failure"),
+            &context,
+        )
+        .await
+        {
+            Ok(_) => panic!("synthetic hydration must reject"),
+            Err(error) => error,
+        };
+        assert!(state.lock().unwrap().calls.contains(&"commit"));
+        assert!(root.current_change_set().changes().is_empty());
+        assert_eq!(events.lock().unwrap().len(), 1);
+        assert!(
+            error
+                .to_string()
+                .contains("COMMITTED_STATE_RELOAD_REQUIRED")
+        );
+        assert!(matches!(error, RuntimeError::CommittedStateReconciliation));
+    }
+
+    #[tokio::test]
+    async fn outer_transaction_hydration_failure_does_not_claim_commit() {
+        let state = Arc::new(Mutex::new(State {
+            row: BTreeMap::from([
+                ("id".to_owned(), Value::I64(1)),
+                ("version".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::Text("before".to_owned())),
+            ]),
+            ..Default::default()
+        }));
+        let context = UserContext::default().with_metadata(
+            InMemoryMetadataStore::new().with_entity(RejectAfterCommitTask::entity_descriptor()),
+        );
+        let root = EntityRuntimeState::default();
+        let key = EntityKey::new_static("Task", 1_i64);
+        root.set_original_version(key.clone(), 1);
+        root.set(key, "name", Value::Text("updated".to_owned()));
+        let entity = RejectAfterCommitTask {
+            root: root.clone(),
+            comment: None,
+        };
+
+        let error = match save_audited_ledger_entity_with_executor(
+            entity.audit_as("verify caller-owned transaction boundary"),
+            &context,
+            &Tx(state.clone()),
+        )
+        .await
+        {
+            Ok(_) => panic!("synthetic hydration must reject before owner commit"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, RuntimeError::Graph(_)));
+        assert!(!state.lock().unwrap().calls.contains(&"commit"));
+        assert!(!root.current_change_set().changes().is_empty());
+    }
+
+    #[tokio::test]
+    async fn legacy_graph_save_hydration_failure_reports_committed_outcome() {
+        let state = Arc::new(Mutex::new(State {
+            row: BTreeMap::from([
+                ("id".to_owned(), Value::I64(1)),
+                ("version".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::Text("before".to_owned())),
+            ]),
+            ..Default::default()
+        }));
+        let mut context = UserContext::default().with_metadata(
+            InMemoryMetadataStore::new().with_entity(RejectAfterCommitTask::entity_descriptor()),
+        );
+        context.register_executor(Ambient(state.clone()));
+        let entity = RejectAfterCommitTask {
+            root: EntityRuntimeState::default(),
+            comment: None,
+        };
+
+        let error = match crate::AuditedSaveExt::save(
+            entity.audit_as("verify legacy committed hydration failure"),
+            &context,
+        )
+        .await
+        {
+            Ok(_) => panic!("synthetic hydration must reject after graph commit"),
+            Err(error) => error,
+        };
+        assert!(state.lock().unwrap().calls.contains(&"commit"));
+        assert!(
+            error
+                .to_string()
+                .contains("COMMITTED_STATE_RELOAD_REQUIRED")
+        );
+        assert!(matches!(error, RuntimeError::CommittedStateReconciliation));
+    }
+
     impl RawAuditEventSink for FailingAuditSink {
         fn on_event(&self, _: &UserContext, _: &RawAuditEvent) -> Result<(), RuntimeError> {
-            Err(RuntimeError::Event("simulated sink failure".to_owned()))
+            Err(RuntimeError::Event("P1-AUDIT-SECRET-CANARY".to_owned()))
         }
     }
 
@@ -931,8 +1527,13 @@ mod transactional_ledger_readback_tests {
             .save_ledger_dyn(&context, node, root.clone())
             .await
             .unwrap_err();
-        assert!(matches!(error, RuntimeError::AuditAfterCommit { .. }));
+        assert!(matches!(
+            error,
+            RuntimeError::AuditAfterCommit { failures: 1 }
+        ));
         assert!(error.to_string().contains("AUDIT_DELIVERY_AFTER_COMMIT"));
+        assert!(!error.to_string().contains("P1-AUDIT-SECRET-CANARY"));
+        assert!(!format!("{error:?}").contains("P1-AUDIT-SECRET-CANARY"));
         assert!(state.lock().unwrap().calls.contains(&"commit"));
         assert!(!state.lock().unwrap().calls.contains(&"rollback"));
         assert!(root.current_change_set().changes().is_empty());
@@ -978,6 +1579,7 @@ mod transactional_ledger_readback_tests {
             ]),
             calls: Vec::new(),
             fail_readback: false,
+            sqlite: None,
         }));
         let descriptor = EntityDescriptor::new("Task")
             .property(PropertyDescriptor::new("id", DataType::I64).id())
@@ -2124,7 +2726,7 @@ where
                     })?;
                 let saved = saver.save_graph_dyn(context, node).await?;
                 T::from_compact_row(teaql_core::CompactRow::from_map(saved.values.into()))
-                    .map_err(|e| RuntimeError::Graph(e.to_string()))
+                    .map_err(|_| RuntimeError::CommittedStateReconciliation)
             }),
         )
     }
@@ -2166,7 +2768,10 @@ where
 ///
 /// This function never commits or rolls back the executor. The returned
 /// mutation ledger must only be cleared after the owner commits the enclosing
-/// transaction; retaining it on rollback keeps the mutation intent retryable.
+/// transaction. A confirmed rollback leaves the intent retryable; if commit or
+/// rollback cannot confirm its outcome, the owner must call
+/// `EntityRuntimeState::mark_transaction_outcome_unknown` on the returned root
+/// and reload before attempting another save.
 #[doc(hidden)]
 pub async fn save_audited_ledger_entity_with_executor<T, E>(
     audited: teaql_core::Audited<T>,
@@ -2205,6 +2810,9 @@ where
 {
     let entity = audited.into_entity();
     let root = entity.entity_runtime_state();
+    if let Some(root) = &root {
+        root.require_known_transaction_outcome()?;
+    }
     if let Some(error) = root
         .as_ref()
         .and_then(|root| root.first_composition_error())
@@ -2342,6 +2950,9 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
     root: Option<crate::EntityRuntimeState>,
     context: &UserContext,
 ) -> Result<T, RuntimeError> {
+    if let Some(root) = &root {
+        root.require_known_transaction_outcome()?;
+    }
     if let Some(error) = root
         .as_ref()
         .and_then(|root| root.first_composition_error())
@@ -2393,6 +3004,20 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
                 &root,
                 preserve_relations,
                 &original_relation_fields,
+            )
+            .map_err(|_| RuntimeError::CommittedStateReconciliation);
+        }
+        if context.committed_event_source().is_some() {
+            // The ledger has no mutation to commit. Preserve the loaded
+            // entity and emit no Outbox set; the legacy graph path is not a
+            // valid substitute for a change-free audited save.
+            let descriptor = context.require_entity(&node.entity)?;
+            let preserve_relations = can_preserve_loaded_relations(&root, &root_key, descriptor);
+            return decode_saved_ledger_entity::<T>(
+                node,
+                &root,
+                preserve_relations,
+                &original_relation_fields,
             );
         }
     }
@@ -2400,6 +3025,7 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
     preflight_graph(context, &mut node, &ObjectLocation::root(), None)?;
     let saved = saver.save_graph_dyn(context, node).await?;
     decode_saved_ledger_entity::<T>(saved, &crate::EntityRuntimeState::default(), false, &[])
+        .map_err(|_| RuntimeError::CommittedStateReconciliation)
 }
 
 #[cfg(test)]

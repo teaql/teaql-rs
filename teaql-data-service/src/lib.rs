@@ -533,8 +533,40 @@ pub trait TransactionExecutor: DataServiceExecutor {
     fn begin(&self) -> impl std::future::Future<Output = Result<Self::Tx<'_>, Self::Error>> + Send;
 }
 
+/// Trusted source-side envelope awaiting a transaction-local sequence number.
+/// `payload_json` is an infrastructure-produced JSON object; a supporting
+/// provider inserts `source_sequence` before validating and storing it.
+/// Ordinary Query/Mutation requests must never be converted into this type.
+#[derive(Clone)]
+pub struct CommittedSetAppend {
+    pub source_runtime_id: String,
+    pub change_set_id: String,
+    pub model_hash: String,
+    pub payload_json: String,
+}
+
+impl std::fmt::Debug for CommittedSetAppend {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CommittedSetAppend")
+            .field("source_runtime_id", &self.source_runtime_id)
+            .field("payload", &"<redacted>")
+            .finish()
+    }
+}
+
 pub trait Transaction {
     type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Append a committed set to the same transaction as the business graph.
+    /// `false` means this provider cannot capture it; callers that require
+    /// capture must fail closed before committing rather than silently proceed.
+    fn append_committed_set<'a>(
+        &'a self,
+        _append: &'a CommittedSetAppend,
+    ) -> impl std::future::Future<Output = Result<bool, Self::Error>> + Send + 'a {
+        async { Ok(false) }
+    }
 
     fn commit(self) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
     fn rollback(self) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
