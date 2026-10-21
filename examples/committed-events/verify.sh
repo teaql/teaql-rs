@@ -19,6 +19,7 @@ for round in 1 2; do
 done
 bash examples/committed-events/verify-process-crash.sh
 bash examples/committed-events/verify-snapshot.sh
+bash examples/committed-events/verify-bootstrap-crash.sh
 
 school_example="$repo_dir/examples/school-management"
 school_evidence="$(mktemp -d -t teaql-committed-school.XXXXXXXX)"

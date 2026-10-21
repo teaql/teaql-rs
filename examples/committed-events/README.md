@@ -71,3 +71,28 @@ The two roles are mutually exclusive and export files are create-new only.
 Use fresh task-owned export directories and retain compact evidence explicitly.
 The files are not an authenticated transport, and this does not qualify
 process-crash snapshot recovery, production scale or public artifacts.
+
+## Managed bootstrap process recovery (CMR-12 candidate)
+
+`bash examples/committed-events/verify-bootstrap-crash.sh` builds the local provider
+example offline in a fresh owned target, then executes that same binary twice.
+Each invocation keeps one source database through two rounds (snapshot/tail
+1/2, then 3/4). The second target is a new consumer slot, not a reset database;
+the first then catches up to 4 without replacing its original snapshot. Four
+source changes use the audited ledger API; one legacy tombstone predates capture.
+
+In each round the owner SIGKILLs and reaps seven workers: snapshot read after N,
+uncommitted publication retention, partial target installation, committed target
+before snapshot receipt, source cursor insert before ACK commit, partial tail
+application, and committed tail before event receipt. Fresh read-only connections
+record actual state after every exit. A negative control rejects ordinary exit
+without a PID/phase barrier. All workers/logs have 30-second/256KiB bounds.
+Metadata and SQLite trigger barriers are test-only, not runtime fault hooks.
+
+`TEAQL_CMR12_EVIDENCE_ROOT` optionally selects a **nonexistent absolute path**
+for compact DBs, child logs, barriers, result JSON, binary hash and Cargo origins.
+Otherwise successful disposable fixtures are removed after owned children exit;
+failed fixtures print a retained diagnostic path. The verifier stops/reaps only
+its own process groups and removes its own build target on exit. It never cleans
+a shared Cargo cache/target. This is controlled Linux/SQLite source proof, not
+power loss, installed-package, authenticated transport or full CMR-12 acceptance.
