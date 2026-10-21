@@ -28,6 +28,9 @@ struct Inner {
     retry_post: AtomicUsize,
     traceparents: Mutex<Vec<String>>,
     retry_bodies: Mutex<Vec<Vec<u8>>>,
+    overflow_released: AtomicBool,
+    gated_entered: AtomicUsize,
+    release_gated: AtomicBool,
 }
 
 impl Fixture {
@@ -209,6 +212,36 @@ fn handle(mut stream: TcpStream, inner: &Inner) {
     if path.contains("/close") {
         return;
     }
+    if path.ends_with("/overflow-open") {
+        if stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\nConnection: close\r\n\r\nLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL")
+            .and_then(|_| stream.flush())
+            .is_err()
+        {
+            return;
+        }
+        // Do not finish the body. A peer EOF/reset is a direct disposal witness.
+        let closed = match reader.read(&mut [0_u8; 1]) {
+            Ok(0) => true,
+            Err(error) => matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+            ),
+            _ => false,
+        };
+        inner.overflow_released.store(closed, Ordering::SeqCst);
+        return;
+    }
+    if path.ends_with("/gated") {
+        inner.gated_entered.fetch_add(1, Ordering::SeqCst);
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while !inner.release_gated.load(Ordering::SeqCst) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(2));
+        }
+        if !inner.release_gated.load(Ordering::SeqCst) {
+            return;
+        }
+    }
     if path.ends_with("/slow") {
         thread::sleep(Duration::from_millis(350));
     }
@@ -386,6 +419,150 @@ async fn retry_is_explicit_and_non_idempotent_transport_failure_is_ambiguous() {
         Err(HttpFailure::AmbiguousOutcome)
     );
     assert_eq!(fixture.requests(), before + 1);
+}
+
+#[tokio::test]
+async fn missing_intent_cannot_start_network_io() {
+    let fixture = Fixture::new();
+    let service = Arc::new(ReqwestHttpRequestService::new(vec![fixture.profile()]).unwrap());
+    // Unlike Java null, absent Context is excluded by the required Rust reference.
+    assert!(matches!(
+        UserContext::new().http_requests(),
+        Err(HttpFailure::ProfileNotConfigured)
+    ));
+    for (comment, purpose) in [(" ", "render order"), ("load order", " \t")] {
+        assert_eq!(
+            HttpCall::get("orders", "ok", comment, purpose),
+            Err(HttpFailure::InvalidInput)
+        );
+    }
+    let _context = context(service);
+    assert_eq!(fixture.requests(), 0);
+    println!("HTTP_NUMBERED_PASS language=rust case=HTTP-01 requests=0");
+}
+
+#[tokio::test]
+async fn always_failing_endpoint_stops_at_configured_attempt_ceiling() {
+    let fixture = Fixture::new();
+    for ceiling in [1, 2, 3, 5] {
+        let profile = fixture
+            .profile()
+            .retry(
+                ceiling,
+                Duration::from_millis(1),
+                BTreeSet::from([HttpMethod::Get]),
+            )
+            .unwrap();
+        let service = Arc::new(ReqwestHttpRequestService::new(vec![profile]).unwrap());
+        let before = fixture.requests();
+        let response = service
+            .execute(
+                &context(service.clone()),
+                &get("fail").with_retry_mode(HttpRetryMode::ConfirmedIdempotent),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 503);
+        assert_eq!(response.attempts(), ceiling);
+        assert_eq!(fixture.requests() - before, usize::from(ceiling));
+    }
+    println!("HTTP_NUMBERED_PASS language=rust case=HTTP-07 ceilings=1,2,3,5");
+}
+
+#[tokio::test]
+async fn oversized_incomplete_response_releases_peer_before_next_call() {
+    let fixture = Fixture::new();
+    let service = Arc::new(
+        ReqwestHttpRequestService::new(vec![fixture.profile().max_response_bytes(16).unwrap()])
+            .unwrap(),
+    );
+    let context = context(service.clone());
+    assert_eq!(
+        service.execute(&context, &get("overflow-open")).await,
+        Err(HttpFailure::ResponseTooLarge)
+    );
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !fixture.inner.overflow_released.load(Ordering::SeqCst) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    assert!(
+        fixture.inner.overflow_released.load(Ordering::SeqCst),
+        "incomplete oversized response did not close at the peer"
+    );
+    assert_eq!(
+        service
+            .execute(&context, &get("ok"))
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(fixture.requests(), 2);
+    println!("HTTP_NUMBERED_PASS language=rust case=HTTP-09 peer_closed=1 next_call=1");
+}
+
+#[tokio::test]
+async fn successful_half_open_probe_closes_circuit_for_concurrent_calls() {
+    let fixture = Fixture::new();
+    let clock = Arc::new(FakeClock::new());
+    let service = Arc::new(
+        ReqwestHttpRequestService::with_clock(
+            vec![
+                fixture
+                    .profile()
+                    .circuit(1, Duration::from_secs(5), 1)
+                    .unwrap(),
+            ],
+            clock.clone(),
+        )
+        .unwrap(),
+    );
+    let context = Arc::new(context(service.clone()));
+    assert_eq!(
+        service
+            .execute(&context, &get("fail"))
+            .await
+            .unwrap()
+            .status(),
+        503
+    );
+    assert_eq!(
+        service.execute(&context, &get("ok")).await,
+        Err(HttpFailure::CircuitOpen)
+    );
+    clock.advance(Duration::from_secs(5));
+    assert_eq!(
+        service
+            .execute(&context, &get("ok"))
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let first_service = service.clone();
+    let first_context = context.clone();
+    let first =
+        tokio::spawn(async move { first_service.execute(&first_context, &get("gated")).await });
+    let second_service = service.clone();
+    let second_context = context.clone();
+    let second =
+        tokio::spawn(async move { second_service.execute(&second_context, &get("gated")).await });
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while fixture.inner.gated_entered.load(Ordering::SeqCst) < 2 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    let both_entered = fixture.inner.gated_entered.load(Ordering::SeqCst) == 2;
+    // Release and reap both tasks even if a broken half-open circuit rejected one.
+    fixture.inner.release_gated.store(true, Ordering::SeqCst);
+    let (a, b) = tokio::join!(first, second);
+    assert!(
+        both_entered,
+        "successful probe left circuit in one-at-a-time half-open state"
+    );
+    assert_eq!(a.unwrap().unwrap().status(), 200);
+    assert_eq!(b.unwrap().unwrap().status(), 200);
+    assert_eq!(fixture.requests(), 4);
+    println!("HTTP_NUMBERED_PASS language=rust case=HTTP-11 concurrent_after_probe=2");
 }
 
 #[tokio::test]

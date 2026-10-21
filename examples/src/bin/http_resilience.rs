@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server = std::thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut served = 0;
-        while served < 2 {
+        while served < 4 {
             match listener.accept() {
                 Ok((mut stream, _)) => {
                     stream
@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let mut reader = BufReader::new(stream.try_clone().unwrap());
                     let mut first = String::new();
                     reader.read_line(&mut first).unwrap();
-                    if served == 0 {
+                    if served % 2 == 0 {
                         assert!(first.starts_with("GET /api/orders/1?"));
                     } else {
                         assert!(first.starts_with("POST /api/orders/1?"));
@@ -106,52 +106,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         TraceNode::typed(TraceKind::Purpose, "Order", None, "render order details"),
         TraceNode::typed(TraceKind::Comment, "Order", None, "load order graph"),
     ])?;
-    let response = context.http_requests()?.execute(&context, &call).await?;
-    assert_eq!(response.status(), 200);
-    assert_eq!(response.attempts(), 1);
-    assert_eq!(response.json_value()?["status"], "submitted");
-    let write_call = HttpCall::new(
-        "orders",
-        HttpMethod::Post,
-        "orders/1?token=PRIVATE_QUERY_TWO",
-        BTreeMap::from([(
-            "Authorization".to_owned(),
-            "Bearer PRIVATE_HEADER_CANARY".to_owned(),
-        )]),
-        b"PRIVATE_BODY_CANARY".to_vec(),
-        Some("text/plain".to_owned()),
-        "notify order service",
-        HttpIntentKind::Purpose,
-        "confirm delivery",
-        HttpRetryMode::None,
-    )?;
-    let written = context
-        .http_requests()?
-        .execute(&context, &write_call)
-        .await?;
-    assert_eq!((written.status(), written.attempts()), (200, 1));
+    for round in 1..=2 {
+        let response = context.http_requests()?.execute(&context, &call).await?;
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.attempts(), 1);
+        assert_eq!(response.json_value()?["status"], "submitted");
+        let write_call = HttpCall::new(
+            "orders",
+            HttpMethod::Post,
+            "orders/1?token=PRIVATE_QUERY_TWO",
+            BTreeMap::from([(
+                "Authorization".to_owned(),
+                "Bearer PRIVATE_HEADER_CANARY".to_owned(),
+            )]),
+            b"PRIVATE_BODY_CANARY".to_vec(),
+            Some("text/plain".to_owned()),
+            "notify order service",
+            HttpIntentKind::Purpose,
+            "confirm delivery",
+            HttpRetryMode::None,
+        )?;
+        let written = context
+            .http_requests()?
+            .execute(&context, &write_call)
+            .await?;
+        assert_eq!((written.status(), written.attempts()), (200, 1));
+        let observed = operations.lock().unwrap();
+        assert_eq!(observed.len(), 2 * round);
+        assert!(
+            observed
+                .iter()
+                .all(|operation| operation.family == "http" && operation.name == "orders")
+        );
+        let diagnostic = format!("{observed:?}");
+        assert!(diagnostic.contains("load order status"));
+        assert!(diagnostic.contains("notify order service"));
+        let first_trace = observed[2 * (round - 1)]
+            .attributes
+            .get("teaql.http.trace_chain");
+        assert_eq!(
+            first_trace,
+            Some(&teaql_runtime::RuntimeAttributeValue::String(
+                call.business_trace_projection()
+            ))
+        );
+        assert_eq!(call.business_trace_chain().len(), 3);
+        assert!(!diagnostic.contains("PRIVATE_QUERY"));
+        assert!(!diagnostic.contains("PRIVATE_HEADER"));
+        assert!(!diagnostic.contains("PRIVATE_BODY"));
+        println!(
+            "HTTP_SAME_FIXTURE_PASS language=rust round={round} requests={} trace={} lineage=3",
+            2 * round,
+            observed.len()
+        );
+    }
     server.join().expect("fixture thread should complete");
-    let observed = operations.lock().unwrap();
-    assert_eq!(observed.len(), 2);
-    assert!(
-        observed
-            .iter()
-            .all(|operation| operation.family == "http" && operation.name == "orders")
-    );
-    let diagnostic = format!("{observed:?}");
-    assert!(diagnostic.contains("load order status"));
-    assert!(diagnostic.contains("notify order service"));
-    let first_trace = observed[0].attributes.get("teaql.http.trace_chain");
-    assert_eq!(
-        first_trace,
-        Some(&teaql_runtime::RuntimeAttributeValue::String(
-            call.business_trace_projection()
-        ))
-    );
-    assert_eq!(call.business_trace_chain().len(), 3);
-    assert!(!diagnostic.contains("PRIVATE_QUERY"));
-    assert!(!diagnostic.contains("PRIVATE_HEADER"));
-    assert!(!diagnostic.contains("PRIVATE_BODY"));
-    println!("HTTP_RESILIENCE_PASS status=200 attempts=1 requests=2 trace=2 lineage=3");
+    println!("HTTP_RESILIENCE_PASS status=200 attempts=1 requests=4 trace=4 lineage=3");
     Ok(())
 }
