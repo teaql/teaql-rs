@@ -30,7 +30,7 @@ use teaql_runtime::{
 use teaql_sql::SqlDataServiceExecutor;
 
 type Failure = Box<dyn std::error::Error + Send + Sync>;
-type Result<T> = std::result::Result<T, Failure>;
+type ProbeResult<T> = std::result::Result<T, Failure>;
 const SOURCE: &str = "cmr12-rust-source";
 const MODEL: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
 const LEGACY: i64 = 9_007_199_254_740_993;
@@ -66,7 +66,7 @@ fn limits() -> SnapshotLimits {
 fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
-fn write_new(file: &Path, bytes: &[u8]) -> Result<()> {
+fn write_new(file: &Path, bytes: &[u8]) -> ProbeResult<()> {
     let mut output = OpenOptions::new().create_new(true).write(true).open(file)?;
     output.write_all(bytes)?;
     output.sync_all()?;
@@ -131,7 +131,7 @@ struct Fixture {
     armed: Arc<AtomicBool>,
 }
 impl Fixture {
-    fn new(directory: &Path, phase: &str, round: u64, source: bool) -> Result<Self> {
+    fn new(directory: &Path, phase: &str, round: u64, source: bool) -> ProbeResult<Self> {
         let file = directory.join(if source {
             "source.sqlite".into()
         } else {
@@ -187,12 +187,12 @@ impl Fixture {
             armed,
         })
     }
-    async fn schema(&self) -> Result<()> {
+    async fn schema(&self) -> ProbeResult<()> {
         self.context.ensure_schema().await?;
         self.executor.ensure_committed_event_schema()?;
         Ok(())
     }
-    fn trigger(&self, sql: &str) -> Result<()> {
+    fn trigger(&self, sql: &str) -> ProbeResult<()> {
         self.executor
             .connection()
             .lock()
@@ -201,7 +201,7 @@ impl Fixture {
         Ok(())
     }
 }
-async fn save(source: &Fixture, directory: &Path, round: u64, tail: bool) -> Result<()> {
+async fn save(source: &Fixture, directory: &Path, round: u64, tail: bool) -> ProbeResult<()> {
     let name = format!("{}-{round}", if tail { "tail" } else { "seed" });
     let mut calls = OpenOptions::new()
         .create(true)
@@ -227,22 +227,22 @@ async fn save(source: &Fixture, directory: &Path, round: u64, tail: bool) -> Res
     .await?;
     Ok(())
 }
-fn readonly(file: &Path) -> Result<Connection> {
+fn readonly(file: &Path) -> ProbeResult<Connection> {
     Ok(Connection::open_with_flags(
         file,
         OpenFlags::SQLITE_OPEN_READ_ONLY,
     )?)
 }
-fn count(db: &Connection, table: &str) -> Result<i64> {
+fn count(db: &Connection, table: &str) -> ProbeResult<i64> {
     Ok(db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))?)
 }
-fn domain(db: &Connection) -> Result<Vec<Json>> {
+fn domain(db: &Connection) -> ProbeResult<Vec<Json>> {
     let mut query = db.prepare("SELECT id,version,name,memo FROM order_data ORDER BY id")?;
     Ok(query.query_map([], |r| Ok(json!({"id":r.get::<_,i64>(0)?.to_string(),
         "version":r.get::<_,i64>(1)?.to_string(),"name":r.get::<_,String>(2)?,"memo":r.get::<_,Option<String>>(3)?})))?
         .collect::<std::result::Result<_,_>>()?)
 }
-fn observed(directory: &Path, round: u64) -> Result<Json> {
+fn observed(directory: &Path, round: u64) -> ProbeResult<Json> {
     let db = readonly(&directory.join("source.sqlite"))?;
     let job: Option<(i64,i64,String)> = db.query_row("SELECT source_sequence,acknowledged,payload_sha256 FROM teaql_event_snapshot_publication WHERE target_id=?1", [slot(round)], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
     let cursor: Option<i64> = db
@@ -276,7 +276,7 @@ fn observed(directory: &Path, round: u64) -> Result<Json> {
     }
     Ok(result)
 }
-fn retained(source: &Fixture, directory: &Path, round: u64) -> Result<()> {
+fn retained(source: &Fixture, directory: &Path, round: u64) -> ProbeResult<()> {
     let shared = source.executor.connection();
     let db = shared.lock().unwrap();
     let (n, payload, digest): (i64,String,String) = db.query_row("SELECT source_sequence,payload_json,payload_sha256 FROM teaql_event_snapshot_publication WHERE target_id=?1", [slot(round)], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
@@ -292,7 +292,7 @@ fn retained(source: &Fixture, directory: &Path, round: u64) -> Result<()> {
     );
     Ok(())
 }
-async fn worker(phase: &str, directory: &Path, round: u64) -> Result<()> {
+async fn worker(phase: &str, directory: &Path, round: u64) -> ProbeResult<()> {
     if phase == "premature" {
         return Ok(());
     }
@@ -493,7 +493,7 @@ impl Drop for OwnedChild {
         let _ = self.child.wait();
     }
 }
-fn start(phase: &str, directory: &Path, round: u64) -> Result<OwnedChild> {
+fn start(phase: &str, directory: &Path, round: u64) -> ProbeResult<OwnedChild> {
     let log = directory.join(format!("{phase}-{round}.log"));
     let output = OpenOptions::new().create_new(true).write(true).open(&log)?;
     let child = Command::new(std::env::current_exe()?)
@@ -506,7 +506,7 @@ fn start(phase: &str, directory: &Path, round: u64) -> Result<OwnedChild> {
         .spawn()?;
     Ok(OwnedChild { child, log })
 }
-fn check(child: &OwnedChild, deadline: Instant) -> Result<()> {
+fn check(child: &OwnedChild, deadline: Instant) -> ProbeResult<()> {
     if Instant::now() >= deadline {
         return Err("worker deadline".into());
     }
@@ -515,7 +515,12 @@ fn check(child: &OwnedChild, deadline: Instant) -> Result<()> {
     }
     Ok(())
 }
-fn await_barrier(child: &mut OwnedChild, directory: &Path, phase: &str, round: u64) -> Result<()> {
+fn await_barrier(
+    child: &mut OwnedChild,
+    directory: &Path,
+    phase: &str,
+    round: u64,
+) -> ProbeResult<()> {
     let ready = directory.join(format!("{phase}-{round}.ready.json"));
     let deadline = Instant::now() + BUDGET;
     while !ready.exists() {
@@ -541,7 +546,7 @@ fn await_barrier(child: &mut OwnedChild, directory: &Path, phase: &str, round: u
     }
     Ok(())
 }
-fn execute(phase: &str, directory: &Path, round: u64, crash: bool) -> Result<Json> {
+fn execute(phase: &str, directory: &Path, round: u64, crash: bool) -> ProbeResult<Json> {
     use std::os::unix::process::ExitStatusExt;
     let mut child = start(phase, directory, round)?;
     let pid = child.child.id();
@@ -577,7 +582,7 @@ fn execute(phase: &str, directory: &Path, round: u64, crash: bool) -> Result<Jso
         "logSha256":hash(&bytes),"observed":observed(directory,round)?}),
     )
 }
-fn negative(directory: &Path) -> Result<()> {
+fn negative(directory: &Path) -> ProbeResult<()> {
     let dir = directory.join("negative");
     fs::create_dir(&dir)?;
     let mut child = start("premature", &dir, 1)?;
@@ -600,7 +605,7 @@ fn negative(directory: &Path) -> Result<()> {
     println!("CMR12_NEGATIVE_CONTROL_PASS language=rust");
     Ok(())
 }
-fn verify_observed(state: &Json, phase: &str, round: u64) -> Result<()> {
+fn verify_observed(state: &Json, phase: &str, round: u64) -> ProbeResult<()> {
     let n = baseline(round) as i64;
     let before_tail = matches!(phase, "seed" | "capture" | "retain" | "prepare");
     let high = if phase == "catchup" {
@@ -675,7 +680,7 @@ fn verify_observed(state: &Json, phase: &str, round: u64) -> Result<()> {
     }
     Ok(())
 }
-fn parent(directory: &Path) -> Result<()> {
+fn parent(directory: &Path) -> ProbeResult<()> {
     assert_eq!(
         std::env::consts::OS,
         "linux",
@@ -749,7 +754,7 @@ fn parent(directory: &Path) -> Result<()> {
     )?;
     Ok(())
 }
-fn main() -> Result<()> {
+fn main() -> ProbeResult<()> {
     let args: Vec<_> = std::env::args_os().collect();
     if args.len() == 2 && args[1] == "--build-receipt" {
         let binary = std::env::current_exe()?;
