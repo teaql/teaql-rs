@@ -2,6 +2,7 @@ extern crate self as teaql_runtime;
 mod business_id;
 mod checker;
 mod commit_audit;
+mod committed_events;
 mod context;
 mod data_service;
 mod document_round_trip;
@@ -34,6 +35,7 @@ mod registry;
 #[doc(hidden)]
 pub use registry::decode_compact_rows_with_read_metadata;
 mod round_trip_reference;
+pub mod secret;
 mod telemetry;
 mod telemetry_mutation;
 #[cfg(feature = "opentelemetry")]
@@ -51,6 +53,7 @@ pub use business_id::{
     FixedBusinessClock, InMemoryBusinessIdAllocator, PermutedDailyBusinessIdProfile,
     StaticBusinessIdKeyProvider, SystemBusinessClock,
 };
+pub use committed_events::CommittedEventSource;
 pub use context::{
     ContextEntityRef, ContextRootError, ContinuousPageCursor, ContinuousPageCursorStore, DataStore,
     FixEvidence, FixEvidenceSource, GeneratedSchemaBootstrap, GeneratedSchemaBootstrapFuture,
@@ -132,6 +135,10 @@ pub use round_trip_reference::{
     ResolvedEntityReference, RoundTripReferenceError, StaticReferenceKeyProvider,
     TrustedReferencePrincipal, UNSAFE_EXPOSE_RAW_ENTITY_IDS_ACKNOWLEDGEMENT,
     UNSAFE_EXPOSE_RAW_ENTITY_IDS_ENVIRONMENT,
+};
+pub use secret::{
+    BoundSecretProvider, SecretFailure, SecretProvider, SecretRef, SecretValue,
+    VaultKv2SecretProvider,
 };
 pub use telemetry::{
     FailOpenRuntimeTelemetryPropagationContext, FailOpenRuntimeTelemetryScope,
