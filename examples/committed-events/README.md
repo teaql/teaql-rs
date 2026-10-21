@@ -26,3 +26,26 @@ SQLite source/target files. It uses generated audited Save and Q APIs for
 replicated readback, and checks that generated-library source hashes do not
 change. Both examples use local runtime source; public-package qualification
 is separate.
+
+## Real source-process crash (CMR-03)
+
+Run `bash examples/committed-events/verify-process-crash.sh`, or use the complete
+verifier above. The dedicated small binary spawns its own seed/recover/verify
+workers. A seed performs the audited ledger save, signals a durable post-commit,
+pre-publish barrier and waits without dropping the Context. Its owning parent
+kills and reaps it (SIGKILL on Unix); a fresh recovery process delivers its
+Outbox row, exercises lost acknowledgement/duplicate handling and persists the
+source cursor. Another new process checks the target and duplicate receipt.
+
+Both rounds share the same source/target DBs: counts/cursors advance one then
+two. The business-invocation file remains one entry per writer. A normally
+exited worker without a barrier is a negative control, not successful recovery.
+The parent owns/reaps every child, bounds waits and logs, and never targets an
+unrelated process. This is a test-only worker CLI, not a remote runtime API.
+
+`TEAQL_CMR03_EVIDENCE_DIR` chooses a fresh retained evidence directory; without
+it the binary prints an owned temporary path. Preserve its compact DBs/logs,
+barriers and `result.json`. Never erase old data to rerun a gate. Set a compatible
+`CARGO_TARGET_DIR` for native builds; one-off callers clean only their own build
+outputs after recording results. No power-failure, snapshot-crash, network,
+production, full CMR-12 or installed-public-package qualification is claimed.
