@@ -7,6 +7,7 @@
 use std::future::Future;
 
 use rusqlite::{OptionalExtension, params};
+use teaql_sql::SqlTransaction;
 
 use crate::{
     SqliteMutationExecutor,
@@ -89,6 +90,14 @@ impl SqliteMutationExecutor {
         F: FnMut(OutboxRecord) -> Fut,
         Fut: Future<Output = Result<InboxOutcome, CommittedEventError>>,
     {
+        validate_identity(source_runtime_id, target_id, model_hash)?;
+        if limit == 0 || limit > 1000 {
+            return Err(CommittedEventError::InvalidEnvelope(
+                "invalid delivery read limit",
+            ));
+        }
+        self.claim_committed_delivery(source_runtime_id, target_id, model_hash)
+            .await?;
         let mut status =
             self.committed_delivery_status(source_runtime_id, target_id, model_hash)?;
         let records =
@@ -141,6 +150,63 @@ impl SqliteMutationExecutor {
         })
     }
 
+    // Atomically choose incremental mode before any callback. A bootstrap
+    // preparation and this initial cursor claim cannot both win the empty slot.
+    async fn claim_committed_delivery(
+        &self,
+        source: &str,
+        target: &str,
+        model: &str,
+    ) -> Result<(), CommittedEventError> {
+        let tx = self.begin_snapshot_transaction(false)?;
+        let result = (|| {
+            let db = self.lock()?;
+            let prepared: Option<(i64,String,i64)>=db.query_row("SELECT source_sequence,model_hash,acknowledged FROM teaql_event_snapshot_publication WHERE source_runtime_id=?1 AND target_id=?2",params![source,target],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+            if let Some((n, stored, flag)) = prepared {
+                if flag == 0 {
+                    return Err(CommittedEventError::InvalidEnvelope(
+                        "snapshot bootstrap must be acknowledged before incremental delivery",
+                    ));
+                }
+                let cursor: Option<(i64,String)>=db.query_row("SELECT acked_sequence,model_hash FROM teaql_event_delivery_cursor WHERE source_runtime_id=?1 AND target_id=?2",params![source,target],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+                if flag != 1
+                    || stored != model
+                    || n < 0
+                    || !cursor.is_some_and(|(position, hash)| position >= n && hash == model)
+                {
+                    return Err(CommittedEventError::CursorConflict);
+                }
+            }
+            db.execute("INSERT INTO teaql_event_delivery_cursor(source_runtime_id,target_id,acked_sequence,model_hash) VALUES(?1,?2,0,?3) ON CONFLICT(source_runtime_id,target_id) DO NOTHING",params![source,target,model])?;
+            let cursor:(i64,String)=db.query_row("SELECT acked_sequence,model_hash FROM teaql_event_delivery_cursor WHERE source_runtime_id=?1 AND target_id=?2",params![source,target],|r|Ok((r.get(0)?,r.get(1)?)))?;
+            let high: i64 = db
+                .query_row(
+                    "SELECT current_sequence FROM teaql_event_sequence WHERE source_runtime_id=?1",
+                    [source],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .unwrap_or(0);
+            if cursor.1 != model {
+                return Err(CommittedEventError::ModelMismatch);
+            }
+            if cursor.0 < 0 || high < cursor.0 {
+                return Err(CommittedEventError::CursorConflict);
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                tx.commit_sql().await?;
+                Ok(())
+            }
+            Err(error) => {
+                tx.rollback_sql().await?;
+                Err(error)
+            }
+        }
+    }
+
     fn acknowledge_committed_delivery(
         &self,
         source_runtime_id: &str,
@@ -153,12 +219,8 @@ impl SqliteMutationExecutor {
         let sequence =
             i64::try_from(sequence).map_err(|_| CommittedEventError::SequenceExhausted)?;
         let changed = self.lock()?.execute(
-            "INSERT INTO teaql_event_delivery_cursor \
-             (source_runtime_id, target_id, acked_sequence, model_hash) VALUES (?1, ?2, ?3, ?4) \
-             ON CONFLICT(source_runtime_id, target_id) DO UPDATE SET \
-             acked_sequence = excluded.acked_sequence \
-             WHERE teaql_event_delivery_cursor.acked_sequence = ?5 \
-               AND teaql_event_delivery_cursor.model_hash = excluded.model_hash",
+            "UPDATE teaql_event_delivery_cursor SET acked_sequence=?3 \
+             WHERE source_runtime_id=?1 AND target_id=?2 AND acked_sequence=?5 AND model_hash=?4",
             params![source_runtime_id, target_id, sequence, model_hash, prior],
         )?;
         if changed != 1 {

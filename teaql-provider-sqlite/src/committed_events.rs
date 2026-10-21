@@ -19,6 +19,8 @@ use crate::{
     strip_identifier_quotes,
 };
 
+#[path = "committed_bootstrap.rs"]
+pub mod bootstrap;
 #[path = "committed_snapshot.rs"]
 pub mod snapshot;
 
@@ -203,7 +205,13 @@ impl SqliteMutationExecutor {
              CREATE TABLE IF NOT EXISTS teaql_event_snapshot (\
                 source_runtime_id TEXT PRIMARY KEY, snapshot_id TEXT NOT NULL,\
                 source_sequence INTEGER NOT NULL CHECK(source_sequence >= 0),\
-                model_hash TEXT NOT NULL,payload_sha256 TEXT NOT NULL,payload_json TEXT NOT NULL);",
+                model_hash TEXT NOT NULL,payload_sha256 TEXT NOT NULL,payload_json TEXT NOT NULL);\
+             CREATE TABLE IF NOT EXISTS teaql_event_snapshot_publication (\
+                source_runtime_id TEXT NOT NULL,target_id TEXT NOT NULL,snapshot_id TEXT NOT NULL,\
+                source_sequence INTEGER NOT NULL CHECK(source_sequence >= 0),model_hash TEXT NOT NULL,\
+                payload_sha256 TEXT NOT NULL,payload_json TEXT NOT NULL,\
+                acknowledged INTEGER NOT NULL CHECK(acknowledged IN (0,1)),\
+                PRIMARY KEY(source_runtime_id,target_id));",
         )?;
         Ok(())
     }

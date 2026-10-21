@@ -101,7 +101,7 @@ fn catalog(context: &UserContext) -> Result<Vec<&EntityDescriptor>, CommittedEve
     tables.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(tables)
 }
-fn provider(
+pub(super) fn provider(
     context: &UserContext,
     executor: &SqliteMutationExecutor,
 ) -> Result<(), CommittedEventError> {
@@ -120,7 +120,7 @@ fn bounded(text: &str, limits: SnapshotLimits) -> Result<(), CommittedEventError
         Ok(())
     }
 }
-async fn finish<T>(
+pub(super) async fn finish<T>(
     transaction: SqliteTransaction,
     result: Result<T, CommittedEventError>,
 ) -> Result<T, CommittedEventError> {
@@ -287,6 +287,7 @@ impl SqliteMutationExecutor {
                 "teaql_event_applied_payload",
                 "teaql_event_outbox",
                 "teaql_event_sequence",
+                "teaql_event_snapshot_publication",
             ] {
                 if count(&connection, table)? != 0 {
                     return Err(invalid("target already contains stream state"));
@@ -376,7 +377,7 @@ fn count(connection: &Connection, table: &str) -> Result<i64, CommittedEventErro
         |r| r.get(0),
     )?)
 }
-fn validate(
+pub(super) fn validate(
     record: &SnapshotRecord,
     target: &CommittedEventTarget,
     limits: SnapshotLimits,

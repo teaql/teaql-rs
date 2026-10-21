@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use teaql_core::{DataType, EntityDescriptor, PropertyDescriptor, RelationDescriptor};
 use teaql_provider_sqlite::SqliteMutationExecutor;
 use teaql_provider_sqlite::SqliteProviderExt;
+use teaql_provider_sqlite::committed_events::bootstrap::SnapshotReceipt;
 use teaql_provider_sqlite::committed_events::snapshot::{
     SnapshotImportMode, SnapshotLimits, SnapshotRecord,
 };
@@ -266,6 +267,398 @@ fn changed(original: &SnapshotRecord, edit: impl FnOnce(&mut Value)) -> Snapshot
         payload_json: text,
         ..original.clone()
     }
+}
+
+#[test]
+fn durable_bootstrap_keeps_original_bytes_and_resumes_after_lost_ack() {
+    block_on(async {
+        use teaql_provider_sqlite::committed_events::CommittedEventError;
+        let source = Fixture::new(true, false);
+        let target = Fixture::new(false, false);
+        commit_tail(&source.path, 1).await;
+        let prepared = source
+            .executor
+            .prepare_committed_snapshot(
+                &source.context,
+                "analytics",
+                "bootstrap",
+                "copy",
+                "bootstrap",
+                SnapshotLimits::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(prepared.snapshot.source_sequence, 1);
+        assert!(!prepared.acknowledged);
+        commit_tail(&source.path, 2).await;
+        assert_eq!(
+            prepared,
+            source
+                .executor
+                .prepare_committed_snapshot(
+                    &source.context,
+                    "analytics",
+                    "bootstrap",
+                    "retry",
+                    "retry",
+                    SnapshotLimits::default()
+                )
+                .await
+                .unwrap()
+        );
+        assert!(
+            source
+                .executor
+                .publish_committed_batch(SOURCE, "analytics", MODEL, 10, |_| async {
+                    panic!("pending bootstrap must block tail")
+                })
+                .await
+                .is_err()
+        );
+        assert!(
+            source
+                .executor
+                .publish_prepared_snapshot(
+                    &source.context,
+                    "analytics",
+                    "bootstrap",
+                    SnapshotLimits::default(),
+                    |record| {
+                        let replica = &target;
+                        let original = &source;
+                        async move {
+                            assert!(
+                                original
+                                    .executor
+                                    .connection()
+                                    .lock()
+                                    .unwrap()
+                                    .is_autocommit()
+                            );
+                            let ack = replica
+                                .executor
+                                .initialize_snapshot_and_acknowledge(
+                                    &replica.context,
+                                    &record,
+                                    "analytics",
+                                    SnapshotImportMode::RequireEmpty,
+                                    SnapshotLimits::default(),
+                                )
+                                .await?;
+                            assert!(!ack.duplicate);
+                            Err(CommittedEventError::TransportUnavailable)
+                        }
+                    }
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            source.scalar("SELECT count(*) FROM teaql_event_delivery_cursor"),
+            0
+        );
+        let acknowledged = source
+            .executor
+            .publish_prepared_snapshot(
+                &source.context,
+                "analytics",
+                "bootstrap",
+                SnapshotLimits::default(),
+                |record| {
+                    let replica = &target;
+                    async move {
+                        let ack = replica
+                            .executor
+                            .initialize_snapshot_and_acknowledge(
+                                &replica.context,
+                                &record,
+                                "analytics",
+                                SnapshotImportMode::RequireEmpty,
+                                SnapshotLimits::default(),
+                            )
+                            .await?;
+                        assert!(ack.duplicate);
+                        Ok(ack)
+                    }
+                },
+            )
+            .await
+            .unwrap();
+        assert!(acknowledged.acknowledged);
+        assert_eq!(
+            source
+                .executor
+                .committed_delivery_status(SOURCE, "analytics", MODEL)
+                .unwrap()
+                .acked_sequence,
+            1
+        );
+        let batch = source
+            .executor
+            .publish_committed_batch(SOURCE, "analytics", MODEL, 10, |record| {
+                let replica = &target;
+                async move {
+                    assert_eq!(record.source_sequence, 2);
+                    replica
+                        .executor
+                        .apply_model_checked_committed_set(&replica.context, &record)
+                        .await
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(batch.acknowledged, 1);
+        assert_eq!(batch.status.acked_sequence, 2);
+        same(&source, &target);
+        assert!(
+            source
+                .executor
+                .publish_prepared_snapshot(
+                    &source.context,
+                    "analytics",
+                    "bootstrap",
+                    SnapshotLimits::default(),
+                    |_| async { panic!("known ACK must not redeliver") }
+                )
+                .await
+                .unwrap()
+                .acknowledged
+        );
+        assert_eq!(
+            source
+                .executor
+                .committed_delivery_status(SOURCE, "analytics", MODEL)
+                .unwrap()
+                .acked_sequence,
+            2
+        );
+        assert!(
+            source
+                .executor
+                .prepare_committed_snapshot(
+                    &source.context,
+                    "analytics",
+                    "different",
+                    "copy",
+                    "bootstrap",
+                    SnapshotLimits::default()
+                )
+                .await
+                .is_err()
+        );
+        println!(
+            "CMR12_BOOTSTRAP_PASS language=rust baseline=1 tail=2 retained_bytes=1 lost_ack=1 pending_gate=1 no_rewind=1"
+        );
+    });
+}
+
+#[test]
+fn bootstrap_ack_is_bound_and_cursor_publication_commit_is_atomic() {
+    block_on(async {
+        let source = Fixture::new(true, false);
+        let target = Fixture::new(false, false);
+        commit_tail(&source.path, 1).await;
+        let prepared = source
+            .executor
+            .prepare_committed_snapshot(
+                &source.context,
+                "analytics",
+                "bootstrap",
+                "copy",
+                "bootstrap",
+                SnapshotLimits::default(),
+            )
+            .await
+            .unwrap();
+        let ack = target
+            .executor
+            .initialize_snapshot_and_acknowledge(
+                &target.context,
+                &prepared.snapshot,
+                "analytics",
+                SnapshotImportMode::RequireEmpty,
+                SnapshotLimits::default(),
+            )
+            .await
+            .unwrap();
+        for bad in [
+            SnapshotReceipt {
+                source_runtime_id: "other".into(),
+                ..ack.clone()
+            },
+            SnapshotReceipt {
+                target_id: "other".into(),
+                ..ack.clone()
+            },
+            SnapshotReceipt {
+                snapshot_id: "other".into(),
+                ..ack.clone()
+            },
+            SnapshotReceipt {
+                source_sequence: 2,
+                ..ack.clone()
+            },
+            SnapshotReceipt {
+                model_hash: format!("sha256:{}", "1".repeat(64)),
+                ..ack.clone()
+            },
+            SnapshotReceipt {
+                payload_sha256: "bad".into(),
+                ..ack.clone()
+            },
+        ] {
+            assert!(
+                source
+                    .executor
+                    .publish_prepared_snapshot(
+                        &source.context,
+                        "analytics",
+                        "bootstrap",
+                        SnapshotLimits::default(),
+                        |_| async move { Ok(bad) }
+                    )
+                    .await
+                    .is_err()
+            );
+        }
+        source.execute("CREATE TRIGGER reject_bootstrap_ack BEFORE UPDATE ON teaql_event_snapshot_publication WHEN NEW.acknowledged=1 BEGIN SELECT RAISE(ABORT,'fixture rejects ACK after cursor insert'); END");
+        assert!(
+            source
+                .executor
+                .publish_prepared_snapshot(
+                    &source.context,
+                    "analytics",
+                    "bootstrap",
+                    SnapshotLimits::default(),
+                    |_| async { Ok(ack.clone()) }
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            source.scalar("SELECT count(*) FROM teaql_event_delivery_cursor"),
+            0
+        );
+        assert_eq!(
+            source.scalar("SELECT acknowledged FROM teaql_event_snapshot_publication"),
+            0
+        );
+        source.execute("DROP TRIGGER reject_bootstrap_ack");
+        assert!(
+            source
+                .executor
+                .publish_prepared_snapshot(
+                    &source.context,
+                    "analytics",
+                    "bootstrap",
+                    SnapshotLimits::default(),
+                    |_| async { Ok(ack.clone()) }
+                )
+                .await
+                .unwrap()
+                .acknowledged
+        );
+        source.execute("DELETE FROM teaql_event_delivery_cursor");
+        assert!(
+            source
+                .executor
+                .publish_committed_batch(SOURCE, "analytics", MODEL, 10, |_| async {
+                    panic!("corrupt cursor must fail before callback")
+                })
+                .await
+                .is_err()
+        );
+        println!(
+            "CMR12_ACK_ATOMIC_PASS language=rust bound_fields=6 rollback=1 retry=1 corrupt_cursor=1"
+        );
+    });
+}
+
+#[test]
+fn bootstrap_mode_is_exclusive_and_cannot_reset_source_publication_state() {
+    block_on(async {
+        let source = Fixture::new(true, false);
+        let target = Fixture::new(false, false);
+        assert!(
+            source
+                .executor
+                .publish_committed_batch(SOURCE, "incremental", MODEL, 0, |_| async { panic!() })
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            source.scalar("SELECT count(*) FROM teaql_event_delivery_cursor"),
+            0
+        );
+        assert_eq!(
+            source
+                .executor
+                .publish_committed_batch(SOURCE, "incremental", MODEL, 1, |_| async { panic!() })
+                .await
+                .unwrap()
+                .acknowledged,
+            0
+        );
+        assert!(
+            source
+                .executor
+                .prepare_committed_snapshot(
+                    &source.context,
+                    "incremental",
+                    "bootstrap",
+                    "copy",
+                    "bootstrap",
+                    SnapshotLimits::default()
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            source.scalar("SELECT count(*) FROM teaql_event_snapshot_publication"),
+            0
+        );
+        let tx = source.executor.begin_sql().await.unwrap();
+        assert!(
+            source
+                .executor
+                .prepare_committed_snapshot(
+                    &source.context,
+                    "new-target",
+                    "bootstrap",
+                    "copy",
+                    "bootstrap",
+                    SnapshotLimits::default()
+                )
+                .await
+                .is_err()
+        );
+        tx.rollback_sql().await.unwrap();
+        target
+            .executor
+            .prepare_committed_snapshot(
+                &target.context,
+                "another-target",
+                "bootstrap",
+                "copy",
+                "bootstrap",
+                SnapshotLimits::default(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            target
+                .import(
+                    &source.snapshot().await,
+                    SnapshotImportMode::ReplaceUninitialized
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            target.scalar("SELECT count(*) FROM teaql_event_snapshot_publication"),
+            1
+        );
+    });
 }
 
 #[test]
