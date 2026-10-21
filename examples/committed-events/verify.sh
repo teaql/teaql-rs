@@ -18,6 +18,7 @@ for round in 1 2; do
   printf 'PASS Rust committed-events example round %s\n' "$round"
 done
 bash examples/committed-events/verify-process-crash.sh
+bash examples/committed-events/verify-snapshot.sh
 
 school_example="$repo_dir/examples/school-management"
 school_evidence="$(mktemp -d -t teaql-committed-school.XXXXXXXX)"

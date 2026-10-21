@@ -49,3 +49,25 @@ barriers and `result.json`. Never erase old data to rerun a gate. Set a compatib
 `CARGO_TARGET_DIR` for native builds; one-off callers clean only their own build
 outputs after recording results. No power-failure, snapshot-crash, network,
 production, full CMR-12 or installed-public-package qualification is claimed.
+
+## Consistent snapshot plus tail (CMR-11)
+
+Run `bash examples/committed-events/verify-snapshot.sh`. It runs the current
+local `teaql-provider-sqlite` example twice offline, overrides any shared target
+with an owned temporary target and removes those build outputs on exit. The
+complete verifier also invokes this gate.
+
+The small in-memory fixture calls Context `ensure_schema`, then simulates two
+old orders with no captured history: a live row and a retained tombstone, with
+an ID above JavaScript's exact-integer range, negative epoch time, Boolean/NULL,
+and an empty entity catalog entry. Fixture SQL simulates one committed tail;
+normal application audited-save capture is shown by `committed_events` instead.
+
+The snapshot at N=0 plus tail 1 matches the source; retries do not rewind the
+current target. Set `TEAQL_SNAPSHOT_EXPORT_DIR` on a single example invocation
+to create `snapshot.json`, `tail.json` and SHA-256 sidecars. A separate invocation
+with `TEAQL_SNAPSHOT_IMPORT_DIR` consumes those files, including Java exports.
+The two roles are mutually exclusive and export files are create-new only.
+Use fresh task-owned export directories and retain compact evidence explicitly.
+The files are not an authenticated transport, and this does not qualify
+process-crash snapshot recovery, production scale or public artifacts.
