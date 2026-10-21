@@ -26,7 +26,12 @@ impl E {
 }
 
 
-pub fn trigger_logic_bug_panic(root_desc: &str, failed_node: &str, attempted_path: &str) -> ! {
+pub fn trigger_logic_bug_panic(root_desc: &str, failed_node: &str, attempted_path: &str, path: &teaql_core::eval_location::ExpressionPath) -> ! {
+    let diagnostic = teaql_core::eval_location::NotLoadedDiagnostic::new(path.failure_location(), path.missing_member().unwrap_or(failed_node))
+        .with_profile(teaql_core::object_location::JsonFieldNamingProfile::from_model_value("camelCase").expect("validated model JSON naming"));
+    let wire = teaql_core::serde_json::to_string(&diagnostic.to_wire()).expect("serializable diagnostic");
+    // Keep legacy preload hints as display only. The canonical location above
+    // comes from typed traversal segments, never from parsing these hints.
     let parts: Vec<&str> = attempted_path.split('.').collect();
     let break_idx = parts.iter().position(|&p| p == failed_node).unwrap_or(0);
 
@@ -83,29 +88,40 @@ pub fn trigger_logic_bug_panic(root_desc: &str, failed_node: &str, attempted_pat
 
     let human_message = format!("\"访问 {}.{} 时缺少预加载。请在查询中加入 {}{}\"", root_name, attempted_path, suggested_fix, human_nested);
 
-    panic!("\n\n💥 [Coding Logic Bug]\n\noriginal_expr_with_broken_point: \"{}\"\nroot: {}\naccess_path: {}\nbreak_point: \"{}\"\nmissing_preload: {}\nsuggested_fix: {}\nnested_fix: {}\nseverity: \"error\"\nhuman_message: {}\n", 
-        original_expr, root_desc, access_path_json, failed_node, missing_preload_json, suggested_fix, nested_fix, human_message);
+    panic!("\n\n💥 [Coding Logic Bug]\n\ndiagnostic: {}\noriginal_expr_with_broken_point: \"{}\"\nroot: {}\naccess_path: {}\nbreak_point: \"{}\"\nmissing_preload: {}\nsuggested_fix: {}\nnested_fix: {}\nseverity: \"error\"\nhuman_message: {}\n",
+        wire, original_expr, root_desc, access_path_json, failed_node, missing_preload_json, suggested_fix, nested_fix, human_message);
 }
 
 #[derive(Clone)]
 pub struct ValueExpression<'a, T> {
     result: teaql_core::eval::EvalResult<T>,
     root_desc: std::sync::Arc<String>,
+    path: teaql_core::eval_location::ExpressionPath,
     _phantom: std::marker::PhantomData<&'a ()>,
 }
 
 impl<'a, T: Clone> ValueExpression<'a, T> {
     pub fn new(result: teaql_core::eval::EvalResult<T>, root_desc: std::sync::Arc<String>) -> Self {
-        Self { result, root_desc, _phantom: std::marker::PhantomData }
+        Self { result, root_desc, path: Default::default(), _phantom: std::marker::PhantomData }
     }
+
+    pub(crate) fn with_path(mut self, mut path: teaql_core::eval_location::ExpressionPath) -> Self { if matches!(&self.result, teaql_core::eval::EvalResult::NotLoaded { .. }) { path.mark_missing(); } self.path = path; self }
 
     fn resolve(self) -> Option<T> {
         match self.result {
             teaql_core::eval::EvalResult::Value(v) => Some(v),
             teaql_core::eval::EvalResult::Null => None,
             teaql_core::eval::EvalResult::NotLoaded { failed_node, attempted_path } => {
-                crate::trigger_logic_bug_panic(&self.root_desc, &failed_node, &attempted_path)
+                crate::trigger_logic_bug_panic(&self.root_desc, &failed_node, &attempted_path, &self.path)
             }
+        }
+    }
+
+    pub fn try_eval(self) -> Result<Option<T>, teaql_core::eval_location::NotLoadedDiagnostic> {
+        match self.result {
+            teaql_core::eval::EvalResult::Value(value) => Ok(Some(value)),
+            teaql_core::eval::EvalResult::Null => Ok(None),
+            teaql_core::eval::EvalResult::NotLoaded { failed_node, .. } => Err(teaql_core::eval_location::NotLoadedDiagnostic::new(self.path.failure_location(), self.path.missing_member().unwrap_or(failed_node.as_str())).with_profile(teaql_core::object_location::JsonFieldNamingProfile::from_model_value("camelCase").expect("validated model JSON naming"))),
         }
     }
 

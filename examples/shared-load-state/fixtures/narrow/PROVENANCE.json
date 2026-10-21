@@ -1,9 +1,9 @@
 {
   "kind": "raw generated minimal Rust load-state fixture",
-  "producerCommit": "9ca551def8cb06c616eadcd34d7c1c89440aa5c2",
+  "producerCommit": "301b1898bae49c16aadfe88ee54cb625c0f6dbea",
   "modelSha256": "0664ef5b32b1126100676782ec5c6c2d56e9e491920bfdfacadb4790a66b9ca9",
-  "runtimeVersion": "5.0.6",
-  "testedRuntimeVersion": "5.0.7",
+  "runtimeVersion": "5.0.7",
+  "qualification": "generated source only; local runtime execution is a separate gate",
   "wide": false,
   "inheritance": false,
   "handEdited": false,
@@ -18,11 +18,11 @@
     },
     {
       "path": "lib/Cargo.toml",
-      "sha256": "12f90a61ebf8193b99542c47a62be30a498e79fab182f98ab23bf6ad04922b92"
+      "sha256": "334904ed7798520ebac5e916da4331b860e9d3993a6ccf33f5d77ffc93bb89bf"
     },
     {
       "path": "lib/src/e.rs",
-      "sha256": "e0fe93b2c6c9f058e2a3fc29d9bb6b4afaf2ad04f870af2229be17ad962a52eb"
+      "sha256": "997cf7da6c04a964b50604a817b85b273c09c0f28ad07d1ce490d3516aee67db"
     },
     {
       "path": "lib/src/lib.rs",
@@ -42,7 +42,7 @@
     },
     {
       "path": "lib/src/platform/expression.rs",
-      "sha256": "73089954e9c817e0ad20ec65c94772f7a20e0f7ac0072fd04579ac41178a636d"
+      "sha256": "a1dee6f1d98bcd551be56a3f1639651658382e315f8eb76e28010cf95e4d6e0e"
     },
     {
       "path": "lib/src/platform/mod.rs",
@@ -69,30 +69,6 @@
       "sha256": "4e302a13857b20dc814d25c22c427093146b1f908cd903ded54866e529fb0101"
     },
     {
-      "path": "lib/src/school/behavior.rs",
-      "sha256": "41c4faa5d2fc86da9b3d080a4a07b17cd5e74ac453ec1e7ca914b8c68c30db05"
-    },
-    {
-      "path": "lib/src/school/checker.rs",
-      "sha256": "acfc18f89390efdbc84c69cff685595646c3e5fd1b519556542d22b3df6d36ed"
-    },
-    {
-      "path": "lib/src/school/entity.rs",
-      "sha256": "b2a7f392db3659bfa1e3bbda6d0dd551bb6eaa1ae42ccb7a03df9d556a9f9551"
-    },
-    {
-      "path": "lib/src/school/expression.rs",
-      "sha256": "0b016d951be3faeebbe728478c7b4e4f581a05185abe6bbf61d7b45daa5ec9cf"
-    },
-    {
-      "path": "lib/src/school/mod.rs",
-      "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
-    },
-    {
-      "path": "lib/src/school/request.rs",
-      "sha256": "ed5e4d38d832ff6b6de658bf28ee98adb495d8459f5de8c15c88be0b2bf34939"
-    },
-    {
       "path": "lib/src/school_capacity_summary/behavior.rs",
       "sha256": "779c4e65b74946928409571a8cb0be25ff169db6dfd9566f60399bd7ebee0573"
     },
@@ -106,7 +82,7 @@
     },
     {
       "path": "lib/src/school_capacity_summary/expression.rs",
-      "sha256": "73309c91ace94c2b66026071e3d27e37d4c0af158cd40029b805a56628b07d9c"
+      "sha256": "4ef3abcf785360112135998632fc4391d125d70eae4a8442ddff225ecf3798b6"
     },
     {
       "path": "lib/src/school_capacity_summary/mod.rs",
@@ -130,7 +106,7 @@
     },
     {
       "path": "lib/src/school_type/expression.rs",
-      "sha256": "abc622e4bc7fdc94ca24f46500ac144d7e3ad83c8417cf29f8c57c535f040db4"
+      "sha256": "731f0bd03e624588e5eeabd4d1368a68b4731bd6b0ca3613f5d7e9e433764b82"
     },
     {
       "path": "lib/src/school_type/mod.rs",
@@ -139,6 +115,30 @@
     {
       "path": "lib/src/school_type/request.rs",
       "sha256": "d48a148dd2f53f8ab224edad55e4dce8bf7c42d2cd66fe963ae1cdc19fd39480"
+    },
+    {
+      "path": "lib/src/school/behavior.rs",
+      "sha256": "41c4faa5d2fc86da9b3d080a4a07b17cd5e74ac453ec1e7ca914b8c68c30db05"
+    },
+    {
+      "path": "lib/src/school/checker.rs",
+      "sha256": "acfc18f89390efdbc84c69cff685595646c3e5fd1b519556542d22b3df6d36ed"
+    },
+    {
+      "path": "lib/src/school/entity.rs",
+      "sha256": "b2a7f392db3659bfa1e3bbda6d0dd551bb6eaa1ae42ccb7a03df9d556a9f9551"
+    },
+    {
+      "path": "lib/src/school/expression.rs",
+      "sha256": "ba8b64f62ddbeb46cfc69e5d33ac71f8da3f4ae23838491870f6dd2112c1eae0"
+    },
+    {
+      "path": "lib/src/school/mod.rs",
+      "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+    },
+    {
+      "path": "lib/src/school/request.rs",
+      "sha256": "ed5e4d38d832ff6b6de658bf28ee98adb495d8459f5de8c15c88be0b2bf34939"
     },
     {
       "path": "model-under-test.xml",
