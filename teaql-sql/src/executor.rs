@@ -14,7 +14,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 use teaql_core::{
-    CompactRow, EntityDescriptor, EntitySnapshot, Expr, GeneratedValues, SelectQuery, Value,
+    AggregateFunction, CompactRow, DataType, EntityDescriptor, EntitySnapshot, Expr, ExprFunction,
+    GeneratedValues, SelectQuery, Value,
 };
 use teaql_data_service::{
     DataServiceCapabilities, DataServiceExecutor, DataServiceOperation, ExecutionMetadata,
@@ -22,7 +23,7 @@ use teaql_data_service::{
     MutationResult, QueryExecutor, QueryRequest, QueryResult,
 };
 
-use crate::{CompiledQuery, SqlCompileError, SqlDialect};
+use crate::{CompiledQuery, DatabaseKind, SqlCompileError, SqlDialect};
 
 pub trait SqlTransport: Send + Sync {
     type Error: std::error::Error + Send + Sync + 'static;
@@ -994,7 +995,9 @@ mod tests {
         let bytes = std::mem::size_of_val(&future);
         println!("ORDINARY_SQL_QUERY_FRAME_BYTES={bytes}");
         assert!(
-            bytes <= 4608,
+            // Exact Decimal result normalization retains one descriptor
+            // reference; the partition-probe buffers must still stay out.
+            bytes <= 4624,
             "ordinary SQL future retains partition-probe state: {bytes}"
         );
         assert_eq!(
@@ -1527,8 +1530,15 @@ impl<
             let compiled = self
                 .compile_select_cached(&entity_desc, &request.query)
                 .map_err(SqlExecutorError::Compile)?;
-            execute_compiled_query(&self.dialect, &self.transport, compiled, request, observer)
-                .await
+            execute_compiled_query(
+                &self.dialect,
+                &self.transport,
+                &entity_desc,
+                compiled,
+                request,
+                observer,
+            )
+            .await
         }
     }
 }
@@ -1567,11 +1577,15 @@ where
         else {
             return Ok(None);
         };
-        let rows = self
+        let mut rows = self
             .transport
             .fetch_repeated_compact_sql(&first, param_index, values)
             .await
             .map_err(SqlExecutorError::Transport)?;
+        if self.dialect.kind() == DatabaseKind::Sqlite {
+            normalize_exact_decimal_aggregates(entity, query, &mut rows)
+                .map_err(SqlExecutorError::PersistedRecord)?;
+        }
         Ok(Some(QueryResult {
             metadata: ExecutionMetadata::unrecorded_query(rows.len()),
             rows,
@@ -1582,6 +1596,7 @@ where
 async fn execute_compiled_query<D: SqlDialect + Sync, T: SqlTransport>(
     dialect: &D,
     transport: &T,
+    entity: &EntityDescriptor,
     compiled: CompiledQuery,
     request: QueryRequest,
     observer: Option<teaql_data_service::ExecutionObserver<'_>>,
@@ -1593,15 +1608,83 @@ async fn execute_compiled_query<D: SqlDialect + Sync, T: SqlTransport>(
     let result = diagnostic
         .run(transport.fetch_all_compact_sql(&compiled))
         .await;
-    let rows = result.map_err(|error| {
+    let mut rows = result.map_err(|error| {
         diagnostic.fail();
         SqlExecutorError::Transport(error)
     })?;
+    if dialect.kind() == DatabaseKind::Sqlite
+        && let Err(error) = normalize_exact_decimal_aggregates(entity, &request.query, &mut rows)
+    {
+        diagnostic.fail();
+        return Err(SqlExecutorError::PersistedRecord(error));
+    }
     let mut metadata = diagnostic
         .success()
         .unwrap_or_else(|| ExecutionMetadata::unrecorded_query(rows.len()));
     metadata.result_count = Some(rows.len());
     Ok(QueryResult { rows, metadata })
+}
+
+fn normalize_exact_decimal_aggregates(
+    entity: &EntityDescriptor,
+    query: &SelectQuery,
+    rows: &mut [CompactRow],
+) -> Result<(), String> {
+    for aggregate in &query.aggregates {
+        if !matches!(
+            aggregate.function,
+            AggregateFunction::Sum
+                | AggregateFunction::Avg
+                | AggregateFunction::Min
+                | AggregateFunction::Max
+        ) || !entity
+            .property_by_name(&aggregate.field)
+            .is_some_and(|property| property.data_type == DataType::Decimal)
+        {
+            continue;
+        }
+        normalize_decimal_alias(rows, &aggregate.alias)?;
+    }
+    for projection in &query.expr_projection {
+        let Expr::Function { function, args } = &projection.expr else {
+            continue;
+        };
+        if !matches!(
+            function,
+            ExprFunction::Sum | ExprFunction::Avg | ExprFunction::Min | ExprFunction::Max
+        ) {
+            continue;
+        }
+        let [Expr::Column(field)] = args.as_slice() else {
+            continue;
+        };
+        if entity
+            .property_by_name(field)
+            .is_some_and(|property| property.data_type == DataType::Decimal)
+        {
+            normalize_decimal_alias(rows, &projection.alias)?;
+        }
+    }
+    Ok(())
+}
+
+fn normalize_decimal_alias(rows: &mut [CompactRow], alias: &str) -> Result<(), String> {
+    for row in rows {
+        let value = row
+            .get_mut(alias)
+            .ok_or_else(|| "exact Decimal aggregate alias is missing".to_owned())?;
+        match value {
+            Value::Null | Value::TypedNull(_) | Value::Decimal(_) => {}
+            Value::Text(_) | Value::I64(_) | Value::U64(_) => {
+                let parsed = value
+                    .try_decimal()
+                    .ok_or_else(|| "exact Decimal aggregate value is invalid".to_owned())?;
+                *value = Value::Decimal(parsed);
+            }
+            _ => return Err("exact Decimal aggregate returned an inexact type".to_owned()),
+        }
+    }
+    Ok(())
 }
 
 fn query_diagnostic_metadata<D: SqlDialect>(
@@ -1972,7 +2055,15 @@ impl<
             let compiled = self
                 .compile_select_cached(&entity_desc, &request.query)
                 .map_err(SqlExecutorError::Compile)?;
-            execute_compiled_query(self.dialect, &self.transport, compiled, request, observer).await
+            execute_compiled_query(
+                self.dialect,
+                &self.transport,
+                &entity_desc,
+                compiled,
+                request,
+                observer,
+            )
+            .await
         }
     }
 }

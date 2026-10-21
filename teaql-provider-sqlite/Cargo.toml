@@ -24,3 +24,4 @@ futures-util = "0.3"
 [dev-dependencies]
 futures-executor = "0.3"
 teaql-macros = { workspace = true }
+tempfile = "3"
