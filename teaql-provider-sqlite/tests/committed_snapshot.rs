@@ -623,3 +623,66 @@ fn snapshot_does_not_bypass_context_or_caller_transaction_or_normal_version_rule
         assert!(empty.rows("customer_order_data").is_empty());
     });
 }
+
+#[test]
+fn source_json_null_and_ambiguous_metadata_fail_closed_without_poisoning_the_connection() {
+    block_on(async {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        executor.ensure_committed_event_schema().unwrap();
+        executor
+            .connection()
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE json_probe_data(id INTEGER PRIMARY KEY,version INTEGER,payload TEXT);
+             INSERT INTO json_probe_data VALUES(1,3,'null');",
+            )
+            .unwrap();
+        let descriptor = entity("json_probe", "payload", DataType::Json);
+        let mut context = UserContext::new()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(descriptor.clone()))
+            .with_committed_event_source(CommittedEventSource::new(SOURCE, MODEL).unwrap());
+        context.use_sqlite_provider(executor.clone());
+        let export = |context| {
+            executor.export_model_checked_snapshot(
+                context,
+                "json-probe",
+                "preserve JSON semantics",
+                "verify lossless export",
+                SnapshotLimits::default(),
+            )
+        };
+        // JSON-text null must not be silently restored as SQL NULL.
+        assert!(export(&context).await.is_err());
+        executor
+            .connection()
+            .lock()
+            .unwrap()
+            .execute("UPDATE json_probe_data SET payload=NULL", [])
+            .unwrap();
+        let snapshot = export(&context).await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&snapshot.payload_json).unwrap()["rows"][0]["fields"]["payload"],
+            Value::Null
+        );
+        executor
+            .connection()
+            .lock()
+            .unwrap()
+            .execute("UPDATE json_probe_data SET payload=?1", [" {\"a\" : 1} "])
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&export(&context).await.unwrap().payload_json).unwrap()["rows"]
+                [0]["fields"]["payload"],
+            json!({"a":1})
+        );
+        let ambiguous = descriptor.clone().property(
+            PropertyDescriptor::new("payload", DataType::Text).column_name("other_payload"),
+        );
+        context.set_metadata(InMemoryMetadataStore::new().with_entity(ambiguous));
+        assert!(export(&context).await.is_err());
+        context.set_metadata(InMemoryMetadataStore::new().with_entity(descriptor));
+        assert!(export(&context).await.is_ok());
+    });
+}

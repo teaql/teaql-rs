@@ -69,8 +69,11 @@ fn catalog(context: &UserContext) -> Result<Vec<&EntityDescriptor>, CommittedEve
         return Err(invalid("snapshot requires an installed model"));
     }
     for entity in &tables {
-        if entity.id_property().is_none()
-            || entity.version_property().is_none()
+        if entity.name.trim().is_empty()
+            || entity.table_name.trim().is_empty()
+            || entity.properties.iter().filter(|p| p.is_id).count() != 1
+            || entity.properties.iter().filter(|p| p.is_version).count() != 1
+            || entity.properties.iter().any(|p| p.is_id && p.is_version)
             || !names.insert(&entity.name)
             || entity
                 .table_name
@@ -81,8 +84,15 @@ fn catalog(context: &UserContext) -> Result<Vec<&EntityDescriptor>, CommittedEve
             return Err(invalid("unsupported or ambiguous snapshot table"));
         }
         let mut columns = BTreeSet::new();
+        let mut properties = BTreeSet::new();
         for property in &entity.properties {
-            if !columns.insert(strip_identifier_quotes(&property.column_name).to_ascii_lowercase())
+            if property.name.trim().is_empty()
+                || strip_identifier_quotes(&property.column_name)
+                    .trim()
+                    .is_empty()
+                || !properties.insert(&property.name)
+                || !columns
+                    .insert(strip_identifier_quotes(&property.column_name).to_ascii_lowercase())
             {
                 return Err(invalid("duplicate snapshot column mapping"));
             }
@@ -437,7 +447,15 @@ fn encode(
                 DataType::Decimal | DataType::Text | DataType::LargeText | DataType::Date,
                 SqliteValue::Text(value),
             ) => json!(value),
-            (DataType::Json, SqliteValue::Text(value)) => strict_json(value)?,
+            (DataType::Json, SqliteValue::Text(value)) => {
+                let json = strict_json(value)?;
+                // The v1 wire uses null for SQL NULL. A stored JSON-text null is
+                // distinct and has no lossless representation in this version.
+                if json.is_null() {
+                    return Err(invalid("JSON text null cannot be represented losslessly"));
+                }
+                json
+            }
             _ => return Err(invalid("source storage cannot be represented losslessly")),
         }
     };
