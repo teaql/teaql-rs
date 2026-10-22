@@ -194,7 +194,10 @@ pub enum MutationExecutorError {
 impl std::fmt::Display for MutationExecutorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ReadOnlyTarget => write!(f, "READ_ONLY_TARGET: ordinary mutations are disabled on this replication target"),
+            Self::ReadOnlyTarget => write!(
+                f,
+                "READ_ONLY_TARGET: ordinary mutations are disabled on this replication target"
+            ),
             Self::Sqlite(err) => err.fmt(f),
             Self::SqlCompile(err) => err.fmt(f),
             Self::RollbackOnly => write!(
@@ -280,17 +283,32 @@ impl SqliteMutationExecutor {
     // The receiver applies canonical facts directly inside its private transaction;
     // it does not borrow ordinary Mutation authority or a temporary bypass flag.
     pub(crate) fn restrict_ordinary_mutations(&self) {
-        self.ordinary_mutations_read_only.store(true, std::sync::atomic::Ordering::Release);
+        self.ordinary_mutations_read_only
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 
     pub(crate) fn require_ordinary_mutation_allowed(&self) -> Result<(), MutationExecutorError> {
-        if self.ordinary_mutations_read_only.load(std::sync::atomic::Ordering::Acquire) {
+        if self
+            .ordinary_mutations_read_only
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
             Err(MutationExecutorError::ReadOnlyTarget)
-        } else { Ok(()) }
+        } else {
+            Ok(())
+        }
     }
 
-    fn require_read_only_statement(&self, statement: &rusqlite::Statement<'_>) -> Result<(), MutationExecutorError> {
-        if !statement.readonly() { self.require_ordinary_mutation_allowed()?; }
+    fn require_read_only_statement(
+        &self,
+        statement: &rusqlite::Statement<'_>,
+    ) -> Result<(), MutationExecutorError> {
+        if self
+            .ordinary_mutations_read_only
+            .load(std::sync::atomic::Ordering::Acquire)
+            && !statement.readonly()
+        {
+            return Err(MutationExecutorError::ReadOnlyTarget);
+        }
         Ok(())
     }
 

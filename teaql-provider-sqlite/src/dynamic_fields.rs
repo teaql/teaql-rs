@@ -1,8 +1,8 @@
 //! Typed extension storage on the native SQLite connection. The ambient executor
 //! can initialize/read; only its exclusive transaction handle can mutate.
 
-use super::{transaction::SqliteTransaction, SqliteMutationExecutor};
-use rusqlite::{params, params_from_iter, Connection};
+use super::{SqliteMutationExecutor, transaction::SqliteTransaction};
+use rusqlite::{Connection, params, params_from_iter};
 use std::collections::HashMap;
 use teaql_core::dynamic_fields::{
     DynamicFieldDefinitions, DynamicFieldError, DynamicFieldMutation, DynamicFieldSelection,

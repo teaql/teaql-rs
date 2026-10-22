@@ -4,8 +4,8 @@ use crate::committed_events::{
     snapshot::{SnapshotImportMode, SnapshotLimits, SnapshotRecord},
 };
 use crate::{
-    committed_events::{CommittedEventError, CommittedEventTarget, InboxOutcome, OutboxRecord},
     SqliteMutationExecutor,
+    committed_events::{CommittedEventError, CommittedEventTarget, InboxOutcome, OutboxRecord},
 };
 use hmac::{Hmac, Mac};
 use rusqlite::params;
