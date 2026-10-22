@@ -290,7 +290,7 @@ impl SqliteMutationExecutor {
                 "teaql_event_snapshot_publication",
             ] {
                 if count(&connection, table)? != 0 {
-                    return Err(invalid("target already contains stream state"));
+                    return Err(CommittedEventError::DuplicateConflict);
                 }
             }
             let tables = catalog(context)?;
@@ -328,9 +328,7 @@ impl SqliteMutationExecutor {
                 if mode == SnapshotImportMode::RequireEmpty
                     && count(&connection, &entity.table_name)? != 0
                 {
-                    return Err(invalid(
-                        "target domain is not empty; explicit replacement required",
-                    ));
+                    return Err(CommittedEventError::DuplicateConflict);
                 }
                 if mode == SnapshotImportMode::ReplaceUninitialized {
                     connection.execute(
