@@ -83,6 +83,7 @@ pub struct SqliteCommittedReceiver {
     keys: HashMap<String, Vec<u8>>,
     snapshot_limits: SnapshotLimits,
     max_snapshot_bytes: usize,
+    snapshot_mode: SnapshotImportMode,
 }
 impl fmt::Debug for SqliteCommittedReceiver {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -119,6 +120,7 @@ impl SqliteCommittedReceiver {
             keys,
             snapshot_limits: SnapshotLimits::default(),
             max_snapshot_bytes: MAX_SNAPSHOT_PAYLOAD,
+            snapshot_mode: SnapshotImportMode::RequireEmpty,
         })
     }
     /// Trusted startup policy. Wire messages cannot choose a destructive mode
@@ -135,6 +137,12 @@ impl SqliteCommittedReceiver {
             .map_err(|_| rejected("INVALID_CONFIGURATION"))?;
         self.max_snapshot_bytes = max_bytes;
         Ok(self)
+    }
+    /// Local startup policy only. No message can select destructive replacement,
+    /// and the provider still refuses replacement after stream initialization.
+    pub fn with_snapshot_import_mode(mut self, mode: SnapshotImportMode) -> Self {
+        self.snapshot_mode = mode;
+        self
     }
     fn context(&self, context: &UserContext) -> Result<(), ReceiverError> {
         let installed = context
@@ -245,7 +253,7 @@ impl SqliteCommittedReceiver {
         .verify_slice(&delivery.signature)
         .map_err(|_| rejected("INVALID_SIGNATURE"))
     }
-    /// Separate authenticated snapshot boundary. Restore is always RequireEmpty;
+    /// Separate authenticated snapshot boundary. Restore uses trusted startup policy;
     /// receipts are constructed only after the authoritative transaction commits.
     pub async fn receive_snapshot(
         &self,
@@ -264,7 +272,7 @@ impl SqliteCommittedReceiver {
                 context,
                 &delivery.snapshot,
                 &self.target,
-                SnapshotImportMode::RequireEmpty,
+                self.snapshot_mode,
                 self.snapshot_limits,
             )
             .await

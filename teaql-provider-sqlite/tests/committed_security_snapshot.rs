@@ -4,6 +4,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use teaql_core::{DataType, EntityDescriptor, PropertyDescriptor};
+use teaql_provider_sqlite::committed_events::snapshot::SnapshotImportMode;
 use teaql_provider_sqlite::committed_events::snapshot::SnapshotRecord;
 use teaql_provider_sqlite::committed_events::{CommittedEventTarget, OutboxRecord};
 use teaql_provider_sqlite::committed_security::{
@@ -17,6 +18,80 @@ const TARGET: &str = "snapshot-target";
 const MODEL: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
 const KEY: &[u8] = b"0123456789abcdef0123456789abcdef";
 const CANARY: &str = "SNAPSHOT_SECRET_never_in_rejection_audit";
+#[test]
+fn trusted_startup_replacement_cannot_reset_active_stream() {
+    futures_executor::block_on(async {
+        let f = fixture().await;
+        // Existing pre-stream fixture, not production seed SQL or a wire option.
+        f.executor
+            .connection()
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO school_data(id,version,name) VALUES(99,1,'pre-stream fixture')",
+                [],
+            )
+            .unwrap();
+        let original = signed(snapshot(0, "baseline"));
+        reject(&f, "SNAPSHOT_CONFLICT", &original).await;
+        assert_eq!(
+            f.executor
+                .connection()
+                .lock()
+                .unwrap()
+                .query_row("SELECT id FROM school_data", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            99
+        );
+        let configured = SqliteCommittedReceiver::new(
+            f.executor.clone(),
+            SOURCE,
+            TARGET,
+            MODEL,
+            HashMap::from([("current".into(), KEY.to_vec())]),
+        )
+        .unwrap()
+        .with_snapshot_import_mode(SnapshotImportMode::ReplaceUninitialized);
+        assert!(
+            !configured
+                .receive_snapshot(&f.context, &original)
+                .await
+                .unwrap()
+                .duplicate
+        );
+        configured
+            .receive(
+                &f.context,
+                &SqliteCommittedReceiver::sign("current", TARGET, KEY, tail(1)).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            configured
+                .receive_snapshot(&f.context, &signed(snapshot(0, "different")))
+                .await
+                .unwrap_err()
+                .code(),
+            "SNAPSHOT_CONFLICT"
+        );
+        assert_eq!(
+            f.executor
+                .connection()
+                .lock()
+                .unwrap()
+                .query_row("SELECT name FROM school_data", [], |r| r
+                    .get::<_, String>(0))
+                .unwrap(),
+            "updated"
+        );
+        assert_eq!(count(&f, "school_data"), 1);
+        assert_eq!(count(&f, "teaql_event_inbox"), 1);
+        assert_eq!(count(&f, "teaql_event_rejection"), 2);
+        println!(
+            "CMR13_STARTUP_POLICY_PASS language=rust default_reject=1 explicit_replace=1 active_stream_fenced=1"
+        );
+    });
+}
 fn digest(s: &str) -> String {
     format!("{:x}", Sha256::digest(s.as_bytes()))
 }
