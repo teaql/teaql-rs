@@ -1,8 +1,8 @@
 //! Complete model snapshots, separate from ordinary committed mutation envelopes.
 use super::*;
 use serde::{
-    Deserialize, Deserializer,
     de::{Error as _, MapAccess, SeqAccess, Visitor},
+    Deserialize, Deserializer,
 };
 use serde_json::json;
 use std::collections::BTreeSet;
@@ -413,6 +413,25 @@ pub(super) fn validate(
     {
         return Err(invalid("snapshot header or rows are invalid"));
     }
+    canonical_controls(
+        body.as_object().unwrap(),
+        &[
+            "snapshot_version",
+            "snapshot_id",
+            "source_runtime_id",
+            "source_sequence",
+            "source_model_hash",
+            "audit",
+            "entity_types",
+            "rows",
+        ],
+    )?;
+    canonical_controls(
+        body["audit"]
+            .as_object()
+            .ok_or(invalid("snapshot audit must be an object"))?,
+        &["actor_ref", "comment", "purpose", "trace_id"],
+    )?;
     Ok(body)
 }
 fn encode(
