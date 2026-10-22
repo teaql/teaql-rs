@@ -66,6 +66,111 @@ fn count(executor: &SqliteMutationExecutor) -> i64 {
         .unwrap()
 }
 #[test]
+fn returning_and_stream_paths_do_not_bypass_target_read_only() {
+    block_on(async {
+        use futures_util::StreamExt;
+        let (executor, _, _) = fixture().await;
+        let query = teaql_sql::CompiledQuery {
+            log_context: Default::default(),
+            sql: "INSERT INTO school_data(id,version,name) VALUES(?,1,'ordinary') RETURNING id"
+                .into(),
+            params: vec![teaql_core::Value::U64(99)],
+            comment: Some("verify ordinary returning paths".into()),
+        };
+        assert!(
+            executor
+                .fetch_all_compact(&query)
+                .unwrap_err()
+                .to_string()
+                .contains("READ_ONLY_TARGET")
+        );
+        assert!(
+            executor
+                .fetch_stream(&query, 1)
+                .unwrap_err()
+                .to_string()
+                .contains("READ_ONLY_TARGET")
+        );
+        assert!(
+            executor
+                .fetch_repeated_compact_sql(&query, 0, &[teaql_core::Value::U64(99)])
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("READ_ONLY_TARGET")
+        );
+        {
+            let mut stream = teaql_sql::StreamingSqlTransport::stream_sql(&executor, query, 1);
+            assert!(
+                stream
+                    .next()
+                    .await
+                    .unwrap()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("READ_ONLY_TARGET")
+            );
+        }
+        assert_eq!(count(&executor), 0);
+        println!(
+            "CMR15_RETURNING_READ_ONLY_PASS language=rust fetch=1 chunk=1 repeated=1 stream=1"
+        );
+    });
+}
+#[test]
+fn dynamic_transaction_store_is_also_read_only() {
+    block_on(async {
+        use teaql_core::dynamic_fields::{DynamicFieldDefinitions, DynamicFieldMutation};
+        use teaql_data_service::dynamic_fields::{DynamicFieldStore, DynamicFieldWrite};
+        let (executor, _, _) = fixture().await;
+        DynamicFieldStore::ensure_schema(&executor).await.unwrap();
+        let tx = executor.begin_sql().await.unwrap();
+        let writes = vec![DynamicFieldWrite {
+            namespace: "test".into(),
+            definitions: DynamicFieldDefinitions::new(
+                "school",
+                "v1",
+                [("note".into(), DataType::Text)],
+            )
+            .unwrap(),
+            owner_id: 7,
+            changes: std::collections::BTreeMap::from([(
+                "note".into(),
+                DynamicFieldMutation::Set(teaql_core::Value::Text("changed".into())),
+            )]),
+        }];
+        assert_eq!(
+            tx.validate_writes(&writes).unwrap_err().code,
+            "READ_ONLY_TARGET"
+        );
+        assert_eq!(
+            tx.apply_writes(
+                &writes,
+                &teaql_core::MutationIntent::new("verify dynamic target read-only").unwrap()
+            )
+            .await
+            .unwrap_err()
+            .code,
+            "READ_ONLY_TARGET"
+        );
+        tx.rollback_sql().await.unwrap();
+        assert_eq!(
+            executor
+                .connection()
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT count(*) FROM teaql_dynamic_field_storage_v1",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        println!("CMR15_DYNAMIC_READ_ONLY_PASS language=rust validate=1 apply=1 rows=0");
+    });
+}
+#[test]
 fn direct_and_batch_mutations_cannot_write_to_signed_receiver_target() {
     block_on(async {
         for batch in [false, true] {
@@ -130,6 +235,13 @@ fn signed_replication_and_an_independent_normal_source_remain_writable() {
             .await
             .unwrap();
         assert_eq!(count(&executor), 1);
+        let read = teaql_sql::CompiledQuery {
+            log_context: Default::default(),
+            sql: "SELECT name FROM school_data WHERE id=7 LIMIT 1".into(),
+            params: vec![],
+            comment: Some("read replicated target".into()),
+        };
+        assert_eq!(executor.fetch_all_compact(&read).unwrap().len(), 1);
         let source = SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
         source.connection().lock().unwrap().execute_batch("CREATE TABLE school_data(id INTEGER PRIMARY KEY,version INTEGER NOT NULL,name TEXT NOT NULL)").unwrap();
         let provider =
@@ -144,6 +256,8 @@ fn signed_replication_and_an_independent_normal_source_remain_writable() {
             .unwrap();
         assert_eq!(count(&source), 1);
         assert_eq!(count(&executor), 1);
-        println!("CMR15_READ_ONLY_SOURCE_PASS language=rust direct=1 batch=1 transaction=1 source_isolated=1 replication=1");
+        println!(
+            "CMR15_READ_ONLY_SOURCE_PASS language=rust direct=1 batch=1 transaction=1 source_isolated=1 replication=1"
+        );
     });
 }
