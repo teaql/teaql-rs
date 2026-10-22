@@ -1,5 +1,20 @@
 # Rust committed-event source and local target example
 
+## Durable observations (CMR-14)
+
+The same security verifier records nine phases in `observations.json` using
+public Context-participating source/target observation APIs. It intentionally
+loses both snapshot and tail receipts **after actual target commit**. Target
+watermark advances while source ACK/backlog stay behind; duplicate retry then
+converges. Two durable journal rows retain six attempts, four retries/failures
+and two publisher-observed permanent rejections. Target-wide audit counts five
+rejections, including direct unauthorized-source attempts. Final dead letters
+are zero, not deleted source facts. Typed observations and existing runtime
+telemetry agree; exported attributes contain only counts and hashed routes.
+Receiver errors retain typed permanent rejection codes at the trusted adapter;
+they are not all erased into transport errors. No fake ACK, remote transport
+authentication claim or automatic retry worker is used.
+
 ## Authenticated snapshot and tail (CMR-13)
 
 `bash examples/committed-events/verify-security.sh` builds the local provider
