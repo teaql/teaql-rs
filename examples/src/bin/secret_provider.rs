@@ -33,6 +33,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut provider = BoundSecretProvider::new(Some(directory.path().to_path_buf()))?;
     provider.bind_file(reference.clone(), "signing-key", Some("v1".into()), None)?;
     let mut context = UserContext::new().with_secret_provider(Arc::new(provider));
+    context.set_business_clock(FixedBusinessClock::new(
+        chrono::DateTime::<chrono::Utc>::from_timestamp(946_684_800, 0)
+            .expect("valid business time for rotation"),
+    ));
+    context.insert_named_resource("example.rotation-marker", "retained marker".to_owned());
+    let pending = context.entity_runtime_state();
+    let pending_key = EntityKey::new("School", 42_u64);
+    pending.set(pending_key.clone(), "name", "pending before rotation");
 
     let first = context.resolve_secret(&reference, "sign document").await?;
     assert_eq!(first.expose_bytes()?, b"private-example-key-v1");
@@ -46,6 +54,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     assert_eq!(second.expose_bytes()?, b"private-example-key-v2");
     assert_eq!(second.version(), Some("v2"));
+    assert_eq!(context.business_date().to_string(), "2000-01-01");
+    assert_eq!(
+        context
+            .get_named_resource::<String>("example.rotation-marker")
+            .map(String::as_str),
+        Some("retained marker")
+    );
+    assert_eq!(
+        pending.get(&pending_key, "name"),
+        Some("pending before rotation".into())
+    );
+    assert!(pending.changed_field_names(&pending_key).contains("name"));
     assert!(!format!("{second:?}").contains("private-example-key"));
     assert_eq!(
         context.resolve_secret(&reference, " ").await.unwrap_err(),
@@ -227,7 +247,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(tokens, ["2000-01-01", "2100-01-01"].into_iter().collect());
 
     println!(
-        "SECRET_PROVIDER_PASS binding=1 rotation=1 masking=1 operational_expiry=1 shared_custom_spi=1 ledger_isolation=1 vault_request_isolation=1"
+        "SECRET_PROVIDER_PASS binding=1 rotation=1 masking=1 operational_expiry=1 shared_custom_spi=1 ledger_isolation=1 vault_request_isolation=1 rotation_ledger_unchanged=1"
     );
     Ok(())
 }
