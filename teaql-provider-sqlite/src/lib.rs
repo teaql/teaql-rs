@@ -184,6 +184,7 @@ pub enum MutationExecutorError {
     Sqlite(rusqlite::Error),
     SqlCompile(SqlCompileError),
     RollbackOnly,
+    ReadOnlyTarget,
     UnsupportedValue(&'static str),
     UnsupportedColumnType(String),
     Bind(String),
@@ -193,6 +194,7 @@ pub enum MutationExecutorError {
 impl std::fmt::Display for MutationExecutorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ReadOnlyTarget => write!(f, "READ_ONLY_TARGET: ordinary mutations are disabled on this replication target"),
             Self::Sqlite(err) => err.fmt(f),
             Self::SqlCompile(err) => err.fmt(f),
             Self::RollbackOnly => write!(
@@ -237,6 +239,7 @@ pub struct SqliteMutationExecutor {
     column_layout_cache: Arc<Mutex<HashMap<String, Arc<ColumnLayout>>>>,
     transaction_lease: Arc<futures_util::lock::Mutex<()>>,
     storage_instance_id: u64,
+    ordinary_mutations_read_only: Arc<std::sync::atomic::AtomicBool>,
 }
 
 static NEXT_STORAGE_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -252,6 +255,7 @@ impl SqliteMutationExecutor {
         }
         Self {
             connection,
+            ordinary_mutations_read_only: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             column_layout_cache: Arc::new(Mutex::new(HashMap::new())),
             transaction_lease: Arc::new(futures_util::lock::Mutex::new(())),
             storage_instance_id: NEXT_STORAGE_INSTANCE
@@ -270,6 +274,24 @@ impl SqliteMutationExecutor {
 
     pub fn connection(&self) -> Arc<Mutex<Connection>> {
         Arc::clone(&self.connection)
+    }
+
+    // Monotonic, provider-owned startup restriction, shared by existing clones.
+    // The receiver applies canonical facts directly inside its private transaction;
+    // it does not borrow ordinary Mutation authority or a temporary bypass flag.
+    pub(crate) fn restrict_ordinary_mutations(&self) {
+        self.ordinary_mutations_read_only.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) fn require_ordinary_mutation_allowed(&self) -> Result<(), MutationExecutorError> {
+        if self.ordinary_mutations_read_only.load(std::sync::atomic::Ordering::Acquire) {
+            Err(MutationExecutorError::ReadOnlyTarget)
+        } else { Ok(()) }
+    }
+
+    fn require_read_only_statement(&self, statement: &rusqlite::Statement<'_>) -> Result<(), MutationExecutorError> {
+        if !statement.readonly() { self.require_ordinary_mutation_allowed()?; }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -476,6 +498,7 @@ impl SqliteMutationExecutor {
     }
 
     pub fn execute(&self, query: &CompiledQuery) -> Result<u64, MutationExecutorError> {
+        self.require_ordinary_mutation_allowed()?;
         let params = bind_values(&query.params)?;
         let rows = self
             .lock()?
@@ -491,6 +514,7 @@ impl SqliteMutationExecutor {
         let connection = self.lock()?;
         let sql = query.sql_with_comment();
         let mut statement = connection.prepare_cached(&sql)?;
+        self.require_read_only_statement(&statement)?;
         let layout = cached_column_layout(&self.column_layout_cache, &query.sql, &statement);
         let mut rows = statement.query(params_from_iter(params.iter()))?;
         let mut result = Vec::new();
@@ -512,6 +536,7 @@ impl SqliteMutationExecutor {
         let connection = self.lock()?;
         let sql = template.sql_with_comment();
         let mut statement = connection.prepare_cached(&sql)?;
+        self.require_read_only_statement(&statement)?;
         let layout = cached_column_layout(&self.column_layout_cache, &template.sql, &statement);
         let mut result = Vec::new();
         let mut query_params = template.params.clone();
@@ -540,6 +565,7 @@ impl SqliteMutationExecutor {
         let connection = self.lock()?;
         let sql = query.sql_with_comment();
         let mut statement = connection.prepare_cached(&sql)?;
+        self.require_read_only_statement(&statement)?;
         let layout = cached_column_layout(&self.column_layout_cache, &query.sql, &statement);
         let mut rows = statement.query(params_from_iter(params.iter()))?;
 
@@ -905,12 +931,16 @@ impl SqliteMutationExecutor {
         let connection = self.connection.clone();
         let column_layout_cache = self.column_layout_cache.clone();
         let transaction_lease = self.transaction_lease.clone();
+        let ordinary_mutations_read_only = self.ordinary_mutations_read_only.clone();
         Box::pin(async_stream::try_stream! {
             let _lease = if acquire_lease { Some(transaction_lease.lock_owned().await) } else { None };
             let params = bind_values(&query.params)?;
             let guard = connection.lock().map_err(|err| MutationExecutorError::Lock(err.to_string()))?;
             let sql = query.sql_with_comment();
             let mut statement = guard.prepare_cached(&sql)?;
+            if ordinary_mutations_read_only.load(std::sync::atomic::Ordering::Acquire) && !statement.readonly() {
+                Err(MutationExecutorError::ReadOnlyTarget)?;
+            }
             let layout = cached_column_layout(&column_layout_cache, &query.sql, &statement);
             let mut rows = statement.query(params_from_iter(params.iter()))?;
             // Allocate nothing for an empty cursor. A short prefix avoids

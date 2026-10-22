@@ -4,8 +4,8 @@ use crate::committed_events::{
     snapshot::{SnapshotImportMode, SnapshotLimits, SnapshotRecord},
 };
 use crate::{
-    SqliteMutationExecutor,
     committed_events::{CommittedEventError, CommittedEventTarget, InboxOutcome, OutboxRecord},
+    SqliteMutationExecutor,
 };
 use hmac::{Hmac, Mac};
 use rusqlite::params;
@@ -139,6 +139,7 @@ impl SqliteCommittedReceiver {
             field(id, MAX_ID)?;
             key(value)?;
         }
+        executor.restrict_ordinary_mutations();
         Ok(Self {
             executor,
             source,

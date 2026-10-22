@@ -1,8 +1,8 @@
 //! Typed extension storage on the native SQLite connection. The ambient executor
 //! can initialize/read; only its exclusive transaction handle can mutate.
 
-use super::{SqliteMutationExecutor, transaction::SqliteTransaction};
-use rusqlite::{Connection, params, params_from_iter};
+use super::{transaction::SqliteTransaction, SqliteMutationExecutor};
+use rusqlite::{params, params_from_iter, Connection};
 use std::collections::HashMap;
 use teaql_core::dynamic_fields::{
     DynamicFieldDefinitions, DynamicFieldError, DynamicFieldMutation, DynamicFieldSelection,
@@ -314,6 +314,9 @@ impl DynamicFieldStore for SqliteTransaction {
         })
     }
     fn validate_writes(&self, writes: &[DynamicFieldWrite]) -> Result<(), DynamicFieldError> {
+        self.executor
+            .require_ordinary_mutation_allowed()
+            .map_err(|_| error("READ_ONLY_TARGET", "save"))?;
         if !self.active {
             return Err(error("DYNAMIC_FIELD_TRANSACTION_BINDING_REQUIRED", "save"));
         }

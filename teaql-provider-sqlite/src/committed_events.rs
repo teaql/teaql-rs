@@ -288,6 +288,7 @@ impl SqliteMutationExecutor {
         if record.source_runtime_id != target.source_runtime_id {
             return Err(CommittedEventError::UnauthorizedSource);
         }
+        self.restrict_ordinary_mutations();
         let transaction = self.begin_sql().await?;
         let result =
             transaction.apply_committed_event(record, &target.model_hash, |connection, payload| {
