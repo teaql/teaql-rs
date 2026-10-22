@@ -76,6 +76,148 @@ fn trusted_tenant_one() -> TrustedQueryContext {
 }
 
 #[tokio::test]
+async fn replication_controls_cannot_cross_ordinary_tfp_boundary() {
+    // Provider fixture, not generated application seed code.
+    let transport = SqliteMutationExecutor::from_connection(
+        rusqlite::Connection::open_in_memory().expect("in-memory sqlite"),
+    );
+    transport.connection().lock().unwrap().execute_batch(
+        "CREATE TABLE customer_order_data(id INTEGER PRIMARY KEY,version INTEGER NOT NULL,commerce_platform_id INTEGER NOT NULL,order_number TEXT NOT NULL); INSERT INTO customer_order_data VALUES(1,1,1,'ORIGINAL')",
+    ).unwrap();
+    let executor = Arc::new(SqlDataServiceExecutor::new(
+        SqliteDialect,
+        transport.clone(),
+        Schema(Arc::new(customer_order_entity())),
+    ));
+    let endpoint = TfpEndpoint::new(executor.clone(), executor);
+    let trusted = trusted_tenant_one();
+    let sql = "INSERT INTO customer_order_data VALUES(99,1,1,'SQL-CANARY')";
+    let query = json!({"entity":"CustomerOrder","limitValue":10,"selectItems":["id","version","orderNumber"],"commentText":"inspect ordinary entry boundary","purposeText":"prove replication is not a query action"});
+    let mutation = json!({"entity":"CustomerOrder","action":"Update","id":1,"expectedVersion":1,"payload":{"orderNumber":"PAID"},"comment":"inspect ordinary entry boundary"});
+    for control in [
+        "sql",
+        "rawSql",
+        "statement",
+        "statements",
+        "committed_mutation_set",
+        "source_sequence",
+        "replication",
+        "apply",
+    ] {
+        let mut input = query.clone();
+        input[control] = json!(sql);
+        assert_eq!(
+            endpoint
+                .handle_query(&trusted, input)
+                .await
+                .unwrap_err()
+                .code(),
+            "TFP_INVALID_REQUEST"
+        );
+        let mut input = mutation.clone();
+        input[control] = json!(sql);
+        assert_eq!(
+            endpoint
+                .handle_mutation(&trusted, input)
+                .await
+                .unwrap_err()
+                .code(),
+            "TFP_INVALID_REQUEST"
+        );
+    }
+    let committed =
+        json!({"protocol_version":1,"source_runtime_id":"untrusted-source","source_sequence":"1"});
+    assert_eq!(
+        endpoint
+            .handle_query(&trusted, committed.clone())
+            .await
+            .unwrap_err()
+            .code(),
+        "TFP_INVALID_REQUEST"
+    );
+    assert_eq!(
+        endpoint
+            .handle_mutation(&trusted, committed)
+            .await
+            .unwrap_err()
+            .code(),
+        "TFP_INVALID_REQUEST"
+    );
+    for action in [
+        "Apply",
+        "Replicate",
+        "CommittedMutationSet",
+        "receive",
+        "rawSql",
+    ] {
+        let mut input = mutation.clone();
+        input["action"] = json!(action);
+        assert_eq!(
+            endpoint
+                .handle_mutation(&trusted, input)
+                .await
+                .unwrap_err()
+                .code(),
+            "TFP_INVALID_REQUEST"
+        );
+    }
+    {
+        let connection = transport.connection();
+        let db = connection.lock().unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM customer_order_data", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT version FROM customer_order_data WHERE id=1",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT order_number FROM customer_order_data WHERE id=1",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "ORIGINAL"
+        );
+    }
+    let initial = endpoint
+        .handle_query(&trusted, query.clone())
+        .await
+        .unwrap();
+    assert_eq!(initial["data"][0]["orderNumber"], "ORIGINAL");
+    let mut allowed = mutation;
+    allowed["payload"]["orderNumber"] = json!(sql);
+    endpoint
+        .handle_mutation(&trusted, allowed)
+        .await
+        .expect("SQL-looking modeled text is ordinary bound data");
+    let final_rows = endpoint.handle_query(&trusted, query).await.unwrap();
+    assert_eq!(final_rows["data"].as_array().unwrap().len(), 1);
+    assert_eq!(final_rows["data"][0]["orderNumber"], sql);
+    assert_eq!(final_rows["data"][0]["version"], 2);
+    assert_eq!(
+        transport
+            .connection()
+            .lock()
+            .unwrap()
+            .query_row("SELECT count(*) FROM customer_order_data", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    println!("CMR15_ENDPOINT_SOURCE_PASS language=rust controls=8 actions=5 real_sqlite=true");
+}
+
+#[tokio::test]
 async fn tfp_json_enforces_tenant_boundary_in_real_sqlite_statement() {
     let entity = Arc::new(customer_order_entity());
     let transport = SqliteMutationExecutor::from_connection(
