@@ -20,9 +20,21 @@ done
 bash examples/committed-events/verify-process-crash.sh
 bash examples/committed-events/verify-snapshot.sh
 bash examples/committed-events/verify-bootstrap-crash.sh
+bash examples/committed-events/verify-security.sh
 
 school_example="$repo_dir/examples/school-management"
-school_evidence="$(mktemp -d -t teaql-committed-school.XXXXXXXX)"
+disposable_evidence=""
+if [[ -n "${TEAQL_COMMITTED_EVIDENCE_DIR:-}" ]]; then
+  if [[ "$TEAQL_COMMITTED_EVIDENCE_DIR" != /* || -e "$TEAQL_COMMITTED_EVIDENCE_DIR" ]]; then
+    echo 'Committed evidence directory must be an absent absolute path' >&2; exit 1
+  fi
+  school_evidence="$TEAQL_COMMITTED_EVIDENCE_DIR"; mkdir "$school_evidence"
+else
+  school_evidence="$(mktemp -d -t teaql-committed-school.XXXXXXXX)"
+  disposable_evidence="$school_evidence"
+fi
+cleanup() { status=$?; trap - EXIT; if [[ -n "$disposable_evidence" ]]; then rm -rf -- "$disposable_evidence"; fi; exit "$status"; }
+trap cleanup EXIT
 school_library_hash() {
   (cd "$school_example/lib" && rg --files -g '*.rs' -g '*.toml' -g '!target/**' \
     | LC_ALL=C sort | xargs -d '\n' sha256sum)
@@ -46,4 +58,8 @@ for round in 1 2; do
     "$school_evidence/generated-library-after.sha256"
   printf 'PASS Rust generated committed Q example round %s\n' "$round"
 done
-printf 'Rust generated committed Q evidence: %s\n' "$school_evidence"
+if [[ -n "${TEAQL_COMMITTED_EVIDENCE_DIR:-}" ]]; then
+  printf 'Rust generated committed Q evidence: %s\n' "$school_evidence"
+else
+  echo 'Rust generated committed Q disposable evidence removed on exit'
+fi

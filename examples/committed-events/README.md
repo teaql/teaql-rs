@@ -1,5 +1,30 @@
 # Rust committed-event source and local target example
 
+## Authenticated snapshot and tail (CMR-13)
+
+`bash examples/committed-events/verify-security.sh` builds the local provider
+example once in an owned target and runs it twice; the complete gate includes
+it. Two audited Mutation saves, not INSERT fixtures, produce baseline 1 and
+tail 2. The source durably retains a signed snapshot. Lost receipt/retry leaves
+the source pending until an authenticated target returns the duplicate ACK;
+signed tail application catches up without replaying business methods.
+
+Five real rejections cover bad snapshot tag, altered tail plus recomputed
+checksum, unauthorized source, snapshot-covered history replay and a newer
+snapshot attempting to reset an active stream. Row/Inbox/checkpoint/source
+cursor checks and a target reopen prove durable state and safe hash-only audit.
+Exact snapshot/event retries never rewind the current target. IDs above
+JavaScript's exact-integer range remain intact.
+
+Default build/fixture cleanup is on exit. Set `TEAQL_CMR13_EVIDENCE_ROOT` to an
+absent absolute path to retain two small SQLite pairs, result JSON, logs, binary
+hash and Cargo origins. `TEAQL_COMMITTED_EVIDENCE_DIR` similarly retains the
+complete gate's generated Q proof. Never reset old directories. The signing key
+is public test material. This is local authenticated ingress, not network/TLS,
+remote receipt authentication, installed-package or production qualification.
+
+## Existing source and target flows
+
 Run `bash examples/committed-events/verify.sh`. The binary uses local runtime
 source and a small SQLite model. `context.ensure_schema()` installs both domain
 and event tables. A database trigger changes an inserted value; the normal
