@@ -93,7 +93,7 @@ impl Fixture {
             [],
             |r| {
                 Ok(json!({
-                "id":r.get::<_,i64>(0)?,"version":r.get::<_,i64>(1)?,
+                "id":r.get::<_,i64>(0)?.to_string(),"version":r.get::<_,i64>(1)?,
                 "name":r.get::<_,String>(2)?,"memo":r.get::<_,String>(3)?}))
             },
         )?)
