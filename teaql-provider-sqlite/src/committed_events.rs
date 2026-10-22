@@ -104,6 +104,7 @@ pub enum CommittedEventError {
     SequenceExhausted,
     CursorConflict,
     TransportUnavailable,
+    AcknowledgementMismatch,
     ObservationUnavailable,
     DeliveryRejected(crate::committed_observation::DeliveryRejection),
 }
@@ -111,6 +112,9 @@ pub enum CommittedEventError {
 impl std::fmt::Display for CommittedEventError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::AcknowledgementMismatch => {
+                write!(formatter, "committed delivery acknowledgement mismatch")
+            }
             Self::ObservationUnavailable => {
                 write!(formatter, "committed delivery observation is unavailable")
             }
@@ -2237,9 +2241,7 @@ mod tests {
                         |_record| async { Ok(InboxOutcome::Applied { checkpoint: 99 }) },
                     )
                     .await,
-                Err(CommittedEventError::InvalidEnvelope(
-                    "target acknowledgement does not match delivered sequence"
-                ))
+                Err(CommittedEventError::AcknowledgementMismatch)
             ));
             assert_eq!(
                 source

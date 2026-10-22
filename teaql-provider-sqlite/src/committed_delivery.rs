@@ -148,9 +148,7 @@ impl SqliteMutationExecutor {
                 }
             };
             if checkpoint != sequence {
-                let error = CommittedEventError::InvalidEnvelope(
-                    "target acknowledgement does not match delivered sequence",
-                );
+                let error = CommittedEventError::AcknowledgementMismatch;
                 self.journal_failed(source_runtime_id, target_id, attempt, &error)
                     .await?;
                 return Err(error);

@@ -182,7 +182,7 @@ impl SqliteMutationExecutor {
             || ack.model_hash != record.model_hash
             || ack.payload_sha256 != record.payload_sha256
         {
-            let error = invalid("snapshot receipt does not match this source/target record");
+            let error = CommittedEventError::AcknowledgementMismatch;
             self.journal_failed(&source.source_runtime_id, target, attempt, &error)
                 .await?;
             return Err(error);

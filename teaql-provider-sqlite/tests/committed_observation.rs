@@ -76,8 +76,13 @@ fn retry_has_durable_attempts_without_losing_original_facts() {
             })
             .await
             .unwrap();
-        let b = executor
-            .observe_committed_source(&ctx, SOURCE, TARGET, MODEL)
+        let reopened = SqliteMutationExecutor::from_connection(
+            Connection::open(_owner.path().join("source.sqlite")).unwrap(),
+        );
+        let mut reopened_context = UserContext::new();
+        reopened_context.use_sqlite_provider(reopened.clone());
+        let b = reopened
+            .observe_committed_source(&reopened_context, SOURCE, TARGET, MODEL)
             .await
             .unwrap();
         assert_eq!(
@@ -227,6 +232,20 @@ fn permanent_rejection_is_inspectable_and_success_preserves_history() {
                     .is_err()
             );
         }
+        assert!(
+            e.publish_committed_batch(SOURCE, TARGET, MODEL, 1, |_| async {
+                Err(CommittedEventError::TransportUnavailable)
+            })
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            e.committed_dead_letters(&c, SOURCE, TARGET, MODEL, 10)
+                .await
+                .unwrap()[0]
+                .reason,
+            "INVALID_SIGNATURE"
+        );
         // Deliberately fake callback ACK is not target-application evidence.
         e.publish_committed_batch(SOURCE, TARGET, MODEL, 1, |_| async {
             Ok(InboxOutcome::Applied { checkpoint: 1 })
@@ -237,7 +256,7 @@ fn permanent_rejection_is_inspectable_and_success_preserves_history() {
             .observe_committed_source(&c, SOURCE, TARGET, MODEL)
             .await
             .unwrap();
-        assert_eq!((a.dead_letters, a.rejections, a.retries), (0, 1, 1));
+        assert_eq!((a.dead_letters, a.rejections, a.retries), (0, 1, 2));
         let t = target
             .observe_committed_target(&target_context, SOURCE, TARGET, MODEL, Some(2))
             .await
@@ -480,6 +499,120 @@ fn snapshot_zero_has_durable_independent_attempts() {
                 .await
                 .unwrap()
                 .attempts,
+            2
+        );
+    });
+}
+
+#[test]
+fn counters_and_wrong_models_fail_closed() {
+    block_on(async {
+        let (e, c, _o) = fixture();
+        assert!(
+            e.publish_committed_batch(SOURCE, TARGET, MODEL, 1, |_| async {
+                Err(CommittedEventError::TransportUnavailable)
+            })
+            .await
+            .is_err()
+        );
+        e.connection()
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE teaql_event_delivery_journal SET attempts=?1",
+                [i64::MAX],
+            )
+            .unwrap();
+        assert!(
+            e.publish_committed_batch(SOURCE, TARGET, MODEL, 1, |_| async {
+                panic!("overflow must not invoke transport")
+            })
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            e.observe_committed_source(&c, SOURCE, TARGET, MODEL)
+                .await
+                .unwrap()
+                .attempts,
+            i64::MAX as u64
+        );
+        e.connection()
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE teaql_event_delivery_journal SET model_hash=?1",
+                [format!("sha256:{}", "1".repeat(64))],
+            )
+            .unwrap();
+        assert!(
+            e.observe_committed_source(&c, SOURCE, TARGET, MODEL)
+                .await
+                .is_err()
+        );
+    });
+}
+#[test]
+fn telemetry_is_safe_and_exporter_failures_are_fail_open() {
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Mutex},
+    };
+    use teaql_runtime::{
+        RuntimeAttributeValue, RuntimeOperation, RuntimeTelemetry, RuntimeTelemetryScope,
+    };
+    struct Telemetry {
+        events: Arc<Mutex<Vec<RuntimeOperation>>>,
+        broken: bool,
+    }
+    impl RuntimeTelemetry for Telemetry {
+        fn start(&self, op: RuntimeOperation) -> Box<dyn RuntimeTelemetryScope> {
+            assert!(!self.broken, "exporter unavailable");
+            self.events.lock().unwrap().push(op);
+            Box::new(Scope)
+        }
+    }
+    struct Scope;
+    impl RuntimeTelemetryScope for Scope {
+        fn success(&mut self, _: BTreeMap<String, RuntimeAttributeValue>) {
+            panic!("exporter unavailable");
+        }
+        fn failure(&mut self, _: &str) {
+            panic!("unexpected failed operation");
+        }
+    }
+    block_on(async {
+        let (e, c, _o) = fixture();
+        let events = Arc::new(Mutex::new(vec![]));
+        let c = c.with_runtime_telemetry(Arc::new(Telemetry {
+            events: events.clone(),
+            broken: false,
+        }));
+        assert_eq!(
+            e.observe_committed_source(&c, SOURCE, TARGET, MODEL)
+                .await
+                .unwrap()
+                .backlog,
+            2
+        );
+        let recorded = events.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert!(
+            recorded[0]
+                .attributes
+                .contains_key("teaql.replication.retries")
+        );
+        assert!(!format!("{recorded:?}").contains("CANARY"));
+        drop(recorded);
+        let c = c.with_runtime_telemetry(Arc::new(Telemetry {
+            events,
+            broken: true,
+        }));
+        assert_eq!(
+            e.observe_committed_source(&c, SOURCE, TARGET, MODEL)
+                .await
+                .unwrap()
+                .backlog,
             2
         );
     });

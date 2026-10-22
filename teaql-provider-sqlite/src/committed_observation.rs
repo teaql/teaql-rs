@@ -5,11 +5,7 @@ use crate::{
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
-use teaql_runtime::{
-    UserContext,
-    telemetry::{RuntimeOperation, start_runtime_operation},
-};
-use teaql_sql::SqlTransaction;
+use teaql_runtime::{RuntimeOperation, UserContext, start_runtime_operation};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceObservation {
@@ -83,7 +79,7 @@ impl DeliveryRejection {
         }
     }
 }
-pub(crate) const JOURNAL_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS teaql_event_delivery_journal (source_runtime_id TEXT NOT NULL,target_id TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('event','snapshot')),source_sequence INTEGER NOT NULL CHECK(source_sequence>=0),model_hash TEXT NOT NULL,identity_fingerprint TEXT NOT NULL,payload_fingerprint TEXT NOT NULL,attempts INTEGER NOT NULL CHECK(typeof(attempts)='integer' AND attempts>0),failures INTEGER NOT NULL CHECK(typeof(failures)='integer' AND failures>=0),rejections INTEGER NOT NULL CHECK(typeof(rejections)='integer' AND rejections>=0),dead_letter INTEGER NOT NULL CHECK(dead_letter IN (0,1)),last_outcome TEXT NOT NULL CHECK(last_outcome IN ('STARTED','ACKNOWLEDGED','FAILED')),last_reason TEXT NOT NULL,PRIMARY KEY(source_runtime_id,target_id,kind,source_sequence));";
+pub(crate) const JOURNAL_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS teaql_event_delivery_journal (source_runtime_id TEXT NOT NULL,target_id TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('event','snapshot')),source_sequence INTEGER NOT NULL CHECK(source_sequence>=0),model_hash TEXT NOT NULL,identity_fingerprint TEXT NOT NULL,payload_fingerprint TEXT NOT NULL,attempts INTEGER NOT NULL CHECK(typeof(attempts)='integer' AND attempts>0),failures INTEGER NOT NULL CHECK(typeof(failures)='integer' AND failures>=0),rejections INTEGER NOT NULL CHECK(typeof(rejections)='integer' AND rejections>=0),dead_letter INTEGER NOT NULL CHECK(dead_letter IN (0,1)),last_outcome TEXT NOT NULL CHECK(last_outcome IN ('STARTED','ACKNOWLEDGED','FAILED')),last_reason TEXT NOT NULL,dead_reason TEXT NOT NULL,PRIMARY KEY(source_runtime_id,target_id,kind,source_sequence));";
 fn unavailable() -> CommittedEventError {
     CommittedEventError::ObservationUnavailable
 }
@@ -115,7 +111,7 @@ pub(crate) fn journal_ack(
     target: &str,
     attempt: Attempt,
 ) -> Result<(), CommittedEventError> {
-    if db.execute("UPDATE teaql_event_delivery_journal SET last_outcome='ACKNOWLEDGED',last_reason='NONE',dead_letter=0 WHERE source_runtime_id=?1 AND target_id=?2 AND kind=?3 AND source_sequence=?4 AND attempts=?5 AND last_outcome='STARTED'",params![source,target,attempt.kind,attempt.sequence as i64,attempt.ordinal])?!=1{return Err(CommittedEventError::CursorConflict);}
+    if db.execute("UPDATE teaql_event_delivery_journal SET last_outcome='ACKNOWLEDGED',last_reason='NONE',dead_letter=0,dead_reason='NONE' WHERE source_runtime_id=?1 AND target_id=?2 AND kind=?3 AND source_sequence=?4 AND attempts=?5 AND last_outcome='STARTED'",params![source,target,attempt.kind,attempt.sequence as i64,attempt.ordinal])?!=1{return Err(CommittedEventError::CursorConflict);}
     Ok(())
 }
 impl SqliteMutationExecutor {
@@ -156,7 +152,7 @@ impl SqliteMutationExecutor {
                 if db.execute("UPDATE teaql_event_delivery_journal SET attempts=?1,last_outcome='STARTED',last_reason='NONE' WHERE source_runtime_id=?2 AND target_id=?3 AND kind=?4 AND source_sequence=?5 AND attempts=?6",params![next,source,target,kind,n,previous])?!=1{return Err(CommittedEventError::CursorConflict);}
                 next
             } else {
-                db.execute("INSERT INTO teaql_event_delivery_journal VALUES(?1,?2,?3,?4,?5,?6,?7,1,0,0,0,'STARTED','NONE')",params![source,target,kind,n,model,fingerprint(identity),payload])?;
+                db.execute("INSERT INTO teaql_event_delivery_journal VALUES(?1,?2,?3,?4,?5,?6,?7,1,0,0,0,'STARTED','NONE','NONE')",params![source,target,kind,n,model,fingerprint(identity),payload])?;
                 1
             };
             Ok(Attempt {
@@ -182,11 +178,13 @@ impl SqliteMutationExecutor {
             CommittedEventError::SequenceGap { .. } => (true, "SEQUENCE_GAP"),
             CommittedEventError::DuplicateConflict => (true, "DUPLICATE_CONFLICT"),
             CommittedEventError::SequenceExhausted => (true, "SEQUENCE_EXHAUSTED"),
+            CommittedEventError::AcknowledgementMismatch => (false, "ACK_MISMATCH"),
+            CommittedEventError::CursorConflict => (false, "CURSOR_CONFLICT"),
             _ => (false, "TRANSPORT_UNAVAILABLE"),
         };
         let tx = self.begin_snapshot_transaction(false)?;
         let result = (|| {
-            let changed=self.lock()?.execute("UPDATE teaql_event_delivery_journal SET failures=failures+1,rejections=rejections+?1,dead_letter=CASE WHEN ?1=1 THEN 1 ELSE dead_letter END,last_outcome='FAILED',last_reason=?2 WHERE source_runtime_id=?3 AND target_id=?4 AND kind=?5 AND source_sequence=?6 AND attempts=?7 AND last_outcome='STARTED'",params![i64::from(permanent),code,source,target,attempt.kind,attempt.sequence as i64,attempt.ordinal])?;
+            let changed=self.lock()?.execute("UPDATE teaql_event_delivery_journal SET failures=failures+1,rejections=rejections+?1,dead_letter=CASE WHEN ?1=1 THEN 1 ELSE dead_letter END,dead_reason=CASE WHEN ?1=1 THEN ?2 ELSE dead_reason END,last_outcome='FAILED',last_reason=?2 WHERE source_runtime_id=?3 AND target_id=?4 AND kind=?5 AND source_sequence=?6 AND attempts=?7 AND last_outcome='STARTED'",params![i64::from(permanent),code,source,target,attempt.kind,attempt.sequence as i64,attempt.ordinal])?;
             if changed != 1 {
                 return Err(CommittedEventError::CursorConflict);
             }
@@ -206,6 +204,10 @@ impl SqliteMutationExecutor {
         let tx = self.begin_snapshot_transaction(true)?;
         let result = (|| {
             let db = self.lock()?;
+            let wrong_model:i64=db.query_row("SELECT count(*) FROM teaql_event_delivery_journal WHERE source_runtime_id=?1 AND target_id=?2 AND model_hash<>?3",params![source,target,model],|r|r.get(0))?;
+            if wrong_model != 0 {
+                return Err(unavailable());
+            }
             let cursor:Option<(i64,String)>=db.query_row("SELECT acked_sequence,model_hash FROM teaql_event_delivery_cursor WHERE source_runtime_id=?1 AND target_id=?2",params![source,target],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
             let ack = match cursor {
                 Some((n, m)) if m == model => number(n)?,
@@ -288,15 +290,12 @@ impl SqliteMutationExecutor {
             let lag = observed_source_high
                 .map(|high| high.checked_sub(checkpoint).ok_or_else(unavailable))
                 .transpose()?;
-            let baseline = number(
-                db.query_row(
-                    "SELECT source_sequence FROM teaql_event_snapshot WHERE source_runtime_id=?1",
-                    [source],
-                    |r| r.get(0),
-                )
-                .optional()?
-                .unwrap_or(0),
-            )?;
+            let row:Option<(i64,String)>=db.query_row("SELECT source_sequence,model_hash FROM teaql_event_snapshot WHERE source_runtime_id=?1",[source],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+            let baseline = match row {
+                Some((n, m)) if m == model => number(n)?,
+                Some(_) => return Err(unavailable()),
+                None => 0,
+            };
             if baseline > checkpoint {
                 return Err(unavailable());
             }
@@ -347,7 +346,7 @@ impl SqliteMutationExecutor {
         let tx = self.begin_snapshot_transaction(true)?;
         let result = (|| {
             let db = self.lock()?;
-            let mut query=db.prepare("SELECT kind,source_sequence,identity_fingerprint,payload_fingerprint,attempts,last_reason FROM teaql_event_delivery_journal WHERE source_runtime_id=?1 AND target_id=?2 AND model_hash=?3 AND dead_letter=1 ORDER BY source_sequence,kind LIMIT ?4")?;
+            let mut query=db.prepare("SELECT kind,source_sequence,identity_fingerprint,payload_fingerprint,attempts,dead_reason FROM teaql_event_delivery_journal WHERE source_runtime_id=?1 AND target_id=?2 AND model_hash=?3 AND dead_letter=1 ORDER BY source_sequence,kind LIMIT ?4")?;
             let rows = query.query_map(params![source, target, model, limit as i64], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
