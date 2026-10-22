@@ -1,4 +1,8 @@
 //! Startup-owned authenticated ingress; never a Query/Mutation/TFP route.
+use crate::committed_events::{
+    bootstrap::SnapshotReceipt,
+    snapshot::{SnapshotImportMode, SnapshotLimits, SnapshotRecord},
+};
 use crate::{
     SqliteMutationExecutor,
     committed_events::{CommittedEventError, CommittedEventTarget, InboxOutcome, OutboxRecord},
@@ -12,6 +16,7 @@ use teaql_sql::{SqlTransaction, SqlTransactionTransport};
 
 const MAX_PAYLOAD: usize = 1024 * 1024;
 const MAX_ID: usize = 256;
+const MAX_SNAPSHOT_PAYLOAD: usize = 16 * 1024 * 1024;
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Clone)]
@@ -24,6 +29,18 @@ pub struct SignedDelivery {
 impl fmt::Debug for SignedDelivery {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("CommittedDelivery[content=<redacted>]")
+    }
+}
+#[derive(Clone)]
+pub struct SignedSnapshotDelivery {
+    pub snapshot: SnapshotRecord,
+    pub key_id: String,
+    pub target_id: String,
+    pub signature: Vec<u8>,
+}
+impl fmt::Debug for SignedSnapshotDelivery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("CommittedSnapshotDelivery[content=<redacted>]")
     }
 }
 /// Safe verdict; unexpected storage/transaction outcomes retain a typed cause
@@ -64,6 +81,8 @@ pub struct SqliteCommittedReceiver {
     target: String,
     model: String,
     keys: HashMap<String, Vec<u8>>,
+    snapshot_limits: SnapshotLimits,
+    max_snapshot_bytes: usize,
 }
 impl fmt::Debug for SqliteCommittedReceiver {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -98,7 +117,24 @@ impl SqliteCommittedReceiver {
             target,
             model,
             keys,
+            snapshot_limits: SnapshotLimits::default(),
+            max_snapshot_bytes: MAX_SNAPSHOT_PAYLOAD,
         })
+    }
+    /// Trusted startup policy. Wire messages cannot choose a destructive mode
+    /// or relax these limits.
+    pub fn with_snapshot_limits(
+        mut self,
+        max_rows: usize,
+        max_bytes: usize,
+    ) -> Result<Self, ReceiverError> {
+        if max_bytes > MAX_SNAPSHOT_PAYLOAD {
+            return Err(rejected("INVALID_CONFIGURATION"));
+        }
+        self.snapshot_limits = SnapshotLimits::new(max_rows, max_bytes)
+            .map_err(|_| rejected("INVALID_CONFIGURATION"))?;
+        self.max_snapshot_bytes = max_bytes;
+        Ok(self)
     }
     fn context(&self, context: &UserContext) -> Result<(), ReceiverError> {
         let installed = context
@@ -158,6 +194,103 @@ impl SqliteCommittedReceiver {
             target_id: target.into(),
             signature,
         })
+    }
+    pub fn sign_snapshot(
+        key_id: &str,
+        target: &str,
+        secret: &[u8],
+        snapshot: SnapshotRecord,
+    ) -> Result<SignedSnapshotDelivery, ReceiverError> {
+        field(key_id, MAX_ID)?;
+        field(target, MAX_ID)?;
+        key(secret)?;
+        snapshot_record(&snapshot, MAX_SNAPSHOT_PAYLOAD)?;
+        let signature = snapshot_mac(key_id, target, secret, &snapshot)
+            .finalize()
+            .into_bytes()
+            .to_vec();
+        Ok(SignedSnapshotDelivery {
+            snapshot,
+            key_id: key_id.into(),
+            target_id: target.into(),
+            signature,
+        })
+    }
+    fn verify_snapshot(&self, delivery: &SignedSnapshotDelivery) -> Result<(), ReceiverError> {
+        field(&delivery.key_id, MAX_ID)?;
+        field(&delivery.target_id, MAX_ID)?;
+        snapshot_record(&delivery.snapshot, self.max_snapshot_bytes)?;
+        if delivery.signature.len() != 32 {
+            return Err(rejected("INVALID_ENVELOPE"));
+        }
+        if delivery.snapshot.source_runtime_id != self.source {
+            return Err(rejected("UNAUTHORIZED_SOURCE"));
+        }
+        if delivery.target_id != self.target {
+            return Err(rejected("UNAUTHORIZED_TARGET"));
+        }
+        if delivery.snapshot.model_hash != self.model {
+            return Err(rejected("MODEL_MISMATCH"));
+        }
+        let secret = self
+            .keys
+            .get(&delivery.key_id)
+            .ok_or_else(|| rejected("UNKNOWN_KEY"))?;
+        snapshot_mac(
+            &delivery.key_id,
+            &delivery.target_id,
+            secret,
+            &delivery.snapshot,
+        )
+        .verify_slice(&delivery.signature)
+        .map_err(|_| rejected("INVALID_SIGNATURE"))
+    }
+    /// Separate authenticated snapshot boundary. Restore is always RequireEmpty;
+    /// receipts are constructed only after the authoritative transaction commits.
+    pub async fn receive_snapshot(
+        &self,
+        context: &UserContext,
+        delivery: &SignedSnapshotDelivery,
+    ) -> Result<SnapshotReceipt, ReceiverError> {
+        self.context(context)?;
+        self.independent()?;
+        if let Err(error) = self.verify_snapshot(delivery) {
+            self.audit_snapshot(delivery, error.code).await?;
+            return Err(error);
+        }
+        match self
+            .executor
+            .initialize_snapshot_and_acknowledge(
+                context,
+                &delivery.snapshot,
+                &self.target,
+                SnapshotImportMode::RequireEmpty,
+                self.snapshot_limits,
+            )
+            .await
+        {
+            Ok(receipt) => Ok(receipt),
+            Err(error) => {
+                let code = match &error {
+                    CommittedEventError::UnauthorizedSource => "UNAUTHORIZED_SOURCE",
+                    CommittedEventError::ModelMismatch => "MODEL_MISMATCH",
+                    CommittedEventError::InvalidEnvelope(_) | CommittedEventError::Json(_) => {
+                        "INVALID_SNAPSHOT"
+                    }
+                    CommittedEventError::DuplicateConflict => "SNAPSHOT_CONFLICT",
+                    CommittedEventError::VersionConflict { .. } => "VERSION_CONFLICT",
+                    CommittedEventError::SequenceExhausted => "SEQUENCE_EXHAUSTED",
+                    _ => {
+                        return Err(ReceiverError {
+                            code: "APPLY_FAILED",
+                            apply_error: Some(error),
+                        });
+                    }
+                };
+                self.audit_snapshot(delivery, code).await?;
+                Err(rejected(code))
+            }
+        }
     }
     fn verify(&self, delivery: &SignedDelivery) -> Result<(), ReceiverError> {
         field(&delivery.key_id, MAX_ID)?;
@@ -235,16 +368,52 @@ impl SqliteCommittedReceiver {
         delivery: &SignedDelivery,
         code: &'static str,
     ) -> Result<(), ReceiverError> {
+        let e = &delivery.event;
+        self.audit_fields(
+            &e.source_runtime_id,
+            e.source_sequence,
+            &e.change_set_id,
+            &e.payload_json,
+            MAX_PAYLOAD,
+            code,
+        )
+        .await
+    }
+    async fn audit_snapshot(
+        &self,
+        delivery: &SignedSnapshotDelivery,
+        code: &'static str,
+    ) -> Result<(), ReceiverError> {
+        let s = &delivery.snapshot;
+        let reason = format!("SNAPSHOT_{code}");
+        self.audit_fields(
+            &s.source_runtime_id,
+            s.source_sequence,
+            &s.snapshot_id,
+            &s.payload_json,
+            MAX_SNAPSHOT_PAYLOAD,
+            &reason,
+        )
+        .await
+    }
+    async fn audit_fields(
+        &self,
+        source: &str,
+        sequence: u64,
+        identity: &str,
+        payload: &str,
+        payload_limit: usize,
+        code: &str,
+    ) -> Result<(), ReceiverError> {
         let tx = self
             .executor
             .begin_sql()
             .await
             .map_err(|_| rejected("AUDIT_UNAVAILABLE"))?;
-        let e = &delivery.event;
         let result = (|| -> Result<(), CommittedEventError> {
             let changed=self.executor.lock()?.execute(
                 "INSERT INTO teaql_event_rejection(reason_code,source_sequence,source_fingerprint,change_fingerprint,target_fingerprint,payload_fingerprint) VALUES (?1,?2,?3,?4,?5,?6)",
-                params![code,i64::try_from(e.source_sequence).unwrap_or(0),fingerprint(&e.source_runtime_id,MAX_ID),fingerprint(&e.change_set_id,MAX_ID),fingerprint(&self.target,MAX_ID),fingerprint(&e.payload_json,MAX_PAYLOAD)])?;
+                params![code,i64::try_from(sequence).unwrap_or(0),fingerprint(source,MAX_ID),fingerprint(identity,MAX_ID),fingerprint(&self.target,MAX_ID),fingerprint(payload,payload_limit)])?;
             if changed != 1 {
                 return Err(CommittedEventError::InvalidEnvelope("audit row missing"));
             }
@@ -291,19 +460,57 @@ fn record(e: &OutboxRecord) -> Result<(), ReceiverError> {
     field(&e.payload_json, MAX_PAYLOAD)
 }
 fn mac(key_id: &str, target: &str, secret: &[u8], e: &OutboxRecord) -> HmacSha256 {
-    let mut mac = HmacSha256::new_from_slice(secret).expect("validated HMAC key");
-    mac.update(b"teaql.committed.receiver.v1\0");
     let sequence = e.source_sequence.to_string();
+    transcript_mac(
+        secret,
+        b"teaql.committed.receiver.v1\0",
+        &[
+            key_id,
+            target,
+            &e.source_runtime_id,
+            &sequence,
+            &e.change_set_id,
+            &e.model_hash,
+            &e.payload_sha256,
+            &e.payload_json,
+        ],
+    )
+}
+fn snapshot_record(s: &SnapshotRecord, limit: usize) -> Result<(), ReceiverError> {
+    if s.source_sequence > i64::MAX as u64 {
+        return Err(rejected("INVALID_ENVELOPE"));
+    }
     for text in [
-        key_id,
-        target,
-        &e.source_runtime_id,
-        &sequence,
-        &e.change_set_id,
-        &e.model_hash,
-        &e.payload_sha256,
-        &e.payload_json,
+        &s.source_runtime_id,
+        &s.snapshot_id,
+        &s.model_hash,
+        &s.payload_sha256,
     ] {
+        field(text, MAX_ID)?;
+    }
+    field(&s.payload_json, limit)
+}
+fn snapshot_mac(key_id: &str, target: &str, secret: &[u8], s: &SnapshotRecord) -> HmacSha256 {
+    let sequence = s.source_sequence.to_string();
+    transcript_mac(
+        secret,
+        b"teaql.committed.snapshot.receiver.v1\0",
+        &[
+            key_id,
+            target,
+            &s.source_runtime_id,
+            &sequence,
+            &s.snapshot_id,
+            &s.model_hash,
+            &s.payload_sha256,
+            &s.payload_json,
+        ],
+    )
+}
+fn transcript_mac(secret: &[u8], domain: &[u8], fields: &[&str]) -> HmacSha256 {
+    let mut mac = HmacSha256::new_from_slice(secret).expect("validated HMAC key");
+    mac.update(domain);
+    for text in fields {
         mac.update(&(text.len() as u32).to_be_bytes());
         mac.update(text.as_bytes());
     }
