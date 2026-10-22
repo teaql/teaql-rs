@@ -83,7 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(published.acknowledged, 1);
     assert_eq!(published.status.backlog, 0);
 
-    let replicated = Q::schools()
+    let mut replicated = Q::schools()
         .with_id_is(created.id())
         .comment("load replicated School through generated Q")
         .purpose("prove model-checked target is queryable by application")
@@ -92,6 +92,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("replicated School must be visible through generated Q");
     assert_eq!(replicated.name(), "Committed Q Readback School");
     assert_eq!(replicated.version(), created.version());
+    replicated.update_name("must not modify the analytical target");
+    let denied = replicated
+        .audit_as("attempt ordinary target write")
+        .save(&target)
+        .await
+        .err()
+        .expect("ordinary generated save must be rejected on target");
+    assert!(denied.to_string().contains("READ_ONLY_TARGET"), "{denied}");
+    let unchanged = Q::schools()
+        .with_id_is(created.id())
+        .comment("reload target after denied ordinary write")
+        .purpose("verify generated mutation did not change replicated facts")
+        .execute_for_one(&target)
+        .await?
+        .expect("replicated School remains visible");
+    assert_eq!(unchanged.name(), "Committed Q Readback School");
+    assert_eq!(unchanged.version(), created.version());
+    assert_eq!(
+        source_transport
+            .committed_outbox_after(SOURCE_ID, 0, 10)?
+            .len(),
+        1
+    );
+    println!("CMR15_GENERATED_READ_ONLY_PASS language=rust backend=sqlite generated_audited_save=1 fresh_query=1 source_isolated=1");
     println!(
         "COMMITTED_GENERATED_Q_PASS id={} version={} outbox=1 target=1",
         created.id(),
