@@ -1,7 +1,7 @@
 //! Signed canonical-frame checks. Infrastructure unit fixture, not application saves.
 use futures_executor::block_on;
 use rusqlite::Connection;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use teaql_core::{DataType, EntityDescriptor, PropertyDescriptor};
@@ -16,6 +16,9 @@ const KEY: &[u8] = b"0123456789abcdef0123456789abcdef";
 const SQL: &str = "INSERT INTO school_data(id,version,name) VALUES(99,1,'SQL-CANARY')";
 fn body() -> Value {
     json!({"protocol_version":1,"change_set_id":"fact","source_runtime_id":SOURCE,"source_sequence":"1","source_model_hash":MODEL,"source_transaction_id":"tx","committed_at":"2026-10-22T00:00:00Z","audit":{"comment":"receive school","purpose":"check protocol boundary"},"mutations":[{"entity_type":"school","entity_id":"7","operation":"create","base_version":null,"committed_version":"1","fields":{"name":"original"},"trace_chain":[]}]})
+}
+fn snapshot_body() -> Value {
+    json!({"snapshot_version":1,"snapshot_id":"baseline","source_runtime_id":SOURCE,"source_sequence":"0","source_model_hash":MODEL,"audit":{"comment":"receive baseline","purpose":"check snapshot boundary"},"entity_types":["school"],"rows":[{"entity_type":"school","entity_id":"7","version":"1","fields":{"name":"original"}}]})
 }
 struct Fixture {
     executor: SqliteMutationExecutor,
@@ -110,6 +113,114 @@ impl Fixture {
         ));
         assert_eq!(self.count("school_data"), 1);
     }
+    async fn receive_snapshot(
+        &self,
+        body: Value,
+    ) -> Result<(), teaql_provider_sqlite::committed_security::ReceiverError> {
+        let text = body.to_string();
+        let record = teaql_provider_sqlite::committed_events::snapshot::SnapshotRecord {
+            source_runtime_id: SOURCE.into(),
+            source_sequence: 0,
+            snapshot_id: "baseline".into(),
+            model_hash: MODEL.into(),
+            payload_sha256: format!("{:x}", Sha256::digest(text.as_bytes())),
+            payload_json: text,
+        };
+        self.receiver
+            .receive_snapshot(
+                &self.context,
+                &SqliteCommittedReceiver::sign_snapshot("current", TARGET, KEY, record).unwrap(),
+            )
+            .await
+            .map(|_| ())
+    }
+    async fn reject_snapshot(&self, body: Value) {
+        let e = self
+            .receive_snapshot(body)
+            .await
+            .expect_err("noncanonical snapshot controls must fail");
+        assert_eq!(e.code(), "INVALID_SNAPSHOT");
+        assert!(!e.to_string().contains(SQL));
+        for table in [
+            "school_data",
+            "teaql_event_snapshot",
+            "teaql_event_inbox",
+            "teaql_event_checkpoint",
+        ] {
+            assert_eq!(self.count(table), 0, "{table}");
+        }
+        assert_eq!(self.count("teaql_event_rejection"), 1);
+        self.receive_snapshot(snapshot_body()).await.unwrap();
+        assert_eq!(self.count("school_data"), 1);
+        assert_eq!(self.count("teaql_event_snapshot"), 1);
+    }
+}
+
+#[test]
+fn snapshot_container_controls_stay_strict() {
+    block_on(async {
+        for key in ["sql", "rawSql", "statement", "provider", "replace"] {
+            let f = Fixture::new().await;
+            let mut b = snapshot_body();
+            b[key] = json!(SQL);
+            f.reject_snapshot(b).await;
+        }
+    });
+}
+#[test]
+fn snapshot_row_controls_stay_strict() {
+    block_on(async {
+        for key in ["sql", "statement", "table", "command", "operation"] {
+            let f = Fixture::new().await;
+            let mut b = snapshot_body();
+            b["rows"][0][key] = json!(SQL);
+            f.reject_snapshot(b).await;
+        }
+    });
+}
+#[test]
+fn snapshot_audit_controls_cannot_smuggle_sql() {
+    block_on(async {
+        for key in [
+            "sql",
+            "rawSql",
+            "statement",
+            "provider",
+            "class",
+            "command",
+            "tenantId",
+        ] {
+            let f = Fixture::new().await;
+            let mut b = snapshot_body();
+            b["audit"][key] = json!(SQL);
+            f.reject_snapshot(b).await;
+        }
+        println!("CMR15_SNAPSHOT_CONTROLS_PASS language=rust container=5 row=5 audit=7");
+    });
+}
+#[test]
+fn snapshot_sql_looking_business_and_audit_text_remain_bound_data() {
+    block_on(async {
+        let f = Fixture::new().await;
+        let mut b = snapshot_body();
+        b["rows"][0]["fields"]["name"] = json!(SQL);
+        b["audit"]["comment"] = json!(SQL);
+        b["audit"]["actor_ref"] = json!("user:7");
+        b["audit"]["trace_id"] = json!("trace:1");
+        f.receive_snapshot(b).await.unwrap();
+        assert_eq!(f.count("school_data"), 1);
+        assert_eq!(f.count("teaql_event_rejection"), 0);
+        assert_eq!(
+            f.executor
+                .connection()
+                .lock()
+                .unwrap()
+                .query_row("SELECT name FROM school_data WHERE id=7", [], |r| r
+                    .get::<_, String>(0))
+                .unwrap(),
+            SQL
+        );
+    });
 }
 #[test]
 fn envelope_controls_cannot_smuggle_sql() {
