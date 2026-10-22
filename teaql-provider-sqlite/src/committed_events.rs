@@ -104,11 +104,19 @@ pub enum CommittedEventError {
     SequenceExhausted,
     CursorConflict,
     TransportUnavailable,
+    ObservationUnavailable,
+    DeliveryRejected(crate::committed_observation::DeliveryRejection),
 }
 
 impl std::fmt::Display for CommittedEventError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ObservationUnavailable => {
+                write!(formatter, "committed delivery observation is unavailable")
+            }
+            Self::DeliveryRejected(reason) => {
+                write!(formatter, "committed delivery rejected: {}", reason.code())
+            }
             Self::Storage(error) => write!(formatter, "committed-event storage failed: {error}"),
             Self::Json(_) => write!(formatter, "committed-event JSON is invalid"),
             Self::InvalidEnvelope(reason) => {
@@ -166,6 +174,8 @@ impl SqliteMutationExecutor {
     /// Install the independent infrastructure tables before enabling the
     /// committed-event source or target. This never seeds domain rows.
     pub fn ensure_committed_event_schema(&self) -> Result<(), CommittedEventError> {
+        self.lock()?
+            .execute_batch(crate::committed_observation::JOURNAL_SCHEMA)?;
         self.lock()?.execute_batch(
             "CREATE TABLE IF NOT EXISTS teaql_event_sequence (\
                 source_runtime_id TEXT PRIMARY KEY, \

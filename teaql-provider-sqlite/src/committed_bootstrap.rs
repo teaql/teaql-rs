@@ -156,7 +156,25 @@ impl SqliteMutationExecutor {
             return Ok(prepared);
         }
         let record = prepared.snapshot;
-        let ack = deliver(record.clone()).await?; // No source SQL transaction held across transport.
+        let attempt = self
+            .journal_begin(
+                &source.source_runtime_id,
+                target,
+                &source.model_hash,
+                "snapshot",
+                record.source_sequence,
+                &record.snapshot_id,
+                &record.payload_sha256,
+            )
+            .await?;
+        let ack = match deliver(record.clone()).await {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                self.journal_failed(&source.source_runtime_id, target, attempt, &error)
+                    .await?;
+                return Err(error);
+            }
+        }; // No source SQL transaction held across transport.
         if ack.source_runtime_id != record.source_runtime_id
             || ack.target_id != target
             || ack.snapshot_id != record.snapshot_id
@@ -164,9 +182,10 @@ impl SqliteMutationExecutor {
             || ack.model_hash != record.model_hash
             || ack.payload_sha256 != record.payload_sha256
         {
-            return Err(invalid(
-                "snapshot receipt does not match this source/target record",
-            ));
+            let error = invalid("snapshot receipt does not match this source/target record");
+            self.journal_failed(&source.source_runtime_id, target, attempt, &error)
+                .await?;
+            return Err(error);
         }
         let tx = self.begin_snapshot_transaction(false)?;
         let result = (|| {
@@ -195,6 +214,12 @@ impl SqliteMutationExecutor {
             if changed != 1 {
                 return Err(CommittedEventError::CursorConflict);
             }
+            crate::committed_observation::journal_ack(
+                &db,
+                &source.source_runtime_id,
+                target,
+                attempt,
+            )?;
             Ok(PreparedSnapshot {
                 snapshot: record,
                 acknowledged: true,

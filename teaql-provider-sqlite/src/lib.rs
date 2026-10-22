@@ -27,6 +27,7 @@ use teaql_sql::{
 
 pub mod committed_delivery;
 pub mod committed_events;
+pub mod committed_observation;
 pub mod committed_security;
 mod dynamic_fields;
 mod transaction;

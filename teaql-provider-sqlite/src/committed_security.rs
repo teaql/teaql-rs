@@ -68,6 +68,33 @@ impl fmt::Debug for ReceiverError {
     }
 }
 impl std::error::Error for ReceiverError {}
+/// Preserve closed permanent rejection codes at trusted transport adapters;
+/// unknown storage/transaction causes stay typed, never confirmed rejections.
+impl From<ReceiverError> for CommittedEventError {
+    fn from(error: ReceiverError) -> Self {
+        use crate::committed_observation::DeliveryRejection as R;
+        let reason = match error.code {
+            "UNAUTHORIZED_SOURCE" => Some(R::UnauthorizedSource),
+            "UNAUTHORIZED_TARGET" => Some(R::UnauthorizedTarget),
+            "UNKNOWN_KEY" => Some(R::UnknownKey),
+            "INVALID_SIGNATURE" => Some(R::InvalidSignature),
+            "INVALID_ENVELOPE" => Some(R::InvalidEnvelope),
+            "MODEL_MISMATCH" => Some(R::ModelMismatch),
+            "SEQUENCE_GAP" => Some(R::SequenceGap),
+            "DUPLICATE_CONFLICT" => Some(R::DuplicateConflict),
+            "VERSION_CONFLICT" => Some(R::VersionConflict),
+            "SEQUENCE_EXHAUSTED" => Some(R::SequenceExhausted),
+            "INVALID_SNAPSHOT" => Some(R::InvalidSnapshot),
+            "SNAPSHOT_CONFLICT" => Some(R::SnapshotConflict),
+            "TARGET_NOT_EMPTY" => Some(R::TargetNotEmpty),
+            _ => None,
+        };
+        match reason {
+            Some(reason) => Self::DeliveryRejected(reason),
+            None => error.apply_error.unwrap_or(Self::TransportUnavailable),
+        }
+    }
+}
 fn rejected(code: &'static str) -> ReceiverError {
     ReceiverError {
         code,

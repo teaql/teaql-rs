@@ -101,7 +101,7 @@ fn catalog(context: &UserContext) -> Result<Vec<&EntityDescriptor>, CommittedEve
     tables.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(tables)
 }
-pub(super) fn provider(
+pub(crate) fn provider(
     context: &UserContext,
     executor: &SqliteMutationExecutor,
 ) -> Result<(), CommittedEventError> {
@@ -120,7 +120,7 @@ fn bounded(text: &str, limits: SnapshotLimits) -> Result<(), CommittedEventError
         Ok(())
     }
 }
-pub(super) async fn finish<T>(
+pub(crate) async fn finish<T>(
     transaction: SqliteTransaction,
     result: Result<T, CommittedEventError>,
 ) -> Result<T, CommittedEventError> {
@@ -288,6 +288,7 @@ impl SqliteMutationExecutor {
                 "teaql_event_outbox",
                 "teaql_event_sequence",
                 "teaql_event_snapshot_publication",
+                "teaql_event_delivery_journal",
             ] {
                 if count(&connection, table)? != 0 {
                     return Err(CommittedEventError::DuplicateConflict);

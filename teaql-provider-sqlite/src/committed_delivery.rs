@@ -123,16 +123,37 @@ impl SqliteMutationExecutor {
                 return Err(CommittedEventError::ModelMismatch);
             }
             let sequence = record.source_sequence;
-            let outcome = deliver(record).await?;
+            let attempt = self
+                .journal_begin(
+                    source_runtime_id,
+                    target_id,
+                    model_hash,
+                    "event",
+                    sequence,
+                    &record.change_set_id,
+                    &record.payload_sha256,
+                )
+                .await?;
+            let outcome = match deliver(record).await {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    self.journal_failed(source_runtime_id, target_id, attempt, &error)
+                        .await?;
+                    return Err(error);
+                }
+            };
             let checkpoint = match outcome {
                 InboxOutcome::Applied { checkpoint } | InboxOutcome::Duplicate { checkpoint } => {
                     checkpoint
                 }
             };
             if checkpoint != sequence {
-                return Err(CommittedEventError::InvalidEnvelope(
+                let error = CommittedEventError::InvalidEnvelope(
                     "target acknowledgement does not match delivered sequence",
-                ));
+                );
+                self.journal_failed(source_runtime_id, target_id, attempt, &error)
+                    .await?;
+                return Err(error);
             }
             self.acknowledge_committed_delivery(
                 source_runtime_id,
@@ -140,7 +161,9 @@ impl SqliteMutationExecutor {
                 model_hash,
                 status.acked_sequence,
                 sequence,
-            )?;
+                attempt,
+            )
+            .await?;
             status.acked_sequence = sequence;
             acknowledged += 1;
         }
@@ -207,26 +230,33 @@ impl SqliteMutationExecutor {
         }
     }
 
-    fn acknowledge_committed_delivery(
+    async fn acknowledge_committed_delivery(
         &self,
         source_runtime_id: &str,
         target_id: &str,
         model_hash: &str,
         prior: u64,
         sequence: u64,
+        attempt: crate::committed_observation::Attempt,
     ) -> Result<(), CommittedEventError> {
         let prior = i64::try_from(prior).map_err(|_| CommittedEventError::SequenceExhausted)?;
         let sequence =
             i64::try_from(sequence).map_err(|_| CommittedEventError::SequenceExhausted)?;
-        let changed = self.lock()?.execute(
-            "UPDATE teaql_event_delivery_cursor SET acked_sequence=?3 \
+        let tx = self.begin_snapshot_transaction(false)?;
+        let result = (|| {
+            let db = self.lock()?;
+            let changed = db.execute(
+                "UPDATE teaql_event_delivery_cursor SET acked_sequence=?3 \
              WHERE source_runtime_id=?1 AND target_id=?2 AND acked_sequence=?5 AND model_hash=?4",
-            params![source_runtime_id, target_id, sequence, model_hash, prior],
-        )?;
-        if changed != 1 {
-            return Err(CommittedEventError::CursorConflict);
-        }
-        Ok(())
+                params![source_runtime_id, target_id, sequence, model_hash, prior],
+            )?;
+            if changed != 1 {
+                return Err(CommittedEventError::CursorConflict);
+            }
+            crate::committed_observation::journal_ack(&db, source_runtime_id, target_id, attempt)?;
+            Ok(())
+        })();
+        crate::committed_events::snapshot::finish(tx, result).await
     }
 }
 
