@@ -559,6 +559,7 @@ fn materialize_model_checked_set(
         .get("audit")
         .and_then(JsonValue::as_object)
         .ok_or(CommittedEventError::InvalidEnvelope("audit is missing"))?;
+    canonical_controls(audit, &["actor_ref", "comment", "purpose", "trace_id"])?;
     for field in ["comment", "purpose"] {
         if !audit
             .get(field)
@@ -664,6 +665,18 @@ fn decode_model_mutation_mode(
         .ok_or(CommittedEventError::InvalidEnvelope(
             "mutation must be an object",
         ))?;
+    canonical_controls(
+        fact,
+        &[
+            "entity_type",
+            "entity_id",
+            "operation",
+            "base_version",
+            "committed_version",
+            "fields",
+            "trace_chain",
+        ],
+    )?;
     validate_trace_chain(fact.get("trace_chain"))?;
     let entity_type = fact.get("entity_type").and_then(JsonValue::as_str).ok_or(
         CommittedEventError::InvalidEnvelope("entity type is missing"),
@@ -1151,6 +1164,36 @@ fn validate_header(
     {
         return Err(CommittedEventError::InvalidEnvelope(
             "required v1 header or mutations mismatch",
+        ));
+    }
+    canonical_controls(
+        payload
+            .as_object()
+            .ok_or(CommittedEventError::InvalidEnvelope(
+                "noncanonical protocol object",
+            ))?,
+        &[
+            "protocol_version",
+            "change_set_id",
+            "source_runtime_id",
+            "source_sequence",
+            "source_model_hash",
+            "source_transaction_id",
+            "committed_at",
+            "audit",
+            "mutations",
+        ],
+    )
+}
+
+// Only protocol frames have closed keys. Modeled text and audit values stay data.
+fn canonical_controls(
+    object: &serde_json::Map<String, JsonValue>,
+    allowed: &[&str],
+) -> Result<(), CommittedEventError> {
+    if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err(CommittedEventError::InvalidEnvelope(
+            "noncanonical protocol control field",
         ));
     }
     Ok(())
