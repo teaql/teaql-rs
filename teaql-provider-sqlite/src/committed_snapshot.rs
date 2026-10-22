@@ -1,8 +1,8 @@
 //! Complete model snapshots, separate from ordinary committed mutation envelopes.
 use super::*;
 use serde::{
-    de::{Error as _, MapAccess, SeqAccess, Visitor},
     Deserialize, Deserializer,
+    de::{Error as _, MapAccess, SeqAccess, Visitor},
 };
 use serde_json::json;
 use std::collections::BTreeSet;
@@ -256,6 +256,7 @@ impl SqliteMutationExecutor {
             .get_resource::<CommittedEventTarget>()
             .ok_or(invalid("snapshot target authority is not configured"))?;
         let payload = validate(record, target, limits)?;
+        self.restrict_ordinary_mutations();
         let transaction = self.begin_snapshot_transaction(false)?;
         let result = (|| {
             let connection = self.lock()?;
