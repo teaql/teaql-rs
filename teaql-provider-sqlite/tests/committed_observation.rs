@@ -1,9 +1,13 @@
 //! Focused infrastructure fixture, not an audited application example.
 use futures_executor::block_on;
 use rusqlite::{Connection, params};
+use teaql_core::{DataType, EntityDescriptor, PropertyDescriptor};
+use teaql_provider_sqlite::committed_events::snapshot::SnapshotLimits;
 use teaql_provider_sqlite::committed_events::{CommittedEventError, InboxOutcome};
+use teaql_provider_sqlite::committed_events::{CommittedEventTarget, OutboxRecord};
+use teaql_provider_sqlite::committed_security::{SignedDelivery, SqliteCommittedReceiver};
 use teaql_provider_sqlite::{SqliteMutationExecutor, SqliteProviderExt};
-use teaql_runtime::UserContext;
+use teaql_runtime::{CommittedEventSource, InMemoryMetadataStore, UserContext};
 const SOURCE: &str = "source-CANARY";
 const TARGET: &str = "target-CANARY";
 const MODEL: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
@@ -165,6 +169,318 @@ fn journal_ack_failure_cannot_advance_cursor() {
         assert_eq!(
             (s.acked_sequence, s.unresolved_attempts, s.failures),
             (0, 1, 0)
+        );
+    });
+}
+
+#[test]
+fn permanent_rejection_is_inspectable_and_success_preserves_history() {
+    block_on(async {
+        let (e, c, _o) = fixture();
+        let target = SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        let mut target_context = UserContext::new();
+        target_context.use_sqlite_provider(target.clone());
+        target_context.insert_resource(CommittedEventTarget::new(SOURCE, MODEL).unwrap());
+        let receiver = SqliteCommittedReceiver::new(
+            target.clone(),
+            SOURCE,
+            TARGET,
+            MODEL,
+            std::collections::HashMap::from([("current".into(), vec![0; 32])]),
+        )
+        .unwrap();
+        receiver.ensure_schema(&target_context).unwrap();
+        assert!(
+            e.publish_committed_batch(SOURCE, TARGET, MODEL, 1, |event| async {
+                receiver
+                    .receive(
+                        &target_context,
+                        &SignedDelivery {
+                            event,
+                            key_id: "current".into(),
+                            target_id: TARGET.into(),
+                            signature: vec![0; 32],
+                        },
+                    )
+                    .await
+                    .map_err(CommittedEventError::from)
+            })
+            .await
+            .is_err()
+        );
+        let s = e
+            .observe_committed_source(&c, SOURCE, TARGET, MODEL)
+            .await
+            .unwrap();
+        assert_eq!((s.rejections, s.dead_letters, s.acked_sequence), (1, 1, 0));
+        let failures = e
+            .committed_dead_letters(&c, SOURCE, TARGET, MODEL, 10)
+            .await
+            .unwrap();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].reason, "INVALID_SIGNATURE");
+        assert!(!format!("{failures:?}").contains("CANARY"));
+        for limit in [0, 1001] {
+            assert!(
+                e.committed_dead_letters(&c, SOURCE, TARGET, MODEL, limit)
+                    .await
+                    .is_err()
+            );
+        }
+        // Deliberately fake callback ACK is not target-application evidence.
+        e.publish_committed_batch(SOURCE, TARGET, MODEL, 1, |_| async {
+            Ok(InboxOutcome::Applied { checkpoint: 1 })
+        })
+        .await
+        .unwrap();
+        let a = e
+            .observe_committed_source(&c, SOURCE, TARGET, MODEL)
+            .await
+            .unwrap();
+        assert_eq!((a.dead_letters, a.rejections, a.retries), (0, 1, 1));
+        let t = target
+            .observe_committed_target(&target_context, SOURCE, TARGET, MODEL, Some(2))
+            .await
+            .unwrap();
+        assert_eq!(
+            (t.checkpoint, t.sequence_lag, t.rejections),
+            (0, Some(2), 1)
+        );
+    });
+}
+#[test]
+fn unauthorized_source_counts_and_absent_lag_is_not_zero() {
+    block_on(async {
+        let (e, mut c, _o) = fixture();
+        c.insert_resource(CommittedEventTarget::new(SOURCE, MODEL).unwrap());
+        let receiver = SqliteCommittedReceiver::new(
+            e.clone(),
+            SOURCE,
+            TARGET,
+            MODEL,
+            std::collections::HashMap::from([("current".into(), vec![0; 32])]),
+        )
+        .unwrap();
+        receiver.ensure_schema(&c).unwrap();
+        let event = OutboxRecord {
+            source_runtime_id: "intruder".into(),
+            source_sequence: 1,
+            change_set_id: "x".into(),
+            model_hash: MODEL.into(),
+            payload_sha256: "a".repeat(64),
+            payload_json: "payload-CANARY".into(),
+        };
+        let error = receiver
+            .receive(
+                &c,
+                &SignedDelivery {
+                    event,
+                    key_id: "current".into(),
+                    target_id: TARGET.into(),
+                    signature: vec![0; 32],
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "UNAUTHORIZED_SOURCE");
+        let t = e
+            .observe_committed_target(&c, SOURCE, TARGET, MODEL, None)
+            .await
+            .unwrap();
+        assert_eq!((t.rejections, t.sequence_lag), (1, None));
+        e.connection()
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO teaql_event_checkpoint VALUES(?1,1,?2)",
+                params![SOURCE, MODEL],
+            )
+            .unwrap();
+        assert!(
+            e.observe_committed_target(&c, SOURCE, TARGET, MODEL, Some(0))
+                .await
+                .is_err()
+        );
+    });
+}
+#[test]
+fn dropped_callback_is_unresolved_not_confirmed_failure() {
+    use std::{
+        future::Future,
+        sync::Arc,
+        task::{Context, Poll, Wake, Waker},
+    };
+    struct Nop;
+    impl Wake for Nop {
+        fn wake(self: Arc<Self>) {}
+    }
+    let (e, c, _o) = fixture();
+    let mut future = Box::pin(e.publish_committed_batch(SOURCE, TARGET, MODEL, 1, |_| {
+        std::future::pending::<Result<InboxOutcome, CommittedEventError>>()
+    }));
+    let waker = Waker::from(Arc::new(Nop));
+    let mut cx = Context::from_waker(&waker);
+    assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+    drop(future);
+    block_on(async {
+        let s = e
+            .observe_committed_source(&c, SOURCE, TARGET, MODEL)
+            .await
+            .unwrap();
+        assert_eq!(
+            (s.acked_sequence, s.unresolved_attempts, s.failures),
+            (0, 1, 0)
+        );
+        e.publish_committed_batch(SOURCE, TARGET, MODEL, 1, |_| async {
+            Ok(InboxOutcome::Applied { checkpoint: 1 })
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            e.observe_committed_source(&c, SOURCE, TARGET, MODEL)
+                .await
+                .unwrap()
+                .retries,
+            1
+        );
+    });
+}
+#[test]
+fn stale_attempt_cannot_replace_newer_success() {
+    block_on(async {
+        let (e, c, _o) = fixture();
+        let inner = e.clone();
+        assert!(
+            e.publish_committed_batch(SOURCE, TARGET, MODEL, 1, |_| async {
+                inner
+                    .publish_committed_batch(SOURCE, TARGET, MODEL, 1, |_| async {
+                        Ok(InboxOutcome::Applied { checkpoint: 1 })
+                    })
+                    .await
+                    .unwrap();
+                Ok(InboxOutcome::Applied { checkpoint: 1 })
+            })
+            .await
+            .is_err()
+        );
+        let s = e
+            .observe_committed_source(&c, SOURCE, TARGET, MODEL)
+            .await
+            .unwrap();
+        assert_eq!(
+            (
+                s.acked_sequence,
+                s.attempts,
+                s.failures,
+                s.unresolved_attempts
+            ),
+            (1, 2, 0, 0)
+        );
+    });
+}
+#[test]
+fn snapshot_zero_has_durable_independent_attempts() {
+    block_on(async {
+        let (e, mut c, _o) = fixture();
+        {
+            let conn = e.connection();
+            let db = conn.lock().unwrap();
+            db.execute_batch("DELETE FROM teaql_event_outbox;DELETE FROM teaql_event_sequence;CREATE TABLE school_data(id INTEGER PRIMARY KEY,version INTEGER NOT NULL,name TEXT);").unwrap();
+        }
+        c = c
+            .with_metadata(
+                InMemoryMetadataStore::new().with_entity(
+                    EntityDescriptor::new("school")
+                        .table_name("school_data")
+                        .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+                        .property(
+                            PropertyDescriptor::new("version", DataType::I64)
+                                .version()
+                                .not_null(),
+                        )
+                        .property(PropertyDescriptor::new("name", DataType::Text)),
+                ),
+            )
+            .with_committed_event_source(CommittedEventSource::new(SOURCE, MODEL).unwrap());
+        e.prepare_committed_snapshot(
+            &c,
+            TARGET,
+            "baseline",
+            "capture empty baseline",
+            "verify observations",
+            SnapshotLimits::default(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            e.publish_prepared_snapshot(
+                &c,
+                TARGET,
+                "baseline",
+                SnapshotLimits::default(),
+                |_| async { Err(CommittedEventError::TransportUnavailable) }
+            )
+            .await
+            .is_err()
+        );
+        let before = e
+            .observe_committed_source(&c, SOURCE, TARGET, MODEL)
+            .await
+            .unwrap();
+        assert_eq!(
+            (before.pending_snapshots, before.attempts, before.failures),
+            (1, 1, 1)
+        );
+        e.publish_prepared_snapshot(
+            &c,
+            TARGET,
+            "baseline",
+            SnapshotLimits::default(),
+            |s| async move {
+                Ok(
+                    teaql_provider_sqlite::committed_events::bootstrap::SnapshotReceipt {
+                        source_runtime_id: s.source_runtime_id,
+                        target_id: TARGET.into(),
+                        snapshot_id: s.snapshot_id,
+                        source_sequence: s.source_sequence,
+                        model_hash: s.model_hash,
+                        payload_sha256: s.payload_sha256,
+                        duplicate: false,
+                    },
+                )
+            },
+        )
+        .await
+        .unwrap();
+        let after = e
+            .observe_committed_source(&c, SOURCE, TARGET, MODEL)
+            .await
+            .unwrap();
+        assert_eq!(
+            (
+                after.pending_snapshots,
+                after.source_high_watermark,
+                after.acked_sequence,
+                after.attempts,
+                after.retries
+            ),
+            (0, 0, 0, 2, 1)
+        );
+        e.publish_prepared_snapshot(
+            &c,
+            TARGET,
+            "baseline",
+            SnapshotLimits::default(),
+            |_| async { panic!("already acked") },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            e.observe_committed_source(&c, SOURCE, TARGET, MODEL)
+                .await
+                .unwrap()
+                .attempts,
+            2
         );
     });
 }
