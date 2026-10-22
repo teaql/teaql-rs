@@ -1723,6 +1723,7 @@ dependencies = [
  "futures-util",
  "hkdf",
  "hmac",
+ "libc",
  "opentelemetry",
  "opentelemetry-proto",
  "opentelemetry_sdk",
