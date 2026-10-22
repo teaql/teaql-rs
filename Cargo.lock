@@ -3740,6 +3740,7 @@ dependencies = [
  "futures-core",
  "futures-executor",
  "futures-util",
+ "hmac 0.12.1",
  "rusqlite",
  "rust_decimal",
  "serde",
