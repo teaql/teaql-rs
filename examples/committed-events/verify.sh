@@ -53,6 +53,12 @@ for round in 1 2; do
       "$round" "$output" >&2
     exit 1
   fi
+  printf '%s\n' "$output" > "$school_evidence/runtime-$round.log"
+  if [[ "$output" != *"CMR15_GENERATED_READ_ONLY_PASS language=rust backend=sqlite generated_audited_save=1 fresh_query=1 source_isolated=1"* ]]; then
+    printf 'Rust generated target readonly example round %s lacked its native evidence\n' "$round" >&2
+    exit 1
+  fi
+  printf '%s\n' "$output" | rg -F 'CMR15_GENERATED_READ_ONLY_PASS language=rust '
   school_library_hash > "$school_evidence/generated-library-after.sha256"
   cmp "$school_evidence/generated-library-before.sha256" \
     "$school_evidence/generated-library-after.sha256"

@@ -171,6 +171,67 @@ fn dynamic_transaction_store_is_also_read_only() {
     });
 }
 #[test]
+fn direct_snapshot_startup_restricts_ordinary_mutation_without_a_receiver_or_tail() {
+    block_on(async {
+        use teaql_provider_sqlite::committed_events::snapshot::{
+            SnapshotImportMode, SnapshotLimits, SnapshotRecord,
+        };
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        let mut context =
+            UserContext::new().with_metadata(InMemoryMetadataStore::new().with_entity(entity()));
+        context.insert_resource(CommittedEventTarget::new("readonly-source", MODEL).unwrap());
+        context.use_sqlite_provider(executor.clone());
+        context.ensure_schema().await.unwrap();
+        let text=json!({"snapshot_version":1,"snapshot_id":"baseline","source_runtime_id":"readonly-source","source_sequence":"0","source_model_hash":MODEL,"audit":{"comment":"import target baseline","purpose":"verify bootstrap authority separation"},"entity_types":["school"],"rows":[{"entity_type":"school","entity_id":"7","version":"1","fields":{"name":"snapshot"}}]}).to_string();
+        let record = SnapshotRecord {
+            source_runtime_id: "readonly-source".into(),
+            source_sequence: 0,
+            snapshot_id: "baseline".into(),
+            model_hash: MODEL.into(),
+            payload_sha256: format!("{:x}", Sha256::digest(text.as_bytes())),
+            payload_json: text,
+        };
+        executor
+            .initialize_model_checked_snapshot(
+                &context,
+                &record,
+                SnapshotImportMode::RequireEmpty,
+                SnapshotLimits::default(),
+            )
+            .await
+            .unwrap();
+        let provider = SqlDataServiceExecutor::new(
+            SqliteDialect,
+            executor.clone(),
+            Schema(Arc::new(entity())),
+        );
+        let error = provider
+            .mutate(
+                MutationCommand::Insert(insert())
+                    .request("attempt ordinary write after direct snapshot import")
+                    .unwrap(),
+            )
+            .await
+            .expect_err("direct snapshot target ordinary mutation must be read-only");
+        assert!(error.to_string().contains("READ_ONLY_TARGET"), "{error}");
+        assert_eq!(count(&executor), 1);
+        assert_eq!(
+            executor
+                .connection()
+                .lock()
+                .unwrap()
+                .query_row("SELECT count(*) FROM teaql_event_inbox", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        println!(
+            "CMR15_SNAPSHOT_ACTIVATION_PASS language=rust signed_receiver=0 tail=0 readonly=1"
+        );
+    });
+}
+#[test]
 fn direct_and_batch_mutations_cannot_write_to_signed_receiver_target() {
     block_on(async {
         for batch in [false, true] {
