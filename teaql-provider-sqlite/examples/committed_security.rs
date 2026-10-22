@@ -416,7 +416,7 @@ async fn scenario(directory: &Path) -> ProbeResult<()> {
             "INVALID_SIGNATURE",
             "UNAUTHORIZED_SOURCE",
             "SEQUENCE_GAP",
-            "SNAPSHOT_CONFLICT"
+            "SNAPSHOT_SNAPSHOT_CONFLICT"
         ]
     );
     let audit_text = serde_json::to_string(&audits)?;
