@@ -1186,11 +1186,12 @@ impl UserContext {
     /// graph save. The task-local scope keeps concurrent saves on one context
     /// isolated; standalone checker calls receive their own current value.
     pub fn fix_time(&self) -> teaql_core::time::Timestamp {
-        crate::entity_save::current_graph_fix_time()
+        crate::entity_save::current_graph_fix_time(self)
+            .unwrap_or_else(|| teaql_core::time::Timestamp(self.business_time().timestamp_millis()))
     }
 
     pub fn record_fix_evidence(&self, evidence: FixEvidence) {
-        crate::entity_save::record_graph_fix_evidence(evidence);
+        crate::entity_save::record_graph_fix_evidence(self, evidence);
     }
 
     pub(crate) fn replace_last_fix_evidence(&self, evidence: Vec<FixEvidence>) {
@@ -1222,7 +1223,9 @@ impl UserContext {
             .and_then(|registry| registry.checker(entity));
         let mut results = CheckResults::new();
         if let Some(checker) = checker {
-            checker.check_and_fix(self, values, location, &mut results);
+            crate::entity_save::with_fix_time(self, || {
+                checker.check_and_fix(self, values, location, &mut results);
+            });
         }
 
         // Custom checkers get the first chance to supply or fix a value.

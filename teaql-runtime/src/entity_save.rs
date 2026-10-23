@@ -16,19 +16,180 @@ use crate::{
     DataServiceError, GraphNode, GraphOperation, ObjectLocation, RuntimeError, UserContext,
 };
 
+#[derive(Clone, Copy)]
+struct FixClockSnapshot {
+    context: usize,
+    time: teaql_core::time::Timestamp,
+}
+
+impl FixClockSnapshot {
+    fn capture(context: &UserContext) -> Self {
+        Self {
+            context: std::ptr::from_ref(context) as usize,
+            time: teaql_core::time::Timestamp(context.business_time().timestamp_millis()),
+        }
+    }
+}
+
 tokio::task_local! {
-    static GRAPH_FIX_TIME: teaql_core::time::Timestamp;
-    static GRAPH_FIX_EVIDENCE: Arc<std::sync::Mutex<Vec<crate::FixEvidence>>>;
+    static GRAPH_FIX_TIME: FixClockSnapshot;
+    static GRAPH_FIX_EVIDENCE: (usize, Arc<std::sync::Mutex<Vec<crate::FixEvidence>>>);
 }
 
-pub(crate) fn current_graph_fix_time() -> teaql_core::time::Timestamp {
+pub(crate) fn current_graph_fix_time(context: &UserContext) -> Option<teaql_core::time::Timestamp> {
     GRAPH_FIX_TIME
-        .try_with(|value| *value)
-        .unwrap_or_else(|_| teaql_core::time::Timestamp::now())
+        .try_with(|value| {
+            (value.context == std::ptr::from_ref(context) as usize).then_some(value.time)
+        })
+        .ok()
+        .flatten()
 }
 
-pub(crate) fn record_graph_fix_evidence(evidence: crate::FixEvidence) {
-    let _ = GRAPH_FIX_EVIDENCE.try_with(|current| current.lock().unwrap().push(evidence));
+/// A standalone checker is also one Fix invocation. Capture once, while
+/// preserving the enclosing graph's snapshot for composed child checkers.
+pub(crate) fn with_fix_time<T>(context: &UserContext, operation: impl FnOnce() -> T) -> T {
+    if current_graph_fix_time(context).is_some() {
+        operation()
+    } else {
+        let snapshot = FixClockSnapshot::capture(context);
+        let evidence = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let result = GRAPH_FIX_TIME.sync_scope(snapshot, || {
+            GRAPH_FIX_EVIDENCE.sync_scope((snapshot.context, evidence.clone()), operation)
+        });
+        context.replace_last_fix_evidence(evidence.lock().unwrap().clone());
+        result
+    }
+}
+
+async fn with_graph_fix_scope<F: Future>(context: &UserContext, operation: F) -> F::Output {
+    let evidence = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let snapshot = FixClockSnapshot::capture(context);
+    // A new graph always captures a new instant, even when invoked by another
+    // operation in the same task. Contexts never inherit each other's clocks.
+    let result = GRAPH_FIX_TIME
+        .scope(
+            snapshot,
+            GRAPH_FIX_EVIDENCE.scope((snapshot.context, evidence.clone()), operation),
+        )
+        .await;
+    context.replace_last_fix_evidence(evidence.lock().unwrap().clone());
+    result
+}
+
+pub(crate) fn record_graph_fix_evidence(context: &UserContext, evidence: crate::FixEvidence) {
+    let _ = GRAPH_FIX_EVIDENCE.try_with(|(owner, current)| {
+        if *owner == std::ptr::from_ref(context) as usize {
+            current.lock().unwrap().push(evidence);
+        }
+    });
+}
+
+#[cfg(test)]
+mod fix_clock_scope_tests {
+    use super::*;
+    use chrono::{DateTime, TimeZone, Utc};
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    struct AdvancingClock(Arc<AtomicI64>);
+    impl crate::BusinessClock for AdvancingClock {
+        fn business_time(&self) -> DateTime<Utc> {
+            Utc.timestamp_millis_opt(self.0.fetch_add(1, Ordering::SeqCst))
+                .unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn standalone_fixes_in_another_context_do_not_pollute_graph_evidence() {
+        let first = UserContext::new();
+        let second = UserContext::new();
+        let evidence = |entity| {
+            crate::FixEvidence::new(
+                entity,
+                "create_time",
+                crate::FixEvidenceSource::Clock,
+                "graphClock",
+            )
+        };
+        with_graph_fix_scope(&first, async {
+            first.record_fix_evidence(evidence("First"));
+            with_fix_time(&second, || second.record_fix_evidence(evidence("Second")));
+            assert_eq!(second.last_fix_evidence(), vec![evidence("Second")]);
+        })
+        .await;
+        assert_eq!(first.last_fix_evidence(), vec![evidence("First")]);
+    }
+
+    #[tokio::test]
+    async fn dropping_an_in_flight_graph_restores_the_clock_scope() {
+        let ticks = Arc::new(AtomicI64::new(1000));
+        let context = UserContext::new().with_business_clock(AdvancingClock(ticks.clone()));
+        let mut pending = Box::pin(with_graph_fix_scope(&context, async {
+            assert_eq!(context.fix_time().as_millis(), 1000);
+            std::future::pending::<()>().await;
+        }));
+        std::future::poll_fn(|cx| {
+            assert!(pending.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(pending);
+        assert!(current_graph_fix_time(&context).is_none());
+        with_graph_fix_scope(&context, async {
+            assert_eq!(context.fix_time().as_millis(), 1001);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn graph_and_standalone_fix_capture_once_and_restore_after_failure() {
+        let ticks = Arc::new(AtomicI64::new(1_961_662_530_000));
+        let context = UserContext::new().with_business_clock(AdvancingClock(ticks.clone()));
+        let first = ticks.load(Ordering::SeqCst);
+        let result: Result<(), ()> = with_graph_fix_scope(&context, async {
+            assert_eq!(context.fix_time().as_millis(), first);
+            tokio::task::yield_now().await;
+            with_fix_time(&context, || {
+                assert_eq!(context.fix_time().as_millis(), first)
+            });
+            assert_eq!(ticks.load(Ordering::SeqCst), first + 1);
+            Err(())
+        })
+        .await;
+        assert!(result.is_err());
+        assert!(current_graph_fix_time(&context).is_none());
+        with_fix_time(&context, || {
+            assert_eq!(context.fix_time().as_millis(), first + 1);
+            assert_eq!(context.fix_time().as_millis(), first + 1);
+        });
+        assert_eq!(ticks.load(Ordering::SeqCst), first + 2);
+    }
+
+    #[tokio::test]
+    async fn independent_contexts_and_new_graphs_never_reuse_an_enclosing_snapshot() {
+        let ticks = Arc::new(AtomicI64::new(1000));
+        let first = UserContext::new().with_business_clock(AdvancingClock(ticks.clone()));
+        let second = UserContext::new().with_business_clock(crate::FixedBusinessClock::new(
+            Utc.timestamp_millis_opt(9000).unwrap(),
+        ));
+        with_graph_fix_scope(&first, async {
+            assert_eq!(first.fix_time().as_millis(), 1000);
+            assert_eq!(second.fix_time().as_millis(), 9000);
+            with_graph_fix_scope(&first, async {
+                assert_eq!(first.fix_time().as_millis(), 1001);
+            })
+            .await;
+            assert_eq!(first.fix_time().as_millis(), 1000);
+            with_graph_fix_scope(&second, async {
+                assert_eq!(second.fix_time().as_millis(), 9000);
+                assert!(current_graph_fix_time(&first).is_none());
+            })
+            .await;
+            assert_eq!(first.fix_time().as_millis(), 1000);
+        })
+        .await;
+        assert!(current_graph_fix_time(&first).is_none());
+        assert!(current_graph_fix_time(&second).is_none());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2083,8 +2244,9 @@ where
         self,
         context: &'a UserContext,
     ) -> Pin<Box<dyn Future<Output = Result<Self::Entity, RuntimeError>> + Send + 'a>> {
-        Box::pin(
-            context.observe_mutation_request(|| T::entity_descriptor().name, async move {
+        Box::pin(context.observe_mutation_request(
+            || T::entity_descriptor().name,
+            with_graph_fix_scope(context, async move {
                 let entity = self.into_entity(); // applies comment onto the entity
                 let root = entity
                     .__teaql_runtime_state_any()
@@ -2099,18 +2261,7 @@ where
                             "dynamic save requires the runtime mutation ledger carrier".into(),
                         ));
                     }
-                    let evidence = Arc::new(std::sync::Mutex::new(Vec::new()));
-                    let result = GRAPH_FIX_TIME
-                        .scope(
-                            teaql_core::time::Timestamp::now(),
-                            GRAPH_FIX_EVIDENCE.scope(
-                                evidence.clone(),
-                                Box::pin(save_ledger_entity_body(entity, root, context)),
-                            ),
-                        )
-                        .await;
-                    context.replace_last_fix_evidence(evidence.lock().unwrap().clone());
-                    return result;
+                    return save_ledger_entity_body(entity, root, context).await;
                 }
                 let mut node = graph_node_from_entity(context, entity)?;
                 preflight_graph(context, &mut node, &ObjectLocation::root(), None)?;
@@ -2126,7 +2277,7 @@ where
                 T::from_compact_row(teaql_core::CompactRow::from_map(saved.values.into()))
                     .map_err(|e| RuntimeError::Graph(e.to_string()))
             }),
-        )
+        ))
     }
 }
 
@@ -2144,21 +2295,12 @@ pub async fn save_audited_ledger_entity<T>(
 where
     T: crate::LedgerEntity + Send + 'static,
 {
-    let evidence = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let result = context
+    context
         .observe_mutation_request(
             || T::entity_descriptor().name,
-            GRAPH_FIX_TIME.scope(
-                teaql_core::time::Timestamp::now(),
-                GRAPH_FIX_EVIDENCE.scope(
-                    evidence.clone(),
-                    save_audited_ledger_entity_inner(audited, context),
-                ),
-            ),
+            with_graph_fix_scope(context, save_audited_ledger_entity_inner(audited, context)),
         )
-        .await;
-    context.replace_last_fix_evidence(evidence.lock().unwrap().clone());
-    result
+        .await
 }
 
 /// Persist an audited generated entity through an executor that is already
@@ -2177,21 +2319,15 @@ where
     T: crate::LedgerEntity + Send + 'static,
     E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
 {
-    let evidence = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let result = context
+    context
         .observe_mutation_request(
             || T::entity_descriptor().name,
-            GRAPH_FIX_TIME.scope(
-                teaql_core::time::Timestamp::now(),
-                GRAPH_FIX_EVIDENCE.scope(
-                    evidence.clone(),
-                    save_audited_ledger_entity_with_executor_inner(audited, context, executor),
-                ),
+            with_graph_fix_scope(
+                context,
+                save_audited_ledger_entity_with_executor_inner(audited, context, executor),
             ),
         )
-        .await;
-    context.replace_last_fix_evidence(evidence.lock().unwrap().clone());
-    result
+        .await
 }
 
 async fn save_audited_ledger_entity_with_executor_inner<T, E>(

@@ -4,33 +4,72 @@ use crate::object_location::{JsonFieldNamingProfile, ObjectLocation, WireLocatio
 
 #[derive(Debug, Clone, Copy)]
 enum Segment {
-    Property(&'static str),
-    Index(usize),
+    Property {
+        name: &'static str,
+        method: Option<&'static str>,
+    },
+    Index {
+        index: usize,
+        first: bool,
+    },
+    Operation(&'static str),
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct ExpressionPath {
     segments: smallvec::SmallVec<[Segment; 8]>,
     missing: Option<usize>,
+    root: Option<&'static str>,
 }
 
 impl ExpressionPath {
+    pub fn root(expression: &'static str) -> Self {
+        Self {
+            root: Some(expression),
+            ..Self::default()
+        }
+    }
     pub fn member(&self, name: &'static str) -> Self {
         let mut next = self.clone();
-        next.segments.push(Segment::Property(name));
+        next.segments.push(Segment::Property { name, method: None });
+        next
+    }
+    pub fn member_as(&self, name: &'static str, method: &'static str) -> Self {
+        let mut next = self.clone();
+        next.segments.push(Segment::Property {
+            name,
+            method: Some(method),
+        });
         next
     }
     pub fn element(&self, index: usize) -> Self {
         let mut next = self.clone();
-        next.segments.push(Segment::Index(index));
+        next.segments.push(Segment::Index {
+            index,
+            first: false,
+        });
+        next
+    }
+    pub fn first(&self) -> Self {
+        let mut next = self.clone();
+        next.segments.push(Segment::Index {
+            index: 0,
+            first: true,
+        });
+        next
+    }
+    pub fn operation(&self, call: &'static str) -> Self {
+        let mut next = self.clone();
+        next.segments.push(Segment::Operation(call));
         next
     }
     pub fn location(&self) -> ObjectLocation {
         self.segments
             .iter()
             .fold(ObjectLocation::root(), |location, segment| match segment {
-                Segment::Property(name) => location.member(*name),
-                Segment::Index(index) => location.element(*index),
+                Segment::Property { name, .. } => location.member(*name),
+                Segment::Index { index, .. } => location.element(*index),
+                Segment::Operation(_) => location,
             })
     }
 
@@ -44,8 +83,8 @@ impl ExpressionPath {
 
     pub fn missing_member(&self) -> Option<&'static str> {
         match self.segments.get(self.missing?)? {
-            Segment::Property(name) => Some(*name),
-            Segment::Index(_) => None,
+            Segment::Property { name, .. } => Some(*name),
+            _ => None,
         }
     }
 
@@ -56,6 +95,40 @@ impl ExpressionPath {
         }
         path.location()
     }
+
+    /// The complete generated native chain, with no entity IDs or argument values.
+    pub fn render(&self, broken: bool) -> String {
+        let mut result = self.root.unwrap_or("E::entity(<root>)").to_owned();
+        for (index, segment) in self.segments.iter().enumerate() {
+            match segment {
+                Segment::Property { name, method } => {
+                    result.push('.');
+                    if let Some(method) = method {
+                        result.push_str(method);
+                    } else {
+                        result.push_str("get_");
+                        result.push_str(name);
+                    }
+                    result.push_str("()");
+                }
+                Segment::Index { index, first } => {
+                    if *first {
+                        result.push_str(".first()");
+                    } else {
+                        result.push_str(&format!(".get({index})"));
+                    }
+                }
+                Segment::Operation(call) => {
+                    result.push('.');
+                    result.push_str(call);
+                }
+            }
+            if broken && self.missing == Some(index) {
+                result.push_str("<broken>");
+            }
+        }
+        result
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,14 +136,31 @@ pub struct NotLoadedDiagnostic {
     pub location: ObjectLocation,
     pub break_point: String,
     profile: JsonFieldNamingProfile,
+    attempted_location: ObjectLocation,
+    original_expression: Option<String>,
+    expression_with_broken_point: Option<String>,
 }
 
 impl NotLoadedDiagnostic {
     pub fn new(location: ObjectLocation, break_point: impl Into<String>) -> Self {
         Self {
+            attempted_location: location.clone(),
             location,
             break_point: break_point.into(),
             profile: JsonFieldNamingProfile::default(),
+            original_expression: None,
+            expression_with_broken_point: None,
+        }
+    }
+    pub fn from_path(path: &ExpressionPath, fallback_member: &str, terminal: &'static str) -> Self {
+        let complete = path.operation(terminal);
+        Self {
+            location: path.failure_location(),
+            attempted_location: path.location(),
+            break_point: path.missing_member().unwrap_or(fallback_member).to_owned(),
+            profile: JsonFieldNamingProfile::default(),
+            original_expression: Some(complete.render(false)),
+            expression_with_broken_point: Some(complete.render(true)),
         }
     }
     pub fn with_profile(mut self, profile: JsonFieldNamingProfile) -> Self {
@@ -86,6 +176,15 @@ impl NotLoadedDiagnostic {
             location: self.location.wire_segments(),
             instance_path: self.location.instance_path_with(profile),
             break_point: self.break_point.clone(),
+            attempted_location: self.attempted_location.wire_segments(),
+            attempted_instance_path: self.attempted_location.instance_path_with(profile),
+            break_point_index: self.location.wire_segments().len().saturating_sub(1),
+            original_expression: self.original_expression.clone(),
+            expression_with_broken_point: self.expression_with_broken_point.clone(),
+            suggested_fix: PreloadGuidance {
+                action: "preload",
+                location: self.location.wire_segments(),
+            },
         }
     }
 }
@@ -97,6 +196,18 @@ pub struct WireNotLoadedDiagnostic {
     pub location: Vec<WireLocationSegment>,
     pub instance_path: String,
     pub break_point: String,
+    pub attempted_location: Vec<WireLocationSegment>,
+    pub attempted_instance_path: String,
+    pub break_point_index: usize,
+    pub original_expression: Option<String>,
+    pub expression_with_broken_point: Option<String>,
+    pub suggested_fix: PreloadGuidance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PreloadGuidance {
+    pub action: &'static str,
+    pub location: Vec<WireLocationSegment>,
 }
 
 impl std::fmt::Display for NotLoadedDiagnostic {
@@ -106,7 +217,11 @@ impl std::fmt::Display for NotLoadedDiagnostic {
             "TeaQLNotLoadedError: access_path={} break_point={} — select the missing field or relation",
             self.location.native_path(),
             self.break_point
-        )
+        )?;
+        if let Some(expression) = &self.expression_with_broken_point {
+            write!(f, " expression={expression}")?;
+        }
+        Ok(())
     }
 }
 impl std::error::Error for NotLoadedDiagnostic {}
@@ -193,5 +308,62 @@ mod tests {
         assert_eq!(child.location().model_path(), "order_items[2].unit_price");
         assert_eq!(child.failure_location().instance_path(), "/orderItems");
         assert_eq!(child.missing_member(), Some("order_items"));
+    }
+
+    #[test]
+    fn early_failure_retains_suffix_and_marks_only_the_first_repeated_member() {
+        let mut parent = ExpressionPath::root("E::node(<root>)").member("parent");
+        parent.mark_missing();
+        let mut leaf = parent.member("parent").member("user_url");
+        leaf.mark_missing();
+        let wire = NotLoadedDiagnostic::from_path(&leaf, "parent", "eval()").to_wire();
+        assert_eq!(wire.instance_path, "/parent");
+        assert_eq!(wire.attempted_instance_path, "/parent/parent/userUrl");
+        assert_eq!(
+            wire.original_expression.as_deref(),
+            Some("E::node(<root>).get_parent().get_parent().get_user_url().eval()")
+        );
+        assert_eq!(
+            wire.expression_with_broken_point.as_deref(),
+            Some("E::node(<root>).get_parent()<broken>.get_parent().get_user_url().eval()")
+        );
+        assert_eq!(
+            wire.expression_with_broken_point
+                .unwrap()
+                .matches("<broken>")
+                .count(),
+            1
+        );
+        assert_eq!(wire.break_point_index, 0);
+        assert_eq!(wire.suggested_fix.location, wire.location);
+    }
+
+    #[test]
+    fn native_calls_indices_and_operations_do_not_change_canonical_identity() {
+        let mut items = ExpressionPath::root("E::order(<root>)").member("order_items");
+        items.mark_missing();
+        let leaf = items.first().member_as("school_type", "get_school_type_id");
+        let wire = NotLoadedDiagnostic::from_path(&leaf, "order_items", "or_if_null(<fallback>)")
+            .with_profile(JsonFieldNamingProfile::SnakeCase)
+            .to_wire();
+        assert_eq!(wire.attempted_instance_path, "/order_items/0/school_type");
+        assert_eq!(
+            wire.expression_with_broken_point.as_deref(),
+            Some(
+                "E::order(<root>).get_order_items()<broken>.first().get_school_type_id().or_if_null(<fallback>)"
+            )
+        );
+        let size =
+            NotLoadedDiagnostic::from_path(&items.operation("size()"), "order_items", "eval()")
+                .to_wire();
+        assert_eq!(size.attempted_instance_path, "/orderItems");
+        assert_eq!(
+            size.expression_with_broken_point.as_deref(),
+            Some("E::order(<root>).get_order_items()<broken>.size().eval()")
+        );
+        assert_eq!(
+            items.element(12).location().instance_path(),
+            "/orderItems/12"
+        );
     }
 }
