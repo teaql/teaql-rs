@@ -300,6 +300,7 @@ impl SqlIntentRedactions {
                         continue;
                     }
                     Value::Text(text) => text.clone(),
+                    Value::BlobRef(value) => value.as_str().to_owned(),
                     Value::Bool(value) => value.to_string(),
                     Value::I64(value) => value.to_string(),
                     Value::U64(value) => value.to_string(),

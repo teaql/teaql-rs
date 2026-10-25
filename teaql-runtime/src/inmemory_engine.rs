@@ -406,6 +406,7 @@ fn compare_values(a: &Value, b: &Value) -> Ordering {
         (Value::F64(a), Value::F64(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
         (Value::Decimal(a), Value::Decimal(b)) => a.cmp(b),
         (Value::Text(a), Value::Text(b)) => a.cmp(b),
+        (Value::BlobRef(a), Value::BlobRef(b)) => a.cmp(b),
         (Value::Date(a), Value::Date(b)) => a.cmp(b),
         (Value::Timestamp(a), Value::Timestamp(b)) => a.cmp(b),
         // Cross-type numeric comparisons via f64.

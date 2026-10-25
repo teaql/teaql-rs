@@ -53,6 +53,7 @@ impl DynamicPropertyDefinitions {
             Value::F64(_) => declared == DataType::F64,
             Value::Decimal(_) => declared == DataType::Decimal,
             Value::Text(_) => matches!(declared, DataType::Text | DataType::LargeText),
+            Value::BlobRef(_) => false,
             Value::Date(_) => declared == DataType::Date,
             Value::Timestamp(_) => declared == DataType::Timestamp,
             Value::Json(json) => {

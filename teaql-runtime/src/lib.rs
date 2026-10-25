@@ -225,6 +225,7 @@ mod tests {
                     _ => Ok("NUMERIC".to_owned()),
                 },
                 DataType::Text => Ok(format!("VARCHAR({})", property.max_length.unwrap_or(255))),
+                DataType::BlobRef => Ok("VARCHAR(128)".to_owned()),
                 DataType::LargeText => Ok("TEXT".to_owned()),
                 DataType::Json => Ok("JSONB".to_owned()),
                 DataType::Date => Ok("DATE".to_owned()),

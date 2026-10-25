@@ -1,0 +1,45 @@
+{
+  "schema": "teaql.blob-value-cases/v1",
+  "valid": [
+    "blob_a",
+    "blob_AZaz09_-",
+    "blob_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  ],
+  "invalid": [
+    "",
+    "blob_",
+    "BLOB_a",
+    "blob_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    " blob_a",
+    "blob_a ",
+    "blob_a\n",
+    "blob_汉",
+    "blob_a/b",
+    "blob_a.b",
+    "blob_a?sig=1",
+    "/tmp/file.pdf",
+    "https://example.invalid/file.pdf",
+    "application.docx"
+  ],
+  "invalidJson": [
+    0,
+    true,
+    {},
+    [],
+    {
+      "key": "blob_a"
+    }
+  ],
+  "formats": {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "mp4": "video/mp4",
+    "mp3": "audio/mpeg",
+    "doc": "application/msword",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xls": "application/vnd.ms-excel",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "pdf": "application/pdf"
+  }
+}

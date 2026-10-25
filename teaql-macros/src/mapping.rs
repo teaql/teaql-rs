@@ -23,6 +23,15 @@ pub fn from_record_value_tokens_with_lookup(
         };
     }
 
+    if base_type_name(ty).as_deref() == Some("BlobRef") {
+        let decoded = decode_value_tokens(ty, quote! { value }, field_name, entity_name);
+        return quote! {
+            match #lookup {
+                Some(::teaql_core::Value::Null) | None => return Err(::teaql_core::EntityError::new(#entity_name, "BLOB_REFERENCE_INVALID: missing required reference")),
+                Some(value) => #decoded,
+            }
+        };
+    }
     let value_expr = quote! {
         match #lookup {
             Some(::teaql_core::Value::Null) | None => {
@@ -147,6 +156,14 @@ pub fn decode_value_tokens(
             match #value_expr {
                 ::teaql_core::Value::Text(v) => v.clone(),
                 other => return Err(::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: {:?}", #field_name, other))),
+            }
+        },
+        Some("BlobRef") => quote! {
+            match #value_expr {
+                ::teaql_core::Value::BlobRef(v) => v.clone(),
+                ::teaql_core::Value::Text(v) => ::teaql_core::BlobRef::new(v.clone())
+                    .map_err(|_| ::teaql_core::EntityError::new(#entity_name, "BLOB_REFERENCE_INVALID"))?,
+                _ => return Err(::teaql_core::EntityError::new(#entity_name, "BLOB_REFERENCE_INVALID")),
             }
         },
         Some("NaiveDate") => quote! {

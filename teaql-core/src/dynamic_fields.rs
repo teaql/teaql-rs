@@ -410,6 +410,7 @@ fn validate_field(
         Value::F64(_) => declared == DataType::F64,
         Value::Decimal(_) => declared == DataType::Decimal,
         Value::Text(_) => matches!(declared, DataType::Text | DataType::LargeText),
+        Value::BlobRef(_) => false,
         Value::Json(_) => declared == DataType::Json,
         Value::Date(_) => declared == DataType::Date,
         Value::Timestamp(_) => declared == DataType::Timestamp,

@@ -252,6 +252,7 @@ pub trait SqlDialect {
                 _ => Ok("NUMERIC".to_owned()),
             },
             DataType::Text => Ok(format!("VARCHAR({})", property.max_length.unwrap_or(255))),
+            DataType::BlobRef => Ok("VARCHAR(128)".to_owned()),
             DataType::LargeText | DataType::Json | DataType::Date | DataType::Timestamp => {
                 Ok("TEXT".to_owned())
             }
@@ -324,6 +325,7 @@ pub trait SqlDialect {
             DataType::Bool => "FALSE",
             DataType::I64 | DataType::U64 | DataType::F64 | DataType::Decimal => "0",
             DataType::Text | DataType::LargeText => "''",
+            DataType::BlobRef => "NULL",
             DataType::Json => "'{}'",
             DataType::Date => "'1970-01-01'",
             DataType::Timestamp => "'1970-01-01 00:00:00Z'",
@@ -335,6 +337,12 @@ pub trait SqlDialect {
         entity: &EntityDescriptor,
         property: &PropertyDescriptor,
     ) -> Result<String, SqlCompileError> {
+        if property.data_type == DataType::BlobRef && !property.nullable {
+            return Err(SqlCompileError::InvalidSchemaShape {
+                property: property.name.clone(),
+                reason: "required BlobRef column needs an explicit data migration".to_owned(),
+            });
+        }
         let mut def = self.column_definition_sql(property)?;
         if !property.nullable && !property.is_id {
             def.push_str(" DEFAULT ");

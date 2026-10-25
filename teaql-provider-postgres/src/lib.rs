@@ -160,6 +160,7 @@ impl SqlDialect for PostgresDialect {
                 _ => Ok("NUMERIC".to_owned()),
             },
             DataType::Text => Ok(format!("VARCHAR({})", property.max_length.unwrap_or(255))),
+            DataType::BlobRef => Ok("VARCHAR(128)".to_owned()),
             DataType::LargeText => Ok("TEXT".to_owned()),
             DataType::Json => Ok("JSONB".to_owned()),
             DataType::Date => Ok("DATE".to_owned()),
@@ -1080,7 +1081,9 @@ fn ensure_postgres_column_compatibility(
         DataType::I64 | DataType::U64 => actual == "bigint",
         DataType::F64 => matches!(actual.as_str(), "double precision" | "real"),
         DataType::Decimal => matches!(actual.as_str(), "numeric" | "decimal"),
-        DataType::Text => matches!(actual.as_str(), "character varying" | "text"),
+        DataType::Text | DataType::BlobRef => {
+            matches!(actual.as_str(), "character varying" | "text")
+        }
         DataType::LargeText => matches!(actual.as_str(), "text" | "character varying"),
         DataType::Json => matches!(actual.as_str(), "jsonb" | "json"),
         DataType::Date => actual == "date",
@@ -3232,6 +3235,7 @@ fn bind_pg(args: &mut PgArgs, value: &Value) -> Result<(), MutationExecutorError
         }
         Value::F64(v) => args.add(*v),
         Value::Decimal(v) => args.add(*v),
+        Value::BlobRef(v) => args.add(v.as_str().to_owned()),
         Value::Text(v) => match try_parse_datetime_from_str(v) {
             Some(dt) => args.add(dt),
             None => args.add(v.clone()),
@@ -3250,7 +3254,9 @@ fn bind_pg(args: &mut PgArgs, value: &Value) -> Result<(), MutationExecutorError
             DataType::I64 | DataType::U64 => args.add(Option::<i64>::None),
             DataType::F64 => args.add(Option::<f64>::None),
             DataType::Decimal => args.add(Option::<Decimal>::None),
-            DataType::Text | DataType::LargeText => args.add(Option::<String>::None),
+            DataType::Text | DataType::LargeText | DataType::BlobRef => {
+                args.add(Option::<String>::None)
+            }
             DataType::Json => args.add(Option::<serde_json::Value>::None),
             DataType::Date => args.add(Option::<NaiveDate>::None),
             DataType::Timestamp => args.add(PgNull),
@@ -3313,6 +3319,18 @@ fn bind_pg_list(args: &mut PgArgs, values: &[Value]) -> Result<(), MutationExecu
                     Value::Decimal(value) => Ok(*value),
                     _ => Err(MutationExecutorError::UnsupportedValue(
                         "mixed decimal list",
+                    )),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            args.add(values);
+        }
+        Value::BlobRef(_) => {
+            let values = values
+                .iter()
+                .map(|value| match value {
+                    Value::BlobRef(value) => Ok(value.as_str().to_owned()),
+                    _ => Err(MutationExecutorError::UnsupportedValue(
+                        "mixed BlobRef list",
                     )),
                 })
                 .collect::<Result<Vec<_>, _>>()?;
