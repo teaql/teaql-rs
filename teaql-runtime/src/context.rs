@@ -39,6 +39,7 @@ use teaql_core::{EntityDescriptor, Value};
 mod json;
 mod locking;
 mod logging;
+mod numeric_validation;
 mod pagination;
 mod transaction;
 pub use locking::RemoteLockProvider;
@@ -1230,6 +1231,7 @@ impl UserContext {
 
         // Custom checkers get the first chance to supply or fix a value.
         self.collect_required_property_results(entity, values, status, location, &mut results);
+        self.collect_floating_property_results(entity, values, location, &mut results);
         if results.is_empty() {
             return Ok(());
         }
@@ -1237,7 +1239,7 @@ impl UserContext {
         Err(RuntimeError::Check(results))
     }
 
-    /// Validate the sparse values that a ledger CREATE will actually insert.
+    /// Validate required/portable scalar values a ledger CREATE actually inserts.
     /// This is intentionally metadata-only: the complete typed graph already
     /// ran Checker/Fix once, and running it again on sparse changes would
     /// misclassify unchanged loaded fields and repeat Fix side effects.
@@ -1255,6 +1257,7 @@ impl UserContext {
             location,
             &mut results,
         );
+        self.collect_floating_property_results(entity, values, location, &mut results);
         if results.is_empty() {
             return Ok(());
         }

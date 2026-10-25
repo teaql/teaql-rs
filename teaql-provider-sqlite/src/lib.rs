@@ -1876,7 +1876,10 @@ fn bind_sqlite_value(value: &Value) -> Result<SqliteValue, MutationExecutorError
         Value::U64(v) => i64::try_from(*v)
             .map(SqliteValue::Integer)
             .map_err(|_| MutationExecutorError::Bind(format!("u64 value {v} exceeds i64 range"))),
-        Value::F64(v) => Ok(SqliteValue::Real(*v)),
+        Value::F64(v) if v.is_finite() => Ok(SqliteValue::Real(*v)),
+        Value::F64(_) => Err(MutationExecutorError::Bind(
+            "non-finite SQL number".to_owned(),
+        )),
         // Bind the canonical numeric spelling. SQLite NUMERIC affinity keeps
         // predicates and aggregates numeric; an application-only text prefix
         // makes range comparisons silently return the wrong result.
@@ -1993,7 +1996,13 @@ fn decode_sqlite_values(
         let value = match value_ref {
             ValueRef::Null => Value::Null,
             ValueRef::Integer(value) => decode_sqlite_integer(value, column),
-            ValueRef::Real(value) => Value::F64(value),
+            ValueRef::Real(value) if value.is_finite() => Value::F64(value),
+            ValueRef::Real(_) => {
+                return Err(MutationExecutorError::Bind(format!(
+                    "non-finite SQLite numeric field {}",
+                    column.name
+                )));
+            }
             ValueRef::Text(value) => decode_sqlite_text(value, column)?,
             ValueRef::Blob(_) => {
                 return Err(MutationExecutorError::UnsupportedColumnType(
@@ -2178,6 +2187,41 @@ mod tests {
     };
     use teaql_macros::{TeaqlEntity, teaql_entity};
     use teaql_runtime::{GraphNode, InMemoryMetadataStore};
+
+    #[test]
+    fn finite_float_bind_rejects_nonfinite_numbers_instead_of_silent_null() {
+        for number in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let error = bind_sqlite_value(&Value::F64(number))
+                .expect_err("non-finite SQL values must fail binding");
+            assert!(error.to_string().contains("non-finite"));
+        }
+    }
+
+    #[test]
+    fn finite_float_legacy_nonfinite_real_read_has_an_explicit_column_error() {
+        let connection = Connection::open_in_memory().unwrap();
+        for number in [f64::INFINITY, f64::NEG_INFINITY] {
+            // Low-level corruption oracle, not a replacement business mutation.
+            let mut statement = connection.prepare("SELECT ? AS required_double").unwrap();
+            let columns = statement_columns(&statement);
+            let mut rows = statement.query([number]).unwrap();
+            let row = rows.next().unwrap().unwrap();
+            let error = decode_sqlite_values(row, &columns)
+                .expect_err("legacy infinity must not become JSON null");
+            assert!(error.to_string().contains("required_double"));
+        }
+    }
+
+    #[test]
+    fn finite_float_binding_preserves_legal_numbers_and_null() {
+        for number in [0.0, -0.0, 1.5, -3.5, f64::MIN_POSITIVE, f64::MAX] {
+            let SqliteValue::Real(actual) = bind_sqlite_value(&Value::F64(number)).unwrap() else {
+                panic!("not a real number")
+            };
+            assert_eq!(actual.to_bits(), number.to_bits());
+        }
+        assert_eq!(bind_sqlite_value(&Value::Null).unwrap(), SqliteValue::Null);
+    }
 
     #[teaql_entity]
     #[derive(Debug, TeaqlEntity)]
