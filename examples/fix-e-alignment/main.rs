@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex};
 use teaql_core::{Entity, Value};
 use teaql_runtime::FixedBusinessClock;
 mod loading_probe;
+mod ownership_probe;
+mod paged_ownership;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -222,6 +224,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(json["emptyItemCount"], serde_json::json!(0));
     println!("GENERATED_EMPTY_SUM_PASS language=rust present=true value=null");
     loading_probe::verify(&context, id).await?;
+    ownership_probe::verify(&context).await?;
     println!(
         "FIX_E_EXAMPLE={}",
         serde_json::json!({"language":"rust", "passed":true,
