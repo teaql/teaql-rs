@@ -62,13 +62,16 @@ impl SqlTransport for Transport {
         unreachable!()
     }
 }
-fn input(capture: bool) -> (CompiledQuery, QueryRequest) {
-    let entity = EntityDescriptor::new("Customer")
+fn fixture_entity() -> EntityDescriptor {
+    EntityDescriptor::new("Customer")
         .property(teaql_core::PropertyDescriptor::new(
             "name",
             teaql_core::DataType::Text,
         ))
-        .audit_mask_fields(vec!["name".into()]);
+        .audit_mask_fields(vec!["name".into()])
+}
+fn input(capture: bool) -> (CompiledQuery, QueryRequest) {
+    let entity = fixture_entity();
     let query = SelectQuery::new("Customer")
         .filter(Expr::eq("name", "Riverside"))
         .limit(10)
@@ -133,9 +136,17 @@ fn check(entries: &Entries, outcome: SqlExecutionOutcome) {
 async fn failed_query_releases_resources_and_keeps_original_error() {
     let (transport, entries, observer) = fixture(Mode::Failure, false);
     let (compiled, request) = input(true);
-    let error = execute_compiled_query(&Dialect, &transport, compiled, request, Some(observer))
-        .await
-        .unwrap_err();
+    let entity = fixture_entity();
+    let error = execute_compiled_query(
+        &Dialect,
+        &transport,
+        &entity,
+        compiled,
+        request,
+        Some(observer),
+    )
+    .await
+    .unwrap_err();
     assert!(
         matches!(error, SqlExecutorError::Transport(ref error) if error.to_string() == "original driver failure")
     );
@@ -145,9 +156,17 @@ async fn failed_query_releases_resources_and_keeps_original_error() {
 async fn observer_panic_cannot_replace_driver_error() {
     let (transport, entries, observer) = fixture(Mode::Failure, true);
     let (compiled, request) = input(true);
-    let error = execute_compiled_query(&Dialect, &transport, compiled, request, Some(observer))
-        .await
-        .unwrap_err();
+    let entity = fixture_entity();
+    let error = execute_compiled_query(
+        &Dialect,
+        &transport,
+        &entity,
+        compiled,
+        request,
+        Some(observer),
+    )
+    .await
+    .unwrap_err();
     assert!(
         matches!(error, SqlExecutorError::Transport(ref error) if error.to_string() == "original driver failure")
     );
@@ -157,9 +176,11 @@ async fn observer_panic_cannot_replace_driver_error() {
 fn dropping_pending_query_is_cancelled_with_unknown_count() {
     let (transport, entries, observer) = fixture(Mode::Pending, false);
     let (compiled, request) = input(true);
+    let entity = fixture_entity();
     let mut future = Box::pin(execute_compiled_query(
         &Dialect,
         &transport,
+        &entity,
         compiled,
         request,
         Some(observer),
@@ -174,9 +195,11 @@ async fn provider_unwind_is_failure_and_releases_resources() {
     use futures_util::FutureExt;
     let (transport, entries, observer) = fixture(Mode::Panic, false);
     let (compiled, request) = input(true);
+    let entity = fixture_entity();
     let result = std::panic::AssertUnwindSafe(execute_compiled_query(
         &Dialect,
         &transport,
+        &entity,
         compiled,
         request,
         Some(observer),
@@ -190,9 +213,17 @@ async fn provider_unwind_is_failure_and_releases_resources() {
 async fn success_returns_metadata_without_duplicate_observer_notification() {
     let (transport, entries, observer) = fixture(Mode::Success, false);
     let (compiled, request) = input(true);
-    let result = execute_compiled_query(&Dialect, &transport, compiled, request, Some(observer))
-        .await
-        .unwrap();
+    let entity = fixture_entity();
+    let result = execute_compiled_query(
+        &Dialect,
+        &transport,
+        &entity,
+        compiled,
+        request,
+        Some(observer),
+    )
+    .await
+    .unwrap();
     assert_eq!(result.metadata.result_count, Some(0));
     assert_eq!(
         result.metadata.sql_log.execution_outcome,
@@ -204,10 +235,18 @@ async fn success_returns_metadata_without_duplicate_observer_notification() {
 async fn disabled_capture_does_not_emit_failure_diagnostic() {
     let (transport, entries, observer) = fixture(Mode::Failure, false);
     let (compiled, request) = input(false);
+    let entity = fixture_entity();
     assert!(
-        execute_compiled_query(&Dialect, &transport, compiled, request, Some(observer))
-            .await
-            .is_err()
+        execute_compiled_query(
+            &Dialect,
+            &transport,
+            &entity,
+            compiled,
+            request,
+            Some(observer)
+        )
+        .await
+        .is_err()
     );
     assert!(entries.lock().unwrap().is_empty());
     assert!(transport.released.load(Ordering::SeqCst));

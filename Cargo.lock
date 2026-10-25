@@ -3744,6 +3744,7 @@ dependencies = [
  "teaql-macros",
  "teaql-runtime",
  "teaql-sql",
+ "tempfile",
 ]
 
 [[package]]

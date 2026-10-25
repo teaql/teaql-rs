@@ -972,12 +972,14 @@ fn database_allocated_explicit_transaction_delivers_audit_only_after_commit() {
         let saved = context
             .execute_in_transaction::<Executor, _, _>(|transaction| {
                 Box::pin(async move {
-                    let saved = transaction
-                        .save_audited(
-                            new_root(0, "explicit database root")
-                                .audit_as("explicit root allocation"),
-                        )
-                        .await?;
+                    let save = transaction.save_audited(
+                        new_root(0, "explicit database root").audit_as("explicit root allocation"),
+                    );
+                    assert!(
+                        std::mem::size_of_val(&save) <= 16 * 1024,
+                        "one small entity must not embed the entire provider save future"
+                    );
+                    let saved = save.await?;
                     assert_eq!(saved.id, 501);
                     assert!(capture_in_work.audits.lock().unwrap().is_empty());
                     Ok(saved)

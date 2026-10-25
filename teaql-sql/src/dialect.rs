@@ -1170,7 +1170,7 @@ pub trait SqlDialect {
                 .iter()
                 .map(|aggregate| {
                     let field = self.resolve_aggregate_field(entity, aggregate)?;
-                    let call = self.aggregate_call_sql(aggregate.function, &field);
+                    let call = self.aggregate_call_sql_for(entity, aggregate, &field)?;
                     Ok(format!("{call} AS {}", self.quote_ident(&aggregate.alias)))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
@@ -1181,6 +1181,17 @@ pub trait SqlDialect {
     fn aggregate_call_sql(&self, function: AggregateFunction, field: &str) -> String {
         let function_sql = self.aggregate_function_sql(function);
         format!("{function_sql}({field})")
+    }
+
+    /// Provider-specific aggregate spelling, with access to the modeled field
+    /// type before a driver can silently coerce an exact value.
+    fn aggregate_call_sql_for(
+        &self,
+        _entity: &EntityDescriptor,
+        aggregate: &Aggregate,
+        field: &str,
+    ) -> Result<String, SqlCompileError> {
+        Ok(self.aggregate_call_sql(aggregate.function, field))
     }
 
     fn aggregate_function_sql(&self, function: AggregateFunction) -> &'static str {
