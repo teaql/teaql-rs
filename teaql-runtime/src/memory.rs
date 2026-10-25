@@ -203,7 +203,7 @@ where
             .collect::<Vec<_>>();
 
         if ids.is_empty() {
-            let value = default_aggregate_value(aggregate.single_result);
+            let value = default_aggregate_value(aggregate);
             for parent in parent_rows.iter_mut() {
                 parent.insert(aggregate.alias.clone(), value.clone());
             }
@@ -244,8 +244,8 @@ where
             let value = parent
                 .get(&relation.local_key)
                 .and_then(|local_value| buckets.get(&local_graph_identity_key(local_value)))
-                .map(|rows| local_relation_aggregate_value(rows, aggregate.single_result))
-                .unwrap_or_else(|| default_aggregate_value(aggregate.single_result));
+                .map(|rows| local_relation_aggregate_value(rows, aggregate))
+                .unwrap_or_else(|| default_aggregate_value(aggregate));
             parent.insert(aggregate.alias.clone(), value);
         }
 
@@ -434,8 +434,11 @@ where
     }
 }
 
-fn default_aggregate_value(single_result: bool) -> Value {
-    match single_result {
+fn default_aggregate_value(aggregate: &RelationAggregate) -> Value {
+    match aggregate.single_result {
+        true if matches!(aggregate.query.aggregates.as_slice(), [value] if value.function == AggregateFunction::Sum) => {
+            Value::Null
+        }
         true => Value::U64(0),
         false => Value::List(Vec::new()),
     }
@@ -448,12 +451,12 @@ fn aggregate_alias(single_result: bool, alias: &str) -> String {
     }
 }
 
-fn local_relation_aggregate_value(rows: &[CompactRow], single_result: bool) -> Value {
-    match single_result {
+fn local_relation_aggregate_value(rows: &[CompactRow], aggregate: &RelationAggregate) -> Value {
+    match aggregate.single_result {
         true => rows
             .first()
             .map(local_single_relation_aggregate_value)
-            .unwrap_or(Value::U64(0)),
+            .unwrap_or_else(|| default_aggregate_value(aggregate)),
         false => Value::List(
             rows.iter()
                 .cloned()
@@ -823,7 +826,12 @@ fn numeric_sum(rows: &[&CompactRow], field: &str) -> Result<Value, MemoryDataSer
     let mut decimal_sum = Decimal::ZERO;
     let mut integer_sum: i128 = 0;
     let mut saw_decimal = false;
+    let mut saw_value = false;
     for value in rows.iter().filter_map(|row| row.get(field)) {
+        if matches!(value, Value::Null) {
+            continue;
+        }
+        saw_value = true;
         match value {
             Value::I64(value) => {
                 integer_sum += i128::from(*value);
@@ -848,6 +856,9 @@ fn numeric_sum(rows: &[&CompactRow], field: &str) -> Result<Value, MemoryDataSer
                 )));
             }
         }
+    }
+    if !saw_value {
+        return Ok(Value::Null);
     }
     match (saw_decimal, integer_sum >= 0) {
         (true, _) => Ok(Value::Decimal(decimal_sum)),
@@ -1057,6 +1068,111 @@ fn local_graph_identity_key(value: &Value) -> String {
         Value::Object(_) => "o".to_owned(),
         Value::List(_) => "l".to_owned(),
         Value::TypedNull(_) => "null".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod empty_aggregate_tests {
+    use super::*;
+
+    fn row(value: Value) -> CompactRow {
+        CompactRow::from_map(BTreeMap::from([("amount".into(), value)]))
+    }
+
+    #[test]
+    fn empty_aggregate_scalar_null_and_zero_are_distinct() {
+        for (values, count, sum) in [
+            (vec![], 0, Value::Null),
+            (vec![Value::Null, Value::Null], 0, Value::Null),
+            (
+                vec![Value::Null, Value::I64(2), Value::I64(-1)],
+                2,
+                Value::U64(1),
+            ),
+            (vec![Value::I64(4), Value::I64(-4)], 2, Value::U64(0)),
+        ] {
+            let rows: Vec<_> = values.into_iter().map(row).collect();
+            let query = SelectQuery::new("Line")
+                .aggregate(Aggregate::count("count"))
+                .aggregate(Aggregate::count_field("amount", "countValue"))
+                .aggregate(Aggregate::sum("amount", "sum"));
+            let result = aggregate_rows(&query, &rows).unwrap();
+            assert_eq!(result.len(), 1);
+            assert_eq!(result[0].get("count"), Some(&Value::U64(rows.len() as u64)));
+            assert_eq!(result[0].get("countValue"), Some(&Value::U64(count)));
+            assert_eq!(result[0].get("sum"), Some(&sum));
+            let json = Value::object(result[0].clone().into_map()).to_json_value();
+            assert!(json.as_object().unwrap().contains_key("sum"));
+            assert_eq!(json["sum"].is_null(), sum == Value::Null);
+            if sum == Value::Null {
+                let fallback = result[0].get("sum").and_then(Value::try_i64).unwrap_or(0);
+                assert_eq!(fallback, 0);
+                assert_eq!(result[0].get("sum"), Some(&Value::Null));
+            }
+        }
+        let grouped = SelectQuery::new("Line")
+            .group_by("amount")
+            .aggregate(Aggregate::sum("amount", "sum"));
+        assert!(aggregate_rows(&grouped, &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn empty_aggregate_memory_relation_bucket_preserves_present_null() {
+        use teaql_core::{DataType, EntityDescriptor, PropertyDescriptor, RelationDescriptor};
+        let metadata = InMemoryMetadataStore::new()
+            .with_entity(
+                EntityDescriptor::new("Owner")
+                    .property(PropertyDescriptor::new("id", DataType::U64).id())
+                    .relation(
+                        RelationDescriptor::new("lines", "Line")
+                            .local_key("id")
+                            .foreign_key("owner")
+                            .many(),
+                    ),
+            )
+            .with_entity(
+                EntityDescriptor::new("Line")
+                    .property(PropertyDescriptor::new("owner", DataType::U64))
+                    .property(PropertyDescriptor::new("amount", DataType::I64)),
+            );
+        let service = MemoryDataService::new(metadata)
+            .with_rows(
+                "Owner",
+                (1..=3)
+                    .map(|id| CompactRow::from_map(BTreeMap::from([("id".into(), Value::U64(id))])))
+                    .collect(),
+            )
+            .with_rows(
+                "Line",
+                vec![
+                    CompactRow::from_map(BTreeMap::from([
+                        ("owner".into(), Value::U64(1)),
+                        ("amount".into(), Value::Null),
+                    ])),
+                    CompactRow::from_map(BTreeMap::from([
+                        ("owner".into(), Value::U64(2)),
+                        ("amount".into(), Value::I64(0)),
+                    ])),
+                ],
+            );
+        let rows = service
+            .fetch_all_with_relation_aggregates(
+                &SelectQuery::new("Owner"),
+                &[
+                    RelationAggregate::new(
+                        "lines",
+                        "total",
+                        SelectQuery::new("Line").aggregate(Aggregate::sum("amount", "sum")),
+                        true,
+                    ),
+                    RelationAggregate::new("lines", "count", SelectQuery::new("Line"), true),
+                ],
+            )
+            .unwrap();
+        assert_eq!(rows[0].get("total"), Some(&Value::Null));
+        assert_eq!(rows[1].get("total"), Some(&Value::U64(0)));
+        assert_eq!(rows[2].get("total"), Some(&Value::Null));
+        assert_eq!(rows[2].get("count"), Some(&Value::U64(0)));
     }
 }
 

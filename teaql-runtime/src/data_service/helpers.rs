@@ -10,8 +10,11 @@ use crate::{DataServiceError, GraphNode, RuntimeError};
 
 use super::{AggregationCacheBackend, RelationLoadPlan};
 
-pub(super) fn default_aggregate_value(single_result: bool) -> Value {
-    match single_result {
+pub(super) fn default_aggregate_value(aggregate: &RelationAggregate) -> Value {
+    match aggregate.single_result {
+        true if matches!(aggregate.query.aggregates.as_slice(), [value] if value.function == teaql_core::AggregateFunction::Sum) => {
+            Value::Null
+        }
         true => Value::U64(0),
         false => Value::List(Vec::new()),
     }
@@ -179,12 +182,11 @@ pub(super) fn ensure_projection(query: &mut SelectQuery, field: &str) {
 
 pub(super) fn attach_empty_relation_aggregate(
     parent_rows: &mut [CompactRow],
-    alias: &str,
-    single_result: bool,
+    aggregate: &RelationAggregate,
 ) {
-    let value = default_aggregate_value(single_result);
+    let value = default_aggregate_value(aggregate);
     for parent in parent_rows {
-        parent.insert(alias.to_owned(), value.clone());
+        parent.insert(aggregate.alias.clone(), value.clone());
     }
 }
 
@@ -246,18 +248,21 @@ pub(super) fn attach_relation_aggregate_rows(
         let value = keys
             .get(&plan.local_key)
             .and_then(|local_value| buckets.get(&graph_identity_key(local_value)))
-            .map(|rows| relation_aggregate_value(rows, aggregate.single_result))
-            .unwrap_or_else(|| default_aggregate_value(aggregate.single_result));
+            .map(|rows| relation_aggregate_value(rows, aggregate))
+            .unwrap_or_else(|| default_aggregate_value(aggregate));
         parent.insert(aggregate.alias.clone(), value);
     }
 }
 
-pub(super) fn relation_aggregate_value(rows: &[CompactRow], single_result: bool) -> Value {
-    match single_result {
+pub(super) fn relation_aggregate_value(
+    rows: &[CompactRow],
+    aggregate: &RelationAggregate,
+) -> Value {
+    match aggregate.single_result {
         true => rows
             .first()
             .map(single_relation_aggregate_value)
-            .unwrap_or(Value::U64(0)),
+            .unwrap_or_else(|| default_aggregate_value(aggregate)),
         false => Value::List(
             rows.iter()
                 .cloned()
@@ -271,6 +276,55 @@ pub(super) fn single_relation_aggregate_value(row: &CompactRow) -> Value {
     match row.len() {
         1 => row.values().next().cloned().unwrap_or(Value::Null),
         _ => Value::object(row.clone().into_map()),
+    }
+}
+
+#[cfg(test)]
+mod empty_aggregate_tests {
+    use super::*;
+    use teaql_core::Aggregate;
+
+    #[test]
+    fn empty_aggregate_sql_bucket_does_not_invent_sum_zero() {
+        let plan = RelationLoadPlan {
+            parent_entity: "Owner".into(),
+            relation_name: "lines".into(),
+            path: "lines".into(),
+            target_entity: "Line".into(),
+            local_key: "id".into(),
+            foreign_key: "owner".into(),
+            many: true,
+            query: None,
+            children: vec![],
+            operation: None,
+        };
+        for (query, expected) in [
+            (SelectQuery::new("Line"), Value::U64(0)),
+            (
+                SelectQuery::new("Line").aggregate(Aggregate::count("value")),
+                Value::U64(0),
+            ),
+            (
+                SelectQuery::new("Line").aggregate(Aggregate::sum("amount", "value")),
+                Value::Null,
+            ),
+        ] {
+            let keys = vec![CompactRow::from_map(BTreeMap::from([(
+                "id".into(),
+                Value::U64(1),
+            )]))];
+            let mut parents = keys.clone();
+            let aggregate = RelationAggregate::new("lines", "total", query, true);
+            attach_relation_aggregate_rows(&mut parents, &keys, &plan, &aggregate, vec![]);
+            assert_eq!(parents[0].get("total"), Some(&expected));
+            assert!(
+                Value::object(parents[0].clone().into_map())
+                    .to_json_value()
+                    .as_object()
+                    .unwrap()
+                    .contains_key("total")
+            );
+        }
     }
 }
 

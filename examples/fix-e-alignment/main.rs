@@ -69,6 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .try_eval()
         .unwrap_err();
     let wire = error.to_wire();
+    let mut human_messages = vec![error.to_string()];
     assert_eq!(wire.instance_path, "/tenant");
     assert_eq!(wire.attempted_instance_path, "/tenant/name");
     assert_eq!(
@@ -90,8 +91,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get_tenant()
         .get_name()
         .try_eval()
-        .unwrap_err()
-        .to_wire();
+        .unwrap_err();
+    human_messages.push(repeated_error.to_string());
+    let repeated_error = repeated_error.to_wire();
     assert_eq!(repeated_error.instance_path, "/tenant");
     assert_eq!(
         repeated_error.attempted_instance_path,
@@ -108,8 +110,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get(2)
         .get_product_name()
         .try_eval()
-        .unwrap_err()
-        .to_wire();
+        .unwrap_err();
+    human_messages.push(list_error.to_string());
+    let list_error = list_error.to_wire();
     assert_eq!(list_error.instance_path, "/orderItemList");
     assert_eq!(
         list_error.attempted_instance_path,
@@ -135,6 +138,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or("");
     assert!(message.contains("get_contact_phone()<broken>.or_if_null(<fallback>)"));
     assert!(!message.contains("PRIVATE-FALLBACK"));
+    assert!(
+        !message.contains("diagnostic:"),
+        "panic is the human view, not a JSON envelope"
+    );
+    assert!(
+        !message.contains("\"instancePath\""),
+        "structured diagnostics remain on try_eval/to_wire"
+    );
+    assert_eq!(
+        message.matches("<broken>").count(),
+        1,
+        "human panic has one positional breakpoint"
+    );
+    let panic_human = message.to_owned();
 
     context.set_business_clock(FixedBusinessClock::new(second));
     let rows = Q::purchase_orders()
@@ -181,11 +198,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .as_deref(),
         Some("5550101")
     );
+    // Exact methods come from current purchase_order.order_item_list Assist.
+    let aggregates = Q::purchase_orders_minimal()
+        .with_id_is(id)
+        .limit(1)
+        .sum_unit_price_of_order_items_as(
+            "emptyItemSum",
+            Q::order_items_minimal()
+                .limit(10)
+                .comment("sum order item prices"),
+        )
+        .count_order_items_as("emptyItemCount")
+        .comment("load order with its selected total")
+        .purpose("verify empty SUM through generated Q and E")
+        .execute_for_list(&context)
+        .await?;
+    let aggregate = aggregates.first().expect("aggregate owner remains visible");
+    assert_eq!(E::purchase_order(aggregate).get_id().eval(), Some(id));
+    let json = aggregate.clone().into_json();
+    assert!(json.as_object().unwrap().contains_key("emptyItemSum"));
+    assert!(json["emptyItemSum"].is_null());
+    assert_eq!(json["emptyItemCount"], serde_json::json!(0));
+    println!("GENERATED_EMPTY_SUM_PASS language=rust present=true value=null");
     println!(
         "FIX_E_EXAMPLE={}",
         serde_json::json!({"language":"rust", "passed":true,
         "normalGeneratedSave":true, "createTimePreserved":true, "updateTimeAdvanced":true,
-        "declaredContextRootInjected":true, "diagnostics":[wire,repeated_error,list_error]})
+        "declaredContextRootInjected":true, "diagnostics":[wire,repeated_error,list_error],
+        "humanMessages":human_messages,"panicHuman":panic_human})
     );
     Ok(())
 }
