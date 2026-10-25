@@ -24,6 +24,8 @@ const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "teaql-rust-fix-e-build-")
 const report = {schema: "teaql.rust-fix-e-example/v1", passed: false, rounds: [], sameDatabase: true,
   localRuntime: repo, databaseRetained: true, sharedCacheRemoved: false};
 const quote = JSON.stringify;
+const {createOwnedRunner, ownedBytes} = require('./owned-command.cjs'), runner = createOwnedRunner();
+async function main() {
 try {
   assert(fs.statfsSync(scratch).bavail * fs.statfsSync(scratch).bsize > 8 * 1024 ** 3, "8 GiB free build space required");
   const m = fingerprint(); report.modelSha256 = m.modelSha256;
@@ -41,21 +43,22 @@ try {
   const env = {...process.env, CARGO_TARGET_DIR: path.join(scratch, "target"), CARGO_INCREMENTAL: "0",
     CARGO_PROFILE_DEV_DEBUG: "0", CARGO_PROFILE_TEST_DEBUG: "0", CARGO_BUILD_JOBS: "2",
     TEAQL_FIX_E_DB: path.join(evidence, "fixture.sqlite")};
-  function run(command, log, timeout) {
+  async function run(command, log, timeout) {
     const fd = fs.openSync(path.join(evidence, log), "w"); let result;
-    try { result = cp.spawnSync(command[0], command.slice(1), {cwd: scratch, env, timeout, stdio: ["ignore", fd, fd]}); }
+    try { result = await runner.run(command, {cwd: scratch, env, timeout, stdio: ["ignore", fd, fd]}); }
     finally { fs.closeSync(fd); }
     const bytes = fs.readFileSync(path.join(evidence, log));
     report.rounds.push({command, exitCode: result.status, signal: result.signal, log, logSha256: sha(bytes)});
+    if (result.status !== 0) process.exitCode = result.status || 1;
     assert.equal(result.status, 0, bytes.toString().slice(-12000));
     return bytes.toString();
   }
-  run(['cargo', 'build', '--offline', '--manifest-path', path.join(scratch, 'Cargo.toml')], 'build.log', 540000);
+  await run(['cargo', 'build', '--offline', '--manifest-path', path.join(scratch, 'Cargo.toml')], 'build.log', 540000);
   fs.copyFileSync(path.join(scratch, 'Cargo.lock'), path.join(evidence, 'consumer-Cargo.lock'));
   const binary = path.join(scratch, 'target/debug/teaql-fix-e-example');
   report.binarySha256 = sha(fs.readFileSync(binary));
   for (const round of [1, 2]) {
-    const log = run([binary], 'round-' + round + '.log', 90000);
+    const log = await run([binary], 'round-' + round + '.log', 90000);
     for (const marker of ['FIX_E_EXAMPLE=', 'CORE_LOAD_EXAMPLE=', 'CORE_MUTATION_OWNERSHIP=', 'CORE_MUTATION_PAGING=']) {
       const values = log.split(/\r?\n/).filter(line => line.startsWith(marker)).map(line => JSON.parse(line.slice(marker.length)));
       assert.equal(values.length, 1, marker); assert.equal(values[0].passed, true, marker);
@@ -65,11 +68,15 @@ try {
   report.databaseSha256 = sha(fs.readFileSync(path.join(evidence, 'fixture.sqlite')));
   report.passed = true;
   console.log('PASS Rust retained Fix/E/loading/ownership example twice on one database');
-} catch (error) { console.error(error.stack); process.exitCode = 1; }
+} catch (error) { console.error(error.stack); process.exitCode ||= 1; }
 finally {
   // Every spawnSync child has exited before this exact owned build is removed.
-  report.disposedOwnedBytes = Number(cp.execFileSync('du', ['-sb', scratch], {encoding: 'utf8'}).split(/\s/)[0]);
-  fs.rmSync(scratch, {recursive: true}); report.scratchRemoved = !fs.existsSync(scratch);
+  report.disposedOwnedBytes = runner.safeToClean ? ownedBytes(scratch) : 0;
+  if (runner.safeToClean) fs.rmSync(scratch, {recursive: true});
+  else report.unsafeBuildRetention = {path: scratch, processGroup: runner.unsafeGroup};
+  report.scratchRemoved = !fs.existsSync(scratch); runner.dispose();
   fs.writeFileSync(path.join(evidence, 'receipt.json'), JSON.stringify(report, null, 2) + '\n');
   console.log('Retained compact example evidence: ' + evidence);
 }
+}
+main().catch(error => { console.error(error.stack); process.exitCode ||= 1; });
