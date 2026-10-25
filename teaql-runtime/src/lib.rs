@@ -43,6 +43,16 @@ mod telemetry_sql;
 mod telemetry_standard;
 mod telemetry_startup;
 mod telemetry_stream;
+mod view_preparation;
+
+pub use view_preparation::{
+    AcceptedDocumentView, AuthorizedResponseGraph, BlobViewProjection, BlobViewRead,
+    BusinessCompletion, CurrentBlobViewValidation, CurrentDocumentViewValidation, DocumentContext,
+    DocumentView, DocumentViewError, DocumentViewProjection, PreparedView, ViewAuthorization,
+    ViewBlobContributor, ViewBlobTarget, ViewCachePolicy, ViewDocumentContributor, ViewEntity,
+    ViewEntityTarget, ViewErrorCode, ViewField, ViewFieldDecision, ViewIdentity, ViewInput,
+    ViewMode, ViewOptions, ViewPath, ViewPathSegment, ViewPreparationError, ViewPreparationService,
+};
 
 pub use business_id::{
     BUSINESS_ID_V1_ALPHABET, BUSINESS_ID_V1_WIDTH, BusinessClock, BusinessDate,

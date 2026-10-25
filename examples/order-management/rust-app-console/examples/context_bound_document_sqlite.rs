@@ -12,11 +12,14 @@ use order_management_service_core::{
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use teaql_runtime::{
-    AcceptedContextualDocument, ContextBoundDocumentService, ContextualDocument,
-    DocumentAcceptRequest, DocumentEntitySnapshot, DocumentMutationKind, DocumentOpenRequest,
-    DocumentRelationCompleteness, DocumentRelationSnapshot, DocumentRoundTripError,
-    DocumentSnapshot, ReferenceDocumentScope, ReferenceIdentity, RoundTripReferenceError,
-    SubmittedContextualDocument, TrustedReferencePrincipal, UserContext,
+    AcceptedContextualDocument, BusinessCompletion, ContextBoundDocumentService,
+    ContextualDocument, DocumentAcceptRequest, DocumentEntitySnapshot, DocumentMutationKind,
+    DocumentOpenRequest, DocumentRelationCompleteness, DocumentRelationSnapshot,
+    DocumentRoundTripError, DocumentSnapshot, PreparedView, ReferenceDocumentScope,
+    ReferenceIdentity, RoundTripReferenceError, SubmittedContextualDocument,
+    TrustedReferencePrincipal, UserContext, VerifiedDocumentSnapshot, ViewAuthorization,
+    ViewEntityTarget, ViewErrorCode, ViewFieldDecision, ViewIdentity, ViewInput, ViewOptions,
+    ViewPath, ViewPreparationService,
 };
 use teaql_secure_document_reference::{
     ContextBoundReferenceRuntime, DeploymentProfile, ReferenceKey, StaticReferenceKeyProvider,
@@ -182,6 +185,27 @@ impl GeneratedOrderDocumentService {
 
 #[async_trait]
 impl ContextBoundDocumentService for GeneratedOrderDocumentService {
+    fn supports_view_preparation(&self) -> bool {
+        true
+    }
+
+    async fn validate_prepared_document(
+        &self,
+        _: &UserContext,
+        principal: &TrustedReferencePrincipal,
+        verified: &VerifiedDocumentSnapshot,
+    ) -> Result<(), DocumentRoundTripError> {
+        self.require_access(principal)?;
+        if verified.snapshot.model_fingerprint != MODEL_FINGERPRINT
+            || verified.snapshot.scope.purpose != PURPOSE
+            || verified.snapshot.scope.aggregate_type != "CustomerOrder"
+            || principal.domain_root_type != "Customer"
+        {
+            return Err(DocumentRoundTripError::authorization_required());
+        }
+        Ok(())
+    }
+
     async fn open_document(
         &self,
         context: &UserContext,
@@ -433,12 +457,59 @@ async fn application_context(
         database_url: database_url.to_owned(),
     })
     .await?;
-    Ok(context
+    let mut context = context
         .with_round_trip_reference_runtime(reference_runtime(permissions, customer_id))
         .with_trusted_reference_principal(
             TrustedReferencePrincipal::new("oidc", subject, "Customer", customer_id).unwrap(),
         )
-        .with_context_bound_document_service(service))
+        .with_context_bound_document_service(service);
+    ViewPreparationService::new(Arc::new(DocumentPresentation)).install_into(&mut context)?;
+    Ok(context)
+}
+
+struct DocumentPresentation;
+impl ViewAuthorization for DocumentPresentation {
+    fn identity(&self, context: &UserContext) -> Result<ViewIdentity, ViewErrorCode> {
+        let principal = context
+            .trusted_reference_principal()
+            .map_err(|_| ViewErrorCode::AccessDenied)?;
+        ViewIdentity::new(
+            &principal.authentication_realm,
+            &principal.subject,
+            format!(
+                "{}:{}",
+                principal.domain_root_type, principal.domain_root_id
+            ),
+        )
+    }
+    fn can_read_entity(
+        &self,
+        _: &UserContext,
+        _: &ViewEntityTarget,
+        _: &ViewPath,
+    ) -> Result<bool, ViewErrorCode> {
+        Ok(false)
+    }
+    fn field(
+        &self,
+        _: &UserContext,
+        _: &ViewEntityTarget,
+        _: &str,
+        _: &ViewPath,
+    ) -> Result<ViewFieldDecision, ViewErrorCode> {
+        Ok(ViewFieldDecision::Hidden)
+    }
+}
+
+fn contextual_document(prepared: &PreparedView) -> ContextualDocument {
+    let credentials = prepared
+        .document_credentials()
+        .expect("governed credentials");
+    ContextualDocument {
+        business_id: credentials["businessId"].as_str().unwrap().into(),
+        document_token: credentials["documentToken"].as_str().unwrap().into(),
+        body: prepared.value().clone(),
+    }
 }
 
 struct SeededIds {
@@ -546,8 +617,8 @@ async fn seed(context: &UserContext) -> Result<SeededIds, Box<dyn std::error::Er
 }
 
 async fn open(context: &UserContext) -> ContextualDocument {
-    context
-        .open_document(
+    let source = context
+        .open_document_for_view(
             DocumentOpenRequest::new(
                 "CustomerOrder",
                 ORDER_NUMBER,
@@ -557,7 +628,20 @@ async fn open(context: &UserContext) -> ContextualDocument {
             .unwrap(),
         )
         .await
-        .unwrap()
+        .unwrap();
+    let options = ViewOptions::governed();
+    let prepared = context
+        .prepare_view(ViewInput::Document(&source), &options)
+        .await
+        .unwrap();
+    assert!(std::ptr::eq(
+        context
+            .reuse_prepared_view(&prepared, &options)
+            .await
+            .unwrap(),
+        &prepared
+    ));
+    contextual_document(&prepared)
 }
 
 fn submit(document: &ContextualDocument, command_id: &str, body: Value) -> DocumentAcceptRequest {
@@ -661,9 +745,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     connection.execute_batch("DROP TRIGGER fail_document_line_update")?;
 
-    let accepted = restarted
-        .accept_document(submit(&original, "rollback-retry", update_body))
+    let accepted_source = restarted
+        .accept_document_for_view(submit(&original, "rollback-retry", update_body))
         .await?;
+    let wrong_options = ViewOptions::read_only().after_commit();
+    let presentation_error = restarted
+        .prepare_view(
+            ViewInput::Document(&accepted_source.document),
+            &wrong_options,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        presentation_error.business_completion,
+        BusinessCompletion::Committed
+    );
+    let accepted_options = ViewOptions::governed().after_commit();
+    let accepted_view = restarted
+        .prepare_view(
+            ViewInput::Document(&accepted_source.document),
+            &accepted_options,
+        )
+        .await?;
+    assert!(std::ptr::eq(
+        restarted
+            .reuse_prepared_view(&accepted_view, &accepted_options)
+            .await?,
+        &accepted_view
+    ));
+    let accepted = AcceptedContextualDocument {
+        document: contextual_document(&accepted_view),
+        previous_revision: accepted_source.previous_revision,
+        new_revision: accepted_source.new_revision,
+        changed_entities: accepted_source.changed_entities,
+    };
     assert_eq!((accepted.previous_revision, accepted.new_revision), (1, 2));
     let updated_line = Q::order_lines()
         .with_id_is(ids.first_line_id)
@@ -751,7 +866,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     println!(
-        "CONTEXT_BOUND_SQLITE_QE_PASS order_id={} update_version={} delete_version={} remaining_line_id={}",
+        "CONTEXT_BOUND_SQLITE_QE_PASS VIEW_ADOPTION_PASS order_id={} update_version={} delete_version={} remaining_line_id={}",
         ids.order_id, accepted.new_revision, removed.new_revision, ids.second_line_id
     );
     Ok(())

@@ -142,3 +142,77 @@ async fn governed_service_cannot_execute_without_reference_protection() {
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
+
+struct NoEntityViews;
+impl teaql_runtime::ViewAuthorization for NoEntityViews {
+    fn identity(
+        &self,
+        _: &UserContext,
+    ) -> Result<teaql_runtime::ViewIdentity, teaql_runtime::ViewErrorCode> {
+        teaql_runtime::ViewIdentity::new("oidc", "alice", "Tenant:1")
+    }
+    fn can_read_entity(
+        &self,
+        _: &UserContext,
+        _: &teaql_runtime::ViewEntityTarget,
+        _: &teaql_runtime::ViewPath,
+    ) -> Result<bool, teaql_runtime::ViewErrorCode> {
+        Ok(false)
+    }
+    fn field(
+        &self,
+        _: &UserContext,
+        _: &teaql_runtime::ViewEntityTarget,
+        _: &str,
+        _: &teaql_runtime::ViewPath,
+    ) -> Result<teaql_runtime::ViewFieldDecision, teaql_runtime::ViewErrorCode> {
+        Ok(teaql_runtime::ViewFieldDecision::Hidden)
+    }
+}
+
+#[tokio::test]
+async fn legacy_service_without_view_opt_in_fails_before_open_or_accept() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let authorization = Arc::new(AtomicUsize::new(0));
+    let mut context = UserContext::new().with_trusted_reference_principal(
+        TrustedReferencePrincipal::new("oidc", "alice", "Tenant", 1).unwrap(),
+    );
+    SecureDocumentReferenceModule::new(provider(authorization.clone()))
+        .with_document_service(Arc::new(UnprotectedService(calls.clone())))
+        .install_into(&mut context)
+        .unwrap();
+    teaql_runtime::ViewPreparationService::new(Arc::new(NoEntityViews))
+        .install_into(&mut context)
+        .unwrap();
+    let result = context
+        .open_document_for_view(
+            DocumentOpenRequest::new("Order", "test", "edit", Duration::from_secs(60)).unwrap(),
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(teaql_runtime::DocumentViewError::Presentation(
+            teaql_runtime::ViewPreparationError {
+                code: teaql_runtime::ViewErrorCode::CapabilityMissing,
+                ..
+            }
+        ))
+    ));
+    let request = DocumentAcceptRequest::new(
+        "Order",
+        "edit",
+        teaql_runtime::SubmittedContextualDocument {
+            business_id: "test".into(),
+            document_token: "invalid".into(),
+            command_id: "test".into(),
+            body: serde_json::Value::Null,
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        context.accept_document_for_view(request).await,
+        Err(teaql_runtime::DocumentViewError::Presentation(_))
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(authorization.load(Ordering::SeqCst), 0);
+}

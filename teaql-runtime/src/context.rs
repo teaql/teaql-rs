@@ -213,6 +213,8 @@ pub struct UserContext {
     remote_lock_owner: String,
     runtime_telemetry: Arc<dyn crate::RuntimeTelemetry>,
     last_fix_evidence: Mutex<Vec<FixEvidence>>,
+    view_transactions: std::sync::atomic::AtomicUsize,
+    view_transaction_uncertain: std::sync::atomic::AtomicBool,
 }
 
 impl Default for UserContext {
@@ -284,6 +286,8 @@ impl Default for UserContext {
             ),
             runtime_telemetry: crate::telemetry_startup::standard_runtime_telemetry(),
             last_fix_evidence: Mutex::new(Vec::new()),
+            view_transactions: std::sync::atomic::AtomicUsize::new(0),
+            view_transaction_uncertain: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -923,6 +927,13 @@ impl UserContext {
     /// Host readiness check after passive business and infrastructure assembly.
     pub fn validate_capabilities(&self) -> Result<(), crate::RuntimeError> {
         for capability in self.required_capabilities() {
+            if let Some(service) =
+                self.get_resource::<crate::view_preparation::ViewServiceResource>()
+                && (capability == "view.v1"
+                    || (capability == "view.governed.v1" && service.0.supports_governed(self)))
+            {
+                continue;
+            }
             if capability == "secure_document.v1" && self.has_round_trip_reference_provider() {
                 continue;
             }
@@ -1098,7 +1109,7 @@ impl UserContext {
             .ok_or_else(RoundTripReferenceError::configuration)
     }
 
-    fn trusted_reference_principal(
+    pub fn trusted_reference_principal(
         &self,
     ) -> Result<&TrustedReferencePrincipal, RoundTripReferenceError> {
         self.get_resource::<TrustedReferencePrincipalResource>()

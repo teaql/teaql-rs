@@ -1,0 +1,116 @@
+{
+  "protocol": "view.preparation.v1",
+  "mode": "READ_ONLY",
+  "entity": "ViewAsset",
+  "cases": [
+    {
+      "id": "loaded-hidden",
+      "fields": {
+        "id": 42,
+        "version": 1,
+        "title": "visible",
+        "hidden": "secret"
+      },
+      "expected": {
+        "id": 42,
+        "version": 1,
+        "title": "visible"
+      }
+    },
+    {
+      "id": "explicit-null",
+      "fields": {
+        "id": 42,
+        "version": 1,
+        "title": null
+      },
+      "expected": {
+        "id": 42,
+        "version": 1,
+        "title": null
+      }
+    },
+    {
+      "id": "new-draft",
+      "fields": {
+        "title": "draft"
+      },
+      "expected": {
+        "title": "draft"
+      }
+    },
+    {
+      "id": "masked-title",
+      "mask": "title",
+      "fields": {
+        "id": 42,
+        "version": 1,
+        "title": "secret"
+      },
+      "expected": {
+        "id": 42,
+        "version": 1,
+        "title": "***"
+      }
+    },
+    {
+      "id": "json-field",
+      "fields": {
+        "id": 42,
+        "version": 1,
+        "json": {
+          "nested": [
+            null,
+            123,
+            "text"
+          ]
+        }
+      },
+      "expected": {
+        "id": 42,
+        "version": 1,
+        "json": {
+          "nested": [
+            null,
+            123,
+            "text"
+          ]
+        }
+      }
+    },
+    {
+      "id": "reserved-id-zero-revision",
+      "fields": {
+        "id": 42,
+        "version": 0,
+        "title": "draft"
+      },
+      "expected": {
+        "id": 42,
+        "version": 0,
+        "title": "draft"
+      }
+    }
+  ],
+  "requiredScenarios": [
+    "loaded-hidden-masked",
+    "immutable-copy",
+    "entity-cycles",
+    "current-identity-policy",
+    "document-before-blob",
+    "document-current-without-reissue",
+    "sealed-surface",
+    "prepared-provenance",
+    "expired-reuse",
+    "active-owner",
+    "committed-failure-reread",
+    "json-values",
+    "raw-key-rejection",
+    "batched-full-graph-snapshot",
+    "equivalent-transport-dedup",
+    "standalone-base-consumer",
+    "standalone-blob-consumer",
+    "rust-document-delegation",
+    "four-combinations"
+  ]
+}

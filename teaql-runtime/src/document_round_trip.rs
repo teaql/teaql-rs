@@ -406,6 +406,22 @@ impl std::error::Error for DocumentRoundTripError {}
 
 #[async_trait]
 pub trait ContextBoundDocumentService: Send + Sync {
+    fn supports_view_preparation(&self) -> bool {
+        false
+    }
+
+    /// Current application document/purpose authority for an already issued outbound view.
+    /// Must not reload its business graph, save or issue another token. Existing services
+    /// opt in explicitly; returning an ordinary ContextualDocument alone is not provenance.
+    async fn validate_prepared_document(
+        &self,
+        _context: &UserContext,
+        _principal: &TrustedReferencePrincipal,
+        _document: &VerifiedDocumentSnapshot,
+    ) -> Result<(), DocumentRoundTripError> {
+        Err(DocumentRoundTripError::configuration())
+    }
+
     async fn open_document(
         &self,
         context: &UserContext,

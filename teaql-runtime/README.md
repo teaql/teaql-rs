@@ -19,6 +19,8 @@ Database execution is supplied by provider crates.
 - typed entity graph extraction
 - SQL debug logging options on `UserContext`
 - context-bound `tqr1` entity references and `tqd1` document snapshots
+- explicit [view preparation](VIEW_PREPARATION.md), authorized immutable output
+  and presentation-local reuse for terminal, embedded and response boundaries
 
 ## Standard OpenTelemetry Module
 

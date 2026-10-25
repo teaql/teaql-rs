@@ -102,6 +102,7 @@ where
                 .map_err(data_service_error_into_runtime)?;
             let policy_plan = crate::graph_policy_plan(context, &plan)?;
             let governance = context.review_mutation_plan(&policy_plan)?;
+            let view_boundary = context.view_transaction_boundary();
             let tx = teaql_data_service::TransactionExecutor::begin(executor)
                 .await
                 .map_err(|e| RuntimeError::Graph(e.to_string()))?;
@@ -118,6 +119,7 @@ where
                     teaql_data_service::Transaction::commit(tx)
                         .await
                         .map_err(|e| RuntimeError::Graph(e.to_string()))?;
+                    view_boundary.complete();
                     crate::commit_audit::deliver(context, audit_events)?;
                     Ok(saved)
                 }
@@ -125,6 +127,7 @@ where
                     teaql_data_service::Transaction::rollback(tx)
                         .await
                         .map_err(|e| RuntimeError::Graph(e.to_string()))?;
+                    view_boundary.complete();
                     Err(match error {
                         DataServiceError::Runtime(r) => r,
                         other => RuntimeError::Graph(other.to_string()),
@@ -162,6 +165,7 @@ where
             reject_cancelled_new_root(&root, &root_key)?;
             let policy_plan = crate::ledger_policy_plan(context, &node, &root);
             let governance = context.review_mutation_plan(&policy_plan)?;
+            let view_boundary = context.view_transaction_boundary();
             let tx = teaql_data_service::TransactionExecutor::begin(executor)
                 .await
                 .map_err(|e| RuntimeError::Graph(e.to_string()))?;
@@ -228,12 +232,14 @@ where
                     teaql_data_service::Transaction::rollback(tx)
                         .await
                         .map_err(|e| RuntimeError::Graph(e.to_string()))?;
+                    view_boundary.complete();
                     return Err(match error {
                         DataServiceError::Runtime(r) => r,
                         other => RuntimeError::Graph(other.to_string()),
                     });
                 }
             }
+            view_boundary.complete();
             root.clear_committed();
             crate::commit_audit::deliver(context, audit_events)?;
             Ok(node)
