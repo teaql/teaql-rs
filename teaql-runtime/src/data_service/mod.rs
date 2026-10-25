@@ -14,4 +14,5 @@ pub use cache::{AggregationCacheBackend, InMemoryAggregationCache};
 pub use executor::GraphTransactionBoundary;
 pub use types::{EntityDataService, RelationLoadPlan};
 
+pub(crate) use helpers::default_aggregate_value;
 pub(crate) use types::{ContextDataService, RuntimeDataService, UserContextMetadata};
