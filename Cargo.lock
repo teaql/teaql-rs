@@ -3624,6 +3624,7 @@ dependencies = [
  "teaql-macros",
  "teaql-provider-sqlite",
  "teaql-runtime",
+ "teaql-secure-document-reference",
  "teaql-sql",
  "tokio",
  "url",
@@ -3756,7 +3757,6 @@ dependencies = [
  "chrono",
  "futures-core",
  "futures-util",
- "hkdf",
  "hmac 0.12.1",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -3768,7 +3768,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "subtle",
  "teaql-core",
  "teaql-data-service",
  "teaql-macros",
@@ -3776,6 +3775,24 @@ dependencies = [
  "tokio",
  "tokio-util",
  "url",
+]
+
+[[package]]
+name = "teaql-secure-document-reference"
+version = "5.0.7"
+dependencies = [
+ "aes-gcm",
+ "async-trait",
+ "base64",
+ "chrono",
+ "hkdf",
+ "hmac 0.12.1",
+ "serde_json",
+ "sha2 0.10.9",
+ "subtle",
+ "teaql-core",
+ "teaql-runtime",
+ "tokio",
 ]
 
 [[package]]

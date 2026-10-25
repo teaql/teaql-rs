@@ -126,12 +126,10 @@ pub use registry::{
     InMemoryEntityRegistry, InMemoryMetadataStore, MetadataStore, RequestPolicy, RuntimeModule,
 };
 pub use round_trip_reference::{
-    ContextBoundReferenceRuntime, DeploymentProfile, ExternalEntityReference,
-    ReferenceAuthorizationPolicy, ReferenceDocumentScope, ReferenceIdentity, ReferenceKey,
-    ReferenceKeyProvider, ReferenceMode, ReferenceStartupNotice, ReferenceWireCodec,
-    ResolvedEntityReference, RoundTripReferenceError, StaticReferenceKeyProvider,
-    TrustedReferencePrincipal, UNSAFE_EXPOSE_RAW_ENTITY_IDS_ACKNOWLEDGEMENT,
-    UNSAFE_EXPOSE_RAW_ENTITY_IDS_ENVIRONMENT,
+    ExternalEntityReference, ReferenceDocumentScope, ReferenceIdentity, ReferenceMode,
+    ReferenceStartupNotice, ReferenceWireCodec, ResolvedEntityReference, RoundTripReferenceError,
+    RoundTripReferenceProvider, TrustedReferencePrincipal,
+    UNSAFE_EXPOSE_RAW_ENTITY_IDS_ACKNOWLEDGEMENT, UNSAFE_EXPOSE_RAW_ENTITY_IDS_ENVIRONMENT,
 };
 pub use telemetry::{
     FailOpenRuntimeTelemetryPropagationContext, FailOpenRuntimeTelemetryScope,

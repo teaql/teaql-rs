@@ -24,3 +24,6 @@ teaql-runtime = { path = "../../../teaql-runtime" }
 teaql-sql = { path = "../../../teaql-sql" }
 teaql-data-service = { path = "../../../teaql-data-service" }
 teaql-provider-sqlite = { path = "../../../teaql-provider-sqlite" }
+
+[dev-dependencies]
+teaql-secure-document-reference = { path = "../../../teaql-secure-document-reference" }

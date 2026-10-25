@@ -21,9 +21,9 @@ use crate::entity_reference::{
 };
 use crate::http::{HttpFailure, HttpRequestService, HttpRequestServiceResource};
 use crate::round_trip_reference::{
-    ContextBoundReferenceRuntime, ContextBoundReferenceRuntimeResource, ExternalEntityReference,
-    ReferenceDocumentScope, ReferenceIdentity, ReferenceMode, ReferenceStartupNotice,
-    ReferenceWireCodec, ResolvedEntityReference, RoundTripReferenceError,
+    ContextBoundReferenceRuntimeResource, ExternalEntityReference, ReferenceDocumentScope,
+    ReferenceIdentity, ReferenceMode, ReferenceStartupNotice, ReferenceWireCodec,
+    ResolvedEntityReference, RoundTripReferenceError, RoundTripReferenceProvider,
     TrustedReferencePrincipal, TrustedReferencePrincipalResource,
 };
 use crate::{
@@ -903,13 +903,30 @@ impl UserContext {
 
     pub fn with_round_trip_reference_runtime(
         mut self,
-        runtime: Arc<ContextBoundReferenceRuntime>,
+        runtime: Arc<dyn RoundTripReferenceProvider>,
     ) -> Self {
         self.set_round_trip_reference_runtime(runtime);
         self
     }
 
-    pub fn set_round_trip_reference_runtime(&mut self, runtime: Arc<ContextBoundReferenceRuntime>) {
+    pub fn has_round_trip_reference_provider(&self) -> bool {
+        self.get_resource::<ContextBoundReferenceRuntimeResource>()
+            .is_some()
+    }
+
+    pub fn has_context_bound_document_service(&self) -> bool {
+        self.get_resource::<ContextBoundDocumentServiceResource>()
+            .is_some()
+    }
+
+    pub fn set_round_trip_reference_runtime(
+        &mut self,
+        runtime: Arc<dyn RoundTripReferenceProvider>,
+    ) {
+        assert!(
+            !self.has_round_trip_reference_provider(),
+            "secure document reference provider already installed"
+        );
         self.insert_resource(ContextBoundReferenceRuntimeResource(runtime));
     }
 
@@ -937,6 +954,10 @@ impl UserContext {
         &mut self,
         service: Arc<dyn ContextBoundDocumentService>,
     ) {
+        assert!(
+            !self.has_context_bound_document_service(),
+            "context-bound document service already installed"
+        );
         self.insert_resource(ContextBoundDocumentServiceResource(service));
     }
 
@@ -944,6 +965,7 @@ impl UserContext {
         &self,
         request: DocumentOpenRequest,
     ) -> Result<ContextualDocument, DocumentRoundTripError> {
+        self.round_trip_reference_runtime()?;
         self.context_bound_document_service()?
             .open_document(self, self.trusted_reference_principal()?, request)
             .await
@@ -953,6 +975,7 @@ impl UserContext {
         &self,
         request: DocumentAcceptRequest,
     ) -> Result<AcceptedContextualDocument, DocumentRoundTripError> {
+        self.round_trip_reference_runtime()?;
         self.context_bound_document_service()?
             .accept_document(self, self.trusted_reference_principal()?, request)
             .await
@@ -1045,7 +1068,7 @@ impl UserContext {
 
     fn round_trip_reference_runtime(
         &self,
-    ) -> Result<&ContextBoundReferenceRuntime, RoundTripReferenceError> {
+    ) -> Result<&dyn RoundTripReferenceProvider, RoundTripReferenceError> {
         self.get_resource::<ContextBoundReferenceRuntimeResource>()
             .map(|resource| resource.0.as_ref())
             .ok_or_else(RoundTripReferenceError::configuration)

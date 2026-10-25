@@ -5,12 +5,14 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use teaql_runtime::{
-    AcceptedContextualDocument, ContextBoundDocumentService, ContextBoundReferenceRuntime,
-    ContextualDocument, DeploymentProfile, DocumentAcceptRequest, DocumentEntitySnapshot,
-    DocumentMutationKind, DocumentOpenRequest, DocumentRelationCompleteness,
-    DocumentRelationSnapshot, DocumentRoundTripError, DocumentSnapshot, ReferenceDocumentScope,
-    ReferenceIdentity, ReferenceKey, RoundTripReferenceError, StaticReferenceKeyProvider,
+    AcceptedContextualDocument, ContextBoundDocumentService, ContextualDocument,
+    DocumentAcceptRequest, DocumentEntitySnapshot, DocumentMutationKind, DocumentOpenRequest,
+    DocumentRelationCompleteness, DocumentRelationSnapshot, DocumentRoundTripError,
+    DocumentSnapshot, ReferenceDocumentScope, ReferenceIdentity, RoundTripReferenceError,
     SubmittedContextualDocument, TrustedReferencePrincipal, UserContext,
+};
+use teaql_secure_document_reference::{
+    ContextBoundReferenceRuntime, DeploymentProfile, ReferenceKey, StaticReferenceKeyProvider,
 };
 
 const PURPOSE: &str = "edit-order-items";

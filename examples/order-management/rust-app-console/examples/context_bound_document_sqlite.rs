@@ -6,18 +6,20 @@ use async_trait::async_trait;
 use chrono::NaiveDate;
 use order_management_service_core::teaql_core::Entity as _;
 use order_management_service_core::{
-    CustomerOrder, DataServiceExecutor, E, OrderLine, Q, ServiceRuntimeConfig,
-    request_support::AuditedSave as _, service_runtime,
+    request_support::AuditedSave as _, service_runtime, CustomerOrder, DataServiceExecutor,
+    OrderLine, ServiceRuntimeConfig, E, Q,
 };
 use rust_decimal::Decimal;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use teaql_runtime::{
-    AcceptedContextualDocument, ContextBoundDocumentService, ContextBoundReferenceRuntime,
-    ContextualDocument, DeploymentProfile, DocumentAcceptRequest, DocumentEntitySnapshot,
-    DocumentMutationKind, DocumentOpenRequest, DocumentRelationCompleteness,
-    DocumentRelationSnapshot, DocumentRoundTripError, DocumentSnapshot, ReferenceDocumentScope,
-    ReferenceIdentity, ReferenceKey, RoundTripReferenceError, StaticReferenceKeyProvider,
+    AcceptedContextualDocument, ContextBoundDocumentService, ContextualDocument,
+    DocumentAcceptRequest, DocumentEntitySnapshot, DocumentMutationKind, DocumentOpenRequest,
+    DocumentRelationCompleteness, DocumentRelationSnapshot, DocumentRoundTripError,
+    DocumentSnapshot, ReferenceDocumentScope, ReferenceIdentity, RoundTripReferenceError,
     SubmittedContextualDocument, TrustedReferencePrincipal, UserContext,
+};
+use teaql_secure_document_reference::{
+    ContextBoundReferenceRuntime, DeploymentProfile, ReferenceKey, StaticReferenceKeyProvider,
 };
 
 const PURPOSE: &str = "edit-generated-order-items";

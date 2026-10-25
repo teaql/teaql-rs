@@ -1,0 +1,8 @@
+{
+  "issue": "https://github.com/teaql/teaql-rs/issues/312",
+  "originalSourceSha256": {
+    "round_trip_reference.rs": "6742f82c825ffa7766f35c86ea4a0f9cffa5728e46d427c6348377b5b7945940",
+    "document_round_trip.rs": "3fc36a65afe1689f735d7e4140d869081c1cd178542a294b1de0e36217f6ca0a"
+  },
+  "boundary": "Original crypto bodies and tests moved; shared DTO/service SPI/validators remain in runtime; context delegates through an object-safe provider trait."
+}
