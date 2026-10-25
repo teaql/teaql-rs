@@ -702,11 +702,30 @@ pub struct RuntimeModule {
     root_graphs: Vec<GraphNode>,
     generated_schema_bootstraps: Vec<crate::GeneratedSchemaBootstrap>,
     graph_decoders: InMemoryEntityGraphDecoderRegistry,
+    required_capabilities: std::collections::BTreeSet<String>,
 }
+
+#[derive(Default)]
+pub(crate) struct RequiredRuntimeCapabilities(pub std::collections::BTreeSet<String>);
 
 impl RuntimeModule {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Passive, monotonic requirement declaration. It installs no service or key.
+    pub fn require_capability(mut self, capability: impl Into<String>) -> Self {
+        let capability = capability.into();
+        assert!(
+            !capability.is_empty() && capability.trim() == capability,
+            "invalid capability identifier"
+        );
+        self.required_capabilities.insert(capability);
+        self
+    }
+
+    pub fn required_capabilities(&self) -> &std::collections::BTreeSet<String> {
+        &self.required_capabilities
     }
 
     pub fn entity<T>(mut self) -> Self
@@ -795,6 +814,9 @@ impl RuntimeModule {
     }
 
     pub fn apply_to(self, context: &mut UserContext) {
+        let mut required = context.required_capabilities();
+        required.extend(self.required_capabilities);
+        context.insert_resource(RequiredRuntimeCapabilities(required));
         context.set_metadata(self.metadata);
         context.set_entity_registry(self.entity_registry);
         context.set_entity_data_service_behavior_registry(self.behaviors);

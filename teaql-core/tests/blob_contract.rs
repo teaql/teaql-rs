@@ -7,6 +7,11 @@ struct BlobAsset {
     id: u64,
     #[teaql(version)]
     version: i64,
+    #[teaql(
+        blob_extensions = "docx,pdf",
+        blob_profile = "documents",
+        blob_required
+    )]
     document: Option<BlobRef>,
 }
 
@@ -48,6 +53,12 @@ fn native_text_rows_decode_to_typed_values_and_reject_invalid_keys() {
         descriptor.property_by_name("document").unwrap().data_type,
         teaql_core::DataType::BlobRef
     );
+    let property = descriptor.property_by_name("document").unwrap();
+    assert!(!property.nullable);
+    let spec = property.blob_field_spec.as_ref().unwrap();
+    assert_eq!(spec.entity(), "BlobAsset");
+    assert_eq!(spec.field(), "document");
+    assert_eq!(spec.policy_profile(), "documents");
 }
 
 #[test]

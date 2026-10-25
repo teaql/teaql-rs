@@ -145,6 +145,9 @@ pub struct ParsedFieldAttrs {
     pub max_length: Option<u32>,
     pub numeric_precision: Option<u32>,
     pub numeric_scale: Option<u32>,
+    pub blob_extensions: Option<String>,
+    pub blob_profile: Option<String>,
+    pub blob_required: bool,
     pub relation: Option<ParsedRelation>,
 }
 
@@ -188,6 +191,12 @@ pub fn parse_field_attrs(attrs: &[syn::Attribute]) -> ParsedFieldAttrs {
                 parsed.numeric_precision = parse_u32_expr(&meta.value()?.parse::<Expr>()?);
             } else if meta.path.is_ident("numeric_scale") {
                 parsed.numeric_scale = parse_u32_expr(&meta.value()?.parse::<Expr>()?);
+            } else if meta.path.is_ident("blob_extensions") {
+                parsed.blob_extensions = Some(parse_string_expr(&meta.value()?.parse::<Expr>()?));
+            } else if meta.path.is_ident("blob_profile") {
+                parsed.blob_profile = Some(parse_string_expr(&meta.value()?.parse::<Expr>()?));
+            } else if meta.path.is_ident("blob_required") {
+                parsed.blob_required = true;
             } else if meta.path.is_ident("relation") {
                 let mut relation = ParsedRelation::default();
                 meta.parse_nested_meta(|nested| {

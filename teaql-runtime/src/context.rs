@@ -914,6 +914,30 @@ impl UserContext {
             .is_some()
     }
 
+    pub fn required_capabilities(&self) -> std::collections::BTreeSet<String> {
+        self.get_resource::<crate::registry::RequiredRuntimeCapabilities>()
+            .map(|value| value.0.clone())
+            .unwrap_or_default()
+    }
+
+    /// Host readiness check after passive business and infrastructure assembly.
+    pub fn validate_capabilities(&self) -> Result<(), crate::RuntimeError> {
+        for capability in self.required_capabilities() {
+            if capability == "secure_document.v1" && self.has_round_trip_reference_provider() {
+                continue;
+            }
+            return Err(crate::RuntimeError::Capability {
+                code: if capability == "blob.v1" {
+                    "BLOB_CAPABILITY_MISSING"
+                } else {
+                    "VIEW_CAPABILITY_MISSING"
+                },
+                capability,
+            });
+        }
+        Ok(())
+    }
+
     pub fn has_context_bound_document_service(&self) -> bool {
         self.get_resource::<ContextBoundDocumentServiceResource>()
             .is_some()

@@ -321,6 +321,39 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         let numeric_scale = parsed
             .numeric_scale
             .map(|value| quote! { .numeric_scale(#value) });
+        let blob_spec = if let Some(extensions) = parsed.blob_extensions {
+            let extensions: Vec<_> = extensions.split(',').collect();
+            if crate::types::base_type_name(&field.ty).as_deref() != Some("BlobRef")
+                || extensions.iter().any(|extension| {
+                    !matches!(
+                        *extension,
+                        "jpg"
+                            | "jpeg"
+                            | "png"
+                            | "mp4"
+                            | "mp3"
+                            | "doc"
+                            | "docx"
+                            | "xls"
+                            | "xlsx"
+                            | "pdf"
+                    )
+                })
+            {
+                return syn::Error::new_spanned(
+                    &field.ty,
+                    "BLOB_FORMAT_NOT_ALLOWED: invalid Blob field metadata",
+                )
+                .to_compile_error();
+            }
+            let profile = parsed.blob_profile.unwrap_or_else(|| "default".to_owned());
+            let blob_nullable = !parsed.blob_required;
+            quote! { .blob_field_spec(::teaql_core::BlobFieldSpec::new(
+                #entity_name, #field_name, [#(#extensions),*], #blob_nullable, #profile,
+            ).expect("validated generated Blob metadata")) }
+        } else {
+            Default::default()
+        };
 
         let nullable_tokens = if !nullable {
             quote! { .not_null() }
@@ -381,6 +414,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                     #max_length
                     #numeric_precision
                     #numeric_scale
+                    #blob_spec
             );
         });
 
