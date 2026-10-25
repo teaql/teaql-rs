@@ -1,5 +1,5 @@
 //! Application-owned regression against an unmodified locally generated library.
-//! Build wiring is provided by conformance's source-only native gate.
+//! Run `node examples/fix-e-alignment/verify-local.cjs` from this repository.
 use checker_fix_advanced_core::{AuditedSave, E, Q, service_runtime_from_pool};
 use chrono::{TimeZone, Utc};
 use std::sync::{Arc, Mutex};
@@ -16,7 +16,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .single()
         .unwrap();
     let second = first + chrono::Duration::hours(25);
-    let pool = Arc::new(Mutex::new(rusqlite::Connection::open_in_memory()?));
+    let connection = match std::env::var("TEAQL_FIX_E_DB") {
+        Ok(path) => rusqlite::Connection::open(path)?,
+        Err(_) => rusqlite::Connection::open_in_memory()?,
+    };
+    let pool = Arc::new(Mutex::new(connection));
     let mut context = service_runtime_from_pool(pool)
         .await?
         .with_active_root("Tenant", 1);

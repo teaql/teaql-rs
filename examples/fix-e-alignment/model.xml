@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root name="checker-fix-advanced" org="teaql" data_service="sqlite">
+  <tenant name="Tenant Name|[1,80]"/>
+  <purchase_order
+      tenant="tenant(contextRoot=true)"
+      contact_phone="Contact Phone|[1,32]"
+      internal_note="Optional note?"
+      create_time="createTime()"
+      update_time="updateTime()"/>
+  <order_item
+      purchase_order="purchase_order()"
+      tenant="tenant(contextRoot=true)"
+      product_name="Product Name|[1,80]"
+      unit_price="10.00|[0.01,1000000]"
+      create_time="createTime()"
+      update_time="updateTime()"/>
+</root>
