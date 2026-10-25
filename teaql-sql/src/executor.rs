@@ -100,6 +100,12 @@ pub trait SqlTransactionTransport: SqlTransport {
 
 pub trait SqlTransaction {
     type Error: std::error::Error + Send + Sync + 'static;
+    fn append_committed_set_sql<'a>(
+        &'a self,
+        _append: &'a teaql_data_service::CommittedSetAppend,
+    ) -> impl std::future::Future<Output = Result<bool, Self::Error>> + Send + 'a {
+        async { Ok(false) }
+    }
     fn commit_sql(self) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
     fn rollback_sql(self) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
 }
@@ -2089,6 +2095,18 @@ impl<
 > teaql_data_service::Transaction for SqlDataServiceTransaction<'a, D, Tx, S>
 {
     type Error = SqlExecutorError<<Tx as SqlTransport>::Error>;
+
+    fn append_committed_set<'scope>(
+        &'scope self,
+        append: &'scope teaql_data_service::CommittedSetAppend,
+    ) -> impl std::future::Future<Output = Result<bool, Self::Error>> + Send + 'scope {
+        async move {
+            self.transport
+                .append_committed_set_sql(append)
+                .await
+                .map_err(SqlExecutorError::Transport)
+        }
+    }
 
     fn commit(self) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
         async move {
