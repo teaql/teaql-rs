@@ -10,6 +10,7 @@ use teaql_core::{
     UpdateCommand, Value,
 };
 
+use crate::data_service::default_aggregate_value;
 use crate::{DataServiceError, InMemoryMetadataStore, MetadataStore, RuntimeError};
 
 #[derive(Debug)]
@@ -203,7 +204,7 @@ where
             .collect::<Vec<_>>();
 
         if ids.is_empty() {
-            let value = default_aggregate_value(aggregate.single_result);
+            let value = default_aggregate_value(aggregate);
             for parent in parent_rows.iter_mut() {
                 parent.insert(aggregate.alias.clone(), value.clone());
             }
@@ -244,8 +245,8 @@ where
             let value = parent
                 .get(&relation.local_key)
                 .and_then(|local_value| buckets.get(&local_graph_identity_key(local_value)))
-                .map(|rows| local_relation_aggregate_value(rows, aggregate.single_result))
-                .unwrap_or_else(|| default_aggregate_value(aggregate.single_result));
+                .map(|rows| local_relation_aggregate_value(rows, aggregate))
+                .unwrap_or_else(|| default_aggregate_value(aggregate));
             parent.insert(aggregate.alias.clone(), value);
         }
 
@@ -434,13 +435,6 @@ where
     }
 }
 
-fn default_aggregate_value(single_result: bool) -> Value {
-    match single_result {
-        true => Value::U64(0),
-        false => Value::List(Vec::new()),
-    }
-}
-
 fn aggregate_alias(single_result: bool, alias: &str) -> String {
     match single_result {
         true => alias.to_owned(),
@@ -448,12 +442,12 @@ fn aggregate_alias(single_result: bool, alias: &str) -> String {
     }
 }
 
-fn local_relation_aggregate_value(rows: &[CompactRow], single_result: bool) -> Value {
-    match single_result {
+fn local_relation_aggregate_value(rows: &[CompactRow], aggregate: &RelationAggregate) -> Value {
+    match aggregate.single_result {
         true => rows
             .first()
             .map(local_single_relation_aggregate_value)
-            .unwrap_or(Value::U64(0)),
+            .unwrap_or_else(|| default_aggregate_value(aggregate)),
         false => Value::List(
             rows.iter()
                 .cloned()

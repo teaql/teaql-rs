@@ -10,10 +10,64 @@ use crate::{DataServiceError, GraphNode, RuntimeError};
 
 use super::{AggregationCacheBackend, RelationLoadPlan};
 
-pub(super) fn default_aggregate_value(single_result: bool) -> Value {
-    match single_result {
-        true => Value::U64(0),
-        false => Value::List(Vec::new()),
+pub(crate) fn default_aggregate_value(aggregate: &RelationAggregate) -> Value {
+    if !aggregate.single_result {
+        return Value::List(Vec::new());
+    }
+    let scalar = |item: &teaql_core::Aggregate| {
+        if item.function == teaql_core::AggregateFunction::Count {
+            Value::U64(0)
+        } else {
+            Value::Null
+        }
+    };
+    match aggregate.query.aggregates.as_slice() {
+        [] => Value::U64(0),
+        [item] => scalar(item),
+        items => Value::Object(
+            items
+                .iter()
+                .map(|item| (item.alias.clone(), scalar(item)))
+                .collect(),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod smart_list_aggregate_default_tests {
+    use super::*;
+
+    #[test]
+    fn missing_relation_buckets_preserve_empty_sql_scalar_semantics() {
+        let count =
+            RelationAggregate::new("items", "count", SelectQuery::new("Item").count("n"), true);
+        let sum = RelationAggregate::new(
+            "items",
+            "total",
+            SelectQuery::new("Item").sum("amount", "total"),
+            true,
+        );
+        assert_eq!(default_aggregate_value(&count), Value::U64(0));
+        assert_eq!(default_aggregate_value(&sum), Value::Null);
+        assert_eq!(relation_aggregate_value(&[], &sum), Value::Null);
+        let present_null = CompactRow::from(BTreeMap::from([("total".to_owned(), Value::Null)]));
+        assert_eq!(relation_aggregate_value(&[present_null], &sum), Value::Null);
+        let multiple = RelationAggregate::new(
+            "items",
+            "stats",
+            SelectQuery::new("Item").count("n").sum("amount", "sum"),
+            true,
+        );
+        assert_eq!(
+            default_aggregate_value(&multiple),
+            Value::Object(BTreeMap::from([
+                ("n".to_owned(), Value::U64(0)),
+                ("sum".to_owned(), Value::Null),
+            ]))
+        );
+        let mut parents = vec![CompactRow::from(BTreeMap::new())];
+        attach_empty_relation_aggregate(&mut parents, &sum);
+        assert_eq!(parents[0].get("total"), Some(&Value::Null));
     }
 }
 
@@ -179,12 +233,11 @@ pub(super) fn ensure_projection(query: &mut SelectQuery, field: &str) {
 
 pub(super) fn attach_empty_relation_aggregate(
     parent_rows: &mut [CompactRow],
-    alias: &str,
-    single_result: bool,
+    aggregate: &RelationAggregate,
 ) {
-    let value = default_aggregate_value(single_result);
+    let value = default_aggregate_value(aggregate);
     for parent in parent_rows {
-        parent.insert(alias.to_owned(), value.clone());
+        parent.insert(aggregate.alias.clone(), value.clone());
     }
 }
 
@@ -246,18 +299,21 @@ pub(super) fn attach_relation_aggregate_rows(
         let value = keys
             .get(&plan.local_key)
             .and_then(|local_value| buckets.get(&graph_identity_key(local_value)))
-            .map(|rows| relation_aggregate_value(rows, aggregate.single_result))
-            .unwrap_or_else(|| default_aggregate_value(aggregate.single_result));
+            .map(|rows| relation_aggregate_value(rows, aggregate))
+            .unwrap_or_else(|| default_aggregate_value(aggregate));
         parent.insert(aggregate.alias.clone(), value);
     }
 }
 
-pub(super) fn relation_aggregate_value(rows: &[CompactRow], single_result: bool) -> Value {
-    match single_result {
+pub(super) fn relation_aggregate_value(
+    rows: &[CompactRow],
+    aggregate: &RelationAggregate,
+) -> Value {
+    match aggregate.single_result {
         true => rows
             .first()
             .map(single_relation_aggregate_value)
-            .unwrap_or(Value::U64(0)),
+            .unwrap_or_else(|| default_aggregate_value(aggregate)),
         false => Value::List(
             rows.iter()
                 .cloned()
