@@ -64,12 +64,9 @@ fn ordinary_list_does_not_invent_count() {
 }
 
 #[test]
-fn grouped_and_mixed_aggregates_keep_their_semantics() {
+fn grouped_and_field_counts_keep_their_projection_semantics() {
     let queries = [
         SelectQuery::new("Probe").count("count").group_by("status"),
-        SelectQuery::new("Probe")
-            .count("count")
-            .sum("amount", "sum"),
         SelectQuery::new("Probe").count_field("name", "count"),
     ];
     for source in queries {
@@ -78,6 +75,23 @@ fn grouped_and_mixed_aggregates_keep_their_semantics() {
         assert!(query.take_requested_list_count(&options(None)).is_none());
         assert_eq!(query.as_query(), &before);
     }
+}
+
+#[test]
+fn named_count_splits_independently_of_other_scalar_aliases() {
+    let source = SelectQuery::new("Probe")
+        .filter(Expr::eq("status", "ACTIVE"))
+        .sum("amount", "sum")
+        .count("count")
+        .page(1, 2);
+    let mut query = authorize(source);
+    let (_, count) = query.take_requested_list_count(&options(None)).unwrap();
+    assert_eq!(query.as_query().aggregates.len(), 1);
+    assert_eq!(query.as_query().aggregates[0].alias, "sum");
+    assert_eq!(count.as_query().aggregates.len(), 1);
+    assert_eq!(count.as_query().aggregates[0].alias, "count");
+    assert!(count.as_query().slice.is_none());
+    assert_eq!(query.as_query().filter, count.as_query().filter);
 }
 
 #[derive(Default)]
