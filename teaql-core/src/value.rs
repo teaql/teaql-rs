@@ -36,6 +36,13 @@ pub enum Value {
     TypedNull(DataType),
 }
 
+/// Nullable generated setters preserve unknown values as NULL, never as zero.
+impl<T: Into<Value>> From<Option<T>> for Value {
+    fn from(value: Option<T>) -> Self {
+        value.map(Into::into).unwrap_or(Self::Null)
+    }
+}
+
 impl From<&str> for Value {
     fn from(value: &str) -> Self {
         Self::Text(value.to_owned())
