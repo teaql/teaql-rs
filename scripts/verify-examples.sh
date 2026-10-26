@@ -14,6 +14,7 @@ fi
 
 cd "$repo"
 node examples/fix-e-alignment/verify-local.cjs
+node examples/tests/loaded-revert/verify-local.cjs
 bash examples/http-resilience/verify.sh
 bash examples/object-storage/verify.sh
 bash examples/trace-chain/verify-standard-telemetry.sh

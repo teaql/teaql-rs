@@ -1,0 +1,183 @@
+<!-- ephemeral -->
+
+# Rust Query Reverse-Relation Assist — `type_platform.scalar_type_probe_list`
+
+KSML entity: `type_platform`  
+Generated reverse relation: `scalar_type_probe_list`  
+Child entity: `scalar_type_probe`
+
+| Capability | Generated API |
+| --- | --- |
+| Select | `.select_scalar_type_probe_list()`, `.select_scalar_type_probe_list_with(Q::scalar_type_probes_minimal())` |
+| Filter nested request | `with_scalar_type_probe_list_matching(request)`, `without_scalar_type_probe_list_matching(request)` |
+| Presence | `have_scalar_type_probes()`, `have_no_scalar_type_probes()` |
+| Count | `count_scalar_type_probes()`, `count_scalar_type_probes_as(alias)`, `count_scalar_type_probes_with(alias, child_request)` |
+| Grouped statistics | `stats_from_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_integer` | `sum_required_integer_of_scalar_type_probes()`, `sum_required_integer_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_integer` | `min_required_integer_of_scalar_type_probes()`, `min_required_integer_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_integer` | `max_required_integer_of_scalar_type_probes()`, `max_required_integer_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_integer` | `avg_required_integer_of_scalar_type_probes()`, `avg_required_integer_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_integer` | `standard_deviation_required_integer_of_scalar_type_probes()`, `standard_deviation_required_integer_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_integer` | `square_root_of_population_standard_deviation_required_integer_of_scalar_type_probes()`, `square_root_of_population_standard_deviation_required_integer_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_integer` | `sample_variance_required_integer_of_scalar_type_probes()`, `sample_variance_required_integer_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_integer` | `sample_population_variance_required_integer_of_scalar_type_probes()`, `sample_population_variance_required_integer_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_integer` | `sum_optional_integer_of_scalar_type_probes()`, `sum_optional_integer_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_integer` | `min_optional_integer_of_scalar_type_probes()`, `min_optional_integer_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_integer` | `max_optional_integer_of_scalar_type_probes()`, `max_optional_integer_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_integer` | `avg_optional_integer_of_scalar_type_probes()`, `avg_optional_integer_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_integer` | `standard_deviation_optional_integer_of_scalar_type_probes()`, `standard_deviation_optional_integer_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_integer` | `square_root_of_population_standard_deviation_optional_integer_of_scalar_type_probes()`, `square_root_of_population_standard_deviation_optional_integer_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_integer` | `sample_variance_optional_integer_of_scalar_type_probes()`, `sample_variance_optional_integer_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_integer` | `sample_population_variance_optional_integer_of_scalar_type_probes()`, `sample_population_variance_optional_integer_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_long` | `sum_required_long_of_scalar_type_probes()`, `sum_required_long_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_long` | `min_required_long_of_scalar_type_probes()`, `min_required_long_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_long` | `max_required_long_of_scalar_type_probes()`, `max_required_long_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_long` | `avg_required_long_of_scalar_type_probes()`, `avg_required_long_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_long` | `standard_deviation_required_long_of_scalar_type_probes()`, `standard_deviation_required_long_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_long` | `square_root_of_population_standard_deviation_required_long_of_scalar_type_probes()`, `square_root_of_population_standard_deviation_required_long_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_long` | `sample_variance_required_long_of_scalar_type_probes()`, `sample_variance_required_long_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_long` | `sample_population_variance_required_long_of_scalar_type_probes()`, `sample_population_variance_required_long_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_long` | `sum_optional_long_of_scalar_type_probes()`, `sum_optional_long_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_long` | `min_optional_long_of_scalar_type_probes()`, `min_optional_long_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_long` | `max_optional_long_of_scalar_type_probes()`, `max_optional_long_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_long` | `avg_optional_long_of_scalar_type_probes()`, `avg_optional_long_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_long` | `standard_deviation_optional_long_of_scalar_type_probes()`, `standard_deviation_optional_long_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_long` | `square_root_of_population_standard_deviation_optional_long_of_scalar_type_probes()`, `square_root_of_population_standard_deviation_optional_long_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_long` | `sample_variance_optional_long_of_scalar_type_probes()`, `sample_variance_optional_long_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_long` | `sample_population_variance_optional_long_of_scalar_type_probes()`, `sample_population_variance_optional_long_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_decimal` | `sum_required_decimal_of_scalar_type_probes()`, `sum_required_decimal_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_decimal` | `min_required_decimal_of_scalar_type_probes()`, `min_required_decimal_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_decimal` | `max_required_decimal_of_scalar_type_probes()`, `max_required_decimal_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_decimal` | `avg_required_decimal_of_scalar_type_probes()`, `avg_required_decimal_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_decimal` | `standard_deviation_required_decimal_of_scalar_type_probes()`, `standard_deviation_required_decimal_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_decimal` | `square_root_of_population_standard_deviation_required_decimal_of_scalar_type_probes()`, `square_root_of_population_standard_deviation_required_decimal_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_decimal` | `sample_variance_required_decimal_of_scalar_type_probes()`, `sample_variance_required_decimal_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_decimal` | `sample_population_variance_required_decimal_of_scalar_type_probes()`, `sample_population_variance_required_decimal_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_decimal` | `sum_optional_decimal_of_scalar_type_probes()`, `sum_optional_decimal_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_decimal` | `min_optional_decimal_of_scalar_type_probes()`, `min_optional_decimal_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_decimal` | `max_optional_decimal_of_scalar_type_probes()`, `max_optional_decimal_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_decimal` | `avg_optional_decimal_of_scalar_type_probes()`, `avg_optional_decimal_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_decimal` | `standard_deviation_optional_decimal_of_scalar_type_probes()`, `standard_deviation_optional_decimal_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_decimal` | `square_root_of_population_standard_deviation_optional_decimal_of_scalar_type_probes()`, `square_root_of_population_standard_deviation_optional_decimal_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_decimal` | `sample_variance_optional_decimal_of_scalar_type_probes()`, `sample_variance_optional_decimal_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_decimal` | `sample_population_variance_optional_decimal_of_scalar_type_probes()`, `sample_population_variance_optional_decimal_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_float` | `sum_required_float_of_scalar_type_probes()`, `sum_required_float_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_float` | `min_required_float_of_scalar_type_probes()`, `min_required_float_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_float` | `max_required_float_of_scalar_type_probes()`, `max_required_float_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_float` | `avg_required_float_of_scalar_type_probes()`, `avg_required_float_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_float` | `standard_deviation_required_float_of_scalar_type_probes()`, `standard_deviation_required_float_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_float` | `square_root_of_population_standard_deviation_required_float_of_scalar_type_probes()`, `square_root_of_population_standard_deviation_required_float_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_float` | `sample_variance_required_float_of_scalar_type_probes()`, `sample_variance_required_float_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_float` | `sample_population_variance_required_float_of_scalar_type_probes()`, `sample_population_variance_required_float_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_float` | `sum_optional_float_of_scalar_type_probes()`, `sum_optional_float_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_float` | `min_optional_float_of_scalar_type_probes()`, `min_optional_float_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_float` | `max_optional_float_of_scalar_type_probes()`, `max_optional_float_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_float` | `avg_optional_float_of_scalar_type_probes()`, `avg_optional_float_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_float` | `standard_deviation_optional_float_of_scalar_type_probes()`, `standard_deviation_optional_float_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_float` | `square_root_of_population_standard_deviation_optional_float_of_scalar_type_probes()`, `square_root_of_population_standard_deviation_optional_float_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_float` | `sample_variance_optional_float_of_scalar_type_probes()`, `sample_variance_optional_float_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_float` | `sample_population_variance_optional_float_of_scalar_type_probes()`, `sample_population_variance_optional_float_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_double` | `sum_required_double_of_scalar_type_probes()`, `sum_required_double_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_double` | `min_required_double_of_scalar_type_probes()`, `min_required_double_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_double` | `max_required_double_of_scalar_type_probes()`, `max_required_double_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_double` | `avg_required_double_of_scalar_type_probes()`, `avg_required_double_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_double` | `standard_deviation_required_double_of_scalar_type_probes()`, `standard_deviation_required_double_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_double` | `square_root_of_population_standard_deviation_required_double_of_scalar_type_probes()`, `square_root_of_population_standard_deviation_required_double_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_double` | `sample_variance_required_double_of_scalar_type_probes()`, `sample_variance_required_double_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_double` | `sample_population_variance_required_double_of_scalar_type_probes()`, `sample_population_variance_required_double_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_double` | `sum_optional_double_of_scalar_type_probes()`, `sum_optional_double_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_double` | `min_optional_double_of_scalar_type_probes()`, `min_optional_double_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_double` | `max_optional_double_of_scalar_type_probes()`, `max_optional_double_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_double` | `avg_optional_double_of_scalar_type_probes()`, `avg_optional_double_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_double` | `standard_deviation_optional_double_of_scalar_type_probes()`, `standard_deviation_optional_double_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_double` | `square_root_of_population_standard_deviation_optional_double_of_scalar_type_probes()`, `square_root_of_population_standard_deviation_optional_double_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_double` | `sample_variance_optional_double_of_scalar_type_probes()`, `sample_variance_optional_double_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_double` | `sample_population_variance_optional_double_of_scalar_type_probes()`, `sample_population_variance_optional_double_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_date` | `min_required_date_of_scalar_type_probes()`, `min_required_date_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_date` | `max_required_date_of_scalar_type_probes()`, `max_required_date_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_date` | `min_optional_date_of_scalar_type_probes()`, `min_optional_date_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_date` | `max_optional_date_of_scalar_type_probes()`, `max_optional_date_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_datetime` | `min_required_datetime_of_scalar_type_probes()`, `min_required_datetime_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `required_datetime` | `max_required_datetime_of_scalar_type_probes()`, `max_required_datetime_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_datetime` | `min_optional_datetime_of_scalar_type_probes()`, `min_optional_datetime_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `optional_datetime` | `max_optional_datetime_of_scalar_type_probes()`, `max_optional_datetime_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `create_time` | `min_create_time_of_scalar_type_probes()`, `min_create_time_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `create_time` | `max_create_time_of_scalar_type_probes()`, `max_create_time_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `update_time` | `min_update_time_of_scalar_type_probes()`, `min_update_time_of_scalar_type_probes_as(alias, request)` |
+| Aggregate `update_time` | `max_update_time_of_scalar_type_probes()`, `max_update_time_of_scalar_type_probes_as(alias, request)` |
+| Entity access | `entity.scalar_type_probe_list()` returns `RelationHandle<'_, SmartList<ScalarTypeProbe>>` |
+
+`RelationHandle` never performs an implicit database query. Inspect `state()` when the distinction matters, and call `value()` only after the relation was explicitly selected. `value()` is present for Loaded and loaded-empty lists; it is absent for NotLoaded (and for an empty to-one relation).
+
+```rust
+let handle = entity.scalar_type_probe_list();
+let value = handle.value().ok_or("scalar_type_probe_list was not loaded")?;
+```
+
+Facet membership counts: configure this reverse-relation count on the Facet target request. The runtime intersects it with the full active outer filter, ignoring the outer page limit/offset. Read the configured alias from the Facet row; an absent alias is not a zero count. Do not substitute the target's ordinary `count_as(alias)` aggregate.
+
+For a generated typed entity, use the runtime `Entity` projection to read the alias without changing the ledger:
+
+```rust
+use teaql_core::{Entity as _, Value};
+let values = entity.clone().into_values();
+let count = values.get("configuredCountAlias").and_then(Value::try_i64)
+    .ok_or("requested aggregate alias was not returned")?;
+```
+
+Generated entities do not implement `BaseEntity`; do not call `dynamic_i64` on them. Facet rows are `CompactRow` values: use `row.get(alias)` directly there. Never default a missing alias to zero.
+
+Apply query methods before `.purpose(...)`; execution still requires non-empty `.comment(...)`, `.purpose(...)`, and exactly one context argument.
+
+
+---
+
+## TeaQL seven-language assist contract
+
+Apply the verified Rust semantic ceiling while using only the exact RUST generated and
+runtime APIs. Discover APIs through the generated application AGENTS.md and progressive
+model-aware Assist. Do not inspect generated domain-library source.
+
+- Do not create plurals by appending `s` or `es`; use the centralized generated plural.
+- Human and non-human entities use different generated predicate vocabularies. Preserve
+  forms such as “who are active” and “whose email is”; never infer them from English.
+- Configure filters, projection, paging, and other query options before `purpose(...)`.
+  Comment may appear anywhere in the chain. Purpose enters the executable stage; execution
+  requires both values, but comment does not have to immediately precede purpose.
+- Every execute/list/stream and every save accepts exactly one context argument:
+  `UserContext`. Name that argument `context`, never `runtime`; data services and global
+  policy are injected when the context is built. Reserve `runtime` for process-level
+  runtime ownership, provider/pool setup, and module assembly.
+- Tenant, merchant, identity, permissions, request policy, purpose policy, hard limit,
+  and continuous-page cursor policy come only from trusted context, never dynamic JSON or TFP.
+- If the required operation is absent after current entity/action and required field
+  Assist, stop that path and report MISSING_ASSIST. Do not guess an API or search the
+  generated library as a fallback.
+- Create each application-owned source file once. After its first compile attempt,
+  repair only the smallest block identified by the exact compiler or test diagnostic.
+  Preserve unrelated code; do not rewrite the complete file as an error-recovery loop.
+- Before a repair that would replace more than 25% of an existing application file,
+  stop and report LARGE_REWRITE_REQUEST with the file, exact diagnostic, reason, and
+  estimated scope. Initial creation and model-driven regeneration are not repairs.
+
+Capability: `query`.
+
+- Use generated projection, relation, predicate, sort, and aggregate APIs; never
+  concatenate application SQL or silently ignore an unsupported filter.
+- Rows, record count, facets, and aggregates must share the same active filter.
+- Add negative tests for missing purpose/comment and forbidden dynamic fields.
+
+### Optional per-parent Top-N optimization
+
+- Configure `top_n_probe_parent_threshold(threshold)` on the nested child request before its intent/execution
+  stage. Use the field-specific relation Assist for the exact generated selector.
+- Give the child a per-parent limit and deterministic ordering with an ID tie-breaker;
+  bound the parent query separately. A single-parent detail query is not batch Top-N.
+- Server providers default to a window query (`threshold = 0`). A positive threshold
+  permits bounded probes only when the already-loaded parent count is at or below it;
+  above it, use the window plan. SQLite uses its internal AlwaysProbe policy by default.
+- Measure before opting in. Do not infer a threshold from table size or execute COUNT
+  or statistics queries to choose a plan. Keep an index on foreign key + sort + ID.
+- Inspect selected-plan, parent-count, per-parent-limit and probe-count telemetry.
+  Runtime-managed probes are not application-owned N+1 loops; neither strategy changes
+  authorization, loaded-state semantics or the required comment/purpose.

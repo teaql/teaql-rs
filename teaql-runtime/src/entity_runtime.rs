@@ -5,6 +5,9 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use teaql_core::{EntitySnapshot, MutationValues, SmartList, Value};
 
+#[cfg(test)]
+mod mutation_input_tests;
+
 /// The explicit load state of a relation stored in the runtime identity graph.
 ///
 /// Reading this state never performs I/O. `NotLoaded` means exactly that the
@@ -490,6 +493,15 @@ impl EntityChangeSet {
         }
     }
 
+    fn clear_field(&mut self, key: &EntityKey, field: &str) {
+        if let Some(values) = self.changes.get_mut(key) {
+            values.remove(field);
+            if values.is_empty() {
+                self.changes.remove(key);
+            }
+        }
+    }
+
     /// Get the set of field names that have been modified for a given entity key.
     pub fn field_names(&self, key: &EntityKey) -> BTreeSet<String> {
         let mut names: BTreeSet<String> = self
@@ -554,6 +566,12 @@ impl ChangeSetStack {
     pub fn clear_entity(&mut self, key: &EntityKey) {
         for change_set in &mut self.stack {
             change_set.clear_entity(key);
+        }
+    }
+
+    fn clear_field(&mut self, key: &EntityKey, field: &str) {
+        for change_set in &mut self.stack {
+            change_set.clear_field(key, field);
         }
     }
 
@@ -1303,6 +1321,14 @@ impl EntityRuntimeState {
         self.write_context(|context| context.change_sets.set(key, field, value.into()));
     }
 
+    // Only model-admitted known-baseline normalization may discard native intent.
+    // Raw set deliberately keeps equal, unknown and malformed caller input.
+    pub(crate) fn discard_restored_field(&self, key: &EntityKey, field: &str) {
+        if self.inner.get().is_some() {
+            self.write_context(|context| context.change_sets.clear_field(key, field));
+        }
+    }
+
     pub fn get(&self, key: &EntityKey, field: &str) -> Option<Value> {
         self.read_context(None, |context| context.change_sets.get(key, field))
     }
@@ -1637,7 +1663,8 @@ impl EntityRuntimeState {
             self.loaded_snapshot
                 .with(|snapshot| {
                     (snapshot.entity.as_ref() == key.entity.as_ref()
-                        && snapshot.row.get("id")?.try_u64() == key.id.try_u64())
+                        && EntityKey::new(snapshot.entity.as_ref(), snapshot.row.get("id")?.clone())
+                            == *key)
                     .then(|| EntitySnapshot::from(snapshot.row.clone().into_map()))
                 })
                 .flatten()

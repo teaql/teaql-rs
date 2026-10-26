@@ -16,6 +16,8 @@ use crate::{
     DataServiceError, GraphNode, GraphOperation, ObjectLocation, RuntimeError, UserContext,
 };
 
+mod restoration;
+
 #[derive(Clone, Copy)]
 struct FixClockSnapshot {
     context: usize,
@@ -2370,6 +2372,7 @@ where
         }
         let mut visited = BTreeSet::from([root_key.clone()]);
         hydrate_ledger_relations(context, &root, &mut node, &mut visited)?;
+        restoration::prepare(context, &root, &mut node)?;
         preflight_graph(context, &mut node, &ObjectLocation::root(), Some(&root))?;
         merge_relation_mutations_into_root(context, &root, &node)?;
         preflight_pending_dynamic_entities(context, &root, &node)?;
@@ -2439,6 +2442,12 @@ where
                 &original_relation_fields,
             )?;
             return Ok((entity, Some(root)));
+        }
+        if restoration::graph_is_unchanged(&node) {
+            teaql_core::MutationIntent::from_optional(node.comment.as_deref())?;
+            node.values.remove("_loaded_fields");
+            return decode_saved_ledger_entity::<T>(node, &root, true, &original_relation_fields)
+                .map(|entity| (entity, None));
         }
     }
 
@@ -2514,6 +2523,7 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
         }
         let mut visited = BTreeSet::from([root_key.clone()]);
         hydrate_ledger_relations(context, &root, &mut node, &mut visited)?;
+        restoration::prepare(context, &root, &mut node)?;
         preflight_graph(context, &mut node, &ObjectLocation::root(), Some(&root))?;
         merge_relation_mutations_into_root(context, &root, &node)?;
         preflight_pending_dynamic_entities(context, &root, &node)?;
@@ -2531,6 +2541,11 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
                 preserve_relations,
                 &original_relation_fields,
             );
+        }
+        if restoration::graph_is_unchanged(&node) {
+            teaql_core::MutationIntent::from_optional(node.comment.as_deref())?;
+            node.values.remove("_loaded_fields");
+            return decode_saved_ledger_entity::<T>(node, &root, true, &original_relation_fields);
         }
     }
 
