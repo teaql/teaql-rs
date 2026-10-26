@@ -1,7 +1,10 @@
 //! Approved mutation intent to transaction-owned Blob binding changes.
 //! Planning performs no SQL, upload, signing or content I/O.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use teaql_core::{BlobRef, DataType, Value};
 use teaql_data_service::infrastructure_sql::InfrastructureSql;
@@ -29,6 +32,16 @@ pub trait BlobBindAuthorization: Send + Sync {
         _context: &UserContext,
         _principal: &teaql_runtime::TrustedReferencePrincipal,
         _identity: &BlobUploadIdentity,
+    ) -> BlobResult<bool> {
+        Ok(false)
+    }
+    /// The generic document relation has no child entity type. The host must
+    /// prove that this client key belongs to a current writable create relation.
+    fn authorize_document_create(
+        &self,
+        _context: &UserContext,
+        _document: &BoundDocumentSnapshot,
+        _entity: &EntityKey,
     ) -> BlobResult<bool> {
         Ok(false)
     }
@@ -86,6 +99,7 @@ struct DocumentSelectionAuthority {
     aggregate_type: String,
     purpose: String,
     selections: Vec<(BlobSelectionTarget, String, BlobRef)>,
+    created_entities: Vec<EntityKey>,
 }
 
 /// Frozen plan for one already-reviewed business mutation. An unresolved
@@ -305,8 +319,27 @@ impl BlobMutationParticipant {
             };
         };
         self.require_document_actor(context, &plan.identity)?;
+        let mut created_entities = BTreeSet::new();
         for change in &mut plan.changes {
             let key = (change.entity.clone(), change.target.field().to_owned());
+            if change.action == BlobBindAction::Create
+                && created_entities.insert(change.entity.clone())
+                && (!matches!(change.entity.id, Value::Text(_))
+                    || !document.snapshot.relations.iter().any(|relation| {
+                        relation.completeness == DocumentRelationCompleteness::Complete
+                            && relation.writable
+                            && relation
+                                .allowed_mutations
+                                .contains(&DocumentMutationKind::CreateChild)
+                    })
+                    || !self.authorization.authorize_document_create(
+                        context,
+                        &document,
+                        &change.entity,
+                    )?)
+            {
+                return Err(BlobErrorCode::BindDenied.into());
+            }
             if change.action != BlobBindAction::Create {
                 let mut rows = document.snapshot.entities.iter().filter(|row| {
                     row.identity.entity_type == change.entity.entity
@@ -377,19 +410,7 @@ impl BlobMutationParticipant {
                         false,
                     )?);
                 }
-                (BlobBindAction::Create, None) => {
-                    if !matches!(change.entity.id, Value::Text(_))
-                        || !document.snapshot.relations.iter().any(|relation| {
-                            relation.completeness == DocumentRelationCompleteness::Complete
-                                && relation.writable
-                                && relation
-                                    .allowed_mutations
-                                    .contains(&DocumentMutationKind::CreateChild)
-                        })
-                    {
-                        return Err(BlobErrorCode::BindDenied.into());
-                    }
-                }
+                (BlobBindAction::Create, None) => {}
                 _ => return Err(BlobErrorCode::BindDenied.into()),
             }
         }
@@ -402,6 +423,7 @@ impl BlobMutationParticipant {
             purpose: purpose.to_owned(),
             document,
             selections: credentials,
+            created_entities: created_entities.into_iter().collect(),
         });
         Ok(Some(plan))
     }
@@ -443,6 +465,41 @@ impl BlobMutationParticipant {
         }
     }
 
+    fn validate_document_authority(
+        &self,
+        context: &UserContext,
+        authority: &DocumentSelectionAuthority,
+    ) -> BlobResult<()> {
+        let current = context
+            .consume_bound_document_snapshot(
+                &authority.document_token,
+                &authority.aggregate_type,
+                &authority.purpose,
+            )
+            .map_err(document_error)?;
+        if current.document != authority.document {
+            return Err(BlobErrorCode::BindDenied.into());
+        }
+        for (target, token, reference) in &authority.selections {
+            let current = context
+                .consume_blob_selection(&authority.document_token, token, target)
+                .map_err(document_error)?;
+            if &current.claim.reference != reference {
+                return Err(BlobErrorCode::BindDenied.into());
+            }
+        }
+        for entity in &authority.created_entities {
+            if !self.authorization.authorize_document_create(
+                context,
+                &authority.document,
+                entity,
+            )? {
+                return Err(BlobErrorCode::BindDenied.into());
+            }
+        }
+        Ok(())
+    }
+
     /// Resolve generated IDs and lock authoritative old bindings on the
     /// business connection. This must precede its first business DML.
     pub async fn prepare(
@@ -470,7 +527,7 @@ impl BlobMutationParticipant {
             return Err(BlobErrorCode::PolicyInvalid.into());
         }
         if let Some(authority) = &plan.document {
-            validate_document_authority(context, authority)?;
+            self.validate_document_authority(context, authority)?;
         }
         let current = self.authorization.identity(context)?;
         if plan.document.is_some() {
@@ -556,7 +613,7 @@ impl BlobMutationParticipant {
             return Err(BlobErrorCode::PolicyInvalid.into());
         }
         if let Some(authority) = &prepared.document {
-            validate_document_authority(context, authority)?;
+            self.validate_document_authority(context, authority)?;
         }
         if self.authorization.identity(context)? != prepared.identity {
             return Err(BlobErrorCode::BindDenied.into());
@@ -576,31 +633,6 @@ impl BlobMutationParticipant {
             .apply_bindings(sql, prepared.bindings, self.clock.now_millis()?)
             .await
     }
-}
-
-fn validate_document_authority(
-    context: &UserContext,
-    authority: &DocumentSelectionAuthority,
-) -> BlobResult<()> {
-    let current = context
-        .consume_bound_document_snapshot(
-            &authority.document_token,
-            &authority.aggregate_type,
-            &authority.purpose,
-        )
-        .map_err(document_error)?;
-    if current.document != authority.document {
-        return Err(BlobErrorCode::BindDenied.into());
-    }
-    for (target, token, reference) in &authority.selections {
-        let current = context
-            .consume_blob_selection(&authority.document_token, token, target)
-            .map_err(document_error)?;
-        if &current.claim.reference != reference {
-            return Err(BlobErrorCode::BindDenied.into());
-        }
-    }
-    Ok(())
 }
 
 fn document_error(error: DocumentRoundTripError) -> crate::BlobError {

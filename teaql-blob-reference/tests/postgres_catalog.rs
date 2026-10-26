@@ -40,6 +40,9 @@ use teaql_data_service::{DataServiceExecutor, MutationCommand, MutationExecutor,
 struct BindPrincipal(std::sync::Arc<std::sync::atomic::AtomicBool>);
 
 #[cfg(feature = "runtime-integration")]
+struct CreateMembership(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+#[cfg(feature = "runtime-integration")]
 struct BindAuthorization;
 
 #[cfg(feature = "runtime-integration")]
@@ -60,6 +63,31 @@ impl BlobBindAuthorization for BindAuthorization {
         Ok(principal.subject == identity.actor()
             && context
                 .get_resource::<BindPrincipal>()
+                .ok_or(BlobErrorCode::BindDenied)?
+                .0
+                .load(Ordering::SeqCst))
+    }
+
+    fn authorize_document_create(
+        &self,
+        context: &teaql_runtime::UserContext,
+        document: &teaql_runtime::BoundDocumentSnapshot,
+        entity: &teaql_runtime::EntityKey,
+    ) -> BlobResult<bool> {
+        Ok(document.snapshot.scope.aggregate_type == "Folder"
+            && document.snapshot.relations.iter().any(|relation| {
+                relation.relation_name == "assets"
+                    && relation.writable
+                    && relation.completeness
+                        == teaql_runtime::DocumentRelationCompleteness::Complete
+                    && relation
+                        .allowed_mutations
+                        .contains(&teaql_runtime::DocumentMutationKind::CreateChild)
+            })
+            && entity.entity == "Asset"
+            && entity.id == teaql_core::Value::Text("client-row-7".into())
+            && context
+                .get_resource::<CreateMembership>()
                 .ok_or(BlobErrorCode::BindDenied)?
                 .0
                 .load(Ordering::SeqCst))

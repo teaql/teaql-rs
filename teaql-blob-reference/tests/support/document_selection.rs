@@ -1,6 +1,7 @@
 //! tqd2/tqs1 selection acceptance on the same real PostgreSQL owner as business DML.
 use super::*;
 use chrono::DateTime;
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 use teaql_core::{BlobFieldSpec, BlobRef, DataType, EntityDescriptor, PropertyDescriptor, Value};
 use teaql_runtime::{
@@ -57,6 +58,9 @@ fn context_for(subject: &str) -> UserContext {
     context.insert_resource(BindPrincipal(Arc::new(std::sync::atomic::AtomicBool::new(
         true,
     ))));
+    context.insert_resource(CreateMembership(Arc::new(
+        std::sync::atomic::AtomicBool::new(true),
+    )));
     context
 }
 
@@ -155,6 +159,28 @@ fn request<'a>(
         purpose,
         command_id,
         selections,
+    }
+}
+
+async fn receipt_status(f: &Fixture, fingerprint: &str) -> Option<Result<i64, ()>> {
+    let row = f
+        .admin
+        .get()
+        .await
+        .unwrap()
+        .query_opt(
+            &format!(
+                "SELECT fingerprint,resulting_version FROM \"{}\".r5_document_receipt WHERE scope=$1 AND actor=$2 AND command_id=$3",
+                f.schema
+            ),
+            &[&"tenant-a", &"actor-a", &"receipt-1"],
+        )
+        .await
+        .unwrap()?;
+    if row.get::<_, String>("fingerprint") == fingerprint {
+        Some(Ok(row.get("resulting_version")))
+    } else {
+        Some(Err(()))
     }
 }
 
@@ -554,6 +580,43 @@ async fn selected_new_client_key_requires_resolved_id_before_business_dml() {
         token: &selection,
         target: target.clone(),
     }];
+    let mut foreign_target = target.clone();
+    foreign_target.target_key = "client-row-outside-assets".into();
+    let foreign_selection = context
+        .issue_blob_selection(
+            &token,
+            BlobSelectionClaim {
+                target: foreign_target.clone(),
+                reference: selected_key.clone(),
+            },
+            Duration::from_secs(120),
+        )
+        .unwrap();
+    let mut foreign_plan = approved.clone();
+    foreign_plan.operations[0].entity =
+        EntityKey::new("Asset", Value::Text("client-row-outside-assets".into()));
+    assert_eq!(
+        participant
+            .plan_document_selections(
+                &context,
+                &foreign_plan,
+                request(
+                    &token,
+                    "Folder",
+                    "edit-folder",
+                    "create-1",
+                    &[DocumentBlobSelectionInput {
+                        token: &foreign_selection,
+                        target: foreign_target,
+                    }],
+                ),
+            )
+            .err()
+            .unwrap()
+            .code,
+        BlobErrorCode::BindDenied,
+        "a generic create relation cannot authorize an arbitrary client key"
+    );
     let tx = f.root.begin().await.unwrap();
     let plan = participant
         .plan_document_selections(
@@ -574,6 +637,52 @@ async fn selected_new_client_key_requires_resolved_id_before_business_dml() {
     );
     assert!(tx.commit().await.is_err());
     assert_eq!(f.count("r5_assets").await, 0);
+
+    let membership = context
+        .get_resource::<CreateMembership>()
+        .unwrap()
+        .0
+        .clone();
+    let tx = f.root.begin().await.unwrap();
+    let plan = participant
+        .plan_document_selections(
+            &context,
+            &approved,
+            request(&token, "Folder", "edit-folder", "create-1", &input),
+        )
+        .unwrap()
+        .unwrap();
+    let prepared = participant
+        .prepare(
+            &context,
+            tx.as_ref(),
+            plan,
+            &BTreeMap::from([(temporary.clone(), Value::U64(77))]),
+        )
+        .await
+        .unwrap();
+    f.write(tx.as_ref(), &final_target, Some(&selected_key))
+        .await;
+    membership.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        participant
+            .apply(&context, tx.as_ref(), prepared)
+            .await
+            .err()
+            .unwrap()
+            .code,
+        BlobErrorCode::BindDenied
+    );
+    membership.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(tx.commit().await.is_err());
+    assert_eq!(f.count("r5_assets").await, 0);
+    assert!(
+        f.catalog
+            .binding(&f.scope(), &final_target)
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     let tx = f.root.begin().await.unwrap();
     let plan = participant
@@ -616,6 +725,193 @@ async fn selected_new_client_key_requires_resolved_id_before_business_dml() {
         )
         .await,
         1
+    );
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn selected_document_receipt_failure_rolls_back_business_and_binding_then_replays_once() {
+    let f = Fixture::new(true).await;
+    execute(
+        f.root.as_ref(),
+        "CREATE TABLE r5_document_receipt (scope TEXT NOT NULL,actor TEXT NOT NULL,command_id TEXT NOT NULL,fingerprint TEXT NOT NULL,resulting_version BIGINT NOT NULL CHECK (resulting_version > 0),PRIMARY KEY(scope,actor,command_id))",
+        vec![],
+    )
+    .await;
+    let target = f.target(42, "document");
+    let spec = BlobFieldSpec::new("Asset", "document", ["pdf"], true, "default").unwrap();
+    let policy = BlobPolicies::default().resolve(&spec).unwrap();
+    let old = f
+        .upload("receipt_old", target.clone(), policy.clone(), 0)
+        .await;
+    let next = f
+        .upload("receipt_next", target.clone(), policy.clone(), 0)
+        .await;
+    f.bind(target.clone(), None, Some(old.clone()), policy, 100)
+        .await;
+    let old_binding = f
+        .catalog
+        .binding(&f.scope(), &target)
+        .await
+        .unwrap()
+        .unwrap();
+    let context = context();
+    let participant = participant(&f);
+    let document = bound_document(
+        Some(old.clone()),
+        u64::try_from(old_binding.version).unwrap(),
+    );
+    let selected = existing_target(document.snapshot.scope.clone(), "receipt-1");
+    let token = context
+        .issue_bound_document_snapshot(document, Duration::from_secs(300))
+        .unwrap();
+    let selection = context
+        .issue_blob_selection(
+            &token,
+            BlobSelectionClaim {
+                target: selected.clone(),
+                reference: next.clone(),
+            },
+            Duration::from_secs(120),
+        )
+        .unwrap();
+    let input = [DocumentBlobSelectionInput {
+        token: &selection,
+        target: selected,
+    }];
+    let approved = update("receipt-1", next.clone());
+    let fingerprint = format!(
+        "{:x}",
+        Sha256::digest(format!("receipt-1|Asset|42|document|{}", next.as_str()).as_bytes())
+    );
+
+    // The application owns this table and inserts its receipt on the same
+    // physical owner after business DML and Blob binding, before commit.
+    let tx = f.root.begin().await.unwrap();
+    let plan = participant
+        .plan_document_selections(
+            &context,
+            &approved,
+            request(&token, "Asset", "edit-asset", "receipt-1", &input),
+        )
+        .unwrap()
+        .unwrap();
+    let prepared = participant
+        .prepare(&context, tx.as_ref(), plan, &BTreeMap::new())
+        .await
+        .unwrap();
+    f.write(tx.as_ref(), &target, Some(&next)).await;
+    participant
+        .apply(&context, tx.as_ref(), prepared)
+        .await
+        .unwrap();
+    assert!(tx
+        .execute(
+            &InfrastructureStatement::new(
+                "INSERT INTO r5_document_receipt(scope,actor,command_id,fingerprint,resulting_version) VALUES ($1,$2,$3,$4,$5)",
+                vec![
+                    Value::Text("tenant-a".into()),
+                    Value::Text("actor-a".into()),
+                    Value::Text("receipt-1".into()),
+                    Value::Text(fingerprint.clone()),
+                    Value::I64(-1),
+                ],
+            )
+            .unwrap(),
+        )
+        .await
+        .is_err());
+    assert!(tx.commit().await.is_err());
+    assert_eq!(
+        scalar(
+            f.root.as_ref(),
+            "SELECT version AS value FROM r5_assets WHERE id=42"
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        f.catalog.binding(&f.scope(), &target).await.unwrap(),
+        Some(old_binding)
+    );
+    assert_eq!(
+        scalar(
+            f.root.as_ref(),
+            "SELECT count(*) AS value FROM r5_document_receipt"
+        )
+        .await,
+        0
+    );
+    assert_eq!(receipt_status(&f, &fingerprint).await, None);
+
+    let tx = f.root.begin().await.unwrap();
+    let plan = participant
+        .plan_document_selections(
+            &context,
+            &approved,
+            request(&token, "Asset", "edit-asset", "receipt-1", &input),
+        )
+        .unwrap()
+        .unwrap();
+    let prepared = participant
+        .prepare(&context, tx.as_ref(), plan, &BTreeMap::new())
+        .await
+        .unwrap();
+    f.write(tx.as_ref(), &target, Some(&next)).await;
+    participant
+        .apply(&context, tx.as_ref(), prepared)
+        .await
+        .unwrap();
+    execute(
+        tx.as_ref(),
+        "INSERT INTO r5_document_receipt(scope,actor,command_id,fingerprint,resulting_version) VALUES ($1,$2,$3,$4,$5)",
+        vec![
+            Value::Text("tenant-a".into()),
+            Value::Text("actor-a".into()),
+            Value::Text("receipt-1".into()),
+            Value::Text(fingerprint.clone()),
+            Value::I64(2),
+        ],
+    )
+    .await;
+    tx.commit().await.unwrap();
+
+    assert_eq!(receipt_status(&f, &fingerprint).await, Some(Ok(2)));
+    assert_eq!(
+        receipt_status(
+            &f,
+            &format!("{:x}", Sha256::digest(b"different submitted document"))
+        )
+        .await,
+        Some(Err(())),
+        "same command ID with changed content must conflict instead of replaying"
+    );
+    // Same command and digest returns the stored receipt without preparing a
+    // second binding or reapplying business DML.
+    assert_eq!(
+        scalar(
+            f.root.as_ref(),
+            "SELECT count(*) AS value FROM r5_document_receipt"
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        scalar(
+            f.root.as_ref(),
+            "SELECT version AS value FROM r5_assets WHERE id=42"
+        )
+        .await,
+        2
+    );
+    assert_eq!(
+        f.catalog
+            .binding(&f.scope(), &target)
+            .await
+            .unwrap()
+            .unwrap()
+            .reference,
+        Some(next)
     );
     f.finish().await;
 }
