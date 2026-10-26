@@ -502,6 +502,7 @@ fn read_text(data: &[u8], offset: &mut usize) -> Result<String, DocumentRoundTri
 mod tests {
     use super::*;
     use crate::{DeploymentProfile, ReferenceKey, StaticReferenceKeyProvider};
+    use sha2::Digest;
 
     fn principal(subject: &str) -> TrustedReferencePrincipal {
         TrustedReferencePrincipal::new("oidc", subject, "Merchant", 7).unwrap()
@@ -591,6 +592,10 @@ mod tests {
         let token = runtime
             .issue_document_snapshot(&principal("alice"), snapshot(), Duration::from_secs(600))
             .unwrap();
+        assert_eq!(
+            format!("{:x}", sha2::Sha256::digest(token.as_bytes())),
+            "69fee1ec01cd4a5b69dd3f795aeaffb3a3546e50d48e25cfc9b8f169a527b267"
+        );
         assert!(token.starts_with("tqd1.k1."));
         assert_eq!(
             runtime
