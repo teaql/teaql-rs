@@ -22,7 +22,8 @@ use teaql_runtime::{
     ViewPath, ViewPreparationService,
 };
 use teaql_secure_document_reference::{
-    ContextBoundReferenceRuntime, DeploymentProfile, ReferenceKey, StaticReferenceKeyProvider,
+    ContextBoundReferenceRuntime, DeploymentProfile, ReferenceKey, SecureDocumentReferenceModule,
+    StaticReferenceKeyProvider,
 };
 
 const PURPOSE: &str = "edit-generated-order-items";
@@ -457,13 +458,15 @@ async fn application_context(
         database_url: database_url.to_owned(),
     })
     .await?;
-    let mut context = context
-        .with_round_trip_reference_runtime(reference_runtime(permissions, customer_id))
-        .with_trusted_reference_principal(
-            TrustedReferencePrincipal::new("oidc", subject, "Customer", customer_id).unwrap(),
-        )
-        .with_context_bound_document_service(service);
+    let mut context = context.with_trusted_reference_principal(
+        TrustedReferencePrincipal::new("oidc", subject, "Customer", customer_id).unwrap(),
+    );
+    SecureDocumentReferenceModule::new(reference_runtime(permissions, customer_id))
+        .with_document_service(service)
+        .install_into(&mut context)?;
+    SecureDocumentReferenceModule::validate_endpoint(&context, true)?;
     ViewPreparationService::new(Arc::new(DocumentPresentation)).install_into(&mut context)?;
+    context.validate_capabilities()?;
     Ok(context)
 }
 

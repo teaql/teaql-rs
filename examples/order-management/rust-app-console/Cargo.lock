@@ -1403,6 +1403,7 @@ dependencies = [
  "hmac",
  "sha2",
  "subtle",
+ "teaql-core",
  "teaql-runtime",
 ]
 
