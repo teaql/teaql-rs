@@ -145,6 +145,151 @@ fn graph_context() -> UserContext {
 }
 
 #[test]
+fn wire_record_nonfinite_value_must_not_be_confused_with_loaded_null() {
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let entity = JsonProbe::from_compact_row(
+            BTreeMap::from([
+                ("id".to_owned(), Value::U64(1)),
+                ("ratio".to_owned(), Value::F64(value)),
+                ("name".to_owned(), Value::Null),
+            ])
+            .into(),
+        )
+        .unwrap();
+        let record = entity
+            .borrowed_json_values(&mut teaql_core::EntityJsonTraversal::default())
+            .unwrap();
+        let Value::F64(actual) = record["ratio"] else {
+            panic!("non-finite value lost its kind")
+        };
+        assert_eq!(actual.to_bits(), value.to_bits());
+        assert_eq!(record["name"], Value::Null);
+        assert!(!record.contains_key("address"));
+    }
+}
+
+#[test]
+fn wire_record_nested_values_keep_exact_types_without_changing_state() {
+    let mut root = JsonProbe::from_compact_row(
+        BTreeMap::from([
+            ("id".to_owned(), Value::U64(u64::MAX)),
+            ("version".to_owned(), Value::I64(i64::MAX)),
+            ("price".to_owned(), Value::Decimal("3.50".parse().unwrap())),
+            ("name".to_owned(), Value::Null),
+        ])
+        .into(),
+    )
+    .unwrap();
+    root.parent = Some(Box::new(
+        JsonProbe::from_compact_row(
+            BTreeMap::from([
+                ("id".to_owned(), Value::U64(u64::MAX)),
+                ("ratio".to_owned(), Value::F64(f64::INFINITY)),
+            ])
+            .into(),
+        )
+        .unwrap(),
+    ));
+    let snapshot = root.loaded_state_snapshot().unwrap();
+    let record = root
+        .borrowed_json_values(&mut teaql_core::EntityJsonTraversal::default())
+        .unwrap();
+    assert_eq!(record["id"], Value::U64(u64::MAX));
+    assert_eq!(record["version"], Value::I64(i64::MAX));
+    let Value::Decimal(price) = record["price"] else {
+        panic!("Decimal lost its kind")
+    };
+    assert_eq!(price.to_string(), "3.50");
+    let Value::Object(child) = &record["parent"] else {
+        panic!("child lost native values")
+    };
+    assert!(matches!(child["ratio"], Value::F64(value) if value.is_infinite()));
+    assert!(!child.contains_key("name"));
+    assert!(Arc::ptr_eq(
+        &snapshot,
+        &root.loaded_state_snapshot().unwrap()
+    ));
+    assert!(root.dirty_fields().is_none());
+    assert!(root.parent.as_ref().unwrap().dirty_fields().is_none());
+    // The legacy bridge stays a presentation API. The future strict codec must
+    // consume the lossless values above, not infer types from this JSON tree.
+    assert_eq!(
+        root.borrowed_json(&mut teaql_core::EntityJsonTraversal::default())
+            .unwrap(),
+        teaql_core::record_to_json_value(&record)
+    );
+}
+
+#[test]
+fn wire_record_dynamic_values_keep_their_kind_but_runtime_state_stays_private() {
+    let mut row = JsonProbe::from_compact_row(
+        BTreeMap::from([
+            ("id".to_owned(), Value::U64(1)),
+            ("_ratio".to_owned(), Value::F64(f64::NAN)),
+            (
+                "_amount".to_owned(),
+                Value::Decimal("0.1000".parse().unwrap()),
+            ),
+        ])
+        .into(),
+    )
+    .unwrap();
+    row.properties.insert(
+        "_comment".to_owned(),
+        Value::Text("PRIVATE-COMMENT".to_owned()),
+    );
+    let record = row
+        .borrowed_json_values(&mut teaql_core::EntityJsonTraversal::default())
+        .unwrap();
+    assert!(matches!(record["_ratio"], Value::F64(value) if value.is_nan()));
+    assert!(matches!(&record["_amount"], Value::Decimal(value) if value.to_string()=="0.1000"));
+    assert!(!record.contains_key("_comment"));
+    assert!(row.dirty_fields().is_none());
+}
+
+#[teaql_macros::teaql_entity]
+#[derive(Debug, teaql_macros::TeaqlEntity)]
+#[teaql(entity = "NoCloneJson", indexed_layout)]
+struct NoCloneJson {
+    #[teaql(id)]
+    id: u64,
+    #[teaql(version)]
+    version: i64,
+    name: Option<String>,
+    #[teaql(skip)]
+    __load_state: LoadState,
+}
+impl NoCloneJson {
+    const __TEAQL_FIELD_LAYOUT_REVISION: &'static str = "no-clone-json-v1";
+    const __TEAQL_FIXED_FIELD_INDEXES: &'static [(&'static str, usize)] =
+        &[("id", 0), ("version", 1), ("name", 2)];
+    const __TEAQL_FIXED_FIELD_MAPPINGS: &'static [(&'static str, &'static str, &'static str)] = &[
+        ("id", "id", "id"),
+        ("version", "version", "version"),
+        ("name", "name", "name"),
+    ];
+}
+
+#[test]
+fn wire_record_compiles_for_an_entity_without_clone() {
+    let row = NoCloneJson::from_compact_row(
+        BTreeMap::from([
+            ("id".to_owned(), Value::U64(7)),
+            ("version".to_owned(), Value::I64(1)),
+            ("name".to_owned(), Value::Text("borrowed".to_owned())),
+        ])
+        .into(),
+    )
+    .unwrap();
+    let record = row
+        .borrowed_json_values(&mut teaql_core::EntityJsonTraversal::default())
+        .unwrap();
+    assert_eq!(record["id"], Value::U64(7));
+    assert_eq!(record["name"], Value::Text("borrowed".to_owned()));
+    assert!(row.dirty_fields().is_none());
+}
+
+#[test]
 fn graph_json_restores_typed_children_without_widening_repeated_identity_views() {
     use crate::LedgerEntity;
     let input = serde_json::json!({"id":1,"version":7,"name":"parent","child_list":[

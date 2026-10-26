@@ -172,6 +172,18 @@ pub trait Entity: TeaqlEntity + Sized {
         None
     }
 
+    /// Lossless presentation snapshot for model-aware codecs. Values retain
+    /// their native kinds, including Decimal scale and non-finite floats, so
+    /// the boundary can validate them before any JSON conversion. Absence is
+    /// omission, not null. This does not clone entities, load data or mutate.
+    #[doc(hidden)]
+    fn borrowed_json_values(
+        &self,
+        _traversal: &mut EntityJsonTraversal,
+    ) -> Option<BTreeMap<String, Value>> {
+        None
+    }
+
     /// Whether a model field was loaded in the entity snapshot used for a
     /// mutation. Implementations without projection tracking remain fully
     /// loaded for backwards compatibility.

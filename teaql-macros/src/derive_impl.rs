@@ -557,10 +557,10 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 };
                 relations.push(quote! {
                     if let Some(entity) = #embedded {
-                        record.insert(#name.to_owned(), ::teaql_core::Value::Json(::teaql_core::Entity::borrowed_json(entity, traversal)?));
+                        record.insert(#name.to_owned(), ::teaql_core::Value::Object(::teaql_core::Entity::borrowed_json_values(entity, traversal)?));
                     } else if self.__load_state.is_loaded(#name) {
                         if let Some(entity) = #resolve {
-                            record.insert(#name.to_owned(), ::teaql_core::Value::Json(::teaql_core::Entity::borrowed_json(entity, traversal)?));
+                            record.insert(#name.to_owned(), ::teaql_core::Value::Object(::teaql_core::Entity::borrowed_json_values(entity, traversal)?));
                         } else if #null_value {
                             record.insert(#name.to_owned(), ::teaql_core::Value::Null);
                         }
@@ -585,7 +585,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                     relations.push(quote! {
                         if self.__load_state.is_loaded(#name) && let Some(list) = self.#state_ident.resolve_relation_list::<#target>(#entity_name, self.#id_ident, #name) {
                             let mut items = Vec::with_capacity(list.len());
-                            for entity in &list.data { items.push(::teaql_core::Value::Json(::teaql_core::Entity::borrowed_json(entity, traversal)?)); }
+                            for entity in &list.data { items.push(::teaql_core::Value::Object(::teaql_core::Entity::borrowed_json_values(entity, traversal)?)); }
                             record.insert(#name.to_owned(), ::teaql_core::Value::List(items));
                         }
                     });
@@ -593,7 +593,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                     relations.push(quote! {
                         if self.__load_state.is_loaded(#name) && let Some(edge) = self.#state_ident.resolve_relation_option::<#target>(#entity_name, self.#id_ident, #name) {
                             let value = match edge {
-                                Some(entity) => ::teaql_core::Value::Json(::teaql_core::Entity::borrowed_json(entity, traversal)?),
+                                Some(entity) => ::teaql_core::Value::Object(::teaql_core::Entity::borrowed_json_values(entity, traversal)?),
                                 None => ::teaql_core::Value::Null,
                             };
                             record.insert(#name.to_owned(), value);
@@ -604,17 +604,21 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         }
         quote! {
             fn borrowed_json(&self, traversal: &mut ::teaql_core::EntityJsonTraversal) -> Option<::teaql_core::serde_json::Value> {
+                <Self as ::teaql_core::Entity>::borrowed_json_values(self, traversal)
+                    .map(|record| ::teaql_core::record_to_json_value(&record))
+            }
+
+            fn borrowed_json_values(&self, traversal: &mut ::teaql_core::EntityJsonTraversal) -> Option<::std::collections::BTreeMap<String, ::teaql_core::Value>> {
                 let expand = traversal.enter(#entity_name, self as *const Self as usize);
                 let result = (|| {
                     let mut record = ::std::collections::BTreeMap::new();
                     #(#values)*
                     if expand { #(#relations)* }
                     for key in ["_comment", "_dirty_fields", "_original_values", "_is_new", "_is_deleted"] { record.remove(key); }
-                    let mut json = ::teaql_core::record_to_json_value(&record);
                     if expand && let Some(fields) = ::teaql_core::Entity::dynamic_field_values(self) {
-                        json.as_object_mut().expect("entity JSON object").extend(fields.values().iter().map(|(code, value)| (format!("#{code}"), value.to_json_value())));
+                        record.extend(fields.values().iter().map(|(code, value)| (format!("#{code}"), value.clone())));
                     }
-                    Some(json)
+                    Some(record)
                 })();
                 traversal.leave();
                 result
