@@ -926,6 +926,36 @@ impl UserContext {
 
     /// Host readiness check after passive business and infrastructure assembly.
     pub fn validate_capabilities(&self) -> Result<(), crate::RuntimeError> {
+        // Generated manifests are declarative. A missing declaration must not
+        // let a modeled Blob field bypass readiness altogether.
+        for entity in self.all_entities() {
+            for property in &entity.properties {
+                if property.data_type != teaql_core::DataType::BlobRef {
+                    if property.blob_field_spec.is_some() {
+                        return Err(crate::RuntimeError::Schema(
+                            "BLOB_POLICY_INVALID".to_owned(),
+                        ));
+                    }
+                    continue;
+                }
+                let spec = property
+                    .blob_field_spec
+                    .as_ref()
+                    .ok_or_else(|| crate::RuntimeError::Schema("BLOB_POLICY_INVALID".to_owned()))?;
+                if spec.entity() != entity.name
+                    || spec.field() != property.name
+                    || spec.nullable() != property.nullable
+                {
+                    return Err(crate::RuntimeError::Schema(
+                        "BLOB_POLICY_INVALID".to_owned(),
+                    ));
+                }
+                return Err(crate::RuntimeError::Capability {
+                    code: "BLOB_CAPABILITY_MISSING",
+                    capability: "blob.v1".to_owned(),
+                });
+            }
+        }
         for capability in self.required_capabilities() {
             if let Some(service) =
                 self.get_resource::<crate::view_preparation::ViewServiceResource>()

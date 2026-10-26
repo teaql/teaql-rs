@@ -727,7 +727,10 @@ mod transactional_ledger_readback_tests {
     };
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
-    use teaql_core::{DataType, EntityDescriptor, PropertyDescriptor, RelationDescriptor, Value};
+    use teaql_core::{
+        BlobFieldSpec, BlobRef, DataType, EntityDescriptor, PropertyDescriptor, RelationDescriptor,
+        Value,
+    };
     use teaql_data_service::{
         DataServiceCapabilities, DataServiceExecutor, ExecutionMetadata, MutationExecutor,
         MutationRequest, MutationResult, QueryExecutor, QueryRequest, QueryResult, Transaction,
@@ -1578,6 +1581,73 @@ mod transactional_ledger_readback_tests {
 
         assert!(error.to_string().contains("TASK-DENIED"));
         assert!(state.lock().unwrap().calls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn modeled_blob_ledger_write_without_binding_participant_never_begins_transaction() {
+        let state = Arc::new(Mutex::new(State {
+            row: BTreeMap::from([
+                ("id".to_owned(), Value::I64(1)),
+                ("version".to_owned(), Value::I64(1)),
+                (
+                    "document".to_owned(),
+                    Value::BlobRef(BlobRef::new("blob_existing_binding").unwrap()),
+                ),
+            ]),
+            ..Default::default()
+        }));
+        let spec = BlobFieldSpec::new("Task", "document", ["pdf"], true, "default").unwrap();
+        let descriptor = EntityDescriptor::new("Task")
+            .property(PropertyDescriptor::new("id", DataType::I64).id())
+            .property(PropertyDescriptor::new("version", DataType::I64).version())
+            .property(PropertyDescriptor::new("document", DataType::BlobRef).blob_field_spec(spec));
+        let mut context = UserContext::default()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(descriptor));
+        context.insert_resource(Ambient(state.clone()));
+        let root = EntityRuntimeState::default();
+        let key = EntityKey::new_static("Task", 1_i64);
+        root.set_original_version(key.clone(), 1);
+        let reference = BlobRef::new("blob_requires_binding").unwrap();
+        root.set(key.clone(), "document", reference.clone());
+        let node = GraphNode::new("Task")
+            .comment("reject unbound blob write")
+            .value("id", Value::I64(1))
+            .value("version", Value::I64(1))
+            .value("document", reference);
+        let graph_node = node.clone();
+
+        let error = GraphSaverFor::<Ambient>::new()
+            .save_ledger_dyn(&context, node, root.clone())
+            .await
+            .expect_err("modeled Blob write needs transaction binding");
+        assert!(matches!(
+            error,
+            RuntimeError::Capability {
+                code: "BLOB_CAPABILITY_MISSING",
+                ..
+            }
+        ));
+        assert!(state.lock().unwrap().calls.is_empty());
+        assert_eq!(
+            root.get(&key, "document"),
+            Some(Value::BlobRef(
+                BlobRef::new("blob_requires_binding").unwrap()
+            ))
+        );
+
+        let error = GraphSaverFor::<Ambient>::new()
+            .save_graph_dyn(&context, graph_node)
+            .await
+            .expect_err("graph save cannot bypass the binding participant");
+        assert!(matches!(
+            error,
+            RuntimeError::Capability {
+                code: "BLOB_CAPABILITY_MISSING",
+                ..
+            }
+        ));
+        assert!(!state.lock().unwrap().calls.contains(&"begin"));
+        assert!(!state.lock().unwrap().calls.contains(&"transaction-mutate"));
     }
 }
 

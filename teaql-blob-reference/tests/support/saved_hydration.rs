@@ -2,7 +2,10 @@
 use super::Fixture;
 use std::sync::Arc;
 use teaql_core::TeaqlEntity as _;
-use teaql_core::{Audited, BlobRef, CompactRow, Entity, EntitySnapshot, Value};
+use teaql_core::{
+    Audited, BlobFieldSpec, BlobRef, CompactRow, DataType, Entity, EntityDescriptor,
+    EntitySnapshot, Value,
+};
 use teaql_data_service::infrastructure_sql::*;
 use teaql_macros::{TeaqlEntity, teaql_entity};
 use teaql_runtime::{
@@ -20,6 +23,18 @@ struct SavedAsset {
     #[teaql(version)]
     version: i64,
     document: Option<BlobRef>,
+}
+// Journal and typed readback fixtures use Key-shaped text without claiming
+// automatic Blob binding. The modeled Blob test below installs the real spec.
+fn transport_descriptor() -> EntityDescriptor {
+    let mut descriptor = SavedAsset::entity_descriptor();
+    descriptor
+        .properties
+        .iter_mut()
+        .find(|property| property.name == "document")
+        .unwrap()
+        .data_type = DataType::Text;
+    descriptor
 }
 fn key() -> EntityKey {
     EntityKey::new_static("Asset", 42_u64)
@@ -55,7 +70,7 @@ async fn owned_native_save_decodes_and_acknowledges_before_physical_commit() {
     let root = loaded.entity_runtime_state().unwrap();
     root.set(key(), "document", Value::BlobRef(blob("owned")));
     let mut context = UserContext::new()
-        .with_metadata(InMemoryMetadataStore::new().with_entity(SavedAsset::entity_descriptor()));
+        .with_metadata(InMemoryMetadataStore::new().with_entity(transport_descriptor()));
     context.register_executor(f.business());
     let saved = Audited::new(loaded, "owned native save")
         .save(&context)
@@ -72,6 +87,55 @@ async fn owned_native_save_decodes_and_acknowledges_before_physical_commit() {
         Some(&Value::Text(blob("owned").as_str().into()))
     );
     println!("R5_OWNED_NATIVE_TYPED_COMMIT_PASS");
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn modeled_blob_save_without_binding_participant_leaves_real_sql_and_intent_unchanged() {
+    let f = Fixture::new(true).await;
+    f.write(
+        f.root.as_ref(),
+        &f.target(42, "document"),
+        Some(&blob("original")),
+    )
+    .await;
+    let loaded = SavedAsset::from_compact_row(row(f.root.as_ref()).await).unwrap();
+    let root = loaded.entity_runtime_state().unwrap();
+    root.set(key(), "document", Value::BlobRef(blob("unbound")));
+    let mut descriptor = SavedAsset::entity_descriptor();
+    let spec = BlobFieldSpec::new("Asset", "document", ["pdf"], true, "default").unwrap();
+    let field = descriptor
+        .properties
+        .iter_mut()
+        .find(|property| property.name == "document")
+        .unwrap();
+    *field = field.clone().blob_field_spec(spec);
+    let mut context =
+        UserContext::new().with_metadata(InMemoryMetadataStore::new().with_entity(descriptor));
+    context.register_executor(f.business());
+
+    let error = Audited::new(loaded, "modeled Blob write requires binding")
+        .save(&context)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        RuntimeError::Capability {
+            code: "BLOB_CAPABILITY_MISSING",
+            ..
+        }
+    ));
+    let actual = row(f.root.as_ref()).await;
+    assert_eq!(actual.get("version"), Some(&Value::I64(1)));
+    assert_eq!(
+        actual.get("document"),
+        Some(&Value::Text(blob("original").as_str().into()))
+    );
+    assert_eq!(
+        root.get(&key(), "document"),
+        Some(Value::BlobRef(blob("unbound")))
+    );
+    assert!(!root.has_pending_submission());
     f.finish().await;
 }
 
@@ -106,7 +170,7 @@ async fn owned_native_review_freezes_sql_intent_and_keeps_late_edit() {
     root.set(key(), "document", Value::BlobRef(blob("submitted")));
     let policy: Arc<dyn MutationPolicy> = Arc::new(EditAfterOwnedReview(root.clone()));
     let mut context = UserContext::new()
-        .with_metadata(InMemoryMetadataStore::new().with_entity(SavedAsset::entity_descriptor()))
+        .with_metadata(InMemoryMetadataStore::new().with_entity(transport_descriptor()))
         .with_mutation_policy_registry(move |request_key: &str| {
             (request_key == "Asset.saveGraph").then(|| policy.clone())
         });
@@ -146,7 +210,7 @@ async fn owned_native_new_row_acknowledges_insert_origin() {
     root.mark_as_new(key());
     root.set(key(), "document", Value::BlobRef(blob("new_owned")));
     let mut context = UserContext::new()
-        .with_metadata(InMemoryMetadataStore::new().with_entity(SavedAsset::entity_descriptor()));
+        .with_metadata(InMemoryMetadataStore::new().with_entity(transport_descriptor()));
     context.register_executor(f.business());
     let saved = Audited::new(new, "owned new Asset save")
         .save(&context)
@@ -196,7 +260,7 @@ async fn owned_native_allocated_id_aliases_original_and_returned_handles() {
         Value::BlobRef(blob("allocated")),
     );
     let mut context = UserContext::new()
-        .with_metadata(InMemoryMetadataStore::new().with_entity(SavedAsset::entity_descriptor()))
+        .with_metadata(InMemoryMetadataStore::new().with_entity(transport_descriptor()))
         .with_internal_id_generator(AllocateAssetId);
     context.register_executor(f.business());
     let saved = Audited::new(new, "owned allocated Asset save")
@@ -249,7 +313,7 @@ async fn owned_invalid_canonical_readback_rolls_back_retryable_intent() {
     let root = loaded.entity_runtime_state().unwrap();
     root.set(key(), "document", Value::BlobRef(blob("submitted")));
     let mut context = UserContext::new()
-        .with_metadata(InMemoryMetadataStore::new().with_entity(SavedAsset::entity_descriptor()));
+        .with_metadata(InMemoryMetadataStore::new().with_entity(transport_descriptor()));
     context.register_executor(f.business());
     let error = Audited::new(loaded, "owned corrupted authoritative readback")
         .save(&context)
@@ -285,7 +349,7 @@ async fn outer_transaction_repeats_native_save_on_one_owner_and_preserves_late_e
     let root = loaded.entity_runtime_state().unwrap();
     root.set(key(), "document", Value::BlobRef(blob("first")));
     let mut context = UserContext::new()
-        .with_metadata(InMemoryMetadataStore::new().with_entity(SavedAsset::entity_descriptor()));
+        .with_metadata(InMemoryMetadataStore::new().with_entity(transport_descriptor()));
     context.insert_resource(f.business());
     let ledger = root.clone();
     let saved = context
@@ -338,7 +402,7 @@ async fn outer_transaction_rollback_restores_original_and_retryable_intent() {
     let root = loaded.entity_runtime_state().unwrap();
     root.set(key(), "document", Value::BlobRef(blob("submitted")));
     let mut context = UserContext::new()
-        .with_metadata(InMemoryMetadataStore::new().with_entity(SavedAsset::entity_descriptor()));
+        .with_metadata(InMemoryMetadataStore::new().with_entity(transport_descriptor()));
     context.insert_resource(f.business());
     let result = context
         .execute_in_transaction::<super::support::Business, _, _>(move |scope| {
@@ -395,7 +459,7 @@ async fn outer_policy_denial_restores_draft_and_commits_no_save_write() {
     root.set(key(), "document", Value::BlobRef(blob("denied")));
     let policy: Arc<dyn MutationPolicy> = Arc::new(DenyAsset);
     let mut context = UserContext::new()
-        .with_metadata(InMemoryMetadataStore::new().with_entity(SavedAsset::entity_descriptor()))
+        .with_metadata(InMemoryMetadataStore::new().with_entity(transport_descriptor()))
         .with_mutation_policy_registry(move |request_key: &str| {
             (request_key == "Asset.saveGraph").then(|| policy.clone())
         });
@@ -452,7 +516,7 @@ async fn outer_caught_invalid_canonical_readback_vetoes_physical_commit() {
     let root = loaded.entity_runtime_state().unwrap();
     root.set(key(), "document", Value::BlobRef(blob("submitted")));
     let mut context = UserContext::new()
-        .with_metadata(InMemoryMetadataStore::new().with_entity(SavedAsset::entity_descriptor()));
+        .with_metadata(InMemoryMetadataStore::new().with_entity(transport_descriptor()));
     context.insert_resource(f.business());
     let error = context
         .execute_in_transaction::<super::support::Business, _, _>(move |scope| {
