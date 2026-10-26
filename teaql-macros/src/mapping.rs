@@ -56,12 +56,9 @@ pub fn decode_value_tokens(
             }
         },
         Some("i64") => quote! {
-            match #value_expr {
-                ::teaql_core::Value::I64(v) => *v,
-                ::teaql_core::Value::U64(v) => i64::try_from(*v)
-                    .map_err(|_| ::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: u64 out of i64 range", #field_name)))?,
-                other => return Err(::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: {:?}", #field_name, other))),
-            }
+            (#value_expr).try_i64().ok_or_else(|| ::teaql_core::EntityError::new(
+                #entity_name, format!("invalid field {}: expected an exact signed 64-bit integer", #field_name)
+            ))?
         },
         Some("i16") => quote! {
             match #value_expr {
@@ -82,14 +79,9 @@ pub fn decode_value_tokens(
             }
         },
         Some("u64") => quote! {
-            match #value_expr {
-                ::teaql_core::Value::U64(v) => *v,
-                ::teaql_core::Value::I64(v) => u64::try_from(*v)
-                    .map_err(|_| ::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: negative i64 cannot map to u64", #field_name)))?,
-                ::teaql_core::Value::Decimal(v) => ::teaql_core::Value::Decimal(*v).try_u64()
-                    .ok_or_else(|| ::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: decimal cannot map exactly to u64", #field_name)))?,
-                other => return Err(::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: {:?}", #field_name, other))),
-            }
+            (#value_expr).try_u64().ok_or_else(|| ::teaql_core::EntityError::new(
+                #entity_name, format!("invalid field {}: expected an exact unsigned 64-bit integer", #field_name)
+            ))?
         },
         Some("u16") => quote! {
             match #value_expr {

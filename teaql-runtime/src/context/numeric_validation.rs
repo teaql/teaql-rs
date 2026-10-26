@@ -3,9 +3,9 @@ use crate::{CheckResult, CheckResults, CheckRule, EntityValues, ObjectLocation};
 use teaql_core::{DataType, Value};
 
 impl UserContext {
-    /// Business Float/Double scalars must have a portable numeric value. Do
-    /// this after custom Fix, but before IDs, transactions or provider work.
-    pub(super) fn collect_floating_property_results(
+    /// Numeric scalars must be representable without rounding or truncation.
+    /// Run after custom Fix, before IDs, transactions or provider work.
+    pub(super) fn collect_numeric_property_results(
         &self,
         entity: &str,
         values: &EntityValues,
@@ -19,25 +19,39 @@ impl UserContext {
         else {
             return;
         };
-        for property in descriptor
-            .properties
-            .iter()
-            .filter(|property| property.data_type == DataType::F64)
-        {
-            if let Some(Value::F64(value)) = values.get(&property.name)
-                && !value.is_finite()
-            {
+        for property in &descriptor.properties {
+            let Some(value) = values.get(&property.name) else {
+                continue;
+            };
+            // Required/null handling is a separate rule. An unselected field
+            // is not an invalid number, and nullable null must remain null.
+            if matches!(value, Value::Null) {
+                continue;
+            }
+            let expected = match property.data_type {
+                DataType::I64 if value.try_i64().is_none() => {
+                    Some("an exact signed 64-bit integer")
+                }
+                DataType::U64 if value.try_u64().is_none() => {
+                    Some("an exact unsigned 64-bit integer")
+                }
+                DataType::F64 if matches!(value, Value::F64(number) if !number.is_finite()) => {
+                    Some("a finite Float/Double number")
+                }
+                _ => None,
+            };
+            if let Some(expected) = expected {
                 let field_location = location.clone().member(&property.name);
                 if !results.iter().any(|result| {
                     result.rule == CheckRule::InvalidType && result.location == field_location
                 }) {
-                    // No input_value: JSON cannot distinguish a non-finite
-                    // number from null. Do not create misleading wire evidence.
+                    // Never copy the rejected value into public diagnostics.
+                    // In particular, NaN/Infinity must not masquerade as null.
                     results.push(
                         CheckResult::new(CheckRule::InvalidType, field_location)
                             .with_entity_type(entity)
                             .with_message(format!(
-                                "invalid field {}: expected a finite Float/Double number",
+                                "invalid field {}: expected {expected}",
                                 property.name
                             )),
                     );
@@ -46,6 +60,10 @@ impl UserContext {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "integral_validation_tests.rs"]
+mod integral_validation_tests;
 
 #[cfg(test)]
 mod tests {

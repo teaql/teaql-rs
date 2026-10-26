@@ -141,7 +141,7 @@ impl Value {
         match self {
             Self::I64(value) => Some(*value),
             Self::U64(value) => i64::try_from(*value).ok(),
-            Self::Decimal(value) => value.to_i64(),
+            Self::Decimal(value) if value.fract().is_zero() => value.to_i64(),
             _ => None,
         }
     }
@@ -150,7 +150,7 @@ impl Value {
         match self {
             Self::U64(value) => Some(*value),
             Self::I64(value) => u64::try_from(*value).ok(),
-            Self::Decimal(value) => value.to_u64(),
+            Self::Decimal(value) if value.fract().is_zero() => value.to_u64(),
             _ => None,
         }
     }
@@ -301,6 +301,47 @@ mod tests {
         assert_eq!(Value::F64(42.0).try_u64(), None);
         assert_eq!(Value::Text("42".to_owned()).try_u64(), None);
         assert_eq!(Value::Null.try_u64(), None);
+    }
+
+    #[test]
+    fn integral_exactness_fractional_decimals_never_truncate_or_cross_a_boundary() {
+        for text in [
+            "0.1",
+            "-0.1",
+            "1.9",
+            "-1.9",
+            "0.0000000000000000000000000001",
+            "9223372036854775807.1",
+            "-9223372036854775808.1",
+            "18446744073709551615.1",
+        ] {
+            let value = Value::Decimal(Decimal::from_str(text).unwrap());
+            assert_eq!(value.try_i64(), None, "signed conversion truncated {text}");
+            assert_eq!(
+                value.try_u64(),
+                None,
+                "unsigned conversion truncated {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn integral_exactness_integral_decimals_preserve_scale_zero_and_full_width() {
+        for (text, expected) in [
+            ("0.000", 0),
+            ("-0.000", 0),
+            ("42.000", 42),
+            ("-42.000", -42),
+            ("9223372036854775807.0", i64::MAX),
+            ("-9223372036854775808.0", i64::MIN),
+        ] {
+            let value = Value::Decimal(Decimal::from_str(text).unwrap());
+            assert_eq!(value.try_i64(), Some(expected));
+            assert_eq!(value.try_u64(), u64::try_from(expected).ok());
+        }
+        let value = Value::Decimal(Decimal::from_str("18446744073709551615.0").unwrap());
+        assert_eq!(value.try_i64(), None);
+        assert_eq!(value.try_u64(), Some(u64::MAX));
     }
 
     #[test]
