@@ -107,6 +107,11 @@ pub trait SqlTransactionTransport: SqlTransport {
 
 pub trait SqlTransaction {
     type Error: std::error::Error + Send + Sync + 'static;
+    fn physical_identity(
+        &self,
+    ) -> Option<teaql_data_service::infrastructure_sql::PhysicalTransactionIdentity> {
+        None
+    }
     fn commit_sql(self) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
     fn rollback_sql(self) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
 }
@@ -2108,6 +2113,12 @@ impl<
 > teaql_data_service::Transaction for SqlDataServiceTransaction<'a, D, Tx, S>
 {
     type Error = SqlExecutorError<<Tx as SqlTransport>::Error>;
+
+    fn physical_identity(
+        &self,
+    ) -> Option<teaql_data_service::infrastructure_sql::PhysicalTransactionIdentity> {
+        self.transport.physical_identity()
+    }
 
     fn commit(self) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
         async move {

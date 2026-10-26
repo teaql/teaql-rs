@@ -97,6 +97,22 @@ struct DetachedLedger {
     level: usize,
     intent: EntityMutationLedger,
 }
+#[derive(Clone, Debug)]
+pub(super) struct DraftLedger {
+    sequence: u64,
+    level: usize,
+    intent: EntityMutationLedger,
+}
+impl DraftLedger {
+    pub(super) fn protects_level(&self, level: usize) -> bool {
+        self.level >= level
+    }
+    pub(super) fn get(&self, level: usize, key: &EntityKey, field: &str) -> Option<Value> {
+        (self.level == level)
+            .then(|| self.intent.change_sets.current()?.get(key, field).cloned())
+            .flatten()
+    }
+}
 impl PendingLedger {
     pub(super) fn protects_level(&self, level: usize) -> bool {
         self.batches.iter().any(|batch| batch.level >= level)
@@ -107,6 +123,109 @@ impl PendingLedger {
             .rev()
             .filter(|batch| batch.level == level)
             .find_map(|batch| batch.intent.change_sets.current()?.get(key, field).cloned())
+    }
+}
+
+/// An ownerless capture for preflight and immutable policy review. Dropping it
+/// before attachment restores the frozen intent without creating SQL uncertainty.
+#[doc(hidden)]
+pub struct LedgerDraft {
+    root: MutationLedgerHandle,
+    sequence: u64,
+    execution: Option<EntityRuntimeState>,
+}
+impl LedgerDraft {
+    pub fn execution_state(&self) -> &EntityRuntimeState {
+        self.execution.as_ref().expect("unattached draft")
+    }
+
+    /// Record trusted Checker/Fix changes made on the isolated execution view
+    /// before constructing the immutable policy plan. Later business edits on
+    /// the live root remain outside this reviewed submission.
+    pub fn seal_reviewed_intent(&mut self) -> Result<(), crate::RuntimeError> {
+        let execution = self.execution.as_ref().ok_or_else(unavailable)?;
+        let captured = execution
+            .context()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        if captured.pending.is_some() || captured.draft.is_some() || captured.completion_fenced {
+            return Err(unavailable());
+        }
+        let mut ledger = self.root.lock().unwrap_or_else(|error| error.into_inner());
+        let draft = ledger
+            .draft
+            .as_mut()
+            .filter(|draft| draft.sequence == self.sequence)
+            .ok_or_else(unavailable)?;
+        draft.intent = captured;
+        Ok(())
+    }
+
+    /// Attach only after the real provider has opened its physical transaction.
+    /// No synthetic owner is accepted or created by the draft.
+    pub fn attach(
+        mut self,
+        owner: &PhysicalTransactionIdentity,
+    ) -> Result<LedgerSubmission, crate::RuntimeError> {
+        let mut ledger = self.root.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(draft) = ledger.draft.as_ref() else {
+            return Err(unavailable());
+        };
+        if draft.sequence != self.sequence {
+            return Err(unavailable());
+        }
+        validate_owner(&ledger, owner)?;
+        owner.require_active().map_err(|_| unavailable())?;
+        if ledger.pending.is_none() {
+            owner
+                .enlist(Arc::new(Completion {
+                    root: self.root.clone(),
+                    owner: owner.clone(),
+                }))
+                .map_err(|_| unavailable())?;
+            ledger.pending = Some(Box::new(PendingLedger {
+                owner: owner.clone(),
+                batches: Vec::new(),
+                active: None,
+                failed: false,
+                initial_versions: draft.intent.original_versions.clone(),
+                initial_rows: Some(SubmittedRows::baseline(&draft.intent)),
+            }));
+        }
+        let draft = ledger.draft.take().expect("validated draft");
+        let pending = ledger.pending.as_mut().expect("actual physical owner");
+        let batch = pending.batches.len();
+        pending.batches.push(DetachedLedger {
+            level: draft.level,
+            intent: draft.intent,
+        });
+        pending.active = Some(batch);
+        let execution = self.execution.take().expect("unattached draft");
+        drop(ledger);
+        Ok(LedgerSubmission {
+            root: self.root.clone(),
+            owner: owner.clone(),
+            batch,
+            execution,
+            acknowledged: false,
+        })
+    }
+}
+impl Drop for LedgerDraft {
+    fn drop(&mut self) {
+        if self.execution.is_none() {
+            return;
+        }
+        let mut ledger = self.root.lock().unwrap_or_else(|error| error.into_inner());
+        if ledger
+            .draft
+            .as_ref()
+            .is_some_and(|draft| draft.sequence == self.sequence)
+        {
+            let draft = ledger.draft.take().expect("current draft");
+            restore_draft(&mut ledger, *draft);
+        }
     }
 }
 
@@ -222,6 +341,66 @@ impl PhysicalTransactionParticipant for Completion {
 }
 
 impl EntityRuntimeState {
+    /// Freeze exactly the current save intent before Checker/Fix and policy
+    /// review. An existing owner is required for a repeated outer flush; an
+    /// owned save passes None before it opens its physical transaction.
+    #[doc(hidden)]
+    pub fn reserve_submission(
+        &self,
+        existing_owner: Option<&PhysicalTransactionIdentity>,
+    ) -> Result<LedgerDraft, crate::RuntimeError> {
+        let root = self.context().clone();
+        let mut ledger = root.lock().unwrap_or_else(|error| error.into_inner());
+        if ledger.draft.is_some()
+            || ledger.completion_fenced
+            || !ledger.composition_errors.is_empty()
+        {
+            return Err(unavailable());
+        }
+        if let Some(owner) = existing_owner {
+            validate_owner(&ledger, owner)?;
+            owner.require_active().map_err(|_| unavailable())?;
+        } else if ledger.pending.is_some() {
+            return Err(unavailable());
+        }
+        ledger.change_sets.current_mut();
+        let level = ledger.change_sets.stack.len() - 1;
+        let mut frozen = ledger.clone();
+        frozen.pending = None;
+        frozen.draft = None;
+        let execution = EntityRuntimeState {
+            inner: LazyLedgerSlot::default(),
+            graph: self.graph.promote(),
+            json_view: self.json_view,
+            loaded_snapshot: self.loaded_snapshot.clone(),
+            dynamic_fields: self.dynamic_fields.clone(),
+        };
+        execution
+            .inner
+            .get_or_init(|| Arc::new(Mutex::new(frozen.clone())));
+        ledger.draft_sequence = ledger
+            .draft_sequence
+            .checked_add(1)
+            .ok_or_else(unavailable)?;
+        let sequence = ledger.draft_sequence;
+        ledger.draft = Some(Box::new(DraftLedger {
+            sequence,
+            level,
+            intent: frozen,
+        }));
+        ledger.change_sets.clear_current();
+        ledger.new_keys.clear();
+        ledger.deleted_keys.clear();
+        ledger.comment = None;
+        ledger.entity_comments.clear();
+        drop(ledger);
+        Ok(LedgerDraft {
+            root,
+            sequence,
+            execution: Some(execution),
+        })
+    }
+
     /// Verify provenance before preflight/Checker/Fix or provider I/O. An
     /// uncertain graph cannot be made retryable by clearing or replacing intent.
     #[doc(hidden)]
@@ -315,6 +494,15 @@ fn validate(
     ledger: &EntityMutationLedger,
     owner: &PhysicalTransactionIdentity,
 ) -> Result<(), crate::RuntimeError> {
+    if ledger.draft.is_some() {
+        return Err(unavailable());
+    }
+    validate_owner(ledger, owner)
+}
+fn validate_owner(
+    ledger: &EntityMutationLedger,
+    owner: &PhysicalTransactionIdentity,
+) -> Result<(), crate::RuntimeError> {
     if ledger.completion_fenced
         || !ledger.composition_errors.is_empty()
         || ledger.pending.as_ref().is_some_and(|pending| {
@@ -324,6 +512,21 @@ fn validate(
         Err(unavailable())
     } else {
         Ok(())
+    }
+}
+fn restore_draft(ledger: &mut EntityMutationLedger, draft: DraftLedger) {
+    let current = &mut ledger.change_sets.stack[draft.level];
+    let live = std::mem::take(current);
+    if let Some(frozen) = draft.intent.change_sets.current() {
+        merge_change_set(current, frozen);
+    }
+    merge_change_set(current, &live);
+    ledger.new_keys.extend(draft.intent.new_keys);
+    ledger.deleted_keys.extend(draft.intent.deleted_keys);
+    let live_comment = ledger.comment.take();
+    ledger.comment = live_comment.or(draft.intent.comment);
+    for (key, reason) in draft.intent.entity_comments {
+        ledger.entity_comments.entry(key).or_insert(reason);
     }
 }
 fn merge_change_set(target: &mut EntityChangeSet, source: &EntityChangeSet) {

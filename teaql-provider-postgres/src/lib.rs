@@ -531,6 +531,12 @@ impl SqlTransport for PgTransactionExecutor {
 impl teaql_sql::SqlTransaction for PgTransactionExecutor {
     type Error = MutationExecutorError;
 
+    fn physical_identity(
+        &self,
+    ) -> Option<teaql_data_service::infrastructure_sql::PhysicalTransactionIdentity> {
+        Some(self.identity.clone())
+    }
+
     async fn commit_sql(mut self) -> Result<(), Self::Error> {
         if self.rollback_only.load(std::sync::atomic::Ordering::SeqCst) {
             self.client().batch_execute("ROLLBACK").await?;

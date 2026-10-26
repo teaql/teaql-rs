@@ -543,6 +543,12 @@ pub trait TransactionExecutor: DataServiceExecutor {
 pub trait Transaction {
     type Error: std::error::Error + Send + Sync + 'static;
 
+    /// Actual provider owner, when this transaction supports framework
+    /// completion participants. The default cannot claim physical provenance.
+    fn physical_identity(&self) -> Option<crate::infrastructure_sql::PhysicalTransactionIdentity> {
+        None
+    }
+
     fn commit(self) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
     fn rollback(self) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
 }

@@ -87,8 +87,8 @@ pub use entity_reference::{
 };
 pub use entity_runtime::{
     ChangeSetStack, DynamicFieldChanges, EntityChangeSet, EntityGraphBuilder, EntityKey,
-    EntityRuntimeState, LedgerCompositionError, LedgerEntity, LedgerSubmission, LoadedRelation,
-    RelationHandle, SavedEntityContext,
+    EntityRuntimeState, LedgerCompositionError, LedgerDraft, LedgerEntity, LedgerSubmission,
+    LoadedRelation, RelationHandle, SavedEntityContext,
 };
 pub use entity_save::{
     AuditedSaveExt, graph_node_from_entity, save_audited_ledger_entity,

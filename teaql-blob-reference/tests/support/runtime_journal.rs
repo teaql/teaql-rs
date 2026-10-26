@@ -59,6 +59,95 @@ impl PhysicalTransactionParticipant for AfterCommitFailure {
 }
 
 #[tokio::test]
+async fn ownerless_review_draft_attaches_to_real_sql_owner_after_begin_without_late_edit_leak() {
+    let f = Fixture::new(true).await;
+    f.write(
+        f.root.as_ref(),
+        &f.target(42, "document"),
+        Some(&blob("original")),
+    )
+    .await;
+    let root = EntityRuntimeState::default();
+    root.set_original_version(key(), 1);
+    edit(&root, "preflight");
+    let mut draft = root.reserve_submission(None).unwrap();
+    draft
+        .execution_state()
+        .set(key(), "document", Value::BlobRef(blob("reviewed")));
+    draft.seal_reviewed_intent().unwrap();
+    edit(&root, "late");
+    let business = f.business();
+    let tx = TransactionExecutor::begin(&business).await.unwrap();
+    let identity = Transaction::physical_identity(&tx).unwrap();
+    let sql = tx.infrastructure_sql().unwrap();
+    let submission = draft.attach(&identity).unwrap();
+    let reviewed = submission
+        .execution_state()
+        .get(&key(), "document")
+        .unwrap();
+    let Value::BlobRef(reviewed) = reviewed else {
+        panic!("reviewed BlobRef required")
+    };
+    assert_eq!(
+        sql.execute(
+            &InfrastructureStatement::new(
+                "UPDATE r5_assets SET document=$1,version=2 WHERE id=42 AND version=1",
+                vec![Value::Text(reviewed.as_str().into())],
+            )
+            .unwrap()
+        )
+        .await
+        .unwrap(),
+        1
+    );
+    submission
+        .acknowledge([(key(), readback(sql).await)])
+        .unwrap();
+    assert_eq!(
+        f.root
+            .fetch(
+                &InfrastructureStatement::new(
+                    "SELECT version,document FROM r5_assets WHERE id=42",
+                    vec![],
+                )
+                .unwrap()
+            )
+            .await
+            .unwrap()[0]
+            .get("version"),
+        Some(&Value::I64(1))
+    );
+    Transaction::commit(tx).await.unwrap();
+    assert_eq!(identity.outcome(), PhysicalTransactionOutcome::Committed);
+    assert_eq!(root.get_original_version(&key()), Some(2));
+    assert_eq!(
+        root.get(&key(), "document"),
+        Some(Value::BlobRef(blob("late")))
+    );
+    let actual = f
+        .admin
+        .get()
+        .await
+        .unwrap()
+        .query_one(
+            &format!(
+                "SELECT version,document FROM \"{}\".r5_assets WHERE id=42",
+                f.schema
+            ),
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(actual.get::<_, i64>("version"), 2);
+    assert_eq!(
+        actual.get::<_, String>("document"),
+        blob("reviewed").as_str()
+    );
+    println!("R5_REVIEW_DRAFT_REAL_OWNER_REVIEWED_ROW_LATE_EDIT_PASS");
+    f.finish().await;
+}
+
+#[tokio::test]
 async fn journal_actual_native_repeated_flush_preserves_late_edits_after_commit_notification_failure()
  {
     let f = Fixture::new(true).await;

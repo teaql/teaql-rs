@@ -13,6 +13,118 @@ fn row(name: &str, version: i64) -> EntitySnapshot {
 }
 
 #[test]
+fn ownerless_review_draft_freezes_intent_and_restores_it_on_denial() {
+    let root = EntityRuntimeState::default();
+    root.set(key(42), "name", "reviewed");
+    root.mark_as_new(key(99));
+    root.set(key(99), "name", "new child");
+    root.set_comment("reviewed reason");
+    let draft = root.reserve_submission(None).unwrap();
+    assert_eq!(
+        draft.execution_state().get(&key(42), "name"),
+        Some(Value::from("reviewed"))
+    );
+    assert!(draft.execution_state().is_new(&key(99)));
+    assert_eq!(root.get(&key(42), "name"), Some(Value::from("reviewed")));
+    assert!(root.current_change_set().is_empty());
+    root.set(key(42), "name", "late");
+    root.clear_committed();
+    assert!(root.reserve_submission(None).is_err());
+    drop(draft);
+    assert_eq!(root.get(&key(42), "name"), Some(Value::from("late")));
+    assert_eq!(
+        root.current_change_set().get(&key(42), "name"),
+        Some(&Value::from("late"))
+    );
+    assert!(root.is_new(&key(99)));
+    assert_eq!(root.get_comment().as_deref(), Some("reviewed reason"));
+    assert!(!root.has_pending_submission());
+    assert!(!root.requires_reload_after_completion());
+}
+
+#[test]
+fn trusted_fix_is_sealed_into_reviewed_intent_without_capturing_late_edit() {
+    let root = EntityRuntimeState::default();
+    root.set(key(42), "name", "preflight");
+    let mut draft = root.reserve_submission(None).unwrap();
+    draft.execution_state().set(key(42), "name", "fixed");
+    draft.seal_reviewed_intent().unwrap();
+    assert_eq!(root.get(&key(42), "name"), Some(Value::from("fixed")));
+    root.set(key(42), "name", "late");
+    let mut owner = SqlResourceIdentity::new().begin();
+    let submission = draft.attach(&owner.identity()).unwrap();
+    assert_eq!(
+        submission.execution_state().get(&key(42), "name"),
+        Some(Value::from("fixed"))
+    );
+    submission
+        .acknowledge([(key(42), row("fixed", 8))])
+        .unwrap();
+    owner.prepare_commit().unwrap();
+    owner.committed().unwrap();
+    assert_eq!(root.get(&key(42), "name"), Some(Value::from("late")));
+}
+
+#[test]
+fn reviewed_draft_attaches_only_to_actual_owner_and_keeps_late_edits() {
+    let root = EntityRuntimeState::default();
+    root.set_original_version(key(42), 7);
+    root.set(key(42), "name", "reviewed");
+    let draft = root.reserve_submission(None).unwrap();
+    root.set(key(42), "name", "late before BEGIN");
+    let mut owner = SqlResourceIdentity::new().begin();
+    let submission = draft.attach(&owner.identity()).unwrap();
+    assert!(root.has_pending_submission());
+    assert_eq!(
+        submission.execution_state().get(&key(42), "name"),
+        Some(Value::from("reviewed"))
+    );
+    submission
+        .acknowledge([(key(42), row("reviewed", 8))])
+        .unwrap();
+    owner.prepare_commit().unwrap();
+    owner.committed().unwrap();
+    assert_eq!(root.get_original_version(&key(42)), Some(8));
+    assert_eq!(
+        root.get(&key(42), "name"),
+        Some(Value::from("late before BEGIN"))
+    );
+    assert_eq!(
+        root.current_change_set().get(&key(42), "name"),
+        Some(&Value::from("late before BEGIN"))
+    );
+}
+
+#[test]
+fn repeated_review_draft_rejects_foreign_owner_without_losing_pending_work() {
+    let root = EntityRuntimeState::default();
+    root.set_original_version(key(42), 7);
+    let mut owner = SqlResourceIdentity::new().begin();
+    root.set(key(42), "name", "first");
+    root.begin_submission(&owner.identity())
+        .unwrap()
+        .acknowledge([(key(42), row("first", 8))])
+        .unwrap();
+    root.set(key(42), "name", "second");
+    let draft = root.reserve_submission(Some(&owner.identity())).unwrap();
+    assert_eq!(
+        draft.execution_state().get_original_version(&key(42)),
+        Some(8)
+    );
+    let foreign = SqlResourceIdentity::new().begin();
+    assert!(draft.attach(&foreign.identity()).is_err());
+    assert_eq!(root.get(&key(42), "name"), Some(Value::from("second")));
+    assert_eq!(
+        root.current_change_set().get(&key(42), "name"),
+        Some(&Value::from("second"))
+    );
+    assert!(root.has_pending_submission());
+    owner.prepare_commit().unwrap();
+    owner.committed().unwrap();
+    assert_eq!(root.get_original_version(&key(42)), Some(8));
+}
+
+#[test]
 fn captured_intent_and_live_edits_are_separate_until_the_actual_owner_commits() {
     let root = EntityRuntimeState::default();
     let alias = root.clone();

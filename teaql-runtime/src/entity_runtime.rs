@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use teaql_core::{EntitySnapshot, MutationValues, SmartList, Value};
 
 mod submission;
-pub use submission::LedgerSubmission;
+pub use submission::{LedgerDraft, LedgerSubmission};
 mod hydration;
 pub use hydration::SavedEntityContext;
 
@@ -604,6 +604,9 @@ struct EntityMutationLedger {
     is_new: bool,
     /// Allocated only at an actual physical submission, never by a readonly query.
     pending: Option<Box<submission::PendingLedger>>,
+    /// A reversible, ownerless save capture during preflight and policy review.
+    draft: Option<Box<submission::DraftLedger>>,
+    draft_sequence: u64,
     submitted_rows: Option<Box<submission::SubmittedRows>>,
     completion_fenced: bool,
 }
@@ -961,7 +964,7 @@ impl EntityRuntimeState {
             let source = source_context
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            if source.pending.is_some() || source.completion_fenced {
+            if source.pending.is_some() || source.draft.is_some() || source.completion_fenced {
                 return Err(LedgerCompositionError::PhysicalCompletionRequired);
             }
             source.clone()
@@ -975,7 +978,7 @@ impl EntityRuntimeState {
             })
             .flatten();
         self.write_context(|target| {
-            if target.pending.is_some() || target.completion_fenced {
+            if target.pending.is_some() || target.draft.is_some() || target.completion_fenced {
                 return Err(LedgerCompositionError::PhysicalCompletionRequired);
             }
             let source_versions = snapshot
@@ -1292,6 +1295,8 @@ impl EntityRuntimeState {
             // A stack pop cannot undo SQL already flushed by the physical owner.
             let protected = context.pending.as_ref().is_some_and(|pending| {
                 pending.protects_level(context.change_sets.stack.len().saturating_sub(1))
+            }) || context.draft.as_ref().is_some_and(|draft| {
+                draft.protects_level(context.change_sets.stack.len().saturating_sub(1))
             });
             (!protected).then(|| context.change_sets.pop()).flatten()
         })
@@ -1308,7 +1313,8 @@ impl EntityRuntimeState {
     pub fn clear_committed(&self) {
         if self.inner.get().is_some() {
             self.write_context(|context| {
-                if context.pending.is_some() || context.completion_fenced {
+                if context.pending.is_some() || context.draft.is_some() || context.completion_fenced
+                {
                     return;
                 }
                 context.change_sets = ChangeSetStack::default();
@@ -1335,6 +1341,13 @@ impl EntityRuntimeState {
             for (level, changes) in context.change_sets.stack.iter().enumerate().rev() {
                 if let Some(value) = changes.get(key, field) {
                     return Some(value.clone());
+                }
+                if let Some(value) = context
+                    .draft
+                    .as_ref()
+                    .and_then(|draft| draft.get(level, key, field))
+                {
+                    return Some(value);
                 }
                 if let Some(value) = context
                     .pending
@@ -1743,7 +1756,7 @@ impl EntityRuntimeState {
     pub(crate) fn first_composition_error(&self) -> Option<LedgerCompositionError> {
         self.read_context(None, |context| {
             context.composition_errors.first().cloned().or_else(|| {
-                (context.completion_fenced || context.pending.is_some())
+                (context.completion_fenced || context.pending.is_some() || context.draft.is_some())
                     .then_some(LedgerCompositionError::PhysicalCompletionRequired)
             })
         })
