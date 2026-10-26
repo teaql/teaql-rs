@@ -474,7 +474,11 @@ where
             .data_service
             .metadata
             .context
-            .check_and_fix_values(&command.entity, &mut checked_values);
+            .check_and_fix_storage_values_at(
+                &command.entity,
+                &mut checked_values,
+                &crate::ObjectLocation::root(),
+            );
         clear_entity_status(&mut checked_values);
         check_result?;
         command.values = checked_values.into();

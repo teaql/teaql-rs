@@ -1226,7 +1226,11 @@ where
             .data_service
             .metadata
             .context
-            .check_and_fix_values(&node.entity, &mut node.values);
+            .check_and_fix_storage_values_at(
+                &node.entity,
+                &mut node.values,
+                &crate::ObjectLocation::root(),
+            );
         crate::clear_entity_status(&mut node.values);
         check_result.map_err(DataServiceError::Runtime)?;
 

@@ -20,7 +20,13 @@ impl UserContext {
             return;
         };
         for property in &descriptor.properties {
-            let Some(value) = values.get(&property.name) else {
+            let canonical =
+                crate::ledger_keys::canonical_field_from_storage(descriptor, &property.name)
+                    .unwrap_or_else(|_| property.name.clone());
+            let Some(value) = values
+                .get(&canonical)
+                .or_else(|| values.get(&property.name))
+            else {
                 continue;
             };
             // Required/null handling is a separate rule. An unselected field
@@ -44,7 +50,7 @@ impl UserContext {
                 _ => None,
             };
             if let Some(expected) = expected {
-                let field_location = location.clone().member(&property.name);
+                let field_location = location.clone().member(&canonical);
                 if !results.iter().any(|result| {
                     result.rule == CheckRule::InvalidType && result.location == field_location
                 }) {
@@ -55,7 +61,7 @@ impl UserContext {
                             .with_entity_type(entity)
                             .with_message(format!(
                                 "invalid field {}: expected {expected}",
-                                property.name
+                                canonical
                             )),
                     );
                 }

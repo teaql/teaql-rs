@@ -2083,7 +2083,8 @@ fn preflight_graph(
                 Value::List(fields.iter().cloned().map(Value::Text).collect()),
             );
         }
-        let result = context.check_and_fix_values_at(&node.entity, &mut node.values, location);
+        let result =
+            context.check_and_fix_storage_values_at(&node.entity, &mut node.values, location);
         crate::clear_entity_status(&mut node.values);
         node.values.remove("_dirty_fields");
         result?;

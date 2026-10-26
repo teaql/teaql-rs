@@ -361,6 +361,14 @@ where
         location: &ObjectLocation,
         results: &mut CheckResults,
     ) {
+        let descriptor = T::entity_descriptor();
+        if let Err(error) = crate::ledger_keys::map_checker_values(&descriptor, values, false) {
+            results.push(
+                CheckResult::new(CheckRule::InvalidType, location.clone())
+                    .with_message(error.to_string()),
+            );
+            return;
+        }
         let status = CheckObjectStatus::from_values(values);
         // Materializing a partial update necessarily fills omitted Rust fields
         // with their type defaults. Those defaults are only a checker view;
@@ -400,8 +408,27 @@ where
                 if let Some(dirty_fields) = dirty_fields {
                     // Only mutation-aware reconstruction needs the original value map.
                     // Readonly checks must not pay for an unused deep copy.
-                    let checker_values: teaql_core::MutationValues = original_values.clone().into();
-                    entity.set_checker_dirty_fields(dirty_fields, &checker_values);
+                    let mut checker_values = original_values.clone();
+                    if let Err(error) = crate::ledger_keys::map_checker_values(
+                        &descriptor,
+                        &mut checker_values,
+                        true,
+                    ) {
+                        *values = original_values;
+                        results.push(
+                            CheckResult::new(CheckRule::InvalidType, location.clone())
+                                .with_message(error.to_string()),
+                        );
+                        return;
+                    }
+                    let dirty_fields = dirty_fields
+                        .into_iter()
+                        .map(|field| {
+                            crate::ledger_keys::canonical_field_from_storage(&descriptor, &field)
+                                .unwrap_or(field)
+                        })
+                        .collect();
+                    entity.set_checker_dirty_fields(dirty_fields, &checker_values.into());
                 }
                 let before_check = entity.clone().into_values();
                 self.checker
@@ -421,7 +448,13 @@ where
                         })
                     {
                         results.push(CheckResult::required(
-                            location.clone().member(&property.name),
+                            location.clone().member(
+                                crate::ledger_keys::canonical_field_from_storage(
+                                    &descriptor,
+                                    &property.name,
+                                )
+                                .unwrap_or_else(|_| property.name.clone()),
+                            ),
                         ));
                     }
                 }
@@ -446,6 +479,12 @@ where
                     ),
                 );
             }
+        }
+        if let Err(error) = crate::ledger_keys::map_checker_values(&descriptor, values, true) {
+            results.push(
+                CheckResult::new(CheckRule::InvalidType, location.clone())
+                    .with_message(error.to_string()),
+            );
         }
     }
 }

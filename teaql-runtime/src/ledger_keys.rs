@@ -131,10 +131,120 @@ pub(crate) fn canonical_values_from_storage(
     Ok(canonical.into())
 }
 
+/// Checker maps expose KSML fields; native typed carriers and provider graph
+/// nodes use storage members. Rename only trusted forward aliases, retaining
+/// framework hints and dynamic values. Validate the whole rename before moving
+/// values so an equal-value alias collision cannot erase caller intent.
+pub(crate) fn map_checker_values(
+    descriptor: &EntityDescriptor,
+    values: &mut EntityValues,
+    canonical: bool,
+) -> Result<(), RuntimeError> {
+    if !descriptor
+        .relations
+        .iter()
+        .any(|r| !r.many && r.local_key != "id" && r.name != r.local_key)
+    {
+        return Ok(());
+    }
+    fn name<'a>(
+        descriptor: &'a EntityDescriptor,
+        field: &'a str,
+        canonical: bool,
+    ) -> Result<&'a str, RuntimeError> {
+        let mut result = None;
+        for relation in descriptor
+            .relations
+            .iter()
+            .filter(|r| !r.many && r.local_key != "id")
+        {
+            if field == relation.name || field == relation.local_key {
+                writable_forward_relation(descriptor, relation)?;
+                let target = if canonical {
+                    relation.name.as_str()
+                } else {
+                    relation.local_key.as_str()
+                };
+                if result.is_some_and(|previous| previous != target) {
+                    return Err(RuntimeError::Graph(format!(
+                        "ambiguous checker field {}.{field}",
+                        descriptor.name
+                    )));
+                }
+                result = Some(target);
+            }
+        }
+        Ok(result.unwrap_or(field))
+    }
+    fn plan(
+        descriptor: &EntityDescriptor,
+        values: &BTreeMap<String, Value>,
+        canonical: bool,
+    ) -> Result<Vec<(String, String)>, RuntimeError> {
+        let mut targets = BTreeSet::new();
+        let mut changes = Vec::new();
+        for field in values.keys() {
+            let target = name(descriptor, field, canonical)?;
+            if !targets.insert(target.to_owned()) {
+                return Err(RuntimeError::Graph(format!(
+                    "duplicate checker mapping for {}.{target}",
+                    descriptor.name
+                )));
+            }
+            if field != target {
+                changes.push((field.clone(), target.to_owned()));
+            }
+        }
+        Ok(changes)
+    }
+    fn apply(values: &mut BTreeMap<String, Value>, changes: Vec<(String, String)>) {
+        let moved: Vec<_> = changes
+            .into_iter()
+            .map(|(from, to)| (to, values.remove(&from).expect("validated checker key")))
+            .collect();
+        values.extend(moved);
+    }
+    let changes = plan(descriptor, values, canonical)?;
+    let originals = match values.get("_original_values") {
+        Some(Value::Object(record)) => Some(plan(descriptor, record, canonical)?),
+        _ => None,
+    };
+    // Metadata lists describe the same modeled fields; validate before edits.
+    for marker in ["_loaded_fields", "_dirty_fields"] {
+        if let Some(Value::List(fields)) = values.get(marker) {
+            for field in fields {
+                if let Value::Text(field) = field {
+                    name(descriptor, field, canonical)?;
+                }
+            }
+        }
+    }
+    apply(values, changes);
+    if let (Some(changes), Some(Value::Object(record))) =
+        (originals, values.get_mut("_original_values"))
+    {
+        apply(record, changes);
+    }
+    for marker in ["_loaded_fields", "_dirty_fields"] {
+        if let Some(Value::List(fields)) = values.get_mut(marker) {
+            for field in fields {
+                if let Value::Text(field) = field {
+                    let target = name(descriptor, field, canonical)?;
+                    if field.as_str() != target {
+                        *field = target.to_owned();
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_values_from_storage, storage_fields_from_ledger, storage_values_from_ledger,
+        canonical_values_from_storage, map_checker_values, storage_fields_from_ledger,
+        storage_values_from_ledger,
     };
     use std::collections::{BTreeMap, BTreeSet};
     use teaql_core::{
@@ -218,5 +328,135 @@ mod tests {
             storage,
             BTreeSet::from(["school_type_id".to_owned(), "#note".to_owned()])
         );
+    }
+
+    #[test]
+    fn canonical_checker_renames_native_values_hints_and_originals_without_scalar_conversion() {
+        let mut input: crate::EntityValues = BTreeMap::from([
+            ("school_type_id".into(), Value::U64(1001)),
+            ("amount".into(), Value::Decimal("1.2300".parse().unwrap())),
+            (
+                "_dirty_fields".into(),
+                Value::List(vec![Value::Text("school_type_id".into())]),
+            ),
+            (
+                "_loaded_fields".into(),
+                Value::List(vec![Value::Text("school_type_id".into())]),
+            ),
+            (
+                "_original_values".into(),
+                Value::Object(BTreeMap::from([(
+                    "school_type_id".into(),
+                    Value::U64(1000),
+                )])),
+            ),
+            ("__teaql_object_status".into(), Value::Text("update".into())),
+        ])
+        .into();
+        let original = input.clone();
+        map_checker_values(&school(), &mut input, true).unwrap();
+        assert_eq!(input.get("school_type"), Some(&Value::U64(1001)));
+        assert!(!input.contains_key("school_type_id"));
+        assert_eq!(
+            input["_dirty_fields"],
+            Value::List(vec![Value::Text("school_type".into())])
+        );
+        let Value::Object(old) = &input["_original_values"] else {
+            panic!("original map lost")
+        };
+        assert_eq!(old["school_type"], Value::U64(1000));
+        map_checker_values(&school(), &mut input, false).unwrap();
+        assert_eq!(input, original);
+    }
+
+    #[test]
+    fn canonical_checker_equal_or_unequal_aliases_are_rejected_atomically() {
+        for canonical in [false, true] {
+            for value in [1001, 1002] {
+                let mut input: crate::EntityValues = BTreeMap::from([
+                    ("school_type".into(), Value::U64(1001)),
+                    ("school_type_id".into(), Value::U64(value)),
+                ])
+                .into();
+                let before = input.clone();
+                assert!(map_checker_values(&school(), &mut input, canonical).is_err());
+                assert_eq!(input, before);
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_checker_original_alias_collision_keeps_all_outer_values_intact() {
+        let mut input: crate::EntityValues = BTreeMap::from([
+            ("school_type_id".into(), Value::U64(1001)),
+            (
+                "_original_values".into(),
+                Value::Object(BTreeMap::from([
+                    ("school_type".into(), Value::U64(1000)),
+                    ("school_type_id".into(), Value::U64(1000)),
+                ])),
+            ),
+        ])
+        .into();
+        let before = input.clone();
+        assert!(map_checker_values(&school(), &mut input, true).is_err());
+        assert_eq!(input, before);
+    }
+
+    #[test]
+    fn canonical_checker_callback_sees_and_fixes_logical_reference_and_metadata_reports_logical_path()
+     {
+        use crate::{
+            CheckResults, CheckRule, Checker, EntityValues, InMemoryCheckerRegistry,
+            InMemoryMetadataStore, ObjectLocation, UserContext,
+        };
+        struct Fix;
+        impl Checker for Fix {
+            fn entity(&self) -> &str {
+                "School"
+            }
+            fn check_and_fix(
+                &self,
+                _: &UserContext,
+                input: &mut EntityValues,
+                _: &ObjectLocation,
+                _: &mut CheckResults,
+            ) {
+                assert_eq!(input["school_type"], Value::U64(1001));
+                assert!(!input.contains_key("school_type_id"));
+                input.insert("school_type".into(), Value::U64(1002));
+            }
+        }
+        let context = UserContext::new()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(school()))
+            .with_checker_registry(InMemoryCheckerRegistry::new().with_checker(Fix));
+        let mut values: EntityValues = BTreeMap::from([
+            ("id".into(), Value::U64(1)),
+            ("school_type_id".into(), Value::U64(1001)),
+        ])
+        .into();
+        context.check_and_fix_values("School", &mut values).unwrap();
+        assert_eq!(values["school_type"], Value::U64(1002));
+        assert!(!values.contains_key("school_type_id"));
+        values.insert("school_type".into(), Value::U64(1001));
+        context
+            .check_and_fix_storage_values_at("School", &mut values, &ObjectLocation::root())
+            .unwrap();
+        assert_eq!(values["school_type_id"], Value::U64(1002));
+        assert!(!values.contains_key("school_type"));
+        let context =
+            UserContext::new().with_metadata(InMemoryMetadataStore::new().with_entity(school()));
+        values.insert(
+            "school_type_id".into(),
+            Value::Decimal("0.1".parse().unwrap()),
+        );
+        let error = context
+            .check_and_fix_values("School", &mut values)
+            .unwrap_err();
+        let crate::RuntimeError::Check(results) = error else {
+            panic!("expected canonical invalid_type")
+        };
+        assert!(results.iter().any(|r| r.rule == CheckRule::InvalidType
+            && r.location == ObjectLocation::root().member("school_type")));
     }
 }

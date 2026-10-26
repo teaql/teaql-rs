@@ -1217,6 +1217,9 @@ impl UserContext {
         values: &mut crate::EntityValues,
         location: &ObjectLocation,
     ) -> Result<(), RuntimeError> {
+        if let Some(descriptor) = self.entity(entity) {
+            crate::ledger_keys::map_checker_values(descriptor, values, true)?;
+        }
         let status = CheckObjectStatus::from_values(values);
         let checker = self
             .checker_registry
@@ -1228,6 +1231,9 @@ impl UserContext {
                 checker.check_and_fix(self, values, location, &mut results);
             });
         }
+        if let Some(descriptor) = self.entity(entity) {
+            crate::ledger_keys::map_checker_values(descriptor, values, true)?;
+        }
 
         // Custom checkers get the first chance to supply or fix a value.
         self.collect_required_property_results(entity, values, status, location, &mut results);
@@ -1237,6 +1243,21 @@ impl UserContext {
         }
         self.translate_check_results(&mut results);
         Err(RuntimeError::Check(results))
+    }
+
+    /// Native graph/provider bridge. Public Checker callbacks remain canonical;
+    /// only this explicit boundary returns values to native storage vocabulary.
+    pub(crate) fn check_and_fix_storage_values_at(
+        &self,
+        entity: &str,
+        values: &mut crate::EntityValues,
+        location: &ObjectLocation,
+    ) -> Result<(), RuntimeError> {
+        let result = self.check_and_fix_values_at(entity, values, location);
+        if let Some(descriptor) = self.entity(entity) {
+            crate::ledger_keys::map_checker_values(descriptor, values, false)?;
+        }
+        result
     }
 
     /// Validate required/portable scalar values a ledger CREATE actually inserts.
@@ -1289,9 +1310,15 @@ impl UserContext {
                 // create caller must never be required to provide it.
                 .filter(|property| !property.nullable && !property.is_version)
             {
-                let missing = !values.contains_key(&property.name);
-                let null = matches!(values.get(&property.name), Some(Value::Null));
-                let property_location = location.clone().member(&property.name);
+                let canonical =
+                    crate::ledger_keys::canonical_field_from_storage(descriptor, &property.name)
+                        .unwrap_or_else(|_| property.name.clone());
+                let value = values
+                    .get(&canonical)
+                    .or_else(|| values.get(&property.name));
+                let missing = value.is_none();
+                let null = matches!(value, Some(Value::Null));
+                let property_location = location.clone().member(&canonical);
                 let already_reported = results.iter().any(|result| {
                     result.rule == crate::CheckRule::Required
                         && result.location == property_location
