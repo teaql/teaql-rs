@@ -771,6 +771,84 @@ impl PostgresBlobCatalog {
         })
         .await
     }
+    /// A bounded, scoped scan. Every candidate is rechecked under a row lock by
+    /// `claim_deletion`; a key cursor lets one failed object coexist with progress.
+    #[cfg(feature = "runtime-integration")]
+    pub(crate) async fn deletion_candidates(
+        &self,
+        scope: &BlobScope,
+        after: Option<&BlobRef>,
+        now: i64,
+        limit: usize,
+    ) -> BlobResult<Vec<BlobCatalogRecord>> {
+        if !(1..=1000).contains(&limit) {
+            return Err(Code::PolicyInvalid.into());
+        }
+        self.validate_schema().await?;
+        let rows = fetch(
+            self.root.as_ref(),
+            "SELECT o.* FROM teaql_blob_object o WHERE o.scope_realm=$1 AND o.scope_boundary=$2 AND o.blob_key>$3 AND (o.state='deleting' OR (o.state='initiated' AND o.upload_expires_at<=$4) OR (o.state='uploaded_unbound' AND o.completed_at::numeric+(o.policy_json::jsonb->>'unbound')::numeric*1000<=$4) OR (o.state='available' AND o.unreferenced_at IS NOT NULL AND o.unreferenced_at::numeric+o.effective_unref_seconds::numeric*1000<=$4 AND (o.retention_floor_at IS NULL OR o.retention_floor_at<=$4))) AND NOT EXISTS (SELECT 1 FROM teaql_blob_binding b WHERE b.blob_key=o.blob_key) ORDER BY o.blob_key LIMIT $5",
+            vec![
+                scope.realm().into(),
+                scope.boundary().into(),
+                after.map_or("", BlobRef::as_str).into(),
+                now.into(),
+                (limit as i64).into(),
+            ],
+        )
+        .await?;
+        rows.into_iter().map(record).collect()
+    }
+    /// Pins an abandoned, previously unrecorded file generation after a durable
+    /// deletion claim. Retries can delete only this exact generation.
+    #[cfg(feature = "runtime-integration")]
+    pub(crate) async fn capture_deletion_content(
+        &self,
+        scope: &BlobScope,
+        key: &BlobRef,
+        content: &crate::StoredBlob,
+    ) -> BlobResult<BlobCatalogRecord> {
+        let catalog = self.clone();
+        let scope = scope.clone();
+        let key = key.clone();
+        let content = content.clone();
+        self.transaction(move |sql| {
+            Box::pin(async move {
+                catalog.validate_schema_on(sql).await?;
+                let blob = catalog.lock_blob(sql, &scope, &key).await?;
+                if blob.state == BlobState::Deleted {
+                    return Ok(blob);
+                }
+                if blob.state != BlobState::Deleting
+                    || catalog.binding_count(sql, &key).await? != 0
+                {
+                    return Err(Code::IdempotencyConflict.into());
+                }
+                if blob.storage_location != content.location() {
+                    return Err(Code::ReferenceInvalid.into());
+                }
+                if let Some(version) = blob.content_version() {
+                    if version != content.content_version() {
+                        return Err(Code::IdempotencyConflict.into());
+                    }
+                    return Ok(blob);
+                }
+                execute(
+                    sql,
+                    "UPDATE teaql_blob_object SET content_version=$1,size_bytes=$2,sha256=$3 WHERE blob_key=$4",
+                    vec![
+                        content.content_version().into(),
+                        signed(content.size_bytes())?,
+                        content.sha256().into(),
+                        key.as_str().into(),
+                    ],
+                )
+                .await?;
+                catalog.lock_blob(sql, &scope, &key).await
+            })
+        })
+        .await
+    }
     /// Trusted maintenance acknowledgement after successful version-conditional physical deletion.
     pub async fn acknowledge_deleted(
         &self,
@@ -1018,12 +1096,15 @@ fn record(row: CompactRow) -> BlobResult<BlobCatalogRecord> {
             blob.size_bytes.is_some() || blob.sha256.is_some() || blob.content_version.is_some();
         if blob.actual_mime.is_some()
             || written
-                && (blob.size_bytes.is_none_or(|size| {
-                    size > blob.policy.max_size || size == 0 && !blob.policy.allow_empty
-                }) || blob
-                    .sha256
-                    .as_deref()
-                    .is_none_or(|sha| digest(sha).is_err())
+                && (blob.size_bytes.is_none()
+                    || blob.state == BlobState::Initiated
+                        && blob.size_bytes.is_some_and(|size| {
+                            size > blob.policy.max_size || size == 0 && !blob.policy.allow_empty
+                        })
+                    || blob
+                        .sha256
+                        .as_deref()
+                        .is_none_or(|sha| digest(sha).is_err())
                     || blob
                         .content_version
                         .as_deref()

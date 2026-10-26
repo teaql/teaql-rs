@@ -17,7 +17,7 @@ use teaql_blob_content_native::{
     ProcessBlobContentVerifier, VerificationLimits, WorkerExecutable, WorkerResourceLimits,
 };
 use teaql_blob_store_file::FileBlobStore;
-use teaql_core::{BlobFieldSpec, DataType, EntityDescriptor, PropertyDescriptor};
+use teaql_core::{BlobFieldSpec, BlobRef, DataType, EntityDescriptor, PropertyDescriptor};
 use teaql_runtime::{InMemoryMetadataStore, RuntimeModule, UserContext};
 use tempfile::TempDir;
 
@@ -162,7 +162,11 @@ impl BlobStore for Store {
         version: Option<&str>,
     ) -> BlobResult<Option<StoredBlob>> {
         self.call();
-        self.inner.seal_for_deletion(location, version).await
+        let result = self.inner.seal_for_deletion(location, version).await;
+        if self.state.hook.load(Ordering::SeqCst) == 14 {
+            self.state.access.store(false, Ordering::SeqCst);
+        }
+        result
     }
     async fn open_range(
         &self,
@@ -187,7 +191,33 @@ impl BlobStore for Store {
         version: &str,
     ) -> BlobResult<BlobDeleteResult> {
         self.call();
-        self.inner.delete_if_version(location, version).await
+        let result = self.inner.delete_if_version(location, version).await;
+        if self.state.hook.load(Ordering::SeqCst) == 13 {
+            return Err(BlobErrorCode::StoreFailed.into());
+        }
+        if self.state.hook.load(Ordering::SeqCst) == 15 {
+            self.state.access.store(false, Ordering::SeqCst);
+        }
+        result
+    }
+}
+
+struct MaintenanceAuth;
+impl BlobMaintenanceAuthorization for MaintenanceAuth {
+    fn scope(&self, context: &UserContext) -> BlobResult<BlobScope> {
+        let state = context
+            .get_resource::<Principal>()
+            .ok_or(BlobErrorCode::BindDenied)?;
+        let identity = state.0.identity.lock().unwrap();
+        BlobScope::new("service", identity.0.clone())
+    }
+    fn can_maintain(&self, context: &UserContext, _scope: &BlobScope) -> BlobResult<bool> {
+        Ok(context
+            .get_resource::<Principal>()
+            .ok_or(BlobErrorCode::BindDenied)?
+            .0
+            .access
+            .load(Ordering::SeqCst))
     }
 }
 fn model(extensions: &[&str]) -> InMemoryMetadataStore {
@@ -351,6 +381,309 @@ impl App {
         assert_eq!(self.verifier.stats().started, self.verifier.stats().reaped);
         self.f.finish().await;
     }
+    fn maintenance(&self, batch_size: usize) -> BlobMaintenanceService {
+        BlobMaintenanceService::new(
+            self.f.catalog.clone(),
+            self.store.clone(),
+            Arc::new(MaintenanceAuth),
+            self.state.clone(),
+            batch_size,
+        )
+        .unwrap()
+    }
+    async fn maintenance_bind(
+        &self,
+        target: BlobFieldTarget,
+        previous: Option<BlobRef>,
+        next: Option<BlobRef>,
+        policy: BlobPolicySnapshot,
+        now: i64,
+    ) {
+        let tx = self.f.root.begin().await.unwrap();
+        let prepared = self
+            .f
+            .catalog
+            .prepare_bindings(
+                tx.as_ref(),
+                &self.scope(),
+                vec![change(target.clone(), previous, next.clone(), policy)],
+                now,
+            )
+            .await
+            .unwrap();
+        self.f.write(tx.as_ref(), &target, next.as_ref()).await;
+        self.f
+            .catalog
+            .apply_bindings(tx.as_ref(), prepared, now)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn host_scheduled_collection_respects_three_clocks_live_binding_and_bounded_cursor() {
+    let app = App::new(104857600, 5).await;
+    let empty = app.begin("maintenance-empty").await;
+    let written = app.begin("maintenance-written").await;
+    app.service
+        .write(&app.ctx, written.upload_id(), content(bytes("pdf")))
+        .await
+        .unwrap();
+    let unbound = app.begin("maintenance-unbound").await;
+    app.service
+        .write(&app.ctx, unbound.upload_id(), content(bytes("pdf")))
+        .await
+        .unwrap();
+    app.service
+        .complete(&app.ctx, unbound.upload_id())
+        .await
+        .unwrap();
+    let live = app.begin("maintenance-live").await;
+    app.service
+        .write(&app.ctx, live.upload_id(), content(bytes("pdf")))
+        .await
+        .unwrap();
+    app.service
+        .complete(&app.ctx, live.upload_id())
+        .await
+        .unwrap();
+    let target = app.target();
+    let policy = app.record(&live).await.policy().clone();
+    app.maintenance_bind(
+        target.clone(),
+        None,
+        Some(live.reference().clone()),
+        policy.clone(),
+        1000,
+    )
+    .await;
+    let maintenance = app.maintenance(1);
+    assert!(
+        maintenance
+            .run_batch(&app.ctx, None)
+            .await
+            .unwrap()
+            .outcomes
+            .is_empty()
+    );
+    app.state.now.store(2000, Ordering::SeqCst);
+    app.state.access.store(false, Ordering::SeqCst);
+    assert_eq!(
+        maintenance
+            .run_batch(&app.ctx, None)
+            .await
+            .unwrap_err()
+            .code,
+        BlobErrorCode::BindDenied
+    );
+    assert_eq!(
+        app.record(&unbound).await.state(),
+        BlobState::UploadedUnbound
+    );
+    app.state.access.store(true, Ordering::SeqCst);
+    let first = maintenance.run_batch(&app.ctx, None).await.unwrap();
+    assert_eq!(first.outcomes.len(), 1);
+    assert_eq!(first.outcomes[0].reference(), unbound.reference());
+    assert_eq!(first.outcomes[0].status(), BlobMaintenanceStatus::Deleted);
+    app.state.identity.lock().unwrap().0 = "tenant-b".into();
+    assert_eq!(
+        maintenance
+            .run_batch(&app.ctx, first.next.as_ref())
+            .await
+            .unwrap_err()
+            .code,
+        BlobErrorCode::BindDenied
+    );
+    app.state.identity.lock().unwrap().0 = "tenant-a".into();
+    assert!(
+        maintenance
+            .run_batch(&app.ctx, first.next.as_ref())
+            .await
+            .unwrap()
+            .outcomes
+            .is_empty()
+    );
+    app.state.now.store(6000, Ordering::SeqCst);
+    let first = maintenance.run_batch(&app.ctx, None).await.unwrap();
+    let second = maintenance
+        .run_batch(&app.ctx, first.next.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(first.outcomes.len() + second.outcomes.len(), 2);
+    assert!(
+        first
+            .outcomes
+            .iter()
+            .chain(&second.outcomes)
+            .all(|outcome| matches!(
+                outcome.status(),
+                BlobMaintenanceStatus::Deleted | BlobMaintenanceStatus::AlreadyMissing
+            ))
+    );
+    assert_eq!(app.record(&empty).await.state(), BlobState::Deleted);
+    assert_eq!(app.record(&written).await.state(), BlobState::Deleted);
+    assert_eq!(app.record(&live).await.state(), BlobState::Available);
+    let live_location = app.record(&live).await.storage_location().to_owned();
+    assert!(app.store.stat(&live_location).await.unwrap().is_some());
+    app.maintenance_bind(target, Some(live.reference().clone()), None, policy, 6000)
+        .await;
+    assert!(
+        maintenance
+            .run_batch(&app.ctx, None)
+            .await
+            .unwrap()
+            .outcomes
+            .is_empty()
+    );
+    app.state.now.store(7000, Ordering::SeqCst);
+    let mut host_timer = tokio::time::interval(Duration::from_millis(10));
+    host_timer.tick().await;
+    let result = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            host_timer.tick().await;
+            let batch = maintenance.run_batch(&app.ctx, None).await.unwrap();
+            if !batch.outcomes.is_empty() {
+                break batch;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(result.outcomes.len(), 1);
+    assert_eq!(result.outcomes[0].reference(), live.reference());
+    assert_eq!(result.outcomes[0].status(), BlobMaintenanceStatus::Deleted);
+    assert!(app.store.stat(&live_location).await.unwrap().is_none());
+    assert!(
+        maintenance
+            .run_batch(&app.ctx, None)
+            .await
+            .unwrap()
+            .outcomes
+            .is_empty()
+    );
+    println!("R5_RUST_HOST_SCHEDULED_LIFECYCLE_PASS");
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn abandoned_unrecorded_file_is_pinned_and_delete_ack_failure_recovers() {
+    let app = App::new(104857600, 5).await;
+    let session = app.begin("maintenance-abandoned").await;
+    let target = app.store.create_upload(session.upload_id()).await.unwrap();
+    let stored = app
+        .store
+        .write(&target, content(bytes("pdf")), 104857600)
+        .await
+        .unwrap();
+    assert_eq!(app.record(&session).await.content_version(), None);
+    app.state.now.store(6000, Ordering::SeqCst);
+    app.state.hook.store(13, Ordering::SeqCst);
+    let maintenance = app.maintenance(10);
+    let failed = maintenance.run_batch(&app.ctx, None).await.unwrap();
+    assert_eq!(failed.outcomes.len(), 1);
+    assert_eq!(failed.outcomes[0].status(), BlobMaintenanceStatus::Failed);
+    assert_eq!(app.record(&session).await.state(), BlobState::Deleting);
+    assert_eq!(
+        app.record(&session).await.content_version(),
+        Some(stored.content_version())
+    );
+    assert!(app.store.stat(stored.location()).await.unwrap().is_none());
+    app.state.hook.store(0, Ordering::SeqCst);
+    let recovered = maintenance.run_batch(&app.ctx, None).await.unwrap();
+    assert_eq!(recovered.outcomes.len(), 1);
+    assert_eq!(
+        recovered.outcomes[0].status(),
+        BlobMaintenanceStatus::AlreadyMissing
+    );
+    assert_eq!(app.record(&session).await.state(), BlobState::Deleted);
+    assert!(
+        maintenance
+            .run_batch(&app.ctx, None)
+            .await
+            .unwrap()
+            .outcomes
+            .is_empty()
+    );
+    let invalid = app.begin("maintenance-empty-invalid").await;
+    let invalid_target = app.store.create_upload(invalid.upload_id()).await.unwrap();
+    let invalid_stored = app
+        .store
+        .write(&invalid_target, content(Vec::new()), 104857600)
+        .await
+        .unwrap();
+    assert!(!app.record(&invalid).await.policy().allow_empty());
+    app.state.now.store(11000, Ordering::SeqCst);
+    let invalid_result = maintenance.run_batch(&app.ctx, None).await.unwrap();
+    assert_eq!(invalid_result.outcomes.len(), 1);
+    assert_eq!(invalid_result.outcomes[0].reference(), invalid.reference());
+    assert_eq!(
+        invalid_result.outcomes[0].status(),
+        BlobMaintenanceStatus::Deleted
+    );
+    assert_eq!(app.record(&invalid).await.state(), BlobState::Deleted);
+    assert_eq!(
+        app.record(&invalid).await.content_version(),
+        Some(invalid_stored.content_version())
+    );
+    assert!(
+        app.store
+            .stat(invalid_stored.location())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    println!("R5_RUST_ABANDONED_FILE_RECOVERY_PASS");
+    app.finish().await;
+}
+
+#[tokio::test]
+async fn maintenance_rechecks_current_permission_after_seal_and_after_physical_delete() {
+    let app = App::new(104857600, 5).await;
+    let maintenance = app.maintenance(10);
+    for (index, mode) in [(0, 14), (1, 15)] {
+        let session = app.begin(&format!("maintenance-revoke-{index}")).await;
+        app.service
+            .write(&app.ctx, session.upload_id(), content(bytes("pdf")))
+            .await
+            .unwrap();
+        app.service
+            .complete(&app.ctx, session.upload_id())
+            .await
+            .unwrap();
+        let location = app.record(&session).await.storage_location().to_owned();
+        app.state.now.fetch_add(1000, Ordering::SeqCst);
+        app.state.hook.store(mode, Ordering::SeqCst);
+        assert_eq!(
+            maintenance
+                .run_batch(&app.ctx, None)
+                .await
+                .unwrap_err()
+                .code,
+            BlobErrorCode::BindDenied
+        );
+        assert_eq!(app.record(&session).await.state(), BlobState::Deleting);
+        assert_eq!(
+            app.store.stat(&location).await.unwrap().is_some(),
+            mode == 14
+        );
+        app.state.hook.store(0, Ordering::SeqCst);
+        app.state.access.store(true, Ordering::SeqCst);
+        let recovered = maintenance.run_batch(&app.ctx, None).await.unwrap();
+        assert_eq!(recovered.outcomes.len(), 1);
+        assert_eq!(recovered.outcomes[0].reference(), session.reference());
+        assert_eq!(
+            recovered.outcomes[0].status(),
+            if mode == 14 {
+                BlobMaintenanceStatus::Deleted
+            } else {
+                BlobMaintenanceStatus::AlreadyMissing
+            }
+        );
+        assert_eq!(app.record(&session).await.state(), BlobState::Deleted);
+    }
+    println!("R5_RUST_MAINTENANCE_CURRENT_PERMISSION_PASS");
+    app.finish().await;
 }
 
 #[tokio::test]

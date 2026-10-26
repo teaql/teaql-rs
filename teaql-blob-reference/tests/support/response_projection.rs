@@ -503,4 +503,5 @@ async fn actual_postgres_bound_view_uses_file_gateway_and_rechecks_current_bindi
         ),
     )));
     assert!(context.validate_capabilities().is_err());
+    fixture.finish().await;
 }
