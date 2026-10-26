@@ -2473,6 +2473,19 @@ where
     T: crate::LedgerEntity + Send + 'static,
     E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
 {
+    save_audited_ledger_entity_with_executor_on_owner(audited, context, executor, None).await
+}
+
+pub(crate) async fn save_audited_ledger_entity_with_executor_on_owner<T, E>(
+    audited: teaql_core::Audited<T>,
+    context: &UserContext,
+    executor: &E,
+    physical_owner: Option<&teaql_data_service::infrastructure_sql::PhysicalTransactionIdentity>,
+) -> Result<(T, Option<crate::EntityRuntimeState>), RuntimeError>
+where
+    T: crate::LedgerEntity + Send + 'static,
+    E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
+{
     let evidence = Arc::new(std::sync::Mutex::new(Vec::new()));
     let result = context
         .observe_mutation_request(
@@ -2481,7 +2494,12 @@ where
                 teaql_core::time::Timestamp::now(),
                 GRAPH_FIX_EVIDENCE.scope(
                     evidence.clone(),
-                    save_audited_ledger_entity_with_executor_inner(audited, context, executor),
+                    save_audited_ledger_entity_with_executor_inner(
+                        audited,
+                        context,
+                        executor,
+                        physical_owner,
+                    ),
                 ),
             ),
         )
@@ -2494,6 +2512,7 @@ async fn save_audited_ledger_entity_with_executor_inner<T, E>(
     audited: teaql_core::Audited<T>,
     context: &UserContext,
     executor: &E,
+    physical_owner: Option<&teaql_data_service::infrastructure_sql::PhysicalTransactionIdentity>,
 ) -> Result<(T, Option<crate::EntityRuntimeState>), RuntimeError>
 where
     T: crate::LedgerEntity + Send + 'static,
@@ -2501,13 +2520,14 @@ where
 {
     let entity = audited.into_entity();
     let root = entity.entity_runtime_state();
-    if let Some(error) = root
-        .as_ref()
-        .and_then(|root| root.first_composition_error())
-    {
-        return Err(RuntimeError::Graph(format!(
-            "generated entity graph attachment failed before save: {error}"
-        )));
+    if let Some(root) = root.as_ref() {
+        if let Some(owner) = physical_owner {
+            root.require_submission_owner(owner)?;
+        } else if let Some(error) = root.first_composition_error() {
+            return Err(RuntimeError::Graph(format!(
+                "generated entity graph attachment failed before save: {error}"
+            )));
+        }
     }
     if root
         .as_ref()
@@ -2519,42 +2539,72 @@ where
     let mut node = extract_graph_node(context, entity)?;
 
     if let Some(root) = root {
+        let mut draft = physical_owner
+            .map(|owner| root.reserve_submission(Some(owner)))
+            .transpose()?;
+        let execution_root = draft
+            .as_ref()
+            .map_or_else(|| root.clone(), |draft| draft.execution_state().clone());
         let root_id = node.values.get("id").cloned().unwrap_or(Value::I64(0));
-        let root_key = root.original_key_for(&crate::EntityKey::new(node.entity.clone(), root_id));
-        reject_cancelled_new_root(&root, &root_key)?;
-        if let Some(changes) = root.current_change_set().changes().get(&root_key) {
+        let root_key =
+            execution_root.original_key_for(&crate::EntityKey::new(node.entity.clone(), root_id));
+        reject_cancelled_new_root(&execution_root, &root_key)?;
+        if let Some(changes) = execution_root.current_change_set().changes().get(&root_key) {
             let descriptor = context.require_entity(&node.entity)?;
             node.values
                 .extend(storage_values_from_ledger(descriptor, changes)?);
         }
         let mut visited = BTreeSet::from([root_key.clone()]);
-        hydrate_ledger_relations(context, &root, &mut node, &mut visited)?;
-        preflight_graph(context, &mut node, &ObjectLocation::root(), Some(&root))?;
-        merge_relation_mutations_into_root(context, &root, &node)?;
-        preflight_pending_dynamic_entities(context, &root, &node)?;
-        capture_ledger_trace_scopes(&root, &node)?;
-        let has_ledger_changes = !root.current_change_set().is_empty()
-            || !root.deleted_keys().is_empty()
-            || !root.new_keys().is_empty();
+        hydrate_ledger_relations(context, &execution_root, &mut node, &mut visited)?;
+        preflight_graph(
+            context,
+            &mut node,
+            &ObjectLocation::root(),
+            Some(&execution_root),
+        )?;
+        merge_relation_mutations_into_root(context, &execution_root, &node)?;
+        preflight_pending_dynamic_entities(context, &execution_root, &node)?;
+        capture_ledger_trace_scopes(&execution_root, &node)?;
+        let has_ledger_changes = !execution_root.current_change_set().is_empty()
+            || !execution_root.deleted_keys().is_empty()
+            || !execution_root.new_keys().is_empty();
         if has_ledger_changes {
+            if let Some(draft) = draft.as_mut() {
+                draft.seal_reviewed_intent()?;
+            }
             let entity_name = node.entity.clone();
             let descriptor = context.require_entity(&entity_name)?;
-            let preserve_relations = can_preserve_loaded_relations(&root, &root_key, descriptor);
+            let preserve_relations =
+                can_preserve_loaded_relations(&execution_root, &root_key, descriptor);
             let id_property = descriptor.id_property().ok_or_else(|| {
                 RuntimeError::Graph(format!("entity {entity_name} has no id property"))
             })?;
             let data_service =
                 crate::EntityDataService::for_executor(context, &entity_name, executor)
-                    .with_ledger_privacy(&root)?
+                    .with_ledger_privacy(&execution_root)?
                     .with_mutation_intent(teaql_core::MutationIntent::from_optional(
                         node.comment.as_deref(),
                     )?);
-            let locations = ledger_object_locations_for(&root, &node);
-            let policy_plan = crate::ledger_policy_plan(context, &node, &root);
+            let locations = ledger_object_locations_for(&execution_root, &node);
+            let policy_plan = crate::ledger_policy_plan(context, &node, &execution_root);
             let governance = context.review_mutation_plan(&policy_plan)?;
+            let submission = if let Some(owner) = physical_owner {
+                Some(
+                    draft
+                        .take()
+                        .expect("physical owner has a draft")
+                        .attach(owner)?,
+                )
+            } else {
+                None
+            };
+            let submitted_root = submission.as_ref().map_or_else(
+                || execution_root.clone(),
+                |submission| submission.execution_state().clone(),
+            );
             let mut generated_ids = crate::with_mutation_governance(
                 governance,
-                data_service.execute_ledger_plan_internal(root.clone(), &locations),
+                data_service.execute_ledger_plan_internal(submitted_root.clone(), &locations),
             )
             .await
             .map_err(data_service_error_into_runtime)?;
@@ -2571,7 +2621,7 @@ where
             // Reuse the authoritative transaction-owned row, including a
             // soft-delete tombstone. Only an unmodified root needs a separate
             // current-row query.
-            if let Some(snapshot) = generated_ids.canonical_rows.remove(&root_key) {
+            if let Some(snapshot) = generated_ids.canonical_rows.get(&root_key).cloned() {
                 node.values = BTreeMap::from(snapshot).into();
             } else {
                 let persisted_id =
@@ -2586,7 +2636,7 @@ where
                         &entity_name,
                         &id_property.name,
                         &persisted_id,
-                        root.get_trace_chain(&root_key),
+                        submitted_root.get_trace_chain(&root_key),
                     )
                     .await
                     .map_err(data_service_error_into_runtime)?
@@ -2597,12 +2647,27 @@ where
                         ))
                     })?;
             }
-            let entity = decode_saved_ledger_entity::<T>(
-                node,
-                &root,
-                preserve_relations,
-                &original_relation_fields,
-            )?;
+            let entity = if submission.is_some() {
+                let saved_context = crate::SavedEntityContext::new(&root, preserve_relations);
+                decode_saved_ledger_entity::<T>(
+                    node,
+                    &saved_context,
+                    preserve_relations,
+                    &original_relation_fields,
+                )?
+            } else {
+                decode_saved_ledger_entity::<T>(
+                    node,
+                    &root,
+                    preserve_relations,
+                    &original_relation_fields,
+                )?
+            };
+            if let Some(submission) = submission {
+                let (rows, allocated_ids) = generated_ids.into_submission_parts();
+                submission.acknowledge_with_allocated_ids(rows, allocated_ids)?;
+                return Ok((entity, None));
+            }
             return Ok((entity, Some(root)));
         }
     }

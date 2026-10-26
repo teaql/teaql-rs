@@ -25,6 +25,17 @@ pub(crate) struct LedgerExecutionOutcome {
     pub(crate) canonical_rows: Box<CanonicalReadbacks>,
 }
 
+impl LedgerExecutionOutcome {
+    pub(crate) fn into_submission_parts(
+        self,
+    ) -> (
+        BTreeMap<crate::EntityKey, teaql_core::EntitySnapshot>,
+        BTreeMap<crate::EntityKey, Value>,
+    ) {
+        (self.canonical_rows.rows, self.generated_ids)
+    }
+}
+
 /// Every row affected by one native ledger flush, keyed by its pre-allocation
 /// identity. Rows are fetched on the same SQL executor after all writes.
 #[derive(Debug, Default)]

@@ -231,12 +231,15 @@ where
         T: crate::LedgerEntity + Send + 'static,
         E::Tx<'context>: QueryExecutor + MutationExecutor + Send + Sync,
     {
-        let (entity, ledger) = crate::save_audited_ledger_entity_with_executor(
-            audited,
-            self.context,
-            self.transaction(),
-        )
-        .await?;
+        let physical_owner = Transaction::physical_identity(self.transaction());
+        let (entity, ledger) =
+            crate::entity_save::save_audited_ledger_entity_with_executor_on_owner(
+                audited,
+                self.context,
+                self.transaction(),
+                physical_owner.as_ref(),
+            )
+            .await?;
         if let Some(ledger) = ledger {
             let mut ledgers = self
                 .flushed_ledgers
