@@ -6,8 +6,9 @@ use teaql_core::{Audited, BlobRef, CompactRow, Entity, EntitySnapshot, Value};
 use teaql_data_service::infrastructure_sql::*;
 use teaql_macros::{TeaqlEntity, teaql_entity};
 use teaql_runtime::{
-    EntityKey, InMemoryMetadataStore, LedgerEntity, MutationDecision, MutationPlan, MutationPolicy,
-    MutationPolicyIdentity, UserContext,
+    AuditedSaveExt, EntityKey, EntityRuntimeState, InMemoryMetadataStore, InternalIdGenerator,
+    LedgerEntity, MutationDecision, MutationPlan, MutationPolicy, MutationPolicyIdentity,
+    RuntimeError, UserContext,
 };
 
 #[teaql_entity]
@@ -39,6 +40,236 @@ async fn row(sql: &dyn InfrastructureSql) -> CompactRow {
         .unwrap();
     assert_eq!(rows.len(), 1);
     rows.into_iter().next().unwrap()
+}
+
+#[tokio::test]
+async fn owned_native_save_decodes_and_acknowledges_before_physical_commit() {
+    let f = Fixture::new(true).await;
+    f.write(
+        f.root.as_ref(),
+        &f.target(42, "document"),
+        Some(&blob("original")),
+    )
+    .await;
+    let loaded = SavedAsset::from_compact_row(row(f.root.as_ref()).await).unwrap();
+    let root = loaded.entity_runtime_state().unwrap();
+    root.set(key(), "document", Value::BlobRef(blob("owned")));
+    let mut context = UserContext::new()
+        .with_metadata(InMemoryMetadataStore::new().with_entity(SavedAsset::entity_descriptor()));
+    context.register_executor(f.business());
+    let saved = Audited::new(loaded, "owned native save")
+        .save(&context)
+        .await
+        .unwrap();
+    assert_eq!(saved.version, 2);
+    assert_eq!(saved.entity_runtime_state(), Some(root.clone()));
+    assert!(!root.has_pending_submission());
+    assert_eq!(root.get_original_version(&key()), Some(2));
+    let actual = row(f.root.as_ref()).await;
+    assert_eq!(actual.get("version"), Some(&Value::I64(2)));
+    assert_eq!(
+        actual.get("document"),
+        Some(&Value::Text(blob("owned").as_str().into()))
+    );
+    println!("R5_OWNED_NATIVE_TYPED_COMMIT_PASS");
+    f.finish().await;
+}
+
+struct EditAfterOwnedReview(EntityRuntimeState);
+impl MutationPolicy for EditAfterOwnedReview {
+    fn identity(&self) -> MutationPolicyIdentity {
+        MutationPolicyIdentity::new("owned-review-late-edit", "1", "sha256:owned-late-edit")
+    }
+    fn review(&self, _context: &UserContext, plan: &MutationPlan) -> MutationDecision {
+        assert_eq!(plan.request_key, "Asset.saveGraph");
+        assert_eq!(plan.operations.len(), 1);
+        assert_eq!(
+            plan.operations[0].changed_values.get("document"),
+            Some(&Value::BlobRef(blob("submitted")))
+        );
+        self.0.set(key(), "document", Value::BlobRef(blob("late")));
+        MutationDecision::allow()
+    }
+}
+
+#[tokio::test]
+async fn owned_native_review_freezes_sql_intent_and_keeps_late_edit() {
+    let f = Fixture::new(true).await;
+    f.write(
+        f.root.as_ref(),
+        &f.target(42, "document"),
+        Some(&blob("original")),
+    )
+    .await;
+    let loaded = SavedAsset::from_compact_row(row(f.root.as_ref()).await).unwrap();
+    let root = loaded.entity_runtime_state().unwrap();
+    root.set(key(), "document", Value::BlobRef(blob("submitted")));
+    let policy: Arc<dyn MutationPolicy> = Arc::new(EditAfterOwnedReview(root.clone()));
+    let mut context = UserContext::new()
+        .with_metadata(InMemoryMetadataStore::new().with_entity(SavedAsset::entity_descriptor()))
+        .with_mutation_policy_registry(move |request_key: &str| {
+            (request_key == "Asset.saveGraph").then(|| policy.clone())
+        });
+    context.register_executor(f.business());
+    let saved = Audited::new(loaded, "owned reviewed save")
+        .save(&context)
+        .await
+        .unwrap();
+    assert_eq!(saved.version, 2);
+    assert_eq!(saved.document, Some(blob("submitted")));
+    assert_eq!(root.get_original_version(&key()), Some(2));
+    assert_eq!(
+        root.get(&key(), "document"),
+        Some(Value::BlobRef(blob("late")))
+    );
+    let actual = row(f.root.as_ref()).await;
+    assert_eq!(actual.get("version"), Some(&Value::I64(2)));
+    assert_eq!(
+        actual.get("document"),
+        Some(&Value::Text(blob("submitted").as_str().into()))
+    );
+    println!("R5_OWNED_NATIVE_REVIEW_FROZEN_LATE_EDIT_PASS");
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn owned_native_new_row_acknowledges_insert_origin() {
+    let f = Fixture::new(true).await;
+    let new =
+        SavedAsset::from_compact_row(CompactRow::from_map(std::collections::BTreeMap::from([
+            ("id".into(), Value::U64(42)),
+            ("version".into(), Value::I64(0)),
+            ("document".into(), Value::Null),
+        ])))
+        .unwrap();
+    let root = new.entity_runtime_state().unwrap();
+    root.mark_as_new(key());
+    root.set(key(), "document", Value::BlobRef(blob("new_owned")));
+    let mut context = UserContext::new()
+        .with_metadata(InMemoryMetadataStore::new().with_entity(SavedAsset::entity_descriptor()));
+    context.register_executor(f.business());
+    let saved = Audited::new(new, "owned new Asset save")
+        .save(&context)
+        .await
+        .unwrap();
+    assert_eq!(saved.id, 42);
+    assert_eq!(saved.version, 1);
+    assert_eq!(saved.entity_runtime_state(), Some(root.clone()));
+    assert!(!root.is_new(&key()));
+    assert!(!root.has_pending_submission());
+    assert_eq!(root.get_original_version(&key()), Some(1));
+    assert_eq!(f.count("r5_assets").await, 1);
+    let actual = row(f.root.as_ref()).await;
+    assert_eq!(actual.get("version"), Some(&Value::I64(1)));
+    assert_eq!(
+        actual.get("document"),
+        Some(&Value::Text(blob("new_owned").as_str().into()))
+    );
+    println!("R5_OWNED_NATIVE_INSERT_ORIGIN_PASS");
+    f.finish().await;
+}
+
+struct AllocateAssetId;
+impl InternalIdGenerator for AllocateAssetId {
+    fn generate_id(&self, entity: &str) -> Result<u64, RuntimeError> {
+        assert_eq!(entity, "Asset");
+        Ok(42)
+    }
+}
+
+#[tokio::test]
+async fn owned_native_allocated_id_aliases_original_and_returned_handles() {
+    let f = Fixture::new(true).await;
+    let temporary = EntityKey::new_static("Asset", 0_u64);
+    let new =
+        SavedAsset::from_compact_row(CompactRow::from_map(std::collections::BTreeMap::from([
+            ("id".into(), Value::U64(0)),
+            ("version".into(), Value::I64(0)),
+            ("document".into(), Value::Null),
+        ])))
+        .unwrap();
+    let root = new.entity_runtime_state().unwrap();
+    root.mark_as_new(temporary.clone());
+    root.set(
+        temporary.clone(),
+        "document",
+        Value::BlobRef(blob("allocated")),
+    );
+    let mut context = UserContext::new()
+        .with_metadata(InMemoryMetadataStore::new().with_entity(SavedAsset::entity_descriptor()))
+        .with_internal_id_generator(AllocateAssetId);
+    context.register_executor(f.business());
+    let saved = Audited::new(new, "owned allocated Asset save")
+        .save(&context)
+        .await
+        .unwrap();
+    assert_eq!(saved.id, 42);
+    assert_eq!(saved.version, 1);
+    assert_eq!(saved.entity_runtime_state(), Some(root.clone()));
+    assert!(!root.is_new(&temporary));
+    assert!(!root.is_new(&key()));
+    assert_eq!(root.get_original_version(&temporary), Some(1));
+    assert_eq!(root.get_original_version(&key()), Some(1));
+    root.set(key(), "document", Value::BlobRef(blob("later")));
+    assert_eq!(
+        root.get(&temporary, "document"),
+        Some(Value::BlobRef(blob("later")))
+    );
+    let actual = row(f.root.as_ref()).await;
+    assert_eq!(actual.get("id"), Some(&Value::I64(42)));
+    assert_eq!(actual.get("version"), Some(&Value::I64(1)));
+    assert_eq!(
+        actual.get("document"),
+        Some(&Value::Text(blob("allocated").as_str().into()))
+    );
+    println!("R5_OWNED_NATIVE_ALLOCATED_ALIAS_PASS");
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn owned_invalid_canonical_readback_rolls_back_retryable_intent() {
+    let f = Fixture::new(true).await;
+    f.write(
+        f.root.as_ref(),
+        &f.target(42, "document"),
+        Some(&blob("original")),
+    )
+    .await;
+    f.admin
+        .get()
+        .await
+        .unwrap()
+        .batch_execute(&format!(
+            "CREATE FUNCTION \"{0}\".corrupt_owned_readback() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.document='invalid_blob_reference'; RETURN NEW; END $$; CREATE TRIGGER corrupt_owned_readback BEFORE UPDATE ON \"{0}\".r5_assets FOR EACH ROW EXECUTE FUNCTION \"{0}\".corrupt_owned_readback()",
+            f.schema
+        ))
+        .await
+        .unwrap();
+    let loaded = SavedAsset::from_compact_row(row(f.root.as_ref()).await).unwrap();
+    let root = loaded.entity_runtime_state().unwrap();
+    root.set(key(), "document", Value::BlobRef(blob("submitted")));
+    let mut context = UserContext::new()
+        .with_metadata(InMemoryMetadataStore::new().with_entity(SavedAsset::entity_descriptor()));
+    context.register_executor(f.business());
+    let error = Audited::new(loaded, "owned corrupted authoritative readback")
+        .save(&context)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("BLOB_REFERENCE_INVALID"));
+    assert!(!root.has_pending_submission());
+    assert_eq!(root.get_original_version(&key()), Some(1));
+    assert_eq!(
+        root.get(&key(), "document"),
+        Some(Value::BlobRef(blob("submitted")))
+    );
+    let actual = row(f.root.as_ref()).await;
+    assert_eq!(actual.get("version"), Some(&Value::I64(1)));
+    assert_eq!(
+        actual.get("document"),
+        Some(&Value::Text(blob("original").as_str().into()))
+    );
+    println!("R5_OWNED_NATIVE_READBACK_ROLLBACK_PASS");
+    f.finish().await;
 }
 
 #[tokio::test]

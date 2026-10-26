@@ -35,6 +35,11 @@ pub(crate) fn record_graph_fix_evidence(evidence: crate::FixEvidence) {
 // DynGraphSaver — type-erased graph save capability
 // ---------------------------------------------------------------------------
 
+type ErasedSavedEntity = Box<dyn std::any::Any + Send>;
+/// The flag is true only after attachment to the provider's physical owner.
+type SavedEntityDecoder =
+    Box<dyn FnOnce(GraphNode, bool) -> Result<ErasedSavedEntity, RuntimeError> + Send>;
+
 /// Object-safe trait for saving a [`GraphNode`] tree to the database.
 ///
 /// A concrete implementation is registered in [`UserContext`] during setup so
@@ -47,12 +52,22 @@ pub(crate) trait DynGraphSaver: Send + Sync {
         node: GraphNode,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>>;
 
+    #[cfg(test)]
     fn save_ledger_dyn<'a>(
         &'a self,
         context: &'a UserContext,
         node: GraphNode,
         root: crate::EntityRuntimeState,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>>;
+
+    fn save_ledger_typed_dyn<'a>(
+        &'a self,
+        context: &'a UserContext,
+        node: GraphNode,
+        root: crate::EntityRuntimeState,
+        draft: crate::LedgerDraft,
+        decode: SavedEntityDecoder,
+    ) -> Pin<Box<dyn Future<Output = Result<ErasedSavedEntity, RuntimeError>> + Send + 'a>>;
 }
 
 /// Marker struct that implements [`DynGraphSaver`] for a specific executor type `E`.
@@ -137,6 +152,7 @@ where
         })
     }
 
+    #[cfg(test)]
     fn save_ledger_dyn<'a>(
         &'a self,
         context: &'a UserContext,
@@ -247,6 +263,152 @@ where
             root.clear_committed();
             crate::commit_audit::deliver(context, audit_events)?;
             Ok(node)
+        })
+    }
+
+    fn save_ledger_typed_dyn<'a>(
+        &'a self,
+        context: &'a UserContext,
+        mut node: GraphNode,
+        root: crate::EntityRuntimeState,
+        draft: crate::LedgerDraft,
+        decode: SavedEntityDecoder,
+    ) -> Pin<Box<dyn Future<Output = Result<ErasedSavedEntity, RuntimeError>> + Send + 'a>> {
+        Box::pin(async move {
+            let execution_root = draft.execution_state().clone();
+            let entity = node.entity.clone();
+            let executor = context
+                .require_resource::<E>()
+                .map_err(|error| RuntimeError::Graph(error.to_string()))?;
+            let descriptor = context.require_entity(&entity)?;
+            let id_property = descriptor.id_property().ok_or_else(|| {
+                RuntimeError::Graph(format!("entity {entity} has no id property"))
+            })?;
+            let current_id = node
+                .values
+                .get(&id_property.name)
+                .cloned()
+                .unwrap_or(Value::I64(0));
+            let root_key =
+                execution_root.original_key_for(&crate::EntityKey::new(entity.clone(), current_id));
+            reject_cancelled_new_root(&execution_root, &root_key)?;
+            let policy_plan = crate::ledger_policy_plan(context, &node, &execution_root);
+            let governance = context.review_mutation_plan(&policy_plan)?;
+            let view_boundary = context.view_transaction_boundary();
+            let tx = match teaql_data_service::TransactionExecutor::begin(executor).await {
+                Ok(tx) => tx,
+                Err(error) => {
+                    view_boundary.complete();
+                    return Err(RuntimeError::Graph(error.to_string()));
+                }
+            };
+            let owner = teaql_data_service::Transaction::physical_identity(&tx);
+            let native = owner.is_some();
+            let root_to_clear = root.clone();
+            let tx_ref = &tx;
+            let (result, audit_events) = crate::commit_audit::collect(
+                context,
+                crate::with_mutation_governance(governance, async move {
+                    let submission = match owner.as_ref() {
+                        Some(owner) => {
+                            Some(draft.attach(owner).map_err(DataServiceError::Runtime)?)
+                        }
+                        None => {
+                            drop(draft);
+                            // Legacy transports have no physical completion
+                            // identity, so execution resumes on the restored
+                            // live ledger. Rebind its trace scopes to the
+                            // reviewed graph before ID allocation.
+                            capture_ledger_trace_scopes(&root, &node)
+                                .map_err(DataServiceError::Runtime)?;
+                            None
+                        }
+                    };
+                    let submitted_root = submission.as_ref().map_or_else(
+                        || root.clone(),
+                        |submission| submission.execution_state().clone(),
+                    );
+                    let service = crate::EntityDataService::for_executor(context, &entity, tx_ref)
+                        .with_ledger_privacy(&submitted_root)
+                        .map_err(DataServiceError::Runtime)?
+                        .with_mutation_intent(
+                            teaql_core::MutationIntent::from_optional(node.comment.as_deref())
+                                .map_err(RuntimeError::from)
+                                .map_err(DataServiceError::Runtime)?,
+                        );
+                    let locations = ledger_object_locations_for(&submitted_root, &node);
+                    let mut outcome = service
+                        .execute_ledger_plan_internal(submitted_root.clone(), &locations)
+                        .await?;
+                    if let Some(readbacks) = &mut outcome.dynamic_readbacks {
+                        node.dynamic_fields = readbacks
+                            .remove(&root_key)
+                            .map(Box::new)
+                            .or(node.dynamic_fields.take());
+                    }
+                    if let Some(new_id) = outcome.get(&root_key) {
+                        node.values.insert(id_property.name.clone(), new_id.clone());
+                    }
+                    if let Some(snapshot) = outcome.canonical_rows.get(&root_key).cloned() {
+                        node.values = BTreeMap::from(snapshot).into();
+                    } else {
+                        let persisted_id =
+                            node.values.get(&id_property.name).cloned().ok_or_else(|| {
+                                DataServiceError::Runtime(RuntimeError::Graph(format!(
+                                    "saved {entity} missing identity field {}",
+                                    id_property.name
+                                )))
+                            })?;
+                        node.values = service
+                            .fetch_graph_current_row_internal(
+                                &entity,
+                                &id_property.name,
+                                &persisted_id,
+                                submitted_root.get_trace_chain(&root_key),
+                            )
+                            .await?
+                            .map(Into::into)
+                            .ok_or_else(|| {
+                                DataServiceError::Runtime(RuntimeError::Graph(format!(
+                                    "persisted {entity} record could not be read back"
+                                )))
+                            })?;
+                    }
+                    // Typed decoding is part of the physical transaction. A
+                    // failed decoder drops the unacknowledged submission and
+                    // prevents this owner from committing.
+                    let saved =
+                        decode(node, submission.is_some()).map_err(DataServiceError::Runtime)?;
+                    if let Some(submission) = submission {
+                        let (rows, allocated_ids) = outcome.into_submission_parts();
+                        submission
+                            .acknowledge_with_allocated_ids(rows, allocated_ids)
+                            .map_err(DataServiceError::Runtime)?;
+                    }
+                    Ok(saved)
+                }),
+            )
+            .await;
+            match result {
+                Ok(saved) => {
+                    teaql_data_service::Transaction::commit(tx)
+                        .await
+                        .map_err(|error| RuntimeError::Graph(error.to_string()))?;
+                    view_boundary.complete();
+                    if !native {
+                        root_to_clear.clear_committed();
+                    }
+                    crate::commit_audit::deliver(context, audit_events)?;
+                    Ok(saved)
+                }
+                Err(error) => {
+                    teaql_data_service::Transaction::rollback(tx)
+                        .await
+                        .map_err(|rollback| RuntimeError::Graph(rollback.to_string()))?;
+                    view_boundary.complete();
+                    Err(data_service_error_into_runtime(error))
+                }
+            }
         })
     }
 }
@@ -556,7 +718,7 @@ mod save_relation_state_tests {
 
 #[cfg(test)]
 mod transactional_ledger_readback_tests {
-    use super::{DynGraphSaver, GraphSaverFor};
+    use super::{DynGraphSaver, GraphSaverFor, SavedEntityDecoder};
     use crate::{
         EntityKey, EntityRuntimeState, GraphNode, InMemoryMetadataStore, MutationDecision,
         MutationPlan, MutationPolicy, MutationPolicyIdentity, MutationPolicySource, RawAuditEvent,
@@ -584,6 +746,86 @@ mod transactional_ledger_readback_tests {
     struct Ambient(Arc<Mutex<State>>);
 
     struct Tx(Arc<Mutex<State>>);
+
+    struct NativeAmbient(Arc<Mutex<State>>);
+
+    struct NativeTx {
+        inner: Tx,
+        owner: teaql_data_service::infrastructure_sql::PhysicalTransactionOwner,
+    }
+
+    impl DataServiceExecutor for NativeAmbient {
+        type Error = std::io::Error;
+
+        fn capabilities(&self) -> DataServiceCapabilities {
+            Ambient(self.0.clone()).capabilities()
+        }
+    }
+
+    impl DataServiceExecutor for NativeTx {
+        type Error = std::io::Error;
+
+        fn capabilities(&self) -> DataServiceCapabilities {
+            self.inner.capabilities()
+        }
+    }
+
+    impl QueryExecutor for NativeAmbient {
+        async fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
+            Ambient(self.0.clone()).query(request).await
+        }
+    }
+
+    impl MutationExecutor for NativeAmbient {
+        async fn mutate(&self, request: MutationRequest) -> Result<MutationResult, Self::Error> {
+            Ambient(self.0.clone()).mutate(request).await
+        }
+    }
+
+    impl QueryExecutor for NativeTx {
+        async fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
+            self.inner.query(request).await
+        }
+    }
+
+    impl MutationExecutor for NativeTx {
+        async fn mutate(&self, request: MutationRequest) -> Result<MutationResult, Self::Error> {
+            self.inner.mutate(request).await
+        }
+    }
+
+    impl TransactionExecutor for NativeAmbient {
+        type Tx<'a> = NativeTx;
+
+        async fn begin(&self) -> Result<Self::Tx<'_>, Self::Error> {
+            let inner = TransactionExecutor::begin(&Ambient(self.0.clone())).await?;
+            Ok(NativeTx {
+                inner,
+                owner: teaql_data_service::infrastructure_sql::SqlResourceIdentity::new().begin(),
+            })
+        }
+    }
+
+    impl Transaction for NativeTx {
+        type Error = std::io::Error;
+
+        fn physical_identity(
+            &self,
+        ) -> Option<teaql_data_service::infrastructure_sql::PhysicalTransactionIdentity> {
+            Some(self.owner.identity())
+        }
+
+        async fn commit(mut self) -> Result<(), Self::Error> {
+            self.owner.prepare_commit().map_err(std::io::Error::other)?;
+            self.inner.commit().await?;
+            self.owner.committed().map_err(std::io::Error::other)
+        }
+
+        async fn rollback(self) -> Result<(), Self::Error> {
+            self.inner.rollback().await?;
+            self.owner.rolled_back().map_err(std::io::Error::other)
+        }
+    }
 
     #[derive(Clone)]
     struct CaptureEvents(Arc<Mutex<Vec<RawAuditEvent>>>);
@@ -753,6 +995,61 @@ mod transactional_ledger_readback_tests {
             }
             Ok(())
         }
+    }
+
+    #[tokio::test]
+    async fn owned_native_decoder_failure_rolls_back_before_commit() {
+        let state = Arc::new(Mutex::new(State {
+            row: BTreeMap::from([
+                ("id".to_owned(), Value::I64(1)),
+                ("version".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::from("before")),
+            ]),
+            ..Default::default()
+        }));
+        let descriptor = EntityDescriptor::new("Task")
+            .property(PropertyDescriptor::new("id", DataType::I64).id())
+            .property(PropertyDescriptor::new("version", DataType::I64).version())
+            .property(PropertyDescriptor::new("name", DataType::Text));
+        let mut context = UserContext::default()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(descriptor));
+        context.insert_resource(NativeAmbient(state.clone()));
+        let root = EntityRuntimeState::default();
+        let key = EntityKey::new_static("Task", 1_i64);
+        root.set_original_version(key.clone(), 1);
+        root.set(key.clone(), "name", Value::from("submitted"));
+        let mut draft = root.reserve_submission(None).unwrap();
+        let node = GraphNode::new("Task")
+            .comment("owned typed decoder failure")
+            .value("id", 1_i64)
+            .value("version", 1_i64)
+            .value("name", "before");
+        super::capture_ledger_trace_scopes(draft.execution_state(), &node).unwrap();
+        draft.seal_reviewed_intent().unwrap();
+        let decode_state = state.clone();
+        let decode_root = root.clone();
+        let decoder: SavedEntityDecoder = Box::new(move |saved, native| {
+            assert!(native);
+            assert_eq!(saved.values.get("version"), Some(&Value::I64(2)));
+            assert!(decode_root.has_pending_submission());
+            assert!(!decode_state.lock().unwrap().calls.contains(&"commit"));
+            Err(RuntimeError::Graph("decoder deliberately failed".into()))
+        });
+        let error = GraphSaverFor::<NativeAmbient>::new()
+            .save_ledger_typed_dyn(&context, node, root.clone(), draft, decoder)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("decoder deliberately failed"),
+            "{error}"
+        );
+        let state = state.lock().unwrap();
+        assert_eq!(state.calls.last(), Some(&"rollback"));
+        assert!(!state.calls.contains(&"commit"));
+        assert_eq!(state.row.get("name"), Some(&Value::from("before")));
+        assert!(!root.has_pending_submission());
+        assert_eq!(root.get_original_version(&key), Some(1));
+        assert_eq!(root.get(&key, "name"), Some(Value::from("submitted")));
     }
 
     #[tokio::test]
@@ -2734,34 +3031,72 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
         })?;
 
     if let Some(root) = root {
+        let mut draft = root.reserve_submission(None)?;
+        let execution_root = draft.execution_state().clone();
         let root_id = node.values.get("id").cloned().unwrap_or(Value::I64(0));
-        let root_key = root.original_key_for(&crate::EntityKey::new(node.entity.clone(), root_id));
-        reject_cancelled_new_root(&root, &root_key)?;
-        if let Some(changes) = root.current_change_set().changes().get(&root_key) {
+        let root_key =
+            execution_root.original_key_for(&crate::EntityKey::new(node.entity.clone(), root_id));
+        reject_cancelled_new_root(&execution_root, &root_key)?;
+        if let Some(changes) = execution_root.current_change_set().changes().get(&root_key) {
             let descriptor = context.require_entity(&node.entity)?;
             node.values
                 .extend(storage_values_from_ledger(descriptor, changes)?);
         }
         let mut visited = BTreeSet::from([root_key.clone()]);
-        hydrate_ledger_relations(context, &root, &mut node, &mut visited)?;
-        preflight_graph(context, &mut node, &ObjectLocation::root(), Some(&root))?;
-        merge_relation_mutations_into_root(context, &root, &node)?;
-        preflight_pending_dynamic_entities(context, &root, &node)?;
-        capture_ledger_trace_scopes(&root, &node)?;
-        let has_ledger_changes = !root.current_change_set().is_empty()
-            || !root.deleted_keys().is_empty()
-            || !root.new_keys().is_empty();
+        hydrate_ledger_relations(context, &execution_root, &mut node, &mut visited)?;
+        preflight_graph(
+            context,
+            &mut node,
+            &ObjectLocation::root(),
+            Some(&execution_root),
+        )?;
+        merge_relation_mutations_into_root(context, &execution_root, &node)?;
+        preflight_pending_dynamic_entities(context, &execution_root, &node)?;
+        capture_ledger_trace_scopes(&execution_root, &node)?;
+        let has_ledger_changes = !execution_root.current_change_set().is_empty()
+            || !execution_root.deleted_keys().is_empty()
+            || !execution_root.new_keys().is_empty();
         if has_ledger_changes {
+            draft.seal_reviewed_intent()?;
             let descriptor = context.require_entity(&node.entity)?;
-            let preserve_relations = can_preserve_loaded_relations(&root, &root_key, descriptor);
-            let saved = saver.save_ledger_dyn(context, node, root.clone()).await?;
-            return decode_saved_ledger_entity::<T>(
-                saved,
-                &root,
-                preserve_relations,
-                &original_relation_fields,
-            );
+            let preserve_relations =
+                can_preserve_loaded_relations(&execution_root, &root_key, descriptor);
+            let decode_root = root.clone();
+            let decode: SavedEntityDecoder = Box::new(move |saved, native| {
+                let decoded = if native {
+                    let binding = crate::SavedEntityContext::new(&decode_root, preserve_relations);
+                    decode_saved_ledger_entity::<T>(
+                        saved,
+                        &binding,
+                        preserve_relations,
+                        &original_relation_fields,
+                    )?
+                } else {
+                    decode_saved_ledger_entity::<T>(
+                        saved,
+                        &decode_root,
+                        preserve_relations,
+                        &original_relation_fields,
+                    )?
+                };
+                Ok(Box::new(decoded))
+            });
+            let saved = saver
+                .save_ledger_typed_dyn(context, node, root, draft, decode)
+                .await?;
+            return saved
+                .downcast::<T>()
+                .map(|saved| *saved)
+                .map_err(|_| RuntimeError::Graph("SAVE_HYDRATION_TYPE_MISMATCH".into()));
         }
+        drop(draft);
+        let saved = saver.save_graph_dyn(context, node).await?;
+        return decode_saved_ledger_entity::<T>(
+            saved,
+            &crate::EntityRuntimeState::default(),
+            false,
+            &[],
+        );
     }
 
     preflight_graph(context, &mut node, &ObjectLocation::root(), None)?;
@@ -2773,7 +3108,7 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
 mod tests {
     use std::sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     };
 
     use teaql_core::{Entity, Record, TeaqlEntity, Value};
@@ -2916,6 +3251,75 @@ mod tests {
         async fn rollback(self) -> Result<(), Self::Error> {
             panic!("unexpected rollback")
         }
+    }
+
+    struct RejectOwnedLedger;
+    impl crate::MutationPolicy for RejectOwnedLedger {
+        fn identity(&self) -> crate::MutationPolicyIdentity {
+            crate::MutationPolicyIdentity::new("reject-owned-ledger", "1", "sha256:reject-owned")
+        }
+
+        fn review(
+            &self,
+            _context: &UserContext,
+            plan: &crate::MutationPlan,
+        ) -> crate::MutationDecision {
+            assert_eq!(plan.request_key, "DirtyTrackedOrder.saveGraph");
+            assert_eq!(plan.operations.len(), 1);
+            crate::MutationDecision::deny("OWNED-DENIED", "owned mutation denied", ["code"])
+        }
+    }
+
+    struct CountOwnedChecks(Arc<AtomicUsize>);
+    impl TypedChecker<DirtyTrackedOrder> for CountOwnedChecks {
+        fn check_and_fix_typed(
+            &self,
+            _context: &UserContext,
+            _entity: &mut DirtyTrackedOrder,
+            _status: CheckObjectStatus,
+            _location: &ObjectLocation,
+            _results: &mut CheckResults,
+        ) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn owned_typed_policy_denial_restores_draft_before_begin() {
+        let loaded =
+            DirtyTrackedOrder::from_compact_row(teaql_core::CompactRow::from_map(Record::from([
+                ("id".into(), Value::U64(42)),
+                ("version".into(), Value::I64(1)),
+                ("code".into(), Value::from("before")),
+            ])))
+            .unwrap();
+        let root = loaded.__teaql_runtime_state().clone();
+        let key = crate::EntityKey::new_static("DirtyTrackedOrder", 42_u64);
+        root.set(key.clone(), "code", "denied");
+        let policy: Arc<dyn crate::MutationPolicy> = Arc::new(RejectOwnedLedger);
+        let checker_calls = Arc::new(AtomicUsize::new(0));
+        let mut context = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new().with_entity(DirtyTrackedOrder::entity_descriptor()),
+            )
+            .with_checker_registry(InMemoryCheckerRegistry::new().with_checker(
+                TypedEntityChecker::<DirtyTrackedOrder, _>::new(CountOwnedChecks(
+                    checker_calls.clone(),
+                )),
+            ))
+            .with_mutation_policy_registry(move |request_key: &str| {
+                (request_key == "DirtyTrackedOrder.saveGraph").then(|| policy.clone())
+            });
+        context.register_executor(IntentGateNoIo);
+        let error = teaql_core::Audited::new(loaded, "deny owned typed save")
+            .save(&context)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("OWNED-DENIED"));
+        assert!(!root.has_pending_submission());
+        assert_eq!(checker_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(root.get_original_version(&key), Some(1));
+        assert_eq!(root.get(&key, "code"), Some(Value::from("denied")));
     }
 
     #[tokio::test]
