@@ -1,4 +1,6 @@
 #![cfg(feature = "live-postgres")]
+#[path = "support/completion.rs"]
+mod completion;
 #[cfg(feature = "runtime-integration")]
 #[path = "support/service.rs"]
 mod service;

@@ -127,9 +127,20 @@ impl InfrastructureTransaction for PgTransactionExecutor {
     fn commit(self: Box<Self>) -> InfrastructureSqlFuture<'static, ()> {
         Box::pin(async move {
             let identity = self.identity.clone();
-            self.commit_sql().await.map_err(|_| {
+            self.commit_sql().await.map_err(|error| {
                 if identity.outcome() == PhysicalTransactionOutcome::Unknown {
                     InfrastructureSqlError::TransactionUnknown
+                } else if matches!(
+                    error,
+                    MutationExecutorError::TransactionCompletionAfterCommit
+                ) {
+                    InfrastructureSqlError::TransactionAfterCommit
+                } else if matches!(
+                    error,
+                    MutationExecutorError::TransactionCompletionRejected
+                        | MutationExecutorError::TransactionCompletionAfterRollback
+                ) {
+                    InfrastructureSqlError::CompletionFailed
                 } else {
                     InfrastructureSqlError::StatementFailed
                 }
@@ -139,9 +150,14 @@ impl InfrastructureTransaction for PgTransactionExecutor {
     fn rollback(self: Box<Self>) -> InfrastructureSqlFuture<'static, ()> {
         Box::pin(async move {
             let identity = self.identity.clone();
-            self.rollback_sql().await.map_err(|_| {
+            self.rollback_sql().await.map_err(|error| {
                 if identity.outcome() == PhysicalTransactionOutcome::Unknown {
                     InfrastructureSqlError::TransactionUnknown
+                } else if matches!(
+                    error,
+                    MutationExecutorError::TransactionCompletionAfterRollback
+                ) {
+                    InfrastructureSqlError::CompletionFailed
                 } else {
                     InfrastructureSqlError::StatementFailed
                 }

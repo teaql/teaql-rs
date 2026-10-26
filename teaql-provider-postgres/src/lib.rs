@@ -310,6 +310,9 @@ pub enum MutationExecutorError {
     UnsupportedColumnType(String),
     Bind(String),
     TransactionRollbackOnly,
+    TransactionCompletionRejected,
+    TransactionCompletionAfterCommit,
+    TransactionCompletionAfterRollback,
 }
 
 impl std::fmt::Display for MutationExecutorError {
@@ -341,6 +344,15 @@ impl std::fmt::Display for MutationExecutorError {
             }
             Self::Bind(message) => write!(f, "bind error: {message}"),
             Self::TransactionRollbackOnly => f.write_str("postgres transaction is rollback-only"),
+            Self::TransactionCompletionRejected => {
+                f.write_str("POSTGRES_TRANSACTION_COMPLETION_REJECTED")
+            }
+            Self::TransactionCompletionAfterCommit => {
+                f.write_str("POSTGRES_TRANSACTION_AFTER_COMMIT_FAILED")
+            }
+            Self::TransactionCompletionAfterRollback => {
+                f.write_str("POSTGRES_TRANSACTION_AFTER_ROLLBACK_FAILED")
+            }
         }
     }
 }
@@ -525,14 +537,31 @@ impl teaql_sql::SqlTransaction for PgTransactionExecutor {
             self.completion
                 .take()
                 .expect("physical transaction owner")
-                .rolled_back();
+                .rolled_back()
+                .map_err(|_| MutationExecutorError::TransactionCompletionAfterRollback)?;
             return Err(MutationExecutorError::TransactionRollbackOnly);
+        }
+        if self
+            .completion
+            .as_mut()
+            .expect("physical transaction owner")
+            .prepare_commit()
+            .is_err()
+        {
+            self.client().batch_execute("ROLLBACK").await?;
+            self.completion
+                .take()
+                .expect("physical transaction owner")
+                .rolled_back()
+                .map_err(|_| MutationExecutorError::TransactionCompletionAfterRollback)?;
+            return Err(MutationExecutorError::TransactionCompletionRejected);
         }
         self.client().batch_execute("COMMIT").await?;
         self.completion
             .take()
             .expect("physical transaction owner")
-            .committed();
+            .committed()
+            .map_err(|_| MutationExecutorError::TransactionCompletionAfterCommit)?;
         Ok(())
     }
 
@@ -541,7 +570,8 @@ impl teaql_sql::SqlTransaction for PgTransactionExecutor {
         self.completion
             .take()
             .expect("physical transaction owner")
-            .rolled_back();
+            .rolled_back()
+            .map_err(|_| MutationExecutorError::TransactionCompletionAfterRollback)?;
         Ok(())
     }
 }

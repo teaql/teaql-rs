@@ -1,119 +1,11 @@
 //! Framework infrastructure access on the native executor's actual SQL resource.
 //! This is not a wire/business query API. Statements and transaction owners come
 //! from trusted adapters/modules, never request-selected SQL or client markers.
-use std::{
-    fmt,
-    future::Future,
-    pin::Pin,
-    sync::{
-        Arc,
-        atomic::{AtomicU8, Ordering},
-    },
-};
+use std::{fmt, future::Future, pin::Pin};
 use teaql_core::{CompactRow, Value};
 
-#[derive(Clone)]
-pub struct SqlResourceIdentity(Arc<()>);
-impl SqlResourceIdentity {
-    pub fn new() -> Self {
-        Self(Arc::new(()))
-    }
-    pub fn begin(&self) -> PhysicalTransactionOwner {
-        PhysicalTransactionOwner {
-            identity: PhysicalTransactionIdentity {
-                resource: self.clone(),
-                state: Arc::new(AtomicU8::new(0)),
-            },
-        }
-    }
-}
-impl Default for SqlResourceIdentity {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-impl PartialEq for SqlResourceIdentity {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
-}
-impl Eq for SqlResourceIdentity {}
-impl fmt::Debug for SqlResourceIdentity {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("SqlResourceIdentity([opaque])")
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PhysicalTransactionOutcome {
-    Active,
-    Committed,
-    RolledBack,
-    Unknown,
-}
-#[derive(Clone)]
-pub struct PhysicalTransactionIdentity {
-    resource: SqlResourceIdentity,
-    state: Arc<AtomicU8>,
-}
-impl PhysicalTransactionIdentity {
-    pub fn resource(&self) -> &SqlResourceIdentity {
-        &self.resource
-    }
-    pub fn outcome(&self) -> PhysicalTransactionOutcome {
-        match self.state.load(Ordering::SeqCst) {
-            0 => PhysicalTransactionOutcome::Active,
-            1 => PhysicalTransactionOutcome::Committed,
-            2 => PhysicalTransactionOutcome::RolledBack,
-            _ => PhysicalTransactionOutcome::Unknown,
-        }
-    }
-    pub fn require_active(&self) -> Result<(), InfrastructureSqlError> {
-        if self.outcome() == PhysicalTransactionOutcome::Active {
-            Ok(())
-        } else {
-            Err(InfrastructureSqlError::TransactionRequired)
-        }
-    }
-}
-impl PartialEq for PhysicalTransactionIdentity {
-    fn eq(&self, other: &Self) -> bool {
-        self.resource == other.resource && Arc::ptr_eq(&self.state, &other.state)
-    }
-}
-impl Eq for PhysicalTransactionIdentity {}
-impl fmt::Debug for PhysicalTransactionIdentity {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("PhysicalTransactionIdentity([opaque])")
-    }
-}
-
-/// Only the adapter keeps this controller. A borrowed identity cannot change its outcome.
-pub struct PhysicalTransactionOwner {
-    identity: PhysicalTransactionIdentity,
-}
-impl PhysicalTransactionOwner {
-    pub fn identity(&self) -> PhysicalTransactionIdentity {
-        self.identity.clone()
-    }
-    pub fn committed(self) {
-        self.identity.state.store(1, Ordering::SeqCst);
-    }
-    pub fn rolled_back(self) {
-        self.identity.state.store(2, Ordering::SeqCst);
-    }
-    pub fn unknown(self) {
-        self.identity.state.store(3, Ordering::SeqCst);
-    }
-}
-impl Drop for PhysicalTransactionOwner {
-    fn drop(&mut self) {
-        let _ = self
-            .identity
-            .state
-            .compare_exchange(0, 3, Ordering::SeqCst, Ordering::SeqCst);
-    }
-}
+mod completion;
+pub use completion::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InfrastructureSqlError {
@@ -123,6 +15,8 @@ pub enum InfrastructureSqlError {
     InvalidStatement,
     TransactionRequired,
     TransactionUnknown,
+    CompletionFailed,
+    TransactionAfterCommit,
 }
 impl fmt::Display for InfrastructureSqlError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -133,6 +27,8 @@ impl fmt::Display for InfrastructureSqlError {
             Self::InvalidStatement => "INFRASTRUCTURE_SQL_INVALID",
             Self::TransactionRequired => "INFRASTRUCTURE_TRANSACTION_REQUIRED",
             Self::TransactionUnknown => "INFRASTRUCTURE_TRANSACTION_UNKNOWN",
+            Self::CompletionFailed => "INFRASTRUCTURE_COMPLETION_FAILED",
+            Self::TransactionAfterCommit => "INFRASTRUCTURE_TRANSACTION_AFTER_COMMIT_FAILED",
         })
     }
 }
@@ -207,11 +103,11 @@ mod tests {
         let token = first.identity();
         assert_ne!(token, second.identity());
         assert_eq!(token.resource(), &resource);
-        first.committed();
+        first.committed().unwrap();
         assert_eq!(token.outcome(), PhysicalTransactionOutcome::Committed);
         assert!(token.require_active().is_err());
         let token = second.identity();
-        second.rolled_back();
+        second.rolled_back().unwrap();
         assert_eq!(token.outcome(), PhysicalTransactionOutcome::RolledBack);
     }
     #[test]

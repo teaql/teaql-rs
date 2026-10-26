@@ -71,6 +71,8 @@ impl From<InfrastructureSqlError> for BlobError {
         .into();
         if error == InfrastructureSqlError::TransactionUnknown {
             result.completion = Some(PhysicalTransactionOutcome::Unknown);
+        } else if error == InfrastructureSqlError::TransactionAfterCommit {
+            result.completion = Some(PhysicalTransactionOutcome::Committed);
         }
         result
     }
