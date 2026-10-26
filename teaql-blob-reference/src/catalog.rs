@@ -219,18 +219,27 @@ pub struct BlobBinding {
     pub retain_until: Option<i64>,
 }
 /// Framework plan input. Host permission review precedes this low-level catalog API.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BindingChangeKind {
+    /// Assign or clear a field on an entity that remains live.
+    FieldWrite,
+    /// Release the binding because the owning entity is being deleted.
+    EntityDelete,
+}
 pub struct BindingChange {
     pub target: BlobFieldTarget,
     pub previous: Option<BlobRef>,
     pub next: Option<BlobRef>,
     pub expected_binding_version: Option<i64>,
     pub policy: BlobPolicySnapshot,
+    pub kind: BindingChangeKind,
 }
 struct PreparedChange {
     previous: BlobBinding,
     next: Option<BlobRef>,
     retain_until: Option<i64>,
     policy: BlobPolicySnapshot,
+    kind: BindingChangeKind,
 }
 /// Frozen physical owner, locked rows and accepted policy. It cannot be reused in another transaction.
 pub struct PreparedBlobBindings {
@@ -494,6 +503,7 @@ impl PostgresBlobCatalog {
             if change.target.id().is_none()
                 || change.policy.entity != change.target.entity()
                 || change.policy.field != change.target.field()
+                || (change.kind == BindingChangeKind::EntityDelete && change.next.is_some())
             {
                 return Err(Code::ReferenceInvalid.into());
             }
@@ -525,6 +535,7 @@ impl PostgresBlobCatalog {
                 next: change.next,
                 retain_until,
                 policy: change.policy,
+                kind: change.kind,
             });
         }
         let mut locked = BTreeMap::new();
@@ -565,7 +576,7 @@ impl PostgresBlobCatalog {
                         return Err(Code::BindDenied.into());
                     }
                 }
-            } else if !change.policy.nullable {
+            } else if !change.policy.nullable && change.kind != BindingChangeKind::EntityDelete {
                 return Err(Code::ReferenceInvalid.into());
             }
         }

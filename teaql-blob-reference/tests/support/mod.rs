@@ -303,6 +303,7 @@ pub fn change(
         next,
         expected_binding_version: None,
         policy,
+        kind: BindingChangeKind::FieldWrite,
     }
 }
 pub async fn execute(sql: &dyn InfrastructureSql, query: &str, params: Vec<Value>) -> u64 {

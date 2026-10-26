@@ -7,8 +7,8 @@ mod runtime_module;
 #[cfg(feature = "runtime-integration")]
 mod upload_service;
 pub use catalog::{
-    BindingChange, BlobBinding, BlobCatalogRecord, BlobState, BlobUploadLease, PostgresBlobCatalog,
-    PreparedBlobBindings, UploadDraft, VerifiedContent,
+    BindingChange, BindingChangeKind, BlobBinding, BlobCatalogRecord, BlobState, BlobUploadLease,
+    PostgresBlobCatalog, PreparedBlobBindings, UploadDraft, VerifiedContent,
 };
 pub use policy::{
     BlobPolicies, BlobPolicyProfile, BlobPolicySnapshot, PolicyLimits, PolicyOverrides,

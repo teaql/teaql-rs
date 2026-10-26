@@ -16,6 +16,7 @@ mod service;
 mod support;
 #[path = "support/upload.rs"]
 mod upload;
+use std::collections::BTreeMap;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -292,6 +293,119 @@ async fn rollback_preserves_original_business_key_binding_and_upload_state() {
         .await
         .unwrap();
     assert_eq!(row.get::<_, i64>(0), 1);
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn deleting_an_entity_releases_a_required_blob_only_in_the_business_transaction() {
+    let f = Fixture::new(true).await;
+    let required = BlobPolicies::new(
+        PolicyLimits::default(),
+        BlobPolicyProfile::named("default"),
+        BTreeMap::new(),
+        BTreeMap::new(),
+    )
+    .unwrap()
+    .resolve(
+        &teaql_core::BlobFieldSpec::new("Asset", "document", ["pdf"], false, "default").unwrap(),
+    )
+    .unwrap();
+    let target = f.target(42, "document");
+    let key = f
+        .upload("required_delete", target.clone(), required.clone(), 0)
+        .await;
+    f.bind(
+        target.clone(),
+        None,
+        Some(key.clone()),
+        required.clone(),
+        100,
+    )
+    .await;
+
+    let tx = f.root.begin().await.unwrap();
+    assert_eq!(
+        f.catalog
+            .prepare_bindings(
+                tx.as_ref(),
+                &f.scope(),
+                vec![change(
+                    target.clone(),
+                    Some(key.clone()),
+                    None,
+                    required.clone()
+                )],
+                200,
+            )
+            .await
+            .unwrap_err()
+            .code,
+        BlobErrorCode::ReferenceInvalid,
+    );
+    assert!(tx.commit().await.is_err());
+    assert_eq!(f.count("r5_assets").await, 1);
+
+    let delete_change = || {
+        let mut planned = change(target.clone(), Some(key.clone()), None, required.clone());
+        planned.kind = BindingChangeKind::EntityDelete;
+        planned
+    };
+    let tx = f.root.begin().await.unwrap();
+    let prepared = f
+        .catalog
+        .prepare_bindings(tx.as_ref(), &f.scope(), vec![delete_change()], 300)
+        .await
+        .unwrap();
+    execute(
+        tx.as_ref(),
+        "DELETE FROM r5_assets WHERE id=$1",
+        vec![42_u64.into()],
+    )
+    .await;
+    f.catalog
+        .apply_bindings(tx.as_ref(), prepared, 300)
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    assert_eq!(f.count("r5_assets").await, 1);
+    assert_eq!(
+        f.catalog
+            .binding(&f.scope(), &target)
+            .await
+            .unwrap()
+            .unwrap()
+            .reference,
+        Some(key.clone())
+    );
+
+    let tx = f.root.begin().await.unwrap();
+    let prepared = f
+        .catalog
+        .prepare_bindings(tx.as_ref(), &f.scope(), vec![delete_change()], 400)
+        .await
+        .unwrap();
+    execute(
+        tx.as_ref(),
+        "DELETE FROM r5_assets WHERE id=$1",
+        vec![42_u64.into()],
+    )
+    .await;
+    f.catalog
+        .apply_bindings(tx.as_ref(), prepared, 400)
+        .await
+        .unwrap();
+    assert_eq!(f.count("r5_assets").await, 1);
+    tx.commit().await.unwrap();
+    assert_eq!(f.count("r5_assets").await, 0);
+    assert_eq!(
+        f.catalog
+            .binding(&f.scope(), &target)
+            .await
+            .unwrap()
+            .unwrap()
+            .reference,
+        None
+    );
     f.finish().await;
 }
 
