@@ -416,9 +416,7 @@ fn execute(
     let mut stdout = child.child.stdout.take().ok_or(Code::CapabilityMissing)?;
     let flags = fs::fcntl_getfl(&stdout).map_err(io_error)?;
     fs::fcntl_setfl(&stdout, flags | OFlags::NONBLOCK).map_err(io_error)?;
-    let mut output = Vec::new();
-    let mut buffer = [0; 512];
-    let mut eof = false;
+    let mut output = OutputState::default();
     loop {
         if cancel.load(Ordering::Acquire) {
             child.outcome = Some(ProcessWorkerOutcome::Cancelled);
@@ -428,56 +426,77 @@ fn execute(
             child.outcome = Some(ProcessWorkerOutcome::TimedOut);
             return Err(Code::FormatNotAllowed.into());
         }
-        loop {
-            match stdout.read(&mut buffer) {
-                Ok(0) => {
-                    eof = true;
-                    break;
-                }
-                Ok(n) => {
-                    if n > MAX_REPLY - output.len() {
-                        child.outcome = Some(ProcessWorkerOutcome::OutputLimit);
-                        return Err(Code::FormatNotAllowed.into());
-                    }
-                    output.extend_from_slice(&buffer[..n]);
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => {
-                    child.outcome = Some(ProcessWorkerOutcome::IoFailed);
-                    return Err(Code::FormatNotAllowed.into());
-                }
-            }
-        }
-        if eof {
-            if let Some(status) = child.child.try_wait().map_err(io_error)? {
+        match poll_output(&mut stdout, &mut output, || {
+            let status = child.child.try_wait()?;
+            if let Some(status) = status {
                 child.record(status);
-                return Ok((status, output));
             }
-        } else if let Some(status) = child.child.try_wait().map_err(io_error)? {
-            // Keep ownership until stdout EOF too; the worker contract never forks.
-            child.record(status);
-            if !eof {
-                match stdout.read(&mut buffer) {
-                    Ok(0) => eof = true,
-                    Ok(n) => {
-                        if n > MAX_REPLY - output.len() {
-                            return Err(Code::FormatNotAllowed.into());
-                        }
-                        output.extend_from_slice(&buffer[..n]);
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => (),
-                    Err(_) => return Err(Code::FormatNotAllowed.into()),
-                }
+            Ok(status)
+        }) {
+            Ok(Some(status)) => return Ok((status, output.bytes)),
+            Ok(None) => (),
+            Err(error) => {
+                child.outcome = Some(if matches!(error, OutputError::Limit) {
+                    ProcessWorkerOutcome::OutputLimit
+                } else {
+                    ProcessWorkerOutcome::IoFailed
+                });
+                return Err(match error {
+                    OutputError::Wait(error) => io_error(error),
+                    _ => Code::FormatNotAllowed.into(),
+                });
             }
-            if eof {
-                return Ok((status, output));
-            }
-            return Err(Code::FormatNotAllowed.into());
         }
         std::thread::sleep(Duration::from_millis(5));
     }
 }
+#[derive(Default)]
+struct OutputState {
+    bytes: Vec<u8>,
+    eof: bool,
+    status: Option<ExitStatus>,
+}
+#[derive(Debug)]
+enum OutputError {
+    Limit,
+    Read,
+    Wait(std::io::Error),
+}
+fn poll_output(
+    stdout: &mut impl Read,
+    output: &mut OutputState,
+    mut observe_exit: impl FnMut() -> std::io::Result<Option<ExitStatus>>,
+) -> Result<Option<ExitStatus>, OutputError> {
+    let mut buffer = [0; 512];
+    loop {
+        match stdout.read(&mut buffer) {
+            Ok(0) => {
+                output.eof = true;
+                break;
+            }
+            Ok(n) => {
+                if n > MAX_REPLY - output.bytes.len() {
+                    return Err(OutputError::Limit);
+                }
+                output.bytes.extend_from_slice(&buffer[..n]);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return Err(OutputError::Read),
+        }
+    }
+    // Exit and pipe EOF are independent observations. The worker can publish
+    // its reply between the nonblocking read and try_wait; retain its reaped
+    // status and drain the pipe on following polls instead of rejecting bytes.
+    if output.status.is_none() {
+        output.status = observe_exit().map_err(OutputError::Wait)?;
+    }
+    Ok(if output.eof { output.status } else { None })
+}
+
+#[cfg(test)]
+mod output_tests;
+
 fn errno(error: rustix::io::Errno) -> std::io::Error {
     std::io::Error::from_raw_os_error(error.raw_os_error())
 }

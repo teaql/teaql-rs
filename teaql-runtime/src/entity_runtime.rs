@@ -5,6 +5,9 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use teaql_core::{EntitySnapshot, MutationValues, SmartList, Value};
 
+mod submission;
+pub use submission::LedgerSubmission;
+
 /// The explicit load state of a relation stored in the runtime identity graph.
 ///
 /// Reading this state never performs I/O. `NotLoaded` means exactly that the
@@ -597,6 +600,10 @@ struct EntityMutationLedger {
     composition_errors: Vec<LedgerCompositionError>,
     /// Indicates if this entity root is entirely new.
     is_new: bool,
+    /// Allocated only at an actual physical submission, never by a readonly query.
+    pending: Option<Box<submission::PendingLedger>>,
+    submitted_rows: Option<Box<submission::SubmittedRows>>,
+    completion_fenced: bool,
 }
 
 #[derive(Debug)]
@@ -948,10 +955,15 @@ impl EntityRuntimeState {
         {
             return Ok(());
         }
-        let snapshot = source_context
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone();
+        let snapshot = {
+            let source = source_context
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if source.pending.is_some() || source.completion_fenced {
+                return Err(LedgerCompositionError::PhysicalCompletionRequired);
+            }
+            source.clone()
+        };
         let loaded_version = source
             .loaded_snapshot
             .with(|loaded| {
@@ -961,6 +973,9 @@ impl EntityRuntimeState {
             })
             .flatten();
         self.write_context(|target| {
+            if target.pending.is_some() || target.completion_fenced {
+                return Err(LedgerCompositionError::PhysicalCompletionRequired);
+            }
             let source_versions = snapshot
                 .original_versions
                 .first
@@ -1271,7 +1286,13 @@ impl EntityRuntimeState {
 
     pub fn pop_change_set(&self) -> Option<EntityChangeSet> {
         self.inner.get()?;
-        self.write_context(|context| context.change_sets.pop())
+        self.write_context(|context| {
+            // A stack pop cannot undo SQL already flushed by the physical owner.
+            let protected = context.pending.as_ref().is_some_and(|pending| {
+                pending.protects_level(context.change_sets.stack.len().saturating_sub(1))
+            });
+            (!protected).then(|| context.change_sets.pop()).flatten()
+        })
     }
 
     pub fn clear_current_change_set(&self) {
@@ -1285,6 +1306,9 @@ impl EntityRuntimeState {
     pub fn clear_committed(&self) {
         if self.inner.get().is_some() {
             self.write_context(|context| {
+                if context.pending.is_some() || context.completion_fenced {
+                    return;
+                }
                 context.change_sets = ChangeSetStack::default();
                 context.deleted_keys.clear();
                 context.new_keys.clear();
@@ -1305,7 +1329,26 @@ impl EntityRuntimeState {
     }
 
     pub fn get(&self, key: &EntityKey, field: &str) -> Option<Value> {
-        self.read_context(None, |context| context.change_sets.get(key, field))
+        self.read_context(None, |context| {
+            for (level, changes) in context.change_sets.stack.iter().enumerate().rev() {
+                if let Some(value) = changes.get(key, field) {
+                    return Some(value.clone());
+                }
+                if let Some(value) = context
+                    .pending
+                    .as_ref()
+                    .and_then(|pending| pending.get(level, key, field))
+                {
+                    return Some(value);
+                }
+            }
+            context
+                .submitted_rows
+                .as_ref()?
+                .get(key)?
+                .get(field)
+                .cloned()
+        })
     }
 
     pub fn current_change_set(&self) -> EntityChangeSet {
@@ -1453,6 +1496,25 @@ impl EntityRuntimeState {
 
     /// Retrieve the original loaded entity snapshot.
     pub fn original_snapshot(&self) -> Option<EntitySnapshot> {
+        if self.read_context(false, |context| context.submitted_rows.is_some()) {
+            let key = self
+                .loaded_snapshot
+                .with(|snapshot| {
+                    snapshot
+                        .row
+                        .get("id")
+                        .cloned()
+                        .map(|id| EntityKey::new(snapshot.entity.as_ref(), id))
+                })
+                .flatten();
+            if let Some(values) = key.and_then(|key| {
+                self.read_context(None, |context| {
+                    context.submitted_rows.as_ref()?.get(&key).cloned()
+                })
+            }) {
+                return Some(values);
+            }
+        }
         if let Some(snapshot) = self
             .loaded_snapshot
             .with(|snapshot| EntitySnapshot::from(snapshot.row.clone().into_map()))
@@ -1502,22 +1564,31 @@ impl EntityRuntimeState {
     }
 
     pub fn get_original_version(&self, key: &EntityKey) -> Option<i64> {
-        self.read_context(None, |context| context.original_versions.get(key))
-            .or_else(|| {
-                self.loaded_snapshot
-                    .with(|snapshot| {
-                        if snapshot.entity.as_ref() != key.entity.as_ref() {
-                            return None;
-                        }
-                        snapshot
-                            .row
-                            .get("id")?
-                            .try_u64()
-                            .filter(|id| Some(*id) == key.id.try_u64())?;
-                        snapshot.row.get("version")?.try_i64()
-                    })
-                    .flatten()
+        self.read_context(None, |context| {
+            context.original_versions.get(key).or_else(|| {
+                context
+                    .submitted_rows
+                    .as_ref()?
+                    .get(key)?
+                    .get("version")?
+                    .try_i64()
             })
+        })
+        .or_else(|| {
+            self.loaded_snapshot
+                .with(|snapshot| {
+                    if snapshot.entity.as_ref() != key.entity.as_ref() {
+                        return None;
+                    }
+                    snapshot
+                        .row
+                        .get("id")?
+                        .try_u64()
+                        .filter(|id| Some(*id) == key.id.try_u64())?;
+                    snapshot.row.get("version")?.try_i64()
+                })
+                .flatten()
+        })
     }
 
     pub fn get_trace_chain(&self, key: &EntityKey) -> Vec<teaql_core::TraceNode> {
@@ -1626,6 +1697,13 @@ impl EntityRuntimeState {
 
     pub(crate) fn original_values_for(&self, key: &EntityKey) -> Option<EntitySnapshot> {
         self.read_context(None, |context| {
+            if let Some(values) = context
+                .submitted_rows
+                .as_ref()
+                .and_then(|rows| rows.get(key))
+            {
+                return Some(values.clone());
+            }
             context
                 .original_snapshots
                 .get(key)
@@ -1650,13 +1728,19 @@ impl EntityRuntimeState {
     }
 
     pub(crate) fn first_composition_error(&self) -> Option<LedgerCompositionError> {
-        self.read_context(None, |context| context.composition_errors.first().cloned())
+        self.read_context(None, |context| {
+            context.composition_errors.first().cloned().or_else(|| {
+                (context.completion_fenced || context.pending.is_some())
+                    .then_some(LedgerCompositionError::PhysicalCompletionRequired)
+            })
+        })
     }
 }
 
 /// An explicit graph composition failed before any database write.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LedgerCompositionError {
+    PhysicalCompletionRequired,
     ConflictingDynamicDefinitions {
         entity: String,
     },
@@ -1673,6 +1757,9 @@ pub enum LedgerCompositionError {
 impl std::fmt::Display for LedgerCompositionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::PhysicalCompletionRequired => {
+                formatter.write_str("ledger physical completion or fresh reload is required")
+            }
             Self::ConflictingDynamicDefinitions { entity } => write!(
                 formatter,
                 "cannot compose incompatible dynamic definitions for {entity}"
