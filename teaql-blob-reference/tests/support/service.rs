@@ -18,7 +18,7 @@ use teaql_blob_content_native::{
 };
 use teaql_blob_store_file::FileBlobStore;
 use teaql_core::{BlobFieldSpec, DataType, EntityDescriptor, PropertyDescriptor};
-use teaql_runtime::{InMemoryMetadataStore, UserContext};
+use teaql_runtime::{InMemoryMetadataStore, RuntimeModule, UserContext};
 use tempfile::TempDir;
 
 struct State {
@@ -351,6 +351,42 @@ impl App {
         assert_eq!(self.verifier.stats().started, self.verifier.stats().reaped);
         self.f.finish().await;
     }
+}
+
+#[tokio::test]
+async fn module_install_is_passive_preserves_context_and_rejects_duplicate() {
+    let mut app = App::new(104857600, 60).await;
+    let module = BlobReferenceModule::new(Arc::new(app.service.clone()));
+    let calls = app.state.store_calls.load(Ordering::SeqCst);
+    module.install_into(&mut app.ctx).unwrap();
+    assert_eq!(app.state.store_calls.load(Ordering::SeqCst), calls);
+    assert!(app.ctx.entity("Asset").is_some());
+    assert!(app.ctx.get_resource::<Principal>().is_some());
+    let installed = app.ctx.get_resource::<BlobRuntimeResource>().unwrap();
+    installed.0.upload().validate_ready(&app.ctx).await.unwrap();
+    assert_eq!(
+        module.install_into(&mut app.ctx).unwrap_err().code,
+        BlobErrorCode::PolicyInvalid
+    );
+    module.validate_upload_ready(&app.ctx).await.unwrap();
+
+    let requirement = || RuntimeModule::new().require_capability(BlobReferenceModule::CAPABILITY);
+    let mut business_first = UserContext::new().with_module(requirement());
+    module.install_into(&mut business_first).unwrap();
+    let mut infrastructure_first = UserContext::new();
+    module.install_into(&mut infrastructure_first).unwrap();
+    let infrastructure_first = infrastructure_first.with_module(requirement());
+    for context in [&business_first, &infrastructure_first] {
+        assert!(context.get_resource::<BlobRuntimeResource>().is_some());
+        assert!(matches!(
+            context.validate_capabilities(),
+            Err(teaql_runtime::RuntimeError::Capability {
+                code: "BLOB_CAPABILITY_MISSING",
+                ..
+            })
+        ));
+    }
+    app.finish().await;
 }
 
 #[tokio::test]

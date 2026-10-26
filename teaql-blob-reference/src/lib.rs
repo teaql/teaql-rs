@@ -3,6 +3,8 @@ mod catalog;
 mod policy;
 mod retention;
 #[cfg(feature = "runtime-integration")]
+mod runtime_module;
+#[cfg(feature = "runtime-integration")]
 mod upload_service;
 pub use catalog::{
     BindingChange, BlobBinding, BlobCatalogRecord, BlobState, BlobUploadLease, PostgresBlobCatalog,
@@ -13,6 +15,8 @@ pub use policy::{
     ResponseShape, Sharing, UploadMode,
 };
 pub use retention::BlobRetention;
+#[cfg(feature = "runtime-integration")]
+pub use runtime_module::*;
 pub use teaql_blob_contracts::*;
 #[cfg(feature = "runtime-integration")]
 pub use upload_service::*;
