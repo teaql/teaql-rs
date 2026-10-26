@@ -2,7 +2,13 @@
 //! They are delivered only after commit and projected before every public sink.
 //! No queue is stored on UserContext, and nested transactions own separate queues.
 use std::future::Future;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+use teaql_data_service::infrastructure_sql::{
+    InfrastructureSqlError, PhysicalTransactionIdentity, PhysicalTransactionOutcome,
+    PhysicalTransactionParticipant,
+};
 
 use crate::{RawAuditEvent, RuntimeError, UserContext};
 
@@ -142,9 +148,161 @@ pub(crate) fn deliver(
     }
 }
 
+enum NativeAuditState {
+    Collecting,
+    Ready(Vec<RawAuditEvent>),
+    Aborted,
+    Settled,
+}
+
+/// Owns the context until the physical transaction reports its real outcome.
+/// An unfinished or failed save vetoes COMMIT even when its caller catches the
+/// error or drops the future. No audit can escape before the database commits.
+pub(crate) struct NativeAuditCompletion {
+    context: Arc<UserContext>,
+    state: Mutex<NativeAuditState>,
+    finished: AtomicBool,
+}
+
+impl NativeAuditCompletion {
+    pub(crate) fn enlist(
+        context: Arc<UserContext>,
+        owner: &PhysicalTransactionIdentity,
+    ) -> Result<Arc<Self>, RuntimeError> {
+        context.native_raw_audit_started();
+        let participant = Arc::new(Self {
+            context,
+            state: Mutex::new(NativeAuditState::Collecting),
+            finished: AtomicBool::new(false),
+        });
+        if let Err(error) = owner.enlist(participant.clone()) {
+            participant.finish(true);
+            return Err(RuntimeError::Transaction(error.to_string()));
+        }
+        Ok(participant)
+    }
+
+    pub(crate) fn ready(&self, events: Vec<RawAuditEvent>) -> Result<(), RuntimeError> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if !matches!(*state, NativeAuditState::Collecting) {
+            return Err(RuntimeError::Transaction(
+                "NATIVE_AUDIT_COMPLETION_NOT_ACTIVE".into(),
+            ));
+        }
+        *state = NativeAuditState::Ready(events);
+        Ok(())
+    }
+
+    pub(crate) fn abort(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if matches!(*state, NativeAuditState::Collecting) {
+            *state = NativeAuditState::Aborted;
+        }
+    }
+
+    fn finish(&self, known_outcome: bool) {
+        if !self.finished.swap(true, Ordering::SeqCst) {
+            self.context.native_raw_audit_finished(known_outcome);
+        }
+    }
+}
+
+impl PhysicalTransactionParticipant for NativeAuditCompletion {
+    fn before_commit(&self) -> Result<(), InfrastructureSqlError> {
+        if matches!(
+            *self.state.lock().unwrap_or_else(|error| error.into_inner()),
+            NativeAuditState::Ready(_)
+        ) {
+            Ok(())
+        } else {
+            Err(InfrastructureSqlError::CompletionFailed)
+        }
+    }
+
+    fn after_completion(
+        &self,
+        outcome: PhysicalTransactionOutcome,
+    ) -> Result<(), InfrastructureSqlError> {
+        if outcome != PhysicalTransactionOutcome::Committed {
+            *self.state.lock().unwrap_or_else(|error| error.into_inner()) =
+                NativeAuditState::Settled;
+        }
+        self.finish(outcome != PhysicalTransactionOutcome::Unknown);
+        Ok(())
+    }
+
+    fn after_commit(&self) -> Result<(), InfrastructureSqlError> {
+        let events = match std::mem::replace(
+            &mut *self.state.lock().unwrap_or_else(|error| error.into_inner()),
+            NativeAuditState::Settled,
+        ) {
+            NativeAuditState::Ready(events) => events,
+            _ => return Err(InfrastructureSqlError::CompletionFailed),
+        };
+        deliver(&self.context, events).map_err(|_| InfrastructureSqlError::TransactionAfterCommit)
+    }
+}
+
+impl Drop for NativeAuditCompletion {
+    fn drop(&mut self) {
+        self.finish(false);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use teaql_data_service::infrastructure_sql::SqlResourceIdentity;
+
+    struct CaptureAudit(Arc<Mutex<Vec<String>>>);
+
+    impl crate::RawAuditEventSink for CaptureAudit {
+        fn on_event(
+            &self,
+            _context: &UserContext,
+            event: &RawAuditEvent,
+        ) -> Result<(), RuntimeError> {
+            self.0.lock().unwrap().push(event.entity.clone());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn native_audit_waits_for_physical_commit_and_vetoes_unfinished_work() {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let context =
+            Arc::new(UserContext::default().with_event_sink(CaptureAudit(captured.clone())));
+        let mut committed = SqlResourceIdentity::new().begin();
+        let audit = NativeAuditCompletion::enlist(context.clone(), &committed.identity()).unwrap();
+        assert!(context.has_unfinished_view_transaction());
+        audit
+            .ready(vec![RawAuditEvent::created("Order", Default::default())])
+            .unwrap();
+        assert!(captured.lock().unwrap().is_empty());
+        committed.prepare_commit().unwrap();
+        committed.committed().unwrap();
+        assert_eq!(&*captured.lock().unwrap(), &["Order"]);
+        assert!(!context.has_unfinished_view_transaction());
+
+        let mut cancelled = SqlResourceIdentity::new().begin();
+        let pending =
+            NativeAuditCompletion::enlist(context.clone(), &cancelled.identity()).unwrap();
+        assert!(cancelled.prepare_commit().is_err());
+        cancelled.rolled_back().unwrap();
+        assert!(!context.has_unfinished_view_transaction());
+        assert!(pending.ready(Vec::new()).is_err());
+        assert_eq!(&*captured.lock().unwrap(), &["Order"]);
+    }
+
+    #[test]
+    fn unknown_native_outcome_keeps_view_preparation_blocked() {
+        let context = Arc::new(UserContext::default());
+        let abandoned = SqlResourceIdentity::new().begin();
+        NativeAuditCompletion::enlist(context.clone(), &abandoned.identity()).unwrap();
+        assert!(context.has_unfinished_view_transaction());
+        drop(abandoned);
+        assert!(context.has_unfinished_view_transaction());
+    }
 
     #[test]
     fn audit_scope_does_not_inline_work_future_payload() {

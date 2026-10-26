@@ -2761,6 +2761,7 @@ where
 /// This function never commits or rolls back the executor. The returned
 /// mutation ledger must only be cleared after the owner commits the enclosing
 /// transaction; retaining it on rollback keeps the mutation intent retryable.
+/// Native infrastructure executors require the completion-aware overload below.
 #[doc(hidden)]
 pub async fn save_audited_ledger_entity_with_executor<T, E>(
     audited: teaql_core::Audited<T>,
@@ -2771,7 +2772,57 @@ where
     T: crate::LedgerEntity + Send + 'static,
     E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
 {
+    if teaql_data_service::DataServiceExecutor::infrastructure_sql(executor).is_some() {
+        return Err(RuntimeError::Transaction(
+            "NATIVE_RAW_EXECUTOR_REQUIRES_COMMIT_AUDIT_OWNER".into(),
+        ));
+    }
     save_audited_ledger_entity_with_executor_on_owner(audited, context, executor, None).await
+}
+
+/// Save through a caller-owned native transaction, delivering audit only after
+/// its physical COMMIT. The caller still owns commit/rollback; cancellation,
+/// save failure and an unacknowledged readback veto a later COMMIT. The owned
+/// context remains available to the completion participant until settlement.
+pub async fn save_audited_ledger_entity_with_native_executor<T, E>(
+    audited: teaql_core::Audited<T>,
+    context: Arc<UserContext>,
+    executor: &E,
+) -> Result<T, RuntimeError>
+where
+    T: crate::LedgerEntity + Send + 'static,
+    E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
+{
+    let owner = teaql_data_service::DataServiceExecutor::infrastructure_sql(executor)
+        .and_then(|sql| sql.transaction_identity())
+        .ok_or_else(|| RuntimeError::Transaction("NATIVE_PHYSICAL_TRANSACTION_REQUIRED".into()))?;
+    let audit = crate::commit_audit::NativeAuditCompletion::enlist(context.clone(), &owner)?;
+    let (result, events) = crate::commit_audit::collect(
+        &context,
+        save_audited_ledger_entity_with_executor_on_owner(
+            audited,
+            &context,
+            executor,
+            Some(&owner),
+        ),
+    )
+    .await;
+    match result {
+        Ok((entity, None)) => {
+            audit.ready(events)?;
+            Ok(entity)
+        }
+        Ok((_, Some(_))) => {
+            audit.abort();
+            Err(RuntimeError::Transaction(
+                "NATIVE_PHYSICAL_TRANSACTION_REQUIRED".into(),
+            ))
+        }
+        Err(error) => {
+            audit.abort();
+            Err(error)
+        }
+    }
 }
 
 pub(crate) async fn save_audited_ledger_entity_with_executor_on_owner<T, E>(

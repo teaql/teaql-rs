@@ -92,7 +92,7 @@ pub use entity_runtime::{
 };
 pub use entity_save::{
     AuditedSaveExt, graph_node_from_entity, save_audited_ledger_entity,
-    save_audited_ledger_entity_with_executor,
+    save_audited_ledger_entity_with_executor, save_audited_ledger_entity_with_native_executor,
 };
 pub use entity_status::{EntityAction, EntityStatus};
 pub use error::{ContextError, DataServiceError, RuntimeError};

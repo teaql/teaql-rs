@@ -1,7 +1,7 @@
 //! Real PostgreSQL extension storage and the generated-entity save bridge.
 use super::{Business, Fixture};
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use teaql_core::dynamic_fields::{
     DynamicFieldDefinitions, DynamicFieldMutation, DynamicFieldSelection, DynamicFieldState,
 };
@@ -10,11 +10,17 @@ use teaql_core::{
     TeaqlEntity as _, Value,
 };
 use teaql_data_service::dynamic_fields::{DynamicFieldStore, DynamicFieldWrite};
+use teaql_data_service::infrastructure_sql::PhysicalTransactionOutcome;
+use teaql_data_service::{Transaction, TransactionExecutor};
 use teaql_macros::{TeaqlEntity, teaql_entity};
-use teaql_provider_postgres::PgMutationExecutor;
+use teaql_provider_postgres::{PgMutationExecutor, PostgresDialect};
 use teaql_runtime::dynamic_fields::{DatabaseDynamicFieldsProvider, DynamicFieldsProvider};
-use teaql_runtime::{AuditedSaveExt, InMemoryMetadataStore, PurposedSelectQuery, UserContext};
-use teaql_sql::{SqlTransaction, SqlTransactionTransport, SqlTransport};
+use teaql_runtime::{
+    AuditedSaveExt, InMemoryMetadataStore, PurposedSelectQuery, RawAuditEventKind, SafeAuditEvent,
+    SafeAuditEventSink, UserContext, save_audited_ledger_entity_with_executor,
+    save_audited_ledger_entity_with_native_executor,
+};
+use teaql_sql::{SqlDataServiceExecutor, SqlTransaction, SqlTransactionTransport, SqlTransport};
 
 #[teaql_entity]
 #[derive(Clone, Debug, TeaqlEntity)]
@@ -235,6 +241,234 @@ async fn generated_dynamic_saves_repeat_rollback_and_retry_on_one_native_owner()
         .get(0);
     assert_eq!(persisted, "\"third\"");
     println!("R5_PG_DYNAMIC_REPEATED_SAVE_ROLLBACK_RETRY_PASS");
+    f.finish().await;
+}
+
+struct CapturedSafeAudits(Arc<Mutex<Vec<SafeAuditEvent>>>);
+
+impl SafeAuditEventSink for CapturedSafeAudits {
+    fn on_safe_event(
+        &self,
+        _context: &UserContext,
+        event: &SafeAuditEvent,
+    ) -> Result<(), teaql_runtime::RuntimeError> {
+        self.0.lock().unwrap().push(event.clone());
+        Ok(())
+    }
+}
+
+struct RejectCommittedAudit;
+
+impl SafeAuditEventSink for RejectCommittedAudit {
+    fn on_safe_event(
+        &self,
+        _context: &UserContext,
+        _event: &SafeAuditEvent,
+    ) -> Result<(), teaql_runtime::RuntimeError> {
+        Err(teaql_runtime::RuntimeError::Graph(
+            "deliberate audit sink failure".into(),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn raw_native_executor_delivers_dynamic_audit_only_after_physical_commit() {
+    let f = Fixture::new(false).await;
+    f.write(f.root.as_ref(), &f.target(42, "document"), None)
+        .await;
+    let audits = Arc::new(Mutex::new(Vec::new()));
+    let mut context = graph_context(&f).await;
+    context.set_custom_event_sink(CapturedSafeAudits(audits.clone()));
+    let context = Arc::new(context);
+    let mut loaded = load_asset(&context).await;
+    loaded
+        .update_dynamic_field("note", Value::from("committed"))
+        .unwrap();
+    let executor = f.business();
+    let transaction = TransactionExecutor::begin(&executor).await.unwrap();
+    assert!(
+        save_audited_ledger_entity_with_executor(
+            Audited::new(loaded.clone(), "legacy raw native save must reject"),
+            &context,
+            &transaction,
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("NATIVE_RAW_EXECUTOR_REQUIRES_COMMIT_AUDIT_OWNER")
+    );
+    let mut saved = save_audited_ledger_entity_with_native_executor(
+        Audited::new(loaded, "native raw extension save"),
+        context.clone(),
+        &transaction,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        saved
+            .dynamic_field_values()
+            .unwrap()
+            .field("note")
+            .unwrap()
+            .value(),
+        Some(&Value::from("committed"))
+    );
+    saved
+        .update_dynamic_field("note", Value::from("second"))
+        .unwrap();
+    save_audited_ledger_entity_with_native_executor(
+        Audited::new(saved, "second native raw extension save"),
+        context.clone(),
+        &transaction,
+    )
+    .await
+    .unwrap();
+    assert!(audits.lock().unwrap().is_empty());
+    assert!(context.has_unfinished_view_transaction());
+    let independent = f.admin.get().await.unwrap();
+    let before: i64 = independent
+        .query_one(
+            &format!(
+                "SELECT count(*) FROM \"{}\".teaql_dynamic_field_storage_v1 WHERE owner_id='42'",
+                f.schema
+            ),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(before, 0);
+    Transaction::commit(transaction).await.unwrap();
+    assert!(!context.has_unfinished_view_transaction());
+    let delivered = audits.lock().unwrap().clone();
+    assert_eq!(delivered.len(), 2);
+    for event in &delivered {
+        assert_eq!(event.kind, RawAuditEventKind::Updated);
+        assert_eq!(event.entity, "Asset");
+        assert_eq!(event.entity_id, Some(42));
+    }
+
+    let mut rollback = load_asset(&context).await;
+    rollback
+        .update_dynamic_field("note", Value::from("rolled back"))
+        .unwrap();
+    let transaction = TransactionExecutor::begin(&executor).await.unwrap();
+    save_audited_ledger_entity_with_native_executor(
+        Audited::new(rollback, "rollback native raw extension save"),
+        context.clone(),
+        &transaction,
+    )
+    .await
+    .unwrap();
+    assert_eq!(audits.lock().unwrap().len(), 2);
+    Transaction::rollback(transaction).await.unwrap();
+    assert_eq!(audits.lock().unwrap().len(), 2);
+    assert!(!context.has_unfinished_view_transaction());
+    let persisted: String = independent
+        .query_one(
+            &format!(
+                "SELECT payload FROM \"{}\".teaql_dynamic_field_storage_v1
+                 WHERE namespace='r5-dynamic' AND owner_type='Asset' AND owner_id='42' AND code='note'",
+                f.schema
+            ),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(persisted, "\"second\"");
+    println!("R5_NATIVE_RAW_DYNAMIC_AUDIT_PHYSICAL_COMMIT_GATE_PASS");
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn raw_native_save_error_vetoes_commit_even_if_caller_catches_it() {
+    let f = Fixture::new(false).await;
+    f.write(f.root.as_ref(), &f.target(42, "document"), None)
+        .await;
+    let context = Arc::new(graph_context(&f).await);
+    let mut loaded = load_asset(&context).await;
+    loaded
+        .update_dynamic_field("note", Value::from("must roll back"))
+        .unwrap();
+    let unrelated = SqlDataServiceExecutor::new(
+        PostgresDialect,
+        PgMutationExecutor::new(f.root.pool()),
+        InMemoryMetadataStore::new().with_entity(DynamicAsset::entity_descriptor()),
+    );
+    let transaction = TransactionExecutor::begin(&unrelated).await.unwrap();
+    let error = save_audited_ledger_entity_with_native_executor(
+        Audited::new(loaded, "reject unrelated native dynamic storage"),
+        context.clone(),
+        &transaction,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("DYNAMIC_FIELD_TRANSACTION_BINDING_REQUIRED")
+    );
+    assert!(Transaction::commit(transaction).await.is_err());
+    assert!(!context.has_unfinished_view_transaction());
+    let independent = f.admin.get().await.unwrap();
+    let stored: i64 = independent
+        .query_one(
+            &format!(
+                "SELECT count(*) FROM \"{}\".teaql_dynamic_field_storage_v1 WHERE owner_id='42'",
+                f.schema
+            ),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(stored, 0);
+    println!("R5_NATIVE_RAW_CAUGHT_ERROR_COMMIT_VETO_PASS");
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn raw_native_audit_notification_failure_preserves_committed_sql_truth() {
+    let f = Fixture::new(false).await;
+    f.write(f.root.as_ref(), &f.target(42, "document"), None)
+        .await;
+    let mut context = graph_context(&f).await;
+    context.set_custom_event_sink(RejectCommittedAudit);
+    let context = Arc::new(context);
+    let mut loaded = load_asset(&context).await;
+    loaded
+        .update_dynamic_field("note", Value::from("committed despite audit failure"))
+        .unwrap();
+    let executor = f.business();
+    let transaction = TransactionExecutor::begin(&executor).await.unwrap();
+    let owner = Transaction::physical_identity(&transaction).unwrap();
+    save_audited_ledger_entity_with_native_executor(
+        Audited::new(loaded, "native raw audit failure after commit"),
+        context.clone(),
+        &transaction,
+    )
+    .await
+    .unwrap();
+    assert_eq!(owner.outcome(), PhysicalTransactionOutcome::Active);
+    assert!(Transaction::commit(transaction).await.is_err());
+    assert_eq!(owner.outcome(), PhysicalTransactionOutcome::Committed);
+    assert!(!context.has_unfinished_view_transaction());
+    let independent = f.admin.get().await.unwrap();
+    let persisted: String = independent
+        .query_one(
+            &format!(
+                "SELECT payload FROM \"{}\".teaql_dynamic_field_storage_v1
+                 WHERE namespace='r5-dynamic' AND owner_type='Asset' AND owner_id='42' AND code='note'",
+                f.schema
+            ),
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(persisted, "\"committed despite audit failure\"");
+    println!("R5_NATIVE_RAW_AUDIT_AFTER_COMMIT_SQL_TRUTH_PASS");
     f.finish().await;
 }
 

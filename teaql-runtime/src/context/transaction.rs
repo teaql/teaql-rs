@@ -50,6 +50,20 @@ impl Drop for ViewTransactionGuard<'_> {
 }
 
 impl UserContext {
+    pub(crate) fn native_raw_audit_started(&self) {
+        self.view_transactions
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn native_raw_audit_finished(&self, known_outcome: bool) {
+        use std::sync::atomic::Ordering;
+        if !known_outcome {
+            self.view_transaction_uncertain
+                .store(true, Ordering::SeqCst);
+        }
+        self.view_transactions.fetch_sub(1, Ordering::SeqCst);
+    }
+
     pub(crate) fn view_transaction_boundary(&self) -> ViewTransactionGuard<'_> {
         self.view_transactions
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
