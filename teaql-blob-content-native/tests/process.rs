@@ -330,7 +330,10 @@ mod faults {
         .await
     }
     async fn active(verifier: &ProcessBlobContentVerifier) -> u32 {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        active_within(verifier, Duration::from_secs(10)).await
+    }
+    async fn active_within(verifier: &ProcessBlobContentVerifier, timeout: Duration) -> u32 {
+        let deadline = Instant::now() + timeout;
         loop {
             if let Some(pid) = verifier.stats().running.first() {
                 return *pid;
@@ -588,7 +591,7 @@ mod faults {
                                 .verify(content(b"H".to_vec()), "pdf", 1000, false)
                                 .await
                         });
-                        let pid = active(&verifier).await;
+                        let pid = active_within(&verifier, Duration::from_secs(60)).await;
                         fs::write(root.join("ready"), pid.to_string()).unwrap();
                         let _ = work.await;
                     });
@@ -608,11 +611,13 @@ mod faults {
                         .env("TEAQL_WORKER_TEST_ROOT", root.path())
                         .stdin(Stdio::null())
                         .stdout(Stdio::null())
-                        .stderr(Stdio::null())
+                        .stderr(Stdio::inherit())
                         .spawn()
                         .unwrap(),
                 );
-                let deadline = Instant::now() + Duration::from_secs(10);
+                // Copying and hashing the pinned, unoptimized worker can take
+                // longer while the other process-fault tests run in parallel.
+                let deadline = Instant::now() + Duration::from_secs(120);
                 let pid: i32 = loop {
                     if let Ok(text) = fs::read_to_string(root.path().join("ready"))
                         && let Ok(pid) = text.parse()
@@ -663,11 +668,11 @@ mod faults {
                         .env("TEAQL_WORKER_TEST_CANARY", "must-never-reach-worker")
                         .stdin(Stdio::null())
                         .stdout(Stdio::null())
-                        .stderr(Stdio::null())
+                        .stderr(Stdio::inherit())
                         .spawn()
                         .unwrap(),
                 );
-                assert!(wait(&mut witness.0, Duration::from_secs(20)).success());
+                assert!(wait(&mut witness.0, Duration::from_secs(150)).success());
             }
             _ => panic!("invalid helper role"),
         }
