@@ -575,6 +575,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn served_axum_response_matches_framework_free_preparation() {
+        let entity = Entity {
+            key: Value::BlobRef(BlobRef::new("blob_secret_key").unwrap()),
+            id: Value::U64(42),
+        };
+        let cli_context = view_context(
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let options = ViewOptions::read_only().with_cache_lifetime(Duration::from_secs(25));
+        let cli = cli_context
+            .prepare_view(
+                ViewInput::Array(vec![ViewInput::Entity(&entity as &dyn ViewEntity)]),
+                &options,
+            )
+            .await
+            .unwrap();
+
+        let signed = Arc::new(AtomicUsize::new(0));
+        let route_signed = signed.clone();
+        let app = axum::Router::new().route(
+            "/view",
+            axum::routing::get(move || {
+                let signed = route_signed.clone();
+                async move {
+                    let context = view_context(signed, Arc::new(AtomicBool::new(false)));
+                    let entity = Entity {
+                        key: Value::BlobRef(BlobRef::new("blob_secret_key").unwrap()),
+                        id: Value::U64(42),
+                    };
+                    WebResponse::of_single(&entity as &dyn ViewEntity)
+                        .prepare_and_render(
+                            &context,
+                            &ViewOptions::read_only().with_cache_lifetime(Duration::from_secs(25)),
+                        )
+                        .await
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}/view"))
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let cache = response
+            .headers()
+            .get(reqwest::header::CACHE_CONTROL)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let body = response.bytes().await.unwrap();
+        server.abort();
+        let _ = server.await;
+
+        assert_eq!(status, reqwest::StatusCode::OK);
+        assert_eq!(content_type, "application/json");
+        assert!(cache.starts_with("private, max-age="));
+        let served: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(served["data"], *cli.value());
+        assert!(served["data"][0].get("private_note").is_none());
+        assert!(!String::from_utf8_lossy(&body).contains("blob_secret_key"));
+        assert_eq!(signed.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn unsupported_facets_and_post_commit_projection_failure_never_render_raw_key() {
         let signed = Arc::new(AtomicUsize::new(0));
         let fail = Arc::new(AtomicBool::new(false));
