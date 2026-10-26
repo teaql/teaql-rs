@@ -2264,6 +2264,45 @@ mod trace_scope_capture_tests {
     }
 
     #[test]
+    fn submitted_draft_plans_complete_scopes_without_exposing_them_to_live_edits() {
+        let root = EntityRuntimeState::default();
+        let graph = GraphNode::new("Order")
+            .value("id", 100_u64)
+            .comment("submit order")
+            .relation(
+                "items",
+                GraphNode::new("OrderItem")
+                    .value("id", 201_u64)
+                    .comment("approve special item"),
+            )
+            .relation("items", GraphNode::new("OrderItem").value("id", 202_u64));
+        let draft = root.reserve_submission(None).unwrap();
+        capture_ledger_trace_scopes(draft.execution_state(), &graph).unwrap();
+        let order = ("Order".to_owned(), Some(100), "submit order".to_owned());
+        assert_eq!(
+            trace(draft.execution_state(), "Order", 100).as_slice(),
+            std::slice::from_ref(&order)
+        );
+        assert_eq!(
+            trace(draft.execution_state(), "OrderItem", 201),
+            [
+                order.clone(),
+                (
+                    "OrderItem".to_owned(),
+                    Some(201),
+                    "approve special item".to_owned()
+                )
+            ]
+        );
+        assert_eq!(trace(draft.execution_state(), "OrderItem", 202), [order]);
+        for (entity, id) in [("Order", 100), ("OrderItem", 201), ("OrderItem", 202)] {
+            assert!(trace(&root, entity, id).is_empty());
+        }
+        drop(draft);
+        assert!(trace(&root, "Order", 100).is_empty());
+    }
+
+    #[test]
     fn allocation_rebinds_owned_ancestors_without_assigning_inherited_siblings() {
         let root = EntityRuntimeState::default();
         let mut graph = GraphNode::new("Order")
