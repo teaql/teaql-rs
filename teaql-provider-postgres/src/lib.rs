@@ -626,6 +626,9 @@ impl teaql_sql::SqlTransactionTransport for PgMutationExecutor {
 }
 
 impl PgMutationExecutor {
+    // Rust 1.99 renamed fetch_update; retain compatibility with supported older
+    // toolchains until the minimum Rust version is deliberately raised.
+    #[allow(deprecated)]
     pub fn new(pool: Pool) -> Self {
         use std::sync::atomic::Ordering;
         Self {
