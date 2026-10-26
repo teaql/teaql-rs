@@ -2,6 +2,7 @@ use crate::UserContext;
 use crate::round_trip_reference::{
     ReferenceDocumentScope, ReferenceIdentity, RoundTripReferenceError, TrustedReferencePrincipal,
 };
+use crate::view_preparation::{ViewPath, ViewPathSegment};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -251,6 +252,38 @@ pub struct ContextualDocument {
     pub business_id: String,
     pub document_token: String,
     pub body: Value,
+}
+
+/// An application-declared output position for one authenticated tqd2 Blob binding.
+/// The body at this path must be null; only ViewPreparation may replace it with a URL.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocumentBlobSlot {
+    pub path: ViewPath,
+    pub row_key: String,
+    pub canonical_field: String,
+}
+
+impl DocumentBlobSlot {
+    pub fn new(
+        path: ViewPath,
+        row_key: impl Into<String>,
+        canonical_field: impl Into<String>,
+    ) -> Result<Self, DocumentRoundTripError> {
+        let value = Self {
+            path,
+            row_key: row_key.into(),
+            canonical_field: canonical_field.into(),
+        };
+        require_text(&value.row_key)?;
+        require_text(&value.canonical_field)?;
+        if !matches!(
+            value.path.segments().last(),
+            Some(ViewPathSegment::Field(_))
+        ) {
+            return Err(DocumentRoundTripError::projection_violation());
+        }
+        Ok(value)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -589,6 +622,17 @@ impl std::error::Error for DocumentRoundTripError {}
 pub trait ContextBoundDocumentService: Send + Sync {
     fn supports_view_preparation(&self) -> bool {
         false
+    }
+
+    /// Declare outbound placeholders only. The runtime authenticates each slot
+    /// against the bound snapshot and current field policy before signing a read.
+    fn outbound_blob_slots(
+        &self,
+        _context: &UserContext,
+        _principal: &TrustedReferencePrincipal,
+        _document: &VerifiedBoundDocumentSnapshot,
+    ) -> Result<Vec<DocumentBlobSlot>, DocumentRoundTripError> {
+        Ok(Vec::new())
     }
 
     /// Current application document/purpose authority for an already issued outbound view.

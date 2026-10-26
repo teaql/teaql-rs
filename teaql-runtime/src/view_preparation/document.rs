@@ -38,6 +38,17 @@ impl DocumentView {
         self.validation.validate(context, &document_context).await?;
         let graph: AuthorizedResponseGraph =
             freeze(context, authorization, ViewInput::Json(&self.document.body))?;
+        let graph = match &self.validation.verified {
+            VerifiedDocumentAuthority::Bound(verified) => {
+                let slots = self
+                    .validation
+                    .service
+                    .outbound_blob_slots(context, &self.validation.principal, verified)
+                    .map_err(document_code)?;
+                graph.resolve_bound_document_slots(context, authorization, verified, slots)?
+            }
+            VerifiedDocumentAuthority::Plain(_) => graph,
+        };
         Ok(DocumentViewProjection {
             graph,
             context: document_context,

@@ -1,5 +1,5 @@
 use super::{DocumentView, ViewAuthorization, ViewErrorCode, ViewFieldDecision, require_text};
-use crate::UserContext;
+use crate::{DocumentBlobSlot, UserContext, VerifiedBoundDocumentSnapshot};
 use serde_json::{Map, Value as Json};
 use std::collections::BTreeSet;
 use teaql_core::{BlobRef, DataType, Value};
@@ -8,12 +8,12 @@ const MAX_NODES: usize = 10_000;
 const MAX_DEPTH: usize = 64;
 const MAX_TEXT: usize = 8_388_608;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ViewPathSegment {
     Field(String),
     Index(usize),
 }
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ViewPath(pub(crate) Vec<ViewPathSegment>);
 impl ViewPath {
     pub fn segments(&self) -> &[ViewPathSegment] {
@@ -118,6 +118,120 @@ impl AuthorizedResponseGraph {
     }
     pub fn blobs(&self) -> &[ViewBlobTarget] {
         &self.blobs
+    }
+
+    pub(crate) fn resolve_bound_document_slots(
+        mut self,
+        context: &UserContext,
+        auth: &dyn ViewAuthorization,
+        document: &VerifiedBoundDocumentSnapshot,
+        slots: Vec<DocumentBlobSlot>,
+    ) -> Result<Self, ViewErrorCode> {
+        if slots.len() > MAX_NODES {
+            return Err(ViewErrorCode::LimitExceeded);
+        }
+        let mut seen = BTreeSet::new();
+        for slot in slots {
+            if !seen.insert(slot.path.clone())
+                || !slot
+                    .path
+                    .value_mut(&mut self.value)
+                    .is_some_and(|value| value.is_null())
+            {
+                return Err(ViewErrorCode::AccessDenied);
+            }
+            let entity = document
+                .document
+                .snapshot
+                .entities
+                .iter()
+                .find(|entity| entity.row_key == slot.row_key)
+                .ok_or(ViewErrorCode::AccessDenied)?;
+            if !entity.loaded_fields.contains(&slot.canonical_field) {
+                return Err(ViewErrorCode::AccessDenied);
+            }
+            let binding = document
+                .document
+                .bindings
+                .iter()
+                .find(|binding| {
+                    binding.row_key == slot.row_key
+                        && binding.canonical_field == slot.canonical_field
+                })
+                .ok_or(ViewErrorCode::AccessDenied)?;
+            if binding.entity_type != entity.identity.entity_type {
+                return Err(ViewErrorCode::AccessDenied);
+            }
+            let descriptor = context
+                .entity(&entity.identity.entity_type)
+                .ok_or(ViewErrorCode::CapabilityMissing)?;
+            let property = descriptor
+                .property_by_name(&slot.canonical_field)
+                .ok_or(ViewErrorCode::ResultUnsupported)?;
+            let spec = property
+                .blob_field_spec
+                .as_ref()
+                .ok_or(ViewErrorCode::ResultUnsupported)?;
+            if property.data_type != DataType::BlobRef
+                || spec.entity() != entity.identity.entity_type
+                || spec.field() != slot.canonical_field
+                || spec.nullable() != property.nullable
+                || binding.nullable != property.nullable
+            {
+                return Err(ViewErrorCode::ResultUnsupported);
+            }
+            let target = ViewEntityTarget {
+                entity: entity.identity.entity_type.clone(),
+                id: Some(entity.identity.id),
+                revision: Some(entity.identity.version),
+            };
+            target.validate()?;
+            let mut parent = slot.path.clone();
+            let Some(ViewPathSegment::Field(member)) = parent.0.pop() else {
+                return Err(ViewErrorCode::ResultUnsupported);
+            };
+            if !auth.can_read_entity(context, &target, &parent)? {
+                return Err(ViewErrorCode::AccessDenied);
+            }
+            let decision = auth.field(context, &target, &slot.canonical_field, &slot.path)?;
+            self.checks
+                .push(Check::Entity(target.clone(), parent.clone()));
+            self.checks.push(Check::Field(
+                target.clone(),
+                slot.canonical_field.clone(),
+                slot.path.clone(),
+                decision.clone(),
+            ));
+            match decision {
+                ViewFieldDecision::Hidden => {
+                    parent
+                        .value_mut(&mut self.value)
+                        .and_then(Json::as_object_mut)
+                        .ok_or(ViewErrorCode::AccessDenied)?
+                        .remove(&member)
+                        .ok_or(ViewErrorCode::AccessDenied)?;
+                }
+                ViewFieldDecision::Mask(mask) => {
+                    *slot
+                        .path
+                        .value_mut(&mut self.value)
+                        .ok_or(ViewErrorCode::AccessDenied)? =
+                        mask.map_or(Json::Null, Json::String);
+                }
+                ViewFieldDecision::Value { .. } => {
+                    if let Some(reference) = &binding.reference {
+                        self.blobs.push(ViewBlobTarget {
+                            target,
+                            canonical: slot.canonical_field,
+                            path: slot.path,
+                            reference: reference.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        validate_json(&self.value)?;
+        Ok(self)
     }
     /// Document stages may replace scalar references, while preserving the frozen surface.
     pub fn replace_scalars(

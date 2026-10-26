@@ -82,9 +82,9 @@ pub use data_service::{
 pub use document_round_trip::{
     AcceptedContextualDocument, BlobSelectionClaim, BlobSelectionTarget, BlobSelectionTargetKind,
     BoundDocumentSnapshot, ContextBoundDocumentService, ContextualDocument, DocumentAcceptRequest,
-    DocumentBlobBindingSnapshot, DocumentEntitySnapshot, DocumentMutationKind, DocumentOpenRequest,
-    DocumentRelationCompleteness, DocumentRelationSnapshot, DocumentRoundTripError,
-    DocumentSnapshot, SubmittedContextualDocument, VerifiedBlobSelection,
+    DocumentBlobBindingSnapshot, DocumentBlobSlot, DocumentEntitySnapshot, DocumentMutationKind,
+    DocumentOpenRequest, DocumentRelationCompleteness, DocumentRelationSnapshot,
+    DocumentRoundTripError, DocumentSnapshot, SubmittedContextualDocument, VerifiedBlobSelection,
     VerifiedBoundDocumentSnapshot, VerifiedDocumentSnapshot,
 };
 #[allow(deprecated)]
