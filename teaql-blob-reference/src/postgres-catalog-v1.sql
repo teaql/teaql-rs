@@ -1,0 +1,45 @@
+CREATE TABLE teaql_blob_object (
+    blob_key VARCHAR(128) CONSTRAINT teaql_blob_object_pk PRIMARY KEY,
+    scope_realm VARCHAR(256) NOT NULL,
+    scope_boundary VARCHAR(256) NOT NULL,
+    upload_id VARCHAR(128) NOT NULL CONSTRAINT teaql_blob_upload_uk UNIQUE,
+    request_key VARCHAR(128) NOT NULL,
+    request_digest VARCHAR(64) NOT NULL,
+    state VARCHAR(32) NOT NULL CHECK (state IN ('initiated','uploaded_unbound','available','deleting','deleted')),
+    original_name VARCHAR(512) NOT NULL,
+    extension VARCHAR(16) NOT NULL,
+    actual_mime VARCHAR(160),
+    size_bytes BIGINT CHECK (size_bytes >= 0),
+    sha256 VARCHAR(64),
+    content_version VARCHAR(1024),
+    storage_location VARCHAR(2048) NOT NULL,
+    target_entity VARCHAR(128) NOT NULL,
+    target_id BIGINT,
+    target_field VARCHAR(128) NOT NULL,
+    policy_json TEXT NOT NULL,
+    created_at BIGINT NOT NULL,
+    upload_expires_at BIGINT NOT NULL,
+    completed_at BIGINT,
+    first_bound_at BIGINT,
+    unreferenced_at BIGINT,
+    retention_floor_at BIGINT,
+    effective_unref_seconds BIGINT NOT NULL CHECK (effective_unref_seconds >= 0),
+    single_binding SMALLINT NOT NULL CHECK (single_binding IN (0,1)),
+    deleted_at BIGINT,
+    CONSTRAINT teaql_blob_request_uk UNIQUE (scope_realm, scope_boundary, request_key)
+);
+CREATE TABLE teaql_blob_binding (
+    scope_realm VARCHAR(256) NOT NULL,
+    scope_boundary VARCHAR(256) NOT NULL,
+    entity_type VARCHAR(128) NOT NULL,
+    entity_id BIGINT NOT NULL CHECK (entity_id > 0),
+    field_name VARCHAR(128) NOT NULL,
+    blob_key VARCHAR(128) CONSTRAINT teaql_blob_binding_fk REFERENCES teaql_blob_object(blob_key),
+    retired_key VARCHAR(128) CONSTRAINT teaql_blob_retired_fk REFERENCES teaql_blob_object(blob_key),
+    binding_version BIGINT NOT NULL CHECK (binding_version >= 0),
+    bound_at BIGINT,
+    retain_until BIGINT,
+    CONSTRAINT teaql_blob_binding_pk PRIMARY KEY (scope_realm, scope_boundary, entity_type, entity_id, field_name)
+);
+CREATE INDEX teaql_blob_live_binding_key ON teaql_blob_binding(blob_key);
+CREATE INDEX teaql_blob_collection_state ON teaql_blob_object(state, upload_expires_at, completed_at, unreferenced_at);

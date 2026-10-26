@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
+mod infrastructure;
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use deadpool_postgres::{GenericClient, Pool};
@@ -308,6 +309,7 @@ pub enum MutationExecutorError {
     UnsupportedValue(&'static str),
     UnsupportedColumnType(String),
     Bind(String),
+    TransactionRollbackOnly,
 }
 
 impl std::fmt::Display for MutationExecutorError {
@@ -338,6 +340,7 @@ impl std::fmt::Display for MutationExecutorError {
                 write!(f, "unsupported column type for record decoding: {kind}")
             }
             Self::Bind(message) => write!(f, "bind error: {message}"),
+            Self::TransactionRollbackOnly => f.write_str("postgres transaction is rollback-only"),
         }
     }
 }
@@ -359,6 +362,7 @@ impl From<SqlCompileError> for MutationExecutorError {
 #[derive(Clone)]
 pub struct PgMutationExecutor {
     pool: Pool,
+    resource_identity: teaql_data_service::infrastructure_sql::SqlResourceIdentity,
 }
 
 #[derive(Debug, Clone)]
@@ -374,11 +378,20 @@ struct PostgresColumnMetadata {
 /// lifetime. Using SQL BEGIN/COMMIT avoids a self-referential wrapper around
 /// `tokio_postgres::Transaction` while preserving connection affinity.
 pub struct PgTransactionExecutor {
-    client: deadpool_postgres::Object,
+    client: Option<deadpool_postgres::Object>,
+    identity: teaql_data_service::infrastructure_sql::PhysicalTransactionIdentity,
+    completion: Option<teaql_data_service::infrastructure_sql::PhysicalTransactionOwner>,
+    rollback_only: std::sync::atomic::AtomicBool,
 }
 
 impl SqlTransport for PgMutationExecutor {
     type Error = MutationExecutorError;
+
+    fn infrastructure_sql(
+        &self,
+    ) -> Option<&dyn teaql_data_service::infrastructure_sql::InfrastructureSql> {
+        Some(self)
+    }
 
     async fn fetch_all_compact_sql(
         &self,
@@ -444,53 +457,91 @@ impl teaql_sql::StreamingSqlTransport for PgMutationExecutor {
 impl SqlTransport for PgTransactionExecutor {
     type Error = MutationExecutorError;
 
+    fn infrastructure_sql(
+        &self,
+    ) -> Option<&dyn teaql_data_service::infrastructure_sql::InfrastructureSql> {
+        Some(self)
+    }
+
     async fn fetch_all_compact_sql(
         &self,
         query: &CompiledQuery,
     ) -> Result<Vec<teaql_core::CompactRow>, Self::Error> {
-        let mut args = PgArgs { values: Vec::new() };
-        for value in &query.params {
-            bind_pg(&mut args, value)?;
+        let result: Result<Vec<teaql_core::CompactRow>, MutationExecutorError> = async {
+            let mut args = PgArgs { values: Vec::new() };
+            for value in &query.params {
+                bind_pg(&mut args, value)?;
+            }
+            let statement = self.client().prepare_cached(&query.sql).await?;
+            let rows = self.client().query(&statement, &args.as_refs()).await?;
+            let columns: Arc<[String]> = statement
+                .columns()
+                .iter()
+                .map(|column| column.name().to_owned())
+                .collect::<Vec<_>>()
+                .into();
+            let columns = teaql_core::CompactRowLayout::new(columns);
+            rows.iter()
+                .map(|row| {
+                    Ok(teaql_core::CompactRow::with_layout(
+                        columns.clone(),
+                        decode_pg_values(row)?,
+                    ))
+                })
+                .collect()
         }
-        let statement = self.client.prepare_cached(&query.sql).await?;
-        let rows = self.client.query(&statement, &args.as_refs()).await?;
-        let columns: Arc<[String]> = statement
-            .columns()
-            .iter()
-            .map(|column| column.name().to_owned())
-            .collect::<Vec<_>>()
-            .into();
-        let columns = teaql_core::CompactRowLayout::new(columns);
-        rows.iter()
-            .map(|row| {
-                Ok(teaql_core::CompactRow::with_layout(
-                    columns.clone(),
-                    decode_pg_values(row)?,
-                ))
-            })
-            .collect()
+        .await;
+        if result.is_err() {
+            self.rollback_only
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        result
     }
 
     async fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
-        let mut args = PgArgs { values: Vec::new() };
-        for value in &query.params {
-            bind_pg(&mut args, value)?;
+        let result = async {
+            let mut args = PgArgs { values: Vec::new() };
+            for value in &query.params {
+                bind_pg(&mut args, value)?;
+            }
+            let statement = self.client().prepare_cached(&query.sql).await?;
+            Ok(self.client().execute(&statement, &args.as_refs()).await?)
         }
-        let statement = self.client.prepare_cached(&query.sql).await?;
-        Ok(self.client.execute(&statement, &args.as_refs()).await?)
+        .await;
+        if result.is_err() {
+            self.rollback_only
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        result
     }
 }
 
 impl teaql_sql::SqlTransaction for PgTransactionExecutor {
     type Error = MutationExecutorError;
 
-    async fn commit_sql(self) -> Result<(), Self::Error> {
-        self.client.batch_execute("COMMIT").await?;
+    async fn commit_sql(mut self) -> Result<(), Self::Error> {
+        if self.rollback_only.load(std::sync::atomic::Ordering::SeqCst) {
+            self.client().batch_execute("ROLLBACK").await?;
+            self.completion
+                .take()
+                .expect("physical transaction owner")
+                .rolled_back();
+            return Err(MutationExecutorError::TransactionRollbackOnly);
+        }
+        self.client().batch_execute("COMMIT").await?;
+        self.completion
+            .take()
+            .expect("physical transaction owner")
+            .committed();
         Ok(())
     }
 
-    async fn rollback_sql(self) -> Result<(), Self::Error> {
-        self.client.batch_execute("ROLLBACK").await?;
+    async fn rollback_sql(mut self) -> Result<(), Self::Error> {
+        self.client().batch_execute("ROLLBACK").await?;
+        self.completion
+            .take()
+            .expect("physical transaction owner")
+            .rolled_back();
         Ok(())
     }
 }
@@ -507,14 +558,24 @@ impl teaql_sql::SqlTransactionTransport for PgMutationExecutor {
             .get()
             .await
             .map_err(|error| MutationExecutorError::Pool(error.to_string()))?;
-        client.batch_execute("BEGIN").await?;
-        Ok(PgTransactionExecutor { client })
+        let completion = self.resource_identity.begin();
+        let transaction = PgTransactionExecutor {
+            client: Some(client),
+            identity: completion.identity(),
+            completion: Some(completion),
+            rollback_only: std::sync::atomic::AtomicBool::new(false),
+        };
+        transaction.client().batch_execute("BEGIN").await?;
+        Ok(transaction)
     }
 }
 
 impl PgMutationExecutor {
     pub fn new(pool: Pool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            resource_identity: teaql_data_service::infrastructure_sql::SqlResourceIdentity::new(),
+        }
     }
 
     pub fn pool(&self) -> Pool {

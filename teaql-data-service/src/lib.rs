@@ -2,6 +2,8 @@
 
 #[doc(hidden)]
 pub mod dynamic_fields;
+#[doc(hidden)]
+pub mod infrastructure_sql;
 mod sql_log;
 #[doc(hidden)]
 pub mod statement_telemetry;
@@ -382,6 +384,11 @@ pub trait DataServiceExecutor {
     type Error: std::error::Error + Send + Sync + 'static;
 
     fn capabilities(&self) -> DataServiceCapabilities;
+
+    #[doc(hidden)]
+    fn infrastructure_sql(&self) -> Option<&dyn infrastructure_sql::InfrastructureSql> {
+        None
+    }
 }
 
 pub trait QueryExecutor: DataServiceExecutor {

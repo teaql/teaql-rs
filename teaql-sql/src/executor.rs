@@ -28,6 +28,13 @@ pub trait SqlTransport: Send + Sync {
     type Error: std::error::Error + Send + Sync + 'static;
 
     #[doc(hidden)]
+    fn infrastructure_sql(
+        &self,
+    ) -> Option<&dyn teaql_data_service::infrastructure_sql::InfrastructureSql> {
+        None
+    }
+
+    #[doc(hidden)]
     fn dynamic_field_store(
         &self,
     ) -> Option<&dyn teaql_data_service::dynamic_fields::DynamicFieldStore> {
@@ -599,6 +606,12 @@ impl<
 > DataServiceExecutor for SqlDataServiceExecutor<D, T, S>
 {
     type Error = SqlExecutorError<T::Error>;
+
+    fn infrastructure_sql(
+        &self,
+    ) -> Option<&dyn teaql_data_service::infrastructure_sql::InfrastructureSql> {
+        self.transport.infrastructure_sql()
+    }
 
     fn capabilities(&self) -> DataServiceCapabilities {
         DataServiceCapabilities {
@@ -1868,6 +1881,12 @@ impl<
 > DataServiceExecutor for SqlDataServiceTransaction<'a, D, Tx, S>
 {
     type Error = SqlExecutorError<<Tx as SqlTransport>::Error>;
+
+    fn infrastructure_sql(
+        &self,
+    ) -> Option<&dyn teaql_data_service::infrastructure_sql::InfrastructureSql> {
+        self.transport.infrastructure_sql()
+    }
 
     fn capabilities(&self) -> DataServiceCapabilities {
         DataServiceCapabilities {

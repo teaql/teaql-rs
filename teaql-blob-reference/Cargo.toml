@@ -1,0 +1,25 @@
+[package]
+name = "teaql-blob-reference"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Optional TeaQL Blob policies and transaction-bound catalog"
+
+[features]
+live-postgres = []
+
+[dependencies]
+teaql-core.workspace = true
+teaql-data-service.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+teaql-provider-postgres.workspace = true
+teaql-runtime.workspace = true
+teaql-sql.workspace = true
+deadpool-postgres = "0.14"
+tokio-postgres = "0.7"
