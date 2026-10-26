@@ -20,7 +20,7 @@ use std::{
     sync::{Arc, OnceLock},
     time::{Duration, SystemTime},
 };
-use teaql_blob_reference::{
+use teaql_blob_contracts::{
     BlobContentStream, BlobDeleteResult, BlobError, BlobErrorCode as Code, BlobRangeContent,
     BlobResult, BlobStore, BlobStoreCapabilities, BlobUploadTarget, Bytes, StoredBlob,
 };

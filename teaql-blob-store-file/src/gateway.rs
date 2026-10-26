@@ -22,7 +22,7 @@ use std::{
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use teaql_blob_reference::*;
+use teaql_blob_contracts::*;
 use tokio::{net::TcpListener, task::JoinSet};
 
 const DOMAIN: &[u8] = b"teaql.rust.file.gateway/v1\0";

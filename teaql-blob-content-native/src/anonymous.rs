@@ -7,7 +7,7 @@ use std::{
     path::{Component, Path, PathBuf},
     sync::{Arc, OnceLock},
 };
-use teaql_blob_reference::{BlobError, BlobErrorCode as Code, BlobResult};
+use teaql_blob_contracts::{BlobError, BlobErrorCode as Code, BlobResult};
 const FORMAT: &[u8] = b"teaql.rust.blob-verifier-scratch/v1\n";
 const SAFE: OFlags = OFlags::NOFOLLOW
     .union(OFlags::CLOEXEC)

@@ -1,7 +1,7 @@
 mod office;
 use crate::VerificationLimits;
 use std::{collections::BTreeSet, io::Cursor};
-use teaql_blob_reference::{BlobError, BlobErrorCode as Code, BlobResult};
+use teaql_blob_contracts::{BlobError, BlobErrorCode as Code, BlobResult};
 pub(super) fn verify(
     bytes: &[u8],
     file: &std::fs::File,

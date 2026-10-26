@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "teaql-core",
+    "teaql-blob-contracts",
     "teaql-blob-reference",
     "teaql-blob-store-file",
     "teaql-blob-content-native",
@@ -56,6 +57,7 @@ sha2 = "0.10"
 subtle = "2"
 
 teaql-core = { path = "teaql-core", version = "5.0.7" }
+teaql-blob-contracts = { path = "teaql-blob-contracts", version = "5.0.7" }
 teaql-blob-reference = { path = "teaql-blob-reference", version = "5.0.7" }
 teaql-blob-store-file = { path = "teaql-blob-store-file", version = "5.0.7" }
 teaql-blob-content-native = { path = "teaql-blob-content-native", version = "5.0.7" }

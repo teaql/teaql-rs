@@ -19,7 +19,7 @@ impl VerifiedBlobContent {
             size_bytes,
             sha256: sha256.into(),
         };
-        if !crate::policy::FORMATS.into_iter().any(|extension| {
+        if !crate::FORMATS.into_iter().any(|extension| {
             teaql_core::blob::content_type(extension) == Some(value.content_type.as_str())
         }) || value.sha256.len() != 64
             || !value

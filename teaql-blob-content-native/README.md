@@ -143,3 +143,7 @@ behind `process-fixtures`; do not install that feature's fixture executable.
 
 Full SQL upload orchestration, native save/journal/read integration, production S3,
 governed document/selection combinations and original R5–R8 exits remain in progress.
+
+Transport/verifier values come directly from the lightweight teaql-blob-contracts
+crate; teaql-blob-reference re-exports the same types for compatibility. The
+provider production graph stays independent of the host runtime-integration feature.

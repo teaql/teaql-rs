@@ -3844,6 +3844,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "symphonia",
+ "teaql-blob-contracts",
  "teaql-blob-reference",
  "teaql-core",
  "tempfile",
@@ -3852,23 +3853,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "teaql-blob-contracts"
+version = "5.0.7"
+dependencies = [
+ "async-trait",
+ "futures-core",
+ "serde",
+ "teaql-core",
+ "teaql-data-service",
+ "url",
+]
+
+[[package]]
 name = "teaql-blob-reference"
 version = "5.0.7"
 dependencies = [
  "async-trait",
  "deadpool-postgres",
- "futures-core",
+ "futures-util",
+ "getrandom 0.3.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "teaql-blob-content-native",
+ "teaql-blob-contracts",
+ "teaql-blob-store-file",
  "teaql-core",
  "teaql-data-service",
  "teaql-provider-postgres",
  "teaql-runtime",
  "teaql-sql",
+ "tempfile",
  "tokio",
  "tokio-postgres",
- "url",
 ]
 
 [[package]]
@@ -3888,6 +3905,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "teaql-blob-contracts",
  "teaql-blob-reference",
  "tempfile",
  "tokio",

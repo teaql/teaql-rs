@@ -20,7 +20,7 @@ required-features = ["process-fixtures"]
 
 [dependencies]
 teaql-core.workspace = true
-teaql-blob-reference.workspace = true
+teaql-blob-contracts.workspace = true
 async-trait.workspace = true
 sha2.workspace = true
 serde.workspace = true
@@ -41,5 +41,6 @@ quick-xml = "=0.41.0"
 zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
+teaql-blob-reference.workspace = true
 tempfile = "3"
 serde_json.workspace = true

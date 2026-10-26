@@ -13,7 +13,7 @@ pub use process::{
 };
 use sha2::{Digest, Sha256};
 use std::{fs::File, path::PathBuf, sync::Arc};
-use teaql_blob_reference::{
+use teaql_blob_contracts::{
     BlobContentStream, BlobContentVerifier, BlobError, BlobErrorCode as Code, BlobResult,
     VerifiedBlobContent,
 };

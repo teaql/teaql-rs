@@ -27,7 +27,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use teaql_blob_reference::{
+use teaql_blob_contracts::{
     BlobContentStream, BlobContentVerifier, BlobError, BlobErrorCode as Code, BlobResult,
     VerifiedBlobContent,
 };

@@ -89,3 +89,7 @@ leases, process kills/recovery and durable publication. Gateway tests use actual
 loopback HTTP and independent curl, wall-clock expiry/reissue, generation fences,
 key rotation, origin/tamper/range rejection and cache/expiry after a real lock wait.
 No database or parser success is inferred from these transport tests.
+
+Transport/verifier values come directly from the lightweight teaql-blob-contracts
+crate; teaql-blob-reference re-exports the same types for compatibility. The
+provider production graph stays independent of the host runtime-integration feature.

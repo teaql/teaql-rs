@@ -1,4 +1,7 @@
 #![cfg(feature = "live-postgres")]
+#[cfg(feature = "runtime-integration")]
+#[path = "support/service.rs"]
+mod service;
 mod support;
 #[path = "support/upload.rs"]
 mod upload;

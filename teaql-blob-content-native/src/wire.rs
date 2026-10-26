@@ -11,7 +11,7 @@ use std::{
     io::{Read, Write},
     process::{ExitCode, ExitStatus},
 };
-use teaql_blob_reference::{BlobError, BlobErrorCode as Code, BlobResult};
+use teaql_blob_contracts::{BlobError, BlobErrorCode as Code, BlobResult};
 pub(crate) const FORMATS: [&str; 10] = [
     "jpg", "jpeg", "png", "mp4", "mp3", "doc", "docx", "xls", "xlsx", "pdf",
 ];

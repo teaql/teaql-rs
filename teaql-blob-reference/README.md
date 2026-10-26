@@ -1,11 +1,11 @@
 # teaql-blob-reference
 
-This optional crate currently implements the R5 policy/catalog component.
-BlobRuntime/BlobReferenceModule assembly, upload streaming/format verification,
-S3 storage, read projection, durable command recovery, native graph/ledger
-and outer completion, and governed selection remain in progress. Runtime saves
-do not automatically call this catalog yet. No complete Blob capability is
-advertised by installing a partial implementation.
+This optional crate implements policies, the PostgreSQL catalog and, with the
+explicit `runtime-integration` feature, actual current-UserContext upload services.
+Full BlobRuntime/BlobReferenceModule assembly, production S3, read projection,
+native graph/ledger/outer completion, durable command recovery and governed
+selection remain in progress. Runtime saves do not automatically call this catalog
+yet. A standalone upload service does not advertise a complete blob.v1 capability.
 
 The trusted asynchronous BlobStore SPI now defines immutable streaming, range,
 exact-version delete/seal and complete signed-read values. The optional sibling
@@ -16,10 +16,15 @@ parsing behind BlobContentVerifier. VerifiedBlobContent is not deserializable cl
 input. Its parser/anonymous-scratch budgets and optional pinned resource-contained worker
 are documented separately; full SQL upload orchestration remains in progress.
 
-Production dependencies are core/data-service contracts, Serde, SHA256, lightweight
-async/stream contracts and URL validation.
-Runtime/PostgreSQL/Tokio dependencies are for tests. A base runtime does not
-install this implementation transitively.
+Default production dependencies are lightweight Blob/core/data-service contracts,
+Serde and SHA256. Transport/verifier values now live in `teaql-blob-contracts` and
+remain re-exported from this crate with the same public type identities. File and
+native parser implementations depend directly on contracts, so enabling the host
+runtime feature does not link the runtime into a parser worker. The optional
+runtime-integration feature adds actual TeaQL UserContext, Tokio deadlines, bounded
+stream adapters and OS randomness. PostgreSQL/provider implementations remain test
+or injected host dependencies. A base runtime does not install this implementation
+transitively; there is no reverse Web-framework dependency or crate cycle.
 
 ## Policies and wire compatibility
 
@@ -114,6 +119,52 @@ Owned failures carry a sanitized code and physical completion when known. Borrow
 failures require the owner to finish. UNKNOWN never proves rollback or authorizes
 blind mutation replay. Full runtime journal/command recovery remains R5 work.
 
+## Actual upload service
+
+Enable runtime-integration and construct BlobUploadService with an existing catalog,
+injected BlobStore/BlobContentVerifier, policies, a required BlobUploadAuthorization
+and a clock. Construction is passive. Provision storage/parser roots and migrate
+schema explicitly before validate_ready checks existing infrastructure and current
+model descriptors. This feature provides server-stream uploads; direct mode fails
+explicitly until a complete direct-target/production provider is installed in a
+later implementation phase. It never falls back to client MIME or string fields.
+
+Every operation receives the actual UserContext. The host authorization policy must
+resolve its verified actor/scope from that context and independently approve field
+writes and the Blob action; there is no allow-all/default OS-user authority. Model
+fields must be canonical BlobRef properties with consistent BlobFieldSpec metadata.
+Checks repeat around I/O and before SQL commit. An identity/scope change within an
+operation, narrowed current model, hard deployment/provider size limit, expired
+session or rejected final verified facts cannot promote content.
+
+begin normalizes a basename, bounds filename/MIME hints and checks canonical
+length-delimited request replay. IDs use 24 OS-random bytes; callers cannot choose a
+locator or version. write owns the catalog row lock across actual immutable storage
+I/O and journals exact generation/size/SHA only after current authorization and time
+checks. complete requires a successful server-stream journal, stats the immutable
+generation, opens the full exact range and invokes the actual verifier. Returned
+MIME/size/hash must match canonical extension/storage facts before uploaded_unbound.
+Repeated complete checks current authority, retention and immutable facts without
+parsing again. Declared MIME never supplies the verified MIME.
+
+Storage/verification/lock waits use the session or unbound-retention deadline; stream
+polls also check the clock. Timeout/cancellation releases the owned SQL transaction
+and storage stream; the process verifier retains its own capacity until actual
+reaping. Rejection after a physical write can leave immutable unverified bytes,
+which are reserved for retry/expiry collection, never automatic binding. Starting
+COMMIT requires a live authorized session; a lost acknowledgement keeps UNKNOWN
+and does not authorize blind replay. Host request/TCP deadlines still govern actual
+COMMIT completion and active bound-object reads without a retention deadline.
+
+Source integration tests use actual UserContext metadata/typed principals, dedicated
+PostgreSQL, FileBlobStore and a separately built SHA-pinned production worker. They
+cover all ten formats/seven cases, dual denials, current model/hard limits, actor/
+scope/time changes, bad provider facts, pending-source deadlines/cancellation,
+unverified state, SQL identity allocation/binding/unbinding and exact-version
+collection. Binding in these tests explicitly uses the existing SQL catalog SPI;
+automatic native graph/ledger/outer journals and full module/four combinations are
+still required before the original R5 exit.
+
 ## Gates
 
 Unit tests consume all 13 shared policy/retention cases and the actual Java
@@ -126,3 +177,7 @@ faults for BEGIN cancellation/COMMIT-ack loss are exercised.
 
 Complete module/four-combination acceptance, generated consumers, framework
 adapters and registry/release gates remain separate.
+
+The embedding host must also bound admission/lookups before a session deadline is
+known, and acknowledged COMMIT completion. A session timer is not a universal
+network or database cancellation deadline.

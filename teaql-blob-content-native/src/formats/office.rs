@@ -5,7 +5,7 @@ use std::{
     collections::BTreeSet,
     io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom},
 };
-use teaql_blob_reference::{BlobErrorCode as Code, BlobResult};
+use teaql_blob_contracts::{BlobErrorCode as Code, BlobResult};
 
 const CFB: &[u8] = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1";
 const WORD_NS: &[u8] = b"http://schemas.openxmlformats.org/wordprocessingml/2006/main";

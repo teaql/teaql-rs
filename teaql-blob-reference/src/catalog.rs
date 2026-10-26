@@ -133,7 +133,7 @@ impl BlobCatalogRecord {
     pub fn deleted_at(&self) -> Option<i64> {
         self.deleted_at
     }
-    fn eligible_at(&self) -> BlobResult<Option<i64>> {
+    pub(crate) fn eligible_at(&self) -> BlobResult<Option<i64>> {
         match self.state {
             BlobState::Initiated => Ok(Some(self.upload_expires_at)),
             BlobState::UploadedUnbound => self

@@ -1,11 +1,8 @@
 use crate::{BlobErrorCode, BlobResult, add_seconds, name};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+pub use teaql_blob_contracts::{CachePolicy, Disposition, FORMATS};
 use teaql_core::{BlobFieldSpec, blob::content_type};
-pub const FORMATS: [&str; 10] = [
-    "jpg", "jpeg", "png", "mp4", "mp3", "doc", "docx", "xls", "xlsx", "pdf",
-];
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum UploadMode {
@@ -20,23 +17,10 @@ pub enum Sharing {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum Disposition {
-    Auto,
-    Inline,
-    Attachment,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ResponseShape {
     Url,
     Descriptor,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CachePolicy {
-    NoStore,
-    PrivateMaxAge(u64),
-}
-
 #[derive(Clone, Debug)]
 pub struct PolicyLimits {
     pub max_upload_size_bytes: u64,
@@ -427,6 +411,9 @@ impl BlobPolicies {
         } else {
             Err(BlobErrorCode::FormatNotAllowed.into())
         }
+    }
+    pub fn maximum_upload_size_bytes(&self) -> u64 {
+        self.limits.max_upload_size_bytes
     }
     pub fn read_ttl(
         &self,
