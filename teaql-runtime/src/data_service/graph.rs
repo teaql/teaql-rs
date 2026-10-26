@@ -31,8 +31,15 @@ impl LedgerExecutionOutcome {
     ) -> (
         BTreeMap<crate::EntityKey, teaql_core::EntitySnapshot>,
         BTreeMap<crate::EntityKey, Value>,
+        BTreeMap<crate::EntityKey, teaql_core::dynamic_fields::DynamicFieldValues>,
     ) {
-        (self.canonical_rows.rows, self.generated_ids)
+        (
+            self.canonical_rows.rows,
+            self.generated_ids,
+            self.dynamic_readbacks
+                .map(|rows| rows.rows)
+                .unwrap_or_default(),
+        )
     }
 }
 
@@ -2146,11 +2153,14 @@ where
                 .map(|(code, mutation)| {
                     crate::EntityPropertyChange::new(
                         format!("#{code}"),
-                        change_set
-                            .dynamic_originals(key)
-                            .and_then(|values| values.get(code))
-                            .cloned()
-                            .flatten(),
+                        root.submitted_dynamic_original_for(key, code)
+                            .unwrap_or_else(|| {
+                                change_set
+                                    .dynamic_originals(key)
+                                    .and_then(|values| values.get(code))
+                                    .cloned()
+                                    .flatten()
+                            }),
                         Some(crate::dynamic_fields::mutation_audit_value(
                             mutation,
                             fields.values().get(code),

@@ -337,12 +337,13 @@ where
                                 .map_err(DataServiceError::Runtime)?,
                         );
                     let locations = ledger_object_locations_for(&submitted_root, &node);
-                    let mut outcome = service
+                    let outcome = service
                         .execute_ledger_plan_internal(submitted_root.clone(), &locations)
                         .await?;
-                    if let Some(readbacks) = &mut outcome.dynamic_readbacks {
+                    if let Some(readbacks) = &outcome.dynamic_readbacks {
                         node.dynamic_fields = readbacks
-                            .remove(&root_key)
+                            .get(&root_key)
+                            .cloned()
                             .map(Box::new)
                             .or(node.dynamic_fields.take());
                     }
@@ -380,9 +381,9 @@ where
                     let saved =
                         decode(node, submission.is_some()).map_err(DataServiceError::Runtime)?;
                     if let Some(submission) = submission {
-                        let (rows, allocated_ids) = outcome.into_submission_parts();
+                        let (rows, allocated_ids, dynamic_rows) = outcome.into_submission_parts();
                         submission
-                            .acknowledge_with_allocated_ids(rows, allocated_ids)
+                            .acknowledge_with_readbacks(rows, allocated_ids, dynamic_rows)
                             .map_err(DataServiceError::Runtime)?;
                     }
                     Ok(saved)
@@ -2899,16 +2900,17 @@ where
                 || execution_root.clone(),
                 |submission| submission.execution_state().clone(),
             );
-            let mut generated_ids = crate::with_mutation_governance(
+            let generated_ids = crate::with_mutation_governance(
                 governance,
                 data_service.execute_ledger_plan_internal(submitted_root.clone(), &locations),
             )
             .await
             .map_err(data_service_error_into_runtime)?;
 
-            if let Some(readbacks) = &mut generated_ids.dynamic_readbacks {
+            if let Some(readbacks) = &generated_ids.dynamic_readbacks {
                 node.dynamic_fields = readbacks
-                    .remove(&root_key)
+                    .get(&root_key)
+                    .cloned()
                     .map(Box::new)
                     .or(node.dynamic_fields.take());
             }
@@ -2961,8 +2963,8 @@ where
                 )?
             };
             if let Some(submission) = submission {
-                let (rows, allocated_ids) = generated_ids.into_submission_parts();
-                submission.acknowledge_with_allocated_ids(rows, allocated_ids)?;
+                let (rows, allocated_ids, dynamic_rows) = generated_ids.into_submission_parts();
+                submission.acknowledge_with_readbacks(rows, allocated_ids, dynamic_rows)?;
                 return Ok((entity, None));
             }
             return Ok((entity, Some(root)));

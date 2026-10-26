@@ -548,7 +548,9 @@ fn pending_or_unknown_composition_is_explicitly_rejected_without_losing_detached
 
 #[test]
 fn dynamic_intent_definition_and_originals_restore_without_overwriting_late_mutations() {
-    use teaql_core::dynamic_fields::{DynamicFieldDefinitions, DynamicFieldMutation};
+    use teaql_core::dynamic_fields::{
+        DynamicFieldDefinitions, DynamicFieldMutation, DynamicFieldValues,
+    };
     for committed in [false, true] {
         let root = EntityRuntimeState::default();
         let definitions = DynamicFieldDefinitions::new(
@@ -584,7 +586,20 @@ fn dynamic_intent_definition_and_originals_restore_without_overwriting_late_muta
                 Some(Value::from("submitted")),
             )
         });
-        batch.acknowledge([]).unwrap();
+        batch
+            .acknowledge_with_readbacks(
+                [],
+                [],
+                [(
+                    key(42),
+                    DynamicFieldValues::from_values(
+                        definitions.clone(),
+                        HashMap::from([("note".into(), Value::from("submitted"))]),
+                    )
+                    .unwrap(),
+                )],
+            )
+            .unwrap();
         if committed {
             owner.prepare_commit().unwrap();
             owner.committed().unwrap();
@@ -602,6 +617,202 @@ fn dynamic_intent_definition_and_originals_restore_without_overwriting_late_muta
             Some(Value::from(if committed { "submitted" } else { "before" }))
         );
     }
+}
+
+#[test]
+fn authoritative_dynamic_readback_supplies_next_flush_and_rollback_restores_original_intent() {
+    use teaql_core::dynamic_fields::{
+        DynamicFieldDefinitions, DynamicFieldMutation, DynamicFieldValues,
+    };
+    for committed in [false, true] {
+        let root = EntityRuntimeState::default();
+        let definitions = DynamicFieldDefinitions::new(
+            "Order",
+            "extension-v1",
+            [
+                ("note".into(), teaql_core::DataType::Text),
+                ("tag".into(), teaql_core::DataType::Text),
+            ],
+        )
+        .unwrap();
+        root.write_context(|ledger| {
+            ledger.change_sets.current_mut().set_dynamic(
+                key(42),
+                "note".into(),
+                DynamicFieldMutation::Set(Value::from("submitted")),
+                definitions.clone(),
+                Some(Value::from("before")),
+            )
+        });
+        let mut owner = SqlResourceIdentity::new().begin();
+        let identity = owner.identity();
+        root.begin_submission(&identity)
+            .unwrap()
+            .acknowledge_with_readbacks(
+                [],
+                [],
+                [(
+                    key(42),
+                    DynamicFieldValues::from_values(
+                        definitions.clone(),
+                        HashMap::from([
+                            ("note".into(), Value::from("canonical")),
+                            ("tag".into(), Value::from("unchanged")),
+                        ]),
+                    )
+                    .unwrap(),
+                )],
+            )
+            .unwrap();
+        assert_eq!(
+            root.submitted_dynamic_original_for(&key(42), "note"),
+            Some(Some(Value::from("canonical")))
+        );
+        assert_eq!(
+            root.submitted_dynamic_original_for(&key(42), "tag"),
+            Some(Some(Value::from("unchanged")))
+        );
+
+        root.write_context(|ledger| {
+            ledger.change_sets.current_mut().set_dynamic(
+                key(42),
+                "note".into(),
+                DynamicFieldMutation::Set(Value::from("late")),
+                definitions.clone(),
+                Some(Value::from("submitted")),
+            )
+        });
+        let next = root.begin_submission(&identity).unwrap();
+        assert_eq!(
+            next.execution_state()
+                .submitted_dynamic_original_for(&key(42), "note"),
+            Some(Some(Value::from("canonical")))
+        );
+        assert_eq!(
+            next.execution_state()
+                .current_change_set()
+                .dynamic_originals(&key(42))
+                .unwrap()["note"],
+            Some(Value::from("submitted")),
+            "retryable intent keeps the pretransaction view separate"
+        );
+        next.acknowledge_with_readbacks(
+            [],
+            [],
+            [(
+                key(42),
+                DynamicFieldValues::from_values(
+                    definitions.clone(),
+                    HashMap::from([("note".into(), Value::from("final"))]),
+                )
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            root.submitted_dynamic_original_for(&key(42), "tag"),
+            Some(Some(Value::from("unchanged"))),
+            "a partial second readback preserves unrelated canonical fields"
+        );
+        if committed {
+            owner.prepare_commit().unwrap();
+            owner.committed().unwrap();
+            assert_eq!(
+                root.submitted_dynamic_original_for(&key(42), "note"),
+                Some(Some(Value::from("final")))
+            );
+            assert!(!root.has_pending_dynamic_mutations());
+        } else {
+            owner.rolled_back().unwrap();
+            assert_eq!(root.submitted_dynamic_original_for(&key(42), "note"), None);
+            let pending = root.current_change_set();
+            assert_eq!(
+                pending.dynamic_changes().unwrap()[&key(42)]["note"],
+                DynamicFieldMutation::Set(Value::from("late"))
+            );
+            assert_eq!(
+                pending.dynamic_originals(&key(42)).unwrap()["note"],
+                Some(Value::from("before"))
+            );
+        }
+    }
+}
+
+#[test]
+fn missing_or_deleted_dynamic_readback_cannot_be_mistaken_for_a_value() {
+    use teaql_core::dynamic_fields::{
+        DynamicFieldDefinitions, DynamicFieldMutation, DynamicFieldValues,
+    };
+    let definitions = DynamicFieldDefinitions::new(
+        "Order",
+        "extension-v1",
+        [("note".into(), teaql_core::DataType::Text)],
+    )
+    .unwrap();
+    let root = EntityRuntimeState::default();
+    root.write_context(|ledger| {
+        ledger.change_sets.current_mut().set_dynamic(
+            key(42),
+            "note".into(),
+            DynamicFieldMutation::Delete,
+            definitions.clone(),
+            Some(Value::from("before")),
+        )
+    });
+    let mut owner = SqlResourceIdentity::new().begin();
+    assert!(
+        root.begin_submission(&owner.identity())
+            .unwrap()
+            .acknowledge([])
+            .is_err()
+    );
+    assert!(owner.prepare_commit().is_err());
+    owner.rolled_back().unwrap();
+
+    let mut retry = SqlResourceIdentity::new().begin();
+    root.begin_submission(&retry.identity())
+        .unwrap()
+        .acknowledge_with_readbacks(
+            [],
+            [],
+            [(
+                key(42),
+                DynamicFieldValues::from_values(definitions.clone(), HashMap::new()).unwrap(),
+            )],
+        )
+        .unwrap();
+    assert_eq!(
+        root.submitted_dynamic_original_for(&key(42), "note"),
+        Some(None)
+    );
+    retry.prepare_commit().unwrap();
+    retry.committed().unwrap();
+
+    root.write_context(|ledger| {
+        ledger.change_sets.current_mut().set_dynamic(
+            key(42),
+            "note".into(),
+            DynamicFieldMutation::Set(Value::from("new")),
+            definitions.clone(),
+            None,
+        )
+    });
+    let mut missing_set = SqlResourceIdentity::new().begin();
+    assert!(
+        root.begin_submission(&missing_set.identity())
+            .unwrap()
+            .acknowledge_with_readbacks(
+                [],
+                [],
+                [(
+                    key(42),
+                    DynamicFieldValues::from_values(definitions, HashMap::new()).unwrap(),
+                )],
+            )
+            .is_err()
+    );
+    assert!(missing_set.prepare_commit().is_err());
+    missing_set.rolled_back().unwrap();
 }
 
 #[test]
@@ -683,21 +894,47 @@ fn dropping_all_entity_views_does_not_erase_a_veto_and_terminal_drain_releases_t
 
 #[test]
 fn failed_state_restoration_keeps_the_ledger_fenced_after_acknowledged_rollback() {
-    use teaql_core::dynamic_fields::DynamicFieldMutation;
+    use teaql_core::dynamic_fields::{
+        DynamicFieldDefinitions, DynamicFieldMutation, DynamicFieldValues,
+    };
     let root = EntityRuntimeState::default();
-    // Internal fault: public typed mutation APIs always install this provenance.
+    let definitions = DynamicFieldDefinitions::new(
+        "Order",
+        "extension-v1",
+        [("note".into(), teaql_core::DataType::Text)],
+    )
+    .unwrap();
     root.write_context(|ledger| {
-        ledger.change_sets.current_mut().dynamic_changes = Some(Box::new(BTreeMap::from([(
+        ledger.change_sets.current_mut().set_dynamic(
             key(42),
-            BTreeMap::from([("note".into(), DynamicFieldMutation::Delete)]),
-        )])));
+            "note".into(),
+            DynamicFieldMutation::Delete,
+            definitions.clone(),
+            Some(Value::from("before")),
+        );
     });
     let owner = SqlResourceIdentity::new().begin();
     let identity = owner.identity();
     root.begin_submission(&identity)
         .unwrap()
-        .acknowledge([])
+        .acknowledge_with_readbacks(
+            [],
+            [],
+            [(
+                key(42),
+                DynamicFieldValues::from_values(definitions, HashMap::new()).unwrap(),
+            )],
+        )
         .unwrap();
+    // Corrupt only the detached attempted frame after valid acknowledgement;
+    // rollback must fence the live ledger if its restore cannot finish.
+    root.write_context(|ledger| {
+        ledger.pending.as_mut().unwrap().batches[0]
+            .intent
+            .change_sets
+            .current_mut()
+            .dynamic_metadata = None;
+    });
     assert_eq!(
         owner.rolled_back(),
         Err(InfrastructureSqlError::CompletionFailed)

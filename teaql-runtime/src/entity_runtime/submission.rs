@@ -15,6 +15,13 @@ pub(super) struct SubmittedRows {
     /// ledger key remains stable for rollback and late edits.
     aliases: BTreeMap<EntityKey, EntityKey>,
     pub(super) persisted_ids: BTreeMap<EntityKey, Value>,
+    dynamic: BTreeMap<EntityKey, SubmittedDynamicRow>,
+}
+#[derive(Clone, Debug, Default)]
+struct SubmittedDynamicRow {
+    // Keep each independently read field across partial later readbacks. A
+    // deleted field is known with None, distinct from an unobserved code.
+    values: BTreeMap<String, Option<Value>>,
 }
 #[derive(Clone, Debug)]
 enum RowOrigin {
@@ -274,9 +281,24 @@ impl LedgerSubmission {
     /// old and returned entity handles then address the same submitted row.
     #[doc(hidden)]
     pub fn acknowledge_with_allocated_ids(
+        self,
+        rows: impl IntoIterator<Item = (EntityKey, EntitySnapshot)>,
+        allocated_ids: impl IntoIterator<Item = (EntityKey, Value)>,
+    ) -> Result<(), crate::RuntimeError> {
+        self.acknowledge_with_readbacks(rows, allocated_ids, std::iter::empty())
+    }
+
+    /// Acknowledge authoritative extension values together with canonical
+    /// rows. The extension payload is required for every executed dynamic
+    /// write, including a delete whose readback no longer contains the code.
+    #[doc(hidden)]
+    pub fn acknowledge_with_readbacks(
         mut self,
         rows: impl IntoIterator<Item = (EntityKey, EntitySnapshot)>,
         allocated_ids: impl IntoIterator<Item = (EntityKey, Value)>,
+        dynamic_rows: impl IntoIterator<
+            Item = (EntityKey, teaql_core::dynamic_fields::DynamicFieldValues),
+        >,
     ) -> Result<(), crate::RuntimeError> {
         let mut readbacks = BTreeMap::new();
         for (key, row) in rows {
@@ -290,6 +312,12 @@ impl LedgerSubmission {
                 return Err(unavailable());
             }
         }
+        let mut dynamic = BTreeMap::new();
+        for (key, values) in dynamic_rows {
+            if dynamic.insert(key, values).is_some() {
+                return Err(unavailable());
+            }
+        }
         let mut ledger = self.root.lock().unwrap_or_else(|error| error.into_inner());
         let pending = ledger.pending.as_ref().ok_or_else(unavailable)?;
         if pending.owner != self.owner
@@ -297,6 +325,63 @@ impl LedgerSubmission {
             || self.owner.outcome() != PhysicalTransactionOutcome::Active
         {
             return Err(unavailable());
+        }
+        let intent = &pending.batches[self.batch].intent;
+        let change_set = intent.change_sets.current().ok_or_else(unavailable)?;
+        let expected_dynamic = change_set
+            .dynamic_changes()
+            .into_iter()
+            .flat_map(|changes| changes.keys())
+            .filter(|key| !intent.deleted_keys.contains(*key))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if dynamic.keys().cloned().collect::<BTreeSet<_>>() != expected_dynamic {
+            return Err(unavailable());
+        }
+        let mut submitted_dynamic = BTreeMap::new();
+        for (key, values) in dynamic {
+            let changes = change_set
+                .dynamic_changes()
+                .and_then(|changes| changes.get(&key))
+                .ok_or_else(unavailable)?;
+            let definitions = change_set
+                .dynamic_definitions(&key)
+                .ok_or_else(unavailable)?;
+            let returned_definitions = values.definitions();
+            if definitions.owner_type() != returned_definitions.owner_type()
+                || definitions.revision() != returned_definitions.revision()
+                || definitions.fields() != returned_definitions.fields()
+            {
+                return Err(unavailable());
+            }
+            for (code, mutation) in changes {
+                let found = values.values().contains_key(code);
+                if matches!(
+                    mutation,
+                    teaql_core::dynamic_fields::DynamicFieldMutation::Set(_)
+                ) != found
+                {
+                    return Err(unavailable());
+                }
+            }
+            let mut known_codes = values
+                .selected_codes()
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            known_codes.extend(changes.keys().cloned());
+            submitted_dynamic.insert(
+                key,
+                SubmittedDynamicRow {
+                    values: known_codes
+                        .into_iter()
+                        .map(|code| {
+                            let value = values.values().get(&code).cloned();
+                            (code, value)
+                        })
+                        .collect(),
+                },
+            );
         }
         let mut canonical_owners = BTreeMap::new();
         for (key, row) in &readbacks {
@@ -348,8 +433,31 @@ impl LedgerSubmission {
                 .insert(key.clone(), RowOrigin::Existing(version));
             rows.rows.insert(key, row);
         }
+        if !submitted_dynamic.is_empty() {
+            let rows = ledger.submitted_rows.get_or_insert_with(Default::default);
+            for (key, row) in submitted_dynamic {
+                rows.dynamic
+                    .entry(key)
+                    .or_default()
+                    .values
+                    .extend(row.values);
+            }
+        }
         self.acknowledged = true;
         Ok(())
+    }
+}
+impl EntityRuntimeState {
+    pub(crate) fn submitted_dynamic_original_for(
+        &self,
+        key: &EntityKey,
+        code: &str,
+    ) -> Option<Option<Value>> {
+        self.read_context(None, |ledger| {
+            let key = ledger.original_key(key);
+            let row = ledger.submitted_rows.as_ref()?.dynamic.get(&key)?;
+            row.values.get(code).cloned()
+        })
     }
 }
 fn pending_alias_id<'a>(ledger: &'a EntityMutationLedger, key: &EntityKey) -> Option<&'a Value> {
