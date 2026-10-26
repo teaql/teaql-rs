@@ -350,6 +350,145 @@ async fn outer_native_owner_commits_or_rolls_back_blob_binding_with_ledger() {
 }
 
 #[tokio::test]
+async fn native_ledger_explicit_two_row_delete_rolls_back_whole_binding_batch_then_retries() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let f = Fixture::new(true).await;
+    let descriptor = modeled_descriptor();
+    let policies = Arc::new(BlobPolicies::default());
+    let policy = policies
+        .resolve(
+            descriptor
+                .property_by_name("document")
+                .unwrap()
+                .blob_field_spec
+                .as_ref()
+                .unwrap(),
+        )
+        .unwrap();
+    let first_target = f.target(42, "document");
+    let second_target = f.target(43, "document");
+    let first = f
+        .upload("cascade_first", first_target.clone(), policy.clone(), 0)
+        .await;
+    let second = f
+        .upload("cascade_second", second_target.clone(), policy.clone(), 0)
+        .await;
+    f.bind(
+        first_target.clone(),
+        None,
+        Some(first.clone()),
+        policy.clone(),
+        100,
+    )
+    .await;
+    f.bind(
+        second_target.clone(),
+        None,
+        Some(second.clone()),
+        policy,
+        100,
+    )
+    .await;
+    let loaded = SavedAsset::from_compact_row(row(f.root.as_ref()).await).unwrap();
+    let root = loaded.entity_runtime_state().unwrap();
+    let second_key = EntityKey::new_static("Asset", 43_u64);
+    root.set_original_version(second_key.clone(), 1);
+    root.mark_as_delete(key());
+    root.mark_as_delete(second_key.clone());
+    let allowed = Arc::new(AtomicBool::new(false));
+    let mut context =
+        UserContext::new().with_metadata(InMemoryMetadataStore::new().with_entity(descriptor));
+    context.insert_resource(BindPrincipal(allowed.clone()));
+    context.insert_resource(BlobMutationParticipantResource(Arc::new(
+        BlobMutationParticipant::new(
+            f.catalog.clone(),
+            policies,
+            Arc::new(BindAuthorization),
+            Arc::new(BindClock),
+        ),
+    )));
+    context.register_executor(f.business());
+    let denied = Audited::new(loaded.clone(), "deny complete two-row Blob delete")
+        .save(&context)
+        .await;
+    assert!(denied.is_err());
+    assert_eq!(
+        super::support::scalar(
+            f.root.as_ref(),
+            "SELECT sum(version)::bigint AS value FROM r5_assets"
+        )
+        .await,
+        2
+    );
+    assert_eq!(
+        f.catalog
+            .binding(&f.scope(), &first_target)
+            .await
+            .unwrap()
+            .unwrap()
+            .reference,
+        Some(first.clone())
+    );
+    assert_eq!(
+        f.catalog
+            .binding(&f.scope(), &second_target)
+            .await
+            .unwrap()
+            .unwrap()
+            .reference,
+        Some(second.clone())
+    );
+    assert!(root.is_marked_as_delete(&key()));
+    assert!(root.is_marked_as_delete(&second_key));
+
+    allowed.store(true, Ordering::SeqCst);
+    let saved = Audited::new(loaded, "approve complete two-row Blob delete")
+        .save(&context)
+        .await
+        .unwrap();
+    assert_eq!(saved.version, -2);
+    assert_eq!(
+        super::support::scalar(
+            f.root.as_ref(),
+            "SELECT sum(version)::bigint AS value FROM r5_assets"
+        )
+        .await,
+        -4
+    );
+    for (target, reference) in [(first_target, first), (second_target, second)] {
+        assert_eq!(
+            f.catalog
+                .binding(&f.scope(), &target)
+                .await
+                .unwrap()
+                .unwrap()
+                .reference,
+            None
+        );
+        assert!(
+            f.catalog
+                .find(&f.scope(), &reference)
+                .await
+                .unwrap()
+                .unwrap()
+                .unreferenced_at()
+                .is_some()
+        );
+    }
+    assert_eq!(
+        super::support::scalar(
+            f.root.as_ref(),
+            "SELECT CASE WHEN count(DISTINCT xmin::text)=1 THEN 1 ELSE 0 END AS value FROM r5_assets"
+        )
+        .await,
+        1
+    );
+    println!("R5_RUST_NATIVE_LEDGER_EXPLICIT_CASCADE_PASS");
+    f.finish().await;
+}
+
+#[tokio::test]
 async fn raw_native_owner_blob_failure_vetoes_commit_even_when_caller_handles_error() {
     use teaql_data_service::{Transaction, TransactionExecutor};
 
