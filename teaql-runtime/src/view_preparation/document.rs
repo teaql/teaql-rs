@@ -7,7 +7,8 @@ use crate::document_round_trip::ContextBoundDocumentServiceResource;
 use crate::round_trip_reference::ContextBoundReferenceRuntimeResource;
 use crate::{
     ContextBoundDocumentService, ContextualDocument, DocumentAcceptRequest, DocumentOpenRequest,
-    RoundTripReferenceProvider, TrustedReferencePrincipal, UserContext, VerifiedDocumentSnapshot,
+    RoundTripReferenceProvider, TrustedReferencePrincipal, UserContext,
+    VerifiedBoundDocumentSnapshot, VerifiedDocumentSnapshot,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -31,8 +32,8 @@ impl DocumentView {
     ) -> Result<DocumentViewProjection, ViewErrorCode> {
         let document_context = DocumentContext {
             principal: self.validation.principal.clone(),
-            scope: self.validation.verified.snapshot.scope.clone(),
-            expires_at: self.validation.verified.expires_at,
+            scope: self.validation.verified.scope().clone(),
+            expires_at: self.validation.verified.expires_at(),
         };
         self.validation.validate(context, &document_context).await?;
         let graph: AuthorizedResponseGraph =
@@ -88,8 +89,36 @@ struct ExistingDocumentValidation {
     service: Arc<dyn ContextBoundDocumentService>,
     provider: Arc<dyn RoundTripReferenceProvider>,
     principal: TrustedReferencePrincipal,
-    verified: VerifiedDocumentSnapshot,
+    verified: VerifiedDocumentAuthority,
     token: String,
+}
+
+enum VerifiedDocumentAuthority {
+    Plain(VerifiedDocumentSnapshot),
+    Bound(VerifiedBoundDocumentSnapshot),
+}
+
+impl VerifiedDocumentAuthority {
+    fn scope(&self) -> &crate::ReferenceDocumentScope {
+        match self {
+            Self::Plain(value) => &value.snapshot.scope,
+            Self::Bound(value) => &value.document.snapshot.scope,
+        }
+    }
+
+    fn business_id(&self) -> &str {
+        match self {
+            Self::Plain(value) => &value.snapshot.business_id,
+            Self::Bound(value) => &value.document.snapshot.business_id,
+        }
+    }
+
+    fn expires_at(&self) -> chrono::DateTime<chrono::Utc> {
+        match self {
+            Self::Plain(value) => value.expires_at,
+            Self::Bound(value) => value.expires_at,
+        }
+    }
 }
 #[async_trait]
 impl CurrentDocumentViewValidation for ExistingDocumentValidation {
@@ -111,30 +140,42 @@ impl CurrentDocumentViewValidation for ExistingDocumentValidation {
                 .map_err(|_| ViewErrorCode::AccessDenied)?
                 != &self.principal
             || document.principal != self.principal
-            || document.scope != self.verified.snapshot.scope
-            || document.expires_at != self.verified.expires_at
+            || document.scope != *self.verified.scope()
+            || document.expires_at != self.verified.expires_at()
         {
             return Err(ViewErrorCode::AccessDenied);
         }
-        let verified = context
-            .consume_document_snapshot(
-                &self.token,
-                &document.scope.aggregate_type,
-                &document.scope.purpose,
-            )
-            .map_err(document_code)?;
-        if verified != self.verified {
-            return Err(ViewErrorCode::AccessDenied);
+        let verified = consume_authority(
+            context,
+            &self.token,
+            &document.scope.aggregate_type,
+            &document.scope.purpose,
+        )
+        .map_err(document_code)?;
+        match (&self.verified, verified) {
+            (
+                VerifiedDocumentAuthority::Plain(expected),
+                VerifiedDocumentAuthority::Plain(current),
+            ) if expected == &current => self
+                .service
+                .validate_prepared_document(context, &self.principal, &current)
+                .await
+                .map_err(document_code),
+            (
+                VerifiedDocumentAuthority::Bound(expected),
+                VerifiedDocumentAuthority::Bound(current),
+            ) if expected == &current => self
+                .service
+                .validate_prepared_bound_document(context, &self.principal, &current)
+                .await
+                .map_err(document_code),
+            _ => Err(ViewErrorCode::AccessDenied),
         }
-        self.service
-            .validate_prepared_document(context, &self.principal, &verified)
-            .await
-            .map_err(document_code)
     }
 }
 
 impl UserContext {
-    /// Calls the existing application service exactly once, then adopts its outbound tqd1.
+    /// Calls the application service exactly once, then adopts its outbound tqd1 or tqd2.
     pub async fn open_document_for_view(
         &self,
         request: DocumentOpenRequest,
@@ -198,10 +239,9 @@ impl UserContext {
         purpose: &str,
         completion: BusinessCompletion,
     ) -> Result<DocumentView, ViewErrorCode> {
-        let verified = self
-            .consume_document_snapshot(&document.document_token, aggregate, purpose)
+        let verified = consume_authority(self, &document.document_token, aggregate, purpose)
             .map_err(document_code)?;
-        if verified.snapshot.business_id != document.business_id {
+        if verified.business_id() != document.business_id {
             return Err(ViewErrorCode::AccessDenied);
         }
         let principal = self
@@ -213,10 +253,16 @@ impl UserContext {
             .ok_or(ViewErrorCode::CapabilityMissing)?
             .0
             .clone();
-        service
-            .validate_prepared_document(self, &principal, &verified)
-            .await
-            .map_err(document_code)?;
+        match &verified {
+            VerifiedDocumentAuthority::Plain(value) => service
+                .validate_prepared_document(self, &principal, value)
+                .await
+                .map_err(document_code)?,
+            VerifiedDocumentAuthority::Bound(value) => service
+                .validate_prepared_bound_document(self, &principal, value)
+                .await
+                .map_err(document_code)?,
+        }
         let provider = self
             .get_resource::<ContextBoundReferenceRuntimeResource>()
             .ok_or(ViewErrorCode::CapabilityMissing)?
@@ -233,6 +279,22 @@ impl UserContext {
             document,
             completion,
         })
+    }
+}
+fn consume_authority(
+    context: &UserContext,
+    token: &str,
+    aggregate: &str,
+    purpose: &str,
+) -> Result<VerifiedDocumentAuthority, crate::DocumentRoundTripError> {
+    if token.starts_with("tqd2.") {
+        context
+            .consume_bound_document_snapshot(token, aggregate, purpose)
+            .map(VerifiedDocumentAuthority::Bound)
+    } else {
+        context
+            .consume_document_snapshot(token, aggregate, purpose)
+            .map(VerifiedDocumentAuthority::Plain)
     }
 }
 fn failure(code: ViewErrorCode, business_completion: BusinessCompletion) -> ViewPreparationError {

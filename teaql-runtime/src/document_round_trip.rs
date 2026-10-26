@@ -603,6 +603,18 @@ pub trait ContextBoundDocumentService: Send + Sync {
         Err(DocumentRoundTripError::configuration())
     }
 
+    /// Current application authority for an outbound tqd2 Blob-bound document.
+    /// Opt in explicitly; the default refuses to present a Blob-bound snapshot.
+    /// The implementation must not save, reload the business graph or issue a token.
+    async fn validate_prepared_bound_document(
+        &self,
+        _context: &UserContext,
+        _principal: &TrustedReferencePrincipal,
+        _document: &VerifiedBoundDocumentSnapshot,
+    ) -> Result<(), DocumentRoundTripError> {
+        Err(DocumentRoundTripError::configuration())
+    }
+
     async fn open_document(
         &self,
         context: &UserContext,

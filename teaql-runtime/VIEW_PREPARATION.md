@@ -37,7 +37,7 @@ references while preserving the frozen entity/field/list/Blob surface. Blob
 contributors see only visible targets; complete URLs and actual expiry are
 validated and preserved.
 
-## Existing tqd1 services
+## Existing tqd1 services and Blob-bound tqd2 documents
 
 An existing `ContextBoundDocumentService` retains its open/accept behavior and
 tqr1/tqd1 protocols. It opts in with `supports_view_preparation` and implements
@@ -65,6 +65,18 @@ Reuse reconsumes the existing token and rechecks current application authority,
 principal, scope and deadline without issuing it again. Registered service and
 provider identities must still match. DocumentContext is server-only; renderers
 serialize the body and explicit credentials, never this context or its snapshot.
+
+An application service may now return `tqd2` from the same open/accept boundary.
+The view adapter identifies that prefix explicitly, consumes the bound snapshot
+through the current reference provider, checks Business ID, and calls the
+service's separate `validate_prepared_bound_document`. That callback defaults
+to a configuration failure. An opting-in application must check its current
+document, field and Blob authority without reloading the graph, saving or
+issuing a second token. Preparation and reuse reconsume the same `tqd2` and
+repeat the callback; the private view retains the authenticated binding facts
+without copying stable Blob Keys into presentation JSON. The `tqd1` path and
+its existing callback remain unchanged. This adapter does not resolve file
+selections or replace Blob fields in the business transaction.
 
 ## Reuse, cache and transactions
 
@@ -101,4 +113,7 @@ The Blob contributor is an SPI here. Rust Blob storage, binding, full graph
 snapshots, actual HTTP and the two-module combination belong to R5. Java governed
 documents, selection/binding extensions, generated native adapters, framework
 adapters, external-machine reads and registry/release gates remain separate.
-No tqd2/tqs1 credential is introduced.
+The `tqd2/tqs1` wire protocols and view adoption are implemented separately;
+current Blob state/permission, selection acceptance in the same physical
+transaction, new client-key resolution and four-combination verification remain
+R5 work.
