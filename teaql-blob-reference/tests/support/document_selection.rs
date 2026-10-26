@@ -1,5 +1,7 @@
 //! tqd2/tqs1 selection acceptance on the same real PostgreSQL owner as business DML.
 use super::*;
+#[path = "document_service.rs"]
+mod document_service;
 use chrono::DateTime;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
