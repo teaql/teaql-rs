@@ -3880,6 +3880,7 @@ dependencies = [
  "teaql-blob-store-file",
  "teaql-core",
  "teaql-data-service",
+ "teaql-macros",
  "teaql-provider-postgres",
  "teaql-runtime",
  "teaql-sql",

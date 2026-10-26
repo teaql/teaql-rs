@@ -2806,6 +2806,59 @@ mod tests {
         );
     }
 
+    #[test]
+    fn unmanaged_native_save_hydration_preserves_repeated_outer_save_behavior() {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        executor.connection().lock().unwrap().execute_batch("CREATE TABLE transaction_school (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name TEXT NOT NULL)").unwrap();
+        let metadata =
+            InMemoryMetadataStore::new().with_entity(TransactionSchool::entity_descriptor());
+        let service = teaql_sql::SqlDataServiceExecutor::new(
+            SqliteDialect,
+            executor.clone(),
+            metadata.clone(),
+        );
+        let mut context = UserContext::new().with_metadata(metadata);
+        context.register_executor(service);
+        type Executor = teaql_sql::SqlDataServiceExecutor<
+            SqliteDialect,
+            SqliteMutationExecutor,
+            InMemoryMetadataStore,
+        >;
+        futures_executor::block_on(context.execute_in_transaction::<Executor, _, _>(|scope| {
+            Box::pin(async move {
+                let (first, original) = TransactionSchool::new(42, "first");
+                let mut saved = scope
+                    .save_audited(first.audit_as("create native save hydration fixture"))
+                    .await?;
+                assert_ne!(saved.__teaql_runtime_state(), &original);
+                assert!(!saved.__teaql_runtime_state().has_pending_submission());
+                saved.name = "second".into();
+                saved
+                    .__teaql_runtime_state()
+                    .set(saved.entity_key(), "name", "second");
+                let saved = scope
+                    .save_audited(saved.audit_as("update returned native save view"))
+                    .await?;
+                assert_eq!(saved.version, 2);
+                assert_eq!(saved.name, "second");
+                Ok(())
+            })
+        }))
+        .unwrap();
+        let row = executor
+            .connection()
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT version,name FROM transaction_school WHERE id=42",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (2, "second".into()));
+    }
+
     fn order_line_entity() -> EntityDescriptor {
         EntityDescriptor::new("OrderLine")
             .table_name("order_line")

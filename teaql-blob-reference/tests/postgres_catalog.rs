@@ -5,6 +5,9 @@ mod completion;
 #[path = "support/runtime_journal.rs"]
 mod runtime_journal;
 #[cfg(feature = "runtime-integration")]
+#[path = "support/saved_hydration.rs"]
+mod saved_hydration;
+#[cfg(feature = "runtime-integration")]
 #[path = "support/service.rs"]
 mod service;
 mod support;

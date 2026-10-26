@@ -10,6 +10,66 @@ use teaql_data_service::infrastructure_sql::{
 #[derive(Clone, Debug, Default)]
 pub(super) struct SubmittedRows {
     rows: BTreeMap<EntityKey, EntitySnapshot>,
+    origins: BTreeMap<EntityKey, RowOrigin>,
+}
+#[derive(Clone, Debug)]
+enum RowOrigin {
+    Existing(Option<i64>),
+    New,
+}
+impl SubmittedRows {
+    fn baseline(ledger: &EntityMutationLedger) -> Box<Self> {
+        let mut baseline = ledger.submitted_rows.clone().unwrap_or_default();
+        for (key, snapshot) in &ledger.original_snapshots {
+            let version = match snapshot {
+                OriginalSnapshot::Materialized(row) => row.get("version").and_then(Value::try_i64),
+                OriginalSnapshot::Compact(row) => row.get("version").and_then(Value::try_i64),
+            };
+            baseline
+                .origins
+                .entry(key.clone())
+                .or_insert(RowOrigin::Existing(version));
+        }
+        for (key, version) in ledger
+            .original_versions
+            .first
+            .iter()
+            .map(|(key, version)| (key, version))
+            .chain(ledger.original_versions.overflow.iter())
+        {
+            baseline
+                .origins
+                .entry(key.clone())
+                .or_insert(RowOrigin::Existing(Some(*version)));
+        }
+        for key in &ledger.new_keys {
+            baseline.rows.remove(key);
+            baseline.origins.insert(key.clone(), RowOrigin::New);
+        }
+        baseline
+    }
+    pub(super) fn version(&self, key: &EntityKey) -> Option<Option<i64>> {
+        self.origins.get(key).map(|origin| match origin {
+            RowOrigin::Existing(version) => *version,
+            RowOrigin::New => None,
+        })
+    }
+    pub(super) fn snapshot(
+        &self,
+        key: &EntityKey,
+        originals: &BTreeMap<EntityKey, OriginalSnapshot>,
+    ) -> Option<Option<EntitySnapshot>> {
+        if let Some(row) = self.rows.get(key) {
+            return Some(Some(row.clone()));
+        }
+        match self.origins.get(key)? {
+            RowOrigin::New => Some(None),
+            RowOrigin::Existing(_) => Some(originals.get(key).map(|row| match row {
+                OriginalSnapshot::Materialized(row) => row.clone(),
+                OriginalSnapshot::Compact(row) => EntitySnapshot::from(row.clone().into_map()),
+            })),
+        }
+    }
 }
 impl std::ops::Deref for SubmittedRows {
     type Target = BTreeMap<EntityKey, EntitySnapshot>;
@@ -81,13 +141,14 @@ impl LedgerSubmission {
         }
         pending.active = None;
         for (key, row) in rows {
-            if let Some(version) = row.get("version").and_then(Value::try_i64) {
+            let version = row.get("version").and_then(Value::try_i64);
+            if let Some(version) = version {
                 ledger.original_versions.insert(key.clone(), version);
             }
-            ledger
-                .submitted_rows
-                .get_or_insert_with(Default::default)
-                .insert(key, row);
+            let rows = ledger.submitted_rows.get_or_insert_with(Default::default);
+            rows.origins
+                .insert(key.clone(), RowOrigin::Existing(version));
+            rows.rows.insert(key, row);
         }
         self.acknowledged = true;
         Ok(())
@@ -196,7 +257,7 @@ impl EntityRuntimeState {
                 active: None,
                 failed: false,
                 initial_versions: ledger.original_versions.clone(),
-                initial_rows: ledger.submitted_rows.clone(),
+                initial_rows: Some(SubmittedRows::baseline(&ledger)),
             }));
         }
         ledger.change_sets.current_mut();

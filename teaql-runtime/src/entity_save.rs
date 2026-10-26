@@ -260,10 +260,14 @@ fn loaded_relation_fields<T: Entity>(entity: &T) -> Vec<String> {
 
 fn decode_saved_ledger_entity<T: Entity>(
     mut saved: GraphNode,
-    root: &crate::EntityRuntimeState,
+    context: &dyn std::any::Any,
     preserve_relations: bool,
     original_relation_fields: &[String],
 ) -> Result<T, RuntimeError> {
+    let binding = context.downcast_ref::<crate::SavedEntityContext>();
+    if binding.is_some_and(|binding| binding.preserves_relations() != preserve_relations) {
+        return Err(RuntimeError::Graph("SAVE_HYDRATION_CONTEXT_INVALID".into()));
+    }
     // An edge entry can be an unfetched identity-only placeholder. Only the
     // original entity's explicit load markers prove that detail was loaded.
     let restored_fields = (preserve_relations && !original_relation_fields.is_empty()).then(|| {
@@ -273,12 +277,8 @@ fn decode_saved_ledger_entity<T: Entity>(
     });
     let fields = saved.dynamic_fields.take();
     let row = teaql_core::CompactRow::from_map(saved.values.into());
-    let mut entity = if preserve_relations {
-        T::from_compact_row_with_context(row, root)
-    } else {
-        T::from_compact_row(row)
-    }
-    .map_err(|error| RuntimeError::Graph(error.to_string()))?;
+    let mut entity = T::from_compact_row_after_save(row, context, preserve_relations)
+        .map_err(|error| RuntimeError::Graph(error.to_string()))?;
     if let Some(fields) = restored_fields {
         // Authoritative scalar SQL does not repeat the relation columns. Keep
         // loaded markers only for the immutable edges intentionally retained.
@@ -293,6 +293,16 @@ fn decode_saved_ledger_entity<T: Entity>(
         entity
             .install_loaded_dynamic_fields(*fields, state)
             .map_err(|error| RuntimeError::Graph(error.to_string()))?;
+    }
+    if let Some(binding) = binding {
+        let state = entity
+            .__teaql_runtime_state_any()
+            .and_then(|state| state.downcast_ref::<crate::EntityRuntimeState>());
+        if !state.is_some_and(|state| binding.owns_ledger(state)) {
+            return Err(RuntimeError::Graph(
+                "SAVE_HYDRATION_BINDING_REQUIRED".into(),
+            ));
+        }
     }
     Ok(entity)
 }
@@ -2436,6 +2446,87 @@ mod tests {
     }
 
     struct DirtyFieldProbe(Arc<AtomicBool>);
+
+    #[derive(Debug, DeriveTeaqlEntity)]
+    #[teaql(entity = "PlainReadback", table = "plain_readback")]
+    struct PlainReadback {
+        #[teaql(id)]
+        id: u64,
+        #[teaql(version)]
+        version: i64,
+        code: String,
+    }
+
+    #[test]
+    fn native_saved_decoder_rejects_missing_binding_and_mismatched_context() {
+        let root = crate::EntityRuntimeState::default();
+        let context = crate::SavedEntityContext::new(&root, false);
+        let node = GraphNode::new("PlainReadback")
+            .value("id", 42_u64)
+            .value("version", 1_i64)
+            .value("code", "SQL");
+        let error = decode_saved_ledger_entity::<PlainReadback>(node.clone(), &context, false, &[])
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("SAVE_HYDRATION_BINDING_REQUIRED")
+        );
+        let error =
+            decode_saved_ledger_entity::<PlainReadback>(node, &context, true, &[]).unwrap_err();
+        assert!(error.to_string().contains("SAVE_HYDRATION_CONTEXT_INVALID"));
+    }
+
+    #[test]
+    fn native_saved_decoder_retains_the_actual_journal_and_pretransaction_baseline() {
+        use teaql_data_service::infrastructure_sql::SqlResourceIdentity;
+        let loaded =
+            DirtyTrackedOrder::from_compact_row(teaql_core::CompactRow::from_map(Record::from([
+                ("id".into(), Value::U64(42)),
+                ("version".into(), Value::I64(1)),
+                ("code".into(), Value::from("before")),
+            ])))
+            .unwrap();
+        let root = loaded.__teaql_runtime_state().clone();
+        let key = crate::EntityKey::new_static("DirtyTrackedOrder", 42_u64);
+        root.set(key.clone(), "code", "submitted");
+        let owner = SqlResourceIdentity::new().begin();
+        root.begin_submission(&owner.identity())
+            .unwrap()
+            .acknowledge([(
+                key.clone(),
+                teaql_core::EntitySnapshot::from(Record::from([
+                    ("id".into(), Value::U64(42)),
+                    ("version".into(), Value::I64(2)),
+                    ("code".into(), Value::from("submitted")),
+                ])),
+            )])
+            .unwrap();
+        root.set(key.clone(), "code", "late");
+        let node = GraphNode::new("DirtyTrackedOrder")
+            .value("id", 42_u64)
+            .value("version", 2_i64)
+            .value("code", "submitted");
+        let context = crate::SavedEntityContext::new(&root, false);
+        let saved =
+            decode_saved_ledger_entity::<DirtyTrackedOrder>(node, &context, false, &[]).unwrap();
+        assert_eq!(saved.__teaql_runtime_state(), &root);
+        assert!(saved.__teaql_runtime_state().has_pending_submission());
+        owner.rolled_back().unwrap();
+        assert_eq!(
+            saved.__teaql_runtime_state().get_original_version(&key),
+            Some(1)
+        );
+        assert_eq!(
+            saved
+                .__teaql_runtime_state()
+                .original_snapshot()
+                .unwrap()
+                .get("code"),
+            Some(&Value::from("before"))
+        );
+        assert_eq!(root.get(&key, "code"), Some(Value::from("late")));
+    }
 
     struct IntentGateNoIo;
     impl teaql_data_service::DataServiceExecutor for IntentGateNoIo {

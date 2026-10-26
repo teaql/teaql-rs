@@ -156,6 +156,23 @@ pub trait Entity: TeaqlEntity + Sized {
         Ok(entity)
     }
 
+    /// Framework hydration of an authoritative save readback. This does not
+    /// acknowledge COMMIT. Runtime-owned carriers can retain mutation ownership
+    /// while choosing whether the previous relation graph remains valid.
+    /// Manual carriers retain the existing hydration behavior by default.
+    #[doc(hidden)]
+    fn from_compact_row_after_save(
+        row: CompactRow,
+        context: &dyn std::any::Any,
+        preserve_relations: bool,
+    ) -> Result<Self, EntityError> {
+        if preserve_relations {
+            Self::from_compact_row_with_context(row, context)
+        } else {
+            Self::from_compact_row(row)
+        }
+    }
+
     fn into_values(self) -> MutationValues;
 
     /// Presentation bridge for macro-generated typed relation carriers.
@@ -268,6 +285,9 @@ pub trait Entity: TeaqlEntity + Sized {
         json
     }
 }
+
+#[cfg(test)]
+mod save_hydration_tests;
 
 /// A wrapper that carries a mandatory audit comment with an entity.
 /// Only `Audited<T>` has a `.save()` method — bare entities cannot be saved directly.

@@ -7,6 +7,8 @@ use teaql_core::{EntitySnapshot, MutationValues, SmartList, Value};
 
 mod submission;
 pub use submission::LedgerSubmission;
+mod hydration;
+pub use hydration::SavedEntityContext;
 
 /// The explicit load state of a relation stored in the runtime identity graph.
 ///
@@ -1509,10 +1511,13 @@ impl EntityRuntimeState {
                 .flatten();
             if let Some(values) = key.and_then(|key| {
                 self.read_context(None, |context| {
-                    context.submitted_rows.as_ref()?.get(&key).cloned()
+                    context
+                        .submitted_rows
+                        .as_ref()?
+                        .snapshot(&key, &context.original_snapshots)
                 })
             }) {
-                return Some(values);
+                return values;
             }
         }
         if let Some(snapshot) = self
@@ -1564,17 +1569,17 @@ impl EntityRuntimeState {
     }
 
     pub fn get_original_version(&self, key: &EntityKey) -> Option<i64> {
-        self.read_context(None, |context| {
-            context.original_versions.get(key).or_else(|| {
-                context
-                    .submitted_rows
-                    .as_ref()?
-                    .get(key)?
-                    .get("version")?
-                    .try_i64()
-            })
-        })
-        .or_else(|| {
+        let known = self.read_context(None, |context| {
+            context
+                .original_versions
+                .get(key)
+                .map(Some)
+                .or_else(|| context.submitted_rows.as_ref()?.version(key))
+        });
+        if let Some(version) = known {
+            return version;
+        }
+        {
             self.loaded_snapshot
                 .with(|snapshot| {
                     if snapshot.entity.as_ref() != key.entity.as_ref() {
@@ -1588,7 +1593,7 @@ impl EntityRuntimeState {
                     snapshot.row.get("version")?.try_i64()
                 })
                 .flatten()
-        })
+        }
     }
 
     pub fn get_trace_chain(&self, key: &EntityKey) -> Vec<teaql_core::TraceNode> {
@@ -1696,6 +1701,14 @@ impl EntityRuntimeState {
     }
 
     pub(crate) fn original_values_for(&self, key: &EntityKey) -> Option<EntitySnapshot> {
+        if let Some(row) = self.read_context(None, |context| {
+            context
+                .submitted_rows
+                .as_ref()?
+                .snapshot(key, &context.original_snapshots)
+        }) {
+            return row;
+        }
         self.read_context(None, |context| {
             if let Some(values) = context
                 .submitted_rows

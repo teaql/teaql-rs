@@ -23,6 +23,7 @@ serde_json.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+teaql-macros.workspace = true
 async-trait.workspace = true
 teaql-blob-store-file.workspace = true
 teaql-blob-content-native.workspace = true

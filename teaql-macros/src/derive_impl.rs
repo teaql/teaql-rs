@@ -206,10 +206,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             if field_name == "__teaql_runtime_state" || field_name == "root" {
                 runtime_state_field_ident = Some(field_ident.clone());
                 from_record_fields.push(quote! {
-                    #field_ident: load_context
-                        .and_then(|context| context.downcast_ref::<::teaql_runtime::EntityRuntimeState>())
-                        .map(::teaql_runtime::EntityRuntimeState::fresh_with_shared_graph)
-                        .unwrap_or_default()
+                    #field_ident: ::teaql_runtime::EntityRuntimeState::from_hydration_context(load_context)
                 });
                 continue;
             }
@@ -931,6 +928,18 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             ) -> Result<Self, ::teaql_core::EntityError> {
                 let load_context = Some(load_context);
                 #from_compact_body
+            }
+
+            fn from_compact_row_after_save(
+                record: ::teaql_core::CompactRow,
+                context: &dyn std::any::Any,
+                preserve_relations: bool,
+            ) -> Result<Self, ::teaql_core::EntityError> {
+                if context.is::<::teaql_runtime::SavedEntityContext>() || preserve_relations {
+                    Self::from_compact_row_with_context(record, context)
+                } else {
+                    Self::from_compact_row(record)
+                }
             }
         }
     });
