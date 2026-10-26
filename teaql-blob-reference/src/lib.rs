@@ -5,7 +5,7 @@ mod retention;
 mod store;
 mod verification;
 pub use catalog::{
-    BindingChange, BlobBinding, BlobCatalogRecord, BlobState, PostgresBlobCatalog,
+    BindingChange, BlobBinding, BlobCatalogRecord, BlobState, BlobUploadLease, PostgresBlobCatalog,
     PreparedBlobBindings, UploadDraft, VerifiedContent,
 };
 pub use policy::{

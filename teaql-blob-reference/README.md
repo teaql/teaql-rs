@@ -13,8 +13,8 @@ teaql-blob-store-file implements Linux file transport and a feature-gated HTTP
 gateway; it does not install a complete Blob capability or verify actual formats.
 The optional sibling teaql-blob-content-native now implements actual byte/format
 parsing behind BlobContentVerifier. VerifiedBlobContent is not deserializable client
-input. Its parser/anonymous-scratch budgets and remaining isolation boundary are
-documented separately; full SQL upload orchestration remains in progress.
+input. Its parser/anonymous-scratch budgets and optional pinned resource-contained worker
+are documented separately; full SQL upload orchestration remains in progress.
 
 Production dependencies are core/data-service contracts, Serde, SHA256, lightweight
 async/stream contracts and URL validation.
@@ -64,6 +64,36 @@ authorize the current host, enforce current hard limits, stream immutable conten
 and verify actual format/bytes. A client completion flag is insufficient. Current
 tests exercise trusted verified-content metadata, not physical upload/verifier
 implementation by this crate.
+
+`find_upload` is scope-qualified; `find_upload_request` compares the trusted canonical
+request digest before returning an old session. `lock_upload` returns an opaque,
+non-cloneable BlobUploadLease owning the actual physical transaction and row lock.
+It exposes only a read-only catalog record, not SQL or a mutable completion owner.
+Hold this lease across the actual store write/read and current-context authorization
+rechecks. Its async record_write/complete_verified methods consume it and return a
+new lease only on success; failure rolls back and cancellation drops the owned
+transaction/connection. A caller cannot catch a failed update and commit a retained
+handle. Commit and rollback consume the lease too; errors preserve known completion
+or UNKNOWN, never infer rollback from a missing COMMIT acknowledgement.
+
+record_write journals exact immutable location/version/size/SHA without setting MIME,
+completed_at or uploaded_unbound. Replays must match; conflicts cannot replace the
+original generation. Confirmation compares prior journaled version/size/hash before
+promotion. This remains a trusted low-level API: direct completion without an earlier
+journal is reserved for bytes actually verified by the orchestrator (for example a
+future direct-upload provider), not a client completion flag. Unverified partial or
+corrupt journal tuples fail closed instead of being repaired through completion.
+
+Owned upload transactions require PostgreSQL 14+ on a server supporting socket
+connection polling (tested here on Linux). validate_upload_ready checks existing schema, server version and setting
+availability read-only. Each lease sets client_connection_check_interval=100ms
+transaction-locally, so a cancelled query blocked on a lock can notice the closed
+client socket before the lock holder releases it. This neither changes global/session
+configuration nor imposes a statement timeout. Tests show the setting restores on
+commit/rollback and the same pooled backend can be reused. Kernel detection of a
+network partition still depends on deployment TCP keepalive/timeouts; this setting
+is not a fixed end-to-end cancellation deadline. No detached query-cancellation task
+or hardcoded TLS connector is created.
 
 Prepare-bindings consumes an already approved batch with final allocated IDs
 and a borrowed physical SQL handle. It checks resource/owner before I/O, locks

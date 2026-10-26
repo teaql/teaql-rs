@@ -17,6 +17,8 @@ use teaql_data_service::infrastructure_sql::{
 
 const MIGRATION: &str = include_str!("postgres-catalog-v1.sql");
 type Work<'a, T> = Pin<Box<dyn Future<Output = BlobResult<T>> + Send + 'a>>;
+mod upload;
+pub use upload::BlobUploadLease;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlobState {
     Initiated,
@@ -330,6 +332,21 @@ impl PostgresBlobCatalog {
     pub async fn validate_schema(&self) -> BlobResult<()> {
         self.validate_schema_on(self.root.as_ref()).await
     }
+    /// Read-only upload readiness; no transaction, setting change or provisioning.
+    pub async fn validate_upload_ready(&self) -> BlobResult<()> {
+        self.validate_schema().await?;
+        self.validate_upload_support_on(self.root.as_ref()).await
+    }
+    async fn validate_upload_support_on(&self, sql: &dyn InfrastructureSql) -> BlobResult<()> {
+        self.require_resource(sql)?;
+        let row=one(fetch(sql,"SELECT current_setting('server_version_num')::bigint AS version,current_setting('client_connection_check_interval',true) AS disconnect",vec![]).await?)?;
+        if integer(&row, "version")? < 140000
+            || !matches!(row.get("disconnect"), Some(Value::Text(_)))
+        {
+            return Err(Code::CapabilityMissing.into());
+        }
+        Ok(())
+    }
     async fn validate_schema_on(&self, sql: &dyn InfrastructureSql) -> BlobResult<()> {
         self.require_resource(sql)?;
         let result:BlobResult<()>=async {
@@ -379,6 +396,45 @@ impl PostgresBlobCatalog {
         }
         rows.pop().map(record).transpose()
     }
+    pub async fn find_upload(
+        &self,
+        scope: &BlobScope,
+        upload_id: &str,
+    ) -> BlobResult<Option<BlobCatalogRecord>> {
+        name(upload_id, 128)?;
+        self.validate_schema().await?;
+        let rows=fetch(self.root.as_ref(),"SELECT * FROM teaql_blob_object WHERE scope_realm=$1 AND scope_boundary=$2 AND upload_id=$3",vec![scope.realm().into(),scope.boundary().into(),upload_id.into()]).await?;
+        optional_record(rows)
+    }
+    /// Trusted canonical request digest; a mismatch never returns an old session.
+    pub async fn find_upload_request(
+        &self,
+        scope: &BlobScope,
+        request_key: &str,
+        request_digest: &str,
+    ) -> BlobResult<Option<BlobCatalogRecord>> {
+        name(request_key, 128)?;
+        digest(request_digest)?;
+        self.validate_schema().await?;
+        let rows=fetch(self.root.as_ref(),"SELECT * FROM teaql_blob_object WHERE scope_realm=$1 AND scope_boundary=$2 AND request_key=$3",vec![scope.realm().into(),scope.boundary().into(),request_key.into()]).await?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        let row = one(rows)?;
+        if text(&row, "request_digest")? != request_digest {
+            return Err(Code::IdempotencyConflict.into());
+        }
+        Ok(Some(record(row)?))
+    }
+    /// Own the physical row lock across storage I/O and current-context rechecks.
+    /// Dropping an unfinished lease drops the adapter's transaction/connection.
+    pub async fn lock_upload(
+        &self,
+        scope: &BlobScope,
+        reference: &BlobRef,
+    ) -> BlobResult<BlobUploadLease> {
+        BlobUploadLease::acquire(self.clone(), scope, reference).await
+    }
     /// Actual format/bytes verification is the upload service's responsibility, never a client completion flag.
     pub async fn complete_verified(
         &self,
@@ -388,20 +444,12 @@ impl PostgresBlobCatalog {
         now: i64,
     ) -> BlobResult<BlobCatalogRecord> {
         content.validate()?;
-        let catalog = self.clone();
-        let scope = scope.clone();
-        let reference = reference.clone();
-        self.transaction(move |sql|Box::pin(async move {
-            catalog.validate_schema_on(sql).await?;let blob=catalog.lock_blob(sql,&scope,&reference).await?;
-            if matches!(blob.state,BlobState::UploadedUnbound|BlobState::Available) {
-                if blob.actual_mime.as_deref()!=Some(&content.content_type) || blob.size_bytes!=Some(content.size_bytes) || blob.sha256.as_deref()!=Some(&content.sha256) || blob.content_version.as_deref()!=Some(&content.content_version) { return Err(Code::IdempotencyConflict.into()); } return Ok(blob);
-            }
-            if blob.state!=BlobState::Initiated || now>=blob.upload_expires_at { return Err(Code::UploadExpired.into()); }
-            if content_type(&blob.extension)!=Some(content.content_type.as_str()) { return Err(Code::FormatNotAllowed.into()); }
-            if content.size_bytes>blob.policy.max_size || content.size_bytes==0 && !blob.policy.allow_empty { return Err(Code::SizeExceeded.into()); }
-            execute(sql,"UPDATE teaql_blob_object SET state='uploaded_unbound',actual_mime=$1,size_bytes=$2,sha256=$3,content_version=$4,completed_at=$5 WHERE blob_key=$6",vec![content.content_type.into(),signed(content.size_bytes)?,content.sha256.into(),content.content_version.into(),now.into(),reference.as_str().into()]).await?;
-            catalog.lock_blob(sql,&scope,&reference).await
-        })).await
+        self.lock_upload(scope, reference)
+            .await?
+            .complete_verified(content, now)
+            .await?
+            .commit()
+            .await
     }
     pub async fn binding(
         &self,
@@ -757,6 +805,12 @@ fn one(mut rows: Vec<CompactRow>) -> BlobResult<CompactRow> {
         rows.pop().ok_or_else(|| Code::CatalogFailed.into())
     }
 }
+fn optional_record(mut rows: Vec<CompactRow>) -> BlobResult<Option<BlobCatalogRecord>> {
+    if rows.len() > 1 {
+        return Err(Code::CatalogFailed.into());
+    }
+    rows.pop().map(record).transpose()
+}
 fn text<'a>(row: &'a CompactRow, name: &str) -> BlobResult<&'a str> {
     match row.get(name) {
         Some(Value::Text(value)) => Ok(value),
@@ -864,6 +918,25 @@ fn record(row: CompactRow) -> BlobResult<BlobCatalogRecord> {
         blob.state,
         BlobState::UploadedUnbound | BlobState::Available
     ) || blob.completed_at.is_some();
+    if !verified {
+        let written =
+            blob.size_bytes.is_some() || blob.sha256.is_some() || blob.content_version.is_some();
+        if blob.actual_mime.is_some()
+            || written
+                && (blob.size_bytes.is_none_or(|size| {
+                    size > blob.policy.max_size || size == 0 && !blob.policy.allow_empty
+                }) || blob
+                    .sha256
+                    .as_deref()
+                    .is_none_or(|sha| digest(sha).is_err())
+                    || blob
+                        .content_version
+                        .as_deref()
+                        .is_none_or(|version| name(version, 1024).is_err()))
+        {
+            return Err(Code::CatalogFailed.into());
+        }
+    }
     if verified
         && (blob.completed_at.is_none()
             || blob.actual_mime.as_deref() != content_type(&blob.extension)

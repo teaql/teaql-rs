@@ -1,5 +1,7 @@
 #![cfg(feature = "live-postgres")]
 mod support;
+#[path = "support/upload.rs"]
+mod upload;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
