@@ -161,7 +161,8 @@ where
                 .get(&id_prop.name)
                 .cloned()
                 .unwrap_or(Value::I64(0));
-            let root_key = crate::EntityKey::new(entity.clone(), current_id);
+            let root_key =
+                root.original_key_for(&crate::EntityKey::new(entity.clone(), current_id));
             reject_cancelled_new_root(&root, &root_key)?;
             let policy_plan = crate::ledger_policy_plan(context, &node, &root);
             let governance = context.review_mutation_plan(&policy_plan)?;
@@ -180,7 +181,7 @@ where
                                 .map_err(RuntimeError::from)
                                 .map_err(DataServiceError::Runtime)?,
                         );
-                    let locations = ledger_object_locations(&node);
+                    let locations = ledger_object_locations_for(&root, &node);
                     let mut generated_ids = eds
                         .execute_ledger_plan_internal(root.clone(), &locations)
                         .await?;
@@ -563,7 +564,7 @@ mod transactional_ledger_readback_tests {
     };
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
-    use teaql_core::{DataType, EntityDescriptor, PropertyDescriptor, Value};
+    use teaql_core::{DataType, EntityDescriptor, PropertyDescriptor, RelationDescriptor, Value};
     use teaql_data_service::{
         DataServiceCapabilities, DataServiceExecutor, ExecutionMetadata, MutationExecutor,
         MutationRequest, MutationResult, QueryExecutor, QueryRequest, QueryResult, Transaction,
@@ -936,6 +937,152 @@ mod transactional_ledger_readback_tests {
         );
         assert_eq!(root.get_original_version(&root_key), Some(1));
         assert_eq!(root.get_original_version(&child_key), Some(1));
+    }
+
+    #[tokio::test]
+    async fn graph_flush_uses_persisted_id_for_a_returned_entity_alias() {
+        use teaql_data_service::infrastructure_sql::SqlResourceIdentity;
+        let state = Arc::new(Mutex::new(State {
+            row: BTreeMap::from([
+                ("id".to_owned(), Value::I64(42)),
+                ("version".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::Text("before".to_owned())),
+            ]),
+            ..Default::default()
+        }));
+        let descriptor = EntityDescriptor::new("Task")
+            .property(PropertyDescriptor::new("id", DataType::I64).id())
+            .property(PropertyDescriptor::new("version", DataType::I64).version())
+            .property(PropertyDescriptor::new("name", DataType::Text));
+        let context = UserContext::default()
+            .with_metadata(InMemoryMetadataStore::new().with_entity(descriptor));
+        let root = EntityRuntimeState::default();
+        let temporary = EntityKey::new_static("Task", 0_i64);
+        let returned = EntityKey::new_static("Task", 42_i64);
+        root.mark_as_new(temporary.clone());
+        root.set(temporary.clone(), "name", "before");
+        let mut first_owner = SqlResourceIdentity::new().begin();
+        root.begin_submission(&first_owner.identity())
+            .unwrap()
+            .acknowledge_with_allocated_ids(
+                [(
+                    temporary.clone(),
+                    teaql_core::EntitySnapshot::from(state.lock().unwrap().row.clone()),
+                )],
+                [(temporary.clone(), Value::I64(42))],
+            )
+            .unwrap();
+        first_owner.prepare_commit().unwrap();
+        first_owner.committed().unwrap();
+        root.set(returned.clone(), "name", "updated");
+        root.set_comment("update previously allocated Task");
+
+        let ambient = Ambient(state.clone());
+        let tx = TransactionExecutor::begin(&ambient).await.unwrap();
+        let service = crate::EntityDataService::for_executor(&context, "Task", &tx);
+        let outcome = service
+            .execute_ledger_plan_internal(root, &BTreeMap::new())
+            .await
+            .unwrap();
+        assert_eq!(outcome.generated_ids.len(), 0);
+        let readback = outcome.canonical_rows.get(&temporary).unwrap();
+        assert_eq!(readback.get("id"), Some(&Value::I64(42)));
+        assert_eq!(readback.get("version"), Some(&Value::I64(2)));
+        assert_eq!(readback.get("name"), Some(&Value::from("updated")));
+        {
+            let state_guard = state.lock().unwrap();
+            let calls = &state_guard.calls;
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|call| **call == "transaction-mutate")
+                    .count(),
+                1
+            );
+            assert!(!calls.contains(&"ambient-query"));
+        }
+        Transaction::rollback(tx).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn graph_flush_rebinds_child_foreign_key_from_a_previously_allocated_parent() {
+        use teaql_data_service::infrastructure_sql::SqlResourceIdentity;
+        let state = Arc::new(Mutex::new(State {
+            row: BTreeMap::from([
+                ("id".to_owned(), Value::I64(42)),
+                ("version".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::Text("parent".to_owned())),
+            ]),
+            child_row: Some(BTreeMap::from([
+                ("id".to_owned(), Value::I64(2)),
+                ("version".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::Text("child before".to_owned())),
+                ("task_id".to_owned(), Value::I64(42)),
+            ])),
+            ..Default::default()
+        }));
+        let task = EntityDescriptor::new("Task")
+            .property(PropertyDescriptor::new("id", DataType::I64).id())
+            .property(PropertyDescriptor::new("version", DataType::I64).version())
+            .property(PropertyDescriptor::new("name", DataType::Text))
+            .relation(
+                RelationDescriptor::new("children", "TaskChild")
+                    .local_key("id")
+                    .foreign_key("task_id")
+                    .many(),
+            );
+        let child = EntityDescriptor::new("TaskChild")
+            .property(PropertyDescriptor::new("id", DataType::I64).id())
+            .property(PropertyDescriptor::new("version", DataType::I64).version())
+            .property(PropertyDescriptor::new("name", DataType::Text))
+            .property(PropertyDescriptor::new("task_id", DataType::I64));
+        let context = UserContext::default().with_metadata(
+            InMemoryMetadataStore::new()
+                .with_entity(task)
+                .with_entity(child),
+        );
+        let root = EntityRuntimeState::default();
+        let parent_temporary = EntityKey::new_static("Task", 0_i64);
+        let child_key = EntityKey::new_static("TaskChild", 2_i64);
+        root.mark_as_new(parent_temporary.clone());
+        root.set(parent_temporary.clone(), "name", "parent");
+        let mut first_owner = SqlResourceIdentity::new().begin();
+        root.begin_submission(&first_owner.identity())
+            .unwrap()
+            .acknowledge_with_allocated_ids(
+                [(
+                    parent_temporary.clone(),
+                    teaql_core::EntitySnapshot::from(state.lock().unwrap().row.clone()),
+                )],
+                [(parent_temporary.clone(), Value::I64(42))],
+            )
+            .unwrap();
+        first_owner.prepare_commit().unwrap();
+        first_owner.committed().unwrap();
+        root.set_original_version(child_key.clone(), 1);
+        root.set(child_key.clone(), "task_id", Value::I64(0));
+        root.set_comment("bind child to allocated parent");
+
+        let ambient = Ambient(state.clone());
+        let tx = TransactionExecutor::begin(&ambient).await.unwrap();
+        let outcome = crate::EntityDataService::for_executor(&context, "Task", &tx)
+            .execute_ledger_plan_internal(root.clone(), &BTreeMap::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome
+                .canonical_rows
+                .get(&child_key)
+                .unwrap()
+                .get("task_id"),
+            Some(&Value::I64(42))
+        );
+        assert_eq!(
+            root.current_change_set().get(&child_key, "task_id"),
+            Some(&Value::I64(0)),
+            "rebinding must leave retryable source intent unchanged"
+        );
+        Transaction::rollback(tx).await.unwrap();
     }
 
     #[tokio::test]
@@ -1468,13 +1615,15 @@ fn capture_ledger_trace_scopes(
 ) -> Result<(), RuntimeError> {
     let intent = teaql_core::MutationIntent::from_optional(node.comment.as_deref())?;
     fn visit(
+        root: &crate::EntityRuntimeState,
         node: &GraphNode,
         scope: Option<Arc<crate::TraceScopeToken>>,
         scopes: &mut BTreeMap<crate::EntityKey, Arc<crate::TraceScopeToken>>,
         unassigned: &mut BTreeMap<crate::EntityKey, Arc<crate::TraceScopeToken>>,
     ) {
         if let (Some(id), Some(scope)) = (node.id(), &scope) {
-            let key = crate::EntityKey::new(node.entity.clone(), id.clone());
+            let key =
+                root.original_key_for(&crate::EntityKey::new(node.entity.clone(), id.clone()));
             if matches!(id, Value::Null | Value::U64(0) | Value::I64(0))
                 && node.audit_trace_node().is_some()
             {
@@ -1489,14 +1638,20 @@ fn capture_ledger_trace_scopes(
         for children in node.relations.values() {
             for child in children {
                 let child_scope = child.trace_scope(scope.clone(), scopes.len() as u64);
-                visit(child, child_scope, scopes, unassigned);
+                visit(root, child, child_scope, scopes, unassigned);
             }
         }
     }
     let root_scope = node.trace_scope(None, 0).expect("validated root comment");
     let mut scopes = BTreeMap::new();
     let mut unassigned = BTreeMap::new();
-    visit(node, Some(root_scope.clone()), &mut scopes, &mut unassigned);
+    visit(
+        root,
+        node,
+        Some(root_scope.clone()),
+        &mut scopes,
+        &mut unassigned,
+    );
 
     // Explicitly composed standalone pending items can be outside a loaded
     // relation projection. They still belong to this root request, not Context.
@@ -1949,11 +2104,9 @@ fn hydrate_ledger_relations(
         let existing_keys = existing
             .iter()
             .filter_map(|child| {
-                child
-                    .values
-                    .get("id")
-                    .cloned()
-                    .map(|id| crate::EntityKey::new(child.entity.clone(), id))
+                child.values.get("id").cloned().map(|id| {
+                    root.original_key_for(&crate::EntityKey::new(child.entity.clone(), id))
+                })
             })
             .collect::<BTreeSet<_>>();
         let mut discovered = Vec::new();
@@ -1978,20 +2131,22 @@ fn hydrate_ledger_relations(
                 values.extend(storage_values_from_ledger(target_descriptor, changes)?);
             }
             let foreign_value = if relation.foreign_key == "id" {
-                Some(&key.id)
+                Some(key.id.clone())
             } else {
-                values.get(&relation.foreign_key)
+                values.get(&relation.foreign_key).cloned()
             };
             // Provider-loaded IDs can be signed while generated FK setters are
             // unsigned. Reuse the ledger's typed identity normalization rather
             // than comparing Value variants; never associate two absent refs.
             let matches_reference = !matches!(local_value, Value::Null)
                 && foreign_value.is_some_and(|foreign| {
-                    crate::EntityKey::new(relation.target_entity.clone(), foreign.clone())
-                        == crate::EntityKey::new(
-                            relation.target_entity.clone(),
-                            local_value.clone(),
-                        )
+                    root.original_key_for(&crate::EntityKey::new(
+                        relation.target_entity.clone(),
+                        foreign,
+                    )) == root.original_key_for(&crate::EntityKey::new(
+                        relation.target_entity.clone(),
+                        local_value.clone(),
+                    ))
                 });
             if !matches_reference || !visited.insert(key.clone()) {
                 continue;
@@ -2085,7 +2240,7 @@ fn preflight_pending_dynamic_entities(
     let Some(dynamic) = changes.dynamic_changes() else {
         return Ok(());
     };
-    let locations = ledger_object_locations(node);
+    let locations = ledger_object_locations_for(root, node);
     for key in dynamic.keys() {
         if locations.contains_key(key) || root.deleted_keys().contains(key) {
             continue;
@@ -2103,7 +2258,9 @@ fn preflight_pending_dynamic_entities(
                 .values
                 .extend(storage_values_from_ledger(descriptor, values)?);
         }
-        pending.values.insert("id".into(), key.id.clone());
+        pending
+            .values
+            .insert("id".into(), root.persisted_id_for(key));
         let loaded = pending
             .values
             .keys()
@@ -2153,6 +2310,19 @@ fn ledger_object_locations(node: &GraphNode) -> BTreeMap<crate::EntityKey, Objec
 
     let mut locations = BTreeMap::new();
     visit(node, &ObjectLocation::root(), &mut locations);
+    locations
+}
+
+fn ledger_object_locations_for(
+    root: &crate::EntityRuntimeState,
+    node: &GraphNode,
+) -> BTreeMap<crate::EntityKey, ObjectLocation> {
+    let mut locations = BTreeMap::new();
+    for (key, location) in ledger_object_locations(node) {
+        locations
+            .entry(root.original_key_for(&key))
+            .or_insert(location);
+    }
     locations
 }
 
@@ -2350,7 +2520,7 @@ where
 
     if let Some(root) = root {
         let root_id = node.values.get("id").cloned().unwrap_or(Value::I64(0));
-        let root_key = crate::EntityKey::new(node.entity.clone(), root_id);
+        let root_key = root.original_key_for(&crate::EntityKey::new(node.entity.clone(), root_id));
         reject_cancelled_new_root(&root, &root_key)?;
         if let Some(changes) = root.current_change_set().changes().get(&root_key) {
             let descriptor = context.require_entity(&node.entity)?;
@@ -2379,7 +2549,7 @@ where
                     .with_mutation_intent(teaql_core::MutationIntent::from_optional(
                         node.comment.as_deref(),
                     )?);
-            let locations = ledger_object_locations(&node);
+            let locations = ledger_object_locations_for(&root, &node);
             let policy_plan = crate::ledger_policy_plan(context, &node, &root);
             let governance = context.review_mutation_plan(&policy_plan)?;
             let mut generated_ids = crate::with_mutation_governance(
@@ -2398,29 +2568,35 @@ where
             if let Some(new_id) = generated_ids.get(&root_key) {
                 node.values.insert(id_property.name.clone(), new_id.clone());
             }
-            // Even a soft delete returns the authoritative tombstone, not a
-            // version inferred from the prior in-memory snapshot.
-            let persisted_id = node.values.get(&id_property.name).cloned().ok_or_else(|| {
-                RuntimeError::Graph(format!(
-                    "saved {entity_name} missing identity field {}",
-                    id_property.name
-                ))
-            })?;
-            node.values = data_service
-                .fetch_graph_current_row_internal(
-                    &entity_name,
-                    &id_property.name,
-                    &persisted_id,
-                    root.get_trace_chain(&root_key),
-                )
-                .await
-                .map_err(data_service_error_into_runtime)?
-                .map(Into::into)
-                .ok_or_else(|| {
-                    RuntimeError::Graph(format!(
-                        "persisted {entity_name} record could not be read back"
-                    ))
-                })?;
+            // Reuse the authoritative transaction-owned row, including a
+            // soft-delete tombstone. Only an unmodified root needs a separate
+            // current-row query.
+            if let Some(snapshot) = generated_ids.canonical_rows.remove(&root_key) {
+                node.values = BTreeMap::from(snapshot).into();
+            } else {
+                let persisted_id =
+                    node.values.get(&id_property.name).cloned().ok_or_else(|| {
+                        RuntimeError::Graph(format!(
+                            "saved {entity_name} missing identity field {}",
+                            id_property.name
+                        ))
+                    })?;
+                node.values = data_service
+                    .fetch_graph_current_row_internal(
+                        &entity_name,
+                        &id_property.name,
+                        &persisted_id,
+                        root.get_trace_chain(&root_key),
+                    )
+                    .await
+                    .map_err(data_service_error_into_runtime)?
+                    .map(Into::into)
+                    .ok_or_else(|| {
+                        RuntimeError::Graph(format!(
+                            "persisted {entity_name} record could not be read back"
+                        ))
+                    })?;
+            }
             let entity = decode_saved_ledger_entity::<T>(
                 node,
                 &root,
@@ -2494,7 +2670,7 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
 
     if let Some(root) = root {
         let root_id = node.values.get("id").cloned().unwrap_or(Value::I64(0));
-        let root_key = crate::EntityKey::new(node.entity.clone(), root_id);
+        let root_key = root.original_key_for(&crate::EntityKey::new(node.entity.clone(), root_id));
         reject_cancelled_new_root(&root, &root_key)?;
         if let Some(changes) = root.current_change_set().changes().get(&root_key) {
             let descriptor = context.require_entity(&node.entity)?;

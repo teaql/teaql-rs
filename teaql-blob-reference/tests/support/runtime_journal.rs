@@ -148,6 +148,143 @@ async fn ownerless_review_draft_attaches_to_real_sql_owner_after_begin_without_l
 }
 
 #[tokio::test]
+async fn allocated_id_alias_repeats_on_one_real_owner_and_preserves_late_edit() {
+    let f = Fixture::new(true).await;
+    let temporary = EntityKey::new_static("Asset", 0_u64);
+    let root = EntityRuntimeState::default();
+    root.mark_as_new(temporary.clone());
+    root.set(temporary.clone(), "document", Value::BlobRef(blob("first")));
+    let draft = root.reserve_submission(None).unwrap();
+    let business = f.business();
+    let tx = TransactionExecutor::begin(&business).await.unwrap();
+    let identity = Transaction::physical_identity(&tx).unwrap();
+    let sql = tx.infrastructure_sql().unwrap();
+    let first = draft.attach(&identity).unwrap();
+    assert_eq!(
+        sql.execute(
+            &InfrastructureStatement::new(
+                "INSERT INTO r5_assets(id,version,document) VALUES (42,1,$1)",
+                vec![Value::Text(blob("first").as_str().into())],
+            )
+            .unwrap()
+        )
+        .await
+        .unwrap(),
+        1
+    );
+    first
+        .acknowledge_with_allocated_ids(
+            [(temporary.clone(), readback(sql).await)],
+            [(temporary.clone(), Value::U64(42))],
+        )
+        .unwrap();
+    assert_eq!(root.get_original_version(&key()), Some(1));
+    root.set(key(), "document", Value::BlobRef(blob("second")));
+    let second = root
+        .reserve_submission(Some(&identity))
+        .unwrap()
+        .attach(&identity)
+        .unwrap();
+    assert_eq!(
+        second.execution_state().get_original_version(&key()),
+        Some(1)
+    );
+    assert_eq!(
+        second.execution_state().get(&key(), "document"),
+        Some(Value::BlobRef(blob("second")))
+    );
+    assert_eq!(
+        sql.execute(
+            &InfrastructureStatement::new(
+                "UPDATE r5_assets SET document=$1,version=2 WHERE id=42 AND version=1",
+                vec![Value::Text(blob("second").as_str().into())],
+            )
+            .unwrap()
+        )
+        .await
+        .unwrap(),
+        1
+    );
+    second
+        .acknowledge([(temporary.clone(), readback(sql).await)])
+        .unwrap();
+    root.set(key(), "document", Value::BlobRef(blob("late")));
+    assert_eq!(f.count("r5_assets").await, 0);
+    Transaction::commit(tx).await.unwrap();
+    assert_eq!(identity.outcome(), PhysicalTransactionOutcome::Committed);
+    assert_eq!(root.get_original_version(&temporary), Some(2));
+    assert_eq!(root.get_original_version(&key()), Some(2));
+    assert_eq!(
+        root.get(&key(), "document"),
+        Some(Value::BlobRef(blob("late")))
+    );
+    let actual = f
+        .admin
+        .get()
+        .await
+        .unwrap()
+        .query_one(
+            &format!(
+                "SELECT version,document FROM \"{}\".r5_assets WHERE id=42",
+                f.schema
+            ),
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(actual.get::<_, i64>("version"), 2);
+    assert_eq!(actual.get::<_, String>("document"), blob("second").as_str());
+    println!("R5_ALLOCATED_ALIAS_REAL_OWNER_REPEAT_LATE_EDIT_PASS");
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn allocated_id_alias_real_rollback_restores_new_intent_without_stale_version() {
+    let f = Fixture::new(true).await;
+    let temporary = EntityKey::new_static("Asset", 0_u64);
+    let root = EntityRuntimeState::default();
+    root.mark_as_new(temporary.clone());
+    root.set(temporary.clone(), "document", Value::BlobRef(blob("first")));
+    let business = f.business();
+    let tx = TransactionExecutor::begin(&business).await.unwrap();
+    let identity = Transaction::physical_identity(&tx).unwrap();
+    let sql = tx.infrastructure_sql().unwrap();
+    let submission = root.begin_submission(&identity).unwrap();
+    sql.execute(
+        &InfrastructureStatement::new(
+            "INSERT INTO r5_assets(id,version,document) VALUES (42,1,$1)",
+            vec![Value::Text(blob("first").as_str().into())],
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    submission
+        .acknowledge_with_allocated_ids(
+            [(temporary.clone(), readback(sql).await)],
+            [(temporary.clone(), Value::U64(42))],
+        )
+        .unwrap();
+    root.set(key(), "document", Value::BlobRef(blob("late")));
+    Transaction::rollback(tx).await.unwrap();
+    assert_eq!(identity.outcome(), PhysicalTransactionOutcome::RolledBack);
+    assert!(root.is_new(&temporary));
+    assert!(root.is_new(&key()));
+    assert_eq!(root.get_original_version(&key()), None);
+    assert_eq!(
+        root.get(&temporary, "document"),
+        Some(Value::BlobRef(blob("late")))
+    );
+    assert_eq!(
+        root.get(&key(), "document"),
+        Some(Value::BlobRef(blob("late")))
+    );
+    assert_eq!(f.count("r5_assets").await, 0);
+    println!("R5_ALLOCATED_ALIAS_REAL_ROLLBACK_RETRY_PASS");
+    f.finish().await;
+}
+
+#[tokio::test]
 async fn journal_actual_native_repeated_flush_preserves_late_edits_after_commit_notification_failure()
  {
     let f = Fixture::new(true).await;

@@ -13,6 +13,147 @@ fn row(name: &str, version: i64) -> EntitySnapshot {
 }
 
 #[test]
+fn allocated_id_aliases_share_authoritative_versions_across_repeated_owner_writes() {
+    let root = EntityRuntimeState::default();
+    let temporary = key(0);
+    let returned = key(42);
+    root.mark_as_new(temporary.clone());
+    root.set(temporary.clone(), "name", "created");
+    let mut owner = SqlResourceIdentity::new().begin();
+    let first = root
+        .reserve_submission(None)
+        .unwrap()
+        .attach(&owner.identity())
+        .unwrap();
+    first
+        .acknowledge_with_allocated_ids(
+            [(temporary.clone(), row("created", 1))],
+            [(temporary.clone(), Value::U64(42))],
+        )
+        .unwrap();
+    assert_eq!(root.get_original_version(&temporary), Some(1));
+    assert_eq!(root.get_original_version(&returned), Some(1));
+    assert_eq!(root.persisted_id_for(&temporary), Value::U64(42));
+    assert_eq!(root.persisted_id_for(&returned), Value::U64(42));
+
+    root.set(returned.clone(), "name", "updated");
+    assert_eq!(
+        root.current_change_set().get(&temporary, "name"),
+        Some(&Value::from("updated"))
+    );
+    let second = root
+        .reserve_submission(Some(&owner.identity()))
+        .unwrap()
+        .attach(&owner.identity())
+        .unwrap();
+    assert_eq!(
+        second.execution_state().get_original_version(&returned),
+        Some(1)
+    );
+    assert_eq!(
+        second.execution_state().persisted_id_for(&temporary),
+        Value::U64(42)
+    );
+    second
+        .acknowledge([(temporary.clone(), row("updated", 2))])
+        .unwrap();
+    owner.prepare_commit().unwrap();
+    owner.committed().unwrap();
+    assert_eq!(root.get_original_version(&temporary), Some(2));
+    assert_eq!(root.get_original_version(&returned), Some(2));
+    assert_eq!(root.get(&returned, "name"), Some(Value::from("updated")));
+    assert!(!root.is_new(&returned));
+}
+
+#[test]
+fn allocated_id_rollback_restores_new_intent_and_invalidates_returned_row_authority() {
+    let root = EntityRuntimeState::default();
+    let temporary = key(0);
+    let returned_key = key(42);
+    root.mark_as_new(temporary.clone());
+    root.set(temporary.clone(), "name", "created");
+    let owner = SqlResourceIdentity::new().begin();
+    root.begin_submission(&owner.identity())
+        .unwrap()
+        .acknowledge_with_allocated_ids(
+            [(temporary.clone(), row("created", 1))],
+            [(temporary.clone(), Value::U64(42))],
+        )
+        .unwrap();
+    let mut returned = root.clone();
+    returned.set_original_compact_row(
+        "Order",
+        teaql_core::CompactRow::from_map(BTreeMap::from([
+            ("id".into(), Value::U64(42)),
+            ("name".into(), Value::from("created")),
+            ("version".into(), Value::I64(1)),
+        ])),
+    );
+    returned.set(returned_key.clone(), "name", "late");
+    owner.rolled_back().unwrap();
+    assert!(root.is_new(&temporary));
+    assert!(returned.is_new(&returned_key));
+    assert_eq!(root.persisted_id_for(&temporary), Value::U64(0));
+    assert_eq!(returned.persisted_id_for(&returned_key), Value::U64(0));
+    assert_eq!(returned.get_original_version(&returned_key), None);
+    assert_eq!(returned.original_snapshot(), None);
+    assert_eq!(root.get(&temporary, "name"), Some(Value::from("late")));
+    assert_eq!(
+        returned.get(&returned_key, "name"),
+        Some(Value::from("late"))
+    );
+    let retry = SqlResourceIdentity::new().begin();
+    assert!(root.reserve_submission(Some(&retry.identity())).is_ok());
+}
+
+#[test]
+fn mismatched_allocated_readback_vetoes_commit_without_binding_alias() {
+    let root = EntityRuntimeState::default();
+    let temporary = key(0);
+    root.mark_as_new(temporary.clone());
+    root.set(temporary.clone(), "name", "created");
+    let mut owner = SqlResourceIdentity::new().begin();
+    assert!(
+        root.begin_submission(&owner.identity())
+            .unwrap()
+            .acknowledge_with_allocated_ids(
+                [(temporary.clone(), row("created", 1))],
+                [(temporary.clone(), Value::U64(43))],
+            )
+            .is_err()
+    );
+    assert!(owner.prepare_commit().is_err());
+    owner.rolled_back().unwrap();
+    assert!(root.is_new(&temporary));
+    assert_eq!(root.persisted_id_for(&temporary), Value::U64(0));
+    assert_eq!(root.get_original_version(&temporary), None);
+}
+
+#[test]
+fn allocated_id_cannot_shadow_an_existing_ledger_identity() {
+    let root = EntityRuntimeState::default();
+    let temporary = key(0);
+    root.set_original_version(key(42), 7);
+    root.mark_as_new(temporary.clone());
+    root.set(temporary.clone(), "name", "new");
+    let mut owner = SqlResourceIdentity::new().begin();
+    assert!(
+        root.begin_submission(&owner.identity())
+            .unwrap()
+            .acknowledge_with_allocated_ids(
+                [(temporary.clone(), row("new", 1))],
+                [(temporary.clone(), Value::U64(42))],
+            )
+            .is_err()
+    );
+    assert!(owner.prepare_commit().is_err());
+    owner.rolled_back().unwrap();
+    assert_eq!(root.get_original_version(&key(42)), Some(7));
+    assert!(root.is_new(&temporary));
+    assert_eq!(root.persisted_id_for(&temporary), Value::U64(0));
+}
+
+#[test]
 fn ownerless_review_draft_freezes_intent_and_restores_it_on_denial() {
     let root = EntityRuntimeState::default();
     root.set(key(42), "name", "reviewed");

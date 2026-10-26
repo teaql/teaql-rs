@@ -11,6 +11,10 @@ use teaql_data_service::infrastructure_sql::{
 pub(super) struct SubmittedRows {
     rows: BTreeMap<EntityKey, EntitySnapshot>,
     origins: BTreeMap<EntityKey, RowOrigin>,
+    /// A returned entity view may carry the allocated ID while its original
+    /// ledger key remains stable for rollback and late edits.
+    aliases: BTreeMap<EntityKey, EntityKey>,
+    pub(super) persisted_ids: BTreeMap<EntityKey, Value>,
 }
 #[derive(Clone, Debug)]
 enum RowOrigin {
@@ -18,6 +22,16 @@ enum RowOrigin {
     New,
 }
 impl SubmittedRows {
+    pub(super) fn original_key<'a>(&'a self, key: &'a EntityKey) -> &'a EntityKey {
+        self.aliases.get(key).unwrap_or(key)
+    }
+    pub(super) fn persisted_id(&self, key: &EntityKey) -> Value {
+        let original = self.original_key(key);
+        self.persisted_ids
+            .get(original)
+            .cloned()
+            .unwrap_or_else(|| original.id.clone())
+    }
     fn baseline(ledger: &EntityMutationLedger) -> Box<Self> {
         let mut baseline = ledger.submitted_rows.clone().unwrap_or_default();
         for (key, snapshot) in &ledger.original_snapshots {
@@ -49,16 +63,19 @@ impl SubmittedRows {
         baseline
     }
     pub(super) fn version(&self, key: &EntityKey) -> Option<Option<i64>> {
-        self.origins.get(key).map(|origin| match origin {
-            RowOrigin::Existing(version) => *version,
-            RowOrigin::New => None,
-        })
+        self.origins
+            .get(self.original_key(key))
+            .map(|origin| match origin {
+                RowOrigin::Existing(version) => *version,
+                RowOrigin::New => None,
+            })
     }
     pub(super) fn snapshot(
         &self,
         key: &EntityKey,
         originals: &BTreeMap<EntityKey, OriginalSnapshot>,
     ) -> Option<Option<EntitySnapshot>> {
+        let key = self.original_key(key);
         if let Some(row) = self.rows.get(key) {
             return Some(Some(row.clone()));
         }
@@ -247,24 +264,86 @@ impl LedgerSubmission {
     /// The caller supplies authoritative canonical rows read on the same SQL
     /// executor, after all submitted writes. This is not a client write API.
     pub fn acknowledge(
-        mut self,
+        self,
         rows: impl IntoIterator<Item = (EntityKey, EntitySnapshot)>,
     ) -> Result<(), crate::RuntimeError> {
+        self.acknowledge_with_allocated_ids(rows, std::iter::empty())
+    }
+
+    /// Bind SQL-allocated identities to their original ledger keys. Both the
+    /// old and returned entity handles then address the same submitted row.
+    #[doc(hidden)]
+    pub fn acknowledge_with_allocated_ids(
+        mut self,
+        rows: impl IntoIterator<Item = (EntityKey, EntitySnapshot)>,
+        allocated_ids: impl IntoIterator<Item = (EntityKey, Value)>,
+    ) -> Result<(), crate::RuntimeError> {
+        let mut readbacks = BTreeMap::new();
+        for (key, row) in rows {
+            if readbacks.insert(key, row).is_some() {
+                return Err(unavailable());
+            }
+        }
+        let mut allocated = BTreeMap::new();
+        for (key, id) in allocated_ids {
+            if allocated.insert(key, id).is_some() {
+                return Err(unavailable());
+            }
+        }
         let mut ledger = self.root.lock().unwrap_or_else(|error| error.into_inner());
-        let pending = ledger.pending.as_mut().ok_or_else(unavailable)?;
+        let pending = ledger.pending.as_ref().ok_or_else(unavailable)?;
         if pending.owner != self.owner
             || pending.active != Some(self.batch)
             || self.owner.outcome() != PhysicalTransactionOutcome::Active
         {
             return Err(unavailable());
         }
-        pending.active = None;
-        for (key, row) in rows {
+        let mut canonical_owners = BTreeMap::new();
+        for (key, row) in &readbacks {
+            if let (Some(previous), Some(next)) =
+                (pending_alias_id(&ledger, key), allocated.get(key))
+                && EntityKey::new(key.entity.to_string(), previous.clone())
+                    != EntityKey::new(key.entity.to_string(), next.clone())
+            {
+                return Err(unavailable());
+            }
+            let actual = allocated
+                .get(key)
+                .or_else(|| pending_alias_id(&ledger, key))
+                .unwrap_or(&key.id);
+            let returned_id = row.get("id").ok_or_else(unavailable)?;
+            let canonical = EntityKey::new(key.entity.to_string(), actual.clone());
+            if EntityKey::new(key.entity.to_string(), returned_id.clone()) != canonical
+                || canonical_owners
+                    .insert(canonical.clone(), key.clone())
+                    .is_some()
+                || ledger
+                    .submitted_rows
+                    .as_ref()
+                    .and_then(|rows| rows.aliases.get(&canonical))
+                    .is_some_and(|owner| owner != key)
+                || (canonical != *key && claimed_elsewhere(&ledger, &canonical, key))
+            {
+                return Err(unavailable());
+            }
+        }
+        if allocated.keys().any(|key| !readbacks.contains_key(key)) {
+            return Err(unavailable());
+        }
+        ledger.pending.as_mut().expect("validated owner").active = None;
+        for (key, row) in readbacks {
             let version = row.get("version").and_then(Value::try_i64);
             if let Some(version) = version {
                 ledger.original_versions.insert(key.clone(), version);
             }
             let rows = ledger.submitted_rows.get_or_insert_with(Default::default);
+            if let Some(id) = allocated.get(&key) {
+                let canonical = EntityKey::new(key.entity.to_string(), id.clone());
+                if canonical != key {
+                    rows.aliases.insert(canonical, key.clone());
+                    rows.persisted_ids.insert(key.clone(), id.clone());
+                }
+            }
             rows.origins
                 .insert(key.clone(), RowOrigin::Existing(version));
             rows.rows.insert(key, row);
@@ -272,6 +351,45 @@ impl LedgerSubmission {
         self.acknowledged = true;
         Ok(())
     }
+}
+fn pending_alias_id<'a>(ledger: &'a EntityMutationLedger, key: &EntityKey) -> Option<&'a Value> {
+    ledger.submitted_rows.as_ref()?.persisted_ids.get(key)
+}
+
+fn claimed_elsewhere(
+    ledger: &EntityMutationLedger,
+    canonical: &EntityKey,
+    original: &EntityKey,
+) -> bool {
+    if ledger
+        .submitted_rows
+        .as_ref()
+        .and_then(|rows| rows.aliases.get(canonical))
+        == Some(original)
+    {
+        return false;
+    }
+    let in_intent = |intent: &EntityMutationLedger| {
+        intent.original_versions.get(canonical).is_some()
+            || intent.original_snapshots.contains_key(canonical)
+            || intent.new_keys.contains(canonical)
+            || intent.deleted_keys.contains(canonical)
+            || intent.change_sets.stack.iter().any(|changes| {
+                changes.changes.contains_key(canonical)
+                    || changes
+                        .dynamic_changes
+                        .as_ref()
+                        .is_some_and(|dynamic| dynamic.contains_key(canonical))
+            })
+    };
+    in_intent(ledger)
+        || ledger.submitted_rows.as_ref().is_some_and(|rows| {
+            rows.rows.contains_key(canonical) || rows.origins.contains_key(canonical)
+        })
+        || ledger
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.batches.iter().any(|batch| in_intent(&batch.intent)))
 }
 impl Drop for LedgerSubmission {
     fn drop(&mut self) {
@@ -559,6 +677,11 @@ fn merge_change_set(target: &mut EntityChangeSet, source: &EntityChangeSet) {
     }
 }
 fn restore(ledger: &mut EntityMutationLedger, pending: PendingLedger) {
+    let attempted_aliases = ledger
+        .submitted_rows
+        .as_ref()
+        .map(|rows| rows.aliases.clone())
+        .unwrap_or_default();
     let live_changes = std::mem::take(&mut ledger.change_sets);
     let live_new = std::mem::take(&mut ledger.new_keys);
     let live_deleted = std::mem::take(&mut ledger.deleted_keys);
@@ -588,6 +711,12 @@ fn restore(ledger: &mut EntityMutationLedger, pending: PendingLedger) {
     ledger.entity_comments.extend(live_reasons);
     ledger.original_versions = pending.initial_versions;
     ledger.submitted_rows = pending.initial_rows;
+    if !attempted_aliases.is_empty() {
+        let rows = ledger.submitted_rows.get_or_insert_with(Default::default);
+        for (alias, original) in attempted_aliases {
+            rows.aliases.entry(alias).or_insert(original);
+        }
+    }
 }
 
 #[cfg(test)]

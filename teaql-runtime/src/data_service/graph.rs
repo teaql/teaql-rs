@@ -1694,11 +1694,12 @@ where
                     )))
                 })?;
                 let my_trace = resolve_trace_chain(root.get_trace_chain(key), &trace_chain);
+                let persisted_id = root.persisted_id_for(key);
                 let current_row = self
                     .fetch_graph_current_row_internal(
                         &key.entity,
                         &id_property.name,
-                        &key.id,
+                        &persisted_id,
                         my_trace,
                     )
                     .await?;
@@ -1749,8 +1750,10 @@ where
                 generated_ids.insert(key.clone(), Value::U64(id));
             }
         }
-        root.enrich_allocated_trace_scopes(&generated_ids);
-        self.rebind_allocated_ledger_relations(&mut checked_changes, &generated_ids)
+        let mut resolved_ids = root.persisted_id_aliases();
+        resolved_ids.extend(generated_ids.clone());
+        root.enrich_allocated_trace_scopes(&resolved_ids);
+        self.rebind_allocated_ledger_relations(&mut checked_changes, &resolved_ids)
             .map_err(DataServiceError::Runtime)?;
         let mut dynamic_writes = Vec::new();
         let mut dynamic_keys = Vec::new();
@@ -1796,7 +1799,8 @@ where
                 })?;
                 let id = generated_ids
                     .get(key)
-                    .unwrap_or(&key.id)
+                    .cloned()
+                    .unwrap_or_else(|| root.persisted_id_for(key))
                     .try_u64()
                     .ok_or_else(|| {
                         DataServiceError::Runtime(RuntimeError::DynamicField(
@@ -1878,7 +1882,7 @@ where
             if new_keys.contains(key) {
                 continue;
             }
-            let id = key.id.clone();
+            let id = root.persisted_id_for(key);
             let mut cmd = teaql_core::DeleteCommand::new(key.entity.as_ref(), id);
             if let Some(version) = root.get_original_version(key) {
                 cmd = cmd.expected_version(version);
@@ -1922,7 +1926,8 @@ where
             for key in keys {
                 let record = checked_changes.get(key).unwrap();
                 let mut db_record = crate::EntityValues::new();
-                db_record.insert("id".to_owned(), key.id.clone());
+                let persisted_id = root.persisted_id_for(key);
+                db_record.insert("id".to_owned(), persisted_id.clone());
                 for (field, value) in record {
                     if field == "id" {
                         continue;
@@ -1936,7 +1941,7 @@ where
                 );
                 crate::data_service::helpers::ensure_timestamps(&mut db_record, descriptor, false);
                 cmd.batch_values.push(db_record.into());
-                cmd.batch_ids.push(key.id.clone());
+                cmd.batch_ids.push(persisted_id);
                 cmd.batch_expected_versions
                     .push(root.get_original_version(key));
                 cmd.batch_old_values.push(root.original_values_for(key));
@@ -1989,13 +1994,17 @@ where
                     key.entity
                 )))
             })?;
-            let persisted_id = outcome.generated_ids.get(&key).unwrap_or(&key.id);
+            let persisted_id = outcome
+                .generated_ids
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(|| root.persisted_id_for(&key));
             let trace = resolve_trace_chain(root.get_trace_chain(&key), &trace_chain);
             let row = self
                 .fetch_graph_current_row_internal(
                     &key.entity,
                     &id_property.name,
-                    persisted_id,
+                    &persisted_id,
                     trace,
                 )
                 .await?
@@ -2012,7 +2021,7 @@ where
                 )))
             })?;
             if crate::EntityKey::new(key.entity.to_string(), returned_id.clone())
-                != crate::EntityKey::new(key.entity.to_string(), persisted_id.clone())
+                != crate::EntityKey::new(key.entity.to_string(), persisted_id)
             {
                 return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
                     "authoritative ledger readback identity mismatch for {}",
