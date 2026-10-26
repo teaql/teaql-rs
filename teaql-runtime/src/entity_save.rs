@@ -193,31 +193,34 @@ where
                     if let Some(new_id) = generated_ids.get(&root_key) {
                         node.values.insert(id_prop.name.clone(), new_id.clone());
                     }
-                    // The database is authoritative for IDs, versions, defaults,
-                    // triggers and conversions. Read on the transaction-owned
-                    // executor before commit; an ambient post-commit read can race
-                    // another writer or fail after the write is irreversible.
-                    let persisted_id =
-                        node.values.get(&id_prop.name).cloned().ok_or_else(|| {
-                            DataServiceError::Runtime(RuntimeError::Graph(format!(
-                                "saved {entity} missing identity field {}",
-                                id_prop.name
-                            )))
-                        })?;
-                    node.values = eds
-                        .fetch_graph_current_row_internal(
-                            &entity,
-                            &id_prop.name,
-                            &persisted_id,
-                            root.get_trace_chain(&root_key),
-                        )
-                        .await?
-                        .map(Into::into)
-                        .ok_or_else(|| {
-                            DataServiceError::Runtime(RuntimeError::Graph(format!(
-                                "persisted {entity} record could not be read back"
-                            )))
-                        })?;
+                    // All mutated rows have already been read from this
+                    // transaction, including database defaults and triggers.
+                    // An unmodified root still needs its own current-row read.
+                    if let Some(snapshot) = generated_ids.canonical_rows.remove(&root_key) {
+                        node.values = BTreeMap::from(snapshot).into();
+                    } else {
+                        let persisted_id =
+                            node.values.get(&id_prop.name).cloned().ok_or_else(|| {
+                                DataServiceError::Runtime(RuntimeError::Graph(format!(
+                                    "saved {entity} missing identity field {}",
+                                    id_prop.name
+                                )))
+                            })?;
+                        node.values = eds
+                            .fetch_graph_current_row_internal(
+                                &entity,
+                                &id_prop.name,
+                                &persisted_id,
+                                root.get_trace_chain(&root_key),
+                            )
+                            .await?
+                            .map(Into::into)
+                            .ok_or_else(|| {
+                                DataServiceError::Runtime(RuntimeError::Graph(format!(
+                                    "persisted {entity} record could not be read back"
+                                )))
+                            })?;
+                    }
                     Ok(())
                 }),
             )
@@ -570,8 +573,10 @@ mod transactional_ledger_readback_tests {
     #[derive(Default)]
     struct State {
         row: BTreeMap<String, Value>,
+        child_row: Option<BTreeMap<String, Value>>,
         calls: Vec<&'static str>,
         fail_readback: bool,
+        fail_child_readback: bool,
     }
 
     #[derive(Clone)]
@@ -607,9 +612,9 @@ mod transactional_ledger_readback_tests {
         }
     }
 
-    fn row_result(state: &State) -> QueryResult {
+    fn row_result(row: &BTreeMap<String, Value>) -> QueryResult {
         QueryResult {
-            rows: vec![teaql_core::CompactRow::from_map(state.row.clone())],
+            rows: vec![teaql_core::CompactRow::from_map(row.clone())],
             metadata: ExecutionMetadata::unrecorded_query(1),
         }
     }
@@ -639,21 +644,34 @@ mod transactional_ledger_readback_tests {
         async fn query(&self, _request: QueryRequest) -> Result<QueryResult, Self::Error> {
             let mut state = self.0.lock().unwrap();
             state.calls.push("ambient-query");
-            Ok(row_result(&state))
+            Ok(row_result(&state.row))
         }
     }
 
     impl QueryExecutor for Tx {
-        async fn query(&self, _request: QueryRequest) -> Result<QueryResult, Self::Error> {
+        async fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
             let mut state = self.0.lock().unwrap();
             state.calls.push("transaction-query");
-            if state.fail_readback && state.calls.contains(&"transaction-mutate") {
+            let child = request.query.entity == "TaskChild";
+            if child {
+                state.calls.push("child-query");
+            }
+            if (state.fail_readback || child && state.fail_child_readback)
+                && state.calls.contains(&"transaction-mutate")
+            {
                 return Ok(QueryResult {
                     rows: Vec::new(),
                     metadata: ExecutionMetadata::unrecorded_query(0),
                 });
             }
-            Ok(row_result(&state))
+            Ok(match (child, &state.child_row) {
+                (true, Some(row)) => row_result(row),
+                (true, None) => QueryResult {
+                    rows: Vec::new(),
+                    metadata: ExecutionMetadata::unrecorded_query(0),
+                },
+                (false, _) => row_result(&state.row),
+            })
         }
     }
 
@@ -670,8 +688,13 @@ mod transactional_ledger_readback_tests {
             match request.command {
                 teaql_data_service::MutationCommand::Update(command) => {
                     assert_eq!(command.expected_version, Some(1));
+                    let row = if command.entity == "TaskChild" {
+                        state.child_row.as_mut().expect("child row must exist")
+                    } else {
+                        &mut state.row
+                    };
                     for (field, value) in command.values {
-                        state.row.insert(field, value);
+                        row.insert(field, value);
                     }
                 }
                 teaql_data_service::MutationCommand::Delete(command) => {
@@ -723,6 +746,10 @@ mod transactional_ledger_readback_tests {
             state
                 .row
                 .insert("name".to_owned(), Value::Text("before".to_owned()));
+            if let Some(row) = &mut state.child_row {
+                row.insert("version".to_owned(), Value::I64(1));
+                row.insert("name".to_owned(), Value::Text("child before".to_owned()));
+            }
             Ok(())
         }
     }
@@ -738,6 +765,7 @@ mod transactional_ledger_readback_tests {
             ]),
             calls: Vec::new(),
             fail_readback: false,
+            ..Default::default()
         }));
         let descriptor = EntityDescriptor::new("Task")
             .property(PropertyDescriptor::new("id", DataType::I64).id())
@@ -793,6 +821,7 @@ mod transactional_ledger_readback_tests {
             ]),
             calls: Vec::new(),
             fail_readback: true,
+            ..Default::default()
         }));
         let descriptor = EntityDescriptor::new("Task")
             .property(PropertyDescriptor::new("id", DataType::I64).id())
@@ -832,6 +861,84 @@ mod transactional_ledger_readback_tests {
     }
 
     #[tokio::test]
+    async fn missing_child_readback_rolls_back_entire_ledger_after_both_writes() {
+        let state = Arc::new(Mutex::new(State {
+            row: BTreeMap::from([
+                ("id".to_owned(), Value::I64(1)),
+                ("version".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::Text("before".to_owned())),
+            ]),
+            child_row: Some(BTreeMap::from([
+                ("id".to_owned(), Value::I64(2)),
+                ("version".to_owned(), Value::I64(1)),
+                ("name".to_owned(), Value::Text("child before".to_owned())),
+            ])),
+            fail_child_readback: true,
+            ..Default::default()
+        }));
+        let descriptor = |entity: &str| {
+            EntityDescriptor::new(entity)
+                .property(PropertyDescriptor::new("id", DataType::I64).id())
+                .property(PropertyDescriptor::new("version", DataType::I64).version())
+                .property(PropertyDescriptor::new("name", DataType::Text))
+        };
+        let mut context = UserContext::default().with_metadata(
+            InMemoryMetadataStore::new()
+                .with_entity(descriptor("Task"))
+                .with_entity(descriptor("TaskChild")),
+        );
+        context.insert_resource(Ambient(state.clone()));
+        let root = EntityRuntimeState::default();
+        let root_key = EntityKey::new_static("Task", 1_i64);
+        let child_key = EntityKey::new_static("TaskChild", 2_i64);
+        root.set_original_version(root_key.clone(), 1);
+        root.set_original_version(child_key.clone(), 1);
+        root.set(root_key.clone(), "name", Value::Text("updated".to_owned()));
+        root.set(
+            child_key.clone(),
+            "name",
+            Value::Text("child updated".to_owned()),
+        );
+        let node = GraphNode::new("Task")
+            .comment("verify complete graph readback before commit")
+            .value("id", 1_i64)
+            .value("version", 1_i64)
+            .value("name", "before");
+
+        let error = GraphSaverFor::<Ambient>::new()
+            .save_ledger_dyn(&context, node, root.clone())
+            .await
+            .expect_err("missing child readback must abort the root save");
+        assert!(
+            error
+                .to_string()
+                .contains("TaskChild record could not be read back")
+        );
+        let state = state.lock().unwrap();
+        assert_eq!(
+            state
+                .calls
+                .iter()
+                .filter(|call| **call == "transaction-mutate")
+                .count(),
+            2
+        );
+        assert!(state.calls.contains(&"child-query"));
+        assert_eq!(state.calls.last(), Some(&"rollback"));
+        assert!(!state.calls.contains(&"commit"));
+        assert_eq!(
+            state.row.get("name"),
+            Some(&Value::Text("before".to_owned()))
+        );
+        assert_eq!(
+            state.child_row.as_ref().and_then(|row| row.get("name")),
+            Some(&Value::Text("child before".to_owned()))
+        );
+        assert_eq!(root.get_original_version(&root_key), Some(1));
+        assert_eq!(root.get_original_version(&child_key), Some(1));
+    }
+
+    #[tokio::test]
     async fn soft_delete_returns_authoritative_tombstone_before_commit() {
         let state = Arc::new(Mutex::new(State {
             row: BTreeMap::from([
@@ -841,6 +948,7 @@ mod transactional_ledger_readback_tests {
             ]),
             calls: Vec::new(),
             fail_readback: false,
+            ..Default::default()
         }));
         let descriptor = EntityDescriptor::new("Task")
             .property(PropertyDescriptor::new("id", DataType::I64).id())
@@ -880,6 +988,7 @@ mod transactional_ledger_readback_tests {
             ]),
             calls: vec!["simulate-commit-failure"],
             fail_readback: false,
+            ..Default::default()
         }));
         let descriptor = EntityDescriptor::new("Task")
             .property(PropertyDescriptor::new("id", DataType::I64).id())
@@ -994,6 +1103,7 @@ mod transactional_ledger_readback_tests {
             ]),
             calls: Vec::new(),
             fail_readback: false,
+            ..Default::default()
         }));
         let descriptor = EntityDescriptor::new("Task")
             .property(PropertyDescriptor::new("id", DataType::I64).id())

@@ -1,7 +1,7 @@
 // Recursive graph futures expose stable internal boundaries used during generator migration.
 #![allow(dead_code, clippy::type_complexity)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use teaql_core::{
@@ -22,6 +22,25 @@ use super::{EntityDataService, helpers::*};
 pub(crate) struct LedgerExecutionOutcome {
     pub(crate) generated_ids: BTreeMap<crate::EntityKey, Value>,
     pub(crate) dynamic_readbacks: Option<Box<DynamicReadbacks>>,
+    pub(crate) canonical_rows: Box<CanonicalReadbacks>,
+}
+
+/// Every row affected by one native ledger flush, keyed by its pre-allocation
+/// identity. Rows are fetched on the same SQL executor after all writes.
+#[derive(Debug, Default)]
+pub(crate) struct CanonicalReadbacks {
+    rows: BTreeMap<crate::EntityKey, teaql_core::EntitySnapshot>,
+}
+impl std::ops::Deref for CanonicalReadbacks {
+    type Target = BTreeMap<crate::EntityKey, teaql_core::EntitySnapshot>;
+    fn deref(&self) -> &Self::Target {
+        &self.rows
+    }
+}
+impl std::ops::DerefMut for CanonicalReadbacks {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.rows
+    }
 }
 
 /// Rare-path payload stays behind one pointer to protect ordinary async stacks.
@@ -1931,6 +1950,7 @@ where
         let mut outcome = LedgerExecutionOutcome {
             generated_ids,
             dynamic_readbacks: None,
+            canonical_rows: Box::default(),
         };
         if !dynamic_writes.is_empty() {
             outcome.dynamic_readbacks = Some(Box::new(DynamicReadbacks {
@@ -1942,6 +1962,66 @@ where
                 ))
                 .await?,
             }));
+        }
+        let mut affected = BTreeSet::from_iter(checked_changes.keys().cloned());
+        affected.extend(
+            deleted_keys
+                .iter()
+                .filter(|key| !new_keys.contains(*key))
+                .cloned(),
+        );
+        affected.extend(
+            new_keys
+                .iter()
+                .filter(|key| !deleted_keys.contains(*key))
+                .cloned(),
+        );
+        for key in affected {
+            let descriptor = self
+                .data_service
+                .metadata
+                .context
+                .require_entity(&key.entity)
+                .map_err(DataServiceError::Runtime)?;
+            let id_property = descriptor.id_property().ok_or_else(|| {
+                DataServiceError::Runtime(RuntimeError::Graph(format!(
+                    "entity {} has no id property for authoritative ledger readback",
+                    key.entity
+                )))
+            })?;
+            let persisted_id = outcome.generated_ids.get(&key).unwrap_or(&key.id);
+            let trace = resolve_trace_chain(root.get_trace_chain(&key), &trace_chain);
+            let row = self
+                .fetch_graph_current_row_internal(
+                    &key.entity,
+                    &id_property.name,
+                    persisted_id,
+                    trace,
+                )
+                .await?
+                .ok_or_else(|| {
+                    DataServiceError::Runtime(RuntimeError::Graph(format!(
+                        "persisted {} record could not be read back on the transaction-owned executor",
+                        key.entity
+                    )))
+                })?;
+            let returned_id = row.get(&id_property.name).ok_or_else(|| {
+                DataServiceError::Runtime(RuntimeError::Graph(format!(
+                    "authoritative ledger readback omitted {}.{}",
+                    key.entity, id_property.name
+                )))
+            })?;
+            if crate::EntityKey::new(key.entity.to_string(), returned_id.clone())
+                != crate::EntityKey::new(key.entity.to_string(), persisted_id.clone())
+            {
+                return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
+                    "authoritative ledger readback identity mismatch for {}",
+                    key.entity
+                ))));
+            }
+            outcome
+                .canonical_rows
+                .insert(key, teaql_core::EntitySnapshot::from(row.into_map()));
         }
         Ok(outcome)
     }
