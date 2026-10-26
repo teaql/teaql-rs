@@ -1,4 +1,5 @@
 extern crate self as teaql_runtime;
+mod blob_mutation;
 mod business_id;
 mod checker;
 mod commit_audit;
@@ -45,6 +46,10 @@ mod telemetry_startup;
 mod telemetry_stream;
 mod view_preparation;
 
+pub use blob_mutation::{
+    BlobMutationFuture, BlobMutationParticipantResource, RuntimeBlobMutationParticipant,
+    RuntimeBlobMutationPlan, RuntimePreparedBlobMutation,
+};
 pub use view_preparation::{
     AcceptedDocumentView, AuthorizedResponseGraph, BlobViewProjection, BlobViewRead,
     BusinessCompletion, CurrentBlobViewValidation, CurrentDocumentViewValidation, DocumentContext,

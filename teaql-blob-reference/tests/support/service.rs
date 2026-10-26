@@ -390,6 +390,40 @@ async fn module_install_is_passive_preserves_context_and_rejects_duplicate() {
 }
 
 #[tokio::test]
+async fn module_can_install_binding_participant_without_running_catalog_or_store_io() {
+    let mut app = App::new(104857600, 60).await;
+    let participant = BlobMutationParticipant::new(
+        app.f.catalog.clone(),
+        Arc::new(BlobPolicies::default()),
+        Arc::new(super::BindAuthorization),
+        Arc::new(super::BindClock),
+    );
+    let module = BlobReferenceModule::new(Arc::new(app.service.clone()))
+        .with_mutation(Arc::new(participant));
+    let calls = app.state.store_calls.load(Ordering::SeqCst);
+    module.install_into(&mut app.ctx).unwrap();
+    assert_eq!(app.state.store_calls.load(Ordering::SeqCst), calls);
+    assert!(
+        app.ctx
+            .get_resource::<teaql_runtime::BlobMutationParticipantResource>()
+            .is_some()
+    );
+    assert!(
+        app.ctx
+            .get_resource::<BlobRuntimeResource>()
+            .unwrap()
+            .0
+            .mutation()
+            .is_some()
+    );
+    assert_eq!(
+        module.install_into(&mut app.ctx).unwrap_err().code,
+        BlobErrorCode::PolicyInvalid
+    );
+    app.finish().await;
+}
+
+#[tokio::test]
 async fn service_all_ten_real_formats_upload_verify_bind_unbind_and_collect_exact_versions() {
     let app = App::new(104857600, 60).await;
     for (index, extension) in FORMATS.into_iter().enumerate() {

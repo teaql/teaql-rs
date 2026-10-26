@@ -300,7 +300,7 @@ impl UserContext {
     /// A modeled Blob field needs the transaction-bound binding participant even
     /// when the write contains no Key (create, removal, recovery or clear).
     /// Unchanged Blob fields on an ordinary update do not change bindings.
-    fn needs_blob_binding_participant(&self, plan: &MutationPlan) -> bool {
+    pub(crate) fn needs_blob_binding_participant(&self, plan: &MutationPlan) -> bool {
         plan.operations.iter().any(|operation| {
             let Some(descriptor) = self.entity(operation.entity.entity.as_ref()) else {
                 return false;
@@ -360,6 +360,25 @@ impl UserContext {
         &self,
         plan: &MutationPlan,
     ) -> Result<MutationGovernanceSnapshot, RuntimeError> {
+        self.review_mutation_plan_inner(plan, false)
+    }
+
+    /// Only a save path that actually prepares and applies a Blob participant
+    /// on its physical owner may pass this gate. Every other caller uses the
+    /// public fail-closed review.
+    pub(crate) fn review_mutation_plan_with_blob_participant(
+        &self,
+        plan: &MutationPlan,
+        binding_available: bool,
+    ) -> Result<MutationGovernanceSnapshot, RuntimeError> {
+        self.review_mutation_plan_inner(plan, binding_available)
+    }
+
+    fn review_mutation_plan_inner(
+        &self,
+        plan: &MutationPlan,
+        binding_available: bool,
+    ) -> Result<MutationGovernanceSnapshot, RuntimeError> {
         let resolved = self.mutation_policy_registry.resolve(&plan.request_key);
         let (source, policy, approval_status, warning_codes) = match resolved {
             None => (
@@ -404,7 +423,7 @@ impl UserContext {
 
         // This shared review boundary precedes graph/ledger/native DML. The
         // passive upload module alone cannot atomically maintain bindings.
-        if self.needs_blob_binding_participant(plan) {
+        if self.needs_blob_binding_participant(plan) && !binding_available {
             return Err(RuntimeError::Capability {
                 code: "BLOB_CAPABILITY_MISSING",
                 capability: "blob.v1".to_owned(),

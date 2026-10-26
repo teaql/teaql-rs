@@ -87,6 +87,28 @@ impl<E> GraphSaverFor<E> {
     }
 }
 
+fn approved_blob_plan(
+    context: &UserContext,
+    approved: &crate::MutationPlan,
+) -> Result<Option<Box<dyn crate::RuntimeBlobMutationPlan>>, RuntimeError> {
+    if !context.needs_blob_binding_participant(approved) {
+        return Ok(None);
+    }
+    context
+        .get_resource::<crate::BlobMutationParticipantResource>()
+        .ok_or_else(|| RuntimeError::Capability {
+            code: "BLOB_CAPABILITY_MISSING",
+            capability: "blob.v1".to_owned(),
+        })?
+        .0
+        .plan(context, approved)?
+        .map(Some)
+        .ok_or_else(|| RuntimeError::Capability {
+            code: "BLOB_CAPABILITY_MISSING",
+            capability: "blob.v1".to_owned(),
+        })
+}
+
 impl<E> DynGraphSaver for GraphSaverFor<E>
 where
     E: teaql_data_service::QueryExecutor
@@ -116,7 +138,12 @@ where
                 .await
                 .map_err(data_service_error_into_runtime)?;
             let policy_plan = crate::graph_policy_plan(context, &plan)?;
-            let governance = context.review_mutation_plan(&policy_plan)?;
+            let binding_available = context
+                .get_resource::<crate::BlobMutationParticipantResource>()
+                .is_some();
+            let governance = context
+                .review_mutation_plan_with_blob_participant(&policy_plan, binding_available)?;
+            let mut blob_plan = approved_blob_plan(context, &policy_plan)?;
             let view_boundary = context.view_transaction_boundary();
             let tx = teaql_data_service::TransactionExecutor::begin(executor)
                 .await
@@ -124,8 +151,37 @@ where
             let (result, audit_events) = crate::commit_audit::collect(
                 context,
                 crate::with_mutation_governance(governance, async {
+                    let prepared_blob = if let Some(blob_plan) = blob_plan.take() {
+                        let sql = teaql_data_service::DataServiceExecutor::infrastructure_sql(&tx)
+                            .ok_or_else(|| {
+                                DataServiceError::Runtime(RuntimeError::Transaction(
+                                    "BLOB_TRANSACTION_REQUIRED".to_owned(),
+                                ))
+                            })?;
+                        let resolved_ids = BTreeMap::new();
+                        Some(
+                            blob_plan
+                                .prepare(context, sql, &resolved_ids)
+                                .await
+                                .map_err(DataServiceError::Runtime)?,
+                        )
+                    } else {
+                        None
+                    };
                     let eds = crate::EntityDataService::for_executor(context, entity, &tx);
-                    eds.execute_graph_plan_internal(plan).await
+                    eds.execute_graph_plan_internal_with_before_readback(plan, || async {
+                        if let Some(prepared_blob) = prepared_blob {
+                            let sql =
+                                teaql_data_service::DataServiceExecutor::infrastructure_sql(&tx)
+                                    .expect("prepared Blob binding requires the same SQL owner");
+                            prepared_blob
+                                .apply(context, sql)
+                                .await
+                                .map_err(DataServiceError::Runtime)?;
+                        }
+                        Ok(())
+                    })
+                    .await
                 }),
             )
             .await;
@@ -181,7 +237,12 @@ where
                 root.original_key_for(&crate::EntityKey::new(entity.clone(), current_id));
             reject_cancelled_new_root(&root, &root_key)?;
             let policy_plan = crate::ledger_policy_plan(context, &node, &root);
-            let governance = context.review_mutation_plan(&policy_plan)?;
+            let binding_available = context
+                .get_resource::<crate::BlobMutationParticipantResource>()
+                .is_some();
+            let governance = context
+                .review_mutation_plan_with_blob_participant(&policy_plan, binding_available)?;
+            let blob_plan = approved_blob_plan(context, &policy_plan)?;
             let view_boundary = context.view_transaction_boundary();
             let tx = teaql_data_service::TransactionExecutor::begin(executor)
                 .await
@@ -199,7 +260,7 @@ where
                         );
                     let locations = ledger_object_locations_for(&root, &node);
                     let mut generated_ids = eds
-                        .execute_ledger_plan_internal(root.clone(), &locations)
+                        .execute_ledger_plan_internal_with_blob(root.clone(), &locations, blob_plan)
                         .await?;
                     if let Some(readbacks) = &mut generated_ids.dynamic_readbacks {
                         node.dynamic_fields = readbacks
@@ -293,7 +354,12 @@ where
                 execution_root.original_key_for(&crate::EntityKey::new(entity.clone(), current_id));
             reject_cancelled_new_root(&execution_root, &root_key)?;
             let policy_plan = crate::ledger_policy_plan(context, &node, &execution_root);
-            let governance = context.review_mutation_plan(&policy_plan)?;
+            let binding_available = context
+                .get_resource::<crate::BlobMutationParticipantResource>()
+                .is_some();
+            let governance = context
+                .review_mutation_plan_with_blob_participant(&policy_plan, binding_available)?;
+            let blob_plan = approved_blob_plan(context, &policy_plan)?;
             let view_boundary = context.view_transaction_boundary();
             let tx = match teaql_data_service::TransactionExecutor::begin(executor).await {
                 Ok(tx) => tx,
@@ -338,7 +404,11 @@ where
                         );
                     let locations = ledger_object_locations_for(&submitted_root, &node);
                     let outcome = service
-                        .execute_ledger_plan_internal(submitted_root.clone(), &locations)
+                        .execute_ledger_plan_internal_with_blob(
+                            submitted_root.clone(),
+                            &locations,
+                            blob_plan,
+                        )
                         .await?;
                     if let Some(readbacks) = &outcome.dynamic_readbacks {
                         node.dynamic_fields = readbacks
@@ -3006,7 +3076,14 @@ where
                     )?);
             let locations = ledger_object_locations_for(&execution_root, &node);
             let policy_plan = crate::ledger_policy_plan(context, &node, &execution_root);
-            let governance = context.review_mutation_plan(&policy_plan)?;
+            let binding_available = physical_owner.is_some()
+                && teaql_data_service::DataServiceExecutor::infrastructure_sql(executor).is_some()
+                && context
+                    .get_resource::<crate::BlobMutationParticipantResource>()
+                    .is_some();
+            let governance = context
+                .review_mutation_plan_with_blob_participant(&policy_plan, binding_available)?;
+            let blob_plan = approved_blob_plan(context, &policy_plan)?;
             let submission = if let Some(owner) = physical_owner {
                 Some(
                     draft
@@ -3023,7 +3100,11 @@ where
             );
             let generated_ids = crate::with_mutation_governance(
                 governance,
-                data_service.execute_ledger_plan_internal(submitted_root.clone(), &locations),
+                data_service.execute_ledger_plan_internal_with_blob(
+                    submitted_root.clone(),
+                    &locations,
+                    blob_plan,
+                ),
             )
             .await
             .map_err(data_service_error_into_runtime)?;
@@ -3094,10 +3175,54 @@ where
 
     preflight_graph(context, &mut node, &ObjectLocation::root(), None)?;
     let entity_name = node.entity.clone();
-    let saved = crate::EntityDataService::for_executor(context, entity_name, executor)
-        .save_graph_internal(node)
+    let data_service = crate::EntityDataService::for_executor(context, entity_name, executor);
+    let plan = data_service
+        .plan_graph(node)
         .await
         .map_err(data_service_error_into_runtime)?;
+    let policy_plan = crate::graph_policy_plan(context, &plan)?;
+    let binding_available = physical_owner.is_some()
+        && teaql_data_service::DataServiceExecutor::infrastructure_sql(executor).is_some()
+        && context
+            .get_resource::<crate::BlobMutationParticipantResource>()
+            .is_some();
+    let governance =
+        context.review_mutation_plan_with_blob_participant(&policy_plan, binding_available)?;
+    let blob_plan = approved_blob_plan(context, &policy_plan)?;
+    let saved = crate::with_mutation_governance(governance, async {
+        let prepared_blob = if let Some(blob_plan) = blob_plan {
+            let sql = teaql_data_service::DataServiceExecutor::infrastructure_sql(executor)
+                .ok_or_else(|| {
+                    DataServiceError::Runtime(RuntimeError::Transaction(
+                        "BLOB_TRANSACTION_REQUIRED".to_owned(),
+                    ))
+                })?;
+            let resolved_ids = BTreeMap::new();
+            Some(
+                blob_plan
+                    .prepare(context, sql, &resolved_ids)
+                    .await
+                    .map_err(DataServiceError::Runtime)?,
+            )
+        } else {
+            None
+        };
+        data_service
+            .execute_graph_plan_internal_with_before_readback(plan, || async {
+                if let Some(prepared_blob) = prepared_blob {
+                    let sql = teaql_data_service::DataServiceExecutor::infrastructure_sql(executor)
+                        .expect("prepared Blob binding requires the same SQL owner");
+                    prepared_blob
+                        .apply(context, sql)
+                        .await
+                        .map_err(DataServiceError::Runtime)?;
+                }
+                Ok(())
+            })
+            .await
+    })
+    .await
+    .map_err(data_service_error_into_runtime)?;
     let entity = T::from_compact_row(teaql_core::CompactRow::from_map(saved.values.into()))
         .map_err(|error| RuntimeError::Graph(error.to_string()))?;
     Ok((entity, None))

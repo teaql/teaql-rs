@@ -1,5 +1,7 @@
 //! Optional Blob infrastructure. No default runtime installation or framework dependency.
 mod catalog;
+#[cfg(feature = "runtime-integration")]
+mod mutation_service;
 mod policy;
 mod retention;
 #[cfg(feature = "runtime-integration")]
@@ -10,6 +12,8 @@ pub use catalog::{
     BindingChange, BindingChangeKind, BlobBinding, BlobCatalogRecord, BlobState, BlobUploadLease,
     PostgresBlobCatalog, PreparedBlobBindings, UploadDraft, VerifiedContent,
 };
+#[cfg(feature = "runtime-integration")]
+pub use mutation_service::*;
 pub use policy::{
     BlobPolicies, BlobPolicyProfile, BlobPolicySnapshot, PolicyLimits, PolicyOverrides,
     ResponseShape, Sharing, UploadMode,

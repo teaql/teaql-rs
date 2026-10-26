@@ -1,20 +1,25 @@
 //! Passive installation of the current Blob services into a request context.
-//! Full `blob.v1` readiness also requires the mutation and view participants.
+//! Full `blob.v1` readiness also requires the authorized view contributor.
 use std::sync::Arc;
 
-use teaql_runtime::UserContext;
+use teaql_runtime::{BlobMutationParticipantResource, UserContext};
 
-use crate::{BlobErrorCode, BlobResult, BlobUploadService};
+use crate::{BlobErrorCode, BlobMutationParticipant, BlobResult, BlobUploadService};
 
 /// Shared infrastructure only. Every operation still receives its current
 /// `UserContext`; this value never captures a request identity.
 pub struct BlobRuntime {
     upload: Arc<BlobUploadService>,
+    mutation: Option<Arc<BlobMutationParticipant>>,
 }
 
 impl BlobRuntime {
     pub fn upload(&self) -> &BlobUploadService {
         &self.upload
+    }
+
+    pub fn mutation(&self) -> Option<&BlobMutationParticipant> {
+        self.mutation.as_deref()
     }
 }
 
@@ -30,21 +35,39 @@ impl BlobReferenceModule {
 
     pub fn new(upload: Arc<BlobUploadService>) -> Self {
         Self {
-            runtime: Arc::new(BlobRuntime { upload }),
+            runtime: Arc::new(BlobRuntime {
+                upload,
+                mutation: None,
+            }),
         }
+    }
+
+    pub fn with_mutation(mut self, mutation: Arc<BlobMutationParticipant>) -> Self {
+        self.runtime = Arc::new(BlobRuntime {
+            upload: self.runtime.upload.clone(),
+            mutation: Some(mutation),
+        });
+        self
     }
 
     /// Installs shared services without SQL, store I/O, migrations, or jobs.
     pub fn install_into(&self, context: &mut UserContext) -> BlobResult<()> {
-        if context.get_resource::<BlobRuntimeResource>().is_some() {
+        if context.get_resource::<BlobRuntimeResource>().is_some()
+            || context
+                .get_resource::<BlobMutationParticipantResource>()
+                .is_some()
+        {
             return Err(BlobErrorCode::PolicyInvalid.into());
+        }
+        if let Some(mutation) = &self.runtime.mutation {
+            context.insert_resource(BlobMutationParticipantResource(mutation.clone()));
         }
         context.insert_resource(BlobRuntimeResource(self.runtime.clone()));
         Ok(())
     }
 
     /// Upload-only readiness. Full `blob.v1` remains unavailable until the
-    /// same-transaction binding and authorized view participants are installed.
+    /// same-transaction binding and authorized view participants are validated.
     pub async fn validate_upload_ready(&self, context: &UserContext) -> BlobResult<()> {
         self.runtime.upload.validate_ready(context).await
     }

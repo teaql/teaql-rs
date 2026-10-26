@@ -1,6 +1,7 @@
 //! Actual SQL row/version provenance through the macro/runtime save hydration bridge.
-use super::Fixture;
+use super::{BindAuthorization, BindClock, BindPrincipal, Fixture};
 use std::sync::Arc;
+use teaql_blob_reference::{BlobMutationParticipant, BlobPolicies};
 use teaql_core::TeaqlEntity as _;
 use teaql_core::{
     Audited, BlobFieldSpec, BlobRef, CompactRow, DataType, Entity, EntityDescriptor,
@@ -9,9 +10,10 @@ use teaql_core::{
 use teaql_data_service::infrastructure_sql::*;
 use teaql_macros::{TeaqlEntity, teaql_entity};
 use teaql_runtime::{
-    AuditedSaveExt, EntityKey, EntityRuntimeState, InMemoryMetadataStore, InternalIdGenerator,
-    LedgerEntity, MutationDecision, MutationPlan, MutationPolicy, MutationPolicyIdentity,
-    RuntimeError, UserContext,
+    AuditedSaveExt, BlobMutationParticipantResource, EntityKey, EntityRuntimeState,
+    InMemoryMetadataStore, InternalIdGenerator, LedgerEntity, MutationDecision, MutationPlan,
+    MutationPolicy, MutationPolicyIdentity, RuntimeError, UserContext,
+    save_audited_ledger_entity_with_native_executor,
 };
 
 #[teaql_entity]
@@ -34,6 +36,17 @@ fn transport_descriptor() -> EntityDescriptor {
         .find(|property| property.name == "document")
         .unwrap()
         .data_type = DataType::Text;
+    descriptor
+}
+fn modeled_descriptor() -> EntityDescriptor {
+    let mut descriptor = SavedAsset::entity_descriptor();
+    let spec = BlobFieldSpec::new("Asset", "document", ["pdf"], true, "default").unwrap();
+    let field = descriptor
+        .properties
+        .iter_mut()
+        .find(|property| property.name == "document")
+        .unwrap();
+    *field = field.clone().blob_field_spec(spec);
     descriptor
 }
 fn key() -> EntityKey {
@@ -136,6 +149,343 @@ async fn modeled_blob_save_without_binding_participant_leaves_real_sql_and_inten
         Some(Value::BlobRef(blob("unbound")))
     );
     assert!(!root.has_pending_submission());
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn native_typed_ledger_save_replaces_blob_binding_and_rejects_unuploaded_key_atomically() {
+    let f = Fixture::new(true).await;
+    let target = f.target(42, "document");
+    let spec = BlobFieldSpec::new("Asset", "document", ["pdf"], true, "default").unwrap();
+    let policies = Arc::new(BlobPolicies::default());
+    let policy = policies.resolve(&spec).unwrap();
+    let original = f
+        .upload("ledger_original", target.clone(), policy.clone(), 0)
+        .await;
+    let replacement = f
+        .upload("ledger_replacement", target.clone(), policy.clone(), 0)
+        .await;
+    f.bind(target.clone(), None, Some(original.clone()), policy, 100)
+        .await;
+    let loaded = SavedAsset::from_compact_row(row(f.root.as_ref()).await).unwrap();
+    let root = loaded.entity_runtime_state().unwrap();
+    root.set(key(), "document", Value::BlobRef(replacement.clone()));
+    let mut descriptor = SavedAsset::entity_descriptor();
+    let field = descriptor
+        .properties
+        .iter_mut()
+        .find(|property| property.name == "document")
+        .unwrap();
+    *field = field.clone().blob_field_spec(spec);
+    let mut context =
+        UserContext::new().with_metadata(InMemoryMetadataStore::new().with_entity(descriptor));
+    context.insert_resource(BindPrincipal(Arc::new(std::sync::atomic::AtomicBool::new(
+        true,
+    ))));
+    context.insert_resource(BlobMutationParticipantResource(Arc::new(
+        BlobMutationParticipant::new(
+            f.catalog.clone(),
+            policies,
+            Arc::new(BindAuthorization),
+            Arc::new(BindClock),
+        ),
+    )));
+    context.register_executor(f.business());
+
+    let saved = Audited::new(loaded, "replace governed Blob")
+        .save(&context)
+        .await
+        .unwrap();
+    assert_eq!(saved.version, 2);
+    assert_eq!(saved.document, Some(replacement.clone()));
+    assert_eq!(
+        f.catalog
+            .binding(&f.scope(), &target)
+            .await
+            .unwrap()
+            .unwrap()
+            .reference,
+        Some(replacement.clone())
+    );
+    root.set(key(), "document", Value::BlobRef(blob("not_uploaded")));
+    let error = Audited::new(saved, "reject unuploaded Blob")
+        .save(&context)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("BLOB_BIND_DENIED"));
+    assert_eq!(
+        row(f.root.as_ref()).await.get("version"),
+        Some(&Value::I64(2))
+    );
+    assert_eq!(
+        f.catalog
+            .binding(&f.scope(), &target)
+            .await
+            .unwrap()
+            .unwrap()
+            .reference,
+        Some(replacement)
+    );
+    assert_eq!(
+        root.get(&key(), "document"),
+        Some(Value::BlobRef(blob("not_uploaded")))
+    );
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn outer_native_owner_commits_or_rolls_back_blob_binding_with_ledger() {
+    let f = Fixture::new(true).await;
+    let target = f.target(42, "document");
+    let descriptor = modeled_descriptor();
+    let policies = Arc::new(BlobPolicies::default());
+    let policy = policies
+        .resolve(
+            descriptor
+                .property_by_name("document")
+                .unwrap()
+                .blob_field_spec
+                .as_ref()
+                .unwrap(),
+        )
+        .unwrap();
+    let original = f
+        .upload("outer_blob_old", target.clone(), policy.clone(), 0)
+        .await;
+    let committed = f
+        .upload("outer_blob_committed", target.clone(), policy.clone(), 0)
+        .await;
+    let rolled_back = f
+        .upload("outer_blob_rollback", target.clone(), policy.clone(), 0)
+        .await;
+    f.bind(target.clone(), None, Some(original.clone()), policy, 100)
+        .await;
+    let loaded = SavedAsset::from_compact_row(row(f.root.as_ref()).await).unwrap();
+    let root = loaded.entity_runtime_state().unwrap();
+    root.set(key(), "document", Value::BlobRef(committed.clone()));
+    let mut context =
+        UserContext::new().with_metadata(InMemoryMetadataStore::new().with_entity(descriptor));
+    context.insert_resource(BindPrincipal(Arc::new(std::sync::atomic::AtomicBool::new(
+        true,
+    ))));
+    context.insert_resource(BlobMutationParticipantResource(Arc::new(
+        BlobMutationParticipant::new(
+            f.catalog.clone(),
+            policies,
+            Arc::new(BindAuthorization),
+            Arc::new(BindClock),
+        ),
+    )));
+    context.insert_resource(f.business());
+    let catalog = f.catalog.clone();
+    let scope = f.scope();
+    let target_in_tx = target.clone();
+    let before = original.clone();
+    let saved = context
+        .execute_in_transaction::<super::support::Business, _, _>(move |tx| {
+            Box::pin(async move {
+                let saved = tx
+                    .save_audited(Audited::new(loaded, "outer Blob commit"))
+                    .await?;
+                assert_eq!(saved.version, 2);
+                assert_eq!(
+                    catalog
+                        .binding(&scope, &target_in_tx)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .reference,
+                    Some(before)
+                );
+                Ok(saved)
+            })
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        f.catalog
+            .binding(&f.scope(), &target)
+            .await
+            .unwrap()
+            .unwrap()
+            .reference,
+        Some(committed.clone())
+    );
+    assert_eq!(
+        row(f.root.as_ref()).await.get("version"),
+        Some(&Value::I64(2))
+    );
+
+    root.set(key(), "document", Value::BlobRef(rolled_back.clone()));
+    let result = context
+        .execute_in_transaction::<super::support::Business, _, _>(move |tx| {
+            Box::pin(async move {
+                let saved = tx
+                    .save_audited(Audited::new(saved, "outer Blob rollback"))
+                    .await?;
+                assert_eq!(saved.version, 3);
+                Err::<(), _>(RuntimeError::Graph("abort outer Blob transaction".into()))
+            })
+        })
+        .await;
+    assert!(result.is_err());
+    assert_eq!(
+        row(f.root.as_ref()).await.get("version"),
+        Some(&Value::I64(2))
+    );
+    assert_eq!(
+        f.catalog
+            .binding(&f.scope(), &target)
+            .await
+            .unwrap()
+            .unwrap()
+            .reference,
+        Some(committed)
+    );
+    assert_eq!(
+        root.get(&key(), "document"),
+        Some(Value::BlobRef(rolled_back))
+    );
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn raw_native_owner_blob_failure_vetoes_commit_even_when_caller_handles_error() {
+    use teaql_data_service::{Transaction, TransactionExecutor};
+
+    let f = Fixture::new(true).await;
+    let target = f.target(42, "document");
+    let descriptor = modeled_descriptor();
+    let policies = Arc::new(BlobPolicies::default());
+    let policy = policies
+        .resolve(
+            descriptor
+                .property_by_name("document")
+                .unwrap()
+                .blob_field_spec
+                .as_ref()
+                .unwrap(),
+        )
+        .unwrap();
+    let original = f
+        .upload("raw_blob_original", target.clone(), policy.clone(), 0)
+        .await;
+    f.bind(target.clone(), None, Some(original.clone()), policy, 100)
+        .await;
+    let loaded = SavedAsset::from_compact_row(row(f.root.as_ref()).await).unwrap();
+    let root = loaded.entity_runtime_state().unwrap();
+    root.set(key(), "document", Value::BlobRef(blob("raw_missing")));
+    let mut context =
+        UserContext::new().with_metadata(InMemoryMetadataStore::new().with_entity(descriptor));
+    context.insert_resource(BindPrincipal(Arc::new(std::sync::atomic::AtomicBool::new(
+        true,
+    ))));
+    context.insert_resource(BlobMutationParticipantResource(Arc::new(
+        BlobMutationParticipant::new(
+            f.catalog.clone(),
+            policies,
+            Arc::new(BindAuthorization),
+            Arc::new(BindClock),
+        ),
+    )));
+    let business = f.business();
+    let tx = TransactionExecutor::begin(&business).await.unwrap();
+    let error = save_audited_ledger_entity_with_native_executor(
+        Audited::new(loaded, "reject raw unuploaded Blob"),
+        Arc::new(context),
+        &tx,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("BLOB_BIND_DENIED"));
+    assert!(Transaction::commit(tx).await.is_err());
+    assert_eq!(
+        row(f.root.as_ref()).await.get("version"),
+        Some(&Value::I64(1))
+    );
+    assert_eq!(
+        f.catalog
+            .binding(&f.scope(), &target)
+            .await
+            .unwrap()
+            .unwrap()
+            .reference,
+        Some(original)
+    );
+    assert_eq!(
+        root.get(&key(), "document"),
+        Some(Value::BlobRef(blob("raw_missing")))
+    );
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn native_ledger_allocated_id_binds_new_blob_before_commit() {
+    let f = Fixture::new(true).await;
+    let descriptor = modeled_descriptor();
+    let policies = Arc::new(BlobPolicies::default());
+    let policy = policies
+        .resolve(
+            descriptor
+                .property_by_name("document")
+                .unwrap()
+                .blob_field_spec
+                .as_ref()
+                .unwrap(),
+        )
+        .unwrap();
+    let pending_target =
+        teaql_blob_reference::BlobFieldTarget::new("Asset", None, "document").unwrap();
+    let reference = f
+        .upload("ledger_allocated_blob", pending_target, policy, 0)
+        .await;
+    let new =
+        SavedAsset::from_compact_row(CompactRow::from_map(std::collections::BTreeMap::from([
+            ("id".into(), Value::U64(0)),
+            ("version".into(), Value::I64(0)),
+            ("document".into(), Value::Null),
+        ])))
+        .unwrap();
+    let root = new.entity_runtime_state().unwrap();
+    let temporary = EntityKey::new_static("Asset", 0_u64);
+    root.mark_as_new(temporary.clone());
+    root.set(
+        temporary.clone(),
+        "document",
+        Value::BlobRef(reference.clone()),
+    );
+    let mut context = UserContext::new()
+        .with_metadata(InMemoryMetadataStore::new().with_entity(descriptor))
+        .with_internal_id_generator(AllocateAssetId);
+    context.insert_resource(BindPrincipal(Arc::new(std::sync::atomic::AtomicBool::new(
+        true,
+    ))));
+    context.insert_resource(BlobMutationParticipantResource(Arc::new(
+        BlobMutationParticipant::new(
+            f.catalog.clone(),
+            policies,
+            Arc::new(BindAuthorization),
+            Arc::new(BindClock),
+        ),
+    )));
+    context.register_executor(f.business());
+    let saved = Audited::new(new, "create ledger asset with pending Blob target")
+        .save(&context)
+        .await
+        .unwrap();
+    assert_eq!((saved.id, saved.version), (42, 1));
+    assert_eq!(saved.document, Some(reference.clone()));
+    assert_eq!(
+        f.catalog
+            .binding(&f.scope(), &f.target(42, "document"))
+            .await
+            .unwrap()
+            .unwrap()
+            .reference,
+        Some(reference)
+    );
+    assert!(!root.is_new(&temporary));
+    assert_eq!(f.count("r5_assets").await, 1);
     f.finish().await;
 }
 

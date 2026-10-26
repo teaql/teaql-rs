@@ -5,6 +5,9 @@ mod completion;
 #[path = "support/dynamic_fields.rs"]
 mod dynamic_fields;
 #[cfg(feature = "runtime-integration")]
+#[path = "support/graph_binding.rs"]
+mod graph_binding;
+#[cfg(feature = "runtime-integration")]
 #[path = "support/runtime_journal.rs"]
 mod runtime_journal;
 #[cfg(feature = "runtime-integration")]
@@ -26,6 +29,282 @@ use teaql_blob_reference::*;
 use teaql_core::InsertCommand;
 use teaql_data_service::infrastructure_sql::*;
 use teaql_data_service::{DataServiceExecutor, MutationCommand, MutationExecutor, MutationRequest};
+
+#[cfg(feature = "runtime-integration")]
+struct BindPrincipal(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+#[cfg(feature = "runtime-integration")]
+struct BindAuthorization;
+
+#[cfg(feature = "runtime-integration")]
+impl BlobBindAuthorization for BindAuthorization {
+    fn identity(&self, context: &teaql_runtime::UserContext) -> BlobResult<BlobUploadIdentity> {
+        context
+            .get_resource::<BindPrincipal>()
+            .ok_or(BlobErrorCode::BindDenied)?;
+        BlobUploadIdentity::new(BlobScope::new("fixture", "tenant-a")?, "actor-a")
+    }
+
+    fn authorize_bind(
+        &self,
+        context: &teaql_runtime::UserContext,
+        _target: &BlobFieldTarget,
+        _action: BlobBindAction,
+        _next: Option<&teaql_core::BlobRef>,
+    ) -> BlobResult<bool> {
+        Ok(context
+            .get_resource::<BindPrincipal>()
+            .ok_or(BlobErrorCode::BindDenied)?
+            .0
+            .load(Ordering::SeqCst))
+    }
+}
+
+#[cfg(feature = "runtime-integration")]
+struct BindClock;
+
+#[cfg(feature = "runtime-integration")]
+impl BlobUploadClock for BindClock {
+    fn now_millis(&self) -> BlobResult<i64> {
+        Ok(100)
+    }
+}
+
+#[cfg(feature = "runtime-integration")]
+#[tokio::test]
+async fn approved_blob_mutation_plan_prepares_on_business_owner_and_requires_resolved_create_id() {
+    use teaql_core::{BlobFieldSpec, DataType, EntityDescriptor, PropertyDescriptor, Value};
+    use teaql_runtime::{
+        EntityKey, InMemoryMetadataStore, MutationOperation, MutationOperationKind, MutationPlan,
+        UserContext,
+    };
+
+    let f = Fixture::new(true).await;
+    let spec = BlobFieldSpec::new("Asset", "document", ["pdf"], false, "default").unwrap();
+    let policy = BlobPolicies::default().resolve(&spec).unwrap();
+    let target = f.target(42, "document");
+    let key = f
+        .upload("participant", target.clone(), policy.clone(), 0)
+        .await;
+    let descriptor = EntityDescriptor::new("Asset")
+        .table_name("r5_assets")
+        .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+        .property(
+            PropertyDescriptor::new("version", DataType::I64)
+                .version()
+                .not_null(),
+        )
+        .property(
+            PropertyDescriptor::new("document", DataType::BlobRef)
+                .not_null()
+                .blob_field_spec(spec),
+        );
+    let granted = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let mut context =
+        UserContext::new().with_metadata(InMemoryMetadataStore::new().with_entity(descriptor));
+    context.insert_resource(BindPrincipal(granted.clone()));
+    let participant = BlobMutationParticipant::new(
+        f.catalog.clone(),
+        Arc::new(BlobPolicies::default()),
+        Arc::new(BindAuthorization),
+        Arc::new(BindClock),
+    );
+    let original = EntityKey::new("Asset", 0_i64);
+    let create = MutationPlan {
+        execution_id: "create".into(),
+        request_key: "Asset.save".into(),
+        root_entity_type: "Asset".into(),
+        audit_reason: Some("insert file".into()),
+        operations: vec![MutationOperation {
+            kind: MutationOperationKind::Create,
+            entity: original.clone(),
+            original_version: None,
+            changed_values: BTreeMap::from([("document".into(), Value::BlobRef(key.clone()))]),
+        }],
+    };
+    let tx = f.root.begin().await.unwrap();
+    let plan = participant.plan(&context, &create).unwrap().unwrap();
+    assert_eq!(plan.len(), 1);
+    assert_eq!(
+        participant
+            .prepare(&context, tx.as_ref(), plan, &BTreeMap::new())
+            .await
+            .unwrap_err()
+            .code,
+        BlobErrorCode::TransactionRequired
+    );
+    assert!(tx.commit().await.is_err());
+    assert_eq!(f.count("r5_assets").await, 0);
+
+    let tx = f.root.begin().await.unwrap();
+    let plan = participant.plan(&context, &create).unwrap().unwrap();
+    let resolved = BTreeMap::from([(original, Value::U64(42))]);
+    let prepared = participant
+        .prepare(&context, tx.as_ref(), plan, &resolved)
+        .await
+        .unwrap();
+    f.write(tx.as_ref(), &target, Some(&key)).await;
+    assert_eq!(f.count("r5_assets").await, 0);
+    participant
+        .apply(&context, tx.as_ref(), prepared)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        f.catalog
+            .binding(&f.scope(), &target)
+            .await
+            .unwrap()
+            .unwrap()
+            .reference,
+        Some(key.clone())
+    );
+
+    let untouched = MutationPlan {
+        operations: vec![MutationOperation {
+            kind: MutationOperationKind::Update,
+            entity: EntityKey::new("Asset", 42_u64),
+            original_version: Some(1),
+            changed_values: BTreeMap::from([("version".into(), Value::I64(2))]),
+        }],
+        ..create.clone()
+    };
+    assert!(participant.plan(&context, &untouched).unwrap().is_none());
+    let replacement = f
+        .upload("participant_replacement", target.clone(), policy, 0)
+        .await;
+    let update = MutationPlan {
+        operations: vec![MutationOperation {
+            kind: MutationOperationKind::Update,
+            entity: EntityKey::new("Asset", 42_u64),
+            original_version: Some(1),
+            changed_values: BTreeMap::from([(
+                "document".into(),
+                Value::BlobRef(replacement.clone()),
+            )]),
+        }],
+        ..create.clone()
+    };
+    let tx = f.root.begin().await.unwrap();
+    let prepared = participant
+        .prepare(
+            &context,
+            tx.as_ref(),
+            participant.plan(&context, &update).unwrap().unwrap(),
+            &BTreeMap::new(),
+        )
+        .await
+        .unwrap();
+    f.write(tx.as_ref(), &target, Some(&replacement)).await;
+    participant
+        .apply(&context, tx.as_ref(), prepared)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        f.catalog
+            .binding(&f.scope(), &target)
+            .await
+            .unwrap()
+            .unwrap()
+            .reference,
+        Some(replacement.clone())
+    );
+
+    let clear = MutationPlan {
+        operations: vec![MutationOperation {
+            kind: MutationOperationKind::Update,
+            entity: EntityKey::new("Asset", 42_u64),
+            original_version: Some(1),
+            changed_values: BTreeMap::from([("document".into(), Value::Null)]),
+        }],
+        ..create.clone()
+    };
+    assert_eq!(
+        participant.plan(&context, &clear).err().unwrap().code,
+        BlobErrorCode::ReferenceInvalid
+    );
+
+    let delete = MutationPlan {
+        operations: vec![MutationOperation {
+            kind: MutationOperationKind::Delete,
+            entity: EntityKey::new("Asset", 42_u64),
+            original_version: Some(1),
+            changed_values: BTreeMap::new(),
+        }],
+        ..create
+    };
+    let tx = f.root.begin().await.unwrap();
+    let prepared = participant
+        .prepare(
+            &context,
+            tx.as_ref(),
+            participant.plan(&context, &delete).unwrap().unwrap(),
+            &BTreeMap::new(),
+        )
+        .await
+        .unwrap();
+    execute(
+        tx.as_ref(),
+        "DELETE FROM r5_assets WHERE id=$1",
+        vec![42_u64.into()],
+    )
+    .await;
+    granted.store(false, Ordering::SeqCst);
+    assert_eq!(
+        participant
+            .apply(&context, tx.as_ref(), prepared)
+            .await
+            .unwrap_err()
+            .code,
+        BlobErrorCode::BindDenied
+    );
+    assert!(tx.commit().await.is_err());
+    assert_eq!(f.count("r5_assets").await, 1);
+    assert_eq!(
+        f.catalog
+            .binding(&f.scope(), &target)
+            .await
+            .unwrap()
+            .unwrap()
+            .reference,
+        Some(replacement.clone())
+    );
+
+    granted.store(true, Ordering::SeqCst);
+    let tx = f.root.begin().await.unwrap();
+    let prepared = participant
+        .prepare(
+            &context,
+            tx.as_ref(),
+            participant.plan(&context, &delete).unwrap().unwrap(),
+            &BTreeMap::new(),
+        )
+        .await
+        .unwrap();
+    execute(
+        tx.as_ref(),
+        "DELETE FROM r5_assets WHERE id=$1",
+        vec![42_u64.into()],
+    )
+    .await;
+    participant
+        .apply(&context, tx.as_ref(), prepared)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(f.count("r5_assets").await, 0);
+    assert_eq!(
+        f.catalog
+            .binding(&f.scope(), &target)
+            .await
+            .unwrap()
+            .unwrap()
+            .reference,
+        None
+    );
+    f.finish().await;
+}
 
 struct Counted {
     inner: Arc<dyn InfrastructureSql>,

@@ -1,11 +1,13 @@
 # teaql-blob-reference
 
 This optional crate implements policies, the PostgreSQL catalog and, with the
-explicit `runtime-integration` feature, actual current-UserContext upload services.
-Full BlobRuntime/BlobReferenceModule assembly, production S3, read projection,
-native graph/ledger/outer completion, durable command recovery and governed
-selection remain in progress. Runtime saves do not automatically call this catalog
-yet. A standalone upload service does not advertise a complete blob.v1 capability.
+explicit `runtime-integration` feature, actual current-UserContext upload services
+and a transaction-bound mutation participant. Audited graph, typed ledger and
+native outer/raw saves call the participant when it is explicitly installed;
+missing participation still fails before business DML. Full `blob.v1` readiness,
+authorized read projection, production S3, durable command recovery and governed
+selection remain in progress. A standalone upload service does not advertise a
+complete Blob capability.
 
 The trusted asynchronous BlobStore SPI now defines immutable streaming, range,
 exact-version delete/seal and complete signed-read values. The optional sibling

@@ -273,6 +273,19 @@ where
         &self,
         plan: GraphMutationPlan,
     ) -> Result<GraphNode, DataServiceError<E::Error>> {
+        self.execute_graph_plan_internal_with_before_readback(plan, || async { Ok(()) })
+            .await
+    }
+
+    pub(crate) async fn execute_graph_plan_internal_with_before_readback<F, Fut>(
+        &self,
+        plan: GraphMutationPlan,
+        before_readback: F,
+    ) -> Result<GraphNode, DataServiceError<E::Error>>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send,
+    {
         let intent = teaql_core::MutationIntent::from_optional(
             plan.planned_root
                 .as_ref()
@@ -286,13 +299,18 @@ where
             .map_err(DataServiceError::Runtime)?;
         // Do not embed the complete executor state machine in each intent
         // boundary. Generated bootstrap also runs on small test-thread stacks.
-        Box::pin(scoped.execute_graph_plan_scoped(plan)).await
+        Box::pin(scoped.execute_graph_plan_scoped(plan, before_readback)).await
     }
 
-    async fn execute_graph_plan_scoped(
+    async fn execute_graph_plan_scoped<F, Fut>(
         &self,
         plan: GraphMutationPlan,
-    ) -> Result<GraphNode, DataServiceError<E::Error>> {
+        before_readback: F,
+    ) -> Result<GraphNode, DataServiceError<E::Error>>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send,
+    {
         let Some(mut root) = plan.planned_root else {
             return Err(DataServiceError::Runtime(RuntimeError::Graph(
                 "graph mutation plan has no planned root".to_owned(),
@@ -364,6 +382,8 @@ where
                 }
             }
         }
+
+        before_readback().await?;
 
         if root.operation != GraphOperation::Remove {
             let descriptor = self
@@ -1584,6 +1604,16 @@ where
         root: crate::EntityRuntimeState,
         locations: &std::collections::BTreeMap<crate::EntityKey, crate::ObjectLocation>,
     ) -> Result<LedgerExecutionOutcome, DataServiceError<E::Error>> {
+        self.execute_ledger_plan_internal_with_blob(root, locations, None)
+            .await
+    }
+
+    pub(crate) async fn execute_ledger_plan_internal_with_blob(
+        &self,
+        root: crate::EntityRuntimeState,
+        locations: &std::collections::BTreeMap<crate::EntityKey, crate::ObjectLocation>,
+        blob_plan: Option<Box<dyn crate::RuntimeBlobMutationPlan>>,
+    ) -> Result<LedgerExecutionOutcome, DataServiceError<E::Error>> {
         if root.has_pending_dynamic_mutations() {
             self.data_service
                 .metadata
@@ -1598,13 +1628,14 @@ where
             .with_mutation_intent(intent)
             .with_ledger_privacy(&root)
             .map_err(DataServiceError::Runtime)?;
-        Box::pin(scoped.execute_ledger_plan_scoped(root, locations)).await
+        Box::pin(scoped.execute_ledger_plan_scoped(root, locations, blob_plan)).await
     }
 
     async fn execute_ledger_plan_scoped(
         &self,
         root: crate::EntityRuntimeState,
         locations: &std::collections::BTreeMap<crate::EntityKey, crate::ObjectLocation>,
+        blob_plan: Option<Box<dyn crate::RuntimeBlobMutationPlan>>,
     ) -> Result<LedgerExecutionOutcome, DataServiceError<E::Error>> {
         if let Some(error) = root.first_composition_error() {
             return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
@@ -1896,6 +1927,24 @@ where
         // The required-field gate above is complete before Deletes, Inserts,
         // or Updates. Ledger deletion is versioned soft delete, so physical
         // foreign keys do not impose child-before-parent ordering here.
+        let prepared_blob = if let Some(blob_plan) = blob_plan {
+            let sql = teaql_data_service::DataServiceExecutor::infrastructure_sql(
+                self.data_service.executor,
+            )
+            .ok_or_else(|| {
+                DataServiceError::Runtime(RuntimeError::Transaction(
+                    "BLOB_TRANSACTION_REQUIRED".to_owned(),
+                ))
+            })?;
+            Some(
+                blob_plan
+                    .prepare(self.data_service.metadata.context, sql, &resolved_ids)
+                    .await
+                    .map_err(DataServiceError::Runtime)?,
+            )
+        } else {
+            None
+        };
         for key in &deleted_keys {
             if new_keys.contains(key) {
                 continue;
@@ -1985,6 +2034,16 @@ where
                 ))
                 .await?,
             }));
+        }
+        if let Some(prepared_blob) = prepared_blob {
+            let sql = teaql_data_service::DataServiceExecutor::infrastructure_sql(
+                self.data_service.executor,
+            )
+            .expect("prepared Blob binding requires the same SQL owner");
+            prepared_blob
+                .apply(self.data_service.metadata.context, sql)
+                .await
+                .map_err(DataServiceError::Runtime)?;
         }
         let mut affected = BTreeSet::from_iter(checked_changes.keys().cloned());
         affected.extend(

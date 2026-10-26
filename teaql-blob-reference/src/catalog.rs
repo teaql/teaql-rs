@@ -472,6 +472,22 @@ impl PostgresBlobCatalog {
         }
         rows.pop().map(binding).transpose()
     }
+    /// Read the authoritative old binding while holding its row lock on the
+    /// caller's physical transaction. The returned version is suitable for
+    /// `prepare_bindings`; a root-connection read is not.
+    pub async fn binding_for_update(
+        &self,
+        sql: &dyn InfrastructureSql,
+        scope: &BlobScope,
+        target: &BlobFieldTarget,
+    ) -> BlobResult<BlobBinding> {
+        self.require_active(sql)?;
+        let result = self.lock_binding(sql, scope, target).await;
+        if result.is_err() {
+            sql.mark_rollback_only()?;
+        }
+        result
+    }
     pub async fn prepare_bindings(
         &self,
         sql: &dyn InfrastructureSql,
