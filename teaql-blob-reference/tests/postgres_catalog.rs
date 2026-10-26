@@ -446,6 +446,16 @@ impl InfrastructureSql for Counted {
 #[tokio::test]
 async fn construction_is_passive_and_fixed_migration_is_explicit_idempotent_and_fail_closed() {
     let f = Fixture::new(false).await;
+    let admin = f.admin.get().await.unwrap();
+    admin
+        .batch_execute(&format!(
+            "INSERT INTO \"{}\".r5_assets(id,version,document) VALUES \
+             (1,1,'legacy-invoice.pdf'), \
+             (2,1,'https://legacy.example.test/files/2.pdf')",
+            f.schema
+        ))
+        .await
+        .unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let catalog = PostgresBlobCatalog::new(Arc::new(Counted {
         inner: f.root.clone(),
@@ -460,6 +470,22 @@ async fn construction_is_passive_and_fixed_migration_is_explicit_idempotent_and_
     catalog.migrate().await.unwrap();
     catalog.migrate().await.unwrap();
     assert_eq!(f.count("teaql_blob_schema").await, 1);
+    let rows = admin
+        .query(
+            &format!(
+                "SELECT document FROM \"{}\".r5_assets ORDER BY id",
+                f.schema
+            ),
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(rows[0].get::<_, &str>(0), "legacy-invoice.pdf");
+    assert_eq!(
+        rows[1].get::<_, &str>(0),
+        "https://legacy.example.test/files/2.pdf"
+    );
+    assert_eq!(f.count("teaql_blob_binding").await, 0);
     execute(
         f.root.as_ref(),
         "UPDATE teaql_blob_schema SET schema_digest='invalid'",
