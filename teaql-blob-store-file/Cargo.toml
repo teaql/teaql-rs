@@ -1,0 +1,32 @@
+[package]
+name = "teaql-blob-store-file"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Explicitly provisioned immutable Linux file store for TeaQL Blob"
+
+[features]
+http-gateway = ["tokio/net", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:serde", "dep:serde_json", "dep:url", "dep:hmac", "dep:base64"]
+
+[dependencies]
+teaql-blob-reference.workspace = true
+async-trait.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "sync"] }
+futures-util = "0.3"
+rustix = { version = "1.1", features = ["fs", "process"] }
+getrandom = "0.3"
+hyper = { version = "1", features = ["server", "http1"], optional = true }
+hyper-util = { version = "0.1", features = ["tokio"], optional = true }
+http-body-util = { version = "0.1", optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+url = { version = "2", optional = true }
+hmac = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+serde_json.workspace = true
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }

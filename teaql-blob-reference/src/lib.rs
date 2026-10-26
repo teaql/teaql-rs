@@ -2,6 +2,7 @@
 mod catalog;
 mod policy;
 mod retention;
+mod store;
 pub use catalog::{
     BindingChange, BlobBinding, BlobCatalogRecord, BlobState, PostgresBlobCatalog,
     PreparedBlobBindings, UploadDraft, VerifiedContent,
@@ -12,6 +13,7 @@ pub use policy::{
 };
 pub use retention::BlobRetention;
 use std::fmt;
+pub use store::*;
 use teaql_data_service::infrastructure_sql::{InfrastructureSqlError, PhysicalTransactionOutcome};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,6 +33,8 @@ pub enum BlobErrorCode {
     TransactionRequired,
     IdempotencyConflict,
     CatalogFailed,
+    StoreFailed,
+    SignFailed,
 }
 impl BlobErrorCode {
     pub const fn code(self) -> &'static str {
@@ -50,6 +54,8 @@ impl BlobErrorCode {
             Self::TransactionRequired => "BLOB_TRANSACTION_REQUIRED",
             Self::IdempotencyConflict => "BLOB_IDEMPOTENCY_CONFLICT",
             Self::CatalogFailed => "BLOB_CATALOG_FAILED",
+            Self::StoreFailed => "BLOB_STORE_FAILED",
+            Self::SignFailed => "BLOB_SIGN_FAILED",
         }
     }
 }

@@ -3504,7 +3504,9 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 name = "teaql-blob-reference"
 version = "5.0.7"
 dependencies = [
+ "async-trait",
  "deadpool-postgres",
+ "futures-core",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -3515,6 +3517,30 @@ dependencies = [
  "teaql-sql",
  "tokio",
  "tokio-postgres",
+ "url",
+]
+
+[[package]]
+name = "teaql-blob-store-file"
+version = "5.0.7"
+dependencies = [
+ "async-trait",
+ "base64",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hmac 0.12.1",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "reqwest 0.13.4",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "teaql-blob-reference",
+ "tempfile",
+ "tokio",
+ "url",
 ]
 
 [[package]]

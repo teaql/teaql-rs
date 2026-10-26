@@ -2,12 +2,18 @@
 
 This optional crate currently implements the R5 policy/catalog component.
 BlobRuntime/BlobReferenceModule assembly, upload streaming/format verification,
-File/S3 storage, read projection, durable command recovery, native graph/ledger
+S3 storage, read projection, durable command recovery, native graph/ledger
 and outer completion, and governed selection remain in progress. Runtime saves
 do not automatically call this catalog yet. No complete Blob capability is
 advertised by installing a partial implementation.
 
-Production dependencies are core/data-service contracts, Serde and SHA256.
+The trusted asynchronous BlobStore SPI now defines immutable streaming, range,
+exact-version delete/seal and complete signed-read values. The optional sibling
+teaql-blob-store-file implements Linux file transport and a feature-gated HTTP
+gateway; it does not install a complete Blob capability or verify actual formats.
+
+Production dependencies are core/data-service contracts, Serde, SHA256, lightweight
+async/stream contracts and URL validation.
 Runtime/PostgreSQL/Tokio dependencies are for tests. A base runtime does not
 install this implementation transitively.
 

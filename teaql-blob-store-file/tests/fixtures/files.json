@@ -1,0 +1,92 @@
+{
+  "schema": "teaql.reference-files/v1",
+  "issue": "https://github.com/teaql/teaql-conformance/issues/237",
+  "license": "Apache-2.0",
+  "content": "TeaQL reference fixture 237",
+  "files": [
+    {
+      "path": "files/sample.jpg",
+      "extension": "jpg",
+      "contentType": "image/jpeg",
+      "sizeBytes": 633,
+      "sha256": "5a8b44ec6679fabfa51de6715b255919bdb9121d78eed82f8e4d1811008201d8",
+      "origin": "Original synthetic TeaQL test content; generated on the implementation server"
+    },
+    {
+      "path": "files/sample.jpeg",
+      "extension": "jpeg",
+      "contentType": "image/jpeg",
+      "sizeBytes": 633,
+      "sha256": "5a8b44ec6679fabfa51de6715b255919bdb9121d78eed82f8e4d1811008201d8",
+      "origin": "Original synthetic TeaQL test content; generated on the implementation server"
+    },
+    {
+      "path": "files/sample.png",
+      "extension": "png",
+      "contentType": "image/png",
+      "sizeBytes": 82,
+      "sha256": "324a6eea5f9f93ef999406880dd3ed634328f63a41b460e701a6b4323ab54551",
+      "origin": "Original synthetic TeaQL test content; generated on the implementation server"
+    },
+    {
+      "path": "files/sample.mp4",
+      "extension": "mp4",
+      "contentType": "video/mp4",
+      "sizeBytes": 1597,
+      "sha256": "5a3665235df157cb9d1cffe53501b86889849a38a5a643f0a64dbc957f4a58af",
+      "origin": "Original synthetic TeaQL test content; generated on the implementation server"
+    },
+    {
+      "path": "files/sample.mp3",
+      "extension": "mp3",
+      "contentType": "audio/mpeg",
+      "sizeBytes": 2107,
+      "sha256": "a4facfc9e36b342c3f7b2de8283ab9f4c9cf53af2dfb2f1959825aa930748d9b",
+      "origin": "Original synthetic TeaQL test content; generated on the implementation server"
+    },
+    {
+      "path": "files/sample.doc",
+      "extension": "doc",
+      "contentType": "application/msword",
+      "sizeBytes": 9728,
+      "sha256": "9fca8d262d2aa905d58b1cc1c8914d1a8069c16c340f24cd3c4a77daff9c8b73",
+      "origin": "Original synthetic TeaQL test content; generated on the implementation server"
+    },
+    {
+      "path": "files/sample.docx",
+      "extension": "docx",
+      "contentType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "sizeBytes": 4283,
+      "sha256": "a36bc052bb030e12466e32d3caad8d5666de8743f2b7d7b775a830d8d5d72c51",
+      "origin": "Original synthetic TeaQL test content; generated on the implementation server"
+    },
+    {
+      "path": "files/sample.xls",
+      "extension": "xls",
+      "contentType": "application/vnd.ms-excel",
+      "sizeBytes": 5632,
+      "sha256": "7f387858aaa3ed39d3c7c692aa865b36ac6620462714f3d0daa96388424cf75d",
+      "origin": "Original synthetic TeaQL test content; generated on the implementation server"
+    },
+    {
+      "path": "files/sample.xlsx",
+      "extension": "xlsx",
+      "contentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "sizeBytes": 4817,
+      "sha256": "cda7a9e23a4c27426a69efdc15d5127af4baefb6c084756df9e28c4330c978ba",
+      "origin": "Original synthetic TeaQL test content; generated on the implementation server"
+    },
+    {
+      "path": "files/sample.pdf",
+      "extension": "pdf",
+      "contentType": "application/pdf",
+      "sizeBytes": 1422,
+      "sha256": "4b6a645a3ed4736baaa092cffa6e06fd3176866f589edd2b748565ad6487731b",
+      "origin": "Original synthetic TeaQL test content; generated on the implementation server"
+    }
+  ],
+  "tools": {
+    "libreoffice": "LibreOffice 7.3.7.2 30(Build:2)",
+    "ffmpeg": "ffmpeg version 4.4.2-0ubuntu0.22.04.1 Copyright (c) 2000-2021 the FFmpeg developers"
+  }
+}
