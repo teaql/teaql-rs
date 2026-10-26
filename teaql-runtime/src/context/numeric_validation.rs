@@ -29,6 +29,9 @@ impl UserContext {
                 continue;
             }
             let expected = match property.data_type {
+                DataType::I64 if property.is_int32 && value.try_i32().is_none() => {
+                    Some("an exact signed 32-bit Integer")
+                }
                 DataType::I64 if value.try_i64().is_none() => {
                     Some("an exact signed 64-bit integer")
                 }
@@ -64,6 +67,10 @@ impl UserContext {
 #[cfg(test)]
 #[path = "integral_validation_tests.rs"]
 mod integral_validation_tests;
+
+#[cfg(test)]
+#[path = "integer32_tests.rs"]
+mod integer32_tests;
 
 #[cfg(test)]
 mod tests {

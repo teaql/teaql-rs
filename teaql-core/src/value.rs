@@ -146,6 +146,11 @@ impl Value {
         }
     }
 
+    /// Exact modeled Integer conversion: never rounds, truncates or wraps.
+    pub fn try_i32(&self) -> Option<i32> {
+        self.try_i64().and_then(|value| i32::try_from(value).ok())
+    }
+
     pub fn try_u64(&self) -> Option<u64> {
         match self {
             Self::U64(value) => Some(*value),
@@ -268,6 +273,31 @@ impl Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integer32_exact_conversion_preserves_endpoints_and_rejects_loss() {
+        for number in [i32::MIN, 0, i32::MAX] {
+            assert_eq!(Value::I64(i64::from(number)).try_i32(), Some(number));
+            assert_eq!(
+                Value::Decimal(Decimal::from(number)).try_i32(),
+                Some(number)
+            );
+        }
+        assert_eq!(Value::U64(i32::MAX as u64).try_i32(), Some(i32::MAX));
+        assert_eq!(Value::Decimal(Decimal::new(42000, 3)).try_i32(), Some(42));
+        for invalid in [
+            Value::I64(i64::from(i32::MIN) - 1),
+            Value::I64(i64::from(i32::MAX) + 1),
+            Value::U64(u64::MAX),
+            Value::Decimal(Decimal::new(1, 1)),
+            Value::F64(42.0),
+            Value::Text("42".to_owned()),
+            Value::Bool(true),
+            Value::Null,
+        ] {
+            assert_eq!(invalid.try_i32(), None);
+        }
+    }
 
     #[test]
     fn value_try_i64_accepts_representable_numeric_variants() {

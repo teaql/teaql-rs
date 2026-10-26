@@ -165,12 +165,12 @@ mod tests {
                 ("unsigned".to_owned(), Value::U64(1)),
                 ("amount".to_owned(), Value::Decimal(Decimal::ONE)),
             ])));
-        assert!(
-            signed_overflow
-                .unwrap_err()
-                .message
-                .contains("out of i32 range")
+        let message = signed_overflow.unwrap_err().message;
+        assert_eq!(
+            message,
+            "invalid field signed: expected a signed 32-bit Integer"
         );
+        assert!(!message.contains("2147483648"));
 
         let unsigned_negative =
             TypedNumberRow::from_compact_row(CompactRow::from_map(Record::from([

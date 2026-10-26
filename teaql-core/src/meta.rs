@@ -8,6 +8,8 @@ pub struct PropertyDescriptor {
     pub column_name: String,
     pub is_id: bool,
     pub is_version: bool,
+    /// Modeled Integer domain; storage/native carrier may remain signed 64-bit.
+    pub is_int32: bool,
     pub max_length: Option<u32>,
     pub numeric_precision: Option<u32>,
     pub numeric_scale: Option<u32>,
@@ -23,6 +25,7 @@ impl PropertyDescriptor {
             nullable: true,
             is_id: false,
             is_version: false,
+            is_int32: false,
             max_length: None,
             numeric_precision: None,
             numeric_scale: None,
@@ -40,12 +43,29 @@ impl PropertyDescriptor {
     }
 
     pub fn id(mut self) -> Self {
+        assert!(
+            !self.is_int32,
+            "identity must not use modeled Integer metadata"
+        );
         self.is_id = true;
         self
     }
 
     pub fn version(mut self) -> Self {
+        assert!(
+            !self.is_int32,
+            "version must not use modeled Integer metadata"
+        );
         self.is_version = true;
+        self
+    }
+
+    pub fn int32(mut self) -> Self {
+        assert!(
+            self.data_type == DataType::I64 && !self.is_id && !self.is_version,
+            "Integer metadata requires a non-identity signed integral property"
+        );
+        self.is_int32 = true;
         self
     }
 
@@ -210,6 +230,43 @@ impl EntityDescriptor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integer32_metadata_preserves_wide_identity_and_long_fields() {
+        let integer = PropertyDescriptor::new("quantity", DataType::I64).int32();
+        assert!(integer.is_int32);
+        assert_eq!(integer.data_type, DataType::I64);
+        for property in [
+            PropertyDescriptor::new("id", DataType::I64).id(),
+            PropertyDescriptor::new("version", DataType::I64).version(),
+            PropertyDescriptor::new("long_value", DataType::I64),
+        ] {
+            assert!(!property.is_int32);
+        }
+    }
+
+    #[test]
+    fn integer32_metadata_rejects_incompatible_types_and_identity_in_either_order() {
+        let invalid: [fn() -> PropertyDescriptor; 6] = [
+            || PropertyDescriptor::new("value", DataType::Text).int32(),
+            || PropertyDescriptor::new("value", DataType::U64).int32(),
+            || PropertyDescriptor::new("value", DataType::I64).id().int32(),
+            || {
+                PropertyDescriptor::new("value", DataType::I64)
+                    .version()
+                    .int32()
+            },
+            || PropertyDescriptor::new("value", DataType::I64).int32().id(),
+            || {
+                PropertyDescriptor::new("value", DataType::I64)
+                    .int32()
+                    .version()
+            },
+        ];
+        for make in invalid {
+            assert!(std::panic::catch_unwind(make).is_err());
+        }
+    }
 
     #[test]
     fn test_property_descriptor_builder() {

@@ -6,7 +6,9 @@ use crate::mapping::{
     from_record_value_tokens_with_lookup, from_relation_value_tokens, identifiable_value_tokens,
     into_record_value_tokens, into_relation_json_value_tokens, into_relation_value_tokens,
 };
-use crate::types::{box_inner_type, is_option, option_inner_type, rust_type_to_data_type};
+use crate::types::{
+    base_type_name, box_inner_type, is_option, option_inner_type, rust_type_to_data_type,
+};
 
 pub fn expand_teaql_entity_attribute(mut input: ItemStruct) -> proc_macro2::TokenStream {
     let struct_name = input.ident.clone();
@@ -187,6 +189,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     let mut from_record_fields = Vec::new();
     let mut record_value_slots = Vec::new();
     let mut record_value_match_arms = Vec::new();
+    let mut record_value_validations = Vec::new();
     let mut record_member_fallback_arms = Vec::new();
     let mut into_record_fields = Vec::new();
     let mut id_impl = None;
@@ -305,6 +308,21 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         }
 
         let mut data_type = rust_type_to_data_type(&field.ty);
+        let native_type = base_type_name(&field.ty);
+        if parsed.integer32
+            && (!matches!(native_type.as_deref(), Some("i64" | "i32"))
+                || parsed.id
+                || parsed.version)
+        {
+            return syn::Error::new_spanned(
+                &field.ty,
+                "integer32 requires a non-identity i64/i32 property",
+            )
+            .to_compile_error();
+        }
+        let integer32 = parsed.integer32
+            || (native_type.as_deref() == Some("i32") && !parsed.id && !parsed.version);
+        let integer32_tokens = integer32.then(|| quote! { .int32() });
         if parsed.large_text {
             data_type = quote! { ::teaql_core::DataType::LargeText };
         }
@@ -378,6 +396,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                     #nullable_tokens
                     #id_tokens
                     #version_tokens
+                    #integer32_tokens
                     #max_length
                     #numeric_precision
                     #numeric_scale
@@ -385,6 +404,16 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         });
 
         let value_slot = format_ident!("__teaql_value_{}", field_ident);
+        if integer32 {
+            record_value_validations.push(quote! {
+                if let Some(value) = #value_slot {
+                    if !matches!(value, ::teaql_core::Value::Null) && value.try_i32().is_none() {
+                        return Err(::teaql_core::EntityError::new(#entity_name,
+                            format!("invalid field {}: expected a signed 32-bit Integer", #field_name)));
+                    }
+                }
+            });
+        }
         record_member_fallback_arms.push(quote! {
             #field_name => { #value_slot = Some(value); true },
         });
@@ -880,6 +909,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                     #unknown_record_field_arm
                 }
             }
+            #(#record_value_validations)*
             let mut entity = Self {
                 #(#from_record_fields),*
             };

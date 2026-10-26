@@ -137,6 +137,7 @@ fn default_table_name(entity_name: &str) -> String {
 pub struct ParsedFieldAttrs {
     pub id: bool,
     pub version: bool,
+    pub integer32: bool,
     pub large_text: bool,
     pub dynamic: bool,
     pub skip: bool,
@@ -171,6 +172,8 @@ pub fn parse_field_attrs(attrs: &[syn::Attribute]) -> ParsedFieldAttrs {
                 parsed.id = true;
             } else if meta.path.is_ident("version") {
                 parsed.version = true;
+            } else if meta.path.is_ident("integer32") {
+                parsed.integer32 = true;
             } else if meta.path.is_ident("large_text") {
                 parsed.large_text = true;
             } else if meta.path.is_ident("dynamic") {
