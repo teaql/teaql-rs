@@ -6,11 +6,26 @@ license.workspace = true
 repository.workspace = true
 description = "Optional bounded native format verification for TeaQL Blob"
 
+[features]
+process-fixtures = []
+
+[[bin]]
+name = "teaql-blob-content-worker"
+path = "src/bin/worker.rs"
+
+[[bin]]
+name = "teaql-blob-content-test-worker"
+path = "tests/support/worker_fixture.rs"
+required-features = ["process-fixtures"]
+
 [dependencies]
 teaql-core.workspace = true
 teaql-blob-reference.workspace = true
 async-trait.workspace = true
 sha2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+libc = "0.2"
 tokio = { workspace = true, features = ["fs", "io-util", "sync"] }
 futures-util = "0.3"
 rustix = { version = "1.1", features = ["fs", "process"] }

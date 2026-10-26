@@ -4,14 +4,22 @@
 compile_error!("teaql-blob-content-native currently requires Linux anonymous scratch files");
 mod anonymous;
 mod formats;
+mod process;
+mod wire;
 use futures_util::StreamExt;
+pub use process::{
+    ProcessBlobContentVerifier, ProcessVerifierStats, ProcessWorkerOutcome, WorkerExecutable,
+    WorkerResourceLimits,
+};
 use sha2::{Digest, Sha256};
-use std::{path::PathBuf, sync::Arc};
+use std::{fs::File, path::PathBuf, sync::Arc};
 use teaql_blob_reference::{
     BlobContentStream, BlobContentVerifier, BlobError, BlobErrorCode as Code, BlobResult,
     VerifiedBlobContent,
 };
 use tokio::{io::AsyncWriteExt, sync::Semaphore};
+#[doc(hidden)]
+pub use wire::worker_main;
 
 #[derive(Clone, Debug)]
 pub struct VerificationLimits {
@@ -78,72 +86,101 @@ impl BlobContentVerifier for NativeBlobContentVerifier {
     }
     async fn verify(
         &self,
-        mut source: BlobContentStream,
+        source: BlobContentStream,
         extension: &str,
         maximum_bytes: u64,
         allow_empty: bool,
     ) -> BlobResult<VerifiedBlobContent> {
-        let expected = teaql_core::blob::content_type(extension).ok_or(Code::FormatNotAllowed)?;
+        teaql_core::blob::content_type(extension).ok_or(Code::FormatNotAllowed)?;
         if maximum_bytes == 0 {
             return Err(Code::PolicyInvalid.into());
         }
-        let maximum = maximum_bytes.min(self.limits.maximum_input_bytes);
         let permit = self
             .permits
             .clone()
             .try_acquire_owned()
             .map_err(|_| BlobError::from(Code::VerificationBusy))?;
-        let file = self.scratch.open().await?;
-        let mut output = tokio::fs::File::from_std(file);
-        let mut digest = Sha256::new();
-        let mut size = 0u64;
-        while let Some(chunk) = source.next().await {
-            let chunk = chunk.map_err(|_| BlobError::from(Code::StoreFailed))?;
-            if chunk.len() as u64 > maximum - size {
-                return Err(Code::SizeExceeded.into());
-            }
-            if chunk.is_empty() {
-                tokio::task::yield_now().await;
-            }
-            for bytes in chunk.chunks(65536) {
-                output.write_all(bytes).await.map_err(io_error)?;
-                digest.update(bytes);
-            }
-            size += chunk.len() as u64;
-        }
-        if size == 0 {
-            return Err(if allow_empty {
-                Code::FormatNotAllowed
-            } else {
-                Code::SizeExceeded
-            }
-            .into());
-        }
-        output.flush().await.map_err(io_error)?;
-        // into_std waits for outstanding writes and transfers the only writable descriptor.
-        let file = output.into_std().await;
+        let (file, size, hash) = stage_input(
+            &self.scratch,
+            source,
+            maximum_bytes.min(self.limits.maximum_input_bytes),
+            allow_empty,
+        )
+        .await?;
         let limits = self.limits.clone();
         let extension = extension.to_owned();
-        let hash = format!("{:x}", digest.finalize());
         tokio::task::spawn_blocking(move || {
             // Keep the permit and anonymous inode until parsing really terminates, even
             // when the caller cancels its future. No detached replacement parser is started.
             let _permit = permit;
-            if file.metadata().map_err(io_error)?.len() != size {
-                return Err(Code::StoreFailed.into());
-            }
-            // SAFETY: this is a private O_TMPFILE inode, never linked or exposed. All
-            // writes finished before into_std returned; no writer is exposed or survives
-            // that transfer. Parsers receive read/seek views only, never mutate/truncate
-            // the inode, and the owned file outlives the read-only map.
-            let mapped = unsafe { memmap2::MmapOptions::new().len(size as usize).map(&file) }
-                .map_err(io_error)?;
-            formats::verify(&mapped, &file, &extension, &limits)?;
-            VerifiedBlobContent::new(expected, size, hash)
+            parse_completed(file, &extension, &limits, size, hash)
         })
         .await
         .map_err(|_| BlobError::from(Code::FormatNotAllowed))?
     }
+}
+async fn stage_input(
+    area: &anonymous::ScratchArea,
+    mut source: BlobContentStream,
+    maximum: u64,
+    allow_empty: bool,
+) -> BlobResult<(File, u64, String)> {
+    if maximum == 0 {
+        return Err(Code::PolicyInvalid.into());
+    }
+    let mut output = tokio::fs::File::from_std(area.open().await?);
+    let mut digest = Sha256::new();
+    let mut size = 0;
+    while let Some(chunk) = source.next().await {
+        let chunk = chunk.map_err(|_| BlobError::from(Code::StoreFailed))?;
+        if chunk.len() as u64 > maximum - size {
+            return Err(Code::SizeExceeded.into());
+        }
+        if chunk.is_empty() {
+            tokio::task::yield_now().await;
+        }
+        for part in chunk.chunks(65536) {
+            output.write_all(part).await.map_err(io_error)?;
+            digest.update(part);
+        }
+        size += chunk.len() as u64;
+    }
+    if size == 0 {
+        return Err(if allow_empty {
+            Code::FormatNotAllowed
+        } else {
+            Code::SizeExceeded
+        }
+        .into());
+    }
+    output.flush().await.map_err(io_error)?;
+    Ok((
+        output.into_std().await,
+        size,
+        format!("{:x}", digest.finalize()),
+    ))
+}
+fn parse_completed(
+    file: File,
+    extension: &str,
+    limits: &VerificationLimits,
+    size: u64,
+    hash: String,
+) -> BlobResult<VerifiedBlobContent> {
+    let expected = teaql_core::blob::content_type(extension).ok_or(Code::FormatNotAllowed)?;
+    if file.metadata().map_err(io_error)?.len() != size
+        || size == 0
+        || size > limits.maximum_input_bytes
+    {
+        return Err(Code::SizeExceeded.into());
+    }
+    // SAFETY: the exclusively owned anonymous inode has no payload pathname or writer.
+    // All writes ended before transfer. Parsers only read/seek, and the file outlives
+    // this read-only mapping. The process worker additionally reopens stdin read-only.
+    let mapped =
+        unsafe { memmap2::MmapOptions::new().len(size as usize).map(&file) }.map_err(io_error)?;
+    formats::verify(&mapped, &file, extension, limits)?;
+    VerifiedBlobContent::new(expected, size, hash)
 }
 fn io_error(_: impl std::fmt::Debug) -> BlobError {
     Code::StoreFailed.into()

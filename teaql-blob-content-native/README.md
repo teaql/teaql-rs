@@ -62,10 +62,60 @@ units/cells and 2 concurrent verifications. Byte arithmetic and cell spans are
 checked. DOC uses UTF16 character positions; XML/cell counters use parsed text;
 PDF additionally limits each eagerly decoded loader stream and the aggregate page
 content. These are format budgets, not an OS address-space or CPU-time guarantee.
-The current parser task runs in-process and has no forcible timeout. An isolated
-worker with process memory/CPU limits remains required before full public Blob
-upload assembly; this inner component does not claim process isolation, malware
+`NativeBlobContentVerifier` is the explicitly in-process inner implementation;
+it has no forcible timeout. Public upload assembly should use
+`ProcessBlobContentVerifier`, described below. Neither implementation claims malware
 scanning, rendering or exhaustive validation of every Office/PDF feature.
+
+## Resource-contained process verifier
+
+`ProcessBlobContentVerifier` implements the same SPI with a separately installed
+`teaql-blob-content-worker` ELF from the same package version. Configure an absolute
+artifact path, its SHA256 and resource limits explicitly. Install it without any
+write/setuid/setgid bits (for example mode 0500), owned by root or the service UID;
+all path components must be real directories, without symlinks. Keep the installed
+artifact and its directories under trusted host administration. Construction opens
+nothing. Explicit initialization provisions only scratch and probes the worker;
+readiness probes the existing installation without provisioning or repairing it.
+Missing, changed, writable, mismatched or unsupported artifacts fail closed, with
+no in-process fallback. Each invocation hashes a bounded regular ELF and executes
+that exact opened inode through procfs, so atomic path replacement cannot substitute
+an executable after validation. In-place modification by a trusted artifact owner
+is outside this boundary; deployments must keep installed artifacts immutable.
+
+The worker inherits only read-only anonymous input on fd 0, bounded stdout IPC on
+fd 1 and discarded stderr on fd 2. All higher descriptors are marked CLOEXEC before
+exec, including non-CLOEXEC files opened by the embedding host. No payload, locator,
+principal, filename, hash or credentials enter argv/environment; only operation,
+canonical extension and numeric parser budgets are arguments. Environment is exactly
+LANG=C, LC_ALL=C, TZ=UTC and cwd is `/`. Parent and worker independently hash input;
+the parent compares canonical MIME, byte count and SHA256 before exposing verified
+facts. Replies are at most 4096 bytes, versioned, closed JSON with duplicate/unknown
+fields, trailing data, incompatible versions and inconsistent exits rejected.
+Worker stderr and panic/OOM details are never forwarded to callers or host logs.
+
+Before exec the host creates a fresh session/process group and sets equal soft/hard
+limits: default 1 GiB address space, 15 CPU seconds, zero core/file-write/process
+budgets, 32 descriptors and 8 MiB stack. It sets no-new-privileges and SIGKILL on
+parent-thread death with a parent identity race check. The worker disables dumps
+and verifies those controls, equal nonzero real/effective/saved UID, and zero
+permitted/effective/ambient capabilities. Readiness also checks the actual kernel
+limits and exact supported format list. A privileged host fails readiness; configure
+an ordinary service UID. Linux procfs, anonymous inodes and Linux 5.11+
+close_range(CLOEXEC) support are required; unsupported controls fail readiness.
+
+The default 30-second deadline covers artifact hashing, spawn, parsing and reply
+collection; input streaming is subject to the caller's own request deadline and
+byte limits. CPU/address-space limits are per worker, independently of parser
+budgets. Cancellation, deadline or reply overflow kills the owned process group and
+waits for the direct child. A clone-shared permit remains held through actual
+reaping, including when the caller drops its future. Pure host diagnostics expose
+bounded start/reap counts, live owned PIDs and a sanitized final outcome only.
+
+This is process/resource containment of trusted pinned parsers, not a filesystem,
+network or malicious-code sandbox. The worker shares the service UID's OS access;
+untrusted executables must never be configured. No parser, listener, probe or
+background task starts on construction. SQL orchestration remains separate.
 
 ## Dependencies and evidence
 
@@ -82,7 +132,14 @@ They cover type substitution, fabricated/truncated input, CRC/duplicate/traversa
 DTD/namespace/Office identity errors, byte/entry/text/cell/piece/expansion budgets,
 source failure/capacity/cancellation, private readiness and actual process kills.
 MP4 malformed metadata/work cases run in owned child processes with a test deadline;
-that test harness is not a production isolation capability.
+that older test harness is distinct from the production process verifier.
+Process-verifier tests additionally check all ten files/seven cases through the
+installed worker, real CPU SIGKILL and memory-allocation SIGABRT, wall timeout,
+cancellation/capacity recovery, bounded/forged replies, a non-CLOEXEC host descriptor,
+minimal environment/read-only input, artifact replacement and actual host death.
+An isolated owned subreaper verifies kernel parent-death SIGKILL and reaps only its
+exact adopted child. Test-only fault modes live exclusively in a separate binary
+behind `process-fixtures`; do not install that feature's fixture executable.
 
 Full SQL upload orchestration, native save/journal/read integration, production S3,
 governed document/selection combinations and original R5–R8 exits remain in progress.
