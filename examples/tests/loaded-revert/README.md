@@ -4,6 +4,7 @@ Run from the repository root (Linux, Rust, Node.js and a C compiler):
 
 ```sh
 node examples/tests/loaded-revert/verify-local.cjs
+node examples/tests/loaded-revert/verify-views.cjs
 ```
 
 This offline example always links all six TeaQL crates to this repository,
@@ -32,3 +33,16 @@ compact commands, hashes, raw logs and the test database are retained. Owned
 compiler outputs are removed on success or failure after descendant processes
 exit; shared download/build caches and services are untouched. A passing example
 is not complete example-inventory or published-artifact qualification.
+
+The second command extends the same evaluated model with a readonly result view
+and externally owned transactions. It uses generated Q/E/save APIs; a bounded
+runtime `Expr` projection supplies typed `_count`, loaded `_null` and declared
+but absent `_missing` properties without raw SQL. Full and sparse view metadata
+must survive a no-op. Real edits still roll back with their caller, retain retry
+intent and deliver mutation audit only after a successful commit.
+
+Both rounds share `views.sqlite`. `views-probe.json` pins the authored extension
+and original fixture provenance. Set `TEAQL_RESTORATION_VIEWS_EVIDENCE_DIR` to a
+new absolute output directory. The complete example inventory runs both commands;
+native SQLite tests separately cover persistent dynamic-field null/missing state,
+definitions/provenance and real dynamic edits beside a restored native field.

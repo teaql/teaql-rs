@@ -853,6 +853,17 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 fn loaded_state_snapshot(&self) -> Option<::std::sync::Arc<::teaql_core::LoadedSnapshot>> {
                     match &self.__load_state { ::teaql_core::eval::LoadState::Indexed(state) => Some(state.clone()), _ => None }
                 }
+                fn install_loaded_state_snapshot(
+                    &mut self,
+                    state: ::std::sync::Arc<::teaql_core::LoadedSnapshot>,
+                ) -> Result<(), ::teaql_core::EntityError> {
+                    let layout = <Self as ::teaql_core::TeaqlEntity>::field_layout()?.expect("indexed entity layout");
+                    if !::std::sync::Arc::ptr_eq(state.layout(), &layout) {
+                        return Err(::teaql_core::EntityError::new(#entity_name, "incompatible loaded-state owner or layout revision"));
+                    }
+                    self.__load_state = ::teaql_core::eval::LoadState::Indexed(state);
+                    Ok(())
+                }
                 fn install_loaded_dynamic_fields(
                     &mut self,
                     values: ::teaql_core::dynamic_fields::DynamicFieldValues,

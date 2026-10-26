@@ -161,6 +161,19 @@ pub trait Entity: TeaqlEntity + Sized {
         None
     }
 
+    /// Runtime hydration only. Restores an unchanged view's validated immutable
+    /// geometry without copying row values or creating mutation intent.
+    #[doc(hidden)]
+    fn install_loaded_state_snapshot(
+        &mut self,
+        _state: std::sync::Arc<crate::LoadedSnapshot>,
+    ) -> Result<(), EntityError> {
+        Err(EntityError::new(
+            Self::ENTITY_NAME,
+            "entity lacks a runtime-owned indexed loaded-state carrier",
+        ))
+    }
+
     /// Framework hydration only: it must not create mutation intent or share row payloads.
     #[doc(hidden)]
     fn install_loaded_dynamic_fields(

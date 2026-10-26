@@ -17,6 +17,8 @@ use crate::{
 };
 
 mod restoration;
+#[cfg(test)]
+mod restoration_view_tests;
 
 #[derive(Clone, Copy)]
 struct FixClockSnapshot {
@@ -449,6 +451,25 @@ fn decode_saved_ledger_entity<T: Entity>(
             .map_err(RuntimeError::Graph)?;
         entity
             .install_loaded_dynamic_fields(*fields, state)
+            .map_err(|error| RuntimeError::Graph(error.to_string()))?;
+    }
+    Ok(entity)
+}
+
+fn decode_unchanged_ledger_entity<T: Entity>(
+    mut node: GraphNode,
+    root: &crate::EntityRuntimeState,
+    original_state: Option<Arc<teaql_core::LoadedSnapshot>>,
+    original_relation_fields: &[String],
+) -> Result<T, RuntimeError> {
+    node.values.remove("_loaded_fields");
+    let mut entity = decode_saved_ledger_entity::<T>(node, root, true, original_relation_fields)?;
+    if let Some(state) = original_state {
+        // No SQL readback occurred: the complete original view geometry remains
+        // authoritative, including absent-but-typed properties, dynamic fields,
+        // selected nulls and loaded edges. Never share the row-owned payload.
+        entity
+            .install_loaded_state_snapshot(state)
             .map_err(|error| RuntimeError::Graph(error.to_string()))?;
     }
     Ok(entity)
@@ -2358,6 +2379,7 @@ where
     {
         context.dynamic_graph_provider()?;
     }
+    let original_state = entity.loaded_state_snapshot();
     let original_relation_fields = loaded_relation_fields(&entity);
     let mut node = extract_graph_node(context, entity)?;
 
@@ -2445,9 +2467,13 @@ where
         }
         if restoration::graph_is_unchanged(&node) {
             teaql_core::MutationIntent::from_optional(node.comment.as_deref())?;
-            node.values.remove("_loaded_fields");
-            return decode_saved_ledger_entity::<T>(node, &root, true, &original_relation_fields)
-                .map(|entity| (entity, None));
+            return decode_unchanged_ledger_entity::<T>(
+                node,
+                &root,
+                original_state,
+                &original_relation_fields,
+            )
+            .map(|entity| (entity, None));
         }
     }
 
@@ -2502,6 +2528,7 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
     {
         context.dynamic_graph_provider()?;
     }
+    let original_state = entity.loaded_state_snapshot();
     let original_relation_fields = loaded_relation_fields(&entity);
     let mut node = extract_graph_node(context, entity)?;
     let saver = context
@@ -2544,8 +2571,12 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
         }
         if restoration::graph_is_unchanged(&node) {
             teaql_core::MutationIntent::from_optional(node.comment.as_deref())?;
-            node.values.remove("_loaded_fields");
-            return decode_saved_ledger_entity::<T>(node, &root, true, &original_relation_fields);
+            return decode_unchanged_ledger_entity::<T>(
+                node,
+                &root,
+                original_state,
+                &original_relation_fields,
+            );
         }
     }
 
