@@ -4,10 +4,15 @@ This optional crate implements policies, the PostgreSQL catalog and, with the
 explicit `runtime-integration` feature, actual current-UserContext upload services
 and a transaction-bound mutation participant. Audited graph, typed ledger and
 native outer/raw saves call the participant when it is explicitly installed;
-missing participation still fails before business DML. Full `blob.v1` readiness,
-authorized read projection, production S3, durable command recovery and governed
-selection remain in progress. A standalone upload service does not advertise a
-complete Blob capability.
+missing participation still fails before business DML. The optional
+BlobResponseContributor joins current field bindings with the catalog in one
+PostgreSQL snapshot, checks current read authority, and asks a signed-read
+BlobStore for complete URLs only for visible, loaded fields. Hosts explicitly
+attach it to ViewPreparationService; prepared views recheck authority and the
+binding without signing again. Full `blob.v1` readiness, production S3,
+external response bridges, durable command recovery and governed selection
+remain in progress. A standalone upload service does not advertise a complete
+Blob capability.
 
 The trusted asynchronous BlobStore SPI now defines immutable streaming, range,
 exact-version delete/seal and complete signed-read values. The optional sibling
@@ -163,9 +168,10 @@ PostgreSQL, FileBlobStore and a separately built SHA-pinned production worker. T
 cover all ten formats/seven cases, dual denials, current model/hard limits, actor/
 scope/time changes, bad provider facts, pending-source deadlines/cancellation,
 unverified state, SQL identity allocation/binding/unbinding and exact-version
-collection. Binding in these tests explicitly uses the existing SQL catalog SPI;
-automatic native graph/ledger/outer journals and full module/four combinations are
-still required before the original R5 exit.
+collection. Native graph/ledger/outer save integration and a separate actual
+PostgreSQL plus file-gateway view test cover transaction binding and signed
+HTTP GET/Range, hidden fields, revocation, unbinding and governed expiry.
+Full module/four-combination acceptance remains required before the original R5 exit.
 
 ## Gates
 

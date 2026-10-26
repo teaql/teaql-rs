@@ -472,6 +472,74 @@ impl PostgresBlobCatalog {
         }
         rows.pop().map(binding).transpose()
     }
+    /// One SQL snapshot for all visible fields. A joined object is returned
+    /// only while the exact field binding still points at it in this scope.
+    /// Callers must also verify the expected Key and current read authority.
+    pub async fn bound_objects(
+        &self,
+        scope: &BlobScope,
+        targets: &BTreeSet<BlobFieldTarget>,
+    ) -> BlobResult<BTreeMap<BlobFieldTarget, (BlobBinding, BlobCatalogRecord)>> {
+        if targets.len() > 512 {
+            return Err(Code::PolicyInvalid.into());
+        }
+        if targets.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        self.validate_schema().await?;
+        let mut statement = String::from(
+            "SELECT b.entity_type AS bound_entity_type,b.entity_id AS bound_entity_id,b.field_name AS bound_field_name,b.binding_version AS bound_version,b.bound_at AS bound_at,b.retain_until AS bound_retain_until,b.retired_key AS bound_retired_key,o.* FROM teaql_blob_binding b JOIN teaql_blob_object o ON o.blob_key=b.blob_key AND o.scope_realm=b.scope_realm AND o.scope_boundary=b.scope_boundary WHERE b.scope_realm=$1 AND b.scope_boundary=$2 AND (",
+        );
+        let mut params = vec![scope.realm().into(), scope.boundary().into()];
+        for (index, target) in targets.iter().enumerate() {
+            if index != 0 {
+                statement.push_str(" OR ");
+            }
+            let first = 3 + index * 3;
+            statement.push_str(&format!(
+                "(b.entity_type=${first} AND b.entity_id=${} AND b.field_name=${})",
+                first + 1,
+                first + 2
+            ));
+            params.push(target.entity().into());
+            params.push(signed(target.id().ok_or(Code::ReferenceInvalid)?)?);
+            params.push(target.field().into());
+        }
+        statement.push(')');
+        let mut result = BTreeMap::new();
+        for row in fetch(self.root.as_ref(), &statement, params).await? {
+            let id = integer(&row, "bound_entity_id")?;
+            let version = integer(&row, "bound_version")?;
+            if id <= 0 || version < 0 {
+                return Err(Code::CatalogFailed.into());
+            }
+            let target = BlobFieldTarget::new(
+                text(&row, "bound_entity_type")?,
+                Some(id as u64),
+                text(&row, "bound_field_name")?,
+            )?;
+            if !targets.contains(&target) {
+                return Err(Code::CatalogFailed.into());
+            }
+            let object = record(row.clone())?;
+            if object.scope() != scope {
+                return Err(Code::CatalogFailed.into());
+            }
+            let binding = BlobBinding {
+                scope: scope.clone(),
+                target: target.clone(),
+                reference: Some(object.reference.clone()),
+                retired_reference: reference(optional_text(&row, "bound_retired_key")?)?,
+                version,
+                bound_at: optional_integer(&row, "bound_at")?,
+                retain_until: optional_integer(&row, "bound_retain_until")?,
+            };
+            if result.insert(target, (binding, object)).is_some() {
+                return Err(Code::CatalogFailed.into());
+            }
+        }
+        Ok(result)
+    }
     /// Read the authoritative old binding while holding its row lock on the
     /// caller's physical transaction. The returned version is suitable for
     /// `prepare_bindings`; a root-connection read is not.

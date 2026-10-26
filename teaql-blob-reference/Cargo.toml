@@ -8,7 +8,7 @@ description = "Optional TeaQL Blob policies, verified transport and transaction-
 
 [features]
 live-postgres = []
-runtime-integration = ["dep:teaql-runtime", "dep:tokio", "dep:getrandom", "dep:futures-util"]
+runtime-integration = ["dep:teaql-runtime", "dep:tokio", "dep:getrandom", "dep:futures-util", "dep:chrono", "dep:async-trait"]
 
 [dependencies]
 teaql-blob-contracts.workspace = true
@@ -16,6 +16,8 @@ teaql-runtime = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 getrandom = { version = "0.3", optional = true }
 futures-util = { version = "0.3", optional = true }
+chrono = { workspace = true, optional = true }
+async-trait = { workspace = true, optional = true }
 teaql-core.workspace = true
 teaql-data-service.workspace = true
 serde.workspace = true
@@ -25,7 +27,7 @@ sha2.workspace = true
 [dev-dependencies]
 teaql-macros.workspace = true
 async-trait.workspace = true
-teaql-blob-store-file.workspace = true
+teaql-blob-store-file = { workspace = true, features = ["http-gateway"] }
 teaql-blob-content-native.workspace = true
 tempfile = "3"
 tokio.workspace = true

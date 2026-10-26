@@ -4,13 +4,16 @@ use std::sync::Arc;
 
 use teaql_runtime::{BlobMutationParticipantResource, UserContext};
 
-use crate::{BlobErrorCode, BlobMutationParticipant, BlobResult, BlobUploadService};
+use crate::{
+    BlobErrorCode, BlobMutationParticipant, BlobResponseContributor, BlobResult, BlobUploadService,
+};
 
 /// Shared infrastructure only. Every operation still receives its current
 /// `UserContext`; this value never captures a request identity.
 pub struct BlobRuntime {
     upload: Arc<BlobUploadService>,
     mutation: Option<Arc<BlobMutationParticipant>>,
+    response: Option<Arc<BlobResponseContributor>>,
 }
 
 impl BlobRuntime {
@@ -20,6 +23,12 @@ impl BlobRuntime {
 
     pub fn mutation(&self) -> Option<&BlobMutationParticipant> {
         self.mutation.as_deref()
+    }
+
+    /// Supply this contributor to the generic `ViewPreparationService` during
+    /// explicit host assembly. The Blob module does not replace view policy.
+    pub fn response(&self) -> Option<Arc<BlobResponseContributor>> {
+        self.response.clone()
     }
 }
 
@@ -38,6 +47,7 @@ impl BlobReferenceModule {
             runtime: Arc::new(BlobRuntime {
                 upload,
                 mutation: None,
+                response: None,
             }),
         }
     }
@@ -46,6 +56,16 @@ impl BlobReferenceModule {
         self.runtime = Arc::new(BlobRuntime {
             upload: self.runtime.upload.clone(),
             mutation: Some(mutation),
+            response: self.runtime.response.clone(),
+        });
+        self
+    }
+
+    pub fn with_response(mut self, response: Arc<BlobResponseContributor>) -> Self {
+        self.runtime = Arc::new(BlobRuntime {
+            upload: self.runtime.upload.clone(),
+            mutation: self.runtime.mutation.clone(),
+            response: Some(response),
         });
         self
     }

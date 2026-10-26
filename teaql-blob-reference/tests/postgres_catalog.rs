@@ -8,6 +8,9 @@ mod dynamic_fields;
 #[path = "support/graph_binding.rs"]
 mod graph_binding;
 #[cfg(feature = "runtime-integration")]
+#[path = "support/response_projection.rs"]
+mod response_projection;
+#[cfg(feature = "runtime-integration")]
 #[path = "support/runtime_journal.rs"]
 mod runtime_journal;
 #[cfg(feature = "runtime-integration")]

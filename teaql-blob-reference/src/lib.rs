@@ -3,6 +3,8 @@ mod catalog;
 #[cfg(feature = "runtime-integration")]
 mod mutation_service;
 mod policy;
+#[cfg(feature = "runtime-integration")]
+mod response_contributor;
 mod retention;
 #[cfg(feature = "runtime-integration")]
 mod runtime_module;
@@ -18,6 +20,8 @@ pub use policy::{
     BlobPolicies, BlobPolicyProfile, BlobPolicySnapshot, PolicyLimits, PolicyOverrides,
     ResponseShape, Sharing, UploadMode,
 };
+#[cfg(feature = "runtime-integration")]
+pub use response_contributor::*;
 pub use retention::BlobRetention;
 #[cfg(feature = "runtime-integration")]
 pub use runtime_module::*;
