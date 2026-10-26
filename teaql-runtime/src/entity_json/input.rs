@@ -250,6 +250,13 @@ impl Model {
                         )
                     }
                 }
+                Kind::One { target } => {
+                    if matches!(node, Node::Null) && field.nullable {
+                        Json::Null
+                    } else {
+                        self.read_entity(target, node, profile, &child, &child_path)?
+                    }
+                }
                 Kind::Many { target } => {
                     let Node::Array(nodes) = node else {
                         return Err(failure("WIRE_INVALID_TYPE", &child, &child_path));
@@ -276,7 +283,7 @@ impl Model {
         }
         let has_graph_input = schema.fields.iter().any(|field| match &field.kind {
             Kind::Reference { detail_key, .. } => result.contains_key(detail_key),
-            Kind::Many { .. } => result.contains_key(&field.record),
+            Kind::One { .. } | Kind::Many { .. } => result.contains_key(&field.record),
             _ => false,
         });
         if has_graph_input {

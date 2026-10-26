@@ -26,8 +26,17 @@ pub enum Kind {
     Time,
     DateTime,
     Json,
-    Reference { target: String, detail_key: String },
-    Many { target: String },
+    Reference {
+        target: String,
+        detail_key: String,
+    },
+    /// An inverse to-one relation has no foreign-key cell on its owner.
+    One {
+        target: String,
+    },
+    Many {
+        target: String,
+    },
 }
 impl Kind {
     fn description(&self) -> &'static str {
@@ -45,6 +54,7 @@ impl Kind {
             Self::DateTime => "millisecond RFC3339 instant",
             Self::Json => "JSON value",
             Self::Reference { .. } => "entity ID or entity object",
+            Self::One { .. } => "entity object or null",
             Self::Many { .. } => "entity array",
         }
     }
@@ -243,7 +253,10 @@ impl Model {
         }
         for schema in schemas.values() {
             for field in &schema.fields {
-                if let Kind::Reference { target, .. } | Kind::Many { target } = &field.kind {
+                if let Kind::Reference { target, .. }
+                | Kind::One { target }
+                | Kind::Many { target } = &field.kind
+                {
                     if !schemas.contains_key(target) {
                         return Err(invalid());
                     }

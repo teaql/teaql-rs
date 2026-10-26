@@ -104,7 +104,24 @@ impl Model {
                 }
             }
             let Some(value) = value else { continue };
-            let json = if let Kind::Many { target } = &field.kind {
+            let json = if let Kind::One { target } = &field.kind {
+                match value {
+                    Value::Null if field.nullable => {
+                        self.tick(depth + 1, budget, &child, &child_path)?;
+                        Json::Null
+                    }
+                    Value::Object(record) => self.write_entity(
+                        target,
+                        record,
+                        profile,
+                        &child,
+                        &child_path,
+                        depth + 1,
+                        budget,
+                    )?,
+                    _ => return Err(failure("WIRE_ENTITY_OBJECT_REQUIRED", &child, &child_path)),
+                }
+            } else if let Kind::Many { target } = &field.kind {
                 self.tick(depth + 1, budget, &child, &child_path)?;
                 let Value::List(values) = value else {
                     return Err(failure("WIRE_INVALID_TYPE", &child, &child_path));

@@ -169,7 +169,7 @@ pub(super) fn read(
             Value::Timestamp(teaql_core::time::Timestamp(value.timestamp_millis()))
         }
         Kind::Json => Value::Json(node.into_json(location, path)?),
-        Kind::Reference { .. } | Kind::Many { .. } => return Err(bad()),
+        Kind::Reference { .. } | Kind::One { .. } | Kind::Many { .. } => return Err(bad()),
     })
 }
 pub(super) fn write(

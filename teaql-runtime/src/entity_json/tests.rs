@@ -9,6 +9,13 @@ use teaql_core::{Entity, Value, eval::LoadState, time::Timestamp};
     entity = "WireRoot",
     indexed_layout,
     reverse_relation(
+        name = "single_probe",
+        target = "WireProbe",
+        local_key = "id",
+        foreign_key = "root_record_id",
+        json_type = "Probe"
+    ),
+    reverse_relation(
         name = "probe_list",
         target = "WireProbe",
         local_key = "id",
@@ -109,6 +116,14 @@ fn model() -> Model {
                 Field::new("version", "version", Kind::Version),
                 Field::new("display_name", "display_name", Kind::Text).nullable(true),
                 Field::new(
+                    "single_probe",
+                    "single_probe",
+                    Kind::One {
+                        target: "WireProbe".into(),
+                    },
+                )
+                .nullable(true),
+                Field::new(
                     "probe_list",
                     "probe_list",
                     Kind::Many {
@@ -148,12 +163,71 @@ fn model() -> Model {
     .unwrap()
 }
 fn context() -> UserContext {
-    let mut context = RuntimeModule::new()
+    RuntimeModule::new()
         .entity::<Root>()
         .entity::<Probe>()
-        .into_context();
-    context.insert_resource(model());
-    context
+        .entity_json_model(model())
+        .into_context()
+}
+
+#[test]
+fn typed_json_module_installs_shared_schema_without_sharing_entity_ledgers() {
+    let module = RuntimeModule::new()
+        .entity::<Root>()
+        .entity::<Probe>()
+        .entity_json_model(model());
+    let first = module.clone().into_context();
+    let second = module.into_context();
+    assert!(Arc::ptr_eq(
+        &first.get_resource::<Model>().unwrap().schemas,
+        &second.get_resource::<Model>().unwrap().schemas
+    ));
+    let payload = r#"{"id":"1","version":"2","displayName":"Original"}"#;
+    let mut a = first
+        .decode_entity_json::<Root>(payload, JsonFieldNamingProfile::CamelCase)
+        .unwrap();
+    let b = second
+        .decode_entity_json::<Root>(payload, JsonFieldNamingProfile::CamelCase)
+        .unwrap();
+    a.mark_for_deletion();
+    assert!(a.is_marked_as_delete());
+    assert!(!b.is_marked_as_delete());
+}
+
+#[test]
+fn typed_json_inverse_to_one_preserves_loaded_null_and_omitted_without_fake_fk() {
+    let context = context();
+    for profile in PROFILES {
+        for detail in [
+            Some(
+                serde_json::json!({profile.render("id"):"7",profile.render("version"):"2",profile.render("root_record"):"1"}),
+            ),
+            Some(serde_json::Value::Null),
+            None,
+        ] {
+            let mut payload =
+                serde_json::json!({profile.render("id"):"1", profile.render("version"):"1"});
+            if let Some(value) = &detail {
+                payload[profile.render("single_probe")] = value.clone();
+            }
+            let row = context
+                .decode_entity_json::<Root>(&payload.to_string(), profile)
+                .unwrap();
+            assert_eq!(row.is_field_loaded("single_probe"), detail.is_some());
+            let output: serde_json::Value =
+                serde_json::from_str(&context.encode_entity_json(&row, profile).unwrap()).unwrap();
+            assert_eq!(output.get(profile.render("single_probe")), detail.as_ref());
+            assert!(output.get("single_probe_id").is_none());
+        }
+        let invalid = serde_json::json!({profile.render("id"):"1",profile.render("version"):"1",profile.render("single_probe"):"7"});
+        assert_eq!(
+            context
+                .decode_entity_json::<Root>(&invalid.to_string(), profile)
+                .unwrap_err()
+                .code,
+            "WIRE_ENTITY_OBJECT_REQUIRED"
+        );
+    }
 }
 fn native() -> Probe {
     Probe::from_compact_row(
