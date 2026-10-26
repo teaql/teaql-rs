@@ -1,3 +1,4 @@
 test-vectors/*.tsv whitespace=-blank-at-eol
 # Preserve the exact shared real-file bytes, including PDF's native xref spacing.
 teaql-blob-store-file/tests/fixtures/files/* binary
+teaql-blob-content-native/tests/fixtures/files/* binary

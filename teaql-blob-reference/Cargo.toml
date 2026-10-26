@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Optional TeaQL Blob policies and transaction-bound catalog"
+description = "Optional TeaQL Blob policies, verified transport and transaction-bound catalog"
 
 [features]
 live-postgres = []

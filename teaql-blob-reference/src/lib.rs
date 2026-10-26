@@ -3,6 +3,7 @@ mod catalog;
 mod policy;
 mod retention;
 mod store;
+mod verification;
 pub use catalog::{
     BindingChange, BlobBinding, BlobCatalogRecord, BlobState, PostgresBlobCatalog,
     PreparedBlobBindings, UploadDraft, VerifiedContent,
@@ -15,6 +16,7 @@ pub use retention::BlobRetention;
 use std::fmt;
 pub use store::*;
 use teaql_data_service::infrastructure_sql::{InfrastructureSqlError, PhysicalTransactionOutcome};
+pub use verification::{BlobContentVerifier, VerifiedBlobContent};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlobErrorCode {
@@ -35,6 +37,7 @@ pub enum BlobErrorCode {
     CatalogFailed,
     StoreFailed,
     SignFailed,
+    VerificationBusy,
 }
 impl BlobErrorCode {
     pub const fn code(self) -> &'static str {
@@ -56,6 +59,7 @@ impl BlobErrorCode {
             Self::CatalogFailed => "BLOB_CATALOG_FAILED",
             Self::StoreFailed => "BLOB_STORE_FAILED",
             Self::SignFailed => "BLOB_SIGN_FAILED",
+            Self::VerificationBusy => "BLOB_VERIFICATION_BUSY",
         }
     }
 }

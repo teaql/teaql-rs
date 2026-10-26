@@ -11,6 +11,10 @@ The trusted asynchronous BlobStore SPI now defines immutable streaming, range,
 exact-version delete/seal and complete signed-read values. The optional sibling
 teaql-blob-store-file implements Linux file transport and a feature-gated HTTP
 gateway; it does not install a complete Blob capability or verify actual formats.
+The optional sibling teaql-blob-content-native now implements actual byte/format
+parsing behind BlobContentVerifier. VerifiedBlobContent is not deserializable client
+input. Its parser/anonymous-scratch budgets and remaining isolation boundary are
+documented separately; full SQL upload orchestration remains in progress.
 
 Production dependencies are core/data-service contracts, Serde, SHA256, lightweight
 async/stream contracts and URL validation.

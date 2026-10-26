@@ -3,6 +3,7 @@ members = [
     "teaql-core",
     "teaql-blob-reference",
     "teaql-blob-store-file",
+    "teaql-blob-content-native",
     "teaql-object-storage-s3",
     "teaql-http-reqwest",
     "teaql-sql",
@@ -57,6 +58,7 @@ subtle = "2"
 teaql-core = { path = "teaql-core", version = "5.0.7" }
 teaql-blob-reference = { path = "teaql-blob-reference", version = "5.0.7" }
 teaql-blob-store-file = { path = "teaql-blob-store-file", version = "5.0.7" }
+teaql-blob-content-native = { path = "teaql-blob-content-native", version = "5.0.7" }
 teaql-macros = { path = "teaql-macros", version = "5.0.7" }
 teaql-runtime = { path = "teaql-runtime", version = "5.0.7" }
 teaql-sql = { path = "teaql-sql", version = "5.0.7" }
