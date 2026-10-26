@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use std::time::Duration;
+use teaql_core::BlobRef;
 
 const MAX_TEXT_LENGTH: usize = 16_384;
 const MAX_ENTITIES: usize = 10_000;
@@ -329,6 +330,186 @@ pub struct AcceptedContextualDocument {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedDocumentSnapshot {
     pub snapshot: DocumentSnapshot,
+    pub key_id: String,
+    pub issued_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// One authenticated tqd2 file binding. The stable Key is never exposed in a view body.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DocumentBlobBindingSnapshot {
+    pub row_key: String,
+    pub canonical_field: String,
+    pub entity_type: String,
+    pub reference: Option<BlobRef>,
+    pub binding_version: u64,
+    pub nullable: bool,
+    pub writable: bool,
+}
+
+impl DocumentBlobBindingSnapshot {
+    pub fn validate(&self) -> Result<(), DocumentRoundTripError> {
+        for value in [&self.row_key, &self.canonical_field, &self.entity_type] {
+            require_text(value)?;
+            if value.trim() != value {
+                return Err(DocumentRoundTripError::projection_violation());
+            }
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for DocumentBlobBindingSnapshot {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("DocumentBlobBindingSnapshot[redacted]")
+    }
+}
+
+/// tqd2 authority: a complete tqd1 snapshot plus a canonical encrypted binding suffix.
+#[derive(Clone, PartialEq, Eq)]
+pub struct BoundDocumentSnapshot {
+    pub snapshot: DocumentSnapshot,
+    pub bindings: Vec<DocumentBlobBindingSnapshot>,
+}
+
+impl BoundDocumentSnapshot {
+    pub fn new(
+        snapshot: DocumentSnapshot,
+        mut bindings: Vec<DocumentBlobBindingSnapshot>,
+    ) -> Result<Self, DocumentRoundTripError> {
+        bindings.sort_by(|left, right| {
+            (&left.row_key, &left.canonical_field).cmp(&(&right.row_key, &right.canonical_field))
+        });
+        let result = Self { snapshot, bindings };
+        result.validate()?;
+        Ok(result)
+    }
+
+    pub fn validate(&self) -> Result<(), DocumentRoundTripError> {
+        self.snapshot.validate()?;
+        if self.bindings.len() > 10_000 {
+            return Err(DocumentRoundTripError::projection_violation());
+        }
+        let mut previous: Option<(&str, &str)> = None;
+        for binding in &self.bindings {
+            binding.validate()?;
+            let key = (binding.row_key.as_str(), binding.canonical_field.as_str());
+            if previous.is_some_and(|last| last >= key) {
+                return Err(DocumentRoundTripError::projection_violation());
+            }
+            let entity = self
+                .snapshot
+                .entity(&binding.row_key)
+                .ok_or_else(DocumentRoundTripError::projection_violation)?;
+            if entity.identity.entity_type != binding.entity_type
+                || !entity.loaded_fields.contains(&binding.canonical_field)
+                || binding.writable && !entity.writable_fields.contains(&binding.canonical_field)
+            {
+                return Err(DocumentRoundTripError::projection_violation());
+            }
+            previous = Some(key);
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for BoundDocumentSnapshot {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("BoundDocumentSnapshot[redacted]")
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedBoundDocumentSnapshot {
+    pub document: BoundDocumentSnapshot,
+    pub key_id: String,
+    pub issued_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlobSelectionTargetKind {
+    ExistingRow,
+    NewClientKey,
+}
+
+impl BlobSelectionTargetKind {
+    pub fn wire_value(self) -> u8 {
+        match self {
+            Self::ExistingRow => 1,
+            Self::NewClientKey => 2,
+        }
+    }
+    pub fn from_wire(value: u8) -> Result<Self, DocumentRoundTripError> {
+        match value {
+            1 => Ok(Self::ExistingRow),
+            2 => Ok(Self::NewClientKey),
+            _ => Err(DocumentRoundTripError::invalid()),
+        }
+    }
+}
+
+/// The exact scope, field, row/client key and command authorized for one selection.
+#[derive(Clone, PartialEq, Eq)]
+pub struct BlobSelectionTarget {
+    pub scope: ReferenceDocumentScope,
+    pub target_entity: String,
+    pub canonical_field: String,
+    pub kind: BlobSelectionTargetKind,
+    pub target_key: String,
+    pub command_id: String,
+}
+
+impl BlobSelectionTarget {
+    pub fn validate(&self) -> Result<(), DocumentRoundTripError> {
+        for value in [
+            &self.target_entity,
+            &self.canonical_field,
+            &self.target_key,
+            &self.command_id,
+        ] {
+            require_text(value)?;
+            if value.trim() != value {
+                return Err(DocumentRoundTripError::validation_failed());
+            }
+        }
+        require_text(&self.scope.document_id)?;
+        require_text(&self.scope.purpose)?;
+        require_text(&self.scope.aggregate_type)?;
+        if self.scope.aggregate_id == 0 || self.scope.aggregate_revision < 0 {
+            return Err(DocumentRoundTripError::validation_failed());
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for BlobSelectionTarget {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("BlobSelectionTarget[redacted]")
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct BlobSelectionClaim {
+    pub target: BlobSelectionTarget,
+    pub reference: BlobRef,
+}
+
+impl BlobSelectionClaim {
+    pub fn validate(&self) -> Result<(), DocumentRoundTripError> {
+        self.target.validate()
+    }
+}
+
+impl std::fmt::Debug for BlobSelectionClaim {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("BlobSelectionClaim[redacted]")
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedBlobSelection {
+    pub claim: BlobSelectionClaim,
     pub key_id: String,
     pub issued_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,

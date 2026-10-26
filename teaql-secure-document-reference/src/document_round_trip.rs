@@ -16,6 +16,7 @@ use teaql_runtime::{
     DocumentRelationSnapshot, DocumentRoundTripError, DocumentSnapshot, ReferenceDocumentScope,
     ReferenceIdentity, TrustedReferencePrincipal, VerifiedDocumentSnapshot,
 };
+mod document_blob_v2;
 const TOKEN_PREFIX: &str = "tqd1";
 const TOKEN_VERSION: u8 = 1;
 const MAX_TOKEN_LENGTH: usize = 256_000;
@@ -182,8 +183,18 @@ fn encode_document_aad(
     environment: &str,
     purpose: &str,
 ) -> Result<Vec<u8>, DocumentRoundTripError> {
+    encode_document_aad_with_prefix(TOKEN_PREFIX, key_id, service, environment, purpose)
+}
+
+fn encode_document_aad_with_prefix(
+    prefix: &str,
+    key_id: &str,
+    service: &str,
+    environment: &str,
+    purpose: &str,
+) -> Result<Vec<u8>, DocumentRoundTripError> {
     let mut output = Vec::new();
-    write_text(&mut output, TOKEN_PREFIX)?;
+    write_text(&mut output, prefix)?;
     write_text(&mut output, key_id)?;
     write_text(&mut output, service)?;
     write_text(&mut output, environment)?;
@@ -235,8 +246,19 @@ fn encode_document_payload(
 }
 
 fn decode_document_payload(data: &[u8]) -> Result<DecodedDocumentPayload, DocumentRoundTripError> {
+    let (decoded, offset) = decode_document_payload_prefix(data, TOKEN_VERSION)?;
+    if offset != data.len() {
+        return Err(DocumentRoundTripError::invalid());
+    }
+    Ok(decoded)
+}
+
+fn decode_document_payload_prefix(
+    data: &[u8],
+    expected_version: u8,
+) -> Result<(DecodedDocumentPayload, usize), DocumentRoundTripError> {
     let mut offset = 0;
-    if read_u8(data, &mut offset)? != TOKEN_VERSION {
+    if read_u8(data, &mut offset)? != expected_version {
         return Err(DocumentRoundTripError::invalid());
     }
     let actor_fingerprint: [u8; 32] = read_exact(data, &mut offset, 32)?
@@ -306,22 +328,22 @@ fn decode_document_payload(data: &[u8]) -> Result<DecodedDocumentPayload, Docume
             allowed_mutations,
         )?);
     }
-    if offset != data.len() {
-        return Err(DocumentRoundTripError::invalid());
-    }
-    Ok(DecodedDocumentPayload {
-        actor_fingerprint,
-        snapshot: DocumentSnapshot::new(
-            model_fingerprint,
-            business_id,
-            scope,
-            aggregate,
-            entities,
-            relations,
-        )?,
-        issued_at,
-        expires_at,
-    })
+    Ok((
+        DecodedDocumentPayload {
+            actor_fingerprint,
+            snapshot: DocumentSnapshot::new(
+                model_fingerprint,
+                business_id,
+                scope,
+                aggregate,
+                entities,
+                relations,
+            )?,
+            issued_at,
+            expires_at,
+        },
+        offset,
+    ))
 }
 
 fn encode_scope(
@@ -396,11 +418,18 @@ fn decode_text_set(
 }
 
 fn parse_document_token(token: &str) -> Result<(&str, &str), DocumentRoundTripError> {
+    parse_token_with_prefix(token, TOKEN_PREFIX)
+}
+
+fn parse_token_with_prefix<'a>(
+    token: &'a str,
+    prefix: &str,
+) -> Result<(&'a str, &'a str), DocumentRoundTripError> {
     if token.len() > MAX_TOKEN_LENGTH {
         return Err(DocumentRoundTripError::invalid());
     }
     let mut parts = token.split('.');
-    if parts.next() != Some(TOKEN_PREFIX) {
+    if parts.next() != Some(prefix) {
         return Err(DocumentRoundTripError::invalid());
     }
     let key_id = parts.next().ok_or_else(DocumentRoundTripError::invalid)?;

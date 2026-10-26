@@ -8,6 +8,7 @@ description = "Optional context-bound reference and document snapshot protection
 readme = "README.md"
 
 [dependencies]
+teaql-core = { workspace = true }
 teaql-runtime = { workspace = true }
 chrono = { workspace = true }
 aes-gcm = { workspace = true }
@@ -18,7 +19,6 @@ sha2 = { workspace = true }
 subtle = { workspace = true }
 
 [dev-dependencies]
-teaql-core = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }

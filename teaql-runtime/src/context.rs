@@ -11,9 +11,10 @@ use crate::business_id::{
     BusinessClock, BusinessDate, BusinessIdSchemaService, SystemBusinessClock,
 };
 use crate::document_round_trip::{
-    AcceptedContextualDocument, ContextBoundDocumentService, ContextBoundDocumentServiceResource,
-    ContextualDocument, DocumentAcceptRequest, DocumentOpenRequest, DocumentRoundTripError,
-    DocumentSnapshot, VerifiedDocumentSnapshot,
+    AcceptedContextualDocument, BlobSelectionClaim, BlobSelectionTarget, BoundDocumentSnapshot,
+    ContextBoundDocumentService, ContextBoundDocumentServiceResource, ContextualDocument,
+    DocumentAcceptRequest, DocumentOpenRequest, DocumentRoundTripError, DocumentSnapshot,
+    VerifiedBlobSelection, VerifiedBoundDocumentSnapshot, VerifiedDocumentSnapshot,
 };
 use crate::entity_reference::{
     EntityReferenceClaims, EntityReferenceCodec, EntityReferenceCodecResource,
@@ -1079,6 +1080,58 @@ impl UserContext {
                 expected_aggregate_type,
                 expected_purpose,
             )
+    }
+
+    pub fn issue_bound_document_snapshot(
+        &self,
+        document: BoundDocumentSnapshot,
+        lifetime: std::time::Duration,
+    ) -> Result<String, DocumentRoundTripError> {
+        self.round_trip_reference_runtime()?
+            .issue_bound_document_snapshot(self.trusted_reference_principal()?, document, lifetime)
+    }
+
+    pub fn consume_bound_document_snapshot(
+        &self,
+        token: &str,
+        expected_aggregate_type: &str,
+        expected_purpose: &str,
+    ) -> Result<VerifiedBoundDocumentSnapshot, DocumentRoundTripError> {
+        self.round_trip_reference_runtime()?
+            .consume_bound_document_snapshot(
+                self.trusted_reference_principal()?,
+                token,
+                expected_aggregate_type,
+                expected_purpose,
+            )
+    }
+
+    pub fn issue_blob_selection(
+        &self,
+        document_token: &str,
+        claim: BlobSelectionClaim,
+        lifetime: std::time::Duration,
+    ) -> Result<String, DocumentRoundTripError> {
+        self.round_trip_reference_runtime()?.issue_blob_selection(
+            self.trusted_reference_principal()?,
+            document_token,
+            claim,
+            lifetime,
+        )
+    }
+
+    pub fn consume_blob_selection(
+        &self,
+        document_token: &str,
+        token: &str,
+        expected_target: &BlobSelectionTarget,
+    ) -> Result<VerifiedBlobSelection, DocumentRoundTripError> {
+        self.round_trip_reference_runtime()?.consume_blob_selection(
+            self.trusted_reference_principal()?,
+            document_token,
+            token,
+            expected_target,
+        )
     }
 
     pub fn reference_mode(&self) -> Result<ReferenceMode, RoundTripReferenceError> {

@@ -10,10 +10,11 @@ pub use round_trip_reference::{
 use std::sync::Arc;
 use std::time::Duration;
 use teaql_runtime::{
-    ContextBoundDocumentService, DocumentRoundTripError, DocumentSnapshot, ExternalEntityReference,
-    ReferenceDocumentScope, ReferenceIdentity, ReferenceMode, ReferenceStartupNotice,
-    ResolvedEntityReference, RoundTripReferenceError, RoundTripReferenceProvider,
-    TrustedReferencePrincipal, UserContext, VerifiedDocumentSnapshot,
+    BlobSelectionClaim, BlobSelectionTarget, BoundDocumentSnapshot, ContextBoundDocumentService,
+    DocumentRoundTripError, DocumentSnapshot, ExternalEntityReference, ReferenceDocumentScope,
+    ReferenceIdentity, ReferenceMode, ReferenceStartupNotice, ResolvedEntityReference,
+    RoundTripReferenceError, RoundTripReferenceProvider, TrustedReferencePrincipal, UserContext,
+    VerifiedBlobSelection, VerifiedBoundDocumentSnapshot, VerifiedDocumentSnapshot,
 };
 
 impl RoundTripReferenceProvider for ContextBoundReferenceRuntime {
@@ -57,6 +58,46 @@ impl RoundTripReferenceProvider for ContextBoundReferenceRuntime {
         expected_purpose: &str,
     ) -> Result<VerifiedDocumentSnapshot, DocumentRoundTripError> {
         self.consume_document_snapshot(principal, token, expected_aggregate_type, expected_purpose)
+    }
+    fn issue_bound_document_snapshot(
+        &self,
+        principal: &TrustedReferencePrincipal,
+        snapshot: BoundDocumentSnapshot,
+        lifetime: Duration,
+    ) -> Result<String, DocumentRoundTripError> {
+        self.issue_bound_document_snapshot(principal, snapshot, lifetime)
+    }
+    fn consume_bound_document_snapshot(
+        &self,
+        principal: &TrustedReferencePrincipal,
+        token: &str,
+        expected_aggregate_type: &str,
+        expected_purpose: &str,
+    ) -> Result<VerifiedBoundDocumentSnapshot, DocumentRoundTripError> {
+        self.consume_bound_document_snapshot(
+            principal,
+            token,
+            expected_aggregate_type,
+            expected_purpose,
+        )
+    }
+    fn issue_blob_selection(
+        &self,
+        principal: &TrustedReferencePrincipal,
+        document_token: &str,
+        claim: BlobSelectionClaim,
+        lifetime: Duration,
+    ) -> Result<String, DocumentRoundTripError> {
+        self.issue_blob_selection(principal, document_token, claim, lifetime)
+    }
+    fn consume_blob_selection(
+        &self,
+        principal: &TrustedReferencePrincipal,
+        document_token: &str,
+        token: &str,
+        expected_target: &BlobSelectionTarget,
+    ) -> Result<VerifiedBlobSelection, DocumentRoundTripError> {
+        self.consume_blob_selection(principal, document_token, token, expected_target)
     }
 }
 

@@ -80,10 +80,12 @@ pub use data_service::{
     RelationLoadPlan,
 };
 pub use document_round_trip::{
-    AcceptedContextualDocument, ContextBoundDocumentService, ContextualDocument,
-    DocumentAcceptRequest, DocumentEntitySnapshot, DocumentMutationKind, DocumentOpenRequest,
+    AcceptedContextualDocument, BlobSelectionClaim, BlobSelectionTarget, BlobSelectionTargetKind,
+    BoundDocumentSnapshot, ContextBoundDocumentService, ContextualDocument, DocumentAcceptRequest,
+    DocumentBlobBindingSnapshot, DocumentEntitySnapshot, DocumentMutationKind, DocumentOpenRequest,
     DocumentRelationCompleteness, DocumentRelationSnapshot, DocumentRoundTripError,
-    DocumentSnapshot, SubmittedContextualDocument, VerifiedDocumentSnapshot,
+    DocumentSnapshot, SubmittedContextualDocument, VerifiedBlobSelection,
+    VerifiedBoundDocumentSnapshot, VerifiedDocumentSnapshot,
 };
 #[allow(deprecated)]
 pub use entity_reference::{

@@ -1,4 +1,8 @@
-use crate::{DocumentRoundTripError, DocumentSnapshot, VerifiedDocumentSnapshot};
+use crate::{
+    BlobSelectionClaim, BlobSelectionTarget, BoundDocumentSnapshot, DocumentRoundTripError,
+    DocumentSnapshot, VerifiedBlobSelection, VerifiedBoundDocumentSnapshot,
+    VerifiedDocumentSnapshot,
+};
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value, json};
 use std::fmt::{Display, Formatter};
@@ -257,6 +261,41 @@ pub trait RoundTripReferenceProvider: Send + Sync {
         expected_aggregate_type: &str,
         expected_purpose: &str,
     ) -> Result<VerifiedDocumentSnapshot, DocumentRoundTripError>;
+    fn issue_bound_document_snapshot(
+        &self,
+        _principal: &TrustedReferencePrincipal,
+        _document: BoundDocumentSnapshot,
+        _lifetime: Duration,
+    ) -> Result<String, DocumentRoundTripError> {
+        Err(DocumentRoundTripError::configuration())
+    }
+    fn consume_bound_document_snapshot(
+        &self,
+        _principal: &TrustedReferencePrincipal,
+        _token: &str,
+        _expected_aggregate_type: &str,
+        _expected_purpose: &str,
+    ) -> Result<VerifiedBoundDocumentSnapshot, DocumentRoundTripError> {
+        Err(DocumentRoundTripError::configuration())
+    }
+    fn issue_blob_selection(
+        &self,
+        _principal: &TrustedReferencePrincipal,
+        _document_token: &str,
+        _claim: BlobSelectionClaim,
+        _lifetime: Duration,
+    ) -> Result<String, DocumentRoundTripError> {
+        Err(DocumentRoundTripError::configuration())
+    }
+    fn consume_blob_selection(
+        &self,
+        _principal: &TrustedReferencePrincipal,
+        _document_token: &str,
+        _token: &str,
+        _expected_target: &BlobSelectionTarget,
+    ) -> Result<VerifiedBlobSelection, DocumentRoundTripError> {
+        Err(DocumentRoundTripError::configuration())
+    }
 }
 
 #[derive(Clone)]
