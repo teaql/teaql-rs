@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
+mod dynamic_fields;
 mod infrastructure;
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
@@ -375,7 +376,11 @@ impl From<SqlCompileError> for MutationExecutorError {
 pub struct PgMutationExecutor {
     pool: Pool,
     resource_identity: teaql_data_service::infrastructure_sql::SqlResourceIdentity,
+    dynamic_storage_identity: Arc<u64>,
 }
+
+static NEXT_DYNAMIC_STORAGE_IDENTITY: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
 
 #[derive(Debug, Clone)]
 struct PostgresColumnMetadata {
@@ -394,10 +399,17 @@ pub struct PgTransactionExecutor {
     identity: teaql_data_service::infrastructure_sql::PhysicalTransactionIdentity,
     completion: Option<teaql_data_service::infrastructure_sql::PhysicalTransactionOwner>,
     rollback_only: std::sync::atomic::AtomicBool,
+    dynamic_storage_identity: Arc<u64>,
 }
 
 impl SqlTransport for PgMutationExecutor {
     type Error = MutationExecutorError;
+
+    fn dynamic_field_store(
+        &self,
+    ) -> Option<&dyn teaql_data_service::dynamic_fields::DynamicFieldStore> {
+        Some(self)
+    }
 
     fn infrastructure_sql(
         &self,
@@ -468,6 +480,12 @@ impl teaql_sql::StreamingSqlTransport for PgMutationExecutor {
 
 impl SqlTransport for PgTransactionExecutor {
     type Error = MutationExecutorError;
+
+    fn dynamic_field_store(
+        &self,
+    ) -> Option<&dyn teaql_data_service::dynamic_fields::DynamicFieldStore> {
+        Some(self)
+    }
 
     fn infrastructure_sql(
         &self,
@@ -600,6 +618,7 @@ impl teaql_sql::SqlTransactionTransport for PgMutationExecutor {
             identity: completion.identity(),
             completion: Some(completion),
             rollback_only: std::sync::atomic::AtomicBool::new(false),
+            dynamic_storage_identity: self.dynamic_storage_identity.clone(),
         };
         transaction.client().batch_execute("BEGIN").await?;
         Ok(transaction)
@@ -608,9 +627,15 @@ impl teaql_sql::SqlTransactionTransport for PgMutationExecutor {
 
 impl PgMutationExecutor {
     pub fn new(pool: Pool) -> Self {
+        use std::sync::atomic::Ordering;
         Self {
             pool,
             resource_identity: teaql_data_service::infrastructure_sql::SqlResourceIdentity::new(),
+            dynamic_storage_identity: Arc::new(
+                NEXT_DYNAMIC_STORAGE_IDENTITY
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                    .expect("PostgreSQL dynamic storage identities exhausted"),
+            ),
         }
     }
 

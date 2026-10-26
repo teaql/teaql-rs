@@ -2,6 +2,9 @@
 #[path = "support/completion.rs"]
 mod completion;
 #[cfg(feature = "runtime-integration")]
+#[path = "support/dynamic_fields.rs"]
+mod dynamic_fields;
+#[cfg(feature = "runtime-integration")]
 #[path = "support/runtime_journal.rs"]
 mod runtime_journal;
 #[cfg(feature = "runtime-integration")]
