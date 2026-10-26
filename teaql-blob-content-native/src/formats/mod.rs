@@ -247,7 +247,13 @@ fn walk_boxes(
         if kind == b"ftyp" {
             require(depth == 0 && body.len() >= 8 && (body.len() - 8).is_multiple_of(4))?;
             *ftyp = std::iter::once(&body[..4])
-                .chain(body[8..].chunks_exact(4))
+                .chain(
+                    body[8..]
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|brand| brand.as_slice()),
+                )
                 .any(|brand| {
                     matches!(
                         brand,
@@ -359,11 +365,8 @@ fn walk_boxes(
                         .and_then(|n| n.checked_add(12))
                         .is_some_and(|n| n <= body.len()),
                 )?;
-                for item in body[12..12 + entries * 4].chunks_exact(4) {
-                    budget(
-                        u32::from_be_bytes(item.try_into().unwrap()) as usize
-                            <= limits.maximum_expanded_bytes,
-                    )?;
+                for item in body[12..12 + entries * 4].as_chunks::<4>().0 {
+                    budget(u32::from_be_bytes(*item) as usize <= limits.maximum_expanded_bytes)?;
                 }
             } else {
                 budget(sample_size <= limits.maximum_expanded_bytes)?;

@@ -51,7 +51,7 @@ fn repack(changes: BTreeMap<String, Vec<u8>>, extras: Vec<(String, Vec<u8>)>) ->
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).unwrap();
-        let name = entry.name().to_owned();
+        let name = entry.name().unwrap().into_owned();
         let data = if let Some(data) = changes.get(&name) {
             data.clone()
         } else {
@@ -345,7 +345,7 @@ async fn size_empty_entry_text_cell_and_word_piece_budgets_fail_closed() {
     let mut payloads = Vec::new();
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).unwrap();
-        let name = entry.name().to_owned();
+        let name = entry.name().unwrap().into_owned();
         let mut bytes = Vec::new();
         entry.read_to_end(&mut bytes).unwrap();
         if name.starts_with("xl/worksheets/") {

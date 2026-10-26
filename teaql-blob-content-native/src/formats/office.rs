@@ -328,7 +328,7 @@ fn package(bytes: &[u8], extension: &str, limits: &VerificationLimits) -> BlobRe
     let mut actual_expanded = 0usize;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(invalid)?;
-        let name = entry.name().to_owned();
+        let name = entry.name().map_err(invalid)?.into_owned();
         require(
             name.len() <= 4096
                 && !name.contains(['\\', '\0', ':'])
