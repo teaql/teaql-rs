@@ -2,7 +2,7 @@ use super::{DocumentView, ViewAuthorization, ViewErrorCode, ViewFieldDecision, r
 use crate::UserContext;
 use serde_json::{Map, Value as Json};
 use std::collections::BTreeSet;
-use teaql_core::{BlobRef, Value};
+use teaql_core::{BlobRef, DataType, Value};
 
 const MAX_NODES: usize = 10_000;
 const MAX_DEPTH: usize = 64;
@@ -277,6 +277,49 @@ struct Freeze<'a> {
     entities: Vec<usize>,
 }
 impl Freeze<'_> {
+    fn modeled_field_input(
+        &self,
+        entity: &str,
+        field: &str,
+        input: &ViewInput<'_>,
+    ) -> Result<(), ViewErrorCode> {
+        let Some(descriptor) = self.context.entity(entity) else {
+            return Ok(());
+        };
+        let property = descriptor.property_by_name(field);
+        if property.is_some_and(|property| {
+            property.data_type != DataType::BlobRef && property.blob_field_spec.is_some()
+        }) {
+            return Err(ViewErrorCode::CapabilityMissing);
+        }
+        if let Some(property) = property
+            && property.data_type == DataType::BlobRef
+        {
+            let spec = property
+                .blob_field_spec
+                .as_ref()
+                .ok_or(ViewErrorCode::CapabilityMissing)?;
+            if spec.entity() != entity
+                || spec.field() != field
+                || spec.nullable() != property.nullable
+            {
+                return Err(ViewErrorCode::CapabilityMissing);
+            }
+            return match input {
+                ViewInput::Value(Value::BlobRef(_)) => Ok(()),
+                ViewInput::Value(Value::Null | Value::TypedNull(DataType::BlobRef))
+                    if property.nullable =>
+                {
+                    Ok(())
+                }
+                _ => Err(ViewErrorCode::ResultUnsupported),
+            };
+        }
+        if matches!(input, ViewInput::Value(Value::BlobRef(_))) {
+            return Err(ViewErrorCode::ResultUnsupported);
+        }
+        Ok(())
+    }
     fn input(
         &mut self,
         input: ViewInput<'_>,
@@ -413,12 +456,16 @@ impl Freeze<'_> {
                         .map_or(Json::Null, |value| Json::String(value.clone())),
                     depth + 1,
                 )?,
-                ViewFieldDecision::Value { .. } => self.input(
-                    entity.read_field(&field.canonical)?,
-                    &field_path,
-                    depth + 1,
-                    Some((&target, &field.canonical)),
-                )?,
+                ViewFieldDecision::Value { .. } => {
+                    let input = entity.read_field(&field.canonical)?;
+                    self.modeled_field_input(&target.entity, &field.canonical, &input)?;
+                    self.input(
+                        input,
+                        &field_path,
+                        depth + 1,
+                        Some((&target, &field.canonical)),
+                    )?
+                }
             };
             self.budget.text(&field.member)?;
             self.checks.push(Check::Field(

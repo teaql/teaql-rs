@@ -283,6 +283,21 @@ async fn actual_postgres_bound_view_uses_file_gateway_and_rechecks_current_bindi
     assert!(headers.starts_with(b"HTTP/1.1 206 Partial Content\r\n"));
     assert_eq!(body, bytes[..16]);
     assert_eq!(entity.document, Value::BlobRef(key.clone()));
+    let web_response =
+        teaql_web_integration_axum::WebResponse::of_single(&entity as &dyn ViewEntity)
+            .prepare_and_render(&context, &options)
+            .await
+            .unwrap();
+    let web_body = axum::body::to_bytes(web_response.into_body(), 64_000)
+        .await
+        .unwrap();
+    let web_json: serde_json::Value = serde_json::from_slice(&web_body).unwrap();
+    assert_eq!(
+        web_json["data"][0]["document"]["contentType"],
+        "application/pdf"
+    );
+    assert!(web_json["data"][0].get("preview").is_none());
+    assert!(!String::from_utf8_lossy(&web_body).contains(key.as_str()));
     context
         .reuse_prepared_view(&prepared, &options)
         .await

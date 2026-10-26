@@ -3869,6 +3869,7 @@ name = "teaql-blob-reference"
 version = "5.0.7"
 dependencies = [
  "async-trait",
+ "axum",
  "chrono",
  "deadpool-postgres",
  "futures-util",
@@ -3885,6 +3886,7 @@ dependencies = [
  "teaql-provider-postgres",
  "teaql-runtime",
  "teaql-sql",
+ "teaql-web-integration-axum",
  "tempfile",
  "tokio",
  "tokio-postgres",
@@ -4242,7 +4244,9 @@ dependencies = [
 name = "teaql-web-integration-axum"
 version = "5.0.7"
 dependencies = [
+ "async-trait",
  "axum",
+ "chrono",
  "serde",
  "serde_json",
  "teaql-core",

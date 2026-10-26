@@ -34,5 +34,7 @@ tokio.workspace = true
 teaql-provider-postgres.workspace = true
 teaql-runtime.workspace = true
 teaql-sql.workspace = true
+teaql-web-integration-axum = { path = "../teaql-web-integration-axum" }
+axum = { version = "0.8" }
 deadpool-postgres = "0.14"
 tokio-postgres = "0.7"
