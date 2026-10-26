@@ -3,8 +3,8 @@ use std::pin::Pin;
 use std::sync::Mutex;
 
 use teaql_data_service::{
-    MutationExecutor, MutationRequest, MutationResult, QueryExecutor, QueryRequest, QueryResult,
-    Transaction, TransactionExecutor,
+    DataServiceExecutor, MutationExecutor, MutationRequest, MutationResult, QueryExecutor,
+    QueryRequest, QueryResult, Transaction, TransactionExecutor,
 };
 
 use crate::{ContextError, EntityDataService, RuntimeError, UserContext};
@@ -163,6 +163,15 @@ where
     /// configuration for this transaction.
     pub fn context(&self) -> &'context UserContext {
         self.context
+    }
+
+    /// Infrastructure services may join the exact owner used by generated
+    /// queries and saves. This never falls back to a context-level connection.
+    #[doc(hidden)]
+    pub fn infrastructure_sql(
+        &self,
+    ) -> Option<&dyn teaql_data_service::infrastructure_sql::InfrastructureSql> {
+        DataServiceExecutor::infrastructure_sql(self.transaction())
     }
 
     /// Build an entity data service that is guaranteed to use this transaction.
