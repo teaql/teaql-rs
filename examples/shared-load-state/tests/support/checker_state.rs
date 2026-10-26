@@ -10,6 +10,27 @@ use teaql_runtime::{
 struct Observe {
     snapshots: Arc<Mutex<Vec<Arc<LoadedSnapshot>>>>,
 }
+
+// Checker maps use KSML identity; the typed carrier keeps native Rust members.
+// Construct the expected public input independently from generated fixed-field
+// metadata, without changing values, presence or immutable snapshot geometry.
+fn canonical_values(source: &School) -> teaql_runtime::EntityValues {
+    fn rename(values: &mut std::collections::BTreeMap<String, Value>) {
+        for &(canonical, member, _) in School::__TEAQL_FIXED_FIELD_MAPPINGS {
+            if canonical != member {
+                if let Some(value) = values.remove(member) {
+                    assert!(values.insert(canonical.to_owned(), value).is_none());
+                }
+            }
+        }
+    }
+    let mut values: teaql_runtime::EntityValues = source.clone().into_values().into();
+    rename(&mut values);
+    if let Some(Value::Object(original)) = values.get_mut("_original_values") {
+        rename(original);
+    }
+    values
+}
 impl TypedChecker<School> for Observe {
     fn check_and_fix_typed(
         &self,
@@ -35,13 +56,13 @@ pub fn verify(context: &UserContext, full: &School, sparse: &School) {
         snapshots: snapshots.clone(),
     });
     for (index, source) in [full, sparse].into_iter().enumerate() {
-        let mut values: teaql_runtime::EntityValues = source.clone().into_values().into();
+        let mut values = canonical_values(source);
         let original = values.clone();
         let expected = source.loaded_state_snapshot().unwrap();
         let fields = School::__TEAQL_FIXED_FIELD_MAPPINGS
             .iter()
             .filter(|(_, member, _)| expected.is_loaded(member))
-            .map(|(_, member, _)| Value::Text((*member).to_owned()))
+            .map(|(canonical, _, _)| Value::Text((*canonical).to_owned()))
             .collect();
         values.insert("_loaded_fields".into(), Value::List(fields));
         let mut results = CheckResults::new();
@@ -104,12 +125,12 @@ fn allocation_probe(context: &UserContext, full: &School, sparse: &School) {
             let checker = TypedEntityChecker::<School, _>::new(Noop {
                 expect_dirty: dirty,
             });
-            let mut template: teaql_runtime::EntityValues = source.clone().into_values().into();
+            let mut template = canonical_values(source);
             let expected = source.loaded_state_snapshot().unwrap();
             let fields = School::__TEAQL_FIXED_FIELD_MAPPINGS
                 .iter()
                 .filter(|(_, member, _)| expected.is_loaded(member))
-                .map(|(_, member, _)| Value::Text((*member).to_owned()))
+                .map(|(canonical, _, _)| Value::Text((*canonical).to_owned()))
                 .collect();
             template.insert("_loaded_fields".into(), Value::List(fields));
             if dirty {
@@ -134,7 +155,7 @@ fn allocation_probe(context: &UserContext, full: &School, sparse: &School) {
                         checker.check_and_fix(context, values, &location, result);
                     }
                 });
-                let original: teaql_runtime::EntityValues = source.clone().into_values().into();
+                let original = canonical_values(source);
                 for (values, result) in inputs.iter().zip(&results) {
                     assert_eq!(values, &original);
                     assert_eq!(result.is_empty(), shape == "full");
