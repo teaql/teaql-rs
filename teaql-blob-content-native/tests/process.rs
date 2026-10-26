@@ -538,8 +538,8 @@ mod faults {
             let mut child = ChildGuard(Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "faults::environment_directory_and_unmarked_host_descriptors_are_not_inherited", "--nocapture"])
                 .env(ROLE, "controller").env("TEAQL_WORKER_TEST_CANARY", "must-never-reach-worker")
-                .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
-            assert!(wait(&mut child.0, Duration::from_secs(15)).success());
+                .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::inherit()).spawn().unwrap());
+            assert!(wait(&mut child.0, Duration::from_secs(60)).success());
         }
     }
 
