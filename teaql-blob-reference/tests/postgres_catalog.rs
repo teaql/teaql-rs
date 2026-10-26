@@ -2,6 +2,9 @@
 #[path = "support/completion.rs"]
 mod completion;
 #[cfg(feature = "runtime-integration")]
+#[path = "support/document_selection.rs"]
+mod document_selection;
+#[cfg(feature = "runtime-integration")]
 #[path = "support/dynamic_fields.rs"]
 mod dynamic_fields;
 #[cfg(feature = "runtime-integration")]
@@ -46,6 +49,20 @@ impl BlobBindAuthorization for BindAuthorization {
             .get_resource::<BindPrincipal>()
             .ok_or(BlobErrorCode::BindDenied)?;
         BlobUploadIdentity::new(BlobScope::new("fixture", "tenant-a")?, "actor-a")
+    }
+
+    fn authorize_document_actor(
+        &self,
+        context: &teaql_runtime::UserContext,
+        principal: &teaql_runtime::TrustedReferencePrincipal,
+        identity: &BlobUploadIdentity,
+    ) -> BlobResult<bool> {
+        Ok(principal.subject == identity.actor()
+            && context
+                .get_resource::<BindPrincipal>()
+                .ok_or(BlobErrorCode::BindDenied)?
+                .0
+                .load(Ordering::SeqCst))
     }
 
     fn authorize_bind(

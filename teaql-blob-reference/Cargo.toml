@@ -33,6 +33,7 @@ tempfile = "3"
 tokio.workspace = true
 teaql-provider-postgres.workspace = true
 teaql-runtime.workspace = true
+teaql-secure-document-reference.workspace = true
 teaql-sql.workspace = true
 teaql-web-integration-axum = { path = "../teaql-web-integration-axum" }
 axum = { version = "0.8" }

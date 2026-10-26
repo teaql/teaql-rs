@@ -3885,6 +3885,7 @@ dependencies = [
  "teaql-macros",
  "teaql-provider-postgres",
  "teaql-runtime",
+ "teaql-secure-document-reference",
  "teaql-sql",
  "teaql-web-integration-axum",
  "tempfile",
