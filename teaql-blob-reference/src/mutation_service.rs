@@ -77,8 +77,8 @@ pub struct PreparedBlobMutation {
 #[derive(Clone)]
 pub struct BlobMutationParticipant {
     instance: Arc<()>,
-    catalog: PostgresBlobCatalog,
-    policies: Arc<BlobPolicies>,
+    pub(crate) catalog: PostgresBlobCatalog,
+    pub(crate) policies: Arc<BlobPolicies>,
     authorization: Arc<dyn BlobBindAuthorization>,
     clock: Arc<dyn BlobUploadClock>,
 }

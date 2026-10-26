@@ -369,6 +369,10 @@ async fn module_install_is_passive_preserves_context_and_rejects_duplicate() {
         BlobErrorCode::PolicyInvalid
     );
     module.validate_upload_ready(&app.ctx).await.unwrap();
+    assert_eq!(
+        module.validate_ready(&mut app.ctx).await.unwrap_err().code,
+        BlobErrorCode::CapabilityMissing
+    );
 
     let requirement = || RuntimeModule::new().require_capability(BlobReferenceModule::CAPABILITY);
     let mut business_first = UserContext::new().with_module(requirement());

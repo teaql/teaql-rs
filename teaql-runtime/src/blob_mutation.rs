@@ -37,3 +37,11 @@ pub trait RuntimePreparedBlobMutation: Send {
 }
 
 pub struct BlobMutationParticipantResource(pub Arc<dyn RuntimeBlobMutationParticipant>);
+
+/// A module-issued readiness claim. Implementations must check that the
+/// validated participants and model are still installed in this context.
+pub trait RuntimeBlobCapability: Send + Sync {
+    fn is_ready(&self, context: &UserContext) -> bool;
+}
+
+pub struct BlobCapabilityResource(pub Arc<dyn RuntimeBlobCapability>);

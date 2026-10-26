@@ -121,10 +121,10 @@ impl fmt::Debug for BlobUploadWriteReceipt {
 }
 #[derive(Clone)]
 pub struct BlobUploadService {
-    catalog: PostgresBlobCatalog,
-    store: Arc<dyn BlobStore>,
+    pub(crate) catalog: PostgresBlobCatalog,
+    pub(crate) store: Arc<dyn BlobStore>,
     verifier: Arc<dyn BlobContentVerifier>,
-    policies: Arc<BlobPolicies>,
+    pub(crate) policies: Arc<BlobPolicies>,
     authorization: Arc<dyn BlobUploadAuthorization>,
     clock: Arc<dyn BlobUploadClock>,
 }

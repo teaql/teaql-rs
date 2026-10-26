@@ -47,8 +47,9 @@ mod telemetry_stream;
 mod view_preparation;
 
 pub use blob_mutation::{
-    BlobMutationFuture, BlobMutationParticipantResource, RuntimeBlobMutationParticipant,
-    RuntimeBlobMutationPlan, RuntimePreparedBlobMutation,
+    BlobCapabilityResource, BlobMutationFuture, BlobMutationParticipantResource,
+    RuntimeBlobCapability, RuntimeBlobMutationParticipant, RuntimeBlobMutationPlan,
+    RuntimePreparedBlobMutation,
 };
 pub use view_preparation::{
     AcceptedDocumentView, AuthorizedResponseGraph, BlobViewProjection, BlobViewRead,

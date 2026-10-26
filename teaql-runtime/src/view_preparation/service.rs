@@ -124,6 +124,16 @@ impl ViewPreparationService {
         context.insert_resource(ViewServiceResource(Arc::new(self.clone())));
         Ok(())
     }
+    /// Checks the installed view service and the exact authorized Blob contributor.
+    pub fn installed_blob_contributor_matches(
+        context: &UserContext,
+        contributor: &Arc<dyn ViewBlobContributor>,
+    ) -> bool {
+        context
+            .get_resource::<ViewServiceResource>()
+            .and_then(|resource| resource.0.blobs.as_ref())
+            .is_some_and(|installed| Arc::ptr_eq(installed, contributor))
+    }
     pub(crate) fn supports_governed(&self, context: &UserContext) -> bool {
         self.documents.is_some()
             || (context

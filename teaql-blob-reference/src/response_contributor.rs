@@ -36,9 +36,9 @@ pub trait BlobReadAuthorization: Send + Sync {
 
 #[derive(Clone)]
 pub struct BlobResponseContributor {
-    catalog: PostgresBlobCatalog,
-    store: Arc<dyn BlobStore>,
-    policies: Arc<BlobPolicies>,
+    pub(crate) catalog: PostgresBlobCatalog,
+    pub(crate) store: Arc<dyn BlobStore>,
+    pub(crate) policies: Arc<BlobPolicies>,
     authorization: Arc<dyn BlobReadAuthorization>,
     clock: Arc<dyn BlobUploadClock>,
 }

@@ -928,6 +928,7 @@ impl UserContext {
     pub fn validate_capabilities(&self) -> Result<(), crate::RuntimeError> {
         // Generated manifests are declarative. A missing declaration must not
         // let a modeled Blob field bypass readiness altogether.
+        let mut has_blob_fields = false;
         for entity in self.all_entities() {
             for property in &entity.properties {
                 if property.data_type != teaql_core::DataType::BlobRef {
@@ -950,13 +951,23 @@ impl UserContext {
                         "BLOB_POLICY_INVALID".to_owned(),
                     ));
                 }
-                return Err(crate::RuntimeError::Capability {
-                    code: "BLOB_CAPABILITY_MISSING",
-                    capability: "blob.v1".to_owned(),
-                });
+                has_blob_fields = true;
             }
         }
+        let blob_ready = || {
+            self.get_resource::<crate::BlobCapabilityResource>()
+                .is_some_and(|resource| resource.0.is_ready(self))
+        };
+        if has_blob_fields && !blob_ready() {
+            return Err(crate::RuntimeError::Capability {
+                code: "BLOB_CAPABILITY_MISSING",
+                capability: "blob.v1".to_owned(),
+            });
+        }
         for capability in self.required_capabilities() {
+            if capability == "blob.v1" && blob_ready() {
+                continue;
+            }
             if let Some(service) =
                 self.get_resource::<crate::view_preparation::ViewServiceResource>()
                 && (capability == "view.v1"

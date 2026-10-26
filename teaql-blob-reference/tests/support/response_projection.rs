@@ -1,12 +1,18 @@
 use super::*;
 use futures_util::stream;
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, fs, sync::atomic::AtomicBool, time::Duration};
+use std::{
+    collections::BTreeMap, fs, os::unix::fs::PermissionsExt, sync::atomic::AtomicBool,
+    time::Duration,
+};
+use teaql_blob_content_native::{
+    ProcessBlobContentVerifier, VerificationLimits, WorkerExecutable, WorkerResourceLimits,
+};
 use teaql_blob_store_file::{FileBlobHttpGateway, FileBlobStore, SystemBlobGatewayClock};
 use teaql_core::{BlobFieldSpec, BlobRef, DataType, EntityDescriptor, PropertyDescriptor, Value};
 use teaql_runtime::{
     AuthorizedResponseGraph, CurrentDocumentViewValidation, DocumentContext,
-    DocumentViewProjection, InMemoryMetadataStore, ReferenceDocumentScope,
+    DocumentViewProjection, InMemoryMetadataStore, ReferenceDocumentScope, RuntimeModule,
     TrustedReferencePrincipal, UserContext, ViewAuthorization, ViewDocumentContributor, ViewEntity,
     ViewEntityTarget, ViewErrorCode, ViewField, ViewFieldDecision, ViewIdentity, ViewInput,
     ViewOptions, ViewPath, ViewPreparationService,
@@ -40,6 +46,38 @@ struct ReadState {
     show_preview: AtomicBool,
 }
 struct ReadAuth(Arc<ReadState>);
+struct ReadyAuth;
+impl BlobUploadAuthorization for ReadyAuth {
+    fn identity(&self, _: &UserContext) -> BlobResult<BlobUploadIdentity> {
+        BlobUploadIdentity::new(BlobScope::new("fixture", "tenant-a")?, "actor-a")
+    }
+    fn can_write_field(&self, _: &UserContext, _: &BlobFieldTarget) -> BlobResult<bool> {
+        Ok(true)
+    }
+    fn authorize_upload(
+        &self,
+        _: &UserContext,
+        _: &BlobFieldTarget,
+        _: BlobUploadAction,
+        _: &BlobUploadFileInfo,
+    ) -> BlobResult<bool> {
+        Ok(true)
+    }
+}
+impl BlobBindAuthorization for ReadyAuth {
+    fn identity(&self, context: &UserContext) -> BlobResult<BlobUploadIdentity> {
+        <Self as BlobUploadAuthorization>::identity(self, context)
+    }
+    fn authorize_bind(
+        &self,
+        _: &UserContext,
+        _: &BlobFieldTarget,
+        _: BlobBindAction,
+        _: Option<&BlobRef>,
+    ) -> BlobResult<bool> {
+        Ok(true)
+    }
+}
 impl BlobReadAuthorization for ReadAuth {
     fn identity(&self, _: &UserContext) -> BlobResult<BlobUploadIdentity> {
         BlobUploadIdentity::new(BlobScope::new("fixture", "tenant-a")?, "actor-a")
@@ -228,7 +266,7 @@ async fn actual_postgres_bound_view_uses_file_gateway_and_rechecks_current_bindi
     let contributor = Arc::new(BlobResponseContributor::new(
         fixture.catalog.clone(),
         gateway.clone(),
-        policies,
+        policies.clone(),
         Arc::new(ReadAuth(state.clone())),
         Arc::new(SystemBlobUploadClock),
     ));
@@ -239,12 +277,63 @@ async fn actual_postgres_bound_view_uses_file_gateway_and_rechecks_current_bindi
         .property(
             PropertyDescriptor::new("preview", DataType::BlobRef).blob_field_spec(preview_spec),
         );
-    let mut context =
-        UserContext::new().with_metadata(InMemoryMetadataStore::new().with_entity(descriptor));
+    let mut context = RuntimeModule::new()
+        .descriptor(descriptor)
+        .require_capability(BlobReferenceModule::CAPABILITY)
+        .into_context();
     ViewPreparationService::new(Arc::new(ViewAuth(state.clone())))
         .with_blob_contributor(contributor.clone())
         .install_into(&mut context)
         .unwrap();
+    assert!(context.validate_capabilities().is_err());
+    let worker_source = std::env::var_os("TEAQL_BLOB_RUST_WORKER").unwrap();
+    let worker_path = temp.path().join("parser-worker");
+    fs::copy(worker_source, &worker_path).unwrap();
+    fs::set_permissions(&worker_path, fs::Permissions::from_mode(0o500)).unwrap();
+    let worker_pin = format!("{:x}", Sha256::digest(fs::read(&worker_path).unwrap()));
+    let verifier = ProcessBlobContentVerifier::new(
+        temp.path().join("parser"),
+        VerificationLimits::default(),
+        WorkerExecutable::new(worker_path, worker_pin).unwrap(),
+        WorkerResourceLimits::default(),
+    )
+    .unwrap();
+    verifier.initialize().await.unwrap();
+    let upload = Arc::new(BlobUploadService::new(
+        fixture.catalog.clone(),
+        gateway.clone(),
+        Arc::new(verifier),
+        (*policies).clone(),
+        Arc::new(ReadyAuth),
+        Arc::new(SystemBlobUploadClock),
+    ));
+    let mutation = Arc::new(BlobMutationParticipant::new(
+        fixture.catalog.clone(),
+        policies,
+        Arc::new(ReadyAuth),
+        Arc::new(SystemBlobUploadClock),
+    ));
+    let module = BlobReferenceModule::new(upload)
+        .with_mutation(mutation)
+        .with_response(contributor.clone());
+    let mut without_view = RuntimeModule::new()
+        .descriptor(context.entity("Asset").unwrap().clone())
+        .require_capability(BlobReferenceModule::CAPABILITY)
+        .into_context();
+    module.install_into(&mut without_view).unwrap();
+    assert_eq!(
+        module
+            .validate_ready(&mut without_view)
+            .await
+            .unwrap_err()
+            .code,
+        BlobErrorCode::CapabilityMissing
+    );
+    assert!(without_view.validate_capabilities().is_err());
+    module.install_into(&mut context).unwrap();
+    assert!(context.validate_capabilities().is_err());
+    module.validate_ready(&mut context).await.unwrap();
+    context.validate_capabilities().unwrap();
     let entity = AssetView {
         document: Value::BlobRef(key.clone()),
         preview: Value::BlobRef(BlobRef::new("blob_hidden_unbound").unwrap()),
@@ -395,4 +484,23 @@ async fn actual_postgres_bound_view_uses_file_gateway_and_rechecks_current_bindi
             .code,
         ViewErrorCode::AccessDenied
     );
+    let original_model = context.entity("Asset").unwrap().clone();
+    let changed_model = EntityDescriptor::new("Asset").property(
+        PropertyDescriptor::new("document", DataType::BlobRef).blob_field_spec(
+            BlobFieldSpec::new("Asset", "document", ["png"], true, "default").unwrap(),
+        ),
+    );
+    context.set_metadata(InMemoryMetadataStore::new().with_entity(changed_model));
+    assert!(context.validate_capabilities().is_err());
+    context.set_metadata(InMemoryMetadataStore::new().with_entity(original_model));
+    context.validate_capabilities().unwrap();
+    context.insert_resource(teaql_runtime::BlobMutationParticipantResource(Arc::new(
+        BlobMutationParticipant::new(
+            fixture.catalog.clone(),
+            Arc::new(BlobPolicies::default()),
+            Arc::new(ReadyAuth),
+            Arc::new(SystemBlobUploadClock),
+        ),
+    )));
+    assert!(context.validate_capabilities().is_err());
 }
