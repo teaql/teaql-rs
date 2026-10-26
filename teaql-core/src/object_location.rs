@@ -23,7 +23,7 @@ impl JsonFieldNamingProfile {
         }
     }
 
-    fn render(self, name: &str) -> String {
+    pub fn render(self, name: &str) -> String {
         match self {
             Self::SnakeCase => name.to_owned(),
             Self::CamelCase => lower_camel(name),

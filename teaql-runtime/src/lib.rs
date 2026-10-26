@@ -7,6 +7,7 @@ mod data_service;
 mod document_round_trip;
 pub mod dynamic_fields;
 mod entity_reference;
+pub mod entity_json;
 mod entity_runtime;
 pub mod entity_save;
 mod entity_status;

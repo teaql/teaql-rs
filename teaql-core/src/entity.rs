@@ -10,11 +10,40 @@ use crate::{
 #[derive(Default)]
 pub struct EntityJsonTraversal {
     path: Vec<(&'static str, usize)>,
+    strict_limits: Option<(usize, usize)>,
+    visited: usize,
+    failure: Option<EntityJsonTraversalError>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntityJsonTraversalError {
+    Cycle,
+    Limit,
 }
 
 impl EntityJsonTraversal {
+    pub fn for_strict_wire(max_depth: usize, max_nodes: usize) -> Self {
+        Self {
+            strict_limits: Some((max_depth, max_nodes)),
+            ..Self::default()
+        }
+    }
+
+    pub fn failure(&self) -> Option<EntityJsonTraversalError> {
+        self.failure
+    }
+
     pub fn enter(&mut self, entity: &'static str, address: usize) -> bool {
-        let expand = self.path.len() < 128 && !self.path.contains(&(entity, address));
+        self.visited = self.visited.saturating_add(1);
+        let cycle = self.path.contains(&(entity, address));
+        if let Some((depth, nodes)) = self.strict_limits {
+            if self.path.len() >= depth || self.visited > nodes {
+                self.failure = Some(EntityJsonTraversalError::Limit);
+            } else if cycle {
+                self.failure = Some(EntityJsonTraversalError::Cycle);
+            }
+        }
+        let expand = self.path.len() < 128 && !cycle && self.failure.is_none();
         self.path.push((entity, address));
         expand
     }

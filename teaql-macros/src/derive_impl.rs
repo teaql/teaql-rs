@@ -611,6 +611,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             fn borrowed_json_values(&self, traversal: &mut ::teaql_core::EntityJsonTraversal) -> Option<::std::collections::BTreeMap<String, ::teaql_core::Value>> {
                 let expand = traversal.enter(#entity_name, self as *const Self as usize);
                 let result = (|| {
+                    if traversal.failure().is_some() { return None; }
                     let mut record = ::std::collections::BTreeMap::new();
                     #(#values)*
                     if expand { #(#relations)* }
