@@ -138,6 +138,8 @@ impl I18nCatalog {
             CheckRule::Required => "checker.required",
             CheckRule::InvalidType => "checker.invalidType",
             CheckRule::InvalidDeletionState => "checker.invalidDeletionState",
+            CheckRule::InvalidVersionState => "checker.invalidVersionState",
+            CheckRule::VersionExhausted => "checker.versionExhausted",
             CheckRule::Min => "checker.min",
             CheckRule::Max => "checker.max",
             CheckRule::MinStringLength => "checker.minLength",

@@ -648,7 +648,7 @@ pub trait SqlDialect {
             params.push_field(
                 entity,
                 &version_property.name,
-                Value::I64(expected_version + 1),
+                Value::I64(teaql_core::mutation_version::updated(expected_version)?),
             );
             assignments.push(format!(
                 "{} = {}",
@@ -774,7 +774,7 @@ pub trait SqlDialect {
                     params.push_field(
                         entity,
                         &version_property.name,
-                        teaql_core::Value::I64(*exp_ver + 1),
+                        teaql_core::Value::I64(teaql_core::mutation_version::updated(*exp_ver)?),
                     );
                     let val_ph = self.placeholder(params.len());
 
@@ -889,21 +889,20 @@ pub trait SqlDialect {
         let mut params = crate::SqlBindings::new();
 
         if command.soft_delete {
-            if let Some(version) = command.expected_version
-                && version <= 0
-            {
-                return Err(SqlCompileError::InvalidDeleteVersion(version));
-            }
+            let deleted_version = command
+                .expected_version
+                .map(teaql_core::mutation_version::deleted)
+                .transpose()?;
             let version_property = entity
                 .version_property()
                 .ok_or_else(|| SqlCompileError::MissingVersionProperty(entity.name.clone()))?;
             params.push_field(
                 entity,
                 &version_property.name,
-                match command.expected_version {
+                match deleted_version {
                     // Negate before subtracting so i64::MAX maps exactly to
                     // i64::MIN without a debug overflow or release wrapping.
-                    Some(version) => Value::I64(-version - 1),
+                    Some(version) => Value::I64(version),
                     None => Value::I64(-1),
                 },
             );
@@ -1007,11 +1006,7 @@ pub trait SqlDialect {
         command: &RecoverCommand,
         guard: Option<&Expr>,
     ) -> Result<CompiledQuery, SqlCompileError> {
-        if command.expected_version >= 0 {
-            return Err(SqlCompileError::InvalidRecoverVersion(
-                command.expected_version,
-            ));
-        }
+        let recovered_version = teaql_core::mutation_version::recovered(command.expected_version)?;
 
         let id_property = entity
             .id_property()
@@ -1023,7 +1018,7 @@ pub trait SqlDialect {
         params.push_field(
             entity,
             &version_property.name,
-            Value::I64(-command.expected_version + 1),
+            Value::I64(recovered_version),
         );
         params.push_field(entity, &id_property.name, command.id.clone());
         params.push_field(
@@ -1185,7 +1180,10 @@ pub trait SqlDialect {
                 .map(|aggregate| {
                     let field = self.resolve_aggregate_field(entity, aggregate)?;
                     let call = self.aggregate_call_sql_for(entity, aggregate, &field)?;
-                    Ok(format!("{call} AS {}", self.quote_ident(&aggregate.alias)))
+                    Ok::<_, SqlCompileError>(format!(
+                        "{call} AS {}",
+                        self.quote_ident(&aggregate.alias)
+                    ))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         );

@@ -277,7 +277,12 @@ pub enum SqlCompileError {
     MissingVersionProperty(String),
     EmptyMutation(String),
     InvalidDeleteVersion(i64),
+    InvalidUpdateVersion(i64),
     InvalidRecoverVersion(i64),
+    VersionExhausted {
+        operation: teaql_core::MutationKind,
+        version: i64,
+    },
     UnsupportedSchemaType(DataType),
     InvalidSchemaShape {
         property: String,
@@ -313,6 +318,14 @@ impl std::fmt::Display for SqlCompileError {
             Self::InvalidRecoverVersion(version) => {
                 write!(f, "recover requires a negative version, got {version}")
             }
+            Self::InvalidUpdateVersion(version) => write!(
+                f,
+                "update requires a positive original version, got {version}"
+            ),
+            Self::VersionExhausted { operation, version } => write!(
+                f,
+                "{operation:?} cannot advance exhausted version {version} within signed 64-bit range"
+            ),
             Self::UnsupportedSchemaType(data_type) => {
                 write!(f, "unsupported schema type: {data_type:?}")
             }
@@ -337,3 +350,17 @@ impl std::fmt::Display for SqlCompileError {
 }
 
 impl std::error::Error for SqlCompileError {}
+
+impl From<teaql_core::mutation_version::MutationVersionError> for SqlCompileError {
+    fn from(error: teaql_core::mutation_version::MutationVersionError) -> Self {
+        use teaql_core::mutation_version::MutationVersionError;
+        match error {
+            MutationVersionError::InvalidUpdate(version) => Self::InvalidUpdateVersion(version),
+            MutationVersionError::InvalidDelete(version) => Self::InvalidDeleteVersion(version),
+            MutationVersionError::InvalidRecovery(version) => Self::InvalidRecoverVersion(version),
+            MutationVersionError::Exhausted { operation, version } => {
+                Self::VersionExhausted { operation, version }
+            }
+        }
+    }
+}

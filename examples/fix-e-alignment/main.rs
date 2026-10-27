@@ -9,6 +9,7 @@ mod loading_probe;
 mod ownership_probe;
 mod paged_ownership;
 mod tombstone_probe;
+mod version_probe;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -230,7 +231,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("GENERATED_EMPTY_SUM_PASS language=rust present=true value=null");
     loading_probe::verify(&context, id).await?;
     ownership_probe::verify(&context).await?;
-    tombstone_probe::verify(&mut context, pool).await?;
+    tombstone_probe::verify(&mut context, pool.clone()).await?;
+    version_probe::verify(&mut context, pool).await?;
     println!(
         "FIX_E_EXAMPLE={}",
         serde_json::json!({"language":"rust", "passed":true,

@@ -411,9 +411,11 @@ pub(crate) fn increment_version(
     values: &mut BTreeMap<String, Value>,
     descriptor: &EntityDescriptor,
     original_version: Option<i64>,
-) {
+) -> Result<(), RuntimeError> {
     if let Some(prop) = descriptor.version_property() {
-        let next_version = original_version.map(|v| v + 1).unwrap_or(2);
+        let next_version =
+            crate::mutation_version::updated(&descriptor.name, original_version)?.unwrap_or(2);
         values.insert(prop.name.clone(), teaql_core::Value::I64(next_version));
     }
+    Ok(())
 }

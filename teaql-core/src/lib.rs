@@ -12,6 +12,7 @@ mod list;
 mod load_state;
 mod meta;
 mod mutation;
+pub mod mutation_version;
 mod naming;
 pub mod object_location;
 pub mod object_storage;

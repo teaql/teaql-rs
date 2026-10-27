@@ -209,6 +209,8 @@ where
         &self,
         command: &UpdateCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
+        crate::mutation_version::updated(&command.entity, command.expected_version)
+            .map_err(DataServiceError::Runtime)?;
         let mut sql_command = command.clone();
         sql_command.trace_chain = sql_statement_trace(
             sql_command.trace_chain,
@@ -245,6 +247,10 @@ where
         &self,
         command: &DeleteCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
+        if command.soft_delete {
+            crate::mutation_version::deleted(&command.entity, command.expected_version)
+                .map_err(DataServiceError::Runtime)?;
+        }
         let mut sql_command = command.clone();
         sql_command.trace_chain = sql_statement_trace(
             sql_command.trace_chain,
@@ -318,6 +324,10 @@ where
         &self,
         command: &teaql_core::BatchUpdateCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
+        for version in &command.batch_expected_versions {
+            crate::mutation_version::updated(&command.entity, *version)
+                .map_err(DataServiceError::Runtime)?;
+        }
         let mut affected = 0;
         for (i, val) in command.batch_values.iter().enumerate() {
             let mut update_cmd =
@@ -386,6 +396,8 @@ where
         &self,
         command: &RecoverCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
+        crate::mutation_version::recovered(&command.entity, command.expected_version)
+            .map_err(DataServiceError::Runtime)?;
         let mut sql_command = command.clone();
         sql_command.trace_chain = sql_statement_trace(
             sql_command.trace_chain,

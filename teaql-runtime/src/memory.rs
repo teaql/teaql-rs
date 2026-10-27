@@ -272,6 +272,9 @@ where
         command: &UpdateCommand,
     ) -> Result<u64, DataServiceError<MemoryDataServiceError>> {
         let (id_property, version_property) = self.id_and_version_properties(&command.entity)?;
+        let next_version =
+            crate::mutation_version::updated(&command.entity, command.expected_version)
+                .map_err(DataServiceError::Runtime)?;
         let mut data = self
             .data
             .lock()
@@ -297,10 +300,16 @@ where
                     },
                 ));
             }
-            row.insert(version_property.to_owned(), Value::I64(expected + 1));
+            row.insert(
+                version_property.to_owned(),
+                Value::I64(next_version.unwrap()),
+            );
         }
 
         for (key, value) in &command.values {
+            if next_version.is_some() && key == version_property {
+                continue;
+            }
             row.insert(key.clone(), value.clone());
         }
         Ok(1)
@@ -311,6 +320,12 @@ where
         command: &DeleteCommand,
     ) -> Result<u64, DataServiceError<MemoryDataServiceError>> {
         let (id_property, version_property) = self.id_and_version_properties(&command.entity)?;
+        let next_version = if command.soft_delete {
+            crate::mutation_version::deleted(&command.entity, command.expected_version)
+                .map_err(DataServiceError::Runtime)?
+        } else {
+            None
+        };
         let mut data = self
             .data
             .lock()
@@ -340,12 +355,16 @@ where
 
         match command.soft_delete {
             true => {
-                let next_version = command
-                    .expected_version
-                    .or_else(|| read_i64(rows[index].get(version_property)))
-                    .map(|version| -(version.abs() + 1))
-                    .unwrap_or(-1);
-                rows[index].insert(version_property.to_owned(), Value::I64(next_version));
+                if command.expected_version.is_none()
+                    && !read_i64(rows[index].get(version_property))
+                        .is_some_and(|version| version > 0)
+                {
+                    return Ok(0);
+                }
+                rows[index].insert(
+                    version_property.to_owned(),
+                    Value::I64(next_version.unwrap_or(-1)),
+                );
             }
             false => {
                 rows.remove(index);
@@ -359,6 +378,9 @@ where
         command: &RecoverCommand,
     ) -> Result<u64, DataServiceError<MemoryDataServiceError>> {
         let (id_property, version_property) = self.id_and_version_properties(&command.entity)?;
+        let next_version =
+            crate::mutation_version::recovered(&command.entity, command.expected_version)
+                .map_err(DataServiceError::Runtime)?;
         let mut data = self
             .data
             .lock()
@@ -385,10 +407,7 @@ where
             ));
         }
 
-        row.insert(
-            version_property.to_owned(),
-            Value::I64(command.expected_version.abs() + 1),
-        );
+        row.insert(version_property.to_owned(), Value::I64(next_version));
         Ok(1)
     }
 
@@ -1068,6 +1087,169 @@ fn local_graph_identity_key(value: &Value) -> String {
         Value::Object(_) => "o".to_owned(),
         Value::List(_) => "l".to_owned(),
         Value::TypedNull(_) => "null".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod version_lifecycle_tests {
+    use super::*;
+    use teaql_core::{DataType, EntityDescriptor, PropertyDescriptor};
+
+    fn service(version: i64) -> MemoryDataService {
+        let metadata = InMemoryMetadataStore::new().with_entity(
+            EntityDescriptor::new("LifecycleProbe")
+                .property(PropertyDescriptor::new("id", DataType::U64).id())
+                .property(PropertyDescriptor::new("version", DataType::I64).version())
+                .property(PropertyDescriptor::new("name", DataType::Text)),
+        );
+        MemoryDataService::new(metadata).with_rows(
+            "LifecycleProbe",
+            vec![CompactRow::from_map(BTreeMap::from([
+                ("id".into(), Value::U64(1)),
+                ("version".into(), Value::I64(version)),
+                ("name".into(), Value::from("original")),
+            ]))],
+        )
+    }
+
+    fn original(service: &MemoryDataService, version: i64) {
+        let rows = service
+            .fetch_all(
+                &SelectQuery::new("LifecycleProbe")
+                    .limit(1)
+                    .comment("Inspect rejected lifecycle state")
+                    .purpose("Assert no in-memory mutation"),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("version"), Some(&Value::I64(version)));
+        assert_eq!(rows[0].get("name"), Some(&Value::from("original")));
+    }
+
+    #[test]
+    fn version_lifecycle_memory_update_exhaustion_does_not_poison_or_mutate() {
+        let service = service(i64::MAX);
+        assert!(
+            service
+                .update(
+                    &UpdateCommand::new("LifecycleProbe", 1_u64)
+                        .expected_version(i64::MAX)
+                        .value("name", "changed")
+                )
+                .is_err()
+        );
+        original(&service, i64::MAX);
+    }
+
+    #[test]
+    fn version_lifecycle_memory_update_rejects_non_live_versions() {
+        for version in [i64::MIN, -902, -1, 0] {
+            let service = service(version);
+            assert!(
+                service
+                    .update(
+                        &UpdateCommand::new("LifecycleProbe", 1_u64)
+                            .expected_version(version)
+                            .value("name", "changed")
+                    )
+                    .is_err()
+            );
+            original(&service, version);
+        }
+    }
+
+    #[test]
+    fn version_lifecycle_memory_recovery_exhaustion_does_not_poison_or_mutate() {
+        for version in [i64::MIN, i64::MIN + 1] {
+            let service = service(version);
+            assert!(
+                service
+                    .recover(&RecoverCommand::new("LifecycleProbe", 1_u64, version))
+                    .is_err()
+            );
+            original(&service, version);
+        }
+    }
+
+    #[test]
+    fn version_lifecycle_memory_recovery_rejects_non_tombstones() {
+        for version in [0, 1, i64::MAX] {
+            let service = service(version);
+            assert!(
+                service
+                    .recover(&RecoverCommand::new("LifecycleProbe", 1_u64, version))
+                    .is_err()
+            );
+            original(&service, version);
+        }
+    }
+
+    #[test]
+    fn version_lifecycle_memory_repeated_deletion_rejects_before_mutation() {
+        let service = service(-902);
+        assert!(
+            service
+                .delete(&DeleteCommand::new("LifecycleProbe", 1_u64).expected_version(-902))
+                .is_err()
+        );
+        original(&service, -902);
+        assert_eq!(
+            service
+                .delete(&DeleteCommand::new("LifecycleProbe", 1_u64))
+                .unwrap(),
+            0
+        );
+        original(&service, -902);
+    }
+
+    #[test]
+    fn version_lifecycle_memory_maximum_live_version_deletes_exactly() {
+        let service = service(i64::MAX);
+        assert_eq!(
+            service
+                .delete(&DeleteCommand::new("LifecycleProbe", 1_u64).expected_version(i64::MAX))
+                .unwrap(),
+            1
+        );
+        original(&service, i64::MIN);
+        assert_eq!(
+            service
+                .delete(
+                    &DeleteCommand::new("LifecycleProbe", 1_u64)
+                        .expected_version(i64::MIN)
+                        .hard_delete()
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn version_lifecycle_memory_legal_update_ignores_payload_version_override() {
+        let service = service(i64::MAX - 1);
+        assert_eq!(
+            service
+                .update(
+                    &UpdateCommand::new("LifecycleProbe", 1_u64)
+                        .expected_version(i64::MAX - 1)
+                        .value("version", -999_i64)
+                )
+                .unwrap(),
+            1
+        );
+        original(&service, i64::MAX);
+    }
+
+    #[test]
+    fn version_lifecycle_memory_representable_recovery_keeps_the_last_live_version() {
+        let service = service(i64::MIN + 2);
+        assert_eq!(
+            service
+                .recover(&RecoverCommand::new("LifecycleProbe", 1_u64, i64::MIN + 2))
+                .unwrap(),
+            1
+        );
+        original(&service, i64::MAX);
     }
 }
 

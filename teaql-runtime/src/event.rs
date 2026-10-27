@@ -241,13 +241,15 @@ impl RawAuditEvent {
         }
     }
 
+    /// Build a recovery audit without inventing a wrapped successor version.
+    /// Invalid lifecycle states and exhausted version space are explicit errors.
     pub fn recovered_with_old_values(
         entity: impl Into<String>,
         id: Value,
         expected_version: i64,
         old_values: Option<Record>,
-    ) -> Self {
-        let recovered_version = -expected_version + 1;
+    ) -> Result<Self, teaql_core::mutation_version::MutationVersionError> {
+        let recovered_version = teaql_core::mutation_version::recovered(expected_version)?;
         let mut new_values = old_values.clone().unwrap_or_default();
         new_values.insert("id".to_owned(), id.clone());
         new_values.insert("version".to_owned(), Value::I64(recovered_version));
@@ -259,7 +261,7 @@ impl RawAuditEvent {
             Some(&new_values),
             &["version".to_owned()],
         );
-        event
+        Ok(event)
     }
 
     /// A new table was created during schema bootstrap.
@@ -659,6 +661,23 @@ mod field_name_tests {
     use super::RawAuditEvent;
     use std::collections::BTreeMap;
     use teaql_core::Value;
+
+    #[test]
+    fn version_lifecycle_recovery_audit_is_fallible_before_event_emission() {
+        for version in [i64::MIN, i64::MIN + 1, 0, 1] {
+            assert!(
+                RawAuditEvent::recovered_with_old_values("Probe", Value::U64(1), version, None)
+                    .is_err()
+            );
+        }
+        let event =
+            RawAuditEvent::recovered_with_old_values("Probe", Value::U64(1), i64::MIN + 2, None)
+                .unwrap();
+        assert_eq!(
+            event.new_values.unwrap().get("version"),
+            Some(&Value::I64(i64::MAX))
+        );
+    }
 
     #[test]
     fn audit_rekeys_all_views_without_losing_alias_collisions() {

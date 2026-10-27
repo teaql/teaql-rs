@@ -494,11 +494,14 @@ where
         &self,
         command: &UpdateCommand,
     ) -> Result<UpdateCommand, RuntimeError> {
+        crate::mutation_version::updated(&command.entity, command.expected_version)?;
         let mut command = command.clone();
         if let Some(behavior) = self.behavior() {
             behavior.before_update(self.data_service.metadata.context, &mut command)?;
         }
+        crate::mutation_version::updated(&command.entity, command.expected_version)?;
         self.enforce_update_policy(&mut command)?;
+        crate::mutation_version::updated(&command.entity, command.expected_version)?;
 
         Ok(command)
     }
@@ -2086,6 +2089,10 @@ where
         command: &DeleteCommand,
         trace_chain: Vec<teaql_core::TraceNode>,
     ) -> Result<u64, DataServiceError<E::Error>> {
+        if command.soft_delete {
+            crate::mutation_version::deleted(&command.entity, command.expected_version)
+                .map_err(DataServiceError::Runtime)?;
+        }
         let mut command = command.clone();
         command.trace_chain = trace_chain.clone();
         if let Some(behavior) = self.behavior() {
@@ -2093,8 +2100,16 @@ where
                 .before_delete(self.data_service.metadata.context, &mut command)
                 .map_err(DataServiceError::Runtime)?;
         }
+        if command.soft_delete {
+            crate::mutation_version::deleted(&command.entity, command.expected_version)
+                .map_err(DataServiceError::Runtime)?;
+        }
         self.enforce_delete_policy(&mut command)
             .map_err(DataServiceError::Runtime)?;
+        if command.soft_delete {
+            crate::mutation_version::deleted(&command.entity, command.expected_version)
+                .map_err(DataServiceError::Runtime)?;
+        }
 
         let old_values =
             self.fetch_current_event_row(&command.entity, &command.id, trace_chain.clone())?;
@@ -2115,6 +2130,8 @@ where
         &self,
         command: &RecoverCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
+        crate::mutation_version::recovered(&command.entity, command.expected_version)
+            .map_err(DataServiceError::Runtime)?;
         let mut command = command.clone();
         command.trace_chain = self.trace_context.clone();
         if let Some(behavior) = self.behavior() {
@@ -2122,7 +2139,11 @@ where
                 .before_recover(self.data_service.metadata.context, &mut command)
                 .map_err(DataServiceError::Runtime)?;
         }
+        crate::mutation_version::recovered(&command.entity, command.expected_version)
+            .map_err(DataServiceError::Runtime)?;
         self.enforce_recover_policy(&mut command)
+            .map_err(DataServiceError::Runtime)?;
+        crate::mutation_version::recovered(&command.entity, command.expected_version)
             .map_err(DataServiceError::Runtime)?;
         let old_values = self.fetch_current_event_row(
             &command.entity,
@@ -2135,7 +2156,10 @@ where
             command.id,
             command.expected_version,
             old_values,
-        );
+        )
+        .map_err(|cause| {
+            DataServiceError::Runtime(crate::mutation_version::error(&self.entity, cause))
+        })?;
         self.emit_event(event).map_err(DataServiceError::Runtime)?;
         Ok(affected)
     }
@@ -2212,6 +2236,9 @@ where
         mut command: UpdateCommand,
         trace_chain: Vec<teaql_core::TraceNode>,
     ) -> Result<u64, DataServiceError<E::Error>> {
+        let next_version =
+            crate::mutation_version::updated(&command.entity, command.expected_version)
+                .map_err(DataServiceError::Runtime)?;
         command.trace_chain = trace_chain.clone();
 
         let mut old_values = command.old_values.clone();
@@ -2229,8 +2256,8 @@ where
         let updated_fields = command.values.keys().cloned().collect();
         let mut values = command.values.clone();
         values.insert("id".to_owned(), command.id.clone());
-        if let Some(version) = command.expected_version {
-            values.insert("version".to_owned(), Value::I64(version + 1));
+        if let Some(version) = next_version {
+            values.insert("version".to_owned(), Value::I64(version));
         }
         let mut new_values = old_values.clone().unwrap_or_default();
         for (field, value) in &values {
@@ -2255,14 +2282,20 @@ where
         if command.batch_values.is_empty() {
             return Ok(0);
         }
+        let next_versions = command
+            .batch_expected_versions
+            .iter()
+            .map(|version| crate::mutation_version::updated(&command.entity, *version))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(DataServiceError::Runtime)?;
         let affected = self.data_service.batch_update(&command).await?;
 
         let entity = command.entity.clone();
         for (i, values) in command.batch_values.into_iter().enumerate() {
             let mut full_values = values.clone();
             full_values.insert("id".to_owned(), command.batch_ids[i].clone());
-            if let Some(Some(version)) = command.batch_expected_versions.get(i) {
-                full_values.insert("version".to_owned(), teaql_core::Value::I64(*version + 1));
+            if let Some(Some(version)) = next_versions.get(i) {
+                full_values.insert("version".to_owned(), teaql_core::Value::I64(*version));
             }
 
             let old_values = command.batch_old_values.get(i).cloned().unwrap_or(None);

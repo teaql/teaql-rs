@@ -6,6 +6,8 @@
       "messages": {
         "checker.required": "The {location} is required",
         "checker.invalidDeletionState": "Soft deletion requires a positive original {location}; use explicit recovery for a deleted entity",
+        "checker.invalidVersionState": "The original {location} does not permit this lifecycle operation",
+        "checker.versionExhausted": "The original {location} cannot advance within the signed 64-bit range",
         "checker.min": "The {location} should be equal or greater than {system}, but input is {input}",
         "checker.max": "The {location} should be equal or less than {system}, but input is {input}",
         "checker.minLength": "The length of {location} should be equal or greater than {system}, but the length of {input} is {input_len}",
@@ -17,6 +19,8 @@
       "messages": {
         "checker.required": "{location} 是必填项",
         "checker.invalidDeletionState": "软删除要求原始 {location} 为正数；恢复已删除对象请使用显式恢复操作",
+        "checker.invalidVersionState": "原始 {location} 不允许执行此生命周期操作",
+        "checker.versionExhausted": "原始 {location} 无法在有符号 64 位范围内继续递增",
         "checker.min": "{location} 应该大于等于 {system}，但输入值为 {input}",
         "checker.max": "{location} 应该小于等于 {system}，但输入值为 {input}",
         "checker.minLength": "{location} 的长度应大于等于 {system}，但实际长度为 {input_len}",

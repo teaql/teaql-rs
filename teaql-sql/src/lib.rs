@@ -565,6 +565,98 @@ mod tests {
     }
 
     #[test]
+    fn version_lifecycle_update_rejects_non_live_versions() {
+        for version in [i64::MIN, -902, -1, 0] {
+            let command = UpdateCommand::new("Order", 7_u64)
+                .expected_version(version)
+                .value("name", "changed");
+            assert!(TestDialect.compile_update(&entity(), &command).is_err());
+            assert!(
+                TestDialect
+                    .compile_guarded_update(&entity(), &command, &Expr::eq("name", "visible"))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn version_lifecycle_update_rejects_exhaustion_without_panicking() {
+        let command = UpdateCommand::new("Order", 7_u64)
+            .expected_version(i64::MAX)
+            .value("name", "changed");
+        assert!(TestDialect.compile_update(&entity(), &command).is_err());
+        assert!(
+            TestDialect
+                .compile_guarded_update(&entity(), &command, &Expr::eq("name", "visible"))
+                .is_err()
+        );
+    }
+
+    fn version_lifecycle_batch(version: i64) -> teaql_core::BatchUpdateCommand {
+        let mut command = teaql_core::BatchUpdateCommand::new("Order", vec!["name".into()]);
+        command.batch_ids = vec![Value::U64(6), Value::U64(7)];
+        command.batch_expected_versions = vec![Some(1), Some(version)];
+        command.batch_values = vec![
+            std::collections::BTreeMap::from([("name".to_owned(), Value::from("first"))]).into(),
+            std::collections::BTreeMap::from([("name".to_owned(), Value::from("second"))]).into(),
+        ];
+        command
+    }
+
+    #[test]
+    fn version_lifecycle_batch_rejects_non_live_versions() {
+        for version in [i64::MIN, -902, -1, 0] {
+            assert!(
+                TestDialect
+                    .compile_batch_update(&entity(), &version_lifecycle_batch(version))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn version_lifecycle_batch_rejects_exhaustion_without_panicking() {
+        assert!(
+            TestDialect
+                .compile_batch_update(&entity(), &version_lifecycle_batch(i64::MAX))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn version_lifecycle_recovery_rejects_unrepresentable_successor() {
+        for version in [i64::MIN, i64::MIN + 1] {
+            let command = RecoverCommand::new("Order", 7_u64, version);
+            assert!(TestDialect.compile_recover(&entity(), &command).is_err());
+            assert!(
+                TestDialect
+                    .compile_guarded_recover(&entity(), &command, &Expr::eq("name", "visible"))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn version_lifecycle_adjacent_representable_boundaries_remain_valid() {
+        let update = TestDialect
+            .compile_update(
+                &entity(),
+                &UpdateCommand::new("Order", 7_u64)
+                    .expected_version(i64::MAX - 1)
+                    .value("name", "changed"),
+            )
+            .unwrap();
+        assert_eq!(update.params[1], Value::I64(i64::MAX));
+        let recover = TestDialect
+            .compile_recover(
+                &entity(),
+                &RecoverCommand::new("Order", 7_u64, i64::MIN + 2),
+            )
+            .unwrap();
+        assert_eq!(recover.params[0], Value::I64(i64::MAX));
+    }
+
+    #[test]
     fn compiles_insert_update_delete_and_recover() {
         let insert = TestDialect
             .compile_insert(

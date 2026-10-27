@@ -222,6 +222,8 @@ where
                 self.entity, node.entity
             ))));
         }
+        crate::mutation_version::graph_input(self.data_service.metadata.context, &node)
+            .map_err(DataServiceError::Runtime)?;
         let mut node = node;
         let mut plan = GraphMutationPlan::default();
         self.with_mutation_intent(intent)
@@ -894,7 +896,11 @@ where
                 {
                     node.values.insert(
                         version_property.name.clone(),
-                        Value::I64(expected_version + 1),
+                        Value::I64(
+                            crate::mutation_version::updated(&node.entity, Some(expected_version))
+                                .map_err(DataServiceError::Runtime)?
+                                .unwrap(),
+                        ),
                     );
                 }
                 node.values = self
@@ -1918,7 +1924,8 @@ where
                     &mut db_record,
                     descriptor,
                     root.get_original_version(key),
-                );
+                )
+                .map_err(DataServiceError::Runtime)?;
                 crate::data_service::helpers::ensure_timestamps(&mut db_record, descriptor, false);
                 cmd.batch_values.push(db_record.into());
                 cmd.batch_ids.push(key.id.clone());
