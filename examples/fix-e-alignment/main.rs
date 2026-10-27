@@ -8,6 +8,7 @@ use teaql_runtime::FixedBusinessClock;
 mod loading_probe;
 mod ownership_probe;
 mod paged_ownership;
+mod tombstone_probe;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -21,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(_) => rusqlite::Connection::open_in_memory()?,
     };
     let pool = Arc::new(Mutex::new(connection));
-    let mut context = service_runtime_from_pool(pool)
+    let mut context = service_runtime_from_pool(pool.clone())
         .await?
         .with_active_root("Tenant", 1);
     context.set_business_clock(FixedBusinessClock::new(first));
@@ -229,6 +230,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("GENERATED_EMPTY_SUM_PASS language=rust present=true value=null");
     loading_probe::verify(&context, id).await?;
     ownership_probe::verify(&context).await?;
+    tombstone_probe::verify(&mut context, pool).await?;
     println!(
         "FIX_E_EXAMPLE={}",
         serde_json::json!({"language":"rust", "passed":true,
