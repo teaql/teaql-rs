@@ -497,20 +497,45 @@ pub(crate) fn graph_policy_plan(
             })
         })
         .collect();
-    Ok(MutationPlan {
+    let plan = MutationPlan {
         execution_id: next_execution_id(context),
         request_key: format!("{}.saveGraph", root.entity),
         root_entity_type: root.entity.clone(),
         audit_reason: root.comment.clone(),
         operations,
-    })
+    };
+    validate_graph_deletion_versions(&plan)?;
+    Ok(plan)
+}
+
+// Graph Delete always means soft deletion. This belongs at plan construction,
+// not generic policy review: a provider's explicitly hard delete has a distinct
+// meaning and may legitimately target a tombstone.
+fn validate_graph_deletion_versions(plan: &MutationPlan) -> Result<(), RuntimeError> {
+    for operation in &plan.operations {
+        if operation.kind == MutationOperationKind::Delete
+            && operation
+                .original_version
+                .is_some_and(|version| version <= 0)
+        {
+            return Err(RuntimeError::Check(vec![
+                crate::CheckResult::new(
+                    crate::CheckRule::InvalidDeletionState,
+                    crate::ObjectLocation::root().member("version"),
+                )
+                .with_entity_type(operation.entity.entity.to_string())
+                .with_message("Soft deletion requires a positive original version; use explicit recovery for a tombstone"),
+            ]));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn ledger_policy_plan(
     context: &UserContext,
     node: &GraphNode,
     root: &EntityRuntimeState,
-) -> MutationPlan {
+) -> Result<MutationPlan, RuntimeError> {
     let changes = root.current_change_set();
     let deleted = root.deleted_keys();
     let new = root.new_keys();
@@ -550,13 +575,15 @@ pub(crate) fn ledger_policy_plan(
             }
         })
         .collect();
-    MutationPlan {
+    let plan = MutationPlan {
         execution_id: next_execution_id(context),
         request_key: format!("{}.saveGraph", node.entity),
         root_entity_type: node.entity.clone(),
         audit_reason: root.get_comment().or_else(|| node.comment.clone()),
         operations,
-    }
+    };
+    validate_graph_deletion_versions(&plan)?;
+    Ok(plan)
 }
 
 #[cfg(test)]

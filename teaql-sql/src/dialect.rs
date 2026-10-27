@@ -889,6 +889,11 @@ pub trait SqlDialect {
         let mut params = crate::SqlBindings::new();
 
         if command.soft_delete {
+            if let Some(version) = command.expected_version
+                && version <= 0
+            {
+                return Err(SqlCompileError::InvalidDeleteVersion(version));
+            }
             let version_property = entity
                 .version_property()
                 .ok_or_else(|| SqlCompileError::MissingVersionProperty(entity.name.clone()))?;
@@ -896,7 +901,9 @@ pub trait SqlDialect {
                 entity,
                 &version_property.name,
                 match command.expected_version {
-                    Some(version) => Value::I64(-(version + 1)),
+                    // Negate before subtracting so i64::MAX maps exactly to
+                    // i64::MIN without a debug overflow or release wrapping.
+                    Some(version) => Value::I64(-version - 1),
                     None => Value::I64(-1),
                 },
             );
@@ -914,6 +921,13 @@ pub trait SqlDialect {
                     "{} = {}",
                     self.quote_ident(&version_property.column_name),
                     self.placeholder(params.len())
+                ));
+            } else {
+                // An administrative versionless delete still cannot rewrite
+                // a row already marked as deleted.
+                predicates.push(format!(
+                    "{} >= 1",
+                    self.quote_ident(&version_property.column_name)
                 ));
             }
 

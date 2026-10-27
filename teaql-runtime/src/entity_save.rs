@@ -325,7 +325,7 @@ where
                 .unwrap_or(Value::I64(0));
             let root_key = crate::EntityKey::new(entity.clone(), current_id);
             reject_cancelled_new_root(&root, &root_key)?;
-            let policy_plan = crate::ledger_policy_plan(context, &node, &root);
+            let policy_plan = crate::ledger_policy_plan(context, &node, &root)?;
             let governance = context.review_mutation_plan(&policy_plan)?;
             let tx = teaql_data_service::TransactionExecutor::begin(executor)
                 .await
@@ -1150,6 +1150,78 @@ mod transactional_ledger_readback_tests {
         let calls = &state.lock().unwrap().calls;
         assert!(!calls.contains(&"transaction-mutate"));
         assert!(!calls.contains(&"commit"));
+    }
+
+    async fn assert_tombstone_rejected_before_policy(ledger: bool) {
+        for version in [i64::MIN, -902, -2, -1, 0] {
+            let state = Arc::new(Mutex::new(State {
+                row: BTreeMap::from([
+                    ("id".to_owned(), Value::I64(1)),
+                    ("version".to_owned(), Value::I64(version)),
+                    ("name".to_owned(), Value::Text("deleted row".to_owned())),
+                ]),
+                ..Default::default()
+            }));
+            let descriptor = EntityDescriptor::new("Task")
+                .property(PropertyDescriptor::new("id", DataType::I64).id())
+                .property(PropertyDescriptor::new("version", DataType::I64).version())
+                .property(PropertyDescriptor::new("name", DataType::Text));
+            let resolutions = Arc::new(Mutex::new(0));
+            let counter = resolutions.clone();
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let policy: Arc<dyn MutationPolicy> = Arc::new(DenyTaskPolicy);
+            let mut context = UserContext::default()
+                .with_metadata(InMemoryMetadataStore::new().with_entity(descriptor))
+                .with_event_sink(CaptureEvents(events.clone()))
+                .with_mutation_policy_registry(move |_request_key: &str| {
+                    *counter.lock().unwrap() += 1;
+                    Some(policy.clone())
+                });
+            context.insert_resource(Ambient(state.clone()));
+            let node = GraphNode::new("Task")
+                .remove()
+                .comment("Reject repeated deletion without invoking customer code")
+                .value("id", Value::I64(1))
+                .value("version", Value::I64(version))
+                .value("name", Value::Text("deleted row".to_owned()));
+            let root = EntityRuntimeState::default();
+            let key = EntityKey::new_static("Task", 1_i64);
+            root.set_original_version(key.clone(), version);
+            root.mark_as_delete(key.clone());
+            let saver = GraphSaverFor::<Ambient>::new();
+            let result = if ledger {
+                saver.save_ledger_dyn(&context, node, root.clone()).await
+            } else {
+                saver.save_graph_dyn(&context, node).await
+            };
+            let error = result.expect_err("non-live deletion must reject");
+            let RuntimeError::Check(checks) = error else {
+                panic!(
+                    "deletion must reject before customer policy: {error}; resolutions={}",
+                    resolutions.lock().unwrap()
+                );
+            };
+            assert_eq!(checks.len(), 1);
+            let wire = checks[0].to_wire(crate::JsonFieldNamingProfile::CamelCase);
+            assert_eq!(wire.rule_id, "invalid_deletion_state");
+            assert_eq!(wire.entity_type.as_deref(), Some("Task"));
+            assert_eq!(wire.instance_path, "/version");
+            assert_eq!(*resolutions.lock().unwrap(), 0);
+            assert!(state.lock().unwrap().calls.is_empty());
+            assert!(events.lock().unwrap().is_empty());
+            assert_eq!(root.get_original_version(&key), Some(version));
+            assert!(root.deleted_keys().contains(&key));
+        }
+    }
+
+    #[tokio::test]
+    async fn tombstone_ledger_save_rejects_before_customer_policy_and_transaction() {
+        assert_tombstone_rejected_before_policy(true).await;
+    }
+
+    #[tokio::test]
+    async fn tombstone_graph_save_rejects_before_customer_policy_and_transaction() {
+        assert_tombstone_rejected_before_policy(false).await;
     }
 
     #[tokio::test]
@@ -2416,7 +2488,7 @@ where
                         node.comment.as_deref(),
                     )?);
             let locations = ledger_object_locations(&node);
-            let policy_plan = crate::ledger_policy_plan(context, &node, &root);
+            let policy_plan = crate::ledger_policy_plan(context, &node, &root)?;
             let governance = context.review_mutation_plan(&policy_plan)?;
             let mut generated_ids = crate::with_mutation_governance(
                 governance,

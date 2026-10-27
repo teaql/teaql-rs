@@ -61,6 +61,7 @@ pub fn clear_entity_status(values: &mut EntityValues) {
 pub enum CheckRule {
     Required,
     InvalidType,
+    InvalidDeletionState,
     Min,
     Max,
     MinStringLength,
@@ -74,6 +75,7 @@ impl CheckRule {
         match self {
             Self::Required => "required",
             Self::InvalidType => "invalid_type",
+            Self::InvalidDeletionState => "invalid_deletion_state",
             Self::Min => "min",
             Self::Max => "max",
             Self::MinStringLength => "min_string_length",

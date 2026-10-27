@@ -276,6 +276,7 @@ pub enum SqlCompileError {
     MissingIdProperty(String),
     MissingVersionProperty(String),
     EmptyMutation(String),
+    InvalidDeleteVersion(i64),
     InvalidRecoverVersion(i64),
     UnsupportedSchemaType(DataType),
     InvalidSchemaShape {
@@ -303,6 +304,12 @@ impl std::fmt::Display for SqlCompileError {
                 write!(f, "entity {entity} has no version property")
             }
             Self::EmptyMutation(kind) => write!(f, "{kind} requires at least one writable field"),
+            Self::InvalidDeleteVersion(version) => {
+                write!(
+                    f,
+                    "soft deletion requires a positive original version, got {version}; use explicit recovery for a tombstone"
+                )
+            }
             Self::InvalidRecoverVersion(version) => {
                 write!(f, "recover requires a negative version, got {version}")
             }

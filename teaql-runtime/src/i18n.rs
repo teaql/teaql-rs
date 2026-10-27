@@ -137,6 +137,7 @@ impl I18nCatalog {
         let key = match result.rule {
             CheckRule::Required => "checker.required",
             CheckRule::InvalidType => "checker.invalidType",
+            CheckRule::InvalidDeletionState => "checker.invalidDeletionState",
             CheckRule::Min => "checker.min",
             CheckRule::Max => "checker.max",
             CheckRule::MinStringLength => "checker.minLength",

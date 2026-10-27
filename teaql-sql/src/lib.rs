@@ -504,6 +504,67 @@ mod tests {
     }
 
     #[test]
+    fn tombstone_soft_delete_rejects_non_live_versions() {
+        for version in [i64::MIN, -902, -2, -1, 0] {
+            let command = DeleteCommand::new("Order", 7_u64).expected_version(version);
+            assert!(
+                TestDialect.compile_delete(&entity(), &command).is_err(),
+                "soft deletion must not recover or rewrite version {version}"
+            );
+            assert!(
+                TestDialect
+                    .compile_guarded_delete(&entity(), &command, &Expr::eq("name", "visible"))
+                    .is_err(),
+                "a customer guard must not bypass lifecycle admission"
+            );
+        }
+    }
+
+    #[test]
+    fn tombstone_live_boundary_cannot_overflow() {
+        for (version, tombstone) in [(1, -2), (i64::MAX, i64::MIN)] {
+            let query = TestDialect
+                .compile_delete(
+                    &entity(),
+                    &DeleteCommand::new("Order", 7_u64).expected_version(version),
+                )
+                .unwrap();
+            assert_eq!(
+                query.params,
+                vec![Value::I64(tombstone), Value::U64(7), Value::I64(version)]
+            );
+        }
+    }
+
+    #[test]
+    fn tombstone_blind_delete_requires_a_live_row() {
+        let command = DeleteCommand::new("Order", 7_u64);
+        let ordinary = TestDialect.compile_delete(&entity(), &command).unwrap();
+        let guarded = TestDialect
+            .compile_guarded_delete(&entity(), &command, &Expr::eq("name", "visible"))
+            .unwrap();
+        for query in [ordinary, guarded] {
+            assert!(query.sql.contains("\"version\" >= 1"), "{}", query.sql);
+            assert_eq!(query.params[0], Value::I64(-1));
+        }
+    }
+
+    #[test]
+    fn tombstone_hard_delete_retains_its_separate_meaning() {
+        let query = TestDialect
+            .compile_delete(
+                &entity(),
+                &DeleteCommand::new("Order", 7_u64)
+                    .expected_version(-902)
+                    .hard_delete(),
+            )
+            .unwrap();
+        assert!(query.sql.starts_with("DELETE FROM "));
+        assert!(!query.sql.contains(">= 1"));
+        assert_eq!(query.params, vec![Value::U64(7), Value::I64(-902)]);
+    }
+
+    #[test]
     fn compiles_insert_update_delete_and_recover() {
         let insert = TestDialect
             .compile_insert(

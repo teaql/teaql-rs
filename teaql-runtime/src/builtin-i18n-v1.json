@@ -5,6 +5,7 @@
     "en": {
       "messages": {
         "checker.required": "The {location} is required",
+        "checker.invalidDeletionState": "Soft deletion requires a positive original {location}; use explicit recovery for a deleted entity",
         "checker.min": "The {location} should be equal or greater than {system}, but input is {input}",
         "checker.max": "The {location} should be equal or less than {system}, but input is {input}",
         "checker.minLength": "The length of {location} should be equal or greater than {system}, but the length of {input} is {input_len}",
@@ -15,6 +16,7 @@
     "zh-CN": {
       "messages": {
         "checker.required": "{location} 是必填项",
+        "checker.invalidDeletionState": "软删除要求原始 {location} 为正数；恢复已删除对象请使用显式恢复操作",
         "checker.min": "{location} 应该大于等于 {system}，但输入值为 {input}",
         "checker.max": "{location} 应该小于等于 {system}，但输入值为 {input}",
         "checker.minLength": "{location} 的长度应大于等于 {system}，但实际长度为 {input_len}",
