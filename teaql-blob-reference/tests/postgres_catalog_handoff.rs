@@ -3,10 +3,11 @@
 use deadpool_postgres::Config;
 use std::sync::Arc;
 use teaql_blob_reference::{
-    BlobErrorCode, BlobFieldTarget, BlobPolicies, BlobScope, BlobState, PostgresBlobCatalog,
-    UploadDraft, VerifiedContent,
+    BindingChange, BindingChangeKind, BlobErrorCode, BlobFieldTarget, BlobPolicies, BlobScope,
+    BlobState, PostgresBlobCatalog, UploadDraft, VerifiedContent,
 };
-use teaql_core::{BlobFieldSpec, BlobRef};
+use teaql_core::{BlobFieldSpec, BlobRef, Value};
+use teaql_data_service::infrastructure_sql::{InfrastructureSql, InfrastructureStatement};
 use teaql_provider_postgres::PgMutationExecutor;
 
 /// The conformance runner calls this once before Java and once after it, in separate databases.
@@ -30,7 +31,7 @@ async fn current_catalog_can_hand_off_to_or_from_java() {
         )
         .unwrap();
     let root = Arc::new(PgMutationExecutor::new(pool.clone()));
-    let catalog = PostgresBlobCatalog::new(root).unwrap();
+    let catalog = PostgresBlobCatalog::new(root.clone()).unwrap();
     let client = pool.get().await.unwrap();
     if phase == "rust-first" {
         client.batch_execute("CREATE TABLE asset_data(id BIGINT PRIMARY KEY,version BIGINT NOT NULL,document VARCHAR(128));
@@ -73,6 +74,38 @@ async fn current_catalog_can_hand_off_to_or_from_java() {
         assert_eq!(foreign.original_name(), "sample.pdf");
         assert_eq!(foreign.size_bytes(), Some(1));
         assert_eq!(foreign.actual_mime(), Some("application/pdf"));
+        let target = BlobFieldTarget::new("Asset", Some(4), "document").unwrap();
+        let tx = root.begin().await.unwrap();
+        let prepared = catalog
+            .prepare_bindings(
+                tx.as_ref(),
+                &scope,
+                vec![BindingChange {
+                    target,
+                    previous: None,
+                    next: Some(foreign.reference().clone()),
+                    expected_binding_version: Some(0),
+                    policy: foreign.policy().clone(),
+                    kind: BindingChangeKind::FieldWrite,
+                }],
+                1_000_002,
+            )
+            .await
+            .unwrap();
+        tx.execute(
+            &InfrastructureStatement::new(
+                "INSERT INTO asset_data(id,version,document) VALUES (4,1,$1)",
+                vec![Value::Text(foreign.reference().as_str().into())],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        catalog
+            .apply_bindings(tx.as_ref(), prepared, 1_000_002)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
     }
     let field = BlobFieldSpec::new("Asset", "document", ["pdf"], true, "default").unwrap();
     let policy = BlobPolicies::default().resolve(&field).unwrap();
