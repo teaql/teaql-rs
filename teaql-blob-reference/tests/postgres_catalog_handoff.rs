@@ -17,7 +17,7 @@ async fn current_catalog_can_hand_off_to_or_from_java() {
         Ok(value) if value.starts_with("rust-") => value,
         _ => return,
     };
-    assert!(phase == "rust-first" || phase == "rust-second");
+    assert!(phase == "rust-first" || phase == "rust-second" || phase == "rust-verify");
     let mut config = Config::new();
     config.host = Some("127.0.0.1".into());
     config.port = Some(std::env::var("TEAQL_R7_PG_PORT").unwrap().parse().unwrap());
@@ -34,8 +34,8 @@ async fn current_catalog_can_hand_off_to_or_from_java() {
     let catalog = PostgresBlobCatalog::new(root.clone()).unwrap();
     let client = pool.get().await.unwrap();
     if phase == "rust-first" {
-        client.batch_execute("CREATE TABLE asset_data(id BIGINT PRIMARY KEY,version BIGINT NOT NULL,document VARCHAR(128));
-            INSERT INTO asset_data VALUES (1,1,'legacy-invoice.pdf'),(2,1,'https://legacy.example.test/files/2.pdf')")
+        client.batch_execute("CREATE TABLE asset_data(id BIGINT PRIMARY KEY,version BIGINT NOT NULL,document VARCHAR(128),title VARCHAR(100) CHECK(title <> 'fail'));
+            INSERT INTO asset_data(id,version,document) VALUES (1,1,'legacy-invoice.pdf'),(2,1,'https://legacy.example.test/files/2.pdf')")
             .await.unwrap();
         assert_eq!(
             catalog.validate_schema().await.unwrap_err().code,
@@ -45,7 +45,10 @@ async fn current_catalog_can_hand_off_to_or_from_java() {
     catalog.migrate().await.unwrap();
     catalog.validate_schema().await.unwrap();
     let old = client
-        .query("SELECT document FROM asset_data ORDER BY id", &[])
+        .query(
+            "SELECT document FROM asset_data WHERE id<=2 ORDER BY id",
+            &[],
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -62,8 +65,27 @@ async fn current_catalog_can_hand_off_to_or_from_java() {
         .await
         .unwrap()
         .get(0);
-    assert_eq!(binding_count, 0);
+    assert_eq!(binding_count, if phase == "rust-verify" { 1 } else { 0 });
     let scope = BlobScope::new("test", "tenant-a").unwrap();
+    if phase == "rust-verify" {
+        let target = BlobFieldTarget::new("Asset", Some(5), "document").unwrap();
+        let binding = catalog.binding(&scope, &target).await.unwrap().unwrap();
+        let rust = BlobRef::new("blob_r7_rust").unwrap();
+        assert_eq!(binding.reference, Some(rust.clone()));
+        assert_eq!(binding.version, 1);
+        assert_eq!(
+            catalog.find(&scope, &rust).await.unwrap().unwrap().state(),
+            BlobState::Available
+        );
+        let business: String = client
+            .query_one("SELECT document FROM asset_data WHERE id=5", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(business, rust.as_str());
+        pool.close();
+        return;
+    }
     if phase == "rust-second" {
         let foreign = catalog
             .find(&scope, &BlobRef::new("blob_r7_java").unwrap())
