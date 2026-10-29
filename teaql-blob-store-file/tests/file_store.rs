@@ -8,7 +8,7 @@ use std::{
     process::{Child, Command, Stdio},
     time::{Duration, SystemTime},
 };
-use teaql_blob_reference::*;
+use teaql_blob_contracts::*;
 use teaql_blob_store_file::FileBlobStore;
 use tempfile::TempDir;
 

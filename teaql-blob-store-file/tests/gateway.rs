@@ -16,7 +16,7 @@ use std::{
     },
     time::Duration,
 };
-use teaql_blob_reference::*;
+use teaql_blob_contracts::*;
 use teaql_blob_store_file::*;
 use tempfile::TempDir;
 use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle};

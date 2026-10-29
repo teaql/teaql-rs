@@ -27,7 +27,6 @@ hmac = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 
 [dev-dependencies]
-teaql-blob-reference.workspace = true
 tempfile = "3"
 serde_json.workspace = true
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }

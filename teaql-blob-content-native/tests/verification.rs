@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 use teaql_blob_content_native::*;
-use teaql_blob_reference::*;
+use teaql_blob_contracts::*;
 use tempfile::TempDir;
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")

@@ -8,7 +8,7 @@ use std::{
     process::{Command, Stdio},
 };
 use teaql_blob_content_native::*;
-use teaql_blob_reference::*;
+use teaql_blob_contracts::*;
 use tempfile::TempDir;
 
 fn temp() -> TempDir {
