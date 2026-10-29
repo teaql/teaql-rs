@@ -8,16 +8,22 @@ use teaql_core::{EntitySnapshot, MutationValues, TraceNode, Value};
 /// It is deliberately distinct from query rows, mutation commands, and loaded
 /// snapshots.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct EntityValues(BTreeMap<String, Value>);
+pub struct EntityValues(MutationValues);
 
 impl EntityValues {
+    pub fn indexed(symbols: &'static teaql_core::EntitySymbols) -> Self {
+        Self(MutationValues::indexed(symbols))
+    }
+    pub fn into_mutation(self) -> MutationValues {
+        self.0
+    }
     pub fn new() -> Self {
         Self::default()
     }
 }
 
 impl Deref for EntityValues {
-    type Target = BTreeMap<String, Value>;
+    type Target = MutationValues;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -32,26 +38,25 @@ impl DerefMut for EntityValues {
 
 impl From<BTreeMap<String, Value>> for EntityValues {
     fn from(values: BTreeMap<String, Value>) -> Self {
-        Self(values)
+        Self(values.into())
     }
 }
 
 impl From<EntityValues> for BTreeMap<String, Value> {
     fn from(values: EntityValues) -> Self {
-        values.0
+        values.0.into()
     }
 }
 
 impl From<EntityValues> for MutationValues {
     fn from(values: EntityValues) -> Self {
-        BTreeMap::from(values).into()
+        values.0
     }
 }
 
 impl From<MutationValues> for EntityValues {
     fn from(values: MutationValues) -> Self {
-        let values: BTreeMap<String, Value> = values.into();
-        values.into()
+        Self(values)
     }
 }
 

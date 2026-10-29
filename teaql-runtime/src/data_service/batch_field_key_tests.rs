@@ -7,7 +7,7 @@ fn key(entity: &str, fields: &[&str]) -> UpdateBatchKey {
         .collect::<std::collections::BTreeSet<_>>();
     UpdateBatchKey {
         entity: entity.into(),
-        fields: fields.into_iter().collect(),
+        fields: fields.into_iter().map(Into::into).collect(),
     }
 }
 
@@ -35,7 +35,22 @@ fn structured_keys_preserve_legacy_batch_order_and_grouping() {
     }
     for a in &inputs {
         for b in &inputs {
-            let legacy = (&a.entity, a.fields.join(",")).cmp(&(&b.entity, b.fields.join(",")));
+            let legacy = (
+                &a.entity,
+                a.fields
+                    .iter()
+                    .map(|f| f.name())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )
+                .cmp(&(
+                    &b.entity,
+                    b.fields
+                        .iter()
+                        .map(|f| f.name())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                ));
             assert_eq!(a.cmp(b), legacy, "{a:?} / {b:?}");
             assert_eq!(a == b, a.cmp(b).is_eq());
         }
@@ -43,14 +58,34 @@ fn structured_keys_preserve_legacy_batch_order_and_grouping() {
     let mut old = BTreeMap::new();
     let mut new = BTreeMap::new();
     for (i, input) in inputs.into_iter().enumerate() {
-        old.entry((input.entity.clone(), input.fields.join(",")))
-            .or_insert_with(Vec::new)
-            .push(i);
+        old.entry((
+            input.entity.clone(),
+            input
+                .fields
+                .iter()
+                .map(|f| f.name())
+                .collect::<Vec<_>>()
+                .join(","),
+        ))
+        .or_insert_with(Vec::new)
+        .push(i);
         new.entry(input).or_insert_with(Vec::new).push(i);
     }
     let consumed: Vec<_> = new
         .into_iter()
-        .map(|(key, rows)| ((key.entity, key.fields.join(",")), rows))
+        .map(|(key, rows)| {
+            (
+                (
+                    key.entity,
+                    key.fields
+                        .iter()
+                        .map(|f| f.name())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                ),
+                rows,
+            )
+        })
         .collect();
     assert_eq!(consumed, old.into_iter().collect::<Vec<_>>());
 }
@@ -60,14 +95,14 @@ fn consuming_batch_preserves_owned_fields_and_unambiguous_names() {
     let single = key("Inventory", &["a,b"]);
     let multiple = key("Inventory", &["a", "b"]);
     assert_ne!(single.cmp(&multiple), std::cmp::Ordering::Equal);
-    let ptr = single.fields[0].as_ptr();
+    let ptr = single.fields[0].name().as_ptr();
     let batches = BTreeMap::from([(single, vec![1]), (multiple, vec![2])]);
     assert_eq!(batches.len(), 2);
     for (key, _) in batches {
         let fields = key.fields;
         if fields.len() == 1 {
-            assert_eq!(fields[0], "a,b");
-            assert_eq!(fields[0].as_ptr(), ptr);
+            assert_eq!(fields[0].name(), "a,b");
+            assert_eq!(fields[0].name().as_ptr(), ptr);
         }
     }
 }

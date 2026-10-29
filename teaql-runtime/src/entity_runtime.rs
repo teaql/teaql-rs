@@ -53,6 +53,7 @@ impl<'a, T> RelationHandle<'a, T> {
 pub struct EntityKey {
     pub entity: Cow<'static, str>,
     pub id: Value,
+    symbols: Option<&'static teaql_core::EntitySymbols>,
     id_key: EntityIdentityKey,
 }
 
@@ -71,10 +72,20 @@ enum EntityIdentityKey {
 }
 
 impl EntityKey {
+    pub fn for_type<T: teaql_core::TeaqlEntity>(id: impl Into<Value>) -> Self {
+        let mut key = Self::new_static(T::ENTITY_NAME, id);
+        key.symbols = T::symbols();
+        key
+    }
+    pub fn symbols(&self) -> Option<&'static teaql_core::EntitySymbols> {
+        self.symbols
+    }
+
     pub fn new(entity: impl Into<String>, id: impl Into<Value>) -> Self {
         let id = id.into();
         Self {
             entity: Cow::Owned(entity.into()),
+            symbols: None,
             id_key: entity_identity_key(&id),
             id,
         }
@@ -84,6 +95,7 @@ impl EntityKey {
         let id = id.into();
         Self {
             entity: Cow::Borrowed(entity),
+            symbols: None,
             id_key: entity_identity_key(&id),
             id,
         }
@@ -411,6 +423,19 @@ impl OriginalVersions {
 }
 
 impl EntityChangeSet {
+    pub(crate) fn scoped_keys(
+        &self,
+    ) -> impl Iterator<Item = (&EntityKey, Option<&'static teaql_core::EntitySymbols>)> {
+        self.changes
+            .iter()
+            .map(|(key, values)| (key, values.symbols().or(key.symbols)))
+            .chain(
+                self.dynamic_changes
+                    .iter()
+                    .flat_map(|changes| changes.keys().map(|key| (key, key.symbols))),
+            )
+    }
+
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty()
             && self
@@ -420,10 +445,44 @@ impl EntityChangeSet {
     }
 
     pub fn set(&mut self, key: EntityKey, field: impl Into<String>, value: Value) {
-        self.changes
+        let symbols = key.symbols;
+        let values = self
+            .changes
             .entry(key)
-            .or_default()
-            .insert(field.into(), value);
+            .or_insert_with(|| symbols.map(MutationValues::indexed).unwrap_or_default());
+        if let Some(symbols) = symbols {
+            values.bind_symbols(symbols);
+        }
+        values.insert(field.into(), value);
+    }
+
+    pub fn set_slot(
+        &mut self,
+        mut key: EntityKey,
+        symbols: &'static teaql_core::EntitySymbols,
+        slot: teaql_core::FieldSlot,
+        value: Value,
+    ) {
+        assert_eq!(
+            symbols.name(),
+            Some(key.entity.as_ref()),
+            "field owner mismatch"
+        );
+        assert!(
+            key.symbols.is_none_or(|owner| owner.same_layout(symbols)),
+            "field owner belongs to a different generated model"
+        );
+        assert!(
+            symbols.field(slot).is_some(),
+            "field slot outside generated layout"
+        );
+        key.symbols = Some(symbols);
+        let values = self
+            .changes
+            .entry(key)
+            .or_insert_with(|| MutationValues::indexed(symbols));
+        values.bind_symbols(symbols);
+        values.insert_slot(symbols, slot, value);
     }
 
     pub fn get(&self, key: &EntityKey, field: &str) -> Option<&Value> {
@@ -495,7 +554,12 @@ impl EntityChangeSet {
         let mut names: BTreeSet<String> = self
             .changes
             .get(key)
-            .map(|record| record.keys().cloned().collect())
+            .map(|record| {
+                record
+                    .named_entries()
+                    .map(|(field, _)| field.to_owned())
+                    .collect()
+            })
             .unwrap_or_default();
         if let Some(fields) = self
             .dynamic_changes
@@ -1043,6 +1107,33 @@ impl EntityRuntimeState {
             })
             .flatten();
         self.write_context(|target| {
+            // A named adapter is scoped to one generating layout per entity in a ledger.
+            // Reject an incompatible model before merging anything, including deletes.
+            let source_keys = snapshot
+                .change_sets
+                .stack
+                .iter()
+                .flat_map(EntityChangeSet::scoped_keys)
+                .chain(snapshot.new_keys.iter().map(|key| (key, key.symbols)))
+                .chain(snapshot.deleted_keys.iter().map(|key| (key, key.symbols)));
+            for (key, symbols) in source_keys {
+                let Some(symbols) = symbols else { continue };
+                let target_keys = target
+                    .change_sets
+                    .stack
+                    .iter()
+                    .flat_map(EntityChangeSet::scoped_keys)
+                    .chain(target.new_keys.iter().map(|key| (key, key.symbols)))
+                    .chain(target.deleted_keys.iter().map(|key| (key, key.symbols)));
+                if target_keys
+                    .filter(|(other, _)| other.entity == key.entity)
+                    .any(|(_, owner)| owner.is_some_and(|s| !s.same_layout(symbols)))
+                {
+                    return Err(LedgerCompositionError::ConflictingSymbolLayout {
+                        entity: key.entity.to_string(),
+                    });
+                }
+            }
             let source_versions = snapshot
                 .original_versions
                 .first
@@ -1103,9 +1194,13 @@ impl EntityRuntimeState {
             }
             for change_set in snapshot.change_sets.stack {
                 for (key, values) in change_set.changes {
-                    for (field, value) in values {
-                        target.change_sets.set(key.clone(), field, value);
-                    }
+                    let receiving = target
+                        .change_sets
+                        .current_mut()
+                        .changes
+                        .entry(key)
+                        .or_default();
+                    receiving.merge(values);
                 }
                 if let Some(changes) = change_set.dynamic_changes {
                     for (key, fields) in *changes {
@@ -1386,6 +1481,36 @@ impl EntityRuntimeState {
         self.write_context(|context| context.change_sets.set(key, field, value.into()));
     }
 
+    pub fn set_slot(
+        &self,
+        key: EntityKey,
+        symbols: &'static teaql_core::EntitySymbols,
+        slot: teaql_core::FieldSlot,
+        value: impl Into<Value>,
+    ) {
+        self.write_context(|context| {
+            context
+                .change_sets
+                .current_mut()
+                .set_slot(key, symbols, slot, value.into())
+        });
+    }
+    pub fn get_slot(
+        &self,
+        key: &EntityKey,
+        symbols: &'static teaql_core::EntitySymbols,
+        slot: teaql_core::FieldSlot,
+    ) -> Option<Value> {
+        self.read_context(None, |context| {
+            context.change_sets.stack.iter().rev().find_map(|set| {
+                set.changes
+                    .get(key)
+                    .and_then(|v| v.get_slot(symbols, slot))
+                    .cloned()
+            })
+        })
+    }
+
     pub fn get(&self, key: &EntityKey, field: &str) -> Option<Value> {
         self.read_context(None, |context| context.change_sets.get(key, field))
     }
@@ -1412,16 +1537,23 @@ impl EntityRuntimeState {
     pub(crate) fn replace_current_field(
         &self,
         key: EntityKey,
-        field: String,
+        field: teaql_core::MutationField,
         value: Option<Value>,
     ) -> Option<Value> {
         self.write_context(|ledger| {
             let changes = &mut ledger.change_sets.current_mut().changes;
             if let Some(value) = value {
-                return changes.entry(key).or_default().insert(field, value);
+                let symbols = match &field {
+                    teaql_core::MutationField::Fixed(s, _) => Some(*s),
+                    _ => key.symbols,
+                };
+                return changes
+                    .entry(key)
+                    .or_insert_with(|| symbols.map(MutationValues::indexed).unwrap_or_default())
+                    .insert_field(field, value);
             }
             let fields = changes.get_mut(&key)?;
-            let previous = fields.remove(&field);
+            let previous = fields.remove(field.name());
             if fields.is_empty() {
                 changes.remove(&key);
             }
@@ -1776,6 +1908,9 @@ impl EntityRuntimeState {
 /// An explicit graph composition failed before any database write.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LedgerCompositionError {
+    ConflictingSymbolLayout {
+        entity: String,
+    },
     ConflictingDynamicDefinitions {
         entity: String,
     },
@@ -1792,6 +1927,10 @@ pub enum LedgerCompositionError {
 impl std::fmt::Display for LedgerCompositionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ConflictingSymbolLayout { entity } => write!(
+                formatter,
+                "cannot compose incompatible generated symbol layouts for {entity}"
+            ),
             Self::ConflictingDynamicDefinitions { entity } => write!(
                 formatter,
                 "cannot compose incompatible dynamic definitions for {entity}"

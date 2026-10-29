@@ -11,7 +11,7 @@ use crate::types::{box_inner_type, is_option, option_inner_type, rust_type_to_da
 pub fn expand_teaql_entity_attribute(mut input: ItemStruct) -> proc_macro2::TokenStream {
     let struct_name = input.ident.clone();
     let attrs = parse_container_attrs(&input.attrs, &struct_name.to_string());
-    let entity_name = attrs.entity_name;
+    let _entity_name = attrs.entity_name;
     let Fields::Named(fields) = &mut input.fields else {
         return syn::Error::new(
             struct_name.span(),
@@ -68,7 +68,7 @@ pub fn expand_teaql_entity_attribute(mut input: ItemStruct) -> proc_macro2::Toke
             }
 
             pub fn entity_key(&self) -> ::teaql_runtime::EntityKey {
-                ::teaql_runtime::EntityKey::new_static(#entity_name, self.#id_field)
+                ::teaql_runtime::EntityKey::for_type::<Self>( self.#id_field)
             }
 
             pub fn mark_for_deletion(&mut self) -> &mut Self {
@@ -189,6 +189,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     let mut record_value_match_arms = Vec::new();
     let mut record_member_fallback_arms = Vec::new();
     let mut into_record_fields = Vec::new();
+    let mut mutation_capacity = Vec::new();
     let mut id_impl = None;
     let mut version_impl = None;
     let mut runtime_state_field_ident: Option<syn::Ident> = None;
@@ -370,6 +371,11 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             continue;
         }
 
+        mutation_capacity.push(if indexed_layout && has_load_state_field {
+            quote! { usize::from(self.__load_state.is_loaded(#field_name)) }
+        } else {
+            quote! { 1usize }
+        });
         property_member_names.push(field_name.clone());
         property_tokens.push(quote! {
             descriptor = descriptor.property(
@@ -442,7 +448,60 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             quote! { record.insert(#field_name.to_owned(), #into_value); }
         });
         into_json_fields.push(into_record_fields.last().unwrap().clone());
+        let slot_const = format_ident!("__TEAQL_SLOT_{}", field_ident);
+        *into_record_fields.last_mut().unwrap() = if indexed_layout && has_load_state_field {
+            quote! { if self.__load_state.is_loaded(#field_name) {
+                record.insert_slot(<Self as ::teaql_core::TeaqlEntity>::symbols().unwrap(), Self::#slot_const, #into_value);
+            } }
+        } else {
+            quote! { record.insert_slot(<Self as ::teaql_core::TeaqlEntity>::symbols().unwrap(), Self::#slot_const, #into_value); }
+        };
     }
+    let mut symbol_fields = property_member_names.clone();
+    symbol_fields.sort();
+    if u32::try_from(symbol_fields.len()).is_err() {
+        return syn::Error::new(struct_name.span(), "too many generated field symbols")
+            .to_compile_error();
+    }
+    let field_constants: Vec<_> = symbol_fields
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let ident = format_ident!("__TEAQL_SLOT_{}", name);
+            let index = i as u32;
+            quote! { pub const #ident: ::teaql_core::FieldSlot = ::teaql_core::FieldSlot(#index); }
+        })
+        .collect();
+    let (symbol_model, default_model) = if let Some(model) = attrs.symbol_model {
+        (quote! { &#model }, quote! {})
+    } else {
+        (
+            quote! { &MODEL },
+            quote! { static MODEL: ::teaql_core::ModelSymbols = ::teaql_core::ModelSymbols { entities: &[#entity_name] }; },
+        )
+    };
+    let mut symbol_relations = materialized_relation_names.clone();
+    symbol_relations.sort();
+    symbol_relations.dedup();
+    if u32::try_from(symbol_relations.len()).is_err() {
+        return syn::Error::new(struct_name.span(), "too many generated relation symbols")
+            .to_compile_error();
+    }
+    let relation_constants: Vec<_> = symbol_relations.iter().enumerate().map(|(i, name)| {
+        let ident = format_ident!("__TEAQL_RELATION_{}", name);
+        let index = i as u32;
+        quote! { pub const #ident: ::teaql_core::RelationSlot = ::teaql_core::RelationSlot(#index); }
+    }).collect();
+    let symbol_entity = attrs.symbol_entity.unwrap_or(0);
+    let symbols_impl = quote! {
+        fn symbols() -> Option<&'static ::teaql_core::EntitySymbols> {
+            #default_model
+            static SYMBOLS: ::teaql_core::EntitySymbols = ::teaql_core::EntitySymbols {
+                model: #symbol_model, entity: ::teaql_core::EntityTypeId(#symbol_entity), fields: &[#(#symbol_fields),*], relations: &[#(#symbol_relations),*],
+            };
+            Some(&SYMBOLS)
+        }
+    };
 
     let identifiable_impl_tokens = id_impl.map(|id_value| {
         quote! {
@@ -626,24 +685,24 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             (Some(state_ident), Some(id_ident)) => (
                 quote! {
                     fn dirty_fields(&self) -> Option<std::collections::BTreeSet<String>> {
-                        let key = teaql_runtime::EntityKey::new_static(#entity_name, self.#id_ident);
+                        let key = teaql_runtime::EntityKey::for_type::<Self>( self.#id_ident);
                         let fields = self.#state_ident.changed_field_names(&key);
                         (!fields.is_empty()).then_some(fields)
                     }
                 },
                 quote! {
                     fn is_marked_as_delete(&self) -> bool {
-                        let key = teaql_runtime::EntityKey::new_static(#entity_name, self.#id_ident);
+                        let key = teaql_runtime::EntityKey::for_type::<Self>( self.#id_ident);
                         self.#state_ident.is_marked_as_delete(&key)
                     }
 
                     fn is_new(&self) -> bool {
-                        let key = teaql_runtime::EntityKey::new_static(#entity_name, self.#id_ident);
+                        let key = teaql_runtime::EntityKey::for_type::<Self>( self.#id_ident);
                         self.#state_ident.is_new(&key)
                     }
 
                     fn mark_as_new(&mut self) {
-                        let key = teaql_runtime::EntityKey::new_static(#entity_name, self.#id_ident);
+                        let key = teaql_runtime::EntityKey::for_type::<Self>( self.#id_ident);
                         self.#state_ident.mark_as_new(key)
                     }
                 },
@@ -673,12 +732,12 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         {
             quote! {
                 fn get_comment(&self) -> Option<String> {
-                    let key = ::teaql_runtime::EntityKey::new_static(#entity_name, self.#id_ident);
+                    let key = ::teaql_runtime::EntityKey::for_type::<Self>( self.#id_ident);
                     self.#state_ident.get_entity_comment(&key)
                 }
 
                 fn set_comment(&mut self, comment: String) {
-                    let key = ::teaql_runtime::EntityKey::new_static(#entity_name, self.#id_ident);
+                    let key = ::teaql_runtime::EntityKey::for_type::<Self>( self.#id_ident);
                     self.#state_ident.set_entity_comment(key, comment);
                 }
 
@@ -775,7 +834,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 fields: &::std::collections::BTreeSet<String>,
                 values: &::std::collections::BTreeMap<String, ::teaql_core::Value>,
             ) {
-                let key = ::teaql_runtime::EntityKey::new_static(#entity_name, self.#id_ident);
+                let key = ::teaql_runtime::EntityKey::for_type::<Self>( self.#id_ident);
                 for field in fields {
                     if let Some(value) = values.get(field) {
                         self.#state_ident.set(key.clone(), field.clone(), value.clone());
@@ -784,13 +843,25 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             }
 
 
+            fn set_checker_dirty_values(&mut self, fields: &::std::collections::BTreeSet<String>, values: &::teaql_core::MutationValues) {
+                let key = ::teaql_runtime::EntityKey::for_type::<Self>(self.#id_ident);
+                let symbols = <Self as ::teaql_core::TeaqlEntity>::symbols().unwrap();
+                for field in fields {
+                    if let Some(value) = values.get(field) {
+                        if let Some(slot) = symbols.slot(field) {
+                            self.#state_ident.set_slot(key.clone(), symbols, slot, value.clone());
+                        } else { self.#state_ident.set(key.clone(), field.clone(), value.clone()); }
+                    }
+                }
+            }
+
             fn begin_checker_fix(&self) -> bool {
                 self.#state_ident.push_change_set();
                 true
             }
 
             fn take_checker_fix_changes(&self) -> ::teaql_core::MutationValues {
-                let key = ::teaql_runtime::EntityKey::new_static(#entity_name, self.#id_ident);
+                let key = ::teaql_runtime::EntityKey::for_type::<Self>( self.#id_ident);
                 self.#state_ident.pop_change_set()
                     .and_then(|changes| changes.changes().get(&key).cloned())
                     .unwrap_or_default()
@@ -809,7 +880,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                     if <Self as ::teaql_core::TeaqlEntity>::field_layout().ok().flatten().is_none_or(|layout| !::std::sync::Arc::ptr_eq(state.layout(), &layout)) {
                         return Err(::teaql_core::dynamic_fields::DynamicFieldError { code: "DYNAMIC_FIELD_LAYOUT_MISMATCH", field: code.to_owned() });
                     }
-                    if self.#state_ident.update_dynamic_field(::teaql_runtime::EntityKey::new_static(#entity_name, self.#id_ident), code, value)? {
+                    if self.#state_ident.update_dynamic_field(::teaql_runtime::EntityKey::for_type::<Self>( self.#id_ident), code, value)? {
                         self.__load_state = ::teaql_core::eval::LoadState::Indexed(::teaql_core::LoadedSnapshot::with_dynamic_fields(
                             &state, self.#state_ident.loaded_dynamic_fields().expect("validated dynamic definitions")
                         ).expect("validated dynamic owner and layout"));
@@ -823,7 +894,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                     if <Self as ::teaql_core::TeaqlEntity>::field_layout().ok().flatten().is_none_or(|layout| !::std::sync::Arc::ptr_eq(state.layout(), &layout)) {
                         return Err(::teaql_core::dynamic_fields::DynamicFieldError { code: "DYNAMIC_FIELD_LAYOUT_MISMATCH", field: code.to_owned() });
                     }
-                    if self.#state_ident.delete_dynamic_field(::teaql_runtime::EntityKey::new_static(#entity_name, self.#id_ident), code)? {
+                    if self.#state_ident.delete_dynamic_field(::teaql_runtime::EntityKey::for_type::<Self>( self.#id_ident), code)? {
                         self.__load_state = ::teaql_core::eval::LoadState::Indexed(::teaql_core::LoadedSnapshot::with_dynamic_fields(
                             &state, self.#state_ident.loaded_dynamic_fields().expect("validated dynamic definitions")
                         ).expect("validated dynamic owner and layout"));
@@ -932,10 +1003,14 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     };
 
     quote! {
+        #[allow(non_upper_case_globals)]
+        impl #struct_name { #(#field_constants)* #(#relation_constants)* }
+
         impl ::teaql_core::TeaqlEntity for #struct_name {
             const ENTITY_NAME: &'static str = #entity_name;
 
             #field_layout_impl
+            #symbols_impl
 
             fn entity_descriptor() -> ::teaql_core::EntityDescriptor {
                 // One cache per concrete generated entity type, never keyed just by name.
@@ -943,7 +1018,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 DESCRIPTOR.get_or_init(|| {
                     #validate_layout
                     let mut descriptor = ::teaql_core::EntityDescriptor::new(#entity_name)
-                        .table_name(#table_name);
+                        .table_name(#table_name).symbols(Self::symbols().unwrap());
 
                     #data_service_token
                     #audit_mask_fields_token
@@ -971,7 +1046,8 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
 
             fn into_values(self) -> ::teaql_core::MutationValues {
                 use ::teaql_core::Entity;
-                let mut record = ::teaql_core::Record::new();
+                let capacity = 0usize #(+ #mutation_capacity)*;
+                let mut record = ::teaql_core::MutationValues::indexed_with_capacity(<Self as ::teaql_core::TeaqlEntity>::symbols().unwrap(), capacity);
                 if let Some(comment) = self.get_comment() {
                     record.insert("_comment".to_owned(), ::teaql_core::Value::Text(comment));
                 }

@@ -274,7 +274,7 @@ pub(super) fn single_relation_aggregate_value(row: &CompactRow) -> Value {
 }
 
 pub(super) fn ensure_initial_version(
-    values: &mut BTreeMap<String, Value>,
+    values: &mut teaql_core::MutationValues,
     descriptor: &EntityDescriptor,
 ) {
     if let Some(version_property) = descriptor.version_property() {
@@ -283,13 +283,13 @@ pub(super) fn ensure_initial_version(
             None | Some(Value::Null) | Some(Value::I64(0)) | Some(Value::U64(0))
         );
         if needs_version {
-            values.insert(version_property.name.clone(), Value::I64(1));
+            values.insert_named(&version_property.name, Value::I64(1));
         }
     }
 }
 
 pub(super) fn ensure_timestamps(
-    values: &mut BTreeMap<String, Value>,
+    values: &mut teaql_core::MutationValues,
     descriptor: &EntityDescriptor,
     is_new: bool,
 ) {
@@ -303,7 +303,7 @@ pub(super) fn ensure_timestamps(
             None | Some(Value::Null) | Some(Value::I64(0)) | Some(Value::U64(0))
         );
         if needs_time {
-            values.insert("create_time".to_owned(), now.clone());
+            values.insert_named("create_time", now.clone());
         }
     }
 
@@ -313,7 +313,7 @@ pub(super) fn ensure_timestamps(
             None | Some(Value::Null) | Some(Value::I64(0)) | Some(Value::U64(0))
         );
         if needs_time {
-            values.insert("update_time".to_owned(), now);
+            values.insert_named("update_time", now);
         }
     }
 }
@@ -353,12 +353,12 @@ pub(super) fn ensure_relation_target<ExecError>(
 }
 
 pub(crate) fn increment_version(
-    values: &mut BTreeMap<String, Value>,
+    values: &mut teaql_core::MutationValues,
     descriptor: &EntityDescriptor,
     original_version: Option<i64>,
 ) {
     if let Some(prop) = descriptor.version_property() {
         let next_version = original_version.map(|v| v + 1).unwrap_or(2);
-        values.insert(prop.name.clone(), teaql_core::Value::I64(next_version));
+        values.insert_named(&prop.name, teaql_core::Value::I64(next_version));
     }
 }

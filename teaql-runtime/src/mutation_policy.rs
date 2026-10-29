@@ -1,4 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -61,7 +63,7 @@ pub struct MutationOperation {
     pub kind: MutationOperationKind,
     pub entity: EntityKey,
     pub original_version: Option<i64>,
-    pub changed_values: BTreeMap<String, Value>,
+    pub changed_values: teaql_core::MutationValues,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -398,7 +400,11 @@ impl UserContext {
                 .map(|operation| MutationOperationSummary {
                     kind: operation.kind,
                     entity: operation.entity.clone(),
-                    changed_fields: operation.changed_values.keys().cloned().collect(),
+                    changed_fields: operation
+                        .changed_values
+                        .named_entries()
+                        .map(|(name, _)| name.to_owned())
+                        .collect(),
                 })
                 .collect(),
         };
@@ -472,21 +478,23 @@ pub(crate) fn graph_policy_plan(
                 GraphMutationKind::Delete => MutationOperationKind::Delete,
                 GraphMutationKind::Reference => return None,
             };
-            let values: BTreeMap<String, Value> = item.values.clone().into();
+            let values = item.values.clone();
             let id = values.get("id").cloned().unwrap_or(Value::I64(0));
             let original_version = values.get("version").and_then(Value::try_i64);
             let changed_values = match kind {
-                MutationOperationKind::Update => item
-                    .update_fields
-                    .iter()
-                    .filter_map(|field| {
-                        values
-                            .get(field)
-                            .cloned()
-                            .map(|value| (field.clone(), value))
-                    })
-                    .collect(),
-                MutationOperationKind::Delete => BTreeMap::new(),
+                MutationOperationKind::Update => {
+                    let mut selected = values
+                        .symbols()
+                        .map(teaql_core::MutationValues::indexed)
+                        .unwrap_or_default();
+                    for field in &item.update_fields {
+                        if let Some(value) = values.get(field) {
+                            selected.insert_named(field, value.clone());
+                        }
+                    }
+                    selected
+                }
+                MutationOperationKind::Delete => teaql_core::MutationValues::new(),
                 _ => values,
             };
             Some(MutationOperation {
@@ -625,7 +633,8 @@ mod tests {
                 kind: MutationOperationKind::Create,
                 entity: EntityKey::new("Order", 7_u64),
                 original_version: None,
-                changed_values: BTreeMap::from([("total_amount".to_owned(), Value::I64(25_000))]),
+                changed_values: BTreeMap::from([("total_amount".to_owned(), Value::I64(25_000))])
+                    .into(),
             }],
         }
     }

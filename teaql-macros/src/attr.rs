@@ -10,6 +10,8 @@ pub struct ContainerAttrs {
     pub audit_value_max_len: Option<usize>,
     pub reverse_relations: Vec<ParsedContainerRelation>,
     pub indexed_layout: bool,
+    pub symbol_model: Option<syn::Path>,
+    pub symbol_entity: Option<u32>,
 }
 
 #[derive(Default)]
@@ -32,6 +34,8 @@ pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> Co
         audit_value_max_len: None,
         reverse_relations: Vec::new(),
         indexed_layout: false,
+        symbol_model: None,
+        symbol_entity: None,
     };
 
     for attr in attrs {
@@ -39,7 +43,14 @@ pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> Co
             continue;
         }
         let _ = attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("indexed_layout") {
+            if meta.path.is_ident("symbol_model") {
+                attrs_out.symbol_model = Some(syn::parse_str(&parse_string_expr(
+                    &meta.value()?.parse::<Expr>()?,
+                ))?);
+            } else if meta.path.is_ident("symbol_entity") {
+                attrs_out.symbol_entity =
+                    Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?);
+            } else if meta.path.is_ident("indexed_layout") {
                 attrs_out.indexed_layout = true;
             } else if meta.path.is_ident("entity") {
                 let value = meta.value()?;

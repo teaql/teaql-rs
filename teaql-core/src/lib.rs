@@ -1093,3 +1093,7 @@ mod tests {
     }
 }
 pub mod eval;
+
+mod symbol;
+pub use mutation::{FieldEntries, MutationField, NamedEntries};
+pub use symbol::{EntitySymbols, EntityTypeId, FieldSlot, ModelSymbols, RelationSlot};

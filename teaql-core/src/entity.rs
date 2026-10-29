@@ -27,6 +27,10 @@ impl EntityJsonTraversal {
 pub trait TeaqlEntity {
     const ENTITY_NAME: &'static str;
 
+    fn symbols() -> Option<&'static crate::EntitySymbols> {
+        None
+    }
+
     /// Return a descriptor handle. Derive-generated implementations initialize one
     /// descriptor per concrete type and return allocation-free shared clones.
     /// Handwritten implementations may construct context-independent metadata here.
@@ -200,6 +204,12 @@ pub trait Entity: TeaqlEntity + Sized {
         values: &BTreeMap<String, Value>,
     ) {
         self.set_checker_dirty_fields(fields.clone(), &MutationValues::from(values.clone()));
+    }
+
+    /// Indexed adapter used by the runtime; handwritten checkers can keep their named hook.
+    #[doc(hidden)]
+    fn set_checker_dirty_values(&mut self, fields: &BTreeSet<String>, values: &MutationValues) {
+        self.set_checker_dirty_fields_borrowed(fields, values);
     }
 
     /// Stage generated Checker/Fix setters in an isolated ledger frame.

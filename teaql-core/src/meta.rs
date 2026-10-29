@@ -138,6 +138,7 @@ pub struct EntityDescriptor {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntityDescriptorData {
     pub name: String,
+    pub symbols: Option<&'static crate::EntitySymbols>,
     pub table_name: String,
     pub data_service: Option<String>,
     pub properties: Vec<PropertyDescriptor>,
@@ -169,6 +170,7 @@ impl EntityDescriptor {
             shared: std::sync::Arc::new(EntityDescriptorData {
                 table_name: default_table_name(&name),
                 name,
+                symbols: None,
                 data_service: None,
                 properties: Vec::new(),
                 relations: Vec::new(),
@@ -177,6 +179,17 @@ impl EntityDescriptor {
                 audit_value_max_len: None,
             }),
         }
+    }
+
+    pub fn symbols(mut self, symbols: &'static crate::EntitySymbols) -> Self {
+        symbols.validate().expect("invalid generated symbols");
+        assert_eq!(
+            symbols.name(),
+            Some(self.name.as_str()),
+            "entity symbol dictionary mismatch"
+        );
+        self.symbols = Some(symbols);
+        self
     }
 
     pub fn table_name(mut self, table_name: impl Into<String>) -> Self {

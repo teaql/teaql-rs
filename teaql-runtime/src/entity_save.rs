@@ -314,11 +314,11 @@ fn can_preserve_loaded_relations(
     }
     changes.changes().iter().all(|(key, fields)| {
         key == root_key
-            && fields.keys().all(|field| {
+            && fields.named_entries().all(|(field, _)| {
                 !descriptor
                     .relations
                     .iter()
-                    .any(|relation| relation.local_key == *field)
+                    .any(|relation| relation.local_key == field)
             })
     })
 }
@@ -915,7 +915,11 @@ fn graph_node_from_values(
     let descriptor = context.require_entity(entity)?;
     let mut node = GraphNode::new(entity);
 
-    for (field, value) in values {
+    if let Some(symbols) = values.symbols().or(descriptor.symbols) {
+        node.values = MutationValues::indexed_with_capacity(symbols, values.len()).into();
+    }
+    for (field_id, value) in values.into_fields() {
+        let field = field_id.name();
         if field == "_comment" {
             if let Value::Text(comment) = value {
                 node.set_comment(comment);
@@ -952,22 +956,25 @@ fn graph_node_from_values(
             }
             continue;
         }
-        let Some(relation) = descriptor.relation_by_name(&field) else {
-            node.values.insert(field, value);
+        let Some(relation) = descriptor.relation_by_name(field) else {
+            node.values.insert_field(field_id, value);
             continue;
         };
 
         match value {
             Value::Null => {
-                node.relations.entry(field).or_default();
+                node.relations.entry(field.to_owned()).or_default();
             }
             Value::Object(record) => {
                 let child =
                     graph_node_from_values(context, &relation.target_entity, record.into())?;
-                node.relations.entry(field).or_default().push(child);
+                node.relations
+                    .entry(field.to_owned())
+                    .or_default()
+                    .push(child);
             }
             Value::List(values) => {
-                let children = node.relations.entry(field.clone()).or_default();
+                let children = node.relations.entry(field.to_owned()).or_default();
                 for value in values {
                     let Value::Object(record) = value else {
                         return Err(RuntimeError::Graph(format!(
@@ -1011,15 +1018,30 @@ fn merge_relation_mutations_into_root(
             match child.operation {
                 GraphOperation::Create => {
                     root.mark_as_new(key.clone());
-                    for (field, value) in &child.values {
-                        root.set(key.clone(), field, value.clone());
+                    for (field, value) in child.values.fields() {
+                        match field {
+                            teaql_core::MutationField::Fixed(symbols, slot) => {
+                                root.set_slot(key.clone(), symbols, slot, value.clone())
+                            }
+                            teaql_core::MutationField::Named(name) => {
+                                root.set(key.clone(), name, value.clone())
+                            }
+                        }
                     }
                 }
                 GraphOperation::Upsert => {
                     if let Some(fields) = &child.dirty_fields {
                         for field in fields {
                             if let Some(value) = child.values.get(field) {
-                                root.set(key.clone(), field, value.clone());
+                                if let Some((symbols, slot)) =
+                                    child.values.symbols().and_then(|symbols| {
+                                        symbols.slot(field).map(|slot| (symbols, slot))
+                                    })
+                                {
+                                    root.set_slot(key.clone(), symbols, slot, value.clone());
+                                } else {
+                                    root.set(key.clone(), field, value.clone());
+                                }
                             }
                         }
                     }
@@ -1576,8 +1598,11 @@ fn hydrate_ledger_relations_borrowed(
                 .clone()
                 .map(|values| BTreeMap::from(values).into())
                 .unwrap_or_default();
+            if let Some(symbols) = key.symbols() {
+                values.bind_symbols(symbols);
+            }
             if let Some(changes) = view.changes.changes().get(key) {
-                values.extend(changes.clone());
+                values.merge(changes.clone());
             }
             let foreign_value = if relation.foreign_key == "id" {
                 Some(&key.id)
@@ -1598,9 +1623,9 @@ fn hydrate_ledger_relations_borrowed(
             if !matches_reference || !visited.insert(key.clone()) {
                 continue;
             }
-            values
-                .entry("id".to_owned())
-                .or_insert_with(|| key.id.clone());
+            if !values.contains_key("id") {
+                values.insert_named("id", key.id.clone());
+            }
             let operation = if view.is_deleted(key) {
                 GraphOperation::Remove
             } else if view.is_new(key) || view.original_version(key).is_none() {
@@ -1627,7 +1652,7 @@ fn hydrate_ledger_relations_borrowed(
 /// Undo only Fix assignments on validation failure, preserving caller intent.
 struct FixStage<'a> {
     root: Option<&'a crate::EntityRuntimeState>,
-    undo: Vec<(crate::EntityKey, String, Option<Value>)>,
+    undo: Vec<(crate::EntityKey, teaql_core::MutationField, Option<Value>)>,
     committed: bool,
 }
 impl<'a> FixStage<'a> {
@@ -1640,7 +1665,7 @@ impl<'a> FixStage<'a> {
     }
     fn apply(&mut self, key: crate::EntityKey, changes: &crate::EntityValues) {
         if let Some(root) = self.root {
-            for (field, value) in changes {
+            for (field, value) in changes.fields() {
                 let old =
                     root.replace_current_field(key.clone(), field.clone(), Some(value.clone()));
                 self.undo.push((key.clone(), field.clone(), old));
@@ -1766,11 +1791,7 @@ fn prepare_ledger_graph(
 ) -> Result<Vec<GraphNode>, RuntimeError> {
     root.with_preflight_view(|view| {
         if let Some(fields) = view.changes.changes().get(root_key) {
-            node.values.extend(
-                fields
-                    .iter()
-                    .map(|(name, value)| (name.clone(), value.clone())),
-            );
+            node.values.merge(fields.clone());
         }
         let mut visited = BTreeSet::from([root_key.clone()]);
         hydrate_ledger_relations_borrowed(context, view, node, &mut visited)?;
@@ -1789,7 +1810,7 @@ fn prepare_ledger_graph(
                     .map(|values| BTreeMap::from(values).into())
                     .unwrap_or_default();
                 if let Some(values) = view.changes.changes().get(key) {
-                    pending.values.extend(values.clone());
+                    pending.values.merge(values.clone());
                 }
                 pending.values.insert("id".into(), key.id.clone());
                 let loaded = pending
@@ -2064,7 +2085,7 @@ where
     let needs_graph_preflight = root.is_none();
     if let Some(root) = root {
         let root_id = node.values.get("id").cloned().unwrap_or(Value::I64(0));
-        let root_key = crate::EntityKey::new(node.entity.clone(), root_id);
+        let root_key = crate::EntityKey::for_type::<T>(root_id);
         reject_cancelled_new_root(&root, &root_key)?;
         let changes = finalize_ledger_preflight(context, &root, &mut node, &root_key)?;
         capture_ledger_trace_scopes_from(&root, &node, &changes)?;
@@ -2201,7 +2222,7 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
     let needs_graph_preflight = root.is_none();
     if let Some(root) = root {
         let root_id = node.values.get("id").cloned().unwrap_or(Value::I64(0));
-        let root_key = crate::EntityKey::new(node.entity.clone(), root_id);
+        let root_key = crate::EntityKey::for_type::<T>(root_id);
         reject_cancelled_new_root(&root, &root_key)?;
         let changes = finalize_ledger_preflight(context, &root, &mut node, &root_key)?;
         capture_ledger_trace_scopes_from(&root, &node, &changes)?;

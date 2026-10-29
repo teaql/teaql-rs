@@ -22,12 +22,14 @@ use super::{EntityDataService, helpers::*};
 #[derive(Debug, PartialEq, Eq)]
 struct UpdateBatchKey {
     entity: String,
-    fields: Vec<String>,
+    fields: Vec<teaql_core::MutationField>,
 }
 
-fn joined_field_bytes(fields: &[String]) -> impl Iterator<Item = u8> + '_ {
+fn joined_field_bytes(fields: &[teaql_core::MutationField]) -> impl Iterator<Item = u8> + '_ {
     fields.iter().enumerate().flat_map(|(index, field)| {
-        std::iter::once(b',').take(usize::from(index != 0)).chain(field.bytes())
+        std::iter::once(b',')
+            .take(usize::from(index != 0))
+            .chain(field.name().bytes())
     })
 }
 
@@ -1634,6 +1636,23 @@ where
         let deleted_keys = root.deleted_keys();
         let new_keys = root.new_keys();
 
+        // Resolve generated identities against this Context's model before any write.
+        // A compatibility key may carry a name, but a typed key cannot silently bind
+        // to another generation that happens to use the same name or numeric ID.
+        for (_, symbols) in change_set
+            .scoped_keys()
+            .chain(deleted_keys.iter().map(|key| (key, key.symbols())))
+            .chain(new_keys.iter().map(|key| (key, key.symbols())))
+        {
+            if let Some(symbols) = symbols {
+                self.data_service
+                    .metadata
+                    .context
+                    .require_entity_symbols(symbols)
+                    .map_err(DataServiceError::Runtime)?;
+            }
+        }
+
         // Deletion of an existing versioned entity must carry the version
         // obtained by loading that entity. A newly created entity deleted
         // before save has no database row and is cancelled within the graph.
@@ -1645,7 +1664,7 @@ where
                 .data_service
                 .metadata
                 .context
-                .require_entity(&key.entity)
+                .require_entity_key(key)
                 .map_err(DataServiceError::Runtime)?;
             if descriptor.version_property().is_some() && root.get_original_version(key).is_none() {
                 return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
@@ -1666,10 +1685,10 @@ where
             if deleted_keys.contains(key) {
                 continue;
             }
-            let mut checked: crate::EntityValues = record.clone().into();
-            checked
-                .entry("id".to_owned())
-                .or_insert_with(|| key.id.clone());
+            let mut checked: crate::EntityValues = record.clone_with_capacity(1).into();
+            if !checked.contains_key("id") {
+                checked.insert_named("id", key.id.clone());
+            }
             checked_changes.insert(key.clone(), checked);
         }
         // Extension-only edits still require a native optimistic update.
@@ -1699,7 +1718,7 @@ where
                     .data_service
                     .metadata
                     .context
-                    .require_entity(&key.entity)
+                    .require_entity_key(key)
                     .map_err(DataServiceError::Runtime)?;
                 let id_property = descriptor.id_property().ok_or_else(|| {
                     DataServiceError::Runtime(RuntimeError::Graph(format!(
@@ -1736,12 +1755,15 @@ where
                         .push(key.clone());
                 }
                 false => {
-                    // MutationValues iterates a BTreeMap: field names are already sorted.
+                    // Slot and named fields iterate in the legacy lexical order.
                     // The command may append update_time and version after grouping.
                     let mut fields = Vec::with_capacity(record.len() + 2);
-                    fields.extend(record.keys().cloned());
+                    fields.extend(record.fields().map(|(field, _)| field));
                     update_batches
-                        .entry(UpdateBatchKey { entity: key.entity.to_string(), fields })
+                        .entry(UpdateBatchKey {
+                            entity: key.entity.to_string(),
+                            fields,
+                        })
                         .or_default()
                         .push(key.clone());
                 }
@@ -1858,18 +1880,12 @@ where
             let mut traces = Vec::new();
             for key in &keys {
                 let record = checked_changes.get(key).unwrap();
-                let mut db_record = crate::EntityValues::new();
+                let mut db_record: crate::EntityValues = record.clone_with_capacity(2).into();
                 let real_id = generated_ids
                     .get(key)
                     .cloned()
                     .unwrap_or_else(|| key.id.clone());
-                db_record.insert("id".to_owned(), real_id);
-                for (field, value) in record {
-                    if field == "id" {
-                        continue;
-                    }
-                    db_record.insert(field.clone(), value.clone());
-                }
+                db_record.insert_named("id", real_id);
                 crate::data_service::helpers::ensure_initial_version(&mut db_record, descriptor);
                 crate::data_service::helpers::ensure_timestamps(&mut db_record, descriptor, true);
                 let location = locations.get(key).cloned().unwrap_or_default();
@@ -1913,7 +1929,11 @@ where
                 .context
                 .require_entity(&signature.entity)
                 .map_err(DataServiceError::Runtime)?;
-            let mut update_fields = signature.fields;
+            let mut update_fields: Vec<String> = signature
+                .fields
+                .into_iter()
+                .map(|field| field.name().to_owned())
+                .collect();
             if descriptor
                 .properties
                 .iter()
@@ -1931,14 +1951,8 @@ where
             let mut traces = Vec::new();
             for key in &keys {
                 let record = checked_changes.get(key).unwrap();
-                let mut db_record = crate::EntityValues::new();
-                db_record.insert("id".to_owned(), key.id.clone());
-                for (field, value) in record {
-                    if field == "id" {
-                        continue;
-                    }
-                    db_record.insert(field.clone(), value.clone());
-                }
+                let mut db_record: crate::EntityValues = record.clone_with_capacity(2).into();
+                db_record.insert_named("id", key.id.clone());
                 crate::data_service::helpers::increment_version(
                     &mut db_record,
                     descriptor,

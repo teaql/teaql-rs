@@ -652,13 +652,17 @@ where
         let status = CheckObjectStatus::from_values(values);
         let loaded = take_field_names(values, "_loaded_fields");
         let dirty = take_field_names(values, "_dirty_fields");
-        match T::from_compact_row(teaql_core::CompactRow::from_map(values.clone().into())) {
+        if let Some(symbols) = T::symbols() {
+            values.bind_symbols(symbols);
+            prepared.changes = EntityValues::indexed(symbols);
+        }
+        match T::from_compact_row(values.to_compact_row()) {
             Ok(mut entity) => {
                 if let Some(loaded) = loaded {
                     entity.set_checker_loaded_fields(loaded);
                 }
                 if let Some(dirty) = &dirty {
-                    entity.set_checker_dirty_fields_borrowed(dirty, values);
+                    entity.set_checker_dirty_values(dirty, values);
                 }
                 let ledger_fix = entity.begin_checker_fix();
                 // Handwritten non-ledger carriers retain a diff fallback.
@@ -683,16 +687,21 @@ where
                         .into()
                 };
                 // Setters declare Fix intent, including explicit zero/default values.
-                for (field, value) in fixed {
-                    if values.get(&field) != Some(&value) {
-                        values.insert(field.clone(), value.clone());
-                        prepared.changes.insert(field, value);
+                for (field, value) in fixed.into_fields() {
+                    if values.get(field.name()) != Some(&value) {
+                        values.insert_field(field.clone(), value.clone());
+                        prepared.changes.insert_field(field, value);
                     }
                 }
                 // Check sees the effective dirty set, but Fix above never uses it as a trigger.
                 let mut effective_dirty = dirty.unwrap_or_default();
-                effective_dirty.extend(prepared.changes.keys().cloned());
-                entity.set_checker_dirty_fields_borrowed(&effective_dirty, values);
+                effective_dirty.extend(
+                    prepared
+                        .changes
+                        .named_entries()
+                        .map(|(field, _)| field.to_owned()),
+                );
+                entity.set_checker_dirty_values(&effective_dirty, values);
                 let checker = self.checker.clone();
                 prepared.validate = Some(Box::new(move |context, location, results| {
                     checker.check_typed(context, &entity, status, location, results);

@@ -2122,15 +2122,19 @@ where
         } else {
             command.old_values
         };
-        let updated_fields = command.values.keys().cloned().collect();
+        let updated_fields = command
+            .values
+            .named_entries()
+            .map(|(name, _)| name.to_owned())
+            .collect();
         let mut values = command.values;
         values.insert("id".to_owned(), command.id);
         if let Some(version) = command.expected_version {
             values.insert("version".to_owned(), Value::I64(version + 1));
         }
         let mut new_values = old_values.clone().unwrap_or_default();
-        for (field, value) in &values {
-            new_values.insert(field.clone(), value.clone());
+        for (field, value) in values.named_entries() {
+            new_values.insert(field.to_owned(), value.clone());
         }
         let mut event = RawAuditEvent::updated_with_old_values(
             command.entity,
@@ -2172,8 +2176,8 @@ where
 
             let old_values = command.batch_old_values.get_mut(i).and_then(Option::take);
             let mut new_values = old_values.clone().unwrap_or_default();
-            for (field, value) in &full_values {
-                new_values.insert(field.clone(), value.clone());
+            for (field, value) in full_values.named_entries() {
+                new_values.insert(field.to_owned(), value.clone());
             }
 
             let updated_fields = if i + 1 == row_count {
