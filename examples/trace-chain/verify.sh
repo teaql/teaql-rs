@@ -12,7 +12,7 @@ bash "$repo_dir/scripts/rust-test-receipt.test.sh"
 export CARGO_TARGET_DIR="${TEAQL_TRACE_CHAIN_CARGO_TARGET_DIR:-$repo_dir/target/trace-chain-verification}"
 mkdir -p "$CARGO_TARGET_DIR"
 printf 'SOURCE_VERIFICATION_TARGET %s\n' "$CARGO_TARGET_DIR"
-trace_evidence_dir="${TEAQL_TRACE_CHAIN_EVIDENCE_DIR:-$(mktemp -d /tmp/teaql-trace-chain-evidence-XXXXXX)}"
+trace_evidence_dir="${TEAQL_TRACE_CHAIN_EVIDENCE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/teaql-trace-chain-evidence-XXXXXX")}"
 mkdir -p "$trace_evidence_dir"
 export TEAQL_TRACE_CHAIN_DATABASE="${TEAQL_TRACE_CHAIN_DATABASE:-sqlite:file:$trace_evidence_dir/trace-chain.sqlite}"
 if [[ "$TEAQL_TRACE_CHAIN_DATABASE" != sqlite:file:* ]]; then

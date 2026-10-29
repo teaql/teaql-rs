@@ -2,7 +2,7 @@
 set -euo pipefail
 example_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$example_dir/../../scripts/rust-test-receipt.sh"
-evidence_dir="$(mktemp -d /tmp/teaql-rust-facet-example-XXXXXX)"
+evidence_dir="$(mktemp -d "${TMPDIR:-/tmp}/teaql-rust-facet-example-XXXXXX")"
 export TEAQL_FACET_DATABASE="$evidence_dir/school.db"
 unset TEAQL_ALLOW_SENSITIVE_PLAINTEXT_LOGS
 hash_library() {
