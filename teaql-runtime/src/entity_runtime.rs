@@ -598,6 +598,71 @@ struct EntityMutationLedger {
     is_new: bool,
 }
 
+/// Synchronous borrowed ledger view. Never call root accessors or user code while held.
+pub(crate) struct LedgerPreflightView<'a> {
+    ledger: &'a EntityMutationLedger,
+    state: &'a EntityRuntimeState,
+    pub(crate) changes: &'a EntityChangeSet,
+}
+
+impl LedgerPreflightView<'_> {
+    pub(crate) fn pending_keys(&self) -> BTreeSet<EntityKey> {
+        let mut keys: BTreeSet<_> = self.changes.changes().keys().cloned().collect();
+        if let Some(dynamic) = self.changes.dynamic_changes() {
+            keys.extend(dynamic.keys().cloned());
+        }
+        keys.extend(self.ledger.deleted_keys.iter().cloned());
+        keys.extend(self.ledger.new_keys.iter().cloned());
+        keys
+    }
+    pub(crate) fn is_deleted(&self, key: &EntityKey) -> bool {
+        self.ledger.deleted_keys.contains(key)
+    }
+    pub(crate) fn is_new(&self, key: &EntityKey) -> bool {
+        self.ledger.new_keys.contains(key)
+    }
+    pub(crate) fn comment(&self, key: &EntityKey) -> Option<String> {
+        self.ledger.entity_comments.get(key).cloned()
+    }
+    pub(crate) fn dirty_fields(&self, key: &EntityKey) -> BTreeSet<String> {
+        self.ledger.change_sets.changed_field_names(key)
+    }
+    pub(crate) fn original_values(&self, key: &EntityKey) -> Option<EntitySnapshot> {
+        self.ledger
+            .original_snapshots
+            .get(key)
+            .map(|snapshot| match snapshot {
+                OriginalSnapshot::Materialized(values) => values.clone(),
+                OriginalSnapshot::Compact(snapshot) => snapshot.values(),
+            })
+            .or_else(|| {
+                self.state
+                    .loaded_snapshot
+                    .with(|snapshot| {
+                        (snapshot.entity.as_ref() == key.entity.as_ref()
+                            && snapshot.row.get("id")?.try_u64() == key.id.try_u64())
+                        .then(|| snapshot.values())
+                    })
+                    .flatten()
+            })
+    }
+    pub(crate) fn original_version(&self, key: &EntityKey) -> Option<i64> {
+        self.ledger.original_versions.get(key).or_else(|| {
+            self.state
+                .loaded_snapshot
+                .with(|snapshot| {
+                    if snapshot.entity.as_ref() != key.entity.as_ref()
+                        || snapshot.row.get("id")?.try_u64() != key.id.try_u64()
+                    {
+                        return None;
+                    }
+                    snapshot.row.get("version")?.try_i64()
+                })
+                .flatten()
+        })
+    }
+}
+
 #[derive(Debug)]
 pub struct EntityRuntimeState {
     // The OnceLock itself is shared so entities composed before the first mutation
@@ -649,10 +714,19 @@ impl Clone for LazyLedgerSlot {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct LoadedEntitySnapshot {
     entity: Arc<str>,
     row: teaql_core::CompactRow,
+    materialized: OnceLock<EntitySnapshot>,
+}
+
+impl LoadedEntitySnapshot {
+    fn values(&self) -> EntitySnapshot {
+        self.materialized
+            .get_or_init(|| EntitySnapshot::from(self.row.clone().into_map()))
+            .clone()
+    }
 }
 
 /// An original row is immutable. Keep never-cloned views inline, and move the
@@ -678,7 +752,7 @@ impl LoadedSnapshotCarrier {
     }
 
     // Private readers only; callbacks cannot expose a mutable row or re-enter
-    // this carrier. Original-value APIs still return independently owned values.
+    // this carrier. Original-value APIs return copy-on-write handles, never mutable shared data.
     fn with<R>(&self, read: impl FnOnce(&LoadedEntitySnapshot) -> R) -> Option<R> {
         let storage = self
             .storage
@@ -692,14 +766,15 @@ impl LoadedSnapshotCarrier {
     }
 }
 
-impl Clone for LoadedSnapshotCarrier {
-    fn clone(&self) -> Self {
+impl LoadedSnapshotCarrier {
+    // Sharing with the ledger must also share the one materialization cache.
+    fn shared(&self) -> Option<Arc<LoadedEntitySnapshot>> {
         let mut storage = self
             .storage
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let shared = match &*storage {
-            LoadedSnapshotStorage::Empty => return Self::default(),
+            LoadedSnapshotStorage::Empty => return None,
             LoadedSnapshotStorage::Shared(snapshot) => snapshot.clone(),
             LoadedSnapshotStorage::Inline(_) => {
                 let LoadedSnapshotStorage::Inline(snapshot) = std::mem::take(&mut *storage) else {
@@ -710,8 +785,17 @@ impl Clone for LoadedSnapshotCarrier {
                 shared
             }
         };
+        Some(shared)
+    }
+}
+
+impl Clone for LoadedSnapshotCarrier {
+    fn clone(&self) -> Self {
         Self {
-            storage: Mutex::new(LoadedSnapshotStorage::Shared(shared)),
+            storage: Mutex::new(match self.shared() {
+                Some(snapshot) => LoadedSnapshotStorage::Shared(snapshot),
+                None => LoadedSnapshotStorage::Empty,
+            }),
         }
     }
 }
@@ -800,8 +884,7 @@ impl std::panic::RefUnwindSafe for EntityRuntimeState {}
 #[derive(Debug, Clone)]
 enum OriginalSnapshot {
     Materialized(EntitySnapshot),
-    #[allow(dead_code)] // Retained for zero-copy CompactRow hydration rollout.
-    Compact(teaql_core::CompactRow),
+    Compact(Arc<LoadedEntitySnapshot>),
 }
 
 impl PartialEq for EntityRuntimeState {
@@ -859,14 +942,14 @@ impl EntityRuntimeState {
     fn context(&self) -> &Arc<Mutex<EntityMutationLedger>> {
         self.inner.get_or_init(|| {
             let mut ledger = EntityMutationLedger::default();
-            self.loaded_snapshot.with(|snapshot| {
+            if let Some(snapshot) = self.loaded_snapshot.shared() {
                 if let Some(id) = snapshot.row.get("id") {
                     ledger.original_snapshots.insert(
                         EntityKey::new(snapshot.entity.as_ref(), id.clone()),
-                        OriginalSnapshot::Compact(snapshot.row.clone()),
+                        OriginalSnapshot::Compact(snapshot),
                     );
                 }
-            });
+            }
             Arc::new(Mutex::new(ledger))
         })
     }
@@ -1307,6 +1390,45 @@ impl EntityRuntimeState {
         self.read_context(None, |context| context.change_sets.get(key, field))
     }
 
+    pub(crate) fn with_preflight_view<R>(
+        &self,
+        read: impl FnOnce(&LedgerPreflightView<'_>) -> R,
+    ) -> R {
+        let empty_ledger = EntityMutationLedger::default();
+        let empty_changes = EntityChangeSet::default();
+        let guard = self
+            .inner
+            .get()
+            .map(|ledger| ledger.lock().unwrap_or_else(|e| e.into_inner()));
+        let ledger = guard.as_deref().unwrap_or(&empty_ledger);
+        read(&LedgerPreflightView {
+            ledger,
+            state: self,
+            changes: ledger.change_sets.current().unwrap_or(&empty_changes),
+        })
+    }
+
+    /// Swap one staged field for Fix rollback without copying the whole ledger.
+    pub(crate) fn replace_current_field(
+        &self,
+        key: EntityKey,
+        field: String,
+        value: Option<Value>,
+    ) -> Option<Value> {
+        self.write_context(|ledger| {
+            let changes = &mut ledger.change_sets.current_mut().changes;
+            if let Some(value) = value {
+                return changes.entry(key).or_default().insert(field, value);
+            }
+            let fields = changes.get_mut(&key)?;
+            let previous = fields.remove(&field);
+            if fields.is_empty() {
+                changes.remove(&key);
+            }
+            previous
+        })
+    }
+
     pub fn current_change_set(&self) -> EntityChangeSet {
         self.read_context(EntityChangeSet::default(), |context| {
             context.change_sets.current().cloned().unwrap_or_default()
@@ -1447,15 +1569,13 @@ impl EntityRuntimeState {
         self.loaded_snapshot = LoadedSnapshotCarrier::new(LoadedEntitySnapshot {
             entity: entity.into(),
             row,
+            materialized: OnceLock::new(),
         });
     }
 
     /// Retrieve the original loaded entity snapshot.
     pub fn original_snapshot(&self) -> Option<EntitySnapshot> {
-        if let Some(snapshot) = self
-            .loaded_snapshot
-            .with(|snapshot| EntitySnapshot::from(snapshot.row.clone().into_map()))
-        {
+        if let Some(snapshot) = self.loaded_snapshot.with(|snapshot| snapshot.values()) {
             return Some(snapshot);
         }
         self.read_context(None, |context| {
@@ -1464,7 +1584,7 @@ impl EntityRuntimeState {
                 .as_ref()
                 .map(|snapshot| match snapshot {
                     OriginalSnapshot::Materialized(snapshot) => snapshot.clone(),
-                    OriginalSnapshot::Compact(row) => EntitySnapshot::from(row.clone().into_map()),
+                    OriginalSnapshot::Compact(snapshot) => snapshot.values(),
                 })
         })
     }
@@ -1630,7 +1750,7 @@ impl EntityRuntimeState {
                 .get(key)
                 .map(|snapshot| match snapshot {
                     OriginalSnapshot::Materialized(values) => values.clone(),
-                    OriginalSnapshot::Compact(row) => EntitySnapshot::from(row.clone().into_map()),
+                    OriginalSnapshot::Compact(snapshot) => snapshot.values(),
                 })
         })
         .or_else(|| {
@@ -1638,7 +1758,7 @@ impl EntityRuntimeState {
                 .with(|snapshot| {
                     (snapshot.entity.as_ref() == key.entity.as_ref()
                         && snapshot.row.get("id")?.try_u64() == key.id.try_u64())
-                    .then(|| EntitySnapshot::from(snapshot.row.clone().into_map()))
+                    .then(|| snapshot.values())
                 })
                 .flatten()
         })
@@ -2489,5 +2609,133 @@ mod trace_allocation_sharing_tests {
             assert!(ledger.trace_chains.is_empty());
             assert!(ledger.unassigned_trace_scopes.is_empty());
         });
+    }
+}
+
+#[cfg(test)]
+mod shared_original_snapshot_tests {
+    use super::*;
+
+    fn state(version: i64) -> EntityRuntimeState {
+        let mut state = EntityRuntimeState::default();
+        state.set_original_compact_row(
+            "Probe",
+            teaql_core::CompactRow::from_map(BTreeMap::from([
+                ("id".into(), Value::U64(7)),
+                ("version".into(), Value::I64(version)),
+                ("name".into(), Value::from("original")),
+                ("nullable".into(), Value::Null),
+            ])),
+        );
+        state
+    }
+    fn same(left: &EntitySnapshot, right: &EntitySnapshot) {
+        assert!(
+            std::ptr::eq(&**left, &**right),
+            "one immutable snapshot must materialize only once"
+        );
+    }
+
+    #[test]
+    fn loaded_ledger_preflight_and_composed_views_reuse_one_materialization() {
+        let root = state(3);
+        assert!(
+            root.loaded_snapshot
+                .with(|s| s.materialized.get().is_none())
+                .unwrap()
+        );
+        let baseline = root.original_snapshot().unwrap();
+        let clone = root.clone(); // Promotion must retain an already-filled cache.
+        let key = EntityKey::new_static("Probe", 7_u64);
+        same(&baseline, &clone.original_snapshot().unwrap());
+        same(&baseline, &root.original_values_for(&key).unwrap());
+        root.set(key.clone(), "name", "pending");
+        same(&baseline, &root.original_values_for(&key).unwrap());
+        root.with_preflight_view(|view| same(&baseline, &view.original_values(&key).unwrap()));
+        let composed = EntityRuntimeState::default();
+        composed.adopt_mutations_from(&root);
+        same(&baseline, &composed.original_values_for(&key).unwrap());
+        root.push_change_set();
+        root.set(key.clone(), "name", "nested");
+        root.pop_change_set();
+        same(&baseline, &root.original_values_for(&key).unwrap());
+        assert_eq!(root.get(&key, "name"), Some(Value::from("pending")));
+        let mut changed = composed.original_values_for(&key).unwrap();
+        changed.insert("name".into(), Value::from("detached"));
+        assert_eq!(baseline.get("name"), Some(&Value::from("original")));
+        assert_eq!(baseline.get("nullable"), Some(&Value::Null));
+        assert!(!baseline.contains_key("missing"));
+        assert!(
+            root.original_values_for(&EntityKey::new_static("Other", 7_u64))
+                .is_none()
+        );
+        assert!(
+            root.original_values_for(&EntityKey::new_static("Probe", 8_u64))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn concurrent_first_reads_share_cache_but_independent_loads_do_not() {
+        let root = state(3);
+        let barrier = std::sync::Barrier::new(12);
+        let snapshots = std::thread::scope(|scope| {
+            let jobs: Vec<_> = (0..12)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        root.clone().original_snapshot().unwrap()
+                    })
+                })
+                .collect();
+            jobs.into_iter()
+                .map(|job| job.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        for snapshot in &snapshots {
+            same(&snapshots[0], snapshot);
+        }
+        let separate = state(3).original_snapshot().unwrap();
+        assert!(!std::ptr::eq(&*snapshots[0], &*separate));
+    }
+
+    #[test]
+    fn new_load_and_commit_boundaries_do_not_reuse_an_old_version_cache() {
+        let mut root = state(3);
+        let old_view = root.clone();
+        let old = root.original_snapshot().unwrap();
+        // Reload on this view installs a new cache; retained views keep theirs.
+        root.set_original_compact_row(
+            "Probe",
+            teaql_core::CompactRow::from_map(BTreeMap::from([
+                ("id".into(), Value::U64(7)),
+                ("version".into(), Value::I64(4)),
+                ("name".into(), Value::from("persisted")),
+            ])),
+        );
+        let new = root.original_snapshot().unwrap();
+        assert!(!std::ptr::eq(&*old, &*new));
+        assert_eq!(new.get("version"), Some(&Value::I64(4)));
+        assert_eq!(
+            old_view.original_snapshot().unwrap().get("version"),
+            Some(&Value::I64(3))
+        );
+        assert!(!new.contains_key("nullable"));
+        let key = EntityKey::new_static("Probe", 7_u64);
+        root.set(key.clone(), "name", "next pending");
+        root.clear_committed();
+        assert!(root.current_change_set().is_empty());
+        same(&new, &root.original_values_for(&key).unwrap());
+        // A separately hydrated post-save entity owns its own immutable version.
+        let next = state(5).original_snapshot().unwrap();
+        assert_eq!(next.get("version"), Some(&Value::I64(5)));
+        assert_eq!(old.get("version"), Some(&Value::I64(3)));
+        let materialized = EntityRuntimeState::default();
+        materialized.set_original_snapshot(old.clone());
+        let mut returned = materialized.original_snapshot().unwrap();
+        returned.clear();
+        same(&old, &materialized.original_snapshot().unwrap());
+        materialized.set_original_snapshot(next.clone());
+        same(&next, &materialized.original_snapshot().unwrap());
     }
 }

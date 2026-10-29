@@ -1188,18 +1188,91 @@ impl UserContext {
         values: &mut crate::EntityValues,
         location: &ObjectLocation,
     ) -> Result<(), RuntimeError> {
+        self.check_and_fix_values_at_collect_changes(entity, values, location)
+            .map(|_| ())
+    }
+
+    pub(crate) fn check_and_fix_values_at_collect_changes(
+        &self,
+        entity: &str,
+        values: &mut crate::EntityValues,
+        location: &ObjectLocation,
+    ) -> Result<crate::EntityValues, RuntimeError> {
         let status = CheckObjectStatus::from_values(values);
+        let dirty_fields = match values.get("_dirty_fields") {
+            Some(Value::List(fields)) => Some(
+                fields
+                    .iter()
+                    .filter_map(|field| match field {
+                        Value::Text(name) => Some(name.clone()),
+                        _ => None,
+                    })
+                    .collect::<BTreeSet<_>>(),
+            ),
+            _ => None,
+        };
         let checker = self
             .checker_registry
             .as_ref()
             .and_then(|registry| registry.checker(entity));
         let mut results = CheckResults::new();
-        if let Some(checker) = checker {
-            checker.check_and_fix(self, values, location, &mut results);
-        }
+        let changes = checker.map_or_else(crate::EntityValues::new, |checker| {
+            checker.check_and_fix_collect_changes(self, values, location, &mut results)
+        });
 
         // Custom checkers get the first chance to supply or fix a value.
-        self.collect_required_property_results(entity, values, status, location, &mut results);
+        self.collect_required_property_results(
+            entity,
+            values,
+            Some(&changes),
+            dirty_fields.as_ref(),
+            status,
+            location,
+            &mut results,
+        );
+        if results.is_empty() {
+            for (field, value) in &changes {
+                values.insert(field.clone(), value.clone());
+            }
+            return Ok(changes);
+        }
+        self.translate_check_results(&mut results);
+        Err(RuntimeError::Check(results))
+    }
+
+    pub(crate) fn prepare_check_values_at(
+        &self,
+        entity: &str,
+        values: &mut crate::EntityValues,
+        location: &ObjectLocation,
+    ) -> crate::checker::PreparedCheck {
+        self.checker_registry
+            .as_ref()
+            .and_then(|registry| registry.checker(entity))
+            .map_or_else(crate::checker::PreparedCheck::empty, |checker| {
+                checker.prepare_check(self, values, location)
+            })
+    }
+
+    pub(crate) fn finish_check_values_at(
+        &self,
+        entity: &str,
+        values: &crate::EntityValues,
+        status: CheckObjectStatus,
+        dirty_fields: Option<&BTreeSet<String>>,
+        location: &ObjectLocation,
+        prepared: crate::checker::PreparedCheck,
+    ) -> Result<(), RuntimeError> {
+        let (fixed, mut results) = prepared.validate(self, location);
+        self.collect_required_property_results(
+            entity,
+            values,
+            Some(&fixed),
+            dirty_fields,
+            status,
+            location,
+            &mut results,
+        );
         if results.is_empty() {
             return Ok(());
         }
@@ -1221,6 +1294,8 @@ impl UserContext {
         self.collect_required_property_results(
             entity,
             values,
+            None,
+            None,
             CheckObjectStatus::Create,
             location,
             &mut results,
@@ -1236,6 +1311,8 @@ impl UserContext {
         &self,
         entity: &str,
         values: &crate::EntityValues,
+        changes: Option<&crate::EntityValues>,
+        dirty_fields: Option<&BTreeSet<String>>,
         status: CheckObjectStatus,
         location: &ObjectLocation,
         results: &mut CheckResults,
@@ -1256,14 +1333,25 @@ impl UserContext {
                 // create caller must never be required to provide it.
                 .filter(|property| !property.nullable && !property.is_version)
             {
-                let missing = !values.contains_key(&property.name);
-                let null = matches!(values.get(&property.name), Some(Value::Null));
+                let value = changes
+                    .and_then(|changes| changes.get(&property.name))
+                    .or_else(|| values.get(&property.name));
+                let missing = value.is_none();
+                let null = matches!(value, Some(Value::Null));
+                let changed = dirty_fields.is_none_or(|fields| fields.contains(&property.name))
+                    || changes.is_some_and(|changes| changes.contains_key(&property.name));
+                let violates_required = (status.is_create() && (missing || null))
+                    || (status.is_update() && null && changed);
+                if !violates_required {
+                    continue;
+                }
+                // Successful checks need neither an error path nor deduplication.
                 let property_location = location.clone().member(&property.name);
                 let already_reported = results.iter().any(|result| {
                     result.rule == crate::CheckRule::Required
                         && result.location == property_location
                 });
-                if ((status.is_create() && missing) || null) && !already_reported {
+                if !already_reported {
                     results.push(CheckResult::required(property_location));
                 }
             }
@@ -1627,5 +1715,102 @@ mod entity_runtime_state_tests {
 
         assert_eq!(first.changed_field_names(&key).len(), 1);
         assert!(second.changed_field_names(&key).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod required_path_regression {
+    use super::*;
+    use crate::{CheckRule, InMemoryMetadataStore};
+    use teaql_core::{DataType, PropertyDescriptor, Record};
+
+    #[test]
+    fn lazy_required_paths_preserve_status_fix_dirty_and_dedup_semantics() {
+        let context = UserContext::new().with_metadata(
+            InMemoryMetadataStore::new().with_entity(
+                EntityDescriptor::new("Probe")
+                    .property(PropertyDescriptor::new("name", DataType::Text).not_null())
+                    .property(
+                        PropertyDescriptor::new("version", DataType::I64)
+                            .version()
+                            .not_null(),
+                    ),
+            ),
+        );
+        let location = ObjectLocation::root().member("items").element(2);
+        let unchanged = BTreeSet::new();
+        let dirty = BTreeSet::from(["name".to_owned()]);
+        let null = crate::EntityValues::from(Record::from([("name".to_owned(), Value::Null)]));
+        let valid =
+            crate::EntityValues::from(Record::from([("name".to_owned(), Value::from("valid"))]));
+        let missing = crate::EntityValues::default();
+        for (values, changes, fields, status, expected) in [
+            (&missing, None, None, CheckObjectStatus::Create, true),
+            (&null, None, None, CheckObjectStatus::Create, true),
+            (&valid, None, None, CheckObjectStatus::Create, false),
+            (
+                &missing,
+                Some(&valid),
+                None,
+                CheckObjectStatus::Create,
+                false,
+            ),
+            (&valid, Some(&null), None, CheckObjectStatus::Create, true),
+            (&missing, None, None, CheckObjectStatus::Update, false),
+            (
+                &null,
+                None,
+                Some(&unchanged),
+                CheckObjectStatus::Update,
+                false,
+            ),
+            (&null, None, Some(&dirty), CheckObjectStatus::Update, true),
+            (&null, None, None, CheckObjectStatus::Update, true),
+            (
+                &null,
+                Some(&valid),
+                Some(&dirty),
+                CheckObjectStatus::Update,
+                false,
+            ),
+            (
+                &valid,
+                Some(&null),
+                Some(&unchanged),
+                CheckObjectStatus::Update,
+                true,
+            ),
+        ] {
+            let mut results = CheckResults::new();
+            context.collect_required_property_results(
+                "Probe",
+                values,
+                changes,
+                fields,
+                status,
+                &location,
+                &mut results,
+            );
+            assert_eq!(results.len(), usize::from(expected));
+            if expected {
+                assert_eq!(results[0].rule, CheckRule::Required);
+                assert_eq!(results[0].location.model_path(), "items[2].name");
+                assert_eq!(results[0].location.instance_path(), "/items/2/name");
+                let before = results.clone();
+                context.collect_required_property_results(
+                    "Probe",
+                    values,
+                    changes,
+                    fields,
+                    status,
+                    &location,
+                    &mut results,
+                );
+                assert_eq!(
+                    results, before,
+                    "existing diagnostics must not be duplicated or rewritten"
+                );
+            }
+        }
     }
 }

@@ -103,7 +103,7 @@ pub use mutation_policy::{
     NoMutationPolicyApprovalProvider,
 };
 pub(crate) use mutation_policy::{
-    current_mutation_governance, graph_policy_plan, ledger_policy_plan, with_mutation_governance,
+    current_mutation_governance, graph_policy_plan, with_mutation_governance,
 };
 pub use registry::{
     EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry, EntityRegistry,
@@ -4508,6 +4508,6 @@ mod tests {
 pub use checker::{
     CHECK_OBJECT_STATUS_FIELD, CheckObjectStatus, CheckResult, CheckResults, CheckRule, Checker,
     CheckerRegistry, InMemoryCheckerRegistry, JsonFieldNamingProfile, LocationSegment,
-    ObjectLocation, TypedChecker, TypedEntityChecker, WireCheckResult, WireLocationSegment,
-    clear_entity_status, mark_entity_status,
+    ObjectLocation, PreparedCheck, TypedChecker, TypedEntityChecker, WireCheckResult,
+    WireLocationSegment, clear_entity_status, mark_entity_status,
 };

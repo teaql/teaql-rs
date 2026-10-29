@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod audit_move_tests;
 mod base;
 mod cache;
 mod context;

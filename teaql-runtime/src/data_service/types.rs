@@ -76,12 +76,12 @@ impl<'a, E> EntityDataService<'a, E> {
         Ok(self)
     }
 
-    pub(crate) fn with_ledger_privacy(
+    pub(crate) fn with_ledger_privacy_from(
         mut self,
         root: &crate::EntityRuntimeState,
+        changes: &crate::EntityChangeSet,
     ) -> Result<Self, crate::RuntimeError> {
         use teaql_data_service::{SqlIntentRedactions, SqlLogContext};
-        let changes = root.current_change_set();
         let mut keys = root.deleted_keys();
         keys.extend(changes.changes().keys().cloned());
         if let Some(dynamic) = changes.dynamic_changes() {

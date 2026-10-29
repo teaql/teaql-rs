@@ -2054,28 +2054,34 @@ where
         mut command: InsertCommand,
         trace_chain: Vec<teaql_core::TraceNode>,
     ) -> Result<u64, DataServiceError<E::Error>> {
-        command.trace_chain = trace_chain.clone();
+        command.trace_chain = trace_chain;
         let affected = self.data_service.insert(&command).await?;
         let mut event = RawAuditEvent::created(command.entity, command.values.into());
-        event.trace_chain = trace_chain;
+        event.trace_chain = command.trace_chain;
         self.emit_event(event).map_err(DataServiceError::Runtime)?;
         Ok(affected)
     }
 
     pub(super) async fn execute_prepared_batch_insert(
         &self,
-        command: teaql_core::BatchInsertCommand,
+        mut command: teaql_core::BatchInsertCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
         if command.batch_values.is_empty() {
             return Ok(0);
         }
         let affected = self.data_service.batch_insert(&command).await?;
 
-        let entity = command.entity.clone();
+        let row_count = command.batch_values.len();
         for (i, values) in command.batch_values.into_iter().enumerate() {
-            let mut event = RawAuditEvent::created(entity.clone(), values.into());
-            if i < command.trace_chains.len() {
-                event.trace_chain = command.trace_chains[i].clone();
+            // Earlier events need their own label; the last event can own it.
+            let entity = if i + 1 == row_count {
+                std::mem::take(&mut command.entity)
+            } else {
+                command.entity.clone()
+            };
+            let mut event = RawAuditEvent::created(entity, values.into());
+            if let Some(trace_chain) = command.trace_chains.get_mut(i) {
+                event.trace_chain = std::mem::take(trace_chain);
             }
             self.emit_event(event).map_err(DataServiceError::Runtime)?;
         }
@@ -2096,23 +2102,29 @@ where
         mut command: UpdateCommand,
         trace_chain: Vec<teaql_core::TraceNode>,
     ) -> Result<u64, DataServiceError<E::Error>> {
-        command.trace_chain = trace_chain.clone();
+        command.trace_chain = trace_chain;
 
-        let mut old_values = command.old_values.clone();
-        let needs_fetch = match &old_values {
+        let needs_fetch = match &command.old_values {
             Some(snapshot) => !command.values.keys().all(|k| snapshot.contains_key(k)),
             None => true,
         };
-        if needs_fetch {
-            old_values = self
-                .fetch_current_event_row(&command.entity, &command.id, trace_chain.clone())?
-                .map(Into::into);
-        }
+        let fetched_old_values = if needs_fetch {
+            self.fetch_current_event_row(&command.entity, &command.id, command.trace_chain.clone())?
+                .map(Into::into)
+        } else {
+            None
+        };
 
         let affected = self.data_service.update(&command).await?;
+        // Keep the provider's command intact until execution succeeds.
+        let old_values = if needs_fetch {
+            fetched_old_values
+        } else {
+            command.old_values
+        };
         let updated_fields = command.values.keys().cloned().collect();
-        let mut values = command.values.clone();
-        values.insert("id".to_owned(), command.id.clone());
+        let mut values = command.values;
+        values.insert("id".to_owned(), command.id);
         if let Some(version) = command.expected_version {
             values.insert("version".to_owned(), Value::I64(version + 1));
         }
@@ -2127,43 +2139,57 @@ where
             new_values.into(),
             updated_fields,
         );
-        event.trace_chain = trace_chain;
+        event.trace_chain = command.trace_chain;
         self.emit_event(event).map_err(DataServiceError::Runtime)?;
         Ok(affected)
     }
 
     pub(super) async fn execute_prepared_batch_update(
         &self,
-        command: teaql_core::BatchUpdateCommand,
+        mut command: teaql_core::BatchUpdateCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
         if command.batch_values.is_empty() {
             return Ok(0);
         }
         let affected = self.data_service.batch_update(&command).await?;
 
-        let entity = command.entity.clone();
+        let row_count = command.batch_values.len();
         for (i, values) in command.batch_values.into_iter().enumerate() {
-            let mut full_values = values.clone();
-            full_values.insert("id".to_owned(), command.batch_ids[i].clone());
+            // Earlier events need their own label; the last event can own it.
+            let entity = if i + 1 == row_count {
+                std::mem::take(&mut command.entity)
+            } else {
+                command.entity.clone()
+            };
+            let mut full_values = values;
+            full_values.insert(
+                "id".to_owned(),
+                std::mem::replace(&mut command.batch_ids[i], Value::Null),
+            );
             if let Some(Some(version)) = command.batch_expected_versions.get(i) {
                 full_values.insert("version".to_owned(), teaql_core::Value::I64(*version + 1));
             }
 
-            let old_values = command.batch_old_values.get(i).cloned().unwrap_or(None);
+            let old_values = command.batch_old_values.get_mut(i).and_then(Option::take);
             let mut new_values = old_values.clone().unwrap_or_default();
             for (field, value) in &full_values {
                 new_values.insert(field.clone(), value.clone());
             }
 
+            let updated_fields = if i + 1 == row_count {
+                std::mem::take(&mut command.update_fields)
+            } else {
+                command.update_fields.clone()
+            };
             let mut event = RawAuditEvent::updated_with_old_values(
-                entity.clone(),
+                entity,
                 full_values.into(),
                 old_values.map(Into::into),
                 new_values.into(),
-                command.update_fields.clone(),
+                updated_fields,
             );
-            if i < command.trace_chains.len() {
-                event.trace_chain = command.trace_chains[i].clone();
+            if let Some(trace_chain) = command.trace_chains.get_mut(i) {
+                event.trace_chain = std::mem::take(trace_chain);
             }
             self.emit_event(event).map_err(DataServiceError::Runtime)?;
         }

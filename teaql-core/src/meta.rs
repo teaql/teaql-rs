@@ -125,8 +125,18 @@ impl RelationDescriptor {
     }
 }
 
+/// Shared model metadata. Cloning this handle never clones field/relationship data.
+/// Builders and mutable field access detach shared data on the first actual mutation,
+/// so context-specific customizations cannot change a generated type's cached schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntityDescriptor {
+    shared: std::sync::Arc<EntityDescriptorData>,
+}
+
+/// Immutable descriptor contents shared by generated entities and query clones.
+/// Mutating a descriptor handle detaches its contents through copy-on-write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntityDescriptorData {
     pub name: String,
     pub table_name: String,
     pub data_service: Option<String>,
@@ -138,18 +148,34 @@ pub struct EntityDescriptor {
     pub audit_value_max_len: Option<usize>,
 }
 
+impl std::ops::Deref for EntityDescriptor {
+    type Target = EntityDescriptorData;
+
+    fn deref(&self) -> &Self::Target {
+        &self.shared
+    }
+}
+
+impl std::ops::DerefMut for EntityDescriptor {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        std::sync::Arc::make_mut(&mut self.shared)
+    }
+}
+
 impl EntityDescriptor {
     pub fn new(name: impl Into<String>) -> Self {
         let name = name.into();
         Self {
-            table_name: default_table_name(&name),
-            name,
-            data_service: None,
-            properties: Vec::new(),
-            relations: Vec::new(),
-            audit_mask_fields: Vec::new(),
-            audit_mask_fields_declared: false,
-            audit_value_max_len: None,
+            shared: std::sync::Arc::new(EntityDescriptorData {
+                table_name: default_table_name(&name),
+                name,
+                data_service: None,
+                properties: Vec::new(),
+                relations: Vec::new(),
+                audit_mask_fields: Vec::new(),
+                audit_mask_fields_declared: false,
+                audit_value_max_len: None,
+            }),
         }
     }
 

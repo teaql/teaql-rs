@@ -68,7 +68,7 @@ pub fn expand_teaql_entity_attribute(mut input: ItemStruct) -> proc_macro2::Toke
             }
 
             pub fn entity_key(&self) -> ::teaql_runtime::EntityKey {
-                ::teaql_runtime::EntityKey::new(#entity_name, self.#id_field)
+                ::teaql_runtime::EntityKey::new_static(#entity_name, self.#id_field)
             }
 
             pub fn mark_for_deletion(&mut self) -> &mut Self {
@@ -626,24 +626,24 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             (Some(state_ident), Some(id_ident)) => (
                 quote! {
                     fn dirty_fields(&self) -> Option<std::collections::BTreeSet<String>> {
-                        let key = teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
+                        let key = teaql_runtime::EntityKey::new_static(#entity_name, self.#id_ident);
                         let fields = self.#state_ident.changed_field_names(&key);
                         (!fields.is_empty()).then_some(fields)
                     }
                 },
                 quote! {
                     fn is_marked_as_delete(&self) -> bool {
-                        let key = teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
+                        let key = teaql_runtime::EntityKey::new_static(#entity_name, self.#id_ident);
                         self.#state_ident.is_marked_as_delete(&key)
                     }
 
                     fn is_new(&self) -> bool {
-                        let key = teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
+                        let key = teaql_runtime::EntityKey::new_static(#entity_name, self.#id_ident);
                         self.#state_ident.is_new(&key)
                     }
 
                     fn mark_as_new(&mut self) {
-                        let key = teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
+                        let key = teaql_runtime::EntityKey::new_static(#entity_name, self.#id_ident);
                         self.#state_ident.mark_as_new(key)
                     }
                 },
@@ -673,12 +673,12 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         {
             quote! {
                 fn get_comment(&self) -> Option<String> {
-                    let key = ::teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
+                    let key = ::teaql_runtime::EntityKey::new_static(#entity_name, self.#id_ident);
                     self.#state_ident.get_entity_comment(&key)
                 }
 
                 fn set_comment(&mut self, comment: String) {
-                    let key = ::teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
+                    let key = ::teaql_runtime::EntityKey::new_static(#entity_name, self.#id_ident);
                     self.#state_ident.set_entity_comment(key, comment);
                 }
 
@@ -767,12 +767,33 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 fields: ::std::collections::BTreeSet<String>,
                 values: &::teaql_core::MutationValues,
             ) {
-                let key = ::teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
+                self.set_checker_dirty_fields_borrowed(&fields, values);
+            }
+
+            fn set_checker_dirty_fields_borrowed(
+                &mut self,
+                fields: &::std::collections::BTreeSet<String>,
+                values: &::std::collections::BTreeMap<String, ::teaql_core::Value>,
+            ) {
+                let key = ::teaql_runtime::EntityKey::new_static(#entity_name, self.#id_ident);
                 for field in fields {
-                    if let Some(value) = values.get(&field) {
-                        self.#state_ident.set(key.clone(), field, value.clone());
+                    if let Some(value) = values.get(field) {
+                        self.#state_ident.set(key.clone(), field.clone(), value.clone());
                     }
                 }
+            }
+
+
+            fn begin_checker_fix(&self) -> bool {
+                self.#state_ident.push_change_set();
+                true
+            }
+
+            fn take_checker_fix_changes(&self) -> ::teaql_core::MutationValues {
+                let key = ::teaql_runtime::EntityKey::new_static(#entity_name, self.#id_ident);
+                self.#state_ident.pop_change_set()
+                    .and_then(|changes| changes.changes().get(&key).cloned())
+                    .unwrap_or_default()
             }
         },
         _ => Default::default(),
@@ -788,7 +809,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                     if <Self as ::teaql_core::TeaqlEntity>::field_layout().ok().flatten().is_none_or(|layout| !::std::sync::Arc::ptr_eq(state.layout(), &layout)) {
                         return Err(::teaql_core::dynamic_fields::DynamicFieldError { code: "DYNAMIC_FIELD_LAYOUT_MISMATCH", field: code.to_owned() });
                     }
-                    if self.#state_ident.update_dynamic_field(::teaql_runtime::EntityKey::new(#entity_name, self.#id_ident), code, value)? {
+                    if self.#state_ident.update_dynamic_field(::teaql_runtime::EntityKey::new_static(#entity_name, self.#id_ident), code, value)? {
                         self.__load_state = ::teaql_core::eval::LoadState::Indexed(::teaql_core::LoadedSnapshot::with_dynamic_fields(
                             &state, self.#state_ident.loaded_dynamic_fields().expect("validated dynamic definitions")
                         ).expect("validated dynamic owner and layout"));
@@ -802,7 +823,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                     if <Self as ::teaql_core::TeaqlEntity>::field_layout().ok().flatten().is_none_or(|layout| !::std::sync::Arc::ptr_eq(state.layout(), &layout)) {
                         return Err(::teaql_core::dynamic_fields::DynamicFieldError { code: "DYNAMIC_FIELD_LAYOUT_MISMATCH", field: code.to_owned() });
                     }
-                    if self.#state_ident.delete_dynamic_field(::teaql_runtime::EntityKey::new(#entity_name, self.#id_ident), code)? {
+                    if self.#state_ident.delete_dynamic_field(::teaql_runtime::EntityKey::new_static(#entity_name, self.#id_ident), code)? {
                         self.__load_state = ::teaql_core::eval::LoadState::Indexed(::teaql_core::LoadedSnapshot::with_dynamic_fields(
                             &state, self.#state_ident.loaded_dynamic_fields().expect("validated dynamic definitions")
                         ).expect("validated dynamic owner and layout"));
@@ -917,18 +938,22 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             #field_layout_impl
 
             fn entity_descriptor() -> ::teaql_core::EntityDescriptor {
-                #validate_layout
-                let mut descriptor = ::teaql_core::EntityDescriptor::new(#entity_name)
-                    .table_name(#table_name);
+                // One cache per concrete generated entity type, never keyed just by name.
+                static DESCRIPTOR: ::std::sync::OnceLock<::teaql_core::EntityDescriptor> = ::std::sync::OnceLock::new();
+                DESCRIPTOR.get_or_init(|| {
+                    #validate_layout
+                    let mut descriptor = ::teaql_core::EntityDescriptor::new(#entity_name)
+                        .table_name(#table_name);
 
-                #data_service_token
-                #audit_mask_fields_token
-                #audit_value_max_len_token
+                    #data_service_token
+                    #audit_mask_fields_token
+                    #audit_value_max_len_token
 
-                #(#property_tokens)*
-                #(#relation_tokens)*
-                #(#container_relation_tokens)*
-                descriptor
+                    #(#property_tokens)*
+                    #(#relation_tokens)*
+                    #(#container_relation_tokens)*
+                    descriptor
+                }).clone()
             }
         }
 

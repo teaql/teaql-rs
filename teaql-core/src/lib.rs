@@ -31,7 +31,7 @@ pub use entity_graph::{EntityGraph, EntityGraphBuilder, EntityGraphNode, EntityG
 pub use expr::{BinaryOp, Expr, ExprFunction};
 pub use list::SmartList;
 pub use load_state::{FieldLayout, LoadedSnapshot};
-pub use meta::{EntityDescriptor, PropertyDescriptor, RelationDescriptor};
+pub use meta::{EntityDescriptor, EntityDescriptorData, PropertyDescriptor, RelationDescriptor};
 pub use mutation::{
     BatchInsertCommand, BatchUpdateCommand, DeleteCommand, EntitySnapshot, GeneratedValues,
     InsertCommand, MutationKind, MutationValues, RecoverCommand, UpdateCommand,
@@ -96,6 +96,71 @@ mod tests {
         unsigned: u32,
         #[teaql(numeric_precision = 19, numeric_scale = 7)]
         amount: Decimal,
+    }
+
+    #[test]
+    fn generated_metadata_and_query_clones_share_immutable_contents() {
+        let descriptor = OrderRow::entity_descriptor();
+        let second = OrderRow::entity_descriptor();
+        assert!(std::ptr::eq(&*descriptor, &*second));
+        assert_eq!(descriptor.properties.as_ptr(), second.properties.as_ptr());
+        let query = Expr::in_subquery("id", descriptor.clone(), SelectQuery::new("Order"), "id");
+        let cloned = query.clone();
+        let (
+            Expr::SubQuery {
+                entity: original, ..
+            },
+            Expr::SubQuery { entity: copy, .. },
+        ) = (query, cloned)
+        else {
+            panic!("subquery");
+        };
+        assert!(std::ptr::eq(&*original, &*copy));
+        assert!(std::ptr::eq(&*descriptor, &*copy));
+    }
+
+    #[test]
+    fn metadata_customization_detaches_without_changing_type_cache() {
+        let original = OrderRow::entity_descriptor();
+        let mut customized = original.clone().table_name("tenant_orders");
+        customized.properties[0].column_name = "tenant_id".into();
+        assert!(!std::ptr::eq(&*original, &*customized));
+        assert_eq!(original.table_name, "orders");
+        assert_eq!(original.properties[0].column_name, "id");
+        assert_eq!(OrderRow::entity_descriptor(), original);
+        assert!(std::ptr::eq(&*OrderRow::entity_descriptor(), &*original));
+    }
+
+    #[test]
+    fn descriptor_cache_is_per_rust_type_and_thread_safe() {
+        #[derive(TeaqlEntity)]
+        #[teaql(entity = "Order", table = "other_orders")]
+        struct OtherOrder {
+            #[teaql(id)]
+            id: u64,
+        }
+        let descriptors = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..8)
+                .map(|_| scope.spawn(OtherOrder::entity_descriptor))
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        for descriptor in &descriptors {
+            assert!(std::ptr::eq(&*descriptors[0], &**descriptor));
+        }
+        // Same model name does not merge different compiled model definitions.
+        assert_eq!(descriptors[0].name, OrderRow::entity_descriptor().name);
+        assert_ne!(
+            descriptors[0].table_name,
+            OrderRow::entity_descriptor().table_name
+        );
+        assert!(!std::ptr::eq(
+            &*descriptors[0],
+            &*OrderRow::entity_descriptor()
+        ));
     }
 
     #[test]

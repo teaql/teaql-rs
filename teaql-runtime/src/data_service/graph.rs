@@ -17,6 +17,39 @@ use crate::{
 
 use super::{EntityDataService, helpers::*};
 
+/// Keep fields structured so the same owned names can reach the SQL command.
+/// Ordering preserves the legacy comma-joined signature without allocating it.
+#[derive(Debug, PartialEq, Eq)]
+struct UpdateBatchKey {
+    entity: String,
+    fields: Vec<String>,
+}
+
+fn joined_field_bytes(fields: &[String]) -> impl Iterator<Item = u8> + '_ {
+    fields.iter().enumerate().flat_map(|(index, field)| {
+        std::iter::once(b',').take(usize::from(index != 0)).chain(field.bytes())
+    })
+}
+
+impl Ord for UpdateBatchKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.entity.cmp(&other.entity)
+            .then_with(|| joined_field_bytes(&self.fields).cmp(joined_field_bytes(&other.fields)))
+            // Distinct field lists must not collide even if a name has a comma.
+            .then_with(|| self.fields.cmp(&other.fields))
+    }
+}
+
+impl PartialOrd for UpdateBatchKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[cfg(test)]
+#[path = "batch_field_key_tests.rs"]
+mod batch_field_key_tests;
+
 #[derive(Debug, Default)]
 pub(crate) struct LedgerExecutionOutcome {
     pub(crate) generated_ids: BTreeMap<crate::EntityKey, Value>,
@@ -1546,6 +1579,17 @@ where
         root: crate::EntityRuntimeState,
         locations: &std::collections::BTreeMap<crate::EntityKey, crate::ObjectLocation>,
     ) -> Result<LedgerExecutionOutcome, DataServiceError<E::Error>> {
+        let changes = root.current_change_set();
+        self.execute_ledger_plan_internal_with_changes(root, locations, &changes)
+            .await
+    }
+
+    pub(crate) async fn execute_ledger_plan_internal_with_changes(
+        &self,
+        root: crate::EntityRuntimeState,
+        locations: &std::collections::BTreeMap<crate::EntityKey, crate::ObjectLocation>,
+        changes: &crate::EntityChangeSet,
+    ) -> Result<LedgerExecutionOutcome, DataServiceError<E::Error>> {
         if root.has_pending_dynamic_mutations() {
             self.data_service
                 .metadata
@@ -1558,15 +1602,16 @@ where
             .map_err(DataServiceError::Runtime)?;
         let scoped = self
             .with_mutation_intent(intent)
-            .with_ledger_privacy(&root)
+            .with_ledger_privacy_from(&root, changes)
             .map_err(DataServiceError::Runtime)?;
-        Box::pin(scoped.execute_ledger_plan_scoped(root, locations)).await
+        Box::pin(scoped.execute_ledger_plan_scoped(root, locations, changes)).await
     }
 
     async fn execute_ledger_plan_scoped(
         &self,
         root: crate::EntityRuntimeState,
         locations: &std::collections::BTreeMap<crate::EntityKey, crate::ObjectLocation>,
+        change_set: &crate::EntityChangeSet,
     ) -> Result<LedgerExecutionOutcome, DataServiceError<E::Error>> {
         if let Some(error) = root.first_composition_error() {
             return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
@@ -1588,7 +1633,6 @@ where
 
         let deleted_keys = root.deleted_keys();
         let new_keys = root.new_keys();
-        let change_set = root.current_change_set();
 
         // Deletion of an existing versioned entity must carry the version
         // obtained by loading that entity. A newly created entity deleted
@@ -1640,10 +1684,7 @@ where
         // Plan updates and inserts before any mutation. A sparse ledger CREATE
         // must be validated against the exact payload sent to SQL, not merely
         // against the typed object's default-filled in-memory snapshot.
-        let mut update_batches: std::collections::BTreeMap<
-            (String, String),
-            Vec<crate::EntityKey>,
-        > = std::collections::BTreeMap::new();
+        let mut update_batches: BTreeMap<UpdateBatchKey, Vec<crate::EntityKey>> = BTreeMap::new();
         let mut insert_batches: std::collections::BTreeMap<String, Vec<crate::EntityKey>> =
             std::collections::BTreeMap::new();
 
@@ -1695,11 +1736,12 @@ where
                         .push(key.clone());
                 }
                 false => {
-                    let mut fields: Vec<String> = record.keys().cloned().collect();
-                    fields.sort();
-                    let signature = fields.join(",");
+                    // MutationValues iterates a BTreeMap: field names are already sorted.
+                    // The command may append update_time and version after grouping.
+                    let mut fields = Vec::with_capacity(record.len() + 2);
+                    fields.extend(record.keys().cloned());
                     update_batches
-                        .entry((key.entity.to_string(), signature))
+                        .entry(UpdateBatchKey { entity: key.entity.to_string(), fields })
                         .or_default()
                         .push(key.clone());
                 }
@@ -1864,24 +1906,19 @@ where
             self.execute_prepared_batch_insert(cmd).await?;
         }
 
-        let mut update_order: Vec<(String, String)> = update_batches.keys().cloned().collect();
-        update_order.sort();
-
-        for signature in update_order {
-            let keys = update_batches.get(&signature).unwrap();
+        for (signature, keys) in update_batches {
             let descriptor = self
                 .data_service
                 .metadata
                 .context
-                .require_entity(&signature.0)
+                .require_entity(&signature.entity)
                 .map_err(DataServiceError::Runtime)?;
-            let mut update_fields: Vec<String> =
-                signature.1.split(',').map(|s| s.to_string()).collect();
+            let mut update_fields = signature.fields;
             if descriptor
                 .properties
                 .iter()
                 .any(|p| p.name == "update_time")
-                && !update_fields.contains(&"update_time".to_owned())
+                && !update_fields.iter().any(|field| field == "update_time")
             {
                 update_fields.push("update_time".to_owned());
             }
@@ -1892,7 +1929,7 @@ where
             }
             let mut cmd = teaql_core::BatchUpdateCommand::new(&descriptor.name, update_fields);
             let mut traces = Vec::new();
-            for key in keys {
+            for key in &keys {
                 let record = checked_changes.get(key).unwrap();
                 let mut db_record = crate::EntityValues::new();
                 db_record.insert("id".to_owned(), key.id.clone());

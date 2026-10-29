@@ -506,12 +506,12 @@ pub(crate) fn graph_policy_plan(
     })
 }
 
-pub(crate) fn ledger_policy_plan(
+pub(crate) fn ledger_policy_plan_from(
     context: &UserContext,
     node: &GraphNode,
     root: &EntityRuntimeState,
+    changes: &crate::EntityChangeSet,
 ) -> MutationPlan {
-    let changes = root.current_change_set();
     let deleted = root.deleted_keys();
     let new = root.new_keys();
     let mut keys = changes.changes().keys().cloned().collect::<BTreeSet<_>>();

@@ -27,6 +27,9 @@ impl EntityJsonTraversal {
 pub trait TeaqlEntity {
     const ENTITY_NAME: &'static str;
 
+    /// Return a descriptor handle. Derive-generated implementations initialize one
+    /// descriptor per concrete type and return allocation-free shared clones.
+    /// Handwritten implementations may construct context-independent metadata here.
     fn entity_descriptor() -> EntityDescriptor;
 
     /// Fixed metadata supplied by generation; hand-written adapters may remain unindexed.
@@ -187,6 +190,30 @@ pub trait Entity: TeaqlEntity + Sized {
     /// typed Checker view. This metadata is used only during validation and
     /// must not widen the eventual database update.
     fn set_checker_dirty_fields(&mut self, _fields: BTreeSet<String>, _values: &MutationValues) {}
+
+    /// Borrowed path used by generated entities to avoid copying the full
+    /// checker input. Existing handwritten implementations keep the owned hook.
+    #[doc(hidden)]
+    fn set_checker_dirty_fields_borrowed(
+        &mut self,
+        fields: &BTreeSet<String>,
+        values: &BTreeMap<String, Value>,
+    ) {
+        self.set_checker_dirty_fields(fields.clone(), &MutationValues::from(values.clone()));
+    }
+
+    /// Stage generated Checker/Fix setters in an isolated ledger frame.
+    /// Non-ledger entities retain the legacy typed-checker adapter path.
+    #[doc(hidden)]
+    fn begin_checker_fix(&self) -> bool {
+        false
+    }
+
+    /// Consume only assignments made by Checker/Fix, leaving caller mutations intact.
+    #[doc(hidden)]
+    fn take_checker_fix_changes(&self) -> MutationValues {
+        MutationValues::default()
+    }
 
     /// Returns the set of field names that have been modified since the entity was loaded.
     /// Returns `None` if dirty tracking is not available (backwards compatible default).

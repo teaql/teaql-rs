@@ -9,7 +9,8 @@ use std::sync::Arc;
 use teaql_core::{Entity, MutationValues, Value};
 
 use crate::{
-    DataServiceError, GraphNode, GraphOperation, ObjectLocation, RuntimeError, UserContext,
+    DataServiceError, EntityChangeSet, GraphNode, GraphOperation, ObjectLocation, RuntimeError,
+    UserContext,
 };
 
 tokio::task_local! {
@@ -43,11 +44,23 @@ pub(crate) trait DynGraphSaver: Send + Sync {
         node: GraphNode,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>>;
 
+    #[cfg(test)]
     fn save_ledger_dyn<'a>(
         &'a self,
         context: &'a UserContext,
         node: GraphNode,
         root: crate::EntityRuntimeState,
+    ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>> {
+        let changes = root.current_change_set();
+        self.save_ledger_dyn_with_changes(context, node, root, changes)
+    }
+
+    fn save_ledger_dyn_with_changes<'a>(
+        &'a self,
+        context: &'a UserContext,
+        node: GraphNode,
+        root: crate::EntityRuntimeState,
+        changes: EntityChangeSet,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>>;
 }
 
@@ -130,17 +143,18 @@ where
         })
     }
 
-    fn save_ledger_dyn<'a>(
+    fn save_ledger_dyn_with_changes<'a>(
         &'a self,
         context: &'a UserContext,
         mut node: GraphNode,
         root: crate::EntityRuntimeState,
+        changes: EntityChangeSet,
     ) -> Pin<Box<dyn Future<Output = Result<GraphNode, RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
             if root.has_pending_dynamic_mutations() {
                 context.dynamic_graph_provider()?;
             }
-            capture_ledger_trace_scopes(&root, &node)?;
+            capture_ledger_trace_scopes_from(&root, &node, &changes)?;
             let entity = node.entity.clone();
             let executor = context
                 .require_resource::<E>()
@@ -156,7 +170,8 @@ where
                 .unwrap_or(Value::I64(0));
             let root_key = crate::EntityKey::new(entity.clone(), current_id);
             reject_cancelled_new_root(&root, &root_key)?;
-            let policy_plan = crate::ledger_policy_plan(context, &node, &root);
+            let policy_plan =
+                crate::mutation_policy::ledger_policy_plan_from(context, &node, &root, &changes);
             let governance = context.review_mutation_plan(&policy_plan)?;
             let tx = teaql_data_service::TransactionExecutor::begin(executor)
                 .await
@@ -165,7 +180,7 @@ where
                 context,
                 crate::with_mutation_governance(governance, async {
                     let eds = crate::EntityDataService::for_executor(context, &entity, &tx)
-                        .with_ledger_privacy(&root)
+                        .with_ledger_privacy_from(&root, &changes)
                         .map_err(DataServiceError::Runtime)?
                         .with_mutation_intent(
                             teaql_core::MutationIntent::from_optional(node.comment.as_deref())
@@ -174,7 +189,11 @@ where
                         );
                     let locations = ledger_object_locations(&node);
                     let mut generated_ids = eds
-                        .execute_ledger_plan_internal(root.clone(), &locations)
+                        .execute_ledger_plan_internal_with_changes(
+                            root.clone(),
+                            &locations,
+                            &changes,
+                        )
                         .await?;
                     if let Some(readbacks) = &mut generated_ids.dynamic_readbacks {
                         node.dynamic_fields = readbacks
@@ -282,18 +301,17 @@ fn can_preserve_loaded_relations(
     root: &crate::EntityRuntimeState,
     root_key: &crate::EntityKey,
     descriptor: &teaql_core::EntityDescriptor,
+    changes: &EntityChangeSet,
 ) -> bool {
     if !root.new_keys().is_empty() || !root.deleted_keys().is_empty() {
         return false;
     }
-    if root
-        .current_change_set()
+    if changes
         .dynamic_changes()
         .is_some_and(|changes| changes.keys().any(|key| key != root_key))
     {
         return false;
     }
-    let changes = root.current_change_set();
     changes.changes().iter().all(|(key, fields)| {
         key == root_key
             && fields.keys().all(|field| {
@@ -325,13 +343,28 @@ mod save_relation_state_tests {
         let order = EntityKey::new("Order", Value::I64(1));
         let child = EntityKey::new("OrderLine", Value::I64(2));
         root.set(order.clone(), "total_amount", Value::I64(100));
-        assert!(can_preserve_loaded_relations(&root, &order, &descriptor()));
+        assert!(can_preserve_loaded_relations(
+            &root,
+            &order,
+            &descriptor(),
+            &root.current_change_set(),
+        ));
         root.set(child, "sku", Value::Text("CHANGED".into()));
-        assert!(!can_preserve_loaded_relations(&root, &order, &descriptor()));
+        assert!(!can_preserve_loaded_relations(
+            &root,
+            &order,
+            &descriptor(),
+            &root.current_change_set(),
+        ));
 
         let root = EntityRuntimeState::default();
         root.set(order.clone(), "customer_id", Value::I64(3));
-        assert!(!can_preserve_loaded_relations(&root, &order, &descriptor()));
+        assert!(!can_preserve_loaded_relations(
+            &root,
+            &order,
+            &descriptor(),
+            &root.current_change_set(),
+        ));
     }
 }
 
@@ -1011,9 +1044,19 @@ fn merge_relation_mutations_into_root(
 
 /// Build real graph ancestry once before policy/execution, not on UserContext.
 /// Every pending item receives its own immutable token, including deletions.
+#[cfg(test)]
 fn capture_ledger_trace_scopes(
     root: &crate::EntityRuntimeState,
     node: &GraphNode,
+) -> Result<(), RuntimeError> {
+    let changes = root.current_change_set();
+    capture_ledger_trace_scopes_from(root, node, &changes)
+}
+
+fn capture_ledger_trace_scopes_from(
+    root: &crate::EntityRuntimeState,
+    node: &GraphNode,
+    changes: &EntityChangeSet,
 ) -> Result<(), RuntimeError> {
     let intent = teaql_core::MutationIntent::from_optional(node.comment.as_deref())?;
     fn visit(
@@ -1049,15 +1092,10 @@ fn capture_ledger_trace_scopes(
 
     // Explicitly composed standalone pending items can be outside a loaded
     // relation projection. They still belong to this root request, not Context.
-    let mut pending = root
-        .current_change_set()
-        .changes()
-        .keys()
-        .cloned()
-        .collect::<BTreeSet<_>>();
+    let mut pending = changes.changes().keys().cloned().collect::<BTreeSet<_>>();
     pending.extend(root.deleted_keys());
     pending.extend(root.new_keys());
-    if let Some(dynamic) = root.current_change_set().dynamic_changes() {
+    if let Some(dynamic) = changes.dynamic_changes() {
         pending.extend(dynamic.keys().cloned());
     }
     for key in pending {
@@ -1375,7 +1413,14 @@ mod trace_scope_capture_tests {
             .value("id", 100_u64)
             .comment("submit order");
         let mut visited = BTreeSet::from([EntityKey::new("Order", 100_u64)]);
-        hydrate_ledger_relations(&context, &root, &mut graph, &mut visited).unwrap();
+        hydrate_ledger_relations(
+            &context,
+            &root,
+            &root.current_change_set(),
+            &mut graph,
+            &mut visited,
+        )
+        .unwrap();
         let deleted = &graph.relations["items"][0];
         assert_eq!(deleted.operation, GraphOperation::Remove);
         assert_eq!(deleted.comment.as_deref(), Some("remove unavailable item"));
@@ -1447,7 +1492,14 @@ mod trace_scope_capture_tests {
             .value("id", 100_u64)
             .comment("submit order");
         let mut visited = BTreeSet::from([EntityKey::new("Order", 100_u64)]);
-        hydrate_ledger_relations(&context, &root, &mut graph, &mut visited).unwrap();
+        hydrate_ledger_relations(
+            &context,
+            &root,
+            &root.current_change_set(),
+            &mut graph,
+            &mut visited,
+        )
+        .unwrap();
         let payments = &graph.relations["payments"];
         assert_eq!(
             payments.len(),
@@ -1480,13 +1532,25 @@ mod trace_scope_capture_tests {
     }
 }
 
+#[cfg(test)]
 fn hydrate_ledger_relations(
     context: &UserContext,
     root: &crate::EntityRuntimeState,
+    _changes: &EntityChangeSet,
+    node: &mut GraphNode,
+    visited: &mut BTreeSet<crate::EntityKey>,
+) -> Result<(), RuntimeError> {
+    root.with_preflight_view(|view| hydrate_ledger_relations_borrowed(context, view, node, visited))
+}
+
+fn hydrate_ledger_relations_borrowed(
+    context: &UserContext,
+    view: &crate::entity_runtime::LedgerPreflightView<'_>,
     node: &mut GraphNode,
     visited: &mut BTreeSet<crate::EntityKey>,
 ) -> Result<(), RuntimeError> {
     let descriptor = context.require_entity(&node.entity)?;
+    let pending = view.pending_keys();
     for relation in &descriptor.relations {
         let Some(local_value) = node.values.get(&relation.local_key).cloned() else {
             continue;
@@ -1503,23 +1567,16 @@ fn hydrate_ledger_relations(
             })
             .collect::<BTreeSet<_>>();
         let mut discovered = Vec::new();
-        let changes = root.current_change_set();
-        let mut pending = changes.changes().keys().cloned().collect::<BTreeSet<_>>();
-        if let Some(dynamic) = changes.dynamic_changes() {
-            pending.extend(dynamic.keys().cloned());
-        }
-        pending.extend(root.deleted_keys());
-        pending.extend(root.new_keys());
         for key in &pending {
             if key.entity.as_ref() != relation.target_entity || existing_keys.contains(key) {
                 continue;
             }
-            let original_values = root.original_values_for(key);
+            let original_values = view.original_values(key);
             let mut values: crate::EntityValues = original_values
                 .clone()
                 .map(|values| BTreeMap::from(values).into())
                 .unwrap_or_default();
-            if let Some(changes) = changes.changes().get(key) {
+            if let Some(changes) = view.changes.changes().get(key) {
                 values.extend(changes.clone());
             }
             let foreign_value = if relation.foreign_key == "id" {
@@ -1544,9 +1601,9 @@ fn hydrate_ledger_relations(
             values
                 .entry("id".to_owned())
                 .or_insert_with(|| key.id.clone());
-            let operation = if root.deleted_keys().contains(key) {
+            let operation = if view.is_deleted(key) {
                 GraphOperation::Remove
-            } else if root.new_keys().contains(key) || root.get_original_version(key).is_none() {
+            } else if view.is_new(key) || view.original_version(key).is_none() {
                 GraphOperation::Create
             } else {
                 GraphOperation::Upsert
@@ -1554,15 +1611,133 @@ fn hydrate_ledger_relations(
             let mut child = GraphNode::new(key.entity.to_string());
             child.values = values;
             child.operation = operation;
-            child.comment = root.get_entity_comment(key);
+            child.comment = view.comment(key);
             child.original_values = original_values;
-            child.dirty_fields = Some(root.changed_field_names(key));
+            child.dirty_fields = Some(view.dirty_fields(key));
             if operation != GraphOperation::Remove {
-                hydrate_ledger_relations(context, root, &mut child, visited)?;
+                hydrate_ledger_relations_borrowed(context, view, &mut child, visited)?;
             }
             discovered.push(child);
         }
         existing.extend(discovered);
+    }
+    Ok(())
+}
+
+/// Undo only Fix assignments on validation failure, preserving caller intent.
+struct FixStage<'a> {
+    root: Option<&'a crate::EntityRuntimeState>,
+    undo: Vec<(crate::EntityKey, String, Option<Value>)>,
+    committed: bool,
+}
+impl<'a> FixStage<'a> {
+    fn new(root: Option<&'a crate::EntityRuntimeState>) -> Self {
+        Self {
+            root,
+            undo: Vec::new(),
+            committed: false,
+        }
+    }
+    fn apply(&mut self, key: crate::EntityKey, changes: &crate::EntityValues) {
+        if let Some(root) = self.root {
+            for (field, value) in changes {
+                let old =
+                    root.replace_current_field(key.clone(), field.clone(), Some(value.clone()));
+                self.undo.push((key.clone(), field.clone(), old));
+            }
+        }
+    }
+}
+impl Drop for FixStage<'_> {
+    fn drop(&mut self) {
+        if !self.committed
+            && let Some(root) = self.root
+        {
+            for (key, field, old) in self.undo.drain(..).rev() {
+                root.replace_current_field(key, field, old);
+            }
+        }
+    }
+}
+
+fn operation_status(node: &GraphNode) -> crate::CheckObjectStatus {
+    match node.operation {
+        GraphOperation::Create => crate::CheckObjectStatus::Create,
+        _ => crate::CheckObjectStatus::Update,
+    }
+}
+
+fn fix_graph(
+    context: &UserContext,
+    node: &mut GraphNode,
+    location: &ObjectLocation,
+    stage: &mut FixStage<'_>,
+    checks: &mut Vec<crate::checker::PreparedCheck>,
+) {
+    if !matches!(
+        node.operation,
+        GraphOperation::Remove | GraphOperation::Reference
+    ) {
+        let status = operation_status(node);
+        crate::mark_entity_status(&mut node.values, status);
+        if let Some(fields) = &node.dirty_fields {
+            node.values.insert(
+                "_dirty_fields".into(),
+                Value::List(fields.iter().cloned().map(Value::Text).collect()),
+            );
+        }
+        let prepared = context.prepare_check_values_at(&node.entity, &mut node.values, location);
+        crate::clear_entity_status(&mut node.values);
+        node.values.remove("_dirty_fields");
+        if let Some(id) = node.values.get("id") {
+            stage.apply(
+                crate::EntityKey::new(node.entity.clone(), id.clone()),
+                &prepared.changes,
+            );
+        }
+        checks.push(prepared);
+    }
+    for (relation, children) in &mut node.relations {
+        for (index, child) in children.iter_mut().enumerate() {
+            fix_graph(
+                context,
+                child,
+                &location.clone().member(relation).element(index),
+                stage,
+                checks,
+            );
+        }
+    }
+}
+
+fn check_graph(
+    context: &UserContext,
+    node: &GraphNode,
+    location: &ObjectLocation,
+    checks: &mut impl Iterator<Item = crate::checker::PreparedCheck>,
+) -> Result<(), RuntimeError> {
+    if !matches!(
+        node.operation,
+        GraphOperation::Remove | GraphOperation::Reference
+    ) {
+        context.finish_check_values_at(
+            &node.entity,
+            &node.values,
+            operation_status(node),
+            node.dirty_fields.as_ref(),
+            location,
+            checks.next().expect("one Check per fixed node"),
+        )?;
+    }
+    for (relation, children) in &node.relations {
+        for (index, child) in children.iter().enumerate() {
+            check_graph(
+                context,
+                child,
+                &location.clone().member(relation).element(index),
+                checks,
+            )?;
+        }
     }
     Ok(())
 }
@@ -1573,93 +1748,109 @@ fn preflight_graph(
     location: &ObjectLocation,
     root: Option<&crate::EntityRuntimeState>,
 ) -> Result<(), RuntimeError> {
-    if !matches!(
-        node.operation,
-        GraphOperation::Remove | GraphOperation::Reference
-    ) {
-        let before = node.values.clone();
-        let status = match node.operation {
-            GraphOperation::Create => crate::CheckObjectStatus::Create,
-            GraphOperation::Upsert => crate::CheckObjectStatus::Update,
-            GraphOperation::Remove | GraphOperation::Reference => unreachable!(),
-        };
-        crate::mark_entity_status(&mut node.values, status);
-        if let Some(fields) = &node.dirty_fields {
-            node.values.insert(
-                "_dirty_fields".to_owned(),
-                Value::List(fields.iter().cloned().map(Value::Text).collect()),
-            );
-        }
-        let result = context.check_and_fix_values_at(&node.entity, &mut node.values, location);
-        crate::clear_entity_status(&mut node.values);
-        node.values.remove("_dirty_fields");
-        result?;
-
-        if let Some(root) = root
-            && let Some(id) = node.values.get("id").cloned()
-        {
-            let key = crate::EntityKey::new(node.entity.clone(), id);
-            for (field, value) in &node.values {
-                if before.get(field) != Some(value) {
-                    root.set(key.clone(), field.clone(), value.clone());
-                }
-            }
-        }
-    }
-
-    for (relation, children) in &mut node.relations {
-        for (index, child) in children.iter_mut().enumerate() {
-            let child_location = location.clone().member(relation).element(index);
-            preflight_graph(context, child, &child_location, root)?;
-        }
-    }
+    let mut stage = FixStage::new(root);
+    let mut checks = Vec::new();
+    fix_graph(context, node, location, &mut stage, &mut checks);
+    check_graph(context, node, location, &mut checks.into_iter())?;
+    stage.committed = true;
     Ok(())
 }
 
-fn preflight_pending_dynamic_entities(
+/// Resolve the operation graph by borrowing the ledger, then release its lock
+/// before calling any user Fix/Check code. No full change-set clone is needed here.
+fn prepare_ledger_graph(
     context: &UserContext,
     root: &crate::EntityRuntimeState,
-    node: &GraphNode,
-) -> Result<(), RuntimeError> {
-    let changes = root.current_change_set();
-    let Some(dynamic) = changes.dynamic_changes() else {
-        return Ok(());
-    };
-    let locations = ledger_object_locations(node);
-    for key in dynamic.keys() {
-        if locations.contains_key(key) || root.deleted_keys().contains(key) {
-            continue;
+    node: &mut GraphNode,
+    root_key: &crate::EntityKey,
+) -> Result<Vec<GraphNode>, RuntimeError> {
+    root.with_preflight_view(|view| {
+        if let Some(fields) = view.changes.changes().get(root_key) {
+            node.values.extend(
+                fields
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.clone())),
+            );
         }
-        let mut pending = GraphNode::new(key.entity.to_string());
-        pending.original_values = root.original_values_for(key);
-        pending.values = pending
-            .original_values
-            .clone()
-            .map(|values| BTreeMap::from(values).into())
-            .unwrap_or_default();
-        if let Some(values) = changes.changes().get(key) {
-            pending.values.extend(values.clone());
+        let mut visited = BTreeSet::from([root_key.clone()]);
+        hydrate_ledger_relations_borrowed(context, view, node, &mut visited)?;
+        let mut pending_nodes = Vec::new();
+        if let Some(dynamic) = view.changes.dynamic_changes() {
+            let locations = ledger_object_locations(node);
+            for key in dynamic.keys() {
+                if locations.contains_key(key) || view.is_deleted(key) {
+                    continue;
+                }
+                let mut pending = GraphNode::new(key.entity.to_string());
+                pending.original_values = view.original_values(key);
+                pending.values = pending
+                    .original_values
+                    .clone()
+                    .map(|values| BTreeMap::from(values).into())
+                    .unwrap_or_default();
+                if let Some(values) = view.changes.changes().get(key) {
+                    pending.values.extend(values.clone());
+                }
+                pending.values.insert("id".into(), key.id.clone());
+                let loaded = pending
+                    .values
+                    .keys()
+                    .filter(|field| !field.starts_with('_'))
+                    .cloned()
+                    .map(Value::Text)
+                    .collect();
+                pending
+                    .values
+                    .insert("_loaded_fields".into(), Value::List(loaded));
+                pending.dirty_fields = Some(view.dirty_fields(key));
+                pending.operation = if view.is_new(key) {
+                    GraphOperation::Create
+                } else {
+                    GraphOperation::Upsert
+                };
+                pending_nodes.push(pending);
+            }
         }
-        pending.values.insert("id".into(), key.id.clone());
-        let loaded = pending
-            .values
-            .keys()
-            .filter(|field| !field.starts_with('_'))
-            .cloned()
-            .map(Value::Text)
-            .collect();
-        pending
-            .values
-            .insert("_loaded_fields".into(), Value::List(loaded));
-        pending.dirty_fields = Some(root.changed_field_names(key));
-        pending.operation = if root.new_keys().contains(key) {
-            GraphOperation::Create
-        } else {
-            GraphOperation::Upsert
-        };
-        preflight_graph(context, &mut pending, &ObjectLocation::root(), Some(root))?;
+        Ok(pending_nodes)
+    })
+}
+
+fn finalize_ledger_preflight(
+    context: &UserContext,
+    root: &crate::EntityRuntimeState,
+    node: &mut GraphNode,
+    root_key: &crate::EntityKey,
+) -> Result<EntityChangeSet, RuntimeError> {
+    let mut pending = prepare_ledger_graph(context, root, node, root_key)?;
+    let mut stage = FixStage::new(Some(root));
+    let mut checks = Vec::new();
+    fix_graph(
+        context,
+        node,
+        &ObjectLocation::root(),
+        &mut stage,
+        &mut checks,
+    );
+    for node in &mut pending {
+        fix_graph(
+            context,
+            node,
+            &ObjectLocation::root(),
+            &mut stage,
+            &mut checks,
+        );
     }
-    Ok(())
+    merge_relation_mutations_into_root(root, node)?;
+    // The only full snapshot in this save: every Fix has completed.
+    let changes = root.current_change_set();
+    let mut checks = checks.into_iter();
+    check_graph(context, node, &ObjectLocation::root(), &mut checks)?;
+    for node in &pending {
+        check_graph(context, node, &ObjectLocation::root(), &mut checks)?;
+    }
+    debug_assert!(checks.next().is_none());
+    stage.committed = true;
+    Ok(changes)
 }
 
 /// Retain the model-relative path discovered during graph preflight for the
@@ -1743,7 +1934,7 @@ where
         context: &'a UserContext,
     ) -> Pin<Box<dyn Future<Output = Result<Self::Entity, RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
-            let _entity_name = T::entity_descriptor().name;
+            let _entity_name = T::ENTITY_NAME;
             let entity = self.into_entity(); // applies comment onto the entity
             if entity.has_pending_dynamic_mutations() || entity.dynamic_field_values().is_some() {
                 let root = entity
@@ -1870,43 +2061,40 @@ where
     }
     let mut node = extract_graph_node(context, entity)?;
 
+    let needs_graph_preflight = root.is_none();
     if let Some(root) = root {
         let root_id = node.values.get("id").cloned().unwrap_or(Value::I64(0));
         let root_key = crate::EntityKey::new(node.entity.clone(), root_id);
         reject_cancelled_new_root(&root, &root_key)?;
-        if let Some(changes) = root.current_change_set().changes().get(&root_key) {
-            for (field, value) in changes {
-                node.values.insert(field.clone(), value.clone());
-            }
-        }
-        let mut visited = BTreeSet::from([root_key.clone()]);
-        hydrate_ledger_relations(context, &root, &mut node, &mut visited)?;
-        preflight_graph(context, &mut node, &ObjectLocation::root(), Some(&root))?;
-        merge_relation_mutations_into_root(&root, &node)?;
-        preflight_pending_dynamic_entities(context, &root, &node)?;
-        capture_ledger_trace_scopes(&root, &node)?;
-        let has_ledger_changes = !root.current_change_set().is_empty()
-            || !root.deleted_keys().is_empty()
-            || !root.new_keys().is_empty();
+        let changes = finalize_ledger_preflight(context, &root, &mut node, &root_key)?;
+        capture_ledger_trace_scopes_from(&root, &node, &changes)?;
+        let has_ledger_changes =
+            !changes.is_empty() || !root.deleted_keys().is_empty() || !root.new_keys().is_empty();
         if has_ledger_changes {
             let entity_name = node.entity.clone();
             let descriptor = context.require_entity(&entity_name)?;
-            let preserve_relations = can_preserve_loaded_relations(&root, &root_key, descriptor);
+            let preserve_relations =
+                can_preserve_loaded_relations(&root, &root_key, descriptor, &changes);
             let id_property = descriptor.id_property().ok_or_else(|| {
                 RuntimeError::Graph(format!("entity {entity_name} has no id property"))
             })?;
             let data_service =
                 crate::EntityDataService::for_executor(context, &entity_name, executor)
-                    .with_ledger_privacy(&root)?
+                    .with_ledger_privacy_from(&root, &changes)?
                     .with_mutation_intent(teaql_core::MutationIntent::from_optional(
                         node.comment.as_deref(),
                     )?);
             let locations = ledger_object_locations(&node);
-            let policy_plan = crate::ledger_policy_plan(context, &node, &root);
+            let policy_plan =
+                crate::mutation_policy::ledger_policy_plan_from(context, &node, &root, &changes);
             let governance = context.review_mutation_plan(&policy_plan)?;
             let mut generated_ids = crate::with_mutation_governance(
                 governance,
-                data_service.execute_ledger_plan_internal(root.clone(), &locations),
+                data_service.execute_ledger_plan_internal_with_changes(
+                    root.clone(),
+                    &locations,
+                    &changes,
+                ),
             )
             .await
             .map_err(data_service_error_into_runtime)?;
@@ -1948,7 +2136,9 @@ where
         }
     }
 
-    preflight_graph(context, &mut node, &ObjectLocation::root(), None)?;
+    if needs_graph_preflight {
+        preflight_graph(context, &mut node, &ObjectLocation::root(), None)?;
+    }
     let entity_name = node.entity.clone();
     let saved = crate::EntityDataService::for_executor(context, entity_name, executor)
         .save_graph_internal(node)
@@ -2008,33 +2198,29 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
             ))
         })?;
 
+    let needs_graph_preflight = root.is_none();
     if let Some(root) = root {
         let root_id = node.values.get("id").cloned().unwrap_or(Value::I64(0));
         let root_key = crate::EntityKey::new(node.entity.clone(), root_id);
         reject_cancelled_new_root(&root, &root_key)?;
-        if let Some(changes) = root.current_change_set().changes().get(&root_key) {
-            for (field, value) in changes {
-                node.values.insert(field.clone(), value.clone());
-            }
-        }
-        let mut visited = BTreeSet::from([root_key.clone()]);
-        hydrate_ledger_relations(context, &root, &mut node, &mut visited)?;
-        preflight_graph(context, &mut node, &ObjectLocation::root(), Some(&root))?;
-        merge_relation_mutations_into_root(&root, &node)?;
-        preflight_pending_dynamic_entities(context, &root, &node)?;
-        capture_ledger_trace_scopes(&root, &node)?;
-        let has_ledger_changes = !root.current_change_set().is_empty()
-            || !root.deleted_keys().is_empty()
-            || !root.new_keys().is_empty();
+        let changes = finalize_ledger_preflight(context, &root, &mut node, &root_key)?;
+        capture_ledger_trace_scopes_from(&root, &node, &changes)?;
+        let has_ledger_changes =
+            !changes.is_empty() || !root.deleted_keys().is_empty() || !root.new_keys().is_empty();
         if has_ledger_changes {
             let descriptor = context.require_entity(&node.entity)?;
-            let preserve_relations = can_preserve_loaded_relations(&root, &root_key, descriptor);
-            let saved = saver.save_ledger_dyn(context, node, root.clone()).await?;
+            let preserve_relations =
+                can_preserve_loaded_relations(&root, &root_key, descriptor, &changes);
+            let saved = saver
+                .save_ledger_dyn_with_changes(context, node, root.clone(), changes)
+                .await?;
             return decode_saved_ledger_entity::<T>(saved, &root, preserve_relations);
         }
     }
 
-    preflight_graph(context, &mut node, &ObjectLocation::root(), None)?;
+    if needs_graph_preflight {
+        preflight_graph(context, &mut node, &ObjectLocation::root(), None)?;
+    }
     let saved = saver.save_graph_dyn(context, node).await?;
     decode_saved_ledger_entity::<T>(saved, &crate::EntityRuntimeState::default(), false)
 }
@@ -2202,5 +2388,145 @@ mod tests {
 
         assert!(observed.load(Ordering::SeqCst));
         assert!(!node.values.contains_key("_dirty_fields"));
+    }
+    struct SplitPhaseProbe {
+        fixes: Arc<std::sync::atomic::AtomicUsize>,
+        checks: Arc<std::sync::atomic::AtomicUsize>,
+        expected_fixes: usize,
+        fail: bool,
+        root: crate::EntityRuntimeState,
+    }
+
+    impl TypedChecker<DirtyTrackedOrder> for SplitPhaseProbe {
+        fn separate_fix_and_check(&self) -> bool {
+            true
+        }
+        fn check_and_fix_typed(
+            &self,
+            _: &UserContext,
+            _: &mut DirtyTrackedOrder,
+            _: CheckObjectStatus,
+            _: &ObjectLocation,
+            _: &mut CheckResults,
+        ) {
+            panic!("separated checker must not use the legacy combined hook");
+        }
+        fn fix_typed(
+            &self,
+            _: &UserContext,
+            entity: &mut DirtyTrackedOrder,
+            _: CheckObjectStatus,
+            _: &ObjectLocation,
+            _: &mut CheckResults,
+        ) {
+            assert_eq!(
+                self.checks.load(Ordering::SeqCst),
+                0,
+                "all Fix must precede Check"
+            );
+            self.fixes.fetch_add(1, Ordering::SeqCst);
+            entity.code = "context-owned".into();
+            entity.__teaql_runtime_state().set(
+                crate::EntityKey::new("DirtyTrackedOrder", entity.id),
+                "code",
+                "context-owned",
+            );
+        }
+        fn check_typed(
+            &self,
+            _: &UserContext,
+            entity: &DirtyTrackedOrder,
+            _: CheckObjectStatus,
+            location: &ObjectLocation,
+            results: &mut CheckResults,
+        ) {
+            assert_eq!(self.fixes.load(Ordering::SeqCst), self.expected_fixes);
+            assert_eq!(entity.code, "context-owned");
+            assert!(entity.dirty_fields().unwrap().contains("code"));
+            assert_eq!(
+                self.root.get(
+                    &crate::EntityKey::new("DirtyTrackedOrder", entity.id),
+                    "code"
+                ),
+                Some(Value::Text("context-owned".into()))
+            );
+            self.checks.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                results.push(crate::CheckResult::required(
+                    location.clone().member("code"),
+                ));
+            }
+        }
+    }
+
+    fn split_node(id: u64) -> GraphNode {
+        let mut node = GraphNode::new("DirtyTrackedOrder")
+            .value("id", id)
+            .value("version", 1_i64)
+            .value("code", "old")
+            .comment("split phase regression");
+        node.operation = GraphOperation::Upsert;
+        node.dirty_fields = Some(BTreeSet::new());
+        node
+    }
+
+    fn split_context(
+        root: &crate::EntityRuntimeState,
+        expected_fixes: usize,
+        fail: bool,
+    ) -> (
+        UserContext,
+        Arc<std::sync::atomic::AtomicUsize>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let fixes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let checks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let context = UserContext::new()
+            .with_metadata(
+                InMemoryMetadataStore::new().with_entity(DirtyTrackedOrder::entity_descriptor()),
+            )
+            .with_checker_registry(InMemoryCheckerRegistry::new().with_checker(
+                TypedEntityChecker::<DirtyTrackedOrder, _>::new(SplitPhaseProbe {
+                    fixes: fixes.clone(),
+                    checks: checks.clone(),
+                    expected_fixes,
+                    fail,
+                    root: root.clone(),
+                }),
+            ));
+        (context, fixes, checks)
+    }
+
+    #[test]
+    fn split_fix_runs_without_caller_changes_and_all_fixes_precede_checks() {
+        let root = crate::EntityRuntimeState::default();
+        let key = crate::EntityKey::new("DirtyTrackedOrder", 7_u64);
+        let (context, fixes, checks) = split_context(&root, 2, false);
+        let mut node = split_node(7).relation("children", split_node(8));
+        assert!(root.current_change_set().is_empty());
+        let changes = finalize_ledger_preflight(&context, &root, &mut node, &key).unwrap();
+        assert_eq!(fixes.load(Ordering::SeqCst), 2);
+        assert_eq!(checks.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            changes.get(&key, "code"),
+            Some(&Value::Text("context-owned".into()))
+        );
+    }
+
+    #[test]
+    fn split_check_failure_rolls_back_fix_and_preserves_caller_intent() {
+        let root = crate::EntityRuntimeState::default();
+        let key = crate::EntityKey::new("DirtyTrackedOrder", 7_u64);
+        root.set(key.clone(), "code", "caller-value");
+        let (context, _, _) = split_context(&root, 1, true);
+        let mut node = split_node(7);
+        node.dirty_fields = Some(BTreeSet::from(["code".into()]));
+        let error = finalize_ledger_preflight(&context, &root, &mut node, &key).unwrap_err();
+        assert!(matches!(error, RuntimeError::Check(_)));
+        assert_eq!(
+            root.get(&key, "code"),
+            Some(Value::Text("caller-value".into()))
+        );
+        assert_eq!(root.current_change_set().changes().len(), 1);
     }
 }

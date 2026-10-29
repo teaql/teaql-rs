@@ -100,8 +100,10 @@ impl From<GeneratedValues> for BTreeMap<String, Value> {
 
 /// Previously persisted field values used for optimistic checks and audit
 /// comparison. It cannot be passed where new mutation values are expected.
+/// Clones share immutable storage; mutation detaches so old/new snapshots stay
+/// independent. Conversion to an owned map moves unique storage or copies it.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct EntitySnapshot(BTreeMap<String, Value>);
+pub struct EntitySnapshot(std::sync::Arc<BTreeMap<String, Value>>);
 
 impl EntitySnapshot {
     pub fn new() -> Self {
@@ -119,19 +121,19 @@ impl Deref for EntitySnapshot {
 
 impl DerefMut for EntitySnapshot {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+        std::sync::Arc::make_mut(&mut self.0)
     }
 }
 
 impl From<BTreeMap<String, Value>> for EntitySnapshot {
     fn from(values: BTreeMap<String, Value>) -> Self {
-        Self(values)
+        Self(std::sync::Arc::new(values))
     }
 }
 
 impl From<EntitySnapshot> for BTreeMap<String, Value> {
     fn from(values: EntitySnapshot) -> Self {
-        values.0
+        std::sync::Arc::try_unwrap(values.0).unwrap_or_else(|shared| (*shared).clone())
     }
 }
 
@@ -287,5 +289,54 @@ impl RecoverCommand {
             expected_version,
             trace_chain: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod shared_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_clones_detach_on_nested_mutation_and_owned_conversion() {
+        let original = EntitySnapshot::from(BTreeMap::from([
+            ("id".into(), Value::U64(7)),
+            ("nullable".into(), Value::Null),
+            (
+                "nested".into(),
+                Value::Object(BTreeMap::from([("label".into(), Value::from("old"))])),
+            ),
+        ]));
+        let mut changed = original.clone();
+        assert!(std::ptr::eq(&*original, &*changed));
+        let Value::Object(nested) = changed.get_mut("nested").unwrap() else {
+            panic!("object")
+        };
+        nested.insert("label".into(), Value::from("new"));
+        changed.remove("nullable");
+        assert!(!std::ptr::eq(&*original, &*changed));
+        assert_eq!(original.get("nullable"), Some(&Value::Null));
+        assert!(!original.contains_key("missing"));
+        assert_eq!(
+            original.get("nested"),
+            Some(&Value::Object(BTreeMap::from([(
+                "label".into(),
+                Value::from("old")
+            )])))
+        );
+        let mut owned: BTreeMap<String, Value> = original.clone().into();
+        owned.insert("id".into(), Value::U64(99));
+        assert_eq!(original.get("id"), Some(&Value::U64(7)));
+    }
+
+    #[test]
+    fn unique_snapshot_into_map_moves_payload_without_string_copy() {
+        let snapshot =
+            EntitySnapshot::from(BTreeMap::from([("name".into(), Value::from("payload"))]));
+        let payload = snapshot.get("name").unwrap().try_text().unwrap().as_ptr();
+        let values: BTreeMap<String, Value> = snapshot.into();
+        assert_eq!(
+            payload,
+            values.get("name").unwrap().try_text().unwrap().as_ptr()
+        );
     }
 }

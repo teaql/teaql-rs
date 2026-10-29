@@ -198,19 +198,25 @@ impl SqlIntentRedactions {
     /// Add an ordinary mutation ID only to diagnostic free-text redactions.
     /// It does not change the ID's SQL binding policy or execution value.
     pub fn capture_target_id(&mut self, id: &teaql_core::Value) {
+        if !is_compound_redaction_value(id) {
+            if let Some(text) = scalar_redaction_text(id) {
+                self.capture_forced_text(text);
+            }
+            return;
+        }
         let source = SqlLogContext {
             generated_sql: true,
             parameter_policies: vec![SqlParameterLogPolicy::Masked],
             ..Default::default()
         };
         for (text, _) in Self::from_bindings(&source, std::slice::from_ref(id), "").0 {
-            if !self
-                .0
-                .iter()
-                .any(|(existing, forced)| existing == &text && *forced)
-            {
-                self.0.push((text, true));
-            }
+            self.capture_forced_text(text);
+        }
+    }
+
+    fn capture_forced_text(&mut self, text: String) {
+        if !self.0.iter().any(|(existing, forced)| existing == &text && *forced) {
+            self.0.push((text, true));
         }
     }
 
@@ -241,9 +247,9 @@ impl SqlIntentRedactions {
                     policy,
                     SqlParameterLogPolicy::Unknown | SqlParameterLogPolicy::Credential
                 );
-            if let teaql_core::Value::Text(text) = value {
-                if !text.is_empty() {
-                    output.0.push((text.clone(), forced));
+            if !is_compound_redaction_value(value) {
+                if let Some(text) = scalar_redaction_text(value) {
+                    output.0.push((text, forced));
                 }
                 continue;
             }
@@ -329,29 +335,75 @@ impl SqlIntentRedactions {
 
 /// Shared conservative credential classifier for compilation and log projection.
 pub fn is_credential_log_name(name: &str) -> bool {
-    let name: String = name
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .map(|c| c.to_ascii_lowercase())
-        .collect();
-    [
-        "password",
-        "passwd",
-        "passphrase",
-        "privatekey",
-        "secret",
-        "accesstoken",
-        "refreshtoken",
-        "idtoken",
-        "apikey",
-        "authorization",
-        "credential",
-        "sessiontoken",
-        "magiclinktoken",
-    ]
-    .iter()
-    .any(|word| name.contains(word))
+    // Keep only a rolling suffix of the normalized ASCII stream. Dropping
+    // non-ASCII UTF-8 bytes is equivalent to filtering non-ASCII chars, so
+    // separators (including Unicode) still cannot hide a credential name.
+    const fn suffix(word: &[u8]) -> (u128, u128) {
+        assert!(word.len() <= 16);
+        let mut pattern = 0;
+        let mut mask = 0;
+        let mut i = 0;
+        while i < word.len() {
+            pattern = (pattern << 8) | word[i] as u128;
+            mask = (mask << 8) | 0xff;
+            i += 1;
+        }
+        (pattern, mask)
+    }
+    const PATTERNS: [(u128, u128); 13] = [
+        suffix(b"password"),
+        suffix(b"passwd"),
+        suffix(b"passphrase"),
+        suffix(b"privatekey"),
+        suffix(b"secret"),
+        suffix(b"accesstoken"),
+        suffix(b"refreshtoken"),
+        suffix(b"idtoken"),
+        suffix(b"apikey"),
+        suffix(b"authorization"),
+        suffix(b"credential"),
+        suffix(b"sessiontoken"),
+        suffix(b"magiclinktoken"),
+    ];
+    let mut tail = 0u128;
+    for byte in name.bytes().filter(u8::is_ascii_alphanumeric) {
+        tail = (tail << 8) | byte.to_ascii_lowercase() as u128;
+        if PATTERNS
+            .iter()
+            .any(|&(pattern, mask)| tail & mask == pattern)
+        {
+            return true;
+        }
+    }
+    false
 }
+
+fn is_compound_redaction_value(value: &teaql_core::Value) -> bool {
+    matches!(value, teaql_core::Value::Object(_) | teaql_core::Value::List(_) | teaql_core::Value::Json(_))
+}
+
+/// Scalar formatting matches the compound scanner, without traversal buffers.
+fn scalar_redaction_text(value: &teaql_core::Value) -> Option<String> {
+    use teaql_core::Value;
+    let text = match value {
+        Value::Null | Value::TypedNull(_) => return None,
+        Value::Text(text) if text.is_empty() => return None,
+        Value::Text(text) => text.clone(),
+        Value::Bool(value) => value.to_string(),
+        Value::I64(value) => value.to_string(),
+        Value::U64(value) => value.to_string(),
+        Value::F64(value) => value.to_string(),
+        Value::Decimal(value) => value.to_string(),
+        Value::Date(value) => value.to_string(),
+        Value::Timestamp(value) => value.as_millis().to_string(),
+        Value::Object(_) | Value::List(_) | Value::Json(_) => return None,
+    };
+    Some(text)
+}
+
+#[cfg(test)]
+#[path = "scalar_redaction_tests.rs"]
+mod scalar_redaction_tests;
 
 #[cfg(test)]
 mod query_intent_tests {

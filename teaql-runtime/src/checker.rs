@@ -377,6 +377,34 @@ impl std::fmt::Display for CheckResult {
 
 pub type CheckResults = Vec<CheckResult>;
 
+/// A Fix result whose validation is deferred until the graph's final ledger snapshot.
+pub struct PreparedCheck {
+    pub(crate) changes: EntityValues,
+    results: CheckResults,
+    validate: Option<Box<dyn FnOnce(&UserContext, &ObjectLocation, &mut CheckResults) + Send>>,
+}
+
+impl PreparedCheck {
+    pub(crate) fn empty() -> Self {
+        Self {
+            changes: EntityValues::new(),
+            results: Vec::new(),
+            validate: None,
+        }
+    }
+
+    pub(crate) fn validate(
+        mut self,
+        context: &UserContext,
+        location: &ObjectLocation,
+    ) -> (EntityValues, CheckResults) {
+        if let Some(validate) = self.validate.take() {
+            validate(context, location, &mut self.results);
+        }
+        (self.changes, self.results)
+    }
+}
+
 pub trait Checker: Send + Sync {
     fn entity(&self) -> &str;
 
@@ -387,6 +415,37 @@ pub trait Checker: Send + Sync {
         location: &ObjectLocation,
         results: &mut CheckResults,
     );
+
+    fn check_and_fix_collect_changes(
+        &self,
+        context: &UserContext,
+        values: &mut EntityValues,
+        location: &ObjectLocation,
+        results: &mut CheckResults,
+    ) -> EntityValues {
+        let before = values.clone();
+        self.check_and_fix(context, values, location, results);
+        values
+            .iter()
+            .filter(|(field, value)| before.get(*field) != Some(*value))
+            .map(|(field, value)| (field.clone(), value.clone()))
+            .collect::<BTreeMap<_, _>>()
+            .into()
+    }
+
+    /// Compatibility bridge: legacy combined checkers still run exactly once.
+    /// New generated checkers override this to defer readonly Check until after Fix.
+    fn prepare_check(
+        &self,
+        context: &UserContext,
+        values: &mut EntityValues,
+        location: &ObjectLocation,
+    ) -> PreparedCheck {
+        let mut prepared = PreparedCheck::empty();
+        prepared.changes =
+            self.check_and_fix_collect_changes(context, values, location, &mut prepared.results);
+        prepared
+    }
 
     fn required(
         &self,
@@ -481,6 +540,33 @@ impl CheckerRegistry for InMemoryCheckerRegistry {
 /// them in [`TypedEntityChecker`] so they satisfy the [`Checker`] trait
 /// expected by [`InMemoryCheckerRegistry`].
 pub trait TypedChecker<T>: Send + Sync {
+    /// Opt in only when Fix and Check have actually been separated.
+    fn separate_fix_and_check(&self) -> bool {
+        false
+    }
+
+    /// Context/state-owned assignments; never gated by caller dirty fields.
+    fn fix_typed(
+        &self,
+        _context: &UserContext,
+        _entity: &mut T,
+        _status: CheckObjectStatus,
+        _location: &ObjectLocation,
+        _results: &mut CheckResults,
+    ) {
+    }
+
+    /// Validation cannot mutate the entity through the ordinary setter API.
+    fn check_typed(
+        &self,
+        _context: &UserContext,
+        _entity: &T,
+        _status: CheckObjectStatus,
+        _location: &ObjectLocation,
+        _results: &mut CheckResults,
+    ) {
+    }
+
     fn check_and_fix_typed(
         &self,
         context: &UserContext,
@@ -491,6 +577,24 @@ pub trait TypedChecker<T>: Send + Sync {
     );
 }
 
+fn take_field_names(
+    values: &mut EntityValues,
+    field: &str,
+) -> Option<std::collections::BTreeSet<String>> {
+    match values.remove(field) {
+        Some(Value::List(fields)) => Some(
+            fields
+                .into_iter()
+                .filter_map(|field| match field {
+                    Value::Text(field) => Some(field),
+                    _ => None,
+                })
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
 /// Adapter that turns a [`TypedChecker<T>`] into a [`Checker`].
 ///
 /// On [`Checker::check_and_fix`], it:
@@ -499,7 +603,7 @@ pub trait TypedChecker<T>: Send + Sync {
 /// 3. Delegates to [`TypedChecker::check_and_fix_typed`].
 /// 4. Serializes the (possibly mutated) `T` back into entity values.
 pub struct TypedEntityChecker<T, C> {
-    checker: C,
+    checker: Arc<C>,
     entity_name: String,
     _marker: std::marker::PhantomData<fn() -> T>,
 }
@@ -512,7 +616,7 @@ where
     pub fn new(checker: C) -> Self {
         let entity_name = T::entity_descriptor().name.clone();
         Self {
-            checker,
+            checker: Arc::new(checker),
             entity_name,
             _marker: std::marker::PhantomData,
         }
@@ -521,11 +625,87 @@ where
 
 impl<T, C> Checker for TypedEntityChecker<T, C>
 where
-    T: Entity + TeaqlEntity + Send + Sync + Clone,
-    C: TypedChecker<T>,
+    T: Entity + TeaqlEntity + Send + Sync + Clone + 'static,
+    C: TypedChecker<T> + 'static,
 {
     fn entity(&self) -> &str {
         &self.entity_name
+    }
+
+    fn prepare_check(
+        &self,
+        context: &UserContext,
+        values: &mut EntityValues,
+        location: &ObjectLocation,
+    ) -> PreparedCheck {
+        if !self.checker.separate_fix_and_check() {
+            let mut prepared = PreparedCheck::empty();
+            prepared.changes = self.check_and_fix_collect_changes(
+                context,
+                values,
+                location,
+                &mut prepared.results,
+            );
+            return prepared;
+        }
+        let mut prepared = PreparedCheck::empty();
+        let status = CheckObjectStatus::from_values(values);
+        let loaded = take_field_names(values, "_loaded_fields");
+        let dirty = take_field_names(values, "_dirty_fields");
+        match T::from_compact_row(teaql_core::CompactRow::from_map(values.clone().into())) {
+            Ok(mut entity) => {
+                if let Some(loaded) = loaded {
+                    entity.set_checker_loaded_fields(loaded);
+                }
+                if let Some(dirty) = &dirty {
+                    entity.set_checker_dirty_fields_borrowed(dirty, values);
+                }
+                let ledger_fix = entity.begin_checker_fix();
+                // Handwritten non-ledger carriers retain a diff fallback.
+                let before = (!ledger_fix).then(|| entity.clone().into_values());
+                self.checker.fix_typed(
+                    context,
+                    &mut entity,
+                    status,
+                    location,
+                    &mut prepared.results,
+                );
+                let fixed = if ledger_fix {
+                    entity.take_checker_fix_changes()
+                } else {
+                    let before = before.expect("non-ledger before values");
+                    entity
+                        .clone()
+                        .into_values()
+                        .into_iter()
+                        .filter(|(field, value)| before.get(field) != Some(value))
+                        .collect::<BTreeMap<_, _>>()
+                        .into()
+                };
+                // Setters declare Fix intent, including explicit zero/default values.
+                for (field, value) in fixed {
+                    if values.get(&field) != Some(&value) {
+                        values.insert(field.clone(), value.clone());
+                        prepared.changes.insert(field, value);
+                    }
+                }
+                // Check sees the effective dirty set, but Fix above never uses it as a trigger.
+                let mut effective_dirty = dirty.unwrap_or_default();
+                effective_dirty.extend(prepared.changes.keys().cloned());
+                entity.set_checker_dirty_fields_borrowed(&effective_dirty, values);
+                let checker = self.checker.clone();
+                prepared.validate = Some(Box::new(move |context, location, results| {
+                    checker.check_typed(context, &entity, status, location, results);
+                }));
+            }
+            Err(error) => prepared.results.push(
+                CheckResult::new(CheckRule::InvalidType, location.clone()).with_message(format!(
+                    "failed to materialize {} for checker: {error}",
+                    self.entity_name
+                )),
+            ),
+        }
+        prepared
     }
 
     fn check_and_fix(
@@ -535,6 +715,23 @@ where
         location: &ObjectLocation,
         results: &mut CheckResults,
     ) {
+        let _ = self.check_and_fix_collect_changes(context, values, location, results);
+    }
+
+    fn check_and_fix_collect_changes(
+        &self,
+        context: &UserContext,
+        values: &mut EntityValues,
+        location: &ObjectLocation,
+        results: &mut CheckResults,
+    ) -> EntityValues {
+        if self.checker.separate_fix_and_check() {
+            let prepared = self.prepare_check(context, values, location);
+            let (changes, checks) = prepared.validate(context, location);
+            results.extend(checks);
+            return changes;
+        }
+        let mut fixed = EntityValues::new();
         let status = CheckObjectStatus::from_values(values);
         // Materializing a partial update necessarily fills omitted Rust fields
         // with their type defaults. Those defaults are only a checker view;
@@ -602,7 +799,8 @@ where
                 *values = original_values;
                 for (field, after_value) in after_check {
                     if before_check.get(&field) != Some(&after_value) {
-                        values.insert(field, after_value);
+                        values.insert(field.clone(), after_value.clone());
+                        fixed.insert(field, after_value);
                     }
                 }
             }
@@ -621,6 +819,7 @@ where
                 );
             }
         }
+        fixed
     }
 }
 
