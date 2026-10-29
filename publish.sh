@@ -41,8 +41,8 @@ if [[ ! "$wait_attempts" =~ ^[1-9][0-9]*$ || ! "$wait_seconds" =~ ^[1-9][0-9]*$ 
 fi
 
 mapfile -t crates < <("$repo_dir/scripts/verify-release-provenance.sh" --list-crates)
-if [[ "${#crates[@]}" -ne 10 ]]; then
-    printf 'Refusing release: retained public crate contract contains %s entries, expected 10\n' \
+if [[ "${#crates[@]}" -ne 16 ]]; then
+    printf 'Refusing release: retained public crate contract contains %s entries, expected 16\n' \
         "${#crates[@]}" >&2
     exit 1
 fi
