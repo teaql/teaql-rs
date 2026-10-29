@@ -69,5 +69,6 @@ teaql-provider-postgres = { path = "teaql-provider-postgres", version = "5.0.7" 
 teaql-provider-mysql = { path = "teaql-provider-mysql", version = "5.0.7" }
 teaql-data-service = { path = "teaql-data-service", version = "5.0.7" }
 teaql-provider-linux = { path = "teaql-provider-linux", version = "5.0.7" }
+teaql-web-integration-axum = { path = "teaql-web-integration-axum", version = "5.0.7" }
 
 teaql-secure-document-reference = { path = "teaql-secure-document-reference", version = "5.0.7" }
