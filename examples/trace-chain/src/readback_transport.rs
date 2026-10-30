@@ -49,6 +49,9 @@ impl<T: SqlTransport<Error = MutationExecutorError>> SqlTransport for ReadbackFa
         self.inner.fetch_all_compact_sql(query).await
     }
 
+    // Rust 1.99 renamed fetch_update; retain compatibility with supported older
+    // toolchains until the minimum Rust version is deliberately raised.
+    #[allow(deprecated)]
     async fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
         let affected = self.inner.execute_sql(query).await?;
         let fail_next_read = self.remaining_writes.as_ref().is_none_or(|remaining| {

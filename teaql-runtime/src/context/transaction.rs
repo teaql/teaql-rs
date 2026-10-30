@@ -3,8 +3,8 @@ use std::pin::Pin;
 use std::sync::Mutex;
 
 use teaql_data_service::{
-    MutationExecutor, MutationRequest, MutationResult, QueryExecutor, QueryRequest, QueryResult,
-    Transaction, TransactionExecutor,
+    DataServiceExecutor, MutationExecutor, MutationRequest, MutationResult, QueryExecutor,
+    QueryRequest, QueryResult, Transaction, TransactionExecutor,
 };
 
 use crate::{ContextError, EntityDataService, RuntimeError, UserContext};
@@ -23,9 +23,62 @@ where
     context: &'context UserContext,
     transaction: Option<E::Tx<'context>>,
     flushed_ledgers: Mutex<Vec<crate::EntityRuntimeState>>,
+    view_boundary: ViewTransactionGuard<'context>,
+}
+
+pub(crate) struct ViewTransactionGuard<'context> {
+    context: &'context UserContext,
+    completed: bool,
+}
+impl ViewTransactionGuard<'_> {
+    pub(crate) fn complete(mut self) {
+        self.completed = true;
+    }
+}
+impl Drop for ViewTransactionGuard<'_> {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering;
+        if !self.completed {
+            self.context
+                .view_transaction_uncertain
+                .store(true, Ordering::SeqCst);
+        }
+        self.context
+            .view_transactions
+            .fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl UserContext {
+    pub(crate) fn native_raw_audit_started(&self) {
+        self.view_transactions
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn native_raw_audit_finished(&self, known_outcome: bool) {
+        use std::sync::atomic::Ordering;
+        if !known_outcome {
+            self.view_transaction_uncertain
+                .store(true, Ordering::SeqCst);
+        }
+        self.view_transactions.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn view_transaction_boundary(&self) -> ViewTransactionGuard<'_> {
+        self.view_transactions
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        ViewTransactionGuard {
+            context: self,
+            completed: false,
+        }
+    }
+    /// A cancelled or unacknowledged physical completion poisons presentation in this context.
+    /// A fresh, authorized reload in a new context is required; QUERY is not rollback proof.
+    pub fn has_unfinished_view_transaction(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        self.view_transactions.load(Ordering::SeqCst) != 0
+            || self.view_transaction_uncertain.load(Ordering::SeqCst)
+    }
     /// Begin a typed transaction using the executor registered in this context.
     async fn start_transaction<E>(&self) -> Result<TransactionScope<'_, E>, RuntimeError>
     where
@@ -35,6 +88,7 @@ impl UserContext {
         let executor = self
             .require_resource::<E>()
             .map_err(|error| RuntimeError::Transaction(error.to_string()))?;
+        let view_boundary = self.view_transaction_boundary();
         let transaction = TransactionExecutor::begin(executor)
             .await
             .map_err(|error| RuntimeError::Transaction(error.to_string()))?;
@@ -42,6 +96,7 @@ impl UserContext {
             context: self,
             transaction: Some(transaction),
             flushed_ledgers: Mutex::new(Vec::new()),
+            view_boundary,
         })
     }
 
@@ -108,6 +163,15 @@ where
     /// configuration for this transaction.
     pub fn context(&self) -> &'context UserContext {
         self.context
+    }
+
+    /// Infrastructure services may join the exact owner used by generated
+    /// queries and saves. This never falls back to a context-level connection.
+    #[doc(hidden)]
+    pub fn infrastructure_sql(
+        &self,
+    ) -> Option<&dyn teaql_data_service::infrastructure_sql::InfrastructureSql> {
+        DataServiceExecutor::infrastructure_sql(self.transaction())
     }
 
     /// Build an entity data service that is guaranteed to use this transaction.
@@ -190,12 +254,15 @@ where
         T: crate::LedgerEntity + Send + 'static,
         E::Tx<'context>: QueryExecutor + MutationExecutor + Send + Sync,
     {
-        let (entity, ledger) = crate::save_audited_ledger_entity_with_executor(
-            audited,
-            self.context,
-            self.transaction(),
-        )
-        .await?;
+        let physical_owner = Transaction::physical_identity(self.transaction());
+        let (entity, ledger) =
+            crate::entity_save::save_audited_ledger_entity_with_executor_on_owner(
+                audited,
+                self.context,
+                self.transaction(),
+                physical_owner.as_ref(),
+            )
+            .await?;
         if let Some(ledger) = ledger {
             let mut ledgers = self
                 .flushed_ledgers
@@ -256,6 +323,7 @@ where
                 Transaction::commit(transaction)
                     .await
                     .map_err(|error| RuntimeError::Transaction(error.to_string()))?;
+                self.view_boundary.completed = true;
                 for ledger in self
                     .flushed_ledgers
                     .lock()
@@ -278,6 +346,7 @@ where
                             "operation failed ({error}); rollback also failed ({rollback})"
                         ))
                     })?;
+                self.view_boundary.completed = true;
                 Err(error)
             }
         }

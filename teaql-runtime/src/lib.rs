@@ -1,4 +1,5 @@
 extern crate self as teaql_runtime;
+mod blob_mutation;
 mod business_id;
 mod checker;
 mod commit_audit;
@@ -43,6 +44,21 @@ mod telemetry_sql;
 mod telemetry_standard;
 mod telemetry_startup;
 mod telemetry_stream;
+mod view_preparation;
+
+pub use blob_mutation::{
+    BlobCapabilityResource, BlobMutationFuture, BlobMutationParticipantResource,
+    RuntimeBlobCapability, RuntimeBlobMutationParticipant, RuntimeBlobMutationPlan,
+    RuntimePreparedBlobMutation,
+};
+pub use view_preparation::{
+    AcceptedDocumentView, AuthorizedResponseGraph, BlobViewProjection, BlobViewRead,
+    BusinessCompletion, CurrentBlobViewValidation, CurrentDocumentViewValidation, DocumentContext,
+    DocumentView, DocumentViewError, DocumentViewProjection, PreparedView, ViewAuthorization,
+    ViewBlobContributor, ViewBlobTarget, ViewCachePolicy, ViewDocumentContributor, ViewEntity,
+    ViewEntityTarget, ViewErrorCode, ViewField, ViewFieldDecision, ViewIdentity, ViewInput,
+    ViewMode, ViewOptions, ViewPath, ViewPathSegment, ViewPreparationError, ViewPreparationService,
+};
 
 pub use business_id::{
     BUSINESS_ID_V1_ALPHABET, BUSINESS_ID_V1_WIDTH, BusinessClock, BusinessDate,
@@ -64,10 +80,12 @@ pub use data_service::{
     RelationLoadPlan,
 };
 pub use document_round_trip::{
-    AcceptedContextualDocument, ContextBoundDocumentService, ContextualDocument,
-    DocumentAcceptRequest, DocumentEntitySnapshot, DocumentMutationKind, DocumentOpenRequest,
-    DocumentRelationCompleteness, DocumentRelationSnapshot, DocumentRoundTripError,
-    DocumentSnapshot, SubmittedContextualDocument, VerifiedDocumentSnapshot,
+    AcceptedContextualDocument, BlobSelectionClaim, BlobSelectionTarget, BlobSelectionTargetKind,
+    BoundDocumentSnapshot, ContextBoundDocumentService, ContextualDocument, DocumentAcceptRequest,
+    DocumentBlobBindingSnapshot, DocumentBlobSlot, DocumentEntitySnapshot, DocumentMutationKind,
+    DocumentOpenRequest, DocumentRelationCompleteness, DocumentRelationSnapshot,
+    DocumentRoundTripError, DocumentSnapshot, SubmittedContextualDocument, VerifiedBlobSelection,
+    VerifiedBoundDocumentSnapshot, VerifiedDocumentSnapshot,
 };
 #[allow(deprecated)]
 pub use entity_reference::{
@@ -77,11 +95,12 @@ pub use entity_reference::{
 };
 pub use entity_runtime::{
     ChangeSetStack, DynamicFieldChanges, EntityChangeSet, EntityGraphBuilder, EntityKey,
-    EntityRuntimeState, LedgerCompositionError, LedgerEntity, LoadedRelation, RelationHandle,
+    EntityRuntimeState, LedgerCompositionError, LedgerDraft, LedgerEntity, LedgerSubmission,
+    LoadedRelation, RelationHandle, SavedEntityContext,
 };
 pub use entity_save::{
     AuditedSaveExt, graph_node_from_entity, save_audited_ledger_entity,
-    save_audited_ledger_entity_with_executor,
+    save_audited_ledger_entity_with_executor, save_audited_ledger_entity_with_native_executor,
 };
 pub use entity_status::{EntityAction, EntityStatus};
 pub use error::{ContextError, DataServiceError, RuntimeError};
@@ -126,12 +145,10 @@ pub use registry::{
     InMemoryEntityRegistry, InMemoryMetadataStore, MetadataStore, RequestPolicy, RuntimeModule,
 };
 pub use round_trip_reference::{
-    ContextBoundReferenceRuntime, DeploymentProfile, ExternalEntityReference,
-    ReferenceAuthorizationPolicy, ReferenceDocumentScope, ReferenceIdentity, ReferenceKey,
-    ReferenceKeyProvider, ReferenceMode, ReferenceStartupNotice, ReferenceWireCodec,
-    ResolvedEntityReference, RoundTripReferenceError, StaticReferenceKeyProvider,
-    TrustedReferencePrincipal, UNSAFE_EXPOSE_RAW_ENTITY_IDS_ACKNOWLEDGEMENT,
-    UNSAFE_EXPOSE_RAW_ENTITY_IDS_ENVIRONMENT,
+    ExternalEntityReference, ReferenceDocumentScope, ReferenceIdentity, ReferenceMode,
+    ReferenceStartupNotice, ReferenceWireCodec, ResolvedEntityReference, RoundTripReferenceError,
+    RoundTripReferenceProvider, TrustedReferencePrincipal,
+    UNSAFE_EXPOSE_RAW_ENTITY_IDS_ACKNOWLEDGEMENT, UNSAFE_EXPOSE_RAW_ENTITY_IDS_ENVIRONMENT,
 };
 pub use telemetry::{
     FailOpenRuntimeTelemetryPropagationContext, FailOpenRuntimeTelemetryScope,
@@ -227,6 +244,7 @@ mod tests {
                     _ => Ok("NUMERIC".to_owned()),
                 },
                 DataType::Text => Ok(format!("VARCHAR({})", property.max_length.unwrap_or(255))),
+                DataType::BlobRef => Ok("VARCHAR(128)".to_owned()),
                 DataType::LargeText => Ok("TEXT".to_owned()),
                 DataType::Json => Ok("JSONB".to_owned()),
                 DataType::Date => Ok("DATE".to_owned()),

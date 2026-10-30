@@ -28,6 +28,13 @@ pub trait SqlTransport: Send + Sync {
     type Error: std::error::Error + Send + Sync + 'static;
 
     #[doc(hidden)]
+    fn infrastructure_sql(
+        &self,
+    ) -> Option<&dyn teaql_data_service::infrastructure_sql::InfrastructureSql> {
+        None
+    }
+
+    #[doc(hidden)]
     fn dynamic_field_store(
         &self,
     ) -> Option<&dyn teaql_data_service::dynamic_fields::DynamicFieldStore> {
@@ -100,6 +107,11 @@ pub trait SqlTransactionTransport: SqlTransport {
 
 pub trait SqlTransaction {
     type Error: std::error::Error + Send + Sync + 'static;
+    fn physical_identity(
+        &self,
+    ) -> Option<teaql_data_service::infrastructure_sql::PhysicalTransactionIdentity> {
+        None
+    }
     fn commit_sql(self) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
     fn rollback_sql(self) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
 }
@@ -599,6 +611,12 @@ impl<
 > DataServiceExecutor for SqlDataServiceExecutor<D, T, S>
 {
     type Error = SqlExecutorError<T::Error>;
+
+    fn infrastructure_sql(
+        &self,
+    ) -> Option<&dyn teaql_data_service::infrastructure_sql::InfrastructureSql> {
+        self.transport.infrastructure_sql()
+    }
 
     fn capabilities(&self) -> DataServiceCapabilities {
         DataServiceCapabilities {
@@ -1869,6 +1887,12 @@ impl<
 {
     type Error = SqlExecutorError<<Tx as SqlTransport>::Error>;
 
+    fn infrastructure_sql(
+        &self,
+    ) -> Option<&dyn teaql_data_service::infrastructure_sql::InfrastructureSql> {
+        self.transport.infrastructure_sql()
+    }
+
     fn capabilities(&self) -> DataServiceCapabilities {
         DataServiceCapabilities {
             query: true,
@@ -2089,6 +2113,12 @@ impl<
 > teaql_data_service::Transaction for SqlDataServiceTransaction<'a, D, Tx, S>
 {
     type Error = SqlExecutorError<<Tx as SqlTransport>::Error>;
+
+    fn physical_identity(
+        &self,
+    ) -> Option<teaql_data_service::infrastructure_sql::PhysicalTransactionIdentity> {
+        self.transport.physical_identity()
+    }
 
     fn commit(self) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
         async move {

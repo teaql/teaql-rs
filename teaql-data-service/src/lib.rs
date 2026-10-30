@@ -2,6 +2,8 @@
 
 #[doc(hidden)]
 pub mod dynamic_fields;
+#[doc(hidden)]
+pub mod infrastructure_sql;
 mod sql_log;
 #[doc(hidden)]
 pub mod statement_telemetry;
@@ -382,6 +384,11 @@ pub trait DataServiceExecutor {
     type Error: std::error::Error + Send + Sync + 'static;
 
     fn capabilities(&self) -> DataServiceCapabilities;
+
+    #[doc(hidden)]
+    fn infrastructure_sql(&self) -> Option<&dyn infrastructure_sql::InfrastructureSql> {
+        None
+    }
 }
 
 pub trait QueryExecutor: DataServiceExecutor {
@@ -535,6 +542,12 @@ pub trait TransactionExecutor: DataServiceExecutor {
 
 pub trait Transaction {
     type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Actual provider owner, when this transaction supports framework
+    /// completion participants. The default cannot claim physical provenance.
+    fn physical_identity(&self) -> Option<crate::infrastructure_sql::PhysicalTransactionIdentity> {
+        None
+    }
 
     fn commit(self) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
     fn rollback(self) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;

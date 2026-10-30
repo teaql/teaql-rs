@@ -297,6 +297,23 @@ pub(crate) fn current_mutation_governance() -> Option<MutationGovernanceSnapshot
 }
 
 impl UserContext {
+    /// A modeled Blob field needs the transaction-bound binding participant even
+    /// when the write contains no Key (create, removal, recovery or clear).
+    /// Unchanged Blob fields on an ordinary update do not change bindings.
+    pub(crate) fn needs_blob_binding_participant(&self, plan: &MutationPlan) -> bool {
+        plan.operations.iter().any(|operation| {
+            let Some(descriptor) = self.entity(operation.entity.entity.as_ref()) else {
+                return false;
+            };
+            descriptor.properties.iter().any(|property| {
+                (property.data_type == teaql_core::DataType::BlobRef
+                    || property.blob_field_spec.is_some())
+                    && (operation.kind != MutationOperationKind::Update
+                        || operation.changed_values.contains_key(&property.name))
+            })
+        })
+    }
+
     pub fn with_mutation_policy_registry(
         mut self,
         registry: impl MutationPolicyRegistry + 'static,
@@ -343,6 +360,25 @@ impl UserContext {
         &self,
         plan: &MutationPlan,
     ) -> Result<MutationGovernanceSnapshot, RuntimeError> {
+        self.review_mutation_plan_inner(plan, false)
+    }
+
+    /// Only a save path that actually prepares and applies a Blob participant
+    /// on its physical owner may pass this gate. Every other caller uses the
+    /// public fail-closed review.
+    pub(crate) fn review_mutation_plan_with_blob_participant(
+        &self,
+        plan: &MutationPlan,
+        binding_available: bool,
+    ) -> Result<MutationGovernanceSnapshot, RuntimeError> {
+        self.review_mutation_plan_inner(plan, binding_available)
+    }
+
+    fn review_mutation_plan_inner(
+        &self,
+        plan: &MutationPlan,
+        binding_available: bool,
+    ) -> Result<MutationGovernanceSnapshot, RuntimeError> {
         let resolved = self.mutation_policy_registry.resolve(&plan.request_key);
         let (source, policy, approval_status, warning_codes) = match resolved {
             None => (
@@ -384,6 +420,15 @@ impl UserContext {
                 )
             }
         };
+
+        // This shared review boundary precedes graph/ledger/native DML. The
+        // passive upload module alone cannot atomically maintain bindings.
+        if self.needs_blob_binding_participant(plan) && !binding_available {
+            return Err(RuntimeError::Capability {
+                code: "BLOB_CAPABILITY_MISSING",
+                capability: "blob.v1".to_owned(),
+            });
+        }
 
         let snapshot = MutationGovernanceSnapshot {
             execution_id: plan.execution_id.clone(),
@@ -563,6 +608,7 @@ pub(crate) fn ledger_policy_plan(
 mod tests {
     use super::*;
     use std::sync::Mutex;
+    use teaql_core::{BlobFieldSpec, DataType, EntityDescriptor, PropertyDescriptor};
 
     #[test]
     fn governance_scope_does_not_inline_work_future_payload() {
@@ -628,6 +674,66 @@ mod tests {
                 changed_values: BTreeMap::from([("total_amount".to_owned(), Value::I64(25_000))]),
             }],
         }
+    }
+
+    #[test]
+    fn modeled_blob_create_clear_delete_and_recover_require_binding_before_sql() {
+        let spec = BlobFieldSpec::new("Asset", "document", ["pdf"], true, "default").unwrap();
+        let descriptor = EntityDescriptor::new("Asset")
+            .property(PropertyDescriptor::new("id", DataType::U64).id())
+            .property(PropertyDescriptor::new("title", DataType::Text))
+            .property(PropertyDescriptor::new("document", DataType::BlobRef).blob_field_spec(spec));
+        let context = UserContext::default()
+            .with_metadata(crate::InMemoryMetadataStore::new().with_entity(descriptor));
+        let mut plan = MutationPlan {
+            execution_id: "blob-boundary".to_owned(),
+            request_key: "Asset.saveGraph".to_owned(),
+            root_entity_type: "Asset".to_owned(),
+            audit_reason: Some("verify blob save boundary".to_owned()),
+            operations: vec![MutationOperation {
+                kind: MutationOperationKind::Update,
+                entity: EntityKey::new("Asset", 1_u64),
+                original_version: Some(1),
+                changed_values: BTreeMap::from([("title".to_owned(), Value::from("ordinary"))]),
+            }],
+        };
+        context.review_mutation_plan(&plan).unwrap();
+
+        plan.operations[0].changed_values = BTreeMap::from([("document".to_owned(), Value::Null)]);
+        for kind in [
+            MutationOperationKind::Update,
+            MutationOperationKind::Create,
+            MutationOperationKind::Delete,
+            MutationOperationKind::Recover,
+        ] {
+            plan.operations[0].kind = kind;
+            if kind != MutationOperationKind::Update {
+                plan.operations[0].changed_values.clear();
+            }
+            assert!(matches!(
+                context.review_mutation_plan(&plan),
+                Err(RuntimeError::Capability {
+                    code: "BLOB_CAPABILITY_MISSING",
+                    capability,
+                }) if capability == "blob.v1"
+            ));
+        }
+
+        // Missing policy metadata is not a license to write a BlobRef column.
+        let bare = EntityDescriptor::new("Asset")
+            .property(PropertyDescriptor::new("id", DataType::U64).id())
+            .property(PropertyDescriptor::new("document", DataType::BlobRef));
+        let bare_context = UserContext::default()
+            .with_metadata(crate::InMemoryMetadataStore::new().with_entity(bare));
+        plan.operations[0].kind = MutationOperationKind::Update;
+        plan.operations[0].changed_values = BTreeMap::from([("document".to_owned(), Value::Null)]);
+        assert!(matches!(
+            bare_context.review_mutation_plan(&plan),
+            Err(RuntimeError::Capability {
+                code: "BLOB_CAPABILITY_MISSING",
+                ..
+            })
+        ));
     }
 
     #[test]

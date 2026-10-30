@@ -131,6 +131,7 @@ fn decode(
         serde_json::from_str(&payload).map_err(|_| error("DYNAMIC_FIELD_INVALID_STORAGE", code))?;
     let invalid = || error("DYNAMIC_FIELD_INVALID_STORAGE", code);
     Ok(match data_type {
+        DataType::BlobRef => return Err(error("BLOB_CAPABILITY_MISSING", code)),
         DataType::Bool => Value::Bool(json.as_bool().ok_or_else(invalid)?),
         DataType::I64 => Value::I64(json.as_i64().ok_or_else(invalid)?),
         DataType::U64 => Value::U64(json.as_u64().ok_or_else(invalid)?),

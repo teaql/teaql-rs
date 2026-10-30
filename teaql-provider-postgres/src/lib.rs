@@ -1,5 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
+mod dynamic_fields;
+mod infrastructure;
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use deadpool_postgres::{GenericClient, Pool};
@@ -160,6 +162,7 @@ impl SqlDialect for PostgresDialect {
                 _ => Ok("NUMERIC".to_owned()),
             },
             DataType::Text => Ok(format!("VARCHAR({})", property.max_length.unwrap_or(255))),
+            DataType::BlobRef => Ok("VARCHAR(128)".to_owned()),
             DataType::LargeText => Ok("TEXT".to_owned()),
             DataType::Json => Ok("JSONB".to_owned()),
             DataType::Date => Ok("DATE".to_owned()),
@@ -307,6 +310,10 @@ pub enum MutationExecutorError {
     UnsupportedValue(&'static str),
     UnsupportedColumnType(String),
     Bind(String),
+    TransactionRollbackOnly,
+    TransactionCompletionRejected,
+    TransactionCompletionAfterCommit,
+    TransactionCompletionAfterRollback,
 }
 
 impl std::fmt::Display for MutationExecutorError {
@@ -337,6 +344,16 @@ impl std::fmt::Display for MutationExecutorError {
                 write!(f, "unsupported column type for record decoding: {kind}")
             }
             Self::Bind(message) => write!(f, "bind error: {message}"),
+            Self::TransactionRollbackOnly => f.write_str("postgres transaction is rollback-only"),
+            Self::TransactionCompletionRejected => {
+                f.write_str("POSTGRES_TRANSACTION_COMPLETION_REJECTED")
+            }
+            Self::TransactionCompletionAfterCommit => {
+                f.write_str("POSTGRES_TRANSACTION_AFTER_COMMIT_FAILED")
+            }
+            Self::TransactionCompletionAfterRollback => {
+                f.write_str("POSTGRES_TRANSACTION_AFTER_ROLLBACK_FAILED")
+            }
         }
     }
 }
@@ -358,7 +375,12 @@ impl From<SqlCompileError> for MutationExecutorError {
 #[derive(Clone)]
 pub struct PgMutationExecutor {
     pool: Pool,
+    resource_identity: teaql_data_service::infrastructure_sql::SqlResourceIdentity,
+    dynamic_storage_identity: Arc<u64>,
 }
+
+static NEXT_DYNAMIC_STORAGE_IDENTITY: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
 
 #[derive(Debug, Clone)]
 struct PostgresColumnMetadata {
@@ -373,11 +395,27 @@ struct PostgresColumnMetadata {
 /// lifetime. Using SQL BEGIN/COMMIT avoids a self-referential wrapper around
 /// `tokio_postgres::Transaction` while preserving connection affinity.
 pub struct PgTransactionExecutor {
-    client: deadpool_postgres::Object,
+    client: Option<deadpool_postgres::Object>,
+    identity: teaql_data_service::infrastructure_sql::PhysicalTransactionIdentity,
+    completion: Option<teaql_data_service::infrastructure_sql::PhysicalTransactionOwner>,
+    rollback_only: std::sync::atomic::AtomicBool,
+    dynamic_storage_identity: Arc<u64>,
 }
 
 impl SqlTransport for PgMutationExecutor {
     type Error = MutationExecutorError;
+
+    fn dynamic_field_store(
+        &self,
+    ) -> Option<&dyn teaql_data_service::dynamic_fields::DynamicFieldStore> {
+        Some(self)
+    }
+
+    fn infrastructure_sql(
+        &self,
+    ) -> Option<&dyn teaql_data_service::infrastructure_sql::InfrastructureSql> {
+        Some(self)
+    }
 
     async fn fetch_all_compact_sql(
         &self,
@@ -443,53 +481,121 @@ impl teaql_sql::StreamingSqlTransport for PgMutationExecutor {
 impl SqlTransport for PgTransactionExecutor {
     type Error = MutationExecutorError;
 
+    fn dynamic_field_store(
+        &self,
+    ) -> Option<&dyn teaql_data_service::dynamic_fields::DynamicFieldStore> {
+        Some(self)
+    }
+
+    fn infrastructure_sql(
+        &self,
+    ) -> Option<&dyn teaql_data_service::infrastructure_sql::InfrastructureSql> {
+        Some(self)
+    }
+
     async fn fetch_all_compact_sql(
         &self,
         query: &CompiledQuery,
     ) -> Result<Vec<teaql_core::CompactRow>, Self::Error> {
-        let mut args = PgArgs { values: Vec::new() };
-        for value in &query.params {
-            bind_pg(&mut args, value)?;
+        let result: Result<Vec<teaql_core::CompactRow>, MutationExecutorError> = async {
+            let mut args = PgArgs { values: Vec::new() };
+            for value in &query.params {
+                bind_pg(&mut args, value)?;
+            }
+            let statement = self.client().prepare_cached(&query.sql).await?;
+            let rows = self.client().query(&statement, &args.as_refs()).await?;
+            let columns: Arc<[String]> = statement
+                .columns()
+                .iter()
+                .map(|column| column.name().to_owned())
+                .collect::<Vec<_>>()
+                .into();
+            let columns = teaql_core::CompactRowLayout::new(columns);
+            rows.iter()
+                .map(|row| {
+                    Ok(teaql_core::CompactRow::with_layout(
+                        columns.clone(),
+                        decode_pg_values(row)?,
+                    ))
+                })
+                .collect()
         }
-        let statement = self.client.prepare_cached(&query.sql).await?;
-        let rows = self.client.query(&statement, &args.as_refs()).await?;
-        let columns: Arc<[String]> = statement
-            .columns()
-            .iter()
-            .map(|column| column.name().to_owned())
-            .collect::<Vec<_>>()
-            .into();
-        let columns = teaql_core::CompactRowLayout::new(columns);
-        rows.iter()
-            .map(|row| {
-                Ok(teaql_core::CompactRow::with_layout(
-                    columns.clone(),
-                    decode_pg_values(row)?,
-                ))
-            })
-            .collect()
+        .await;
+        if result.is_err() {
+            self.rollback_only
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        result
     }
 
     async fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
-        let mut args = PgArgs { values: Vec::new() };
-        for value in &query.params {
-            bind_pg(&mut args, value)?;
+        let result = async {
+            let mut args = PgArgs { values: Vec::new() };
+            for value in &query.params {
+                bind_pg(&mut args, value)?;
+            }
+            let statement = self.client().prepare_cached(&query.sql).await?;
+            Ok(self.client().execute(&statement, &args.as_refs()).await?)
         }
-        let statement = self.client.prepare_cached(&query.sql).await?;
-        Ok(self.client.execute(&statement, &args.as_refs()).await?)
+        .await;
+        if result.is_err() {
+            self.rollback_only
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        result
     }
 }
 
 impl teaql_sql::SqlTransaction for PgTransactionExecutor {
     type Error = MutationExecutorError;
 
-    async fn commit_sql(self) -> Result<(), Self::Error> {
-        self.client.batch_execute("COMMIT").await?;
+    fn physical_identity(
+        &self,
+    ) -> Option<teaql_data_service::infrastructure_sql::PhysicalTransactionIdentity> {
+        Some(self.identity.clone())
+    }
+
+    async fn commit_sql(mut self) -> Result<(), Self::Error> {
+        if self.rollback_only.load(std::sync::atomic::Ordering::SeqCst) {
+            self.client().batch_execute("ROLLBACK").await?;
+            self.completion
+                .take()
+                .expect("physical transaction owner")
+                .rolled_back()
+                .map_err(|_| MutationExecutorError::TransactionCompletionAfterRollback)?;
+            return Err(MutationExecutorError::TransactionRollbackOnly);
+        }
+        if self
+            .completion
+            .as_mut()
+            .expect("physical transaction owner")
+            .prepare_commit()
+            .is_err()
+        {
+            self.client().batch_execute("ROLLBACK").await?;
+            self.completion
+                .take()
+                .expect("physical transaction owner")
+                .rolled_back()
+                .map_err(|_| MutationExecutorError::TransactionCompletionAfterRollback)?;
+            return Err(MutationExecutorError::TransactionCompletionRejected);
+        }
+        self.client().batch_execute("COMMIT").await?;
+        self.completion
+            .take()
+            .expect("physical transaction owner")
+            .committed()
+            .map_err(|_| MutationExecutorError::TransactionCompletionAfterCommit)?;
         Ok(())
     }
 
-    async fn rollback_sql(self) -> Result<(), Self::Error> {
-        self.client.batch_execute("ROLLBACK").await?;
+    async fn rollback_sql(mut self) -> Result<(), Self::Error> {
+        self.client().batch_execute("ROLLBACK").await?;
+        self.completion
+            .take()
+            .expect("physical transaction owner")
+            .rolled_back()
+            .map_err(|_| MutationExecutorError::TransactionCompletionAfterRollback)?;
         Ok(())
     }
 }
@@ -506,14 +612,34 @@ impl teaql_sql::SqlTransactionTransport for PgMutationExecutor {
             .get()
             .await
             .map_err(|error| MutationExecutorError::Pool(error.to_string()))?;
-        client.batch_execute("BEGIN").await?;
-        Ok(PgTransactionExecutor { client })
+        let completion = self.resource_identity.begin();
+        let transaction = PgTransactionExecutor {
+            client: Some(client),
+            identity: completion.identity(),
+            completion: Some(completion),
+            rollback_only: std::sync::atomic::AtomicBool::new(false),
+            dynamic_storage_identity: self.dynamic_storage_identity.clone(),
+        };
+        transaction.client().batch_execute("BEGIN").await?;
+        Ok(transaction)
     }
 }
 
 impl PgMutationExecutor {
+    // Rust 1.99 renamed fetch_update; retain compatibility with supported older
+    // toolchains until the minimum Rust version is deliberately raised.
+    #[allow(deprecated)]
     pub fn new(pool: Pool) -> Self {
-        Self { pool }
+        use std::sync::atomic::Ordering;
+        Self {
+            pool,
+            resource_identity: teaql_data_service::infrastructure_sql::SqlResourceIdentity::new(),
+            dynamic_storage_identity: Arc::new(
+                NEXT_DYNAMIC_STORAGE_IDENTITY
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                    .expect("PostgreSQL dynamic storage identities exhausted"),
+            ),
+        }
     }
 
     pub fn pool(&self) -> Pool {
@@ -1080,7 +1206,9 @@ fn ensure_postgres_column_compatibility(
         DataType::I64 | DataType::U64 => actual == "bigint",
         DataType::F64 => matches!(actual.as_str(), "double precision" | "real"),
         DataType::Decimal => matches!(actual.as_str(), "numeric" | "decimal"),
-        DataType::Text => matches!(actual.as_str(), "character varying" | "text"),
+        DataType::Text | DataType::BlobRef => {
+            matches!(actual.as_str(), "character varying" | "text")
+        }
         DataType::LargeText => matches!(actual.as_str(), "text" | "character varying"),
         DataType::Json => matches!(actual.as_str(), "jsonb" | "json"),
         DataType::Date => actual == "date",
@@ -3232,6 +3360,7 @@ fn bind_pg(args: &mut PgArgs, value: &Value) -> Result<(), MutationExecutorError
         }
         Value::F64(v) => args.add(*v),
         Value::Decimal(v) => args.add(*v),
+        Value::BlobRef(v) => args.add(v.as_str().to_owned()),
         Value::Text(v) => match try_parse_datetime_from_str(v) {
             Some(dt) => args.add(dt),
             None => args.add(v.clone()),
@@ -3250,7 +3379,9 @@ fn bind_pg(args: &mut PgArgs, value: &Value) -> Result<(), MutationExecutorError
             DataType::I64 | DataType::U64 => args.add(Option::<i64>::None),
             DataType::F64 => args.add(Option::<f64>::None),
             DataType::Decimal => args.add(Option::<Decimal>::None),
-            DataType::Text | DataType::LargeText => args.add(Option::<String>::None),
+            DataType::Text | DataType::LargeText | DataType::BlobRef => {
+                args.add(Option::<String>::None)
+            }
             DataType::Json => args.add(Option::<serde_json::Value>::None),
             DataType::Date => args.add(Option::<NaiveDate>::None),
             DataType::Timestamp => args.add(PgNull),
@@ -3313,6 +3444,18 @@ fn bind_pg_list(args: &mut PgArgs, values: &[Value]) -> Result<(), MutationExecu
                     Value::Decimal(value) => Ok(*value),
                     _ => Err(MutationExecutorError::UnsupportedValue(
                         "mixed decimal list",
+                    )),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            args.add(values);
+        }
+        Value::BlobRef(_) => {
+            let values = values
+                .iter()
+                .map(|value| match value {
+                    Value::BlobRef(value) => Ok(value.as_str().to_owned()),
+                    _ => Err(MutationExecutorError::UnsupportedValue(
+                        "mixed BlobRef list",
                     )),
                 })
                 .collect::<Result<Vec<_>, _>>()?;

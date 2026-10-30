@@ -1,7 +1,7 @@
 // Recursive graph futures expose stable internal boundaries used during generator migration.
 #![allow(dead_code, clippy::type_complexity)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use teaql_core::{
@@ -22,6 +22,43 @@ use super::{EntityDataService, helpers::*};
 pub(crate) struct LedgerExecutionOutcome {
     pub(crate) generated_ids: BTreeMap<crate::EntityKey, Value>,
     pub(crate) dynamic_readbacks: Option<Box<DynamicReadbacks>>,
+    pub(crate) canonical_rows: Box<CanonicalReadbacks>,
+}
+
+impl LedgerExecutionOutcome {
+    pub(crate) fn into_submission_parts(
+        self,
+    ) -> (
+        BTreeMap<crate::EntityKey, teaql_core::EntitySnapshot>,
+        BTreeMap<crate::EntityKey, Value>,
+        BTreeMap<crate::EntityKey, teaql_core::dynamic_fields::DynamicFieldValues>,
+    ) {
+        (
+            self.canonical_rows.rows,
+            self.generated_ids,
+            self.dynamic_readbacks
+                .map(|rows| rows.rows)
+                .unwrap_or_default(),
+        )
+    }
+}
+
+/// Every row affected by one native ledger flush, keyed by its pre-allocation
+/// identity. Rows are fetched on the same SQL executor after all writes.
+#[derive(Debug, Default)]
+pub(crate) struct CanonicalReadbacks {
+    rows: BTreeMap<crate::EntityKey, teaql_core::EntitySnapshot>,
+}
+impl std::ops::Deref for CanonicalReadbacks {
+    type Target = BTreeMap<crate::EntityKey, teaql_core::EntitySnapshot>;
+    fn deref(&self) -> &Self::Target {
+        &self.rows
+    }
+}
+impl std::ops::DerefMut for CanonicalReadbacks {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.rows
+    }
 }
 
 /// Rare-path payload stays behind one pointer to protect ordinary async stacks.
@@ -236,6 +273,19 @@ where
         &self,
         plan: GraphMutationPlan,
     ) -> Result<GraphNode, DataServiceError<E::Error>> {
+        self.execute_graph_plan_internal_with_before_readback(plan, || async { Ok(()) })
+            .await
+    }
+
+    pub(crate) async fn execute_graph_plan_internal_with_before_readback<F, Fut>(
+        &self,
+        plan: GraphMutationPlan,
+        before_readback: F,
+    ) -> Result<GraphNode, DataServiceError<E::Error>>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send,
+    {
         let intent = teaql_core::MutationIntent::from_optional(
             plan.planned_root
                 .as_ref()
@@ -249,13 +299,18 @@ where
             .map_err(DataServiceError::Runtime)?;
         // Do not embed the complete executor state machine in each intent
         // boundary. Generated bootstrap also runs on small test-thread stacks.
-        Box::pin(scoped.execute_graph_plan_scoped(plan)).await
+        Box::pin(scoped.execute_graph_plan_scoped(plan, before_readback)).await
     }
 
-    async fn execute_graph_plan_scoped(
+    async fn execute_graph_plan_scoped<F, Fut>(
         &self,
         plan: GraphMutationPlan,
-    ) -> Result<GraphNode, DataServiceError<E::Error>> {
+        before_readback: F,
+    ) -> Result<GraphNode, DataServiceError<E::Error>>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: std::future::Future<Output = Result<(), DataServiceError<E::Error>>> + Send,
+    {
         let Some(mut root) = plan.planned_root else {
             return Err(DataServiceError::Runtime(RuntimeError::Graph(
                 "graph mutation plan has no planned root".to_owned(),
@@ -327,6 +382,8 @@ where
                 }
             }
         }
+
+        before_readback().await?;
 
         if root.operation != GraphOperation::Remove {
             let descriptor = self
@@ -1547,6 +1604,16 @@ where
         root: crate::EntityRuntimeState,
         locations: &std::collections::BTreeMap<crate::EntityKey, crate::ObjectLocation>,
     ) -> Result<LedgerExecutionOutcome, DataServiceError<E::Error>> {
+        self.execute_ledger_plan_internal_with_blob(root, locations, None)
+            .await
+    }
+
+    pub(crate) async fn execute_ledger_plan_internal_with_blob(
+        &self,
+        root: crate::EntityRuntimeState,
+        locations: &std::collections::BTreeMap<crate::EntityKey, crate::ObjectLocation>,
+        blob_plan: Option<Box<dyn crate::RuntimeBlobMutationPlan>>,
+    ) -> Result<LedgerExecutionOutcome, DataServiceError<E::Error>> {
         if root.has_pending_dynamic_mutations() {
             self.data_service
                 .metadata
@@ -1561,13 +1628,14 @@ where
             .with_mutation_intent(intent)
             .with_ledger_privacy(&root)
             .map_err(DataServiceError::Runtime)?;
-        Box::pin(scoped.execute_ledger_plan_scoped(root, locations)).await
+        Box::pin(scoped.execute_ledger_plan_scoped(root, locations, blob_plan)).await
     }
 
     async fn execute_ledger_plan_scoped(
         &self,
         root: crate::EntityRuntimeState,
         locations: &std::collections::BTreeMap<crate::EntityKey, crate::ObjectLocation>,
+        blob_plan: Option<Box<dyn crate::RuntimeBlobMutationPlan>>,
     ) -> Result<LedgerExecutionOutcome, DataServiceError<E::Error>> {
         if let Some(error) = root.first_composition_error() {
             return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
@@ -1675,11 +1743,12 @@ where
                     )))
                 })?;
                 let my_trace = resolve_trace_chain(root.get_trace_chain(key), &trace_chain);
+                let persisted_id = root.persisted_id_for(key);
                 let current_row = self
                     .fetch_graph_current_row_internal(
                         &key.entity,
                         &id_property.name,
-                        &key.id,
+                        &persisted_id,
                         my_trace,
                     )
                     .await?;
@@ -1730,8 +1799,10 @@ where
                 generated_ids.insert(key.clone(), Value::U64(id));
             }
         }
-        root.enrich_allocated_trace_scopes(&generated_ids);
-        self.rebind_allocated_ledger_relations(&mut checked_changes, &generated_ids)
+        let mut resolved_ids = root.persisted_id_aliases();
+        resolved_ids.extend(generated_ids.clone());
+        root.enrich_allocated_trace_scopes(&resolved_ids);
+        self.rebind_allocated_ledger_relations(&mut checked_changes, &resolved_ids)
             .map_err(DataServiceError::Runtime)?;
         let mut dynamic_writes = Vec::new();
         let mut dynamic_keys = Vec::new();
@@ -1777,7 +1848,8 @@ where
                 })?;
                 let id = generated_ids
                     .get(key)
-                    .unwrap_or(&key.id)
+                    .cloned()
+                    .unwrap_or_else(|| root.persisted_id_for(key))
                     .try_u64()
                     .ok_or_else(|| {
                         DataServiceError::Runtime(RuntimeError::DynamicField(
@@ -1855,11 +1927,29 @@ where
         // The required-field gate above is complete before Deletes, Inserts,
         // or Updates. Ledger deletion is versioned soft delete, so physical
         // foreign keys do not impose child-before-parent ordering here.
+        let prepared_blob = if let Some(blob_plan) = blob_plan {
+            let sql = teaql_data_service::DataServiceExecutor::infrastructure_sql(
+                self.data_service.executor,
+            )
+            .ok_or_else(|| {
+                DataServiceError::Runtime(RuntimeError::Transaction(
+                    "BLOB_TRANSACTION_REQUIRED".to_owned(),
+                ))
+            })?;
+            Some(
+                blob_plan
+                    .prepare(self.data_service.metadata.context, sql, &resolved_ids)
+                    .await
+                    .map_err(DataServiceError::Runtime)?,
+            )
+        } else {
+            None
+        };
         for key in &deleted_keys {
             if new_keys.contains(key) {
                 continue;
             }
-            let id = key.id.clone();
+            let id = root.persisted_id_for(key);
             let mut cmd = teaql_core::DeleteCommand::new(key.entity.as_ref(), id);
             if let Some(version) = root.get_original_version(key) {
                 cmd = cmd.expected_version(version);
@@ -1903,7 +1993,8 @@ where
             for key in keys {
                 let record = checked_changes.get(key).unwrap();
                 let mut db_record = crate::EntityValues::new();
-                db_record.insert("id".to_owned(), key.id.clone());
+                let persisted_id = root.persisted_id_for(key);
+                db_record.insert("id".to_owned(), persisted_id.clone());
                 for (field, value) in record {
                     if field == "id" {
                         continue;
@@ -1917,7 +2008,7 @@ where
                 );
                 crate::data_service::helpers::ensure_timestamps(&mut db_record, descriptor, false);
                 cmd.batch_values.push(db_record.into());
-                cmd.batch_ids.push(key.id.clone());
+                cmd.batch_ids.push(persisted_id);
                 cmd.batch_expected_versions
                     .push(root.get_original_version(key));
                 cmd.batch_old_values.push(root.original_values_for(key));
@@ -1931,6 +2022,7 @@ where
         let mut outcome = LedgerExecutionOutcome {
             generated_ids,
             dynamic_readbacks: None,
+            canonical_rows: Box::default(),
         };
         if !dynamic_writes.is_empty() {
             outcome.dynamic_readbacks = Some(Box::new(DynamicReadbacks {
@@ -1942,6 +2034,80 @@ where
                 ))
                 .await?,
             }));
+        }
+        if let Some(prepared_blob) = prepared_blob {
+            let sql = teaql_data_service::DataServiceExecutor::infrastructure_sql(
+                self.data_service.executor,
+            )
+            .expect("prepared Blob binding requires the same SQL owner");
+            prepared_blob
+                .apply(self.data_service.metadata.context, sql)
+                .await
+                .map_err(DataServiceError::Runtime)?;
+        }
+        let mut affected = BTreeSet::from_iter(checked_changes.keys().cloned());
+        affected.extend(
+            deleted_keys
+                .iter()
+                .filter(|key| !new_keys.contains(*key))
+                .cloned(),
+        );
+        affected.extend(
+            new_keys
+                .iter()
+                .filter(|key| !deleted_keys.contains(*key))
+                .cloned(),
+        );
+        for key in affected {
+            let descriptor = self
+                .data_service
+                .metadata
+                .context
+                .require_entity(&key.entity)
+                .map_err(DataServiceError::Runtime)?;
+            let id_property = descriptor.id_property().ok_or_else(|| {
+                DataServiceError::Runtime(RuntimeError::Graph(format!(
+                    "entity {} has no id property for authoritative ledger readback",
+                    key.entity
+                )))
+            })?;
+            let persisted_id = outcome
+                .generated_ids
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(|| root.persisted_id_for(&key));
+            let trace = resolve_trace_chain(root.get_trace_chain(&key), &trace_chain);
+            let row = self
+                .fetch_graph_current_row_internal(
+                    &key.entity,
+                    &id_property.name,
+                    &persisted_id,
+                    trace,
+                )
+                .await?
+                .ok_or_else(|| {
+                    DataServiceError::Runtime(RuntimeError::Graph(format!(
+                        "persisted {} record could not be read back on the transaction-owned executor",
+                        key.entity
+                    )))
+                })?;
+            let returned_id = row.get(&id_property.name).ok_or_else(|| {
+                DataServiceError::Runtime(RuntimeError::Graph(format!(
+                    "authoritative ledger readback omitted {}.{}",
+                    key.entity, id_property.name
+                )))
+            })?;
+            if crate::EntityKey::new(key.entity.to_string(), returned_id.clone())
+                != crate::EntityKey::new(key.entity.to_string(), persisted_id)
+            {
+                return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
+                    "authoritative ledger readback identity mismatch for {}",
+                    key.entity
+                ))));
+            }
+            outcome
+                .canonical_rows
+                .insert(key, teaql_core::EntitySnapshot::from(row.into_map()));
         }
         Ok(outcome)
     }
@@ -2046,11 +2212,14 @@ where
                 .map(|(code, mutation)| {
                     crate::EntityPropertyChange::new(
                         format!("#{code}"),
-                        change_set
-                            .dynamic_originals(key)
-                            .and_then(|values| values.get(code))
-                            .cloned()
-                            .flatten(),
+                        root.submitted_dynamic_original_for(key, code)
+                            .unwrap_or_else(|| {
+                                change_set
+                                    .dynamic_originals(key)
+                                    .and_then(|values| values.get(code))
+                                    .cloned()
+                                    .flatten()
+                            }),
                         Some(crate::dynamic_fields::mutation_audit_value(
                             mutation,
                             fields.values().get(code),

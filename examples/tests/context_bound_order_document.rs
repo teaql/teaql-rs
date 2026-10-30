@@ -4,13 +4,19 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use teaql_core::BlobRef;
 use teaql_runtime::{
-    AcceptedContextualDocument, ContextBoundDocumentService, ContextBoundReferenceRuntime,
-    ContextualDocument, DeploymentProfile, DocumentAcceptRequest, DocumentEntitySnapshot,
+    AcceptedContextualDocument, BoundDocumentSnapshot, ContextBoundDocumentService,
+    ContextualDocument, DocumentAcceptRequest, DocumentBlobBindingSnapshot, DocumentEntitySnapshot,
     DocumentMutationKind, DocumentOpenRequest, DocumentRelationCompleteness,
     DocumentRelationSnapshot, DocumentRoundTripError, DocumentSnapshot, ReferenceDocumentScope,
-    ReferenceIdentity, ReferenceKey, RoundTripReferenceError, StaticReferenceKeyProvider,
-    SubmittedContextualDocument, TrustedReferencePrincipal, UserContext,
+    ReferenceIdentity, RoundTripReferenceError, SubmittedContextualDocument,
+    TrustedReferencePrincipal, UserContext, VerifiedBoundDocumentSnapshot,
+    VerifiedDocumentSnapshot, ViewAuthorization, ViewEntityTarget, ViewErrorCode,
+    ViewFieldDecision, ViewIdentity, ViewInput, ViewOptions, ViewPath, ViewPreparationService,
+};
+use teaql_secure_document_reference::{
+    ContextBoundReferenceRuntime, DeploymentProfile, ReferenceKey, StaticReferenceKeyProvider,
 };
 
 const PURPOSE: &str = "edit-order-items";
@@ -45,6 +51,9 @@ struct OrderState {
 struct OrderDocumentService {
     state: Arc<Mutex<OrderState>>,
     permissions: Arc<Mutex<BTreeSet<String>>>,
+    issued: Arc<std::sync::atomic::AtomicUsize>,
+    bound: bool,
+    allow_bound_view: bool,
 }
 
 impl OrderDocumentService {
@@ -80,6 +89,7 @@ impl OrderDocumentService {
         let scope =
             ReferenceDocumentScope::new(document_id, PURPOSE, "Order", order.id, order.revision)?;
         let mut snapshots = Vec::new();
+        let mut bindings = Vec::new();
         let mut visible_items = Vec::new();
         let mut row_keys = Vec::new();
         for (index, item) in order
@@ -90,16 +100,40 @@ impl OrderDocumentService {
         {
             let row_key = format!("item:{index}");
             row_keys.push(row_key.clone());
+            let loaded_fields = if self.bound {
+                vec!["product_code", "quantity", "attachment"]
+            } else {
+                vec!["product_code", "quantity"]
+            };
+            let writable_fields = if self.bound {
+                vec!["quantity", "attachment"]
+            } else {
+                vec!["quantity"]
+            };
             snapshots.push(DocumentEntitySnapshot::new(
                 row_key.clone(),
                 ReferenceIdentity::new("OrderItem", item.id, item.version)?,
-                ["product_code", "quantity"],
-                ["quantity"],
+                loaded_fields,
+                writable_fields,
                 [
                     DocumentMutationKind::Update,
                     DocumentMutationKind::RemoveChild,
                 ],
             )?);
+            if self.bound {
+                bindings.push(DocumentBlobBindingSnapshot {
+                    row_key: row_key.clone(),
+                    canonical_field: "attachment".into(),
+                    entity_type: "OrderItem".into(),
+                    reference: Some(
+                        BlobRef::new(format!("blob_{}", item.id))
+                            .map_err(|_| DocumentRoundTripError::invalid())?,
+                    ),
+                    binding_version: 1,
+                    nullable: true,
+                    writable: true,
+                });
+            }
             visible_items.push(json!({
                 "ref": row_key,
                 "productCode": item.product_code,
@@ -123,9 +157,19 @@ impl OrderDocumentService {
                 ],
             )?],
         )?;
+        self.issued
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let document_token = if self.bound {
+            context.issue_bound_document_snapshot(
+                BoundDocumentSnapshot::new(snapshot, bindings)?,
+                lifetime,
+            )?
+        } else {
+            context.issue_document_snapshot(snapshot, lifetime)?
+        };
         Ok(ContextualDocument {
             business_id: order.business_id.clone(),
-            document_token: context.issue_document_snapshot(snapshot, lifetime)?,
+            document_token,
             body: json!({
                 "orderNumber": order.business_id,
                 "items": visible_items
@@ -159,6 +203,50 @@ impl OrderDocumentService {
 
 #[async_trait]
 impl ContextBoundDocumentService for OrderDocumentService {
+    fn supports_view_preparation(&self) -> bool {
+        true
+    }
+
+    async fn validate_prepared_document(
+        &self,
+        _: &UserContext,
+        principal: &TrustedReferencePrincipal,
+        verified: &VerifiedDocumentSnapshot,
+    ) -> Result<(), DocumentRoundTripError> {
+        self.require_access(principal)?;
+        if verified.snapshot.model_fingerprint != MODEL_FINGERPRINT
+            || verified.snapshot.scope.purpose != PURPOSE
+            || verified.snapshot.scope.aggregate_type != "Order"
+            || principal.domain_root_type != "Merchant"
+            || principal.domain_root_id != 7
+        {
+            return Err(DocumentRoundTripError::authorization_required());
+        }
+        Ok(())
+    }
+
+    async fn validate_prepared_bound_document(
+        &self,
+        context: &UserContext,
+        principal: &TrustedReferencePrincipal,
+        verified: &VerifiedBoundDocumentSnapshot,
+    ) -> Result<(), DocumentRoundTripError> {
+        if !self.allow_bound_view || verified.document.bindings.is_empty() {
+            return Err(DocumentRoundTripError::configuration());
+        }
+        self.validate_prepared_document(
+            context,
+            principal,
+            &VerifiedDocumentSnapshot {
+                snapshot: verified.document.snapshot.clone(),
+                key_id: verified.key_id.clone(),
+                issued_at: verified.issued_at,
+                expires_at: verified.expires_at,
+            },
+        )
+        .await
+    }
+
     async fn open_document(
         &self,
         context: &UserContext,
@@ -187,21 +275,34 @@ impl ContextBoundDocumentService for OrderDocumentService {
         if request.expected_aggregate_type != "Order" || request.purpose != PURPOSE {
             return Err(DocumentRoundTripError::scope_mismatch());
         }
-        let verified = context.consume_document_snapshot(
-            &request.submitted.document_token,
-            &request.expected_aggregate_type,
-            &request.purpose,
-        )?;
-        if request.submitted.business_id != verified.snapshot.business_id {
+        let verified = if self.bound {
+            context
+                .consume_bound_document_snapshot(
+                    &request.submitted.document_token,
+                    &request.expected_aggregate_type,
+                    &request.purpose,
+                )?
+                .document
+                .snapshot
+        } else {
+            context
+                .consume_document_snapshot(
+                    &request.submitted.document_token,
+                    &request.expected_aggregate_type,
+                    &request.purpose,
+                )?
+                .snapshot
+        };
+        if request.submitted.business_id != verified.business_id {
             return Err(DocumentRoundTripError::scope_mismatch());
         }
-        if verified.snapshot.model_fingerprint != MODEL_FINGERPRINT
+        if verified.model_fingerprint != MODEL_FINGERPRINT
             || request
                 .submitted
                 .body
                 .get("orderNumber")
                 .and_then(Value::as_str)
-                != Some(verified.snapshot.business_id.as_str())
+                != Some(verified.business_id.as_str())
         {
             return Err(DocumentRoundTripError::projection_violation());
         }
@@ -212,16 +313,13 @@ impl ContextBoundDocumentService for OrderDocumentService {
         }
         let original = state
             .orders
-            .get(&verified.snapshot.business_id)
+            .get(&verified.business_id)
             .ok_or_else(DocumentRoundTripError::not_found)?
             .clone();
-        if original.id != verified.snapshot.aggregate.id
-            || original.revision != verified.snapshot.aggregate.version
-        {
+        if original.id != verified.aggregate.id || original.revision != verified.aggregate.version {
             return Err(DocumentRoundTripError::revision_conflict());
         }
         let relation = verified
-            .snapshot
             .relation("items")
             .ok_or_else(DocumentRoundTripError::projection_violation)?;
         let relation_rows: BTreeSet<&str> = relation.row_keys.iter().map(String::as_str).collect();
@@ -246,7 +344,6 @@ impl ContextBoundDocumentService for OrderDocumentService {
                     return Err(DocumentRoundTripError::projection_violation());
                 }
                 let issued = verified
-                    .snapshot
                     .entity(row_key)
                     .ok_or_else(DocumentRoundTripError::projection_violation)?;
                 if !relation_rows.contains(row_key)
@@ -340,7 +437,6 @@ impl ContextBoundDocumentService for OrderDocumentService {
                 return Err(DocumentRoundTripError::projection_violation());
             }
             let issued = verified
-                .snapshot
                 .entity(row_key)
                 .ok_or_else(DocumentRoundTripError::projection_violation)?;
             if !issued
@@ -443,12 +539,50 @@ fn context(
     runtime: Arc<ContextBoundReferenceRuntime>,
     service: Arc<OrderDocumentService>,
 ) -> UserContext {
-    UserContext::new()
+    let mut context = UserContext::new()
         .with_round_trip_reference_runtime(runtime)
         .with_trusted_reference_principal(
             TrustedReferencePrincipal::new("oidc", subject, "Merchant", 7).unwrap(),
         )
-        .with_context_bound_document_service(service)
+        .with_context_bound_document_service(service);
+    ViewPreparationService::new(Arc::new(DocumentPresentation))
+        .install_into(&mut context)
+        .unwrap();
+    context
+}
+
+struct DocumentPresentation;
+impl ViewAuthorization for DocumentPresentation {
+    fn identity(&self, context: &UserContext) -> Result<ViewIdentity, ViewErrorCode> {
+        let principal = context
+            .trusted_reference_principal()
+            .map_err(|_| ViewErrorCode::AccessDenied)?;
+        ViewIdentity::new(
+            &principal.authentication_realm,
+            &principal.subject,
+            format!(
+                "{}:{}",
+                principal.domain_root_type, principal.domain_root_id
+            ),
+        )
+    }
+    fn can_read_entity(
+        &self,
+        _: &UserContext,
+        _: &ViewEntityTarget,
+        _: &ViewPath,
+    ) -> Result<bool, ViewErrorCode> {
+        Ok(false)
+    }
+    fn field(
+        &self,
+        _: &UserContext,
+        _: &ViewEntityTarget,
+        _: &str,
+        _: &ViewPath,
+    ) -> Result<ViewFieldDecision, ViewErrorCode> {
+        Ok(ViewFieldDecision::Hidden)
+    }
 }
 
 fn fixture() -> (Arc<OrderDocumentService>, Arc<Mutex<BTreeSet<String>>>) {
@@ -507,6 +641,9 @@ fn fixture() -> (Arc<OrderDocumentService>, Arc<Mutex<BTreeSet<String>>>) {
         Arc::new(OrderDocumentService {
             state: Arc::new(Mutex::new(state)),
             permissions: permissions.clone(),
+            issued: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            bound: false,
+            allow_bound_view: false,
         }),
         permissions,
     )
@@ -700,4 +837,173 @@ async fn child_version_conflict_is_detected_even_if_aggregate_revision_is_unchan
             .code(),
         "DOCUMENT_REVISION_CONFLICT"
     );
+}
+
+#[tokio::test]
+async fn existing_tqd1_outbound_is_adopted_once_with_current_authority_and_committed_failure() {
+    use std::sync::atomic::Ordering;
+    let (service, permissions) = fixture();
+    let alice = context(
+        "alice",
+        runtime("test", permissions.clone()),
+        service.clone(),
+    );
+    let request =
+        DocumentOpenRequest::new("Order", "ORD-1001", PURPOSE, Duration::from_secs(900)).unwrap();
+    let source = alice.open_document_for_view(request).await.unwrap();
+    assert_eq!(service.issued.load(Ordering::SeqCst), 1);
+    let options = ViewOptions::governed();
+    let prepared = alice
+        .prepare_view(ViewInput::Document(&source), &options)
+        .await
+        .unwrap();
+    let credentials = prepared.document_credentials().unwrap();
+    let original = ContextualDocument {
+        business_id: credentials["businessId"].as_str().unwrap().into(),
+        document_token: credentials["documentToken"].as_str().unwrap().into(),
+        body: prepared.value().clone(),
+    };
+    assert!(original.document_token.starts_with("tqd1."));
+    alice
+        .reuse_prepared_view(&prepared, &options)
+        .await
+        .unwrap();
+    assert_eq!(service.issued.load(Ordering::SeqCst), 1);
+    permissions.lock().unwrap().remove("alice");
+    assert_eq!(
+        alice
+            .reuse_prepared_view(&prepared, &options)
+            .await
+            .unwrap_err()
+            .code,
+        ViewErrorCode::AccessDenied
+    );
+    assert_eq!(service.issued.load(Ordering::SeqCst), 1);
+    permissions.lock().unwrap().insert("alice".into());
+    let accepted=alice.accept_document_for_view(submit(&original,"view-accept",json!({"orderNumber":"ORD-1001","items":[{"ref":"item:0","productCode":"VISIBLE","quantity":4}]}))).await.unwrap();
+    assert_eq!(service.issued.load(Ordering::SeqCst), 2);
+    permissions.lock().unwrap().remove("alice");
+    let committed_options = ViewOptions::governed().after_commit();
+    let error = alice
+        .prepare_view(ViewInput::Document(&accepted.document), &committed_options)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.business_completion,
+        teaql_runtime::BusinessCompletion::Committed
+    );
+    assert_eq!(error.code, ViewErrorCode::AccessDenied);
+    assert_eq!(service.state.lock().unwrap().orders["ORD-1001"].revision, 4);
+    let missing_service = UserContext::new();
+    let error = missing_service
+        .prepare_view(
+            ViewInput::Document(&accepted.document),
+            &ViewOptions::read_only(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.business_completion,
+        teaql_runtime::BusinessCompletion::Committed
+    );
+    permissions.lock().unwrap().insert("alice".into());
+    let accepted_view = alice
+        .prepare_view(ViewInput::Document(&accepted.document), &committed_options)
+        .await
+        .unwrap();
+    alice
+        .reuse_prepared_view(&accepted_view, &committed_options)
+        .await
+        .unwrap();
+    assert_eq!(
+        service.issued.load(Ordering::SeqCst),
+        2,
+        "prepare/reuse cannot sign again or replay accept"
+    );
+    assert_eq!(service.state.lock().unwrap().orders["ORD-1001"].revision, 4);
+}
+
+#[tokio::test]
+async fn bound_tqd2_outbound_requires_opt_in_and_revalidates_without_reissuing() {
+    use std::sync::atomic::Ordering;
+
+    let (mut service, permissions) = fixture();
+    Arc::get_mut(&mut service).unwrap().bound = true;
+    let alice = context(
+        "alice",
+        runtime("test", permissions.clone()),
+        service.clone(),
+    );
+    let request = || {
+        DocumentOpenRequest::new("Order", "ORD-1001", PURPOSE, Duration::from_secs(900)).unwrap()
+    };
+    let error = alice.open_document_for_view(request()).await.unwrap_err();
+    assert!(matches!(
+        error,
+        teaql_runtime::DocumentViewError::Presentation(ref failure)
+            if failure.code == ViewErrorCode::CapabilityMissing
+    ));
+
+    let (mut service, permissions) = fixture();
+    let service_mut = Arc::get_mut(&mut service).unwrap();
+    service_mut.bound = true;
+    service_mut.allow_bound_view = true;
+    let alice = context(
+        "alice",
+        runtime("test", permissions.clone()),
+        service.clone(),
+    );
+    let source = alice.open_document_for_view(request()).await.unwrap();
+    assert_eq!(service.issued.load(Ordering::SeqCst), 1);
+    let options = ViewOptions::governed();
+    let prepared = alice
+        .prepare_view(ViewInput::Document(&source), &options)
+        .await
+        .unwrap();
+    let credentials = prepared.document_credentials().unwrap();
+    let token = credentials["documentToken"].as_str().unwrap();
+    assert!(token.starts_with("tqd2."));
+    assert!(!prepared.value().to_string().contains("blob_11"));
+    alice
+        .reuse_prepared_view(&prepared, &options)
+        .await
+        .unwrap();
+    assert_eq!(service.issued.load(Ordering::SeqCst), 1);
+    permissions.lock().unwrap().remove("alice");
+    assert_eq!(
+        alice
+            .reuse_prepared_view(&prepared, &options)
+            .await
+            .unwrap_err()
+            .code,
+        ViewErrorCode::AccessDenied
+    );
+    permissions.lock().unwrap().insert("alice".into());
+
+    let original = ContextualDocument {
+        business_id: credentials["businessId"].as_str().unwrap().into(),
+        document_token: token.into(),
+        body: prepared.value().clone(),
+    };
+    let accepted = alice
+        .accept_document_for_view(submit(
+            &original,
+            "bound-view-accept",
+            json!({"orderNumber":"ORD-1001","items":[{"ref":"item:0","productCode":"VISIBLE","quantity":4},{"ref":"item:1","productCode":"ALICE-ONLY","quantity":9}]}),
+        ))
+        .await
+        .unwrap();
+    let committed = ViewOptions::governed().after_commit();
+    let result = alice
+        .prepare_view(ViewInput::Document(&accepted.document), &committed)
+        .await
+        .unwrap();
+    assert!(
+        result.document_credentials().unwrap()["documentToken"]
+            .as_str()
+            .unwrap()
+            .starts_with("tqd2.")
+    );
+    assert_eq!(service.issued.load(Ordering::SeqCst), 2);
+    assert_eq!(service.state.lock().unwrap().orders["ORD-1001"].revision, 4);
 }

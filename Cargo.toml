@@ -1,10 +1,15 @@
 [workspace]
 members = [
     "teaql-core",
+    "teaql-blob-contracts",
+    "teaql-blob-reference",
+    "teaql-blob-store-file",
+    "teaql-blob-content-native",
     "teaql-object-storage-s3",
     "teaql-http-reqwest",
     "teaql-sql",
     "teaql-runtime",
+    "teaql-secure-document-reference",
     "teaql-provider-postgres",
     "teaql-provider-mysql",
     "teaql-provider-sqlite",
@@ -52,6 +57,10 @@ sha2 = "0.10"
 subtle = "2"
 
 teaql-core = { path = "teaql-core", version = "5.0.7" }
+teaql-blob-contracts = { path = "teaql-blob-contracts", version = "5.0.7" }
+teaql-blob-reference = { path = "teaql-blob-reference", version = "5.0.7" }
+teaql-blob-store-file = { path = "teaql-blob-store-file", version = "5.0.7" }
+teaql-blob-content-native = { path = "teaql-blob-content-native", version = "5.0.7" }
 teaql-macros = { path = "teaql-macros", version = "5.0.7" }
 teaql-runtime = { path = "teaql-runtime", version = "5.0.7" }
 teaql-sql = { path = "teaql-sql", version = "5.0.7" }
@@ -60,3 +69,6 @@ teaql-provider-postgres = { path = "teaql-provider-postgres", version = "5.0.7" 
 teaql-provider-mysql = { path = "teaql-provider-mysql", version = "5.0.7" }
 teaql-data-service = { path = "teaql-data-service", version = "5.0.7" }
 teaql-provider-linux = { path = "teaql-provider-linux", version = "5.0.7" }
+teaql-web-integration-axum = { path = "teaql-web-integration-axum", version = "5.0.7" }
+
+teaql-secure-document-reference = { path = "teaql-secure-document-reference", version = "5.0.7" }

@@ -367,14 +367,7 @@ where
         selection: &DynamicFieldSelection,
         intent: &QueryIntent,
     ) -> Result<DynamicFieldBatch, DynamicFieldError> {
-        let definitions =
-            self.definitions
-                .get(owner_type)
-                .cloned()
-                .ok_or_else(|| DynamicFieldError {
-                    code: "DYNAMIC_FIELD_DEFINITIONS_MISSING",
-                    field: owner_type.into(),
-                })?;
+        let definitions = self.definitions_for_context(context, owner_type)?;
         selection.validate(&definitions)?;
         let executor = context
             .require_resource::<E>()
@@ -391,11 +384,6 @@ where
         let rows = store
             .load_values(&self.namespace, &definitions, ids, selection, intent)
             .await?;
-        let identity = store.source_identity().ok_or_else(|| DynamicFieldError {
-            code: "DYNAMIC_FIELD_STORAGE_IDENTITY_REQUIRED",
-            field: owner_type.into(),
-        })?;
-        let definitions = definitions.with_storage_binding(&self.namespace, identity);
         Ok(DynamicFieldBatch { definitions, rows })
     }
 }

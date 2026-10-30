@@ -325,7 +325,11 @@ fn handle(mut stream: TcpStream, inner: &Inner) {
                 return;
             }
             let _ = stream.flush();
-            thread::sleep(Duration::from_millis(350));
+            thread::sleep(if path.contains("/slowbody-post") {
+                Duration::from_secs(3)
+            } else {
+                Duration::from_millis(350)
+            });
             let _ = stream.write_all(&body[1..]);
         } else {
             let _ = stream.write_all(&body);
@@ -581,16 +585,16 @@ async fn posted_request_with_stalled_response_body_reports_ambiguous_outcome() {
     let profile = fixture
         .profile()
         .budgets(
-            Duration::from_millis(200),
-            Duration::from_millis(120),
-            Duration::from_millis(180),
+            Duration::from_secs(2),
+            Duration::from_secs(1),
+            Duration::from_secs(2),
         )
         .unwrap();
     let service = Arc::new(ReqwestHttpRequestService::new(vec![profile]).unwrap());
     let context = context(service.clone());
     let call = HttpCall::post_text(
         "orders",
-        "slowbody",
+        "slowbody-post",
         "PRIVATE_BODY_CANARY",
         "submit payment",
         "confirm external effect",

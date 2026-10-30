@@ -1,0 +1,82 @@
+{
+  "schema": "teaql.blob-upload-cases/v1",
+  "cases": [
+    {
+      "id": "pdf-exact-size",
+      "path": "files/sample.pdf",
+      "fileName": "application.pdf",
+      "declaredContentType": "application/pdf",
+      "allowedExtensions": [
+        "pdf"
+      ],
+      "maxSizeBytes": 1422,
+      "expected": "accepted"
+    },
+    {
+      "id": "pdf-one-below-limit",
+      "path": "files/sample.pdf",
+      "fileName": "application.pdf",
+      "declaredContentType": "application/pdf",
+      "allowedExtensions": [
+        "pdf"
+      ],
+      "maxSizeBytes": 1423,
+      "expected": "accepted"
+    },
+    {
+      "id": "pdf-one-over-limit",
+      "path": "files/sample.pdf",
+      "fileName": "application.pdf",
+      "declaredContentType": "application/pdf",
+      "allowedExtensions": [
+        "pdf"
+      ],
+      "maxSizeBytes": 1421,
+      "error": "BLOB_SIZE_EXCEEDED"
+    },
+    {
+      "id": "forged-png-mime-and-suffix",
+      "path": "files/sample.jpg",
+      "fileName": "cover.png",
+      "declaredContentType": "image/png",
+      "allowedExtensions": [
+        "png"
+      ],
+      "maxSizeBytes": 104857600,
+      "error": "BLOB_FORMAT_NOT_ALLOWED"
+    },
+    {
+      "id": "word-container-as-excel",
+      "path": "files/sample.docx",
+      "fileName": "report.xlsx",
+      "declaredContentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "allowedExtensions": [
+        "xlsx"
+      ],
+      "maxSizeBytes": 104857600,
+      "error": "BLOB_FORMAT_NOT_ALLOWED"
+    },
+    {
+      "id": "excel-compound-as-word",
+      "path": "files/sample.xls",
+      "fileName": "letter.doc",
+      "declaredContentType": "application/msword",
+      "allowedExtensions": [
+        "doc"
+      ],
+      "maxSizeBytes": 104857600,
+      "error": "BLOB_FORMAT_NOT_ALLOWED"
+    },
+    {
+      "id": "wrong-filename-suffix",
+      "path": "files/sample.pdf",
+      "fileName": "application.exe",
+      "declaredContentType": "application/pdf",
+      "allowedExtensions": [
+        "pdf"
+      ],
+      "maxSizeBytes": 104857600,
+      "error": "BLOB_FORMAT_NOT_ALLOWED"
+    }
+  ]
+}

@@ -414,6 +414,7 @@ fn id_key(value: &Value) -> String {
         Value::F64(value) => format!("f:{value}"),
         Value::Decimal(value) => format!("decimal:{value}"),
         Value::Text(value) => format!("t:{value}"),
+        Value::BlobRef(value) => format!("blob:{}", value.as_str()),
         Value::Json(value) => format!("j:{value}"),
         Value::Date(value) => format!("date:{value}"),
         Value::Timestamp(value) => format!("ts:{}", value.0),

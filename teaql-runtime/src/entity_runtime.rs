@@ -5,6 +5,11 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use teaql_core::{EntitySnapshot, MutationValues, SmartList, Value};
 
+mod submission;
+pub use submission::{LedgerDraft, LedgerSubmission};
+mod hydration;
+pub use hydration::SavedEntityContext;
+
 /// The explicit load state of a relation stored in the runtime identity graph.
 ///
 /// Reading this state never performs I/O. `NotLoaded` means exactly that the
@@ -122,6 +127,7 @@ fn entity_identity_key(value: &Value) -> EntityIdentityKey {
         Value::F64(value) => EntityIdentityKey::F64(value.to_bits()),
         Value::Decimal(value) => EntityIdentityKey::Decimal(*value),
         Value::Text(value) => EntityIdentityKey::Text(value.clone()),
+        Value::BlobRef(value) => EntityIdentityKey::Other(format!("blob:{}", value.as_str())),
         Value::Json(value) => EntityIdentityKey::Other(format!("json:{value}")),
         Value::Date(value) => EntityIdentityKey::Date(*value),
         Value::Timestamp(value) => EntityIdentityKey::Timestamp(value.0),
@@ -596,6 +602,30 @@ struct EntityMutationLedger {
     composition_errors: Vec<LedgerCompositionError>,
     /// Indicates if this entity root is entirely new.
     is_new: bool,
+    /// Allocated only at an actual physical submission, never by a readonly query.
+    pending: Option<Box<submission::PendingLedger>>,
+    /// A reversible, ownerless save capture during preflight and policy review.
+    draft: Option<Box<submission::DraftLedger>>,
+    draft_sequence: u64,
+    submitted_rows: Option<Box<submission::SubmittedRows>>,
+    completion_fenced: bool,
+}
+
+impl EntityMutationLedger {
+    fn original_key(&self, key: &EntityKey) -> EntityKey {
+        self.submitted_rows
+            .as_ref()
+            .map(|rows| rows.original_key(key))
+            .unwrap_or(key)
+            .clone()
+    }
+
+    fn persisted_id(&self, key: &EntityKey) -> Value {
+        self.submitted_rows
+            .as_ref()
+            .map(|rows| rows.persisted_id(key))
+            .unwrap_or_else(|| key.id.clone())
+    }
 }
 
 #[derive(Debug)]
@@ -947,10 +977,15 @@ impl EntityRuntimeState {
         {
             return Ok(());
         }
-        let snapshot = source_context
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone();
+        let snapshot = {
+            let source = source_context
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if source.pending.is_some() || source.draft.is_some() || source.completion_fenced {
+                return Err(LedgerCompositionError::PhysicalCompletionRequired);
+            }
+            source.clone()
+        };
         let loaded_version = source
             .loaded_snapshot
             .with(|loaded| {
@@ -960,6 +995,9 @@ impl EntityRuntimeState {
             })
             .flatten();
         self.write_context(|target| {
+            if target.pending.is_some() || target.draft.is_some() || target.completion_fenced {
+                return Err(LedgerCompositionError::PhysicalCompletionRequired);
+            }
             let source_versions = snapshot
                 .original_versions
                 .first
@@ -1270,7 +1308,15 @@ impl EntityRuntimeState {
 
     pub fn pop_change_set(&self) -> Option<EntityChangeSet> {
         self.inner.get()?;
-        self.write_context(|context| context.change_sets.pop())
+        self.write_context(|context| {
+            // A stack pop cannot undo SQL already flushed by the physical owner.
+            let protected = context.pending.as_ref().is_some_and(|pending| {
+                pending.protects_level(context.change_sets.stack.len().saturating_sub(1))
+            }) || context.draft.as_ref().is_some_and(|draft| {
+                draft.protects_level(context.change_sets.stack.len().saturating_sub(1))
+            });
+            (!protected).then(|| context.change_sets.pop()).flatten()
+        })
     }
 
     pub fn clear_current_change_set(&self) {
@@ -1284,6 +1330,10 @@ impl EntityRuntimeState {
     pub fn clear_committed(&self) {
         if self.inner.get().is_some() {
             self.write_context(|context| {
+                if context.pending.is_some() || context.draft.is_some() || context.completion_fenced
+                {
+                    return;
+                }
                 context.change_sets = ChangeSetStack::default();
                 context.deleted_keys.clear();
                 context.new_keys.clear();
@@ -1300,11 +1350,59 @@ impl EntityRuntimeState {
     }
 
     pub fn set(&self, key: EntityKey, field: impl Into<String>, value: impl Into<Value>) {
-        self.write_context(|context| context.change_sets.set(key, field, value.into()));
+        self.write_context(|context| {
+            let key = context.original_key(&key);
+            context.change_sets.set(key, field, value.into());
+        });
+    }
+
+    pub(crate) fn original_key_for(&self, key: &EntityKey) -> EntityKey {
+        self.read_context(key.clone(), |context| context.original_key(key))
+    }
+
+    pub(crate) fn persisted_id_for(&self, key: &EntityKey) -> Value {
+        self.read_context(key.id.clone(), |context| context.persisted_id(key))
+    }
+
+    pub(crate) fn persisted_id_aliases(&self) -> BTreeMap<EntityKey, Value> {
+        self.read_context(BTreeMap::new(), |context| {
+            context
+                .submitted_rows
+                .as_ref()
+                .map(|rows| rows.persisted_ids.clone())
+                .unwrap_or_default()
+        })
     }
 
     pub fn get(&self, key: &EntityKey, field: &str) -> Option<Value> {
-        self.read_context(None, |context| context.change_sets.get(key, field))
+        self.read_context(None, |context| {
+            let key = context.original_key(key);
+            for (level, changes) in context.change_sets.stack.iter().enumerate().rev() {
+                if let Some(value) = changes.get(&key, field) {
+                    return Some(value.clone());
+                }
+                if let Some(value) = context
+                    .draft
+                    .as_ref()
+                    .and_then(|draft| draft.get(level, &key, field))
+                {
+                    return Some(value);
+                }
+                if let Some(value) = context
+                    .pending
+                    .as_ref()
+                    .and_then(|pending| pending.get(level, &key, field))
+                {
+                    return Some(value);
+                }
+            }
+            context
+                .submitted_rows
+                .as_ref()?
+                .get(&key)?
+                .get(field)
+                .cloned()
+        })
     }
 
     pub fn current_change_set(&self) -> EntityChangeSet {
@@ -1348,6 +1446,7 @@ impl EntityRuntimeState {
         let definitions = fields.definitions().clone();
         fields.assign(code, value.clone())?;
         self.write_context(|ledger| {
+            let key = ledger.original_key(&key);
             ledger.change_sets.current_mut().set_dynamic(
                 key,
                 code.to_owned(),
@@ -1383,6 +1482,7 @@ impl EntityRuntimeState {
         let definitions = fields.definitions().clone();
         fields.delete(code)?;
         self.write_context(|ledger| {
+            let key = ledger.original_key(&key);
             ledger.change_sets.current_mut().set_dynamic(
                 key,
                 code.to_owned(),
@@ -1409,25 +1509,33 @@ impl EntityRuntimeState {
     #[doc(hidden)]
     pub fn set_entity_comment(&self, key: EntityKey, comment: impl Into<String>) {
         self.write_context(|context| {
+            let key = context.original_key(&key);
             context.entity_comments.insert(key, comment.into());
         });
     }
 
     #[doc(hidden)]
     pub fn get_entity_comment(&self, key: &EntityKey) -> Option<String> {
-        self.read_context(None, |context| context.entity_comments.get(key).cloned())
+        self.read_context(None, |context| {
+            context
+                .entity_comments
+                .get(&context.original_key(key))
+                .cloned()
+        })
     }
 
     /// Mark this entity root as a newly created entity in memory.
     pub fn mark_as_new(&self, key: EntityKey) {
         self.write_context(|context| {
-            context.new_keys.insert(key);
+            context.new_keys.insert(context.original_key(&key));
         });
     }
 
     /// Check if this entity root is marked as newly created.
     pub fn is_new(&self, key: &EntityKey) -> bool {
-        self.read_context(false, |context| context.new_keys.contains(key))
+        self.read_context(false, |context| {
+            context.new_keys.contains(&context.original_key(key))
+        })
     }
 
     /// Store an original loaded entity snapshot.
@@ -1452,6 +1560,28 @@ impl EntityRuntimeState {
 
     /// Retrieve the original loaded entity snapshot.
     pub fn original_snapshot(&self) -> Option<EntitySnapshot> {
+        if self.read_context(false, |context| context.submitted_rows.is_some()) {
+            let key = self
+                .loaded_snapshot
+                .with(|snapshot| {
+                    snapshot
+                        .row
+                        .get("id")
+                        .cloned()
+                        .map(|id| EntityKey::new(snapshot.entity.as_ref(), id))
+                })
+                .flatten();
+            if let Some(values) = key.and_then(|key| {
+                self.read_context(None, |context| {
+                    context
+                        .submitted_rows
+                        .as_ref()?
+                        .snapshot(&key, &context.original_snapshots)
+                })
+            }) {
+                return values;
+            }
+        }
         if let Some(snapshot) = self
             .loaded_snapshot
             .with(|snapshot| EntitySnapshot::from(snapshot.row.clone().into_map()))
@@ -1475,6 +1605,7 @@ impl EntityRuntimeState {
     /// when the entity is being deleted.
     pub fn mark_as_delete(&self, key: EntityKey) {
         self.write_context(|context| {
+            let key = context.original_key(&key);
             context.change_sets.clear_entity(&key);
             context.deleted_keys.insert(key);
         });
@@ -1482,14 +1613,18 @@ impl EntityRuntimeState {
 
     /// Check whether an entity has been marked for deletion.
     pub fn is_marked_as_delete(&self, key: &EntityKey) -> bool {
-        self.read_context(false, |context| context.deleted_keys.contains(key))
+        self.read_context(false, |context| {
+            context.deleted_keys.contains(&context.original_key(key))
+        })
     }
 
     /// Get the set of field names that have been modified for the given entity key.
     /// This is the Rust equivalent of Java's `entity.getUpdatedProperties()`.
     pub fn changed_field_names(&self, key: &EntityKey) -> BTreeSet<String> {
         self.read_context(BTreeSet::new(), |context| {
-            context.change_sets.changed_field_names(key)
+            context
+                .change_sets
+                .changed_field_names(&context.original_key(key))
         })
     }
     pub fn deleted_keys(&self) -> std::collections::BTreeSet<EntityKey> {
@@ -1501,29 +1636,39 @@ impl EntityRuntimeState {
     }
 
     pub fn get_original_version(&self, key: &EntityKey) -> Option<i64> {
-        self.read_context(None, |context| context.original_versions.get(key))
-            .or_else(|| {
-                self.loaded_snapshot
-                    .with(|snapshot| {
-                        if snapshot.entity.as_ref() != key.entity.as_ref() {
-                            return None;
-                        }
-                        snapshot
-                            .row
-                            .get("id")?
-                            .try_u64()
-                            .filter(|id| Some(*id) == key.id.try_u64())?;
-                        snapshot.row.get("version")?.try_i64()
-                    })
-                    .flatten()
-            })
+        let known = self.read_context(None, |context| {
+            let key = context.original_key(key);
+            context
+                .original_versions
+                .get(&key)
+                .map(Some)
+                .or_else(|| context.submitted_rows.as_ref()?.version(&key))
+        });
+        if let Some(version) = known {
+            return version;
+        }
+        {
+            self.loaded_snapshot
+                .with(|snapshot| {
+                    if snapshot.entity.as_ref() != key.entity.as_ref() {
+                        return None;
+                    }
+                    snapshot
+                        .row
+                        .get("id")?
+                        .try_u64()
+                        .filter(|id| Some(*id) == key.id.try_u64())?;
+                    snapshot.row.get("version")?.try_i64()
+                })
+                .flatten()
+        }
     }
 
     pub fn get_trace_chain(&self, key: &EntityKey) -> Vec<teaql_core::TraceNode> {
         self.read_context(Vec::new(), |context| {
             context
                 .trace_chains
-                .get(key)
+                .get(&context.original_key(key))
                 .map(|scope| scope.recover_trace_chain())
                 .unwrap_or_default()
         })
@@ -1624,10 +1769,27 @@ impl EntityRuntimeState {
     }
 
     pub(crate) fn original_values_for(&self, key: &EntityKey) -> Option<EntitySnapshot> {
+        if let Some(row) = self.read_context(None, |context| {
+            let key = context.original_key(key);
+            context
+                .submitted_rows
+                .as_ref()?
+                .snapshot(&key, &context.original_snapshots)
+        }) {
+            return row;
+        }
         self.read_context(None, |context| {
+            let key = context.original_key(key);
+            if let Some(values) = context
+                .submitted_rows
+                .as_ref()
+                .and_then(|rows| rows.get(&key))
+            {
+                return Some(values.clone());
+            }
             context
                 .original_snapshots
-                .get(key)
+                .get(&key)
                 .map(|snapshot| match snapshot {
                     OriginalSnapshot::Materialized(values) => values.clone(),
                     OriginalSnapshot::Compact(row) => EntitySnapshot::from(row.clone().into_map()),
@@ -1645,17 +1807,27 @@ impl EntityRuntimeState {
     }
 
     pub fn set_original_version(&self, key: EntityKey, version: i64) {
-        self.write_context(|context| context.original_versions.insert(key, version));
+        self.write_context(|context| {
+            context
+                .original_versions
+                .insert(context.original_key(&key), version)
+        });
     }
 
     pub(crate) fn first_composition_error(&self) -> Option<LedgerCompositionError> {
-        self.read_context(None, |context| context.composition_errors.first().cloned())
+        self.read_context(None, |context| {
+            context.composition_errors.first().cloned().or_else(|| {
+                (context.completion_fenced || context.pending.is_some() || context.draft.is_some())
+                    .then_some(LedgerCompositionError::PhysicalCompletionRequired)
+            })
+        })
     }
 }
 
 /// An explicit graph composition failed before any database write.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LedgerCompositionError {
+    PhysicalCompletionRequired,
     ConflictingDynamicDefinitions {
         entity: String,
     },
@@ -1672,6 +1844,9 @@ pub enum LedgerCompositionError {
 impl std::fmt::Display for LedgerCompositionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::PhysicalCompletionRequired => {
+                formatter.write_str("ledger physical completion or fresh reload is required")
+            }
             Self::ConflictingDynamicDefinitions { entity } => write!(
                 formatter,
                 "cannot compose incompatible dynamic definitions for {entity}"

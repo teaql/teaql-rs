@@ -873,6 +873,7 @@ dependencies = [
  "rust_decimal",
  "serde_json",
  "teaql-runtime",
+ "teaql-secure-document-reference",
  "tokio",
 ]
 
@@ -1378,19 +1379,32 @@ dependencies = [
  "chrono",
  "futures-core",
  "futures-util",
- "hkdf",
  "hmac",
  "rust_decimal",
  "serde",
  "serde_json",
  "sha2",
- "subtle",
  "teaql-core",
  "teaql-data-service",
  "teaql-sql",
  "tokio",
  "tokio-util",
  "url",
+]
+
+[[package]]
+name = "teaql-secure-document-reference"
+version = "5.0.7"
+dependencies = [
+ "aes-gcm",
+ "base64",
+ "chrono",
+ "hkdf",
+ "hmac",
+ "sha2",
+ "subtle",
+ "teaql-core",
+ "teaql-runtime",
 ]
 
 [[package]]

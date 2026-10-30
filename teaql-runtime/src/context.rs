@@ -11,9 +11,10 @@ use crate::business_id::{
     BusinessClock, BusinessDate, BusinessIdSchemaService, SystemBusinessClock,
 };
 use crate::document_round_trip::{
-    AcceptedContextualDocument, ContextBoundDocumentService, ContextBoundDocumentServiceResource,
-    ContextualDocument, DocumentAcceptRequest, DocumentOpenRequest, DocumentRoundTripError,
-    DocumentSnapshot, VerifiedDocumentSnapshot,
+    AcceptedContextualDocument, BlobSelectionClaim, BlobSelectionTarget, BoundDocumentSnapshot,
+    ContextBoundDocumentService, ContextBoundDocumentServiceResource, ContextualDocument,
+    DocumentAcceptRequest, DocumentOpenRequest, DocumentRoundTripError, DocumentSnapshot,
+    VerifiedBlobSelection, VerifiedBoundDocumentSnapshot, VerifiedDocumentSnapshot,
 };
 use crate::entity_reference::{
     EntityReferenceClaims, EntityReferenceCodec, EntityReferenceCodecResource,
@@ -21,9 +22,9 @@ use crate::entity_reference::{
 };
 use crate::http::{HttpFailure, HttpRequestService, HttpRequestServiceResource};
 use crate::round_trip_reference::{
-    ContextBoundReferenceRuntime, ContextBoundReferenceRuntimeResource, ExternalEntityReference,
-    ReferenceDocumentScope, ReferenceIdentity, ReferenceMode, ReferenceStartupNotice,
-    ReferenceWireCodec, ResolvedEntityReference, RoundTripReferenceError,
+    ContextBoundReferenceRuntimeResource, ExternalEntityReference, ReferenceDocumentScope,
+    ReferenceIdentity, ReferenceMode, ReferenceStartupNotice, ReferenceWireCodec,
+    ResolvedEntityReference, RoundTripReferenceError, RoundTripReferenceProvider,
     TrustedReferencePrincipal, TrustedReferencePrincipalResource,
 };
 use crate::{
@@ -213,6 +214,8 @@ pub struct UserContext {
     remote_lock_owner: String,
     runtime_telemetry: Arc<dyn crate::RuntimeTelemetry>,
     last_fix_evidence: Mutex<Vec<FixEvidence>>,
+    view_transactions: std::sync::atomic::AtomicUsize,
+    view_transaction_uncertain: std::sync::atomic::AtomicBool,
 }
 
 impl Default for UserContext {
@@ -284,6 +287,8 @@ impl Default for UserContext {
             ),
             runtime_telemetry: crate::telemetry_startup::standard_runtime_telemetry(),
             last_fix_evidence: Mutex::new(Vec::new()),
+            view_transactions: std::sync::atomic::AtomicUsize::new(0),
+            view_transaction_uncertain: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -903,13 +908,102 @@ impl UserContext {
 
     pub fn with_round_trip_reference_runtime(
         mut self,
-        runtime: Arc<ContextBoundReferenceRuntime>,
+        runtime: Arc<dyn RoundTripReferenceProvider>,
     ) -> Self {
         self.set_round_trip_reference_runtime(runtime);
         self
     }
 
-    pub fn set_round_trip_reference_runtime(&mut self, runtime: Arc<ContextBoundReferenceRuntime>) {
+    pub fn has_round_trip_reference_provider(&self) -> bool {
+        self.get_resource::<ContextBoundReferenceRuntimeResource>()
+            .is_some()
+    }
+
+    pub fn required_capabilities(&self) -> std::collections::BTreeSet<String> {
+        self.get_resource::<crate::registry::RequiredRuntimeCapabilities>()
+            .map(|value| value.0.clone())
+            .unwrap_or_default()
+    }
+
+    /// Host readiness check after passive business and infrastructure assembly.
+    pub fn validate_capabilities(&self) -> Result<(), crate::RuntimeError> {
+        // Generated manifests are declarative. A missing declaration must not
+        // let a modeled Blob field bypass readiness altogether.
+        let mut has_blob_fields = false;
+        for entity in self.all_entities() {
+            for property in &entity.properties {
+                if property.data_type != teaql_core::DataType::BlobRef {
+                    if property.blob_field_spec.is_some() {
+                        return Err(crate::RuntimeError::Schema(
+                            "BLOB_POLICY_INVALID".to_owned(),
+                        ));
+                    }
+                    continue;
+                }
+                let spec = property
+                    .blob_field_spec
+                    .as_ref()
+                    .ok_or_else(|| crate::RuntimeError::Schema("BLOB_POLICY_INVALID".to_owned()))?;
+                if spec.entity() != entity.name
+                    || spec.field() != property.name
+                    || spec.nullable() != property.nullable
+                {
+                    return Err(crate::RuntimeError::Schema(
+                        "BLOB_POLICY_INVALID".to_owned(),
+                    ));
+                }
+                has_blob_fields = true;
+            }
+        }
+        let blob_ready = || {
+            self.get_resource::<crate::BlobCapabilityResource>()
+                .is_some_and(|resource| resource.0.is_ready(self))
+        };
+        if has_blob_fields && !blob_ready() {
+            return Err(crate::RuntimeError::Capability {
+                code: "BLOB_CAPABILITY_MISSING",
+                capability: "blob.v1".to_owned(),
+            });
+        }
+        for capability in self.required_capabilities() {
+            if capability == "blob.v1" && blob_ready() {
+                continue;
+            }
+            if let Some(service) =
+                self.get_resource::<crate::view_preparation::ViewServiceResource>()
+                && (capability == "view.v1"
+                    || (capability == "view.governed.v1" && service.0.supports_governed(self)))
+            {
+                continue;
+            }
+            if capability == "secure_document.v1" && self.has_round_trip_reference_provider() {
+                continue;
+            }
+            return Err(crate::RuntimeError::Capability {
+                code: if capability == "blob.v1" {
+                    "BLOB_CAPABILITY_MISSING"
+                } else {
+                    "VIEW_CAPABILITY_MISSING"
+                },
+                capability,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn has_context_bound_document_service(&self) -> bool {
+        self.get_resource::<ContextBoundDocumentServiceResource>()
+            .is_some()
+    }
+
+    pub fn set_round_trip_reference_runtime(
+        &mut self,
+        runtime: Arc<dyn RoundTripReferenceProvider>,
+    ) {
+        assert!(
+            !self.has_round_trip_reference_provider(),
+            "secure document reference provider already installed"
+        );
         self.insert_resource(ContextBoundReferenceRuntimeResource(runtime));
     }
 
@@ -937,6 +1031,10 @@ impl UserContext {
         &mut self,
         service: Arc<dyn ContextBoundDocumentService>,
     ) {
+        assert!(
+            !self.has_context_bound_document_service(),
+            "context-bound document service already installed"
+        );
         self.insert_resource(ContextBoundDocumentServiceResource(service));
     }
 
@@ -944,6 +1042,7 @@ impl UserContext {
         &self,
         request: DocumentOpenRequest,
     ) -> Result<ContextualDocument, DocumentRoundTripError> {
+        self.round_trip_reference_runtime()?;
         self.context_bound_document_service()?
             .open_document(self, self.trusted_reference_principal()?, request)
             .await
@@ -953,6 +1052,7 @@ impl UserContext {
         &self,
         request: DocumentAcceptRequest,
     ) -> Result<AcceptedContextualDocument, DocumentRoundTripError> {
+        self.round_trip_reference_runtime()?;
         self.context_bound_document_service()?
             .accept_document(self, self.trusted_reference_principal()?, request)
             .await
@@ -980,6 +1080,58 @@ impl UserContext {
                 expected_aggregate_type,
                 expected_purpose,
             )
+    }
+
+    pub fn issue_bound_document_snapshot(
+        &self,
+        document: BoundDocumentSnapshot,
+        lifetime: std::time::Duration,
+    ) -> Result<String, DocumentRoundTripError> {
+        self.round_trip_reference_runtime()?
+            .issue_bound_document_snapshot(self.trusted_reference_principal()?, document, lifetime)
+    }
+
+    pub fn consume_bound_document_snapshot(
+        &self,
+        token: &str,
+        expected_aggregate_type: &str,
+        expected_purpose: &str,
+    ) -> Result<VerifiedBoundDocumentSnapshot, DocumentRoundTripError> {
+        self.round_trip_reference_runtime()?
+            .consume_bound_document_snapshot(
+                self.trusted_reference_principal()?,
+                token,
+                expected_aggregate_type,
+                expected_purpose,
+            )
+    }
+
+    pub fn issue_blob_selection(
+        &self,
+        document_token: &str,
+        claim: BlobSelectionClaim,
+        lifetime: std::time::Duration,
+    ) -> Result<String, DocumentRoundTripError> {
+        self.round_trip_reference_runtime()?.issue_blob_selection(
+            self.trusted_reference_principal()?,
+            document_token,
+            claim,
+            lifetime,
+        )
+    }
+
+    pub fn consume_blob_selection(
+        &self,
+        document_token: &str,
+        token: &str,
+        expected_target: &BlobSelectionTarget,
+    ) -> Result<VerifiedBlobSelection, DocumentRoundTripError> {
+        self.round_trip_reference_runtime()?.consume_blob_selection(
+            self.trusted_reference_principal()?,
+            document_token,
+            token,
+            expected_target,
+        )
     }
 
     pub fn reference_mode(&self) -> Result<ReferenceMode, RoundTripReferenceError> {
@@ -1045,13 +1197,13 @@ impl UserContext {
 
     fn round_trip_reference_runtime(
         &self,
-    ) -> Result<&ContextBoundReferenceRuntime, RoundTripReferenceError> {
+    ) -> Result<&dyn RoundTripReferenceProvider, RoundTripReferenceError> {
         self.get_resource::<ContextBoundReferenceRuntimeResource>()
             .map(|resource| resource.0.as_ref())
             .ok_or_else(RoundTripReferenceError::configuration)
     }
 
-    fn trusted_reference_principal(
+    pub fn trusted_reference_principal(
         &self,
     ) -> Result<&TrustedReferencePrincipal, RoundTripReferenceError> {
         self.get_resource::<TrustedReferencePrincipalResource>()

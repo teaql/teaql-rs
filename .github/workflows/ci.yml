@@ -10,6 +10,20 @@ jobs:
   test:
     name: Test and Lint
     runs-on: ubuntu-latest
+    services:
+      blob-postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: teaql_reference_test
+          POSTGRES_PASSWORD: teaql-ci-test-only
+          POSTGRES_DB: teaql_reference_test
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd="pg_isready -U teaql_reference_test -d teaql_reference_test"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+    env:
+      TEAQL_BLOB_RUST_PG_PASSWORD: teaql-ci-test-only
     steps:
       - uses: actions/checkout@v7
       - name: Setup Rust
@@ -24,6 +38,8 @@ jobs:
         run: ./scripts/test-release-provenance-contract.sh
       - name: Check fail-closed publish contract
         run: ./scripts/test-publish-contract.sh
+      - name: Check crates.io version lookup failures
+        run: ./scripts/test-release-version-status.sh
       - name: Check published Order replay version pinning
         run: ./scripts/test-pin-rust-order-replay-version.sh
       - name: Check published TFP replay version pinning
@@ -35,8 +51,34 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings -A clippy::double_must_use
       - name: Build
         run: cargo build --all-targets --all-features
+      - name: Prepare live Blob fixtures
+        id: blob_fixtures
+        run: |
+          set -euo pipefail
+          test -x "$GITHUB_WORKSPACE/target/debug/teaql-blob-content-worker"
+          test -f "$GITHUB_WORKSPACE/teaql-blob-content-native/tests/fixtures/files/sample.pdf"
+          test -d "$GITHUB_WORKSPACE/teaql-blob-content-native/tests/fixtures/files"
+          manifest="$RUNNER_TEMP/teaql-blob-schemas.txt"
+          : > "$manifest"
+          {
+            echo "TEAQL_BLOB_RUST_RUN_LABEL=github-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "TEAQL_BLOB_RUST_SCHEMA_MANIFEST=$manifest"
+            echo "TEAQL_BLOB_RUST_PDF=$GITHUB_WORKSPACE/teaql-blob-content-native/tests/fixtures/files/sample.pdf"
+            echo "TEAQL_BLOB_RUST_FILES=$GITHUB_WORKSPACE/teaql-blob-content-native/tests/fixtures"
+            echo "TEAQL_BLOB_RUST_WORKER=$GITHUB_WORKSPACE/target/debug/teaql-blob-content-worker"
+          } >> "$GITHUB_ENV"
       - name: Run Tests
         run: cargo test --all-targets --all-features
+      - name: Verify live Blob schema cleanup
+        if: always() && steps.blob_fixtures.outcome == 'success'
+        run: |
+          set -euo pipefail
+          test -s "$TEAQL_BLOB_RUST_SCHEMA_MANIFEST"
+          container="$(docker ps --filter 'ancestor=postgres:16-alpine' --format '{{.ID}}')"
+          test -n "$container"
+          test "$(printf '%s\n' "$container" | wc -l)" -eq 1
+          remaining="$(docker exec "$container" psql -U teaql_reference_test -d teaql_reference_test -At -c "SELECT count(*) FROM pg_namespace WHERE left(nspname, 8) = 'r5_blob_';")"
+          test "$remaining" = 0
 
   live-sql-providers:
     name: Live SQLite/PostgreSQL/MySQL providers

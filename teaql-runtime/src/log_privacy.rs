@@ -51,6 +51,7 @@ fn json_has_credentials(value: &serde_json::Value) -> bool {
 pub(crate) fn collect_strings(value: &Value, output: &mut Vec<String>) {
     match value {
         Value::Null | Value::TypedNull(_) => (),
+        Value::BlobRef(value) => output.push(value.as_str().to_owned()),
         Value::Text(value) => {
             if !value.is_empty() {
                 output.push(value.clone());

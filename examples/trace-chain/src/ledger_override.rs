@@ -1,5 +1,6 @@
-//! Inspect real planner-owned ledger chains before BEGIN, then compare each
-//! emitted command/SQL/audit. Never supply a trace chain to execution.
+//! Observe live-ledger isolation at BEGIN, then compare each emitted
+//! command/SQL/audit. The runtime unit test inspects the submitted draft's
+//! complete planner-owned chains before a transaction is opened.
 use std::sync::{Arc, Mutex};
 
 use super::{
@@ -94,13 +95,13 @@ pub async fn ledger_override(
                     "no stale planned scope"
                 );
             }
-            let observed_scopes = Arc::new(Mutex::new(Vec::new()));
-            let planned = observed_scopes.clone();
-            let planned_state = state.clone();
+            let observed_live_scopes = Arc::new(Mutex::new(Vec::new()));
+            let observed = observed_live_scopes.clone();
+            let live_state = state.clone();
             observation.observe_next_begin(move || {
-                *planned.lock().unwrap() = keys
+                *observed.lock().unwrap() = keys
                     .iter()
-                    .map(|key| planned_state.get_trace_chain(key))
+                    .map(|key| live_state.get_trace_chain(key))
                     .collect();
             });
             capture.clear();
@@ -141,25 +142,17 @@ pub async fn ledger_override(
                 },
             ];
             {
-                let scopes = observed_scopes.lock().unwrap();
+                let scopes = observed_live_scopes.lock().unwrap();
                 assert_eq!(
                     scopes.len(),
                     expected.len(),
-                    "observed actual pre-BEGIN ledger"
+                    "observed all live-ledger keys at pre-BEGIN"
                 );
-                for (scope, item) in scopes.iter().zip(&expected) {
-                    let actual: Vec<_> = scope
-                        .iter()
-                        .map(|node| {
-                            assert_eq!(node.kind, TraceKind::AuditReason);
-                            (
-                                node.entity_type.as_str(),
-                                node.entity_id.unwrap(),
-                                node.comment.as_str(),
-                            )
-                        })
-                        .collect();
-                    assert_eq!(actual, item.reasons, "complete runtime ledger scope");
+                for scope in scopes.iter() {
+                    assert!(
+                        scope.is_empty(),
+                        "submitted draft must not leak into live ledger"
+                    );
                 }
             }
             assert_execution_lineage(observation, &expected);

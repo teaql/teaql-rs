@@ -14,6 +14,12 @@ crates=(
     teaql-provider-mysql
     teaql-tfp-endpoint
     teaql-web-integration-axum
+    teaql-blob-contracts
+    teaql-blob-store-file
+    teaql-blob-content-native
+    teaql-object-storage-s3
+    teaql-secure-document-reference
+    teaql-blob-reference
 )
 
 if [[ "${1:-}" == "--list-crates" ]]; then

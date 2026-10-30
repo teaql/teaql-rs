@@ -206,10 +206,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             if field_name == "__teaql_runtime_state" || field_name == "root" {
                 runtime_state_field_ident = Some(field_ident.clone());
                 from_record_fields.push(quote! {
-                    #field_ident: load_context
-                        .and_then(|context| context.downcast_ref::<::teaql_runtime::EntityRuntimeState>())
-                        .map(::teaql_runtime::EntityRuntimeState::fresh_with_shared_graph)
-                        .unwrap_or_default()
+                    #field_ident: ::teaql_runtime::EntityRuntimeState::from_hydration_context(load_context)
                 });
                 continue;
             }
@@ -321,6 +318,39 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         let numeric_scale = parsed
             .numeric_scale
             .map(|value| quote! { .numeric_scale(#value) });
+        let blob_spec = if let Some(extensions) = parsed.blob_extensions {
+            let extensions: Vec<_> = extensions.split(',').collect();
+            if crate::types::base_type_name(&field.ty).as_deref() != Some("BlobRef")
+                || extensions.iter().any(|extension| {
+                    !matches!(
+                        *extension,
+                        "jpg"
+                            | "jpeg"
+                            | "png"
+                            | "mp4"
+                            | "mp3"
+                            | "doc"
+                            | "docx"
+                            | "xls"
+                            | "xlsx"
+                            | "pdf"
+                    )
+                })
+            {
+                return syn::Error::new_spanned(
+                    &field.ty,
+                    "BLOB_FORMAT_NOT_ALLOWED: invalid Blob field metadata",
+                )
+                .to_compile_error();
+            }
+            let profile = parsed.blob_profile.unwrap_or_else(|| "default".to_owned());
+            let blob_nullable = !parsed.blob_required;
+            quote! { .blob_field_spec(::teaql_core::BlobFieldSpec::new(
+                #entity_name, #field_name, [#(#extensions),*], #blob_nullable, #profile,
+            ).expect("validated generated Blob metadata")) }
+        } else {
+            Default::default()
+        };
 
         let nullable_tokens = if !nullable {
             quote! { .not_null() }
@@ -381,6 +411,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                     #max_length
                     #numeric_precision
                     #numeric_scale
+                    #blob_spec
             );
         });
 
@@ -897,6 +928,18 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             ) -> Result<Self, ::teaql_core::EntityError> {
                 let load_context = Some(load_context);
                 #from_compact_body
+            }
+
+            fn from_compact_row_after_save(
+                record: ::teaql_core::CompactRow,
+                context: &dyn std::any::Any,
+                preserve_relations: bool,
+            ) -> Result<Self, ::teaql_core::EntityError> {
+                if context.is::<::teaql_runtime::SavedEntityContext>() || preserve_relations {
+                    Self::from_compact_row_with_context(record, context)
+                } else {
+                    Self::from_compact_row(record)
+                }
             }
         }
     });

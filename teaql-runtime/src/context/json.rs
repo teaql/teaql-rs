@@ -215,6 +215,14 @@ fn scalar(
         DataType::Text | DataType::LargeText => {
             Value::Text(value.as_str().ok_or_else(invalid)?.to_owned())
         }
+        DataType::BlobRef => Value::BlobRef(
+            teaql_core::BlobRef::new(
+                value
+                    .as_str()
+                    .ok_or_else(|| error(entity, "BLOB_REFERENCE_INVALID"))?,
+            )
+            .map_err(|_| error(entity, "BLOB_REFERENCE_INVALID"))?,
+        ),
         DataType::Json => {
             if value.is_null() {
                 return Err(invalid());

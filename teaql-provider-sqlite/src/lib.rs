@@ -69,6 +69,7 @@ impl SqlDialect for SqliteDialect {
                 _ => Ok("NUMERIC".to_owned()),
             },
             DataType::Text => Ok(format!("VARCHAR({})", property.max_length.unwrap_or(255))),
+            DataType::BlobRef => Ok("VARCHAR(128)".to_owned()),
             DataType::LargeText => Ok("TEXT".to_owned()),
             DataType::Json => Ok("JSON".to_owned()),
             DataType::Date => Ok("DATE".to_owned()),
@@ -653,7 +654,7 @@ fn ensure_sqlite_column_compatibility(
         DataType::I64 | DataType::U64 => actual_family == "integer",
         DataType::F64 => actual_family == "real",
         DataType::Decimal => actual_family == "numeric",
-        DataType::Text | DataType::LargeText => actual_family == "text",
+        DataType::Text | DataType::LargeText | DataType::BlobRef => actual_family == "text",
         DataType::Json => matches!(actual_family.as_str(), "json" | "text"),
         DataType::Date => matches!(actual_family.as_str(), "date" | "text"),
         DataType::Timestamp => matches!(actual_family.as_str(), "timestamp" | "integer"),
@@ -1573,6 +1574,7 @@ fn bind_sqlite_value(value: &Value) -> Result<SqliteValue, MutationExecutorError
         // makes range comparisons silently return the wrong result.
         Value::Decimal(v) => Ok(SqliteValue::Text(v.to_string())),
         Value::Text(v) => Ok(SqliteValue::Text(v.clone())),
+        Value::BlobRef(v) => Ok(SqliteValue::Text(v.as_str().to_owned())),
         Value::Json(v) => Ok(SqliteValue::Text(v.to_string())),
         Value::Date(v) => Ok(SqliteValue::Text(v.format("%Y-%m-%d").to_string())),
         Value::Timestamp(v) => Ok(SqliteValue::Integer(v.0)),
@@ -2802,6 +2804,59 @@ mod tests {
             rows,
             vec![(1, "first".to_owned()), (2, "second".to_owned())]
         );
+    }
+
+    #[test]
+    fn unmanaged_native_save_hydration_preserves_repeated_outer_save_behavior() {
+        let executor =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        executor.connection().lock().unwrap().execute_batch("CREATE TABLE transaction_school (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name TEXT NOT NULL)").unwrap();
+        let metadata =
+            InMemoryMetadataStore::new().with_entity(TransactionSchool::entity_descriptor());
+        let service = teaql_sql::SqlDataServiceExecutor::new(
+            SqliteDialect,
+            executor.clone(),
+            metadata.clone(),
+        );
+        let mut context = UserContext::new().with_metadata(metadata);
+        context.register_executor(service);
+        type Executor = teaql_sql::SqlDataServiceExecutor<
+            SqliteDialect,
+            SqliteMutationExecutor,
+            InMemoryMetadataStore,
+        >;
+        futures_executor::block_on(context.execute_in_transaction::<Executor, _, _>(|scope| {
+            Box::pin(async move {
+                let (first, original) = TransactionSchool::new(42, "first");
+                let mut saved = scope
+                    .save_audited(first.audit_as("create native save hydration fixture"))
+                    .await?;
+                assert_ne!(saved.__teaql_runtime_state(), &original);
+                assert!(!saved.__teaql_runtime_state().has_pending_submission());
+                saved.name = "second".into();
+                saved
+                    .__teaql_runtime_state()
+                    .set(saved.entity_key(), "name", "second");
+                let saved = scope
+                    .save_audited(saved.audit_as("update returned native save view"))
+                    .await?;
+                assert_eq!(saved.version, 2);
+                assert_eq!(saved.name, "second");
+                Ok(())
+            })
+        }))
+        .unwrap();
+        let row = executor
+            .connection()
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT version,name FROM transaction_school WHERE id=42",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (2, "second".into()));
     }
 
     fn order_line_entity() -> EntityDescriptor {

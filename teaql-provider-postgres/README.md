@@ -1,10 +1,19 @@
-# teaql-provider-sqlx-postgres
+# teaql-provider-postgres
 
-PostgreSQL SQLx provider adapter for TeaQL runtime.
+PostgreSQL provider adapter for TeaQL runtime, using tokio-postgres and deadpool.
 
 This crate owns PostgreSQL-specific execution, schema bootstrap, transaction
 wrapping, row decoding, and ID-space generation. It is intentionally separate
 from the SQLite and MySQL providers.
+
+Native SQL wrappers expose framework infrastructure on the same resource and
+physical transaction. Each transaction has a fresh opaque identity and read-only
+completion witness. Cancelled or uncertain completion removes its connection from
+the pool; successful commit/rollback may recycle it. SQL and explicit logical
+failures mark rollback-only so a caught statement error cannot report an aborted
+COMMIT as success. UNKNOWN remains uncertain even when the server already committed.
+See the optional [Blob catalog component](../teaql-blob-reference/README.md) for
+the trusted infrastructure boundary and its separate remaining implementation gates.
 
 ## Usage
 

@@ -41,8 +41,8 @@ if [[ ! "$wait_attempts" =~ ^[1-9][0-9]*$ || ! "$wait_seconds" =~ ^[1-9][0-9]*$ 
 fi
 
 mapfile -t crates < <("$repo_dir/scripts/verify-release-provenance.sh" --list-crates)
-if [[ "${#crates[@]}" -ne 10 ]]; then
-    printf 'Refusing release: retained public crate contract contains %s entries, expected 10\n' \
+if [[ "${#crates[@]}" -ne 16 ]]; then
+    printf 'Refusing release: retained public crate contract contains %s entries, expected 16\n' \
         "${#crates[@]}" >&2
     exit 1
 fi
@@ -114,12 +114,6 @@ verify_public_archive() {
     [[ "$crate_commit" == "$source_commit" && "$dirty" == false ]]
 }
 
-public_version_exists() {
-    local crate_name="$1"
-    curl -fsSL --retry 2 --max-time 20 -H "User-Agent: $user_agent" \
-        "https://crates.io/api/v1/crates/$crate_name/$version" >/dev/null 2>&1
-}
-
 sparse_index_has_version() {
     local crate_name="$1"
     local normalized_name="${crate_name,,}"
@@ -161,17 +155,28 @@ if [[ "$mode" == "--check-only" ]]; then
     exit 0
 fi
 
+# Check the entire release set before the first publish. An HTTP/network error
+# must never be interpreted as an available version, and a partial prior run
+# may resume only when every existing archive has this exact source commit.
+declare -A release_states=()
 for crate_name in "${crates[@]}"; do
-    if public_version_exists "$crate_name"; then
-        if verify_public_archive "$crate_name"; then
-            wait_for_public_archive "$crate_name"
-            printf 'SKIP already published and provenance-matched: %s %s\n' \
-                "$crate_name" "$version"
-            continue
-        fi
+    state="$("$repo_dir/scripts/release-version-status.sh" "$crate_name" "$version")" || exit 1
+    release_states["$crate_name"]="$state"
+    if [[ "$state" == present ]] && ! verify_public_archive "$crate_name"; then
         printf 'Refusing resume: %s %s already exists but does not match source %s\n' \
             "$crate_name" "$version" "$source_commit" >&2
         exit 1
+    fi
+    if [[ "$state" == present ]]; then
+        wait_for_public_archive "$crate_name"
+    fi
+done
+
+for crate_name in "${crates[@]}"; do
+    if [[ "${release_states[$crate_name]}" == present ]]; then
+        printf 'SKIP already published and provenance-matched: %s %s\n' \
+            "$crate_name" "$version"
+        continue
     fi
     printf 'Publishing %s %s from %s\n' "$crate_name" "$version" "$source_commit"
     cargo publish --manifest-path "$repo_dir/Cargo.toml" --locked -p "$crate_name"

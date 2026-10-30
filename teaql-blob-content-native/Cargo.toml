@@ -1,0 +1,45 @@
+[package]
+name = "teaql-blob-content-native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Optional bounded native format verification for TeaQL Blob"
+
+[features]
+process-fixtures = []
+
+[[bin]]
+name = "teaql-blob-content-worker"
+path = "src/bin/worker.rs"
+
+[[bin]]
+name = "teaql-blob-content-test-worker"
+path = "tests/support/worker_fixture.rs"
+required-features = ["process-fixtures"]
+
+[dependencies]
+teaql-core.workspace = true
+teaql-blob-contracts.workspace = true
+async-trait.workspace = true
+sha2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+libc = "0.2"
+tokio = { workspace = true, features = ["fs", "io-util", "sync"] }
+futures-util = "0.3"
+rustix = { version = "1.1", features = ["fs", "process"] }
+memmap2 = "0.9"
+cfb = "=0.12.1"
+calamine = { version = "=0.37.0", default-features = false }
+lopdf = { version = "=0.46.0", default-features = false }
+mp4 = "=0.14.0"
+symphonia = { version = "=0.5.5", default-features = false, features = ["mp3"] }
+png = "=0.18.1"
+jpeg-decoder = { version = "=0.3.2", default-features = false }
+quick-xml = "=0.41.0"
+zip = { version = "=9.0.0", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tempfile = "3"
+serde_json.workspace = true

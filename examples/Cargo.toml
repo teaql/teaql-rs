@@ -15,6 +15,7 @@ teaql-macros = { workspace = true }
 # teaql-provider-postgres = { workspace = true }
 teaql-provider-sqlite = { workspace = true }
 teaql-runtime = { workspace = true }
+teaql-secure-document-reference = { workspace = true }
 teaql-http-reqwest = { path = "../teaql-http-reqwest" }
 teaql-sql = { workspace = true }
 rusqlite = { workspace = true }

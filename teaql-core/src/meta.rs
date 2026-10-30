@@ -11,6 +11,7 @@ pub struct PropertyDescriptor {
     pub max_length: Option<u32>,
     pub numeric_precision: Option<u32>,
     pub numeric_scale: Option<u32>,
+    pub blob_field_spec: Option<crate::BlobFieldSpec>,
 }
 
 impl PropertyDescriptor {
@@ -26,6 +27,7 @@ impl PropertyDescriptor {
             max_length: None,
             numeric_precision: None,
             numeric_scale: None,
+            blob_field_spec: None,
         }
     }
 
@@ -61,6 +63,16 @@ impl PropertyDescriptor {
 
     pub fn numeric_scale(mut self, scale: u32) -> Self {
         self.numeric_scale = Some(scale);
+        self
+    }
+
+    pub fn blob_field_spec(mut self, spec: crate::BlobFieldSpec) -> Self {
+        assert!(
+            self.data_type == DataType::BlobRef && self.name == spec.field(),
+            "BLOB_POLICY_INVALID"
+        );
+        self.nullable = spec.nullable();
+        self.blob_field_spec = Some(spec);
         self
     }
 }

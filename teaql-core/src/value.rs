@@ -13,6 +13,7 @@ pub enum DataType {
     F64,
     Decimal,
     Text,
+    BlobRef,
     LargeText,
     Json,
     Date,
@@ -28,6 +29,7 @@ pub enum Value {
     F64(f64),
     Decimal(Decimal),
     Text(String),
+    BlobRef(crate::BlobRef),
     Json(serde_json::Value),
     Date(NaiveDate),
     Timestamp(crate::time::Timestamp),
@@ -194,6 +196,13 @@ impl Value {
         }
     }
 
+    pub fn try_blob_ref(&self) -> Option<&crate::BlobRef> {
+        match self {
+            Self::BlobRef(value) => Some(value),
+            _ => None,
+        }
+    }
+
     pub fn try_bool(&self) -> Option<bool> {
         match self {
             Self::Bool(value) => Some(*value),
@@ -260,6 +269,7 @@ impl Value {
                 .unwrap_or(serde_json::Value::Null),
             Self::Decimal(value) => serde_json::Value::String(value.to_string()),
             Self::Text(value) => serde_json::Value::String(value.clone()),
+            Self::BlobRef(value) => serde_json::Value::String(value.as_str().to_owned()),
             Self::Json(value) => value.clone(),
             Self::Date(value) => serde_json::Value::String(value.to_string()),
             Self::Timestamp(value) => serde_json::Value::from(value.0),

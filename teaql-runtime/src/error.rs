@@ -5,6 +5,10 @@ use crate::CheckResult;
 
 #[derive(Debug)]
 pub enum RuntimeError {
+    Capability {
+        code: &'static str,
+        capability: String,
+    },
     DynamicField(teaql_core::dynamic_fields::DynamicFieldError),
     RequestIntent(teaql_core::RequestIntentError),
     /// The mutation is committed; callers must not blindly retry the write.
@@ -36,6 +40,10 @@ pub enum RuntimeError {
 impl std::fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Capability { code, capability } => write!(
+                f,
+                "{code}: required capability {capability} is not installed"
+            ),
             Self::DynamicField(err) => err.fmt(f),
             Self::RequestIntent(err) => err.fmt(f),
             Self::AuditAfterCommit { .. } => write!(

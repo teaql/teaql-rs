@@ -2,9 +2,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use teaql_runtime::{
-    ContextBoundReferenceRuntime, DeploymentProfile, ExternalEntityReference,
-    ReferenceDocumentScope, ReferenceIdentity, ReferenceKey, ReferenceMode,
-    RoundTripReferenceError, StaticReferenceKeyProvider, TrustedReferencePrincipal, UserContext,
+    ExternalEntityReference, ReferenceDocumentScope, ReferenceIdentity, ReferenceMode,
+    RoundTripReferenceError, TrustedReferencePrincipal, UserContext,
+};
+use teaql_secure_document_reference::{
+    ContextBoundReferenceRuntime, DeploymentProfile, ReferenceKey, StaticReferenceKeyProvider,
 };
 
 fn profile() -> Result<DeploymentProfile, RoundTripReferenceError> {

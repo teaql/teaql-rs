@@ -13,7 +13,13 @@ expected="$({
         teaql-provider-sqlite \
         teaql-provider-mysql \
         teaql-tfp-endpoint \
-        teaql-web-integration-axum
+        teaql-web-integration-axum \
+        teaql-blob-contracts \
+        teaql-blob-store-file \
+        teaql-blob-content-native \
+        teaql-object-storage-s3 \
+        teaql-secure-document-reference \
+        teaql-blob-reference
 })"
 actual="$($repo_dir/scripts/verify-release-provenance.sh --list-crates)"
 
@@ -23,8 +29,8 @@ if [[ "$actual" != "$expected" ]]; then
     exit 1
 fi
 
-if [[ "$(wc -l <<<"$actual")" -ne 10 ]]; then
-    printf 'FAIL expected exactly ten public release crates\n' >&2
+if [[ "$(wc -l <<<"$actual")" -ne 16 ]]; then
+    printf 'FAIL expected exactly sixteen public release crates\n' >&2
     exit 1
 fi
 
@@ -35,10 +41,14 @@ while IFS= read -r crate_name; do
     ((position += 1))
 done <<<"$actual"
 
-metadata="$(cargo metadata --manifest-path "$repo_dir/Cargo.toml" --locked --no-deps --format-version 1)"
+metadata="$(cargo metadata --manifest-path "$repo_dir/Cargo.toml" --locked --offline --no-deps --format-version 1)"
 while IFS=$'\t' read -r consumer dependency; do
     [[ -n "${release_position[$consumer]+present}" ]] || continue
-    [[ -n "${release_position[$dependency]+present}" ]] || continue
+    if [[ -z "${release_position[$dependency]+present}" ]]; then
+        printf 'FAIL release dependency %s required by %s is absent from the crate contract\n' \
+            "$dependency" "$consumer" >&2
+        exit 1
+    fi
     if (( release_position[$dependency] >= release_position[$consumer] )); then
         printf 'FAIL release order places dependency %s at/after consumer %s\n' \
             "$dependency" "$consumer" >&2
@@ -53,4 +63,4 @@ done < <(jq -r '
     | @tsv
 ' <<<"$metadata")
 
-printf 'PASS release provenance contract: 10/10 public crates in dependency order\n'
+printf 'PASS release provenance contract: 16/16 public crates in dependency order and complete closure\n'

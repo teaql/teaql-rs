@@ -1,0 +1,15 @@
+[package]
+name = "teaql-blob-contracts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Lightweight TeaQL Blob values and transport/verifier contracts"
+
+[dependencies]
+teaql-core.workspace = true
+teaql-data-service.workspace = true
+serde.workspace = true
+async-trait.workspace = true
+futures-core = "0.3"
+url = "2"

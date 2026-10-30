@@ -1,5 +1,6 @@
 extern crate self as teaql_core;
 
+pub mod blob;
 pub mod business_id;
 pub mod dynamic_fields;
 pub mod dynamic_properties;
@@ -13,6 +14,7 @@ mod meta;
 mod mutation;
 mod naming;
 pub mod object_storage;
+pub use blob::{BlobFieldSpec, BlobRef, BlobReferenceError};
 mod query;
 pub mod request;
 mod request_intent;

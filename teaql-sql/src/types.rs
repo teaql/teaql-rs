@@ -226,6 +226,7 @@ fn sql_literal(value: &Value, kind: DatabaseKind) -> String {
         Value::F64(value) => value.to_string(),
         Value::Decimal(value) => value.to_string(),
         Value::Text(value) => quoted_sql_string(value),
+        Value::BlobRef(value) => quoted_sql_string(value.as_str()),
         Value::Json(value) => quoted_sql_string(&value.to_string()),
         Value::Date(value) => match kind {
             DatabaseKind::PostgreSql => format!("DATE '{}'", value),

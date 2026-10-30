@@ -1,0 +1,159 @@
+{
+  "schema": "teaql.blob-policy-cases/v1",
+  "cases": [
+    {
+      "id": "defaults",
+      "input": {},
+      "expected": {
+        "maxSizeBytes": 104857600,
+        "uploadSessionTtlSeconds": 3600,
+        "unboundRetentionSeconds": 86400,
+        "unreferencedRetentionSeconds": 604800,
+        "readUrlTtlSeconds": 600
+      }
+    },
+    {
+      "id": "intersections",
+      "input": {
+        "modelExtensions": [
+          "pdf",
+          "docx",
+          "xlsx"
+        ],
+        "deploymentExtensions": [
+          "pdf",
+          "docx"
+        ],
+        "profileExtensions": [
+          "pdf",
+          "xlsx"
+        ]
+      },
+      "expected": {
+        "allowedExtensions": [
+          "pdf"
+        ],
+        "allowedContentTypes": [
+          "application/pdf"
+        ]
+      }
+    },
+    {
+      "id": "empty-intersection",
+      "input": {
+        "modelExtensions": [
+          "pdf"
+        ],
+        "profileExtensions": [
+          "docx"
+        ]
+      },
+      "error": "BLOB_POLICY_INVALID"
+    },
+    {
+      "id": "hard-size-limit",
+      "input": {
+        "maxSizeBytes": 104857601,
+        "maxUploadSizeBytes": 104857600
+      },
+      "error": "BLOB_POLICY_INVALID"
+    },
+    {
+      "id": "url-capped-by-document",
+      "input": {
+        "requestedTtlSeconds": 600,
+        "documentRemainingSeconds": 120,
+        "storeMaximumSeconds": 90
+      },
+      "expected": {
+        "readUrlTtlSeconds": 90
+      }
+    },
+    {
+      "id": "upload-clock-independent",
+      "input": {
+        "beginAtSeconds": 0,
+        "completedAtSeconds": 3500,
+        "nowSeconds": 3600
+      },
+      "expected": {
+        "uploadSessionExpired": true,
+        "unboundEligibleAtSeconds": 89900
+      }
+    },
+    {
+      "id": "unbound-deadline-rejects-bind-before-gc",
+      "input": {
+        "completedAtSeconds": 0,
+        "unboundRetentionSeconds": 86400,
+        "nowSeconds": 86400
+      },
+      "error": "BLOB_REFERENCE_EXPIRED"
+    },
+    {
+      "id": "active-reference-never-collected",
+      "input": {
+        "bindingCount": 1,
+        "nowSeconds": 315360000
+      },
+      "expected": {
+        "collectable": false
+      }
+    },
+    {
+      "id": "maximum-retention-across-fields",
+      "input": {
+        "acceptedRetentionSeconds": [
+          604800,
+          2592000,
+          3600
+        ],
+        "lastUnboundAtSeconds": 100,
+        "retentionFloorUntilSeconds": 3000000
+      },
+      "expected": {
+        "effectiveUnreferencedRetentionSeconds": 2592000,
+        "unreferencedEligibleAtSeconds": 3000000
+      }
+    },
+    {
+      "id": "profile-update-does-not-shorten",
+      "input": {
+        "acceptedUnreferencedRetentionSeconds": 2592000,
+        "currentProfileRetentionSeconds": 3600
+      },
+      "expected": {
+        "effectiveUnreferencedRetentionSeconds": 2592000
+      }
+    },
+    {
+      "id": "read-expiry-does-not-delete",
+      "input": {
+        "readUrlExpired": true,
+        "bindingCount": 1
+      },
+      "expected": {
+        "collectable": false,
+        "requiresReadAuthorization": true
+      }
+    },
+    {
+      "id": "deleting-rejects-binding",
+      "input": {
+        "status": "deleting"
+      },
+      "error": "BLOB_REFERENCE_EXPIRED"
+    },
+    {
+      "id": "context-checked-read-is-explicit",
+      "input": {
+        "requireContextCheckedRead": true,
+        "storeCapabilities": [
+          "presign",
+          "range"
+        ]
+      },
+      "error": "BLOB_CAPABILITY_MISSING"
+    }
+  ]
+}
