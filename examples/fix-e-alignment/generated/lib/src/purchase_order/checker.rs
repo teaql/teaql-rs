@@ -230,4 +230,33 @@ where
         self.logic
             .check_and_fix_purchase_order(context, entity, status, location, results);
     }
+
+    fn check_fixed_values(
+        &self,
+        _context: &UserContext,
+        values: &teaql_runtime::EntityValues,
+        location: &ObjectLocation,
+        results: &mut CheckResults,
+    ) {
+        if let Some(teaql_core::Value::Text(value)) = values.get("contact_phone") {
+            let length = value.chars().count() as u64;
+            if length < 1_u64 {
+                results.push(teaql_runtime::CheckResult::min_str(location.clone().member("contact_phone"), 1_u64, value.clone()));
+            }
+            if length > 32_u64 {
+                results.push(teaql_runtime::CheckResult::max_str(location.clone().member("contact_phone"), 32_u64, value.clone()));
+            }
+        }
+
+        if let Some(teaql_core::Value::Text(value)) = values.get("internal_note") {
+            let length = value.chars().count() as u64;
+            if length > 100_u64 {
+                results.push(teaql_runtime::CheckResult::max_str(location.clone().member("internal_note"), 100_u64, value.clone()));
+            }
+        }
+
+
+
+
+    }
 }

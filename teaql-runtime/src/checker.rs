@@ -321,6 +321,18 @@ pub trait TypedChecker<T>: Send + Sync {
         location: &ObjectLocation,
         results: &mut CheckResults,
     );
+
+    /// Model constraints observe the canonical values after typed/custom Fix.
+    /// Borrow the existing sparse payload: absent fields and explicit null must
+    /// not be mistaken for defaults introduced while materializing `T`.
+    fn check_fixed_values(
+        &self,
+        _context: &UserContext,
+        _values: &EntityValues,
+        _location: &ObjectLocation,
+        _results: &mut CheckResults,
+    ) {
+    }
 }
 
 /// Adapter that turns a [`TypedChecker<T>`] into a [`Checker`].
@@ -491,6 +503,22 @@ where
                 CheckResult::new(CheckRule::InvalidType, location.clone())
                     .with_message(error.to_string()),
             );
+            return;
+        }
+        let first_model_result = results.len();
+        self.checker
+            .check_fixed_values(context, values, location, results);
+        // A customer checker may already report the same modeled rule. Keep
+        // its message/metadata instead of displaying a second mechanical copy.
+        let mut index = first_model_result;
+        while index < results.len() {
+            if results[..index].iter().any(|prior| {
+                prior.rule == results[index].rule && prior.location == results[index].location
+            }) {
+                results.remove(index);
+            } else {
+                index += 1;
+            }
         }
     }
 }

@@ -167,7 +167,7 @@ impl<R> TenantRequest<R> {
             self.query,
             &self.query_options,
             &self.child_enhancements,
-        ))?;
+        ))?.with_facet_diagnostics(&self.query_options);
         context.fetch_compact_smart_list("Tenant", &query).await
     }
 
@@ -251,7 +251,7 @@ impl<R> TenantRequest<R> {
             &self.child_enhancements,
         ).limit(1);
         query.relations.clear();
-        let query = authorize_query(query)?;
+        let query = authorize_query(query)?.with_facet_diagnostics(&self.query_options);
         let rows = context.fetch_compact_rows("Tenant", &query).await?;
         Ok(!rows.is_empty())
     }

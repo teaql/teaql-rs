@@ -274,13 +274,13 @@ impl OrderItem {
     pub fn update_purchase_order_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.purchase_order_id = value.try_u64().unwrap_or(self.purchase_order_id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "purchase_order_id", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "purchase_order", value);
         self.__load_state.mark_loaded("purchase_order_id").expect("generated field layout");
         self
     }
 
     pub fn changed_purchase_order_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "purchase_order_id")
+        self.__teaql_runtime_state().get(&self.entity_key(), "purchase_order")
     }
 
     pub fn eval_purchase_order_id(&self) -> teaql_core::eval::EvalResult<u64> {
@@ -297,13 +297,13 @@ impl OrderItem {
     pub(crate) fn update_tenant_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.tenant_id = value.try_u64().unwrap_or(self.tenant_id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "tenant_id", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "tenant", value);
         self.__load_state.mark_loaded("tenant_id").expect("generated field layout");
         self
     }
 
     pub fn changed_tenant_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "tenant_id")
+        self.__teaql_runtime_state().get(&self.entity_key(), "tenant")
     }
 
     pub fn eval_tenant_id(&self) -> teaql_core::eval::EvalResult<u64> {

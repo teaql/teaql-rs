@@ -240,4 +240,37 @@ where
         self.logic
             .check_and_fix_order_item(context, entity, status, location, results);
     }
+
+    fn check_fixed_values(
+        &self,
+        _context: &UserContext,
+        values: &teaql_runtime::EntityValues,
+        location: &ObjectLocation,
+        results: &mut CheckResults,
+    ) {
+        if let Some(teaql_core::Value::Text(value)) = values.get("product_name") {
+            let length = value.chars().count() as u64;
+            if length < 1_u64 {
+                results.push(teaql_runtime::CheckResult::min_str(location.clone().member("product_name"), 1_u64, value.clone()));
+            }
+            if length > 80_u64 {
+                results.push(teaql_runtime::CheckResult::max_str(location.clone().member("product_name"), 80_u64, value.clone()));
+            }
+        }
+
+        if let Some(value) = values.get("unit_price").and_then(teaql_core::Value::try_decimal) {
+            let minimum = rust_decimal::Decimal::from_parts(1, 0, 0, false, 2);
+            if value < minimum {
+                results.push(teaql_runtime::CheckResult::min(location.clone().member("unit_price"), minimum, value));
+            }
+            let maximum = rust_decimal::Decimal::from_parts(1000000, 0, 0, false, 0);
+            if value > maximum {
+                results.push(teaql_runtime::CheckResult::max(location.clone().member("unit_price"), maximum, value));
+            }
+        }
+
+
+
+
+    }
 }

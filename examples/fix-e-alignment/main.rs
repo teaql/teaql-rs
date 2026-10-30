@@ -5,12 +5,13 @@ use chrono::{TimeZone, Utc};
 use std::sync::{Arc, Mutex};
 use teaql_core::{Entity, Value};
 use teaql_runtime::FixedBusinessClock;
+mod checker_range_probe;
+mod checker_type_probe;
 mod loading_probe;
 mod ownership_probe;
 mod paged_ownership;
 mod tombstone_probe;
 mod version_probe;
-mod checker_type_probe;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -235,6 +236,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tombstone_probe::verify(&mut context, pool.clone()).await?;
     version_probe::verify(&mut context, pool).await?;
     checker_type_probe::verify().await?;
+    checker_range_probe::verify().await?;
     println!(
         "FIX_E_EXAMPLE={}",
         serde_json::json!({"language":"rust", "passed":true,

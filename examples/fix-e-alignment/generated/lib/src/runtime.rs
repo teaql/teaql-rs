@@ -111,11 +111,11 @@ impl ServiceRuntimeExecutor {
         }
     }
 
-    /// Trusted runtime diagnostic SPI; it never changes query results or intent.
+    /// Trusted provider/test SPI, disabled by default. Metadata can contain raw
+    /// binds: never send it to operator logs or an untrusted transport. Normal
+    /// SQL/audit sinks retain their runtime-owned safe projections.
     #[doc(hidden)]
-    pub fn with_query_metadata_observer(mut self,
-        observer: std::sync::Arc<dyn Fn(&teaql_data_service::ExecutionMetadata) + Send + Sync>,
-    ) -> Self {
+    pub fn with_query_metadata_observer(mut self, observer: std::sync::Arc<dyn Fn(&teaql_data_service::ExecutionMetadata) + Send + Sync>) -> Self {
         self.query_metadata_observer = Some(observer);
         self
     }
@@ -356,8 +356,48 @@ pub fn generated_wire_field_aliases() -> std::collections::BTreeMap<String, std:
     std::collections::BTreeMap::new()
 }
 
+/// One immutable model schema shared across contexts, never across row values.
+pub fn generated_entity_json_model() -> &'static teaql_runtime::entity_json::Model {
+    use teaql_runtime::entity_json::{Definition, Field, Kind};
+    static MODEL: std::sync::OnceLock<teaql_runtime::entity_json::Model> = std::sync::OnceLock::new();
+    MODEL.get_or_init(|| teaql_runtime::entity_json::Model::new(vec![
+        Definition::new("Tenant", vec![
+            Field::new("id", "id", Kind::Id).nullable(false),
+            Field::new("name", "name", Kind::Text).nullable(false),
+            Field::new("version", "version", Kind::Version).nullable(false),
+            Field::new("purchase_order_list", "purchase_order_list", Kind::Many { target: "PurchaseOrder".to_owned() }),
+            Field::new("order_item_list", "order_item_list", Kind::Many { target: "OrderItem".to_owned() }),
+        ]),
+        Definition::new("PurchaseOrder", vec![
+            Field::new("id", "id", Kind::Id).nullable(false),
+            Field::new("tenant", "tenant_id", Kind::Reference { target: "Tenant".to_owned(), detail_key: "tenant".to_owned() }).nullable(false),
+            Field::new("contact_phone", "contact_phone", Kind::Text).nullable(false),
+            Field::new("internal_note", "internal_note", Kind::Text).nullable(true),
+            Field::new("create_time", "create_time", Kind::DateTime).nullable(false),
+            Field::new("update_time", "update_time", Kind::DateTime).nullable(false),
+            Field::new("version", "version", Kind::Version).nullable(false),
+            Field::new("order_item_list", "order_item_list", Kind::Many { target: "OrderItem".to_owned() }),
+        ]),
+        Definition::new("OrderItem", vec![
+            Field::new("id", "id", Kind::Id).nullable(false),
+            Field::new("purchase_order", "purchase_order_id", Kind::Reference { target: "PurchaseOrder".to_owned(), detail_key: "purchase_order".to_owned() }).nullable(false),
+            Field::new("tenant", "tenant_id", Kind::Reference { target: "Tenant".to_owned(), detail_key: "tenant".to_owned() }).nullable(false),
+            Field::new("product_name", "product_name", Kind::Text).nullable(false),
+            Field::new("unit_price", "unit_price", Kind::Decimal).nullable(false),
+            Field::new("create_time", "create_time", Kind::DateTime).nullable(false),
+            Field::new("update_time", "update_time", Kind::DateTime).nullable(false),
+            Field::new("version", "version", Kind::Version).nullable(false),
+        ])
+    ]).expect("invalid generated entity JSON metadata"))
+}
+
+pub fn generated_json_field_naming_profile() -> teaql_runtime::JsonFieldNamingProfile {
+    teaql_runtime::JsonFieldNamingProfile::CamelCase
+}
+
 pub fn module() -> teaql_runtime::RuntimeModule {
     teaql_runtime::RuntimeModule::new()
+        .entity_json_model(generated_entity_json_model().clone())
         .entity::<Tenant>()
         .entity::<PurchaseOrder>()
         .entity::<OrderItem>()
@@ -365,7 +405,8 @@ pub fn module() -> teaql_runtime::RuntimeModule {
 }
 
 pub fn module_with_checkers() -> teaql_runtime::RuntimeModule {
-    let mut module = teaql_runtime::RuntimeModule::new();
+    let mut module = teaql_runtime::RuntimeModule::new()
+        .entity_json_model(generated_entity_json_model().clone());
     module = module.entity::<Tenant>();
     module = module.checker(teaql_runtime::TypedEntityChecker::<Tenant, _>::new(TenantChecker::default()));
     module = module.entity::<PurchaseOrder>();
@@ -377,7 +418,8 @@ pub fn module_with_checkers() -> teaql_runtime::RuntimeModule {
 }
 
 pub fn module_with_behaviors() -> teaql_runtime::RuntimeModule {
-    let mut module = teaql_runtime::RuntimeModule::new();
+    let mut module = teaql_runtime::RuntimeModule::new()
+        .entity_json_model(generated_entity_json_model().clone());
     module = module.entity_with_behavior::<Tenant, _>(TenantBehavior::default());
     module = module.entity_with_behavior::<PurchaseOrder, _>(PurchaseOrderBehavior::default());
     module = module.entity_with_behavior::<OrderItem, _>(OrderItemBehavior::default());
@@ -386,7 +428,8 @@ pub fn module_with_behaviors() -> teaql_runtime::RuntimeModule {
 }
 
 pub fn module_with_behaviors_and_checkers() -> teaql_runtime::RuntimeModule {
-    let mut module = teaql_runtime::RuntimeModule::new();
+    let mut module = teaql_runtime::RuntimeModule::new()
+        .entity_json_model(generated_entity_json_model().clone());
     module = module.entity_with_behavior::<Tenant, _>(TenantBehavior::default());
     module = module.checker(teaql_runtime::TypedEntityChecker::<Tenant, _>::new(TenantChecker::default()));
     module = module.entity_with_behavior::<PurchaseOrder, _>(PurchaseOrderBehavior::default());
