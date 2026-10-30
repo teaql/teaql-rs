@@ -1230,6 +1230,18 @@ impl UserContext {
             crate::entity_save::with_fix_time(self, || {
                 checker.check_and_fix(self, values, location, &mut results);
             });
+            // Bind rule ownership before localization. Nested/custom checkers
+            // may already provide a more specific type; never replace it with
+            // the current graph root or infer identity from a rendered path.
+            for result in &mut results {
+                if result
+                    .entity_type
+                    .as_deref()
+                    .is_none_or(|name| name.trim().is_empty())
+                {
+                    result.entity_type = Some(checker.entity().to_owned());
+                }
+            }
         }
         if let Some(descriptor) = self.entity(entity) {
             crate::ledger_keys::map_checker_values(descriptor, values, true)?;
@@ -1324,7 +1336,7 @@ impl UserContext {
                         && result.location == property_location
                 });
                 if ((status.is_create() && missing) || null) && !already_reported {
-                    results.push(CheckResult::required(property_location));
+                    results.push(CheckResult::required(property_location).with_entity_type(entity));
                 }
             }
         }

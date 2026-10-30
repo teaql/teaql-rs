@@ -59,13 +59,15 @@ try {
   report.binarySha256 = sha(fs.readFileSync(binary));
   for (const round of [1, 2]) {
     const log = await run([binary], 'round-' + round + '.log', 90000);
-    for (const marker of ['FIX_E_EXAMPLE=', 'CORE_LOAD_EXAMPLE=', 'CORE_MUTATION_OWNERSHIP=', 'CORE_MUTATION_PAGING=', 'RUST_AUTHORITATIVE_TOMBSTONES=', 'RUST_VERSION_BOUNDARIES=']) {
+    for (const marker of ['FIX_E_EXAMPLE=', 'CORE_LOAD_EXAMPLE=', 'CORE_MUTATION_OWNERSHIP=', 'CORE_MUTATION_PAGING=', 'RUST_AUTHORITATIVE_TOMBSTONES=', 'RUST_VERSION_BOUNDARIES=', 'RUST_GENERATED_CHECKER_TYPES=']) {
       const values = log.split(/\r?\n/).filter(line => line.startsWith(marker)).map(line => JSON.parse(line.slice(marker.length)));
       assert.equal(values.length, 1, marker); assert.equal(values[0].passed, true, marker);
     }
     assert.deepEqual(fingerprint(), m);
   }
   report.databaseSha256 = sha(fs.readFileSync(path.join(evidence, 'fixture.sqlite')));
+  report.checkerTypeDatabase = {file: 'fixture.sqlite.checker-types.sqlite',
+    sha256: sha(fs.readFileSync(path.join(evidence, 'fixture.sqlite.checker-types.sqlite')))};
   report.passed = true;
   console.log('PASS Rust retained Fix/E/loading/ownership example twice on one database');
 } catch (error) { console.error(error.stack); process.exitCode ||= 1; }
