@@ -144,7 +144,7 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
             "partial-owner-update",
             "PurchaseOrder",
             "invalid_type",
-            "/internalNote",
+            "/tenant",
         )
         .await,
     );

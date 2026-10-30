@@ -13,6 +13,8 @@ pub struct PropertyDescriptor {
     pub max_length: Option<u32>,
     pub numeric_precision: Option<u32>,
     pub numeric_scale: Option<u32>,
+    /// Model-declared contextual ownership; not a tenant or authorization policy.
+    pub context_root_entity: Option<String>,
 }
 
 impl PropertyDescriptor {
@@ -29,6 +31,7 @@ impl PropertyDescriptor {
             max_length: None,
             numeric_precision: None,
             numeric_scale: None,
+            context_root_entity: None,
         }
     }
 
@@ -81,6 +84,20 @@ impl PropertyDescriptor {
 
     pub fn numeric_scale(mut self, scale: u32) -> Self {
         self.numeric_scale = Some(scale);
+        self
+    }
+
+    pub fn context_root(mut self, entity: impl Into<String>) -> Self {
+        let entity = entity.into();
+        assert!(
+            !entity.trim().is_empty(),
+            "context root type must not be empty"
+        );
+        assert!(
+            !self.is_id && !self.is_version,
+            "identity/version cannot be a context root"
+        );
+        self.context_root_entity = Some(entity);
         self
     }
 }

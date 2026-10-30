@@ -41,6 +41,7 @@ pub struct OrderItem {
 
 // @source model.xml:16
 #[teaql(column = "tenant")]
+    #[teaql(context_root = "Tenant")]
     tenant_id: u64,
 // @source model.xml:16
 #[teaql(relation(target = "PurchaseOrder", local_key = "purchase_order_id", foreign_key = "id"))]

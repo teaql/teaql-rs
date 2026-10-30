@@ -339,6 +339,9 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         let numeric_scale = parsed
             .numeric_scale
             .map(|value| quote! { .numeric_scale(#value) });
+        let context_root = parsed
+            .context_root
+            .map(|value| quote! { .context_root(#value) });
 
         let nullable_tokens = if !nullable {
             quote! { .not_null() }
@@ -400,6 +403,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                     #max_length
                     #numeric_precision
                     #numeric_scale
+                    #context_root
             );
         });
 

@@ -8,6 +8,7 @@ use teaql_runtime::FixedBusinessClock;
 mod checker_range_probe;
 mod checker_type_probe;
 mod clock_update_probe;
+mod context_root_probe;
 mod loading_probe;
 mod ownership_probe;
 mod paged_ownership;
@@ -239,6 +240,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     checker_type_probe::verify().await?;
     checker_range_probe::verify().await?;
     clock_update_probe::verify().await?;
+    context_root_probe::verify().await?;
     println!(
         "FIX_E_EXAMPLE={}",
         serde_json::json!({"language":"rust", "passed":true,

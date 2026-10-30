@@ -16,6 +16,7 @@ use crate::{
     DataServiceError, GraphNode, GraphOperation, ObjectLocation, RuntimeError, UserContext,
 };
 
+mod context_roots;
 mod restoration;
 #[cfg(test)]
 mod restoration_view_tests;
@@ -2244,6 +2245,18 @@ fn preflight_graph(
     location: &ObjectLocation,
     root: Option<&crate::EntityRuntimeState>,
 ) -> Result<(), RuntimeError> {
+    // Validate the entire intended graph before any customizable Fix executes.
+    // Removal intentionally skips ordinary Checker, but never contextual ownership.
+    context_roots::validate(context, node, location, root)?;
+    preflight_graph_inner(context, node, location, root)
+}
+
+fn preflight_graph_inner(
+    context: &UserContext,
+    node: &mut GraphNode,
+    location: &ObjectLocation,
+    root: Option<&crate::EntityRuntimeState>,
+) -> Result<(), RuntimeError> {
     if !matches!(
         node.operation,
         GraphOperation::Remove | GraphOperation::Reference
@@ -2284,7 +2297,7 @@ fn preflight_graph(
     for (relation, children) in &mut node.relations {
         for (index, child) in children.iter_mut().enumerate() {
             let child_location = location.clone().member(relation).element(index);
-            preflight_graph(context, child, &child_location, root)?;
+            preflight_graph_inner(context, child, &child_location, root)?;
         }
     }
     Ok(())

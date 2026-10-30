@@ -60,7 +60,7 @@ try {
   report.binarySha256 = sha(fs.readFileSync(binary));
   for (const round of [1, 2]) {
     const log = await run([binary], 'round-' + round + '.log', 90000);
-    for (const marker of ['FIX_E_EXAMPLE=', 'CORE_LOAD_EXAMPLE=', 'CORE_MUTATION_OWNERSHIP=', 'CORE_MUTATION_PAGING=', 'RUST_AUTHORITATIVE_TOMBSTONES=', 'RUST_VERSION_BOUNDARIES=', 'RUST_GENERATED_CHECKER_TYPES=', 'RUST_GENERATED_CHECKER_RANGES=', 'RUST_GENERATED_CLOCK_UPDATES=']) {
+    for (const marker of ['FIX_E_EXAMPLE=', 'CORE_LOAD_EXAMPLE=', 'CORE_MUTATION_OWNERSHIP=', 'CORE_MUTATION_PAGING=', 'RUST_AUTHORITATIVE_TOMBSTONES=', 'RUST_VERSION_BOUNDARIES=', 'RUST_GENERATED_CHECKER_TYPES=', 'RUST_GENERATED_CHECKER_RANGES=', 'RUST_GENERATED_CLOCK_UPDATES=', 'RUST_CONTEXT_ROOT_BOUNDARY=']) {
       const values = log.split(/\r?\n/).filter(line => line.startsWith(marker)).map(line => JSON.parse(line.slice(marker.length)));
       assert.equal(values.length, 1, marker); assert.equal(values[0].passed, true, marker);
     }
@@ -75,6 +75,9 @@ try {
   report.clockUpdateDatabase = {file: 'fixture.sqlite.clock-updates.sqlite',
     sha256: sha(fs.readFileSync(path.join(evidence, 'fixture.sqlite.clock-updates.sqlite')))};
   report.clockUpdateApplicationSha256 = sha(fs.readFileSync(path.join(example, 'clock_update_probe.rs')));
+  report.contextRootDatabase = {file: 'fixture.sqlite.context-root.sqlite',
+    sha256: sha(fs.readFileSync(path.join(evidence, 'fixture.sqlite.context-root.sqlite')))};
+  report.contextRootApplicationSha256 = sha(fs.readFileSync(path.join(example, 'context_root_probe.rs')));
   const expressionBinary = path.join(scratch, 'target/debug/teaql-expression-boundaries');
   report.expressionBoundaryBinarySha256 = sha(fs.readFileSync(expressionBinary));
   report.expressionBoundaryApplicationSha256 = sha(fs.readFileSync(path.join(example, 'expression_boundary_probe.rs')));
