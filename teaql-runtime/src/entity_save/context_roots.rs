@@ -287,6 +287,19 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_new_children_require_no_context_because_they_are_not_persisted() {
+        let context = UserContext::new()
+            .with_metadata(crate::InMemoryMetadataStore::new().with_entity(descriptor()));
+        let root = crate::EntityRuntimeState::default();
+        let key = crate::EntityKey::new_static("Document", 42u64);
+        root.mark_as_new(key.clone());
+        root.mark_as_delete(key);
+        let mut node = GraphNode::new("UnchangedOwner");
+        node.operation = GraphOperation::Reference;
+        validate(&context, &node, &ObjectLocation::root(), Some(&root)).unwrap();
+    }
+
+    #[test]
     fn the_entire_graph_is_admitted_before_any_custom_fix() {
         struct NeverFix;
         impl crate::Checker for NeverFix {

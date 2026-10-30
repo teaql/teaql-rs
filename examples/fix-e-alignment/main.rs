@@ -5,6 +5,7 @@ use chrono::{TimeZone, Utc};
 use std::sync::{Arc, Mutex};
 use teaql_core::{Entity, Value};
 use teaql_runtime::FixedBusinessClock;
+mod cancelled_root_probe;
 mod checker_range_probe;
 mod checker_type_probe;
 mod clock_update_probe;
@@ -241,6 +242,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     checker_range_probe::verify().await?;
     clock_update_probe::verify().await?;
     context_root_probe::verify().await?;
+    cancelled_root_probe::verify().await?;
     println!(
         "FIX_E_EXAMPLE={}",
         serde_json::json!({"language":"rust", "passed":true,
