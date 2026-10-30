@@ -513,12 +513,18 @@ where
                     }
                 }
                 ensure_initial_version(&mut node.values, descriptor);
-                crate::data_service::helpers::ensure_timestamps(&mut node.values, descriptor, true);
+                crate::data_service::helpers::ensure_timestamps(
+                    &mut node.values,
+                    descriptor,
+                    true,
+                    self.data_service.metadata.context,
+                );
             } else {
                 crate::data_service::helpers::ensure_timestamps(
                     &mut node.values,
                     descriptor,
                     false,
+                    self.data_service.metadata.context,
                 );
             }
             let update_fields = if is_update {
@@ -1847,7 +1853,12 @@ where
                     db_record.insert(field.clone(), value.clone());
                 }
                 crate::data_service::helpers::ensure_initial_version(&mut db_record, descriptor);
-                crate::data_service::helpers::ensure_timestamps(&mut db_record, descriptor, true);
+                crate::data_service::helpers::ensure_timestamps(
+                    &mut db_record,
+                    descriptor,
+                    true,
+                    self.data_service.metadata.context,
+                );
                 let location = locations.get(key).cloned().unwrap_or_default();
                 self.data_service
                     .metadata
@@ -1926,7 +1937,12 @@ where
                     root.get_original_version(key),
                 )
                 .map_err(DataServiceError::Runtime)?;
-                crate::data_service::helpers::ensure_timestamps(&mut db_record, descriptor, false);
+                crate::data_service::helpers::ensure_timestamps(
+                    &mut db_record,
+                    descriptor,
+                    false,
+                    self.data_service.metadata.context,
+                );
                 cmd.batch_values.push(db_record.into());
                 cmd.batch_ids.push(key.id.clone());
                 cmd.batch_expected_versions

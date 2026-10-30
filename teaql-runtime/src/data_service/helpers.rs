@@ -347,29 +347,166 @@ pub(super) fn ensure_timestamps(
     values: &mut BTreeMap<String, Value>,
     descriptor: &EntityDescriptor,
     is_new: bool,
+    context: &crate::UserContext,
 ) {
-    let now = Value::Timestamp(teaql_core::time::Timestamp::now());
     let has_property =
         |name: &str| -> bool { descriptor.properties.iter().any(|p| p.name == name) };
-
-    if is_new && has_property("create_time") {
-        let needs_time = matches!(
-            values.get("create_time"),
+    let missing_time = |name: &str| {
+        matches!(
+            values.get(name),
             None | Some(Value::Null) | Some(Value::I64(0)) | Some(Value::U64(0))
-        );
-        if needs_time {
-            values.insert("create_time".to_owned(), now.clone());
+        )
+    };
+    let create = is_new && has_property("create_time") && missing_time("create_time");
+    let update = has_property("update_time") && missing_time("update_time");
+    if !create && !update {
+        return;
+    }
+    // A frozen clock can produce the same value as the loaded row, so typed
+    // Fix need not put this managed field into the sparse mutation delta. The
+    // persistence fallback must use that same invocation's Business Clock,
+    // never introduce an independent wall-clock instant after validation.
+    let now = Value::Timestamp(context.fix_time());
+    if create {
+        values.insert("create_time".to_owned(), now.clone());
+    }
+    if update {
+        values.insert("update_time".to_owned(), now);
+    }
+}
+
+#[cfg(test)]
+mod timestamp_fallback_tests {
+    use super::*;
+    use crate::{BusinessClock, FixedBusinessClock, UserContext};
+    use chrono::{DateTime, TimeZone, Utc};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicI64, Ordering},
+    };
+    use teaql_core::{DataType, PropertyDescriptor, time::Timestamp};
+
+    const FIXED: i64 = 1_961_662_530_000;
+    fn descriptor() -> EntityDescriptor {
+        EntityDescriptor::new("TimestampFallback")
+            .property(PropertyDescriptor::new("create_time", DataType::Timestamp))
+            .property(PropertyDescriptor::new("update_time", DataType::Timestamp))
+    }
+    fn context() -> UserContext {
+        UserContext::new().with_business_clock(FixedBusinessClock::new(
+            Utc.timestamp_millis_opt(FIXED).unwrap(),
+        ))
+    }
+    struct AdvancingClock(Arc<AtomicI64>);
+    impl BusinessClock for AdvancingClock {
+        fn business_time(&self) -> DateTime<Utc> {
+            Utc.timestamp_millis_opt(self.0.fetch_add(1, Ordering::SeqCst))
+                .unwrap()
         }
     }
-
-    if has_property("update_time") {
-        let needs_time = matches!(
-            values.get("update_time"),
-            None | Some(Value::Null) | Some(Value::I64(0)) | Some(Value::U64(0))
-        );
-        if needs_time {
-            values.insert("update_time".to_owned(), now);
+    struct NoClock;
+    impl BusinessClock for NoClock {
+        fn business_time(&self) -> DateTime<Utc> {
+            panic!("complete or unrelated payloads must not consult the clock")
         }
+    }
+    #[test]
+    fn missing_create_and_update_timestamps_use_the_business_clock() {
+        let mut values = BTreeMap::new();
+        ensure_timestamps(&mut values, &descriptor(), true, &context());
+        assert_eq!(
+            values.get("create_time"),
+            Some(&Value::Timestamp(Timestamp(FIXED)))
+        );
+        assert_eq!(
+            values.get("update_time"),
+            Some(&Value::Timestamp(Timestamp(FIXED)))
+        );
+    }
+    #[test]
+    fn sparse_update_fallback_never_introduces_a_create_time() {
+        let mut values = BTreeMap::from([("name".into(), Value::from("updated"))]);
+        ensure_timestamps(&mut values, &descriptor(), false, &context());
+        assert!(!values.contains_key("create_time"));
+        assert_eq!(values.get("name"), Some(&Value::from("updated")));
+        assert_eq!(
+            values.get("update_time"),
+            Some(&Value::Timestamp(Timestamp(FIXED)))
+        );
+    }
+    #[test]
+    fn explicit_times_and_the_epoch_are_preserved_without_clock_access() {
+        let context = UserContext::new().with_business_clock(NoClock);
+        let mut values = BTreeMap::from([
+            ("create_time".into(), Value::Timestamp(Timestamp(0))),
+            ("update_time".into(), Value::Timestamp(Timestamp(123))),
+        ]);
+        let before = values.clone();
+        ensure_timestamps(&mut values, &descriptor(), true, &context);
+        assert_eq!(values, before);
+        ensure_timestamps(
+            &mut BTreeMap::new(),
+            &EntityDescriptor::new("Untimed"),
+            true,
+            &context,
+        );
+    }
+    #[test]
+    fn null_and_legacy_zero_placeholders_share_one_standalone_instant() {
+        for placeholder in [Value::Null, Value::I64(0), Value::U64(0)] {
+            let ticks = Arc::new(AtomicI64::new(FIXED));
+            let context = UserContext::new().with_business_clock(AdvancingClock(ticks.clone()));
+            let mut values = BTreeMap::from([
+                ("create_time".into(), placeholder.clone()),
+                ("update_time".into(), placeholder),
+            ]);
+            ensure_timestamps(&mut values, &descriptor(), true, &context);
+            assert_eq!(values.get("create_time"), values.get("update_time"));
+            assert_eq!(
+                values.get("update_time"),
+                Some(&Value::Timestamp(Timestamp(FIXED)))
+            );
+            assert_eq!(ticks.load(Ordering::SeqCst), FIXED + 1);
+        }
+    }
+    #[test]
+    fn multiple_entities_reuse_the_enclosing_fix_snapshot() {
+        let ticks = Arc::new(AtomicI64::new(FIXED));
+        let context = UserContext::new().with_business_clock(AdvancingClock(ticks.clone()));
+        crate::entity_save::with_fix_time(&context, || {
+            for create in [true, false, true] {
+                let mut values = BTreeMap::new();
+                ensure_timestamps(&mut values, &descriptor(), create, &context);
+                assert_eq!(
+                    values.get("update_time"),
+                    Some(&Value::Timestamp(Timestamp(FIXED)))
+                );
+            }
+        });
+        assert_eq!(ticks.load(Ordering::SeqCst), FIXED + 1);
+    }
+    #[test]
+    fn fallback_contexts_and_later_invocations_do_not_share_time() {
+        let ticks = Arc::new(AtomicI64::new(FIXED));
+        let first = UserContext::new().with_business_clock(AdvancingClock(ticks.clone()));
+        let mut second = context();
+        second.set_business_clock(FixedBusinessClock::new(
+            Utc.timestamp_millis_opt(9000).unwrap(),
+        ));
+        crate::entity_save::with_fix_time(&first, || {
+            let mut values = BTreeMap::new();
+            ensure_timestamps(&mut values, &descriptor(), false, &second);
+            assert_eq!(
+                values.get("update_time"),
+                Some(&Value::Timestamp(Timestamp(9000)))
+            );
+        });
+        let mut values = BTreeMap::new();
+        ensure_timestamps(&mut values, &descriptor(), false, &first);
+        assert_eq!(
+            values.get("update_time"),
+            Some(&Value::Timestamp(Timestamp(FIXED + 1)))
+        );
     }
 }
 
