@@ -177,6 +177,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     });
 
     let mut property_tokens = Vec::new();
+    let mut context_root_metadata_revision = 0u32;
     let mut into_json_fields = Vec::new();
     let mut property_member_names = Vec::new();
     let forward_relation_names: std::collections::HashSet<String> = named_fields
@@ -392,6 +393,9 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         }
 
         property_member_names.push(field_name.clone());
+        if context_root.is_some() {
+            context_root_metadata_revision = 1;
+        }
         property_tokens.push(quote! {
             descriptor = descriptor.property(
                 ::teaql_core::PropertyDescriptor::new(#field_name, #data_type)
@@ -963,6 +967,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     quote! {
         impl ::teaql_core::TeaqlEntity for #struct_name {
             const ENTITY_NAME: &'static str = #entity_name;
+            const CONTEXT_ROOT_METADATA_REVISION: u32 = #context_root_metadata_revision;
 
             #field_layout_impl
 

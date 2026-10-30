@@ -1,4 +1,8 @@
 extern crate self as teaql_runtime;
+
+/// Compile-time contract for generated contextual-ownership save admission.
+#[doc(hidden)]
+pub const CONTEXT_ROOT_SAVE_ADMISSION_REVISION: u32 = 1;
 mod business_id;
 mod checker;
 mod commit_audit;
@@ -6,8 +10,8 @@ mod context;
 mod data_service;
 mod document_round_trip;
 pub mod dynamic_fields;
-mod entity_reference;
 pub mod entity_json;
+mod entity_reference;
 mod entity_runtime;
 pub mod entity_save;
 mod entity_status;

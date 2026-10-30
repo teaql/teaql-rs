@@ -56,6 +56,10 @@ impl EntityJsonTraversal {
 pub trait TeaqlEntity {
     const ENTITY_NAME: &'static str;
 
+    /// Derive capability witness. Legacy/hand-written adapters do not attest support.
+    #[doc(hidden)]
+    const CONTEXT_ROOT_METADATA_REVISION: u32 = 0;
+
     fn entity_descriptor() -> EntityDescriptor;
 
     /// Fixed metadata supplied by generation; hand-written adapters may remain unindexed.

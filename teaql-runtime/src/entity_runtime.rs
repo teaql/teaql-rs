@@ -1663,9 +1663,11 @@ impl EntityRuntimeState {
             self.loaded_snapshot
                 .with(|snapshot| {
                     (snapshot.entity.as_ref() == key.entity.as_ref()
-                        && EntityKey::new(snapshot.entity.as_ref(), snapshot.row.get("id")?.clone())
-                            == *key)
-                    .then(|| EntitySnapshot::from(snapshot.row.clone().into_map()))
+                        && EntityKey::new(
+                            snapshot.entity.as_ref(),
+                            snapshot.row.get("id")?.clone(),
+                        ) == *key)
+                        .then(|| EntitySnapshot::from(snapshot.row.clone().into_map()))
                 })
                 .flatten()
         })

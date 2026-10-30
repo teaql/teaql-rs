@@ -2,13 +2,13 @@
   "schema": "teaql.generated-example-fixture/v1",
   "language": "rust",
   "modelSha256": "a2cf4c907cb084cb0946e993eeba586c8c0701a89fdc4a849808aa743be033b7",
-  "generatedManifestSha256": "68694b77756301c3bfc1f9ccd30de4226ba92535f0c2d0b721179226b246ed6f",
-  "producerReceiptSha256": "fe19e950d2cd6cca2d70ec427dc4d79d8f78604eeeb09adfe8b8a2e52a4d97b6",
+  "generatedManifestSha256": "e75bc2b58840287736112ac53f019f35c974bce7e1b44735fe63ffe84b1f54a6",
+  "producerReceiptSha256": "f4ff614dd6bcb35484a51c7596d52467272414bfa4706091ebf9800d68b27737",
   "producerSource": {
-    "commit": "ee833c6fcfcfdf9fe97da78b8af0dea13ebef865",
-    "diff": "6da3291b0fcab832991ba0b05d3dd8adfe0d3316876660a1d4b5036612a19f94",
-    "status": "11cbc7bd3344446a1536cf3b71f6b8fadde748a929c5cc4f9373464d10940b87",
-    "sourceContentsSha256": "7b022c59f7340cbe25c47e138a5b748e0c920c3a5f8540cd1b70524e4ee62ab9"
+    "commit": "5ed87034aefbb173d207733cb542627ce2b13639",
+    "diff": "0e461c7fa96e629b87b8df7ccc639999d5c17ca67e69473116bb24aa279eee6f",
+    "status": "027decfc3a704de7ba1e0579186c1b37e7c6e045f474c26104eeea401887e2fd",
+    "sourceContentsSha256": "0de83e9a9568d8cba118a3e0ab810456e3fbe09ea77209d1947bf04ce1ba7287"
   },
   "evaluatedScope": "rust-lib-core",
   "evaluationErrors": 0,
@@ -35,8 +35,8 @@
     "lib/src/purchase_order/mod.rs": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7",
     "lib/src/order_item/mod.rs": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7",
     "lib/src/tenant/entity.rs": "a8a63e07f18eea0074e0914b36361138205eadd139bde076d7ae2646841d94fc",
-    "lib/src/purchase_order/entity.rs": "dc071b5723bac6a5d407626a4ba0a666b3d9e872dc152ea9ce14ad8aa4f7fcdb",
-    "lib/src/order_item/entity.rs": "031f81922408d205f801d295ae1e0541e540c28740db08b47ba417ce6e958bca",
+    "lib/src/purchase_order/entity.rs": "6781aeb94e2f6266a3a438e3b4d12eef02f358eef446d7a8b118c69662075ac4",
+    "lib/src/order_item/entity.rs": "370e6be6cbe2204a1e9336ad804f4da7d77b3d37dc87c0c68433d3b5b7da7feb",
     "lib/src/runtime.rs": "72e189a8325b8accf3cb6336897687a58b3f3fc9029a3ba299c2e0e8294154fd",
     "lib/src/sample_data.rs": "06f24daa926f421d8745ae9eebb02a6869d1c2db1a72c075e34f0aba220ff9e0"
   }

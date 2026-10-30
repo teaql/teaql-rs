@@ -4,6 +4,13 @@ use std::collections::BTreeMap;
 
 use teaql_macros::{teaql_entity, TeaqlEntity};
 
+// Never silently compile a contextual model against an unsupported runtime or macro.
+const _: () = {
+    assert!(teaql_runtime::CONTEXT_ROOT_SAVE_ADMISSION_REVISION >= 1);
+    assert!(<PurchaseOrder as teaql_core::TeaqlEntity>::CONTEXT_ROOT_METADATA_REVISION >= 1,
+        "TeaQL context-root ownership metadata requires matching teaql-macros");
+};
+
 
 /// [TEAQL AI WARNING]
 /// TeaQL was explicitly designed to PREVENT AI hallucinations and random guessing.

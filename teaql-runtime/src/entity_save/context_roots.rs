@@ -27,7 +27,7 @@ pub(super) fn validate(
             .collect();
         let locations = ledger_object_locations(node);
         for key in keys {
-            if checked.contains(&key) {
+            if checked.contains(&key) || (root.is_new(&key) && root.is_marked_as_delete(&key)) {
                 continue;
             }
             let descriptor = context.require_entity(&key.entity)?;
@@ -196,6 +196,10 @@ mod tests {
         }
         let d = <MetadataProbe as teaql_core::TeaqlEntity>::entity_descriptor();
         assert_eq!(
+            <MetadataProbe as teaql_core::TeaqlEntity>::CONTEXT_ROOT_METADATA_REVISION,
+            1
+        );
+        assert_eq!(
             d.property_by_name("scope_id")
                 .unwrap()
                 .context_root_entity
@@ -300,6 +304,23 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_new_children_in_the_materialized_graph_are_omitted_too() {
+        let context = UserContext::new()
+            .with_metadata(crate::InMemoryMetadataStore::new().with_entity(descriptor()));
+        let root = crate::EntityRuntimeState::default();
+        let key = crate::EntityKey::new_static("Document", 42u64);
+        root.mark_as_new(key.clone());
+        root.mark_as_delete(key);
+        let mut parent = GraphNode::new("UnchangedOwner");
+        parent.operation = GraphOperation::Reference;
+        let mut child = GraphNode::new("Document");
+        child.operation = GraphOperation::Remove;
+        child.values.insert("id".into(), Value::U64(42));
+        parent.relations.insert("items".into(), vec![child]);
+        validate(&context, &parent, &ObjectLocation::root(), Some(&root)).unwrap();
+    }
+
+    #[test]
     fn the_entire_graph_is_admitted_before_any_custom_fix() {
         struct NeverFix;
         impl crate::Checker for NeverFix {
@@ -360,14 +381,18 @@ fn visit(
                 .as_ref()
                 .and_then(|key| root.and_then(|root| root.original_values_for(key)))
                 .or_else(|| node.original_values.clone());
-            validate_values(
-                context,
-                descriptor,
-                &node.values,
-                original.as_ref(),
-                node.operation == GraphOperation::Create,
-                location,
-            )?;
+            if !key.as_ref().is_some_and(|key| {
+                root.is_some_and(|root| root.is_new(key) && root.is_marked_as_delete(key))
+            }) {
+                validate_values(
+                    context,
+                    descriptor,
+                    &node.values,
+                    original.as_ref(),
+                    node.operation == GraphOperation::Create,
+                    location,
+                )?;
+            }
             if let Some(key) = key {
                 checked.insert(key);
             }
