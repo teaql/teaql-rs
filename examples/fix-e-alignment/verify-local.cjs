@@ -33,6 +33,7 @@ try {
   for (const file of fs.readdirSync(example).filter(file => file.endsWith(".rs"))) fs.copyFileSync(path.join(example, file), path.join(scratch, "src", file));
   const local = name => quote(path.join(repo, name));
   const manifest = ['[package]', 'name = "teaql-fix-e-example"', 'version = "0.0.0"', 'edition = "2024"', 'publish = false',
+    '[[bin]]', 'name = "teaql-expression-boundaries"', 'path = "src/expression_boundary_probe.rs"',
     '[dependencies]', 'checker-fix-advanced-core = { path = ' + quote(path.join(example, "generated/lib")) + ' }',
     'teaql-core = { path = ' + local('teaql-core') + ' }', 'teaql-runtime = { path = ' + local('teaql-runtime') + ' }',
     'chrono = "0.4"', 'serde_json = "1"', 'futures-util = "0.3"', 'rusqlite = { version = "0.40", features = ["bundled", "trace"] }',
@@ -74,6 +75,24 @@ try {
   report.clockUpdateDatabase = {file: 'fixture.sqlite.clock-updates.sqlite',
     sha256: sha(fs.readFileSync(path.join(evidence, 'fixture.sqlite.clock-updates.sqlite')))};
   report.clockUpdateApplicationSha256 = sha(fs.readFileSync(path.join(example, 'clock_update_probe.rs')));
+  const expressionBinary = path.join(scratch, 'target/debug/teaql-expression-boundaries');
+  report.expressionBoundaryBinarySha256 = sha(fs.readFileSync(expressionBinary));
+  report.expressionBoundaryApplicationSha256 = sha(fs.readFileSync(path.join(example, 'expression_boundary_probe.rs')));
+  env.TEAQL_EXPRESSION_DB = path.join(evidence, 'fixture.sqlite.expression-boundaries.sqlite');
+  report.expressionBoundaryRounds = [];
+  for (const round of [1, 2]) {
+    assert.equal(fs.existsSync(env.TEAQL_EXPRESSION_DB), round === 2, 'expression rounds must share one unreset database');
+    env.TEAQL_EXPRESSION_ROUND = String(round);
+    const log = await run([expressionBinary], 'expression-boundaries-round-' + round + '.log', 90000);
+    const values = log.split(/\r?\n/).filter(line => line.startsWith('RUST_E_BOUNDARY_RESULT='))
+      .map(line => JSON.parse(line.slice('RUST_E_BOUNDARY_RESULT='.length)));
+    assert.equal(values.length, 1); assert.equal(values[0].passed, true); assert.equal(values[0].round, round);
+    assert.equal(values[0].cases.length, 10);
+    report.expressionBoundaryRounds.push(values[0]);
+    assert.deepEqual(fingerprint(), m);
+  }
+  report.expressionBoundaryDatabase = {file: 'fixture.sqlite.expression-boundaries.sqlite',
+    sha256: sha(fs.readFileSync(env.TEAQL_EXPRESSION_DB))};
   report.passed = true;
   console.log('PASS Rust retained Fix/E/loading/ownership example twice on one database');
 } catch (error) { console.error(error.stack); process.exitCode ||= 1; }
