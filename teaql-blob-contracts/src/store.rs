@@ -202,7 +202,7 @@ impl SignedBlobRead {
         let url = url.into();
         if url.len() > 16384
             || expires_at_millis <= 0
-            || url.chars().any(|c| c.is_control() || c == ' ')
+            || url.chars().any(|c| c.is_control() || c.is_whitespace())
             || url.split_once("://").is_some_and(|(_, rest)| {
                 rest.split(['/', '?', '#'])
                     .next()
