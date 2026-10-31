@@ -52,7 +52,12 @@ pub(crate) fn translate(
             // credentials in custom constraints, however, must never escape.
             project(
                 value,
-                crate::log_privacy::has_credentials(value),
+                crate::log_privacy::has_credentials(value)
+                    || (credential
+                        && matches!(
+                            value,
+                            Value::Text(_) | Value::List(_) | Value::Object(_) | Value::Json(_)
+                        )),
                 false,
                 &mut secrets,
             );

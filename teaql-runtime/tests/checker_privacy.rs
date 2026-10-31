@@ -74,12 +74,13 @@ fn model_mask_is_applied_before_wire_display_and_debug_escape() {
 #[test]
 fn credentials_and_nested_credentials_do_not_need_a_model_mask() {
     let results = errors(&context(vec![
-        invalid("password", SECRET),
+        invalid("password", SECRET).with_system_value("private-expected-credential"),
         invalid(
             "profile",
             Value::Json(serde_json::json!({"access_token": SECRET})),
         ),
     ]));
+    assert_eq!(results[0].system_value, Some(Value::from("[REDACTED]")));
     for result in results {
         assert_eq!(result.input_value, Some(Value::from("[REDACTED]")));
         assert!(!format!("{result:?}").contains(SECRET));
@@ -319,13 +320,14 @@ fn debug_opt_in_is_exact_and_never_unmasks_credentials() {
     if let Ok(expected) = std::env::var("TEAQL_CHECKER_PRIVACY_CHILD") {
         let results = errors(&context(vec![
             invalid("contact_phone", SECRET),
-            invalid("password", SECRET),
+            invalid("password", SECRET).with_system_value("private-expected-credential"),
         ]));
         assert_eq!(
             results[0].input_value == Some(Value::from(SECRET)),
             expected == "debug"
         );
         assert_eq!(results[1].input_value, Some(Value::from("[REDACTED]")));
+        assert_eq!(results[1].system_value, Some(Value::from("[REDACTED]")));
         return;
     }
     for (value, expected) in [(None, "safe"), (Some("true"), "safe"), (Some(ACK), "debug")] {
