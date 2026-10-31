@@ -25,7 +25,21 @@ pub(super) fn validate(
             .chain(root.deleted_keys())
             .chain(root.new_keys())
             .collect();
-        let locations = ledger_object_locations(node);
+        let mut locations = ledger_object_locations(node);
+        // Sparse unchanged ancestors need not enter the mutation plan, but
+        // their selected immutable relation views still define error locations.
+        // Resolve only otherwise-unrepresented pending identities, on demand.
+        if let Some(id) = node.values.get("id") {
+            let missing = keys
+                .iter()
+                .filter(|key| !locations.contains_key(*key))
+                .cloned()
+                .collect();
+            locations.extend(root.loaded_object_locations(
+                &crate::EntityKey::new(node.entity.clone(), id.clone()),
+                &missing,
+            ));
+        }
         for key in keys {
             if checked.contains(&key) || (root.is_new(&key) && root.is_marked_as_delete(&key)) {
                 continue;
@@ -356,6 +370,78 @@ mod tests {
             panic!("child ownership accepted")
         };
         assert_eq!(results[0].location.instance_path(), "/items/0/scope");
+    }
+}
+
+#[cfg(test)]
+mod loaded_path_regression {
+    use super::*;
+    #[derive(Clone, Debug, teaql_macros::TeaqlEntity)]
+    struct Document {
+        #[teaql(id)]
+        id: u64,
+    }
+    #[test]
+    fn detached_pending_child_uses_selected_graph_path_for_context_root_error() {
+        let context = UserContext::default()
+            .with_active_root("Account", 1)
+            .with_metadata(
+                crate::InMemoryMetadataStore::new()
+                    .with_entity(teaql_core::EntityDescriptor::new("Portfolio"))
+                    .with_entity(
+                        teaql_core::EntityDescriptor::new("Document")
+                            .property(
+                                teaql_core::PropertyDescriptor::new(
+                                    "id",
+                                    teaql_core::DataType::U64,
+                                )
+                                .id(),
+                            )
+                            .property(teaql_core::PropertyDescriptor::new(
+                                "name",
+                                teaql_core::DataType::Text,
+                            ))
+                            .property(
+                                teaql_core::PropertyDescriptor::new(
+                                    "scope_id",
+                                    teaql_core::DataType::U64,
+                                )
+                                .context_root("Account"),
+                            )
+                            .relation(
+                                teaql_core::RelationDescriptor::new("scope", "Account")
+                                    .local_key("scope_id")
+                                    .foreign_key("id"),
+                            ),
+                    ),
+            );
+        let mut root = crate::EntityRuntimeState::default();
+        let key = crate::EntityKey::new("Document", 9_u64);
+        root.set_original_compact_row(
+            "Document",
+            teaql_core::CompactRow::from_map(BTreeMap::from([
+                ("id".into(), Value::U64(9)),
+                ("version".into(), Value::I64(1)),
+            ])),
+        );
+        root.set(key, "name", "Pending change");
+        let mut graph = crate::EntityGraphBuilder::default();
+        graph.install_typed_relation_list(
+            "Portfolio",
+            1,
+            "documents",
+            teaql_core::SmartList::from(vec![Document { id: 9 }]),
+        );
+        root.freeze_graph(graph).unwrap();
+        let node = GraphNode::new("Portfolio").value("id", 1_u64);
+        let before = root.current_change_set();
+        let outcome = validate(&context, &node, &ObjectLocation::root(), Some(&root));
+        let Err(RuntimeError::Check(violations)) = outcome else {
+            panic!("The sparse modified child must be rejected: {outcome:?}");
+        };
+        assert_eq!(violations[0].entity_type.as_deref(), Some("Document"));
+        assert_eq!(violations[0].location.instance_path(), "/documents/0/scope");
+        assert_eq!(root.current_change_set(), before);
     }
 }
 

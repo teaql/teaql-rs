@@ -13,6 +13,7 @@ mod context_root_probe;
 mod loading_probe;
 mod ownership_probe;
 mod paged_ownership;
+mod partial_ancestor_probe;
 mod tombstone_probe;
 mod version_probe;
 
@@ -243,6 +244,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     clock_update_probe::verify().await?;
     context_root_probe::verify().await?;
     cancelled_root_probe::verify().await?;
+    partial_ancestor_probe::verify().await?;
     println!(
         "FIX_E_EXAMPLE={}",
         serde_json::json!({"language":"rust", "passed":true,

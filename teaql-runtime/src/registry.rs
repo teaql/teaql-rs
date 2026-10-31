@@ -259,7 +259,7 @@ impl InMemoryEntityGraphDecoderRegistry {
             // known. Reserve the exact row count and decode directly into the
             // final SmartList allocation.
             let entities = decode_compact_rows_with_read_metadata::<T>(rows.data, &graph_root)?;
-            graph.install_relation_list(
+            graph.install_typed_relation_list(
                 owner_entity,
                 owner_id,
                 relation,

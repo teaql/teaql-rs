@@ -1,10 +1,12 @@
 use std::any::{Any, TypeId};
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use teaql_core::{EntitySnapshot, MutationValues, SmartList, Value};
 
+#[cfg(test)]
+mod loaded_path_tests;
 #[cfg(test)]
 mod mutation_input_tests;
 
@@ -137,7 +139,7 @@ fn entity_identity_key(value: &Value) -> EntityIdentityKey {
 pub struct EntityGraphBuilder {
     tables: HashMap<TypeId, EntityTable>,
     option_entities: Option<Box<RelationOptionEntities>>,
-    relation_lists: HashMap<RelationListKey, Box<dyn Any + Send + Sync>>,
+    relation_lists: HashMap<RelationListKey, RelationValue>,
     relation_facets: Option<Box<RelationFacetResults>>,
 }
 
@@ -162,8 +164,69 @@ struct RelationListKey {
     relation: String,
 }
 
+// One function pointer per selected relation, not a path/map on every row.
+// Identity visitation is lazy: ordinary relation reads and hydration do not
+// allocate path collections or serialize entity payloads.
+type RelationIdentityVisitor = fn(&dyn Any, &mut dyn FnMut(&str, u64, u64, Option<usize>));
+struct RelationValue {
+    value: Box<dyn Any + Send + Sync>,
+    identities: Option<RelationIdentityVisitor>,
+}
+impl RelationValue {
+    fn new<T: Any + Send + Sync>(value: T, identities: Option<RelationIdentityVisitor>) -> Self {
+        Self {
+            value: Box::new(value),
+            identities,
+        }
+    }
+    fn downcast_ref<T: Any>(&self) -> Option<&T> {
+        self.value.downcast_ref()
+    }
+}
+fn visit_relation_entity<T: teaql_core::IdentifiableEntity + 'static>(
+    entity: &T,
+    index: Option<usize>,
+    visitor: &mut dyn FnMut(&str, u64, u64, Option<usize>),
+) {
+    if entity.is_field_loaded("id")
+        && let Some(id) = entity.id_value().try_u64()
+    {
+        let view = entity
+            .__teaql_runtime_state_any()
+            .and_then(|state| state.downcast_ref::<EntityRuntimeState>())
+            .map_or(0, EntityRuntimeState::json_view_id);
+        visitor(T::ENTITY_NAME, id, view, index);
+    }
+}
+fn visit_relation_list<T: teaql_core::IdentifiableEntity + 'static>(
+    value: &dyn Any,
+    visitor: &mut dyn FnMut(&str, u64, u64, Option<usize>),
+) {
+    for (index, entity) in value
+        .downcast_ref::<SmartList<T>>()
+        .expect("typed relation list")
+        .iter()
+        .enumerate()
+    {
+        visit_relation_entity(entity, Some(index), visitor);
+    }
+}
+fn visit_relation_option<T: teaql_core::IdentifiableEntity + 'static>(
+    value: &dyn Any,
+    visitor: &mut dyn FnMut(&str, u64, u64, Option<usize>),
+) {
+    if let Some(entity) = value
+        .downcast_ref::<Option<T>>()
+        .expect("typed relation option")
+    {
+        visit_relation_entity(entity, None, visitor);
+    }
+}
+
 impl EntityGraphBuilder {
-    pub(crate) fn install_json_relation_list<T: Any + Send + Sync>(
+    pub(crate) fn install_json_relation_list<
+        T: teaql_core::IdentifiableEntity + Any + Send + Sync,
+    >(
         &mut self,
         view_id: u64,
         owner_entity: &str,
@@ -178,7 +241,7 @@ impl EntityGraphBuilder {
                 owner_id,
                 relation: relation.to_owned(),
             },
-            Box::new(list),
+            RelationValue::new(list, Some(visit_relation_list::<T>)),
         );
     }
     pub(crate) fn for_json_read() -> Self {
@@ -223,7 +286,7 @@ impl EntityGraphBuilder {
                 owner_id,
                 relation: relation.to_owned(),
             },
-            Box::new(value),
+            RelationValue::new(value, Some(visit_relation_option::<T>)),
         );
     }
     pub fn install<T>(&mut self, id: u64, entity: T)
@@ -249,6 +312,35 @@ impl EntityGraphBuilder {
     ) where
         T: Any + Send + Sync,
     {
+        self.insert_relation_list(owner_entity, owner_id, relation, list, None);
+    }
+
+    pub(crate) fn install_typed_relation_list<T>(
+        &mut self,
+        owner_entity: impl Into<String>,
+        owner_id: u64,
+        relation: impl Into<String>,
+        list: SmartList<T>,
+    ) where
+        T: teaql_core::IdentifiableEntity + Any + Send + Sync,
+    {
+        self.insert_relation_list(
+            owner_entity,
+            owner_id,
+            relation,
+            list,
+            Some(visit_relation_list::<T>),
+        );
+    }
+
+    fn insert_relation_list<T: Any + Send + Sync>(
+        &mut self,
+        owner_entity: impl Into<String>,
+        owner_id: u64,
+        relation: impl Into<String>,
+        list: SmartList<T>,
+        identities: Option<RelationIdentityVisitor>,
+    ) {
         let key = RelationListKey {
             view_id: 0,
             owner_entity: crate::canonical_id_space_entity(&owner_entity.into()),
@@ -261,7 +353,8 @@ impl EntityGraphBuilder {
                 .lists
                 .insert(key.clone(), list.facets.clone());
         }
-        self.relation_lists.insert(key, Box::new(list));
+        self.relation_lists
+            .insert(key, RelationValue::new(list, identities));
     }
 
     /// Read-result metadata for a selected relation, including null to-one views.
@@ -306,7 +399,7 @@ impl EntityGraphBuilder {
                 owner_id,
                 relation: relation.into(),
             },
-            Box::new(value),
+            RelationValue::new(value, None),
         );
     }
 
@@ -338,7 +431,7 @@ impl std::fmt::Debug for EntityGraphBuilder {
 struct FrozenEntityGraph {
     tables: HashMap<TypeId, EntityTable>,
     option_entities: Option<Box<RelationOptionEntities>>,
-    relation_lists: HashMap<RelationListKey, Box<dyn Any + Send + Sync>>,
+    relation_lists: HashMap<RelationListKey, RelationValue>,
     relation_facets: Option<Box<RelationFacetResults>>,
 }
 
@@ -1109,6 +1202,71 @@ impl EntityRuntimeState {
                 relation_lists: graph.relation_lists,
                 relation_facets: graph.relation_facets,
             })
+    }
+
+    /// Resolve only requested identities through this view's explicitly loaded
+    /// edges. No I/O, entity cloning, JSON payloads or mutation-ledger changes.
+    pub(crate) fn loaded_object_locations(
+        &self,
+        root: &EntityKey,
+        wanted: &BTreeSet<EntityKey>,
+    ) -> BTreeMap<EntityKey, crate::ObjectLocation> {
+        let mut result = BTreeMap::new();
+        let Some(graph) = self.graph.frozen() else {
+            return result;
+        };
+        let Some(id) = root.id.try_u64() else {
+            return result;
+        };
+        if wanted.is_empty() {
+            return result;
+        }
+        let mut by_owner = HashMap::<_, Vec<_>>::new();
+        for (key, value) in &graph.relation_lists {
+            if value.identities.is_some() {
+                by_owner
+                    .entry((key.owner_entity.as_str(), key.owner_id, key.view_id))
+                    .or_default()
+                    .push((key, value));
+            }
+        }
+        for edges in by_owner.values_mut() {
+            edges.sort_by(|(left, _), (right, _)| left.relation.cmp(&right.relation));
+        }
+        let mut pending = VecDeque::from([(
+            root.entity.to_string(),
+            id,
+            self.json_view,
+            crate::ObjectLocation::root(),
+        )]);
+        let mut visited = BTreeSet::new();
+        while let Some((entity, id, view, location)) = pending.pop_front() {
+            if !visited.insert((entity.clone(), id, view)) {
+                continue;
+            }
+            let identity = EntityKey::new(entity.clone(), id);
+            if wanted.contains(&identity) {
+                result.entry(identity).or_insert_with(|| location.clone());
+                if result.len() == wanted.len() {
+                    break;
+                }
+            }
+            let entity = crate::canonical_id_space_entity(&entity);
+            // Index only selected edges once, rather than scanning the whole
+            // graph for each row. Stable shortest path ignores HashMap order.
+            let Some(edges) = by_owner.get(&(entity.as_str(), id, view)) else {
+                continue;
+            };
+            for (key, value) in edges {
+                let field = location.clone().member(&key.relation);
+                value.identities.unwrap()(&*value.value, &mut |entity, id, view, index| {
+                    let path =
+                        index.map_or_else(|| field.clone(), |index| field.clone().element(index));
+                    pending.push_back((entity.to_owned(), id, view, path));
+                });
+            }
+        }
+        result
     }
 
     /// Resolve an entity by type and ID without locking or reference cloning.
