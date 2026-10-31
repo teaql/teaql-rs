@@ -184,6 +184,11 @@ pub fn retain_submitted_paths(
 ) {
     for result in results {
         let wire = result.to_wire(teaql_runtime::JsonFieldNamingProfile::SnakeCase);
+        // This normalization covers one object. Do not replace a descendant's
+        // complete pointer with the path of its parent collection/relation.
+        if wire.location.len() != 1 {
+            continue;
+        }
         let Some(teaql_runtime::WireLocationSegment::Property { name: canonical }) =
             wire.location.first()
         else {
@@ -3544,6 +3549,40 @@ mod tests {
                 .unwrap_err()
                 .code(),
             "WIRE_UNKNOWN_FIELD"
+        );
+    }
+
+    #[test]
+    fn wire_parent_alias_never_truncates_descendant_provenance() {
+        use teaql_runtime::{CheckResult, ObjectLocation};
+        let normalized = NormalizedWireObject {
+            values: serde_json::Map::new(),
+            source_instance_paths: BTreeMap::from([
+                ("order_item_list".into(), "/legacy~1items".into()),
+                ("product_name".into(), "/legacy~0name".into()),
+            ]),
+        };
+        let child = ObjectLocation::hash_root("order_item_list")
+            .element(2)
+            .member("product_name");
+        let exact = "/legacy~1items/2/legacy~0name";
+        let mut results = vec![
+            CheckResult::required(child.clone()).with_source_instance_path(exact),
+            CheckResult::required(child),
+            CheckResult::required(ObjectLocation::root().element(2).member("product_name")),
+            CheckResult::required(ObjectLocation::hash_root("order_item_list")),
+        ];
+        retain_submitted_paths(&mut results, &normalized);
+        assert_eq!(results[0].source_instance_path.as_deref(), Some(exact));
+        assert_eq!(
+            results[0].location.instance_path(),
+            "/orderItemList/2/productName"
+        );
+        assert_eq!(results[1].source_instance_path, None);
+        assert_eq!(results[2].source_instance_path, None);
+        assert_eq!(
+            results[3].source_instance_path.as_deref(),
+            Some("/legacy~1items")
         );
     }
 }
