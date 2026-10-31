@@ -5,6 +5,7 @@ extern crate self as teaql_runtime;
 pub const CONTEXT_ROOT_SAVE_ADMISSION_REVISION: u32 = 1;
 mod business_id;
 mod checker;
+mod checker_privacy;
 mod commit_audit;
 mod context;
 mod data_service;

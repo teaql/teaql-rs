@@ -134,6 +134,15 @@ impl I18nCatalog {
     }
 
     pub fn translate_check_result(&self, language: Language, result: &CheckResult) -> String {
+        self.translate_check_result_with_input_length(language, result, None)
+    }
+
+    pub(crate) fn translate_check_result_with_input_length(
+        &self,
+        language: Language,
+        result: &CheckResult,
+        original_input_length: Option<usize>,
+    ) -> String {
         let key = match result.rule {
             CheckRule::Required => "checker.required",
             CheckRule::InvalidType => "checker.invalidType",
@@ -158,12 +167,12 @@ impl I18nCatalog {
             .as_ref()
             .map(format_value)
             .unwrap_or_else(|| "-".to_owned());
-        let input_len = result
-            .input_value
-            .as_ref()
-            .and_then(|value| match value {
-                Value::Text(value) => Some(value.chars().count()),
-                _ => None,
+        let input_len = original_input_length
+            .or_else(|| {
+                result.input_value.as_ref().and_then(|value| match value {
+                    Value::Text(value) => Some(value.chars().count()),
+                    _ => None,
+                })
             })
             .unwrap_or(0)
             .to_string();

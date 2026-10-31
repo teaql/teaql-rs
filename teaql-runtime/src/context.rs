@@ -1253,7 +1253,7 @@ impl UserContext {
         if results.is_empty() {
             return Ok(());
         }
-        self.translate_check_results(&mut results);
+        self.translate_check_results_with_values(&mut results, Some((entity, values)));
         Err(RuntimeError::Check(results))
     }
 
@@ -1294,7 +1294,7 @@ impl UserContext {
         if results.is_empty() {
             return Ok(());
         }
-        self.translate_check_results(&mut results);
+        self.translate_check_results_with_values(&mut results, Some((entity, values)));
         Err(RuntimeError::Check(results))
     }
 
@@ -1343,14 +1343,26 @@ impl UserContext {
     }
 
     pub fn translate_check_results(&self, results: &mut CheckResults) {
-        for result in results {
-            if result.message.is_none() {
-                result.message = Some(
-                    self.i18n_catalog
-                        .translate_check_result(self.language, result),
-                );
-            }
-        }
+        self.translate_check_results_with_values(results, None);
+    }
+
+    fn translate_check_results_with_values(
+        &self,
+        results: &mut CheckResults,
+        source_values: Option<(&str, &crate::EntityValues)>,
+    ) {
+        crate::checker_privacy::translate(
+            self,
+            results,
+            source_values,
+            |result, original_input_length| {
+                self.i18n_catalog.translate_check_result_with_input_length(
+                    self.language,
+                    result,
+                    original_input_length,
+                )
+            },
+        );
     }
 
     pub fn send_event(&self, mut event: RawAuditEvent) -> Result<(), RuntimeError> {

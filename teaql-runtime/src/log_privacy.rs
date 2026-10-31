@@ -100,7 +100,7 @@ pub(crate) fn scrub_trace(trace: &mut [TraceNode], secrets: &[String]) {
     }
 }
 
-fn mask_business_value(value: &Value) -> Value {
+pub(crate) fn mask_business_value(value: &Value) -> Value {
     match value {
         Value::Null | Value::TypedNull(_) => value.clone(),
         Value::List(values) => Value::List(values.iter().map(mask_business_value).collect()),
