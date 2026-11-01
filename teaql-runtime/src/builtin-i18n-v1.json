@@ -5,6 +5,9 @@
     "en": {
       "messages": {
         "checker.required": "The {location} is required",
+        "checker.invalidType": "The {location} has an invalid type",
+        "checker.contextRootMissing": "An active context root is required for {location}",
+        "checker.contextRootMismatch": "The {location} does not match the active context root",
         "checker.invalidDeletionState": "Soft deletion requires a positive original {location}; use explicit recovery for a deleted entity",
         "checker.invalidVersionState": "The original {location} does not permit this lifecycle operation",
         "checker.versionExhausted": "The original {location} cannot advance within the signed 64-bit range",
@@ -18,6 +21,9 @@
     "zh-CN": {
       "messages": {
         "checker.required": "{location} 是必填项",
+        "checker.invalidType": "{location} 的类型无效",
+        "checker.contextRootMissing": "{location} 需要有效的当前上下文根对象",
+        "checker.contextRootMismatch": "{location} 与当前上下文根对象不一致",
         "checker.invalidDeletionState": "软删除要求原始 {location} 为正数；恢复已删除对象请使用显式恢复操作",
         "checker.invalidVersionState": "原始 {location} 不允许执行此生命周期操作",
         "checker.versionExhausted": "原始 {location} 无法在有符号 64 位范围内继续递增",

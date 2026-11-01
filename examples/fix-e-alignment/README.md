@@ -23,3 +23,12 @@ the returned root has loaded own fields and invalidated affected relation views.
 It is not required to preserve the sparse returned-root projection used by other
 languages. The same-graph retry and immutable database oracles verify correctness
 without changing this approved semantic difference.
+# Context-root human diagnostics
+
+The managed-root case checks both the complete structured location and the
+readable default message. Builtin `invalid_type`, missing-root and mismatched-root
+messages resolve in English and Chinese, with the existing builtin fallback for
+other supported locales. They describe the field and rule without echoing input
+or system root values. Native regressions also cover partial customer catalogs,
+customer overrides, explicit messages and all three JSON naming profiles.
+
