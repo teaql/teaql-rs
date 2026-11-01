@@ -231,6 +231,70 @@ mod tests {
     use super::*;
 
     #[test]
+    fn literal_punctuation_and_indices_preserve_canonical_identity_in_all_wire_profiles() {
+        let mut path = ExpressionPath::root("E::node(<root>)")
+            .member_as("school_type", "get_school_type")
+            .element(2)
+            .member_as("a~/b.c", "safe_field");
+        path.mark_missing();
+        for (profile, label, pointer) in [
+            (
+                JsonFieldNamingProfile::CamelCase,
+                "camelCase",
+                "/schoolType/2/a~0~1b.c",
+            ),
+            (
+                JsonFieldNamingProfile::SnakeCase,
+                "snake_case",
+                "/school_type/2/a~0~1b.c",
+            ),
+            (
+                JsonFieldNamingProfile::PascalCase,
+                "PascalCase",
+                "/SchoolType/2/A~0~1b.c",
+            ),
+        ] {
+            let wire = NotLoadedDiagnostic::from_path(&path, "a~/b.c", "eval()")
+                .with_profile(profile)
+                .to_wire();
+            assert_eq!(wire.instance_path, pointer);
+            assert_eq!(wire.attempted_instance_path, pointer);
+            assert_eq!(
+                wire.location,
+                vec![
+                    WireLocationSegment::Property {
+                        name: "school_type".to_owned()
+                    },
+                    WireLocationSegment::Index { index: 2 },
+                    WireLocationSegment::Property {
+                        name: "a~/b.c".to_owned()
+                    },
+                ]
+            );
+            assert_eq!(wire.attempted_location, wire.location);
+            assert_eq!(wire.suggested_fix.location, wire.location);
+            assert_eq!(wire.break_point_index, 2);
+            assert_eq!(wire.break_point, "a~/b.c");
+            assert_eq!(
+                wire.expression_with_broken_point.as_deref(),
+                Some("E::node(<root>).get_school_type().get(2).safe_field()<broken>.eval()")
+            );
+            let record =
+                serde_json::json!({"language":"rust", "profile":label, "wire":wire}).to_string();
+            println!("E_POINTER_PROFILE_CASE={record}");
+            if let Some(output) = std::env::var_os("TEAQL_POINTER_PROFILE_EVIDENCE") {
+                use std::io::Write;
+                let mut file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(output)
+                    .unwrap();
+                writeln!(file, "{record}").unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn one_location_has_separate_model_native_and_wire_views() {
         let path = ExpressionPath::default()
             .member("school_type")
