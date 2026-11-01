@@ -275,12 +275,6 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
                 violation.location.instance_path(),
                 "/purchaseOrderList/0/orderItemList/0/tenant"
             );
-            assert_eq!(
-                violation.message.as_deref(),
-                Some(
-                    "The Purchase_order_list[0].Order_item_list[0].Tenant does not match the active context root"
-                )
-            );
         }
         rejections.push(
             violations
@@ -525,6 +519,12 @@ pub async fn verify_managed_root() -> Result<(), Box<dyn std::error::Error>> {
                 violation.rule,
                 teaql_runtime::CheckRule::ContextRootMismatch
             ));
+            assert_eq!(
+                violation.message.as_deref(),
+                Some(
+                    "The Purchase_order_list[0].Order_item_list[0].Tenant does not match the active context root"
+                )
+            );
             assert_eq!(
                 violation.location.instance_path(),
                 "/purchaseOrderList/0/orderItemList/0/tenant"
