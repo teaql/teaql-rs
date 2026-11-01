@@ -60,7 +60,7 @@ try {
   report.binarySha256 = sha(fs.readFileSync(binary));
   for (const round of [1, 2]) {
     const log = await run([binary], 'round-' + round + '.log', 90000);
-    for (const marker of ['FIX_E_EXAMPLE=', 'CORE_LOAD_EXAMPLE=', 'CORE_MUTATION_OWNERSHIP=', 'CORE_MUTATION_PAGING=', 'RUST_AUTHORITATIVE_TOMBSTONES=', 'RUST_VERSION_BOUNDARIES=', 'RUST_GENERATED_CHECKER_TYPES=', 'RUST_GENERATED_CHECKER_RANGES=', 'RUST_GENERATED_CLOCK_UPDATES=', 'RUST_CONTEXT_ROOT_BOUNDARY=', 'RUST_CANCELLED_CONTEXT_ROOT=', 'RUST_PARTIAL_ANCESTORS_RESULT=']) {
+    for (const marker of ['FIX_E_EXAMPLE=', 'CORE_LOAD_EXAMPLE=', 'CORE_MUTATION_OWNERSHIP=', 'CORE_MUTATION_PAGING=', 'RUST_AUTHORITATIVE_TOMBSTONES=', 'RUST_VERSION_BOUNDARIES=', 'RUST_GENERATED_CHECKER_TYPES=', 'RUST_GENERATED_CHECKER_RANGES=', 'RUST_GENERATED_CLOCK_UPDATES=', 'RUST_CONTEXT_ROOT_BOUNDARY=', 'RUST_CANCELLED_CONTEXT_ROOT=', 'RUST_PARTIAL_ANCESTORS_RESULT=', 'RUST_PARTIAL_ANCESTOR_ROOT_RESULT=']) {
       const values = log.split(/\r?\n/).filter(line => line.startsWith(marker)).map(line => JSON.parse(line.slice(marker.length)));
       assert.equal(values.length, 1, marker); assert.equal(values[0].passed, true, marker);
     }
@@ -84,6 +84,8 @@ try {
   report.partialAncestorDatabase = {file: 'fixture.sqlite.partial-ancestors.sqlite',
     sha256: sha(fs.readFileSync(path.join(evidence, 'fixture.sqlite.partial-ancestors.sqlite')))};
   report.partialAncestorApplicationSha256 = sha(fs.readFileSync(path.join(example, 'partial_ancestor_probe.rs')));
+  report.partialAncestorRootDatabase = {file: 'fixture.sqlite.partial-ancestor-root.sqlite',
+    sha256: sha(fs.readFileSync(path.join(evidence, 'fixture.sqlite.partial-ancestor-root.sqlite')))};
   const expressionBinary = path.join(scratch, 'target/debug/teaql-expression-boundaries');
   report.expressionBoundaryBinarySha256 = sha(fs.readFileSync(expressionBinary));
   report.expressionBoundaryApplicationSha256 = sha(fs.readFileSync(path.join(example, 'expression_boundary_probe.rs')));

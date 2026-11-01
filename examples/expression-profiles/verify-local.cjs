@@ -4,10 +4,19 @@ const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),cp=r
 const {createOwnedRunner,ownedBytes}=require('../tests/loaded-revert/owned-command.cjs');
 const {prepareOwnedSubreaper}=require('../tests/loaded-revert/subreaper.cjs');
 const EXAMPLE=__dirname,RUNTIME=path.resolve(EXAMPLE,'../..'),CRATES=['teaql-core','teaql-macros','teaql-runtime','teaql-sql','teaql-data-service','teaql-provider-sqlite'];
+// A full-inventory runner may execute a disposable byte-identical source copy.
+// Its Git origin must be explicit; never manufacture Git metadata in that copy.
+const ORIGIN=process.env.TEAQL_RUST_EXAMPLE_SOURCE_ROOT?path.resolve(process.env.TEAQL_RUST_EXAMPLE_SOURCE_ROOT):RUNTIME;
 const sha=b=>crypto.createHash('sha256').update(b).digest('hex'),digest=f=>sha(fs.readFileSync(f));
-function fingerprint(){
- const files=[...new Set(cp.execFileSync('git',['-C',RUNTIME,'ls-files','-z','--cached','--others','--exclude-standard']).toString().split('\0').filter(Boolean))].sort(),hash=crypto.createHash('sha256');
- for(const n of files){hash.update(n+'\0');const f=path.join(RUNTIME,n);if(!fs.existsSync(f)){hash.update('deleted\0');continue;}const s=fs.lstatSync(f);hash.update(String(s.mode)+'\0');if(s.isSymbolicLink())hash.update(fs.readlinkSync(f));else if(s.isFile())hash.update(fs.readFileSync(f));hash.update('\0');}return hash.digest('hex');
+function fingerprint(source=RUNTIME){
+ assert.equal(fs.realpathSync(ORIGIN),ORIGIN);assert.equal(fs.realpathSync(source),source);
+ const files=[...new Set(cp.execFileSync('git',['-C',ORIGIN,'ls-files','-z','--cached','--others','--exclude-standard']).toString().split('\0').filter(Boolean))].sort(),hash=crypto.createHash('sha256');
+ for(const n of files){hash.update(n+'\0');const f=path.join(source,n);if(!fs.existsSync(f)){hash.update('deleted\0');continue;}const s=fs.lstatSync(f);hash.update(String(s.mode)+'\0');if(s.isSymbolicLink())hash.update(fs.readlinkSync(f));else if(s.isFile())hash.update(fs.readFileSync(f));hash.update('\0');}return hash.digest('hex');
+}
+function sourceIdentity(){
+ const sourceContentsSha256=fingerprint();
+ assert.equal(fingerprint(ORIGIN),sourceContentsSha256,'source copy must exactly match its real Git origin');
+ return{commit:cp.execFileSync('git',['-C',ORIGIN,'rev-parse','HEAD'],{encoding:'utf8'}).trim(),sourceContentsSha256};
 }
 function fixture(){
  const root=path.join(EXAMPLE,'generated'),manifest=JSON.parse(fs.readFileSync(path.join(root,'manifest.json'))),p=JSON.parse(fs.readFileSync(path.join(EXAMPLE,'provenance.json')));
@@ -26,7 +35,8 @@ async function main(){
  let scratch,runner;
  try{
   const disk=fs.statfsSync(os.tmpdir());assert(disk.bavail*disk.bsize>8*1024**3);
-  report.sourceBefore={commit:cp.execFileSync('git',['-C',RUNTIME,'rev-parse','HEAD'],{encoding:'utf8'}).trim(),sourceContentsSha256:fingerprint()};
+  report.sourceBefore=sourceIdentity();
+  if(ORIGIN!==RUNTIME)report.runtimeSourceCopy={path:RUNTIME,origin:ORIGIN,sourceContentsSha256:report.sourceBefore.sourceContentsSha256};
   report.fixture=fixture();report.applicationSha256=digest(path.join(EXAMPLE,'main.rs'));report.controllerSha256=digest(__filename);
   scratch=fs.mkdtempSync(path.join(os.tmpdir(),'teaql-generated-e-profile-build-'));runner=createOwnedRunner({supervisor:prepareOwnedSubreaper(scratch)});
   const env={...process.env,TMPDIR:scratch,CARGO_TARGET_DIR:path.join(scratch,'target'),CARGO_INCREMENTAL:'0',CARGO_BUILD_JOBS:'2',CARGO_PROFILE_DEV_DEBUG:'0',CARGO_PROFILE_TEST_DEBUG:'0'};
@@ -53,6 +63,7 @@ async function main(){
     assert.equal(value.passed,true);assert.equal(value.profile,profile);assert.equal(value.round,round);assert.equal(value.providerEntries,0);assert(value.queryCalibration>0);state.rounds.push(value);
    }
    state.databaseSha256=digest(env.TEAQL_EXPRESSION_DB);assert.deepEqual(fixture(),report.fixture);assert.equal(fingerprint(),report.sourceBefore.sourceContentsSha256);
+   assert.equal(fingerprint(ORIGIN),report.sourceBefore.sourceContentsSha256,'Git origin changed during the isolated run');
   }
   report.passed=true;
  }catch(error){report.error=error.stack;console.error(error.stack);process.exitCode=1;}
@@ -62,4 +73,4 @@ async function main(){
   runner?.dispose();report.sourceAfter=fingerprint();fs.writeFileSync(path.join(output,'report.json'),JSON.stringify(report,null,2)+'\n',{flag:'wx'});console.log(JSON.stringify({output,passed:report.passed,cleanup:report.cleanup}));
  }
 }
-module.exports={fingerprint,fixture};if(require.main===module)main().catch(error=>{console.error(error.stack);process.exitCode=1;});
+module.exports={fingerprint,sourceIdentity,fixture};if(require.main===module)main().catch(error=>{console.error(error.stack);process.exitCode=1;});

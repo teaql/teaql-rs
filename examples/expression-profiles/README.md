@@ -26,6 +26,14 @@ logs, the dependency lock, results and three test databases. To choose a new
 evidence directory, set `TEAQL_GENERATED_E_PROFILE_EVIDENCE_DIR` to an unused
 absolute path. Existing evidence is never overwritten.
 
+The complete `scripts/verify-examples.sh` inventory includes this example. When
+that inventory runs in a disposable source copy without Git metadata, set
+`TEAQL_RUST_EXAMPLE_SOURCE_ROOT` to the original Git checkout. Before compiling,
+the verifier hashes the complete tracked/untracked source list from both roots
+and requires exact file-byte, mode and symlink equality. Both hashes are checked
+again during execution. Recorded crate origins remain those actually compiled
+in the copy; no Git metadata or source-origin guard is fabricated or bypassed.
+
 This is a local-source E diagnostic example, not a published-package test,
 an audited-save example, or full acceptance of every E operation. The related
 native runtime test owns literal punctuation and JSON-pointer escaping; KSML

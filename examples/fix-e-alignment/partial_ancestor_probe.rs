@@ -9,7 +9,11 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use teaql_core::{Entity, Value};
-use teaql_runtime::{FixedBusinessClock, JsonFieldNamingProfile, RuntimeError, UserContext};
+use teaql_runtime::{
+    AtomicCounterIdGenerator, FixedBusinessClock, InternalIdGenerator, JsonFieldNamingProfile,
+    MutationDecision, MutationPlan, MutationPolicy, MutationPolicyIdentity, RuntimeError,
+    SafeAuditEvent, SafeAuditEventSink, UserContext,
+};
 
 static STATEMENTS: AtomicUsize = AtomicUsize::new(0);
 fn observe(_: &str) {
@@ -307,6 +311,283 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
             "rejections":rejections,"intentRetained":true,"generatedImplementationsModified":false,
             "returnedRootAuthoritativelyReadBack":true,"returnedReverseRelationInvalidated":true
         })
+    );
+    Ok(())
+}
+
+#[derive(Clone, Default)]
+struct ManagedEvidence {
+    ids: Arc<AtomicUsize>,
+    policy_lookups: Arc<AtomicUsize>,
+    reviews: Arc<AtomicUsize>,
+    audits: Arc<AtomicUsize>,
+}
+impl SafeAuditEventSink for ManagedEvidence {
+    fn on_safe_event(&self, _: &UserContext, _: &SafeAuditEvent) -> Result<(), RuntimeError> {
+        self.audits.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+struct ManagedPolicy(ManagedEvidence);
+impl MutationPolicy for ManagedPolicy {
+    fn identity(&self) -> MutationPolicyIdentity {
+        MutationPolicyIdentity::new("partial-ancestor-root-probe", "1", "save-admission")
+    }
+    fn review(&self, _: &UserContext, _: &MutationPlan) -> MutationDecision {
+        self.0.reviews.fetch_add(1, Ordering::SeqCst);
+        MutationDecision::allow()
+    }
+}
+#[derive(Clone)]
+struct ManagedIds(ManagedEvidence, Arc<AtomicCounterIdGenerator>);
+impl InternalIdGenerator for ManagedIds {
+    fn generate_id(&self, entity: &str) -> Result<u64, RuntimeError> {
+        self.0.ids.fetch_add(1, Ordering::SeqCst);
+        self.1.generate_id(entity)
+    }
+    fn ensure_floor(&self, entity: &str, floor: u64) -> Result<(), RuntimeError> {
+        self.1.ensure_floor(entity, floor)
+    }
+}
+fn managed_instrument(context: &mut UserContext, evidence: &ManagedEvidence) {
+    context.set_business_clock(FixedBusinessClock::new(
+        Utc.with_ymd_and_hms(2032, 2, 29, 10, 15, 30)
+            .single()
+            .unwrap(),
+    ));
+    context.set_custom_event_sink(evidence.clone());
+    let captured = evidence.clone();
+    let policy: Arc<dyn MutationPolicy> = Arc::new(ManagedPolicy(evidence.clone()));
+    context.set_mutation_policy_registry(move |_: &str| {
+        captured.policy_lookups.fetch_add(1, Ordering::SeqCst);
+        Some(policy.clone())
+    });
+}
+fn managed_counts(evidence: &ManagedEvidence) -> [usize; 5] {
+    [
+        count(),
+        evidence.ids.load(Ordering::SeqCst),
+        evidence.policy_lookups.load(Ordering::SeqCst),
+        evidence.reviews.load(Ordering::SeqCst),
+        evidence.audits.load(Ordering::SeqCst),
+    ]
+}
+fn managed_effects(before: [usize; 5], evidence: &ManagedEvidence) -> serde_json::Value {
+    let now = managed_counts(evidence);
+    serde_json::json!({"sqlStatements":now[0]-before[0],"idAllocations":now[1]-before[1],
+        "policyLookups":now[2]-before[2],"policyReviews":now[3]-before[3],"auditEvents":now[4]-before[4]})
+}
+fn managed_storage(
+    pool: &Arc<Mutex<rusqlite::Connection>>,
+) -> Result<serde_json::Value, rusqlite::Error> {
+    let connection = pool.lock().unwrap();
+    let mut parents = connection
+        .prepare("SELECT id,version,tenant,contact_phone FROM purchase_order_data ORDER BY id")?;
+    let parents = parents
+        .query_map([], |r| {
+            Ok(serde_json::json!([
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?
+            ]))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut children = connection.prepare(
+        "SELECT id,version,tenant,purchase_order,product_name FROM order_item_data ORDER BY id",
+    )?;
+    let children = children
+        .query_map([], |r| {
+            Ok(serde_json::json!([
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, String>(4)?
+            ]))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(serde_json::json!({"parents":parents,"children":children}))
+}
+
+pub async fn verify_managed_root() -> Result<(), Box<dyn std::error::Error>> {
+    let pool = Arc::new(Mutex::new(match std::env::var("TEAQL_FIX_E_DB") {
+        Ok(file) => rusqlite::Connection::open(format!("{file}.partial-ancestor-root.sqlite"))?,
+        Err(_) => rusqlite::Connection::open_in_memory()?,
+    }));
+    let evidence = ManagedEvidence::default();
+    let mut context = service_runtime_from_pool(pool.clone())
+        .await?
+        .with_active_root("Tenant", 1);
+    managed_instrument(&mut context, &evidence);
+    context.ensure_schema().await?;
+    pool.lock().unwrap().trace(Some(observe));
+    let mut other = Q::tenants()
+        .comment("Prepare a second real root")
+        .purpose("Reject incorrect ownership rather than a missing foreign key")
+        .new_entity(&context);
+    other.update_name("Independent partial root");
+    let other = other
+        .audit_as("Create the other partial-ancestor root")
+        .save(&context)
+        .await?;
+    let mut wrong = service_runtime_from_pool(pool.clone())
+        .await?
+        .with_active_root("Tenant", other.id());
+    managed_instrument(&mut wrong, &evidence);
+    let mut parent = Q::purchase_orders()
+        .comment("Prepare a complete graph parent")
+        .purpose("Test managed ownership beneath two sparse ancestors")
+        .new_entity(&context);
+    parent.update_contact_phone("5550987");
+    parent.update_internal_note(Value::Null);
+    let parent = parent
+        .audit_as("Create the managed-root parent control")
+        .save(&context)
+        .await?;
+    let mut item = Q::order_items()
+        .comment("Prepare the complete graph child")
+        .purpose("Exercise generated mutation and loaded expressions")
+        .new_entity(&context);
+    item.update_purchase_order_id(parent.id());
+    item.update_product_name("Partial root original");
+    item.update_unit_price(Value::Decimal("1".parse()?));
+    let item = item
+        .audit_as("Create the managed-root child control")
+        .save(&context)
+        .await?;
+    // Swap the public ID SPI only after creating real fixtures. Its positive
+    // calibration cannot affect their persisted IDs or the default ID space.
+    let ids = ManagedIds(
+        evidence.clone(),
+        Arc::new(AtomicCounterIdGenerator::new(5000)),
+    );
+    context.set_internal_id_generator(ids.clone());
+    wrong.set_internal_id_generator(ids);
+    assert_eq!(context.next_id("ObserverCalibration")?, 5001);
+    let root = graph(&context, parent.id(), false).await?;
+    let parent_view = E::tenant(&root)
+        .get_purchase_order_list()
+        .first()
+        .eval()
+        .unwrap();
+    let mut leaf = E::purchase_order(parent_view)
+        .get_order_item_list()
+        .first()
+        .eval()
+        .unwrap()
+        .clone();
+    assert_eq!(leaf.id(), item.id());
+    let root_state = root.loaded_state_snapshot().unwrap();
+    let parent_state = parent_view.loaded_state_snapshot().unwrap();
+    assert!(E::tenant(&root).get_name().try_eval().is_err());
+    assert!(
+        E::purchase_order(parent_view)
+            .get_contact_phone()
+            .try_eval()
+            .is_err()
+    );
+    let calibration = managed_counts(&evidence);
+    assert!(calibration.iter().all(|v| *v > 0));
+    leaf.update_product_name("Partial root accepted retry");
+    root.include_pending_mutations_from(&leaf)?;
+    let state = root.entity_runtime_state().unwrap();
+    let intent = state.current_change_set();
+    assert!(!intent.changes().is_empty());
+    let original = managed_storage(&pool)?;
+    let mut denials = Vec::new();
+    for attempt in 1..=2 {
+        let before = managed_counts(&evidence);
+        let error = root
+            .clone()
+            .audit_as("Reject wrong ownership below two sparse ancestors")
+            .save(&wrong)
+            .await
+            .expect_err("The wrong root must reject before provider entry");
+        let effects = managed_effects(before, &evidence);
+        assert_eq!(
+            effects,
+            serde_json::json!({"sqlStatements":0,"idAllocations":0,"policyLookups":0,"policyReviews":0,"auditEvents":0})
+        );
+        let RuntimeError::Check(violations) = error else {
+            return Err(error.into());
+        };
+        assert!(!violations.is_empty());
+        for violation in &violations {
+            assert_eq!(violation.entity_type.as_deref(), Some("OrderItem"));
+            assert!(matches!(
+                violation.rule,
+                teaql_runtime::CheckRule::ContextRootMismatch
+            ));
+            assert_eq!(
+                violation.location.instance_path(),
+                "/purchaseOrderList/0/orderItemList/0/tenant"
+            );
+        }
+        assert_eq!(managed_storage(&pool)?, original);
+        assert_eq!(state.current_change_set(), intent);
+        assert!(Arc::ptr_eq(
+            &root_state,
+            &root.loaded_state_snapshot().unwrap()
+        ));
+        assert!(Arc::ptr_eq(
+            &parent_state,
+            &parent_view.loaded_state_snapshot().unwrap()
+        ));
+        assert_eq!(
+            E::order_item(&leaf).get_product_name().eval().as_deref(),
+            Some("Partial root accepted retry")
+        );
+        assert_eq!(E::order_item(&leaf).get_version().eval(), Some(1));
+        assert!(wrong.last_fix_evidence().is_empty());
+        denials.push(serde_json::json!({"attempt":attempt,"effects":effects,"pendingIntentRetained":true,
+            "storageUnchanged":true,"sparseStatesUnchanged":true,"fixEvidenceAbsent":true,
+            "violations":violations.iter().map(|v|v.to_wire(JsonFieldNamingProfile::CamelCase)).collect::<Vec<_>>()}));
+    }
+    let before = managed_counts(&evidence);
+    let accepted = root
+        .clone()
+        .audit_as("Retry the same graph with its correct root")
+        .save(&context)
+        .await?;
+    let effects = managed_effects(before, &evidence);
+    assert!(effects["sqlStatements"].as_u64().unwrap() > 0);
+    assert!(effects["policyReviews"].as_u64().unwrap() > 0);
+    assert_eq!(effects["auditEvents"], 1);
+    assert!(state.current_change_set().changes().is_empty());
+    assert_eq!(E::tenant(&accepted).get_version().eval(), Some(1));
+    assert_eq!(
+        E::tenant(&accepted).get_name().eval().as_deref(),
+        Some("Tenant Name")
+    );
+    assert!(
+        E::tenant(&accepted)
+            .get_purchase_order_list()
+            .try_eval()
+            .is_err()
+    );
+    let stored = Q::order_items()
+        .with_id_is(item.id())
+        .limit(1)
+        .comment("Read the authorized graph update")
+        .purpose("Verify actual child persistence after root rejection and retry")
+        .execute_for_list(&context)
+        .await?;
+    let stored = stored.first().ok_or("The persisted child is missing")?;
+    assert_eq!(
+        E::order_item(stored).get_product_name().eval().as_deref(),
+        Some("Partial root accepted retry")
+    );
+    assert_eq!(E::order_item(stored).get_version().eval(), Some(2));
+    let rows = managed_storage(&pool)?;
+    assert_eq!(rows["parents"], original["parents"]);
+    pool.lock().unwrap().trace(None);
+    println!(
+        "RUST_PARTIAL_ANCESTOR_ROOT_RESULT={}",
+        serde_json::json!({"passed":true,"orderId":parent.id(),"leafId":item.id(),
+        "otherRootId":other.id(),"denials":denials,"acceptedEffects":effects,"ancestorVersions":[1,1],"leafVersion":2,
+        "positiveCalibration":true,"sameGraphRetry":true,"returnedRootAuthoritativelyReadBack":true,"returnedReverseRelationInvalidated":true,
+        "generatedImplementationsModified":false})
     );
     Ok(())
 }

@@ -9,7 +9,14 @@ pub(super) fn validate(
     root: Option<&crate::EntityRuntimeState>,
 ) -> Result<(), RuntimeError> {
     let mut checked = BTreeSet::new();
-    visit(context, node, location, root, &mut checked)?;
+    visit(
+        context,
+        node,
+        location,
+        root,
+        &mut checked,
+        (node, location),
+    )?;
     if let Some(root) = root {
         let changes = root.current_change_set();
         let keys: BTreeSet<_> = changes
@@ -381,6 +388,128 @@ mod loaded_path_regression {
         #[teaql(id)]
         id: u64,
     }
+    #[derive(Clone, Debug, teaql_macros::TeaqlEntity)]
+    struct SelectedParent {
+        #[teaql(id)]
+        id: u64,
+    }
+
+    fn materialized_shortcut_fixture() -> (UserContext, crate::EntityRuntimeState, GraphNode) {
+        let context = UserContext::new()
+            .with_active_root("Account", 2)
+            .with_metadata(
+                crate::InMemoryMetadataStore::new()
+                    .with_entity(teaql_core::EntityDescriptor::new("Portfolio"))
+                    .with_entity(
+                        teaql_core::EntityDescriptor::new("Document")
+                            .property(
+                                teaql_core::PropertyDescriptor::new(
+                                    "scope_id",
+                                    teaql_core::DataType::U64,
+                                )
+                                .context_root("Account"),
+                            )
+                            .relation(
+                                teaql_core::RelationDescriptor::new("scope", "Account")
+                                    .local_key("scope_id")
+                                    .foreign_key("id"),
+                            ),
+                    ),
+            );
+        let mut state = crate::EntityRuntimeState::default();
+        state.set_original_compact_row(
+            "Document",
+            teaql_core::CompactRow::from_map(BTreeMap::from([
+                ("id".into(), Value::U64(9)),
+                ("version".into(), Value::I64(1)),
+                ("scope_id".into(), Value::U64(1)),
+            ])),
+        );
+        state.set(
+            crate::EntityKey::new("Document", 9_u64),
+            "name",
+            "Pending change",
+        );
+        let mut graph = crate::EntityGraphBuilder::default();
+        graph.install_typed_relation_list(
+            "Portfolio",
+            1,
+            "parent_list",
+            teaql_core::SmartList::from(vec![SelectedParent { id: 10 }, SelectedParent { id: 20 }]),
+        );
+        graph.install_typed_relation_list(
+            "SelectedParent",
+            20,
+            "documents",
+            teaql_core::SmartList::from(vec![Document { id: 9 }]),
+        );
+        state.freeze_graph(graph).unwrap();
+        let mut node = GraphNode::new("Portfolio").value("id", 1_u64);
+        node.operation = GraphOperation::Reference;
+        let mut child = GraphNode::new("Document")
+            .value("id", 9_u64)
+            .value("scope_id", 1_u64);
+        child.operation = GraphOperation::Upsert;
+        child.original_values = Some(
+            BTreeMap::from([
+                ("id".into(), Value::U64(9)),
+                ("scope_id".into(), Value::U64(1)),
+            ])
+            .into(),
+        );
+        // Mutation hydration can reach this identity through a shorter modeled
+        // edge, although the actual query selected it only below two ancestors.
+        node.relations.insert("documents".into(), vec![child]);
+        (context, state, node)
+    }
+
+    #[test]
+    fn materialized_context_mismatch_retains_selected_sparse_ancestor_path() {
+        let (context, state, node) = materialized_shortcut_fixture();
+        let before = state.current_change_set();
+        let Err(RuntimeError::Check(results)) =
+            validate(&context, &node, &ObjectLocation::root(), Some(&state))
+        else {
+            panic!("wrong ownership accepted")
+        };
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].rule, crate::CheckRule::ContextRootMismatch);
+        assert_eq!(
+            results[0].location.instance_path(),
+            "/parentList/1/documents/0/scope"
+        );
+        assert_eq!(
+            results[0].location.model_path(),
+            "parent_list[1].documents[0].scope"
+        );
+        assert_eq!(state.current_change_set(), before);
+    }
+
+    #[test]
+    fn selected_context_error_path_keeps_the_callers_base_location() {
+        let (context, state, node) = materialized_shortcut_fixture();
+        let base = ObjectLocation::root().member("batch").element(2);
+        let Err(RuntimeError::Check(results)) = validate(&context, &node, &base, Some(&state))
+        else {
+            panic!("wrong ownership accepted")
+        };
+        assert_eq!(
+            results[0].location.instance_path(),
+            "/batch/2/parentList/1/documents/0/scope"
+        );
+    }
+
+    #[test]
+    fn ownership_errors_without_a_selected_view_keep_the_mutation_graph_path() {
+        let (context, _, node) = materialized_shortcut_fixture();
+        let state = crate::EntityRuntimeState::default();
+        let Err(RuntimeError::Check(results)) =
+            validate(&context, &node, &ObjectLocation::root(), Some(&state))
+        else {
+            panic!("wrong ownership accepted")
+        };
+        assert_eq!(results[0].location.instance_path(), "/documents/0/scope");
+    }
     #[test]
     fn detached_pending_child_uses_selected_graph_path_for_context_root_error() {
         let context = UserContext::default()
@@ -451,6 +580,7 @@ fn visit(
     location: &ObjectLocation,
     root: Option<&crate::EntityRuntimeState>,
     checked: &mut BTreeSet<crate::EntityKey>,
+    origin: (&GraphNode, &ObjectLocation),
 ) -> Result<(), RuntimeError> {
     if node.operation != GraphOperation::Reference {
         let descriptor = context.require_entity(&node.entity)?;
@@ -470,14 +600,35 @@ fn visit(
             if !key.as_ref().is_some_and(|key| {
                 root.is_some_and(|root| root.is_new(key) && root.is_marked_as_delete(key))
             }) {
-                validate_values(
+                let outcome = validate_values(
                     context,
                     descriptor,
                     &node.values,
                     original.as_ref(),
                     node.operation == GraphOperation::Create,
                     location,
-                )?;
+                );
+                // Hydration may materialize a shorter modeled edge than the
+                // route actually selected by Q. Resolve that route only after
+                // a pure ownership failure: successful saves do not index the
+                // loaded graph, and no customizable Fix/Checker is run twice.
+                let selected = if matches!(&outcome, Err(RuntimeError::Check(_))) {
+                    selected_error_location(root, key.as_ref(), origin)
+                } else {
+                    None
+                };
+                if let Some(selected) = selected.filter(|selected| selected != location) {
+                    validate_values(
+                        context,
+                        descriptor,
+                        &node.values,
+                        original.as_ref(),
+                        node.operation == GraphOperation::Create,
+                        &selected,
+                    )?;
+                } else {
+                    outcome?;
+                }
             }
             if let Some(key) = key {
                 checked.insert(key);
@@ -492,10 +643,33 @@ fn visit(
                 &location.clone().member(name).element(index),
                 root,
                 checked,
+                origin,
             )?;
         }
     }
     Ok(())
+}
+
+fn selected_error_location(
+    root: Option<&crate::EntityRuntimeState>,
+    key: Option<&crate::EntityKey>,
+    (origin, base): (&GraphNode, &ObjectLocation),
+) -> Option<ObjectLocation> {
+    let root = root?;
+    let key = key?;
+    let origin_key = crate::EntityKey::new(origin.entity.clone(), origin.values.get("id")?.clone());
+    let selected = root
+        .loaded_object_locations(&origin_key, &BTreeSet::from([key.clone()]))
+        .remove(key)?;
+    Some(
+        selected
+            .segments()
+            .iter()
+            .fold(base.clone(), |at, segment| match segment {
+                teaql_core::object_location::LocationSegment::Member(name) => at.member(name),
+                teaql_core::object_location::LocationSegment::Index(index) => at.element(*index),
+            }),
+    )
 }
 
 fn validate_values(

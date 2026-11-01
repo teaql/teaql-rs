@@ -245,6 +245,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     context_root_probe::verify().await?;
     cancelled_root_probe::verify().await?;
     partial_ancestor_probe::verify().await?;
+    partial_ancestor_probe::verify_managed_root().await?;
     println!(
         "FIX_E_EXAMPLE={}",
         serde_json::json!({"language":"rust", "passed":true,
