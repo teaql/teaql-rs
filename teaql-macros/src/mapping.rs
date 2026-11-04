@@ -141,6 +141,11 @@ pub fn decode_value_tokens(
                 other => return Err(::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: {:?}", #field_name, other))),
             }
         },
+        Some("NaiveTime") => quote! {
+            (#value_expr).try_time().ok_or_else(|| ::teaql_core::EntityError::new(
+                #entity_name, format!("invalid field {}: expected an ISO local time", #field_name)
+            ))?
+        },
         Some("NaiveDate") => quote! {
             match #value_expr {
                 ::teaql_core::Value::Date(v) => *v,

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 pub use rust_decimal::Decimal;
 use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 
@@ -120,6 +120,14 @@ impl From<NaiveDate> for Value {
     }
 }
 
+// Keep the domain boundary typed while preserving the existing local-time
+// SQL/wire representation. A local time has no date, UTC offset or epoch.
+impl From<NaiveTime> for Value {
+    fn from(value: NaiveTime) -> Self {
+        Self::Text(value.to_string())
+    }
+}
+
 impl From<crate::time::Timestamp> for Value {
     fn from(value: crate::time::Timestamp) -> Self {
         Self::Timestamp(value)
@@ -215,6 +223,13 @@ impl Value {
                 .ok()
                 .and_then(chrono::DateTime::from_timestamp_millis)
                 .map(|dt| dt.naive_utc().date()),
+            _ => None,
+        }
+    }
+
+    pub fn try_time(&self) -> Option<NaiveTime> {
+        match self {
+            Self::Text(value) => NaiveTime::parse_from_str(value, "%H:%M:%S%.f").ok(),
             _ => None,
         }
     }
