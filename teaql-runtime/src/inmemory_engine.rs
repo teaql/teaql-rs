@@ -14,7 +14,8 @@ pub struct InMemoryQueryEngine;
 impl InMemoryQueryEngine {
     /// Execute a [`SelectQuery`] against the given rows and return a [`QueryResult`].
     ///
-    /// Processing order: filter → aggregation (if any) → sort → paginate → project.
+    /// Processing order: filter → optional aggregation/HAVING → sort → paginate.
+    /// Non-aggregate queries then apply their ordinary field projection.
     pub fn execute(query: &SelectQuery, mut rows: Vec<CompactRow>) -> QueryResult {
         let started_at = SystemTime::now();
 
@@ -23,9 +24,20 @@ impl InMemoryQueryEngine {
             Self::filter(&mut rows, filter);
         }
 
-        // 2. Aggregation short-circuits the normal pipeline.
+        // Aggregate aliases only exist after grouping. Apply HAVING, ordering
+        // and slicing to those result rows, not to their contributing inputs.
         if !query.aggregates.is_empty() {
             let mut result = Self::aggregate(query, rows);
+            if let Some(having) = &query.having {
+                Self::filter(&mut result.rows, having);
+            }
+            if !query.order_by.is_empty() {
+                Self::sort(&mut result.rows, &query.order_by);
+            }
+            if let Some(slice) = &query.slice {
+                result.rows = Self::paginate(result.rows, slice);
+            }
+            result.metadata.result_count = Some(result.rows.len());
             result.metadata.started_at = started_at;
             result.metadata.ended_at = SystemTime::now();
             return result;

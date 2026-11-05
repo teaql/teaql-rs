@@ -231,4 +231,52 @@ mod tests {
         assert_eq!(result.rows[0].get("matching"), Some(&Value::I64(2)));
         assert_eq!(result.metadata.result_count, Some(1));
     }
+
+    #[tokio::test]
+    async fn aggregate_having_order_and_slice_preserve_provider_trace_metadata() {
+        let executor = LinuxDataServiceExecutor::new().with_collector(Box::new(StaticCollector {
+            rows: vec![
+                row("A", 4),
+                row("B", 2),
+                row("A", 6),
+                row("C", 3),
+                row("C", 5),
+            ],
+        }));
+        let trace = TraceNode::new("Fixture", None, "Load qualifying resource groups");
+        let request = QueryRequest {
+            query: SelectQuery::new("Fixture")
+                .filter(Expr::gt("score", 1_i64))
+                .group_by("name")
+                .aggregate(Aggregate::sum("score", "total"))
+                .having(Expr::gt("total", 5_i64))
+                .order_by(OrderBy::desc("total"))
+                .page(1, 1),
+            trace_chain: vec![trace.clone()],
+            intent: teaql_core::QueryIntent::new(
+                "Load qualifying resource groups",
+                "verify bounded in-memory aggregate execution",
+            )
+            .unwrap(),
+            capture_debug_query: true,
+            capture_execution_metadata: true,
+        };
+        let result = executor.query(request).await.unwrap();
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("name"), Some(&Value::from("C")));
+        assert_eq!(
+            result.rows[0].get("total").and_then(Value::try_f64),
+            Some(8.0)
+        );
+        assert_eq!(result.metadata.result_count, Some(1));
+        assert_eq!(result.metadata.backend, "linux-proc");
+        assert_eq!(result.metadata.trace_chain, vec![trace]);
+        assert_eq!(
+            result.metadata.comment.as_deref(),
+            Some("Load qualifying resource groups")
+        );
+        assert_eq!(result.metadata.operation, DataServiceOperation::Query);
+        assert!(result.metadata.statements.is_empty());
+        assert!(result.metadata.started_at <= result.metadata.ended_at);
+    }
 }
