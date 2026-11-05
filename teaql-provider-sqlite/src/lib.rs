@@ -1993,21 +1993,25 @@ fn decode_sqlite_values(
     let mut values = Vec::with_capacity(columns.len());
     for (index, column) in columns.iter().enumerate() {
         let value_ref = row.get_ref(index)?;
-        let value = match value_ref {
-            ValueRef::Null => Value::Null,
-            ValueRef::Integer(value) => decode_sqlite_integer(value, column),
-            ValueRef::Real(value) if value.is_finite() => Value::F64(value),
-            ValueRef::Real(_) => {
-                return Err(MutationExecutorError::Bind(format!(
-                    "non-finite SQLite numeric field {}",
-                    column.name
-                )));
-            }
-            ValueRef::Text(value) => decode_sqlite_text(value, column)?,
-            ValueRef::Blob(_) => {
-                return Err(MutationExecutorError::UnsupportedColumnType(
-                    "BLOB".to_owned(),
-                ));
+        let value = if column.decode_kind == SqliteDecodeKind::Bool {
+            decode_sqlite_boolean(value_ref, column)?
+        } else {
+            match value_ref {
+                ValueRef::Null => Value::Null,
+                ValueRef::Integer(value) => Value::I64(value),
+                ValueRef::Real(value) if value.is_finite() => Value::F64(value),
+                ValueRef::Real(_) => {
+                    return Err(MutationExecutorError::Bind(format!(
+                        "non-finite SQLite numeric field {}",
+                        column.name
+                    )));
+                }
+                ValueRef::Text(value) => decode_sqlite_text(value, column)?,
+                ValueRef::Blob(_) => {
+                    return Err(MutationExecutorError::UnsupportedColumnType(
+                        "BLOB".to_owned(),
+                    ));
+                }
             }
         };
         values.push(value);
@@ -2015,11 +2019,26 @@ fn decode_sqlite_values(
     Ok(values)
 }
 
-fn decode_sqlite_integer(value: i64, column: &ColumnInfo) -> Value {
-    match column.decode_kind {
-        SqliteDecodeKind::Bool => Value::Bool(value != 0),
-        _ => Value::I64(value),
+fn decode_sqlite_boolean(
+    value: ValueRef<'_>,
+    column: &ColumnInfo,
+) -> Result<Value, MutationExecutorError> {
+    match value {
+        ValueRef::Null => Ok(Value::Null),
+        ValueRef::Integer(0) => Ok(Value::Bool(false)),
+        ValueRef::Integer(1) => Ok(Value::Bool(true)),
+        // Match declared storage type rather than the output name. A real
+        // Boolean alias stays Boolean; COUNT aliased to that name stays I64.
+        // Never include rejected text/blob contents in public diagnostics.
+        _ => Err(invalid_sqlite_boolean(column)),
     }
+}
+
+fn invalid_sqlite_boolean(column: &ColumnInfo) -> MutationExecutorError {
+    MutationExecutorError::Bind(format!(
+        "invalid SQLite boolean field {}: expected INTEGER 0 or 1, or NULL",
+        column.name
+    ))
 }
 
 fn decode_sqlite_text(value: &[u8], column: &ColumnInfo) -> Result<Value, MutationExecutorError> {
@@ -2036,7 +2055,8 @@ fn decode_sqlite_text(value: &[u8], column: &ColumnInfo) -> Result<Value, Mutati
             .map(Value::Date)
             .map_err(|err| MutationExecutorError::Bind(format!("invalid sqlite date: {err}"))),
         SqliteDecodeKind::Timestamp => parse_sqlite_timestamp(value),
-        SqliteDecodeKind::Text | SqliteDecodeKind::Bool => Ok(Value::Text(value.to_owned())),
+        SqliteDecodeKind::Bool => Err(invalid_sqlite_boolean(column)),
+        SqliteDecodeKind::Text => Ok(Value::Text(value.to_owned())),
         SqliteDecodeKind::Infer => infer_sqlite_text(value),
     }
 }

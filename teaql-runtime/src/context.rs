@@ -36,6 +36,7 @@ use crate::{
 use teaql_core::business_id::BusinessIdAllocator;
 use teaql_core::{EntityDescriptor, Value};
 
+mod boolean_validation;
 mod json;
 mod locking;
 mod logging;
@@ -1249,6 +1250,7 @@ impl UserContext {
 
         // Custom checkers get the first chance to supply or fix a value.
         self.collect_required_property_results(entity, values, status, location, &mut results);
+        self.collect_boolean_property_results(entity, values, location, &mut results);
         self.collect_numeric_property_results(entity, values, location, &mut results);
         if results.is_empty() {
             return Ok(());
@@ -1290,6 +1292,7 @@ impl UserContext {
             location,
             &mut results,
         );
+        self.collect_boolean_property_results(entity, values, location, &mut results);
         self.collect_numeric_property_results(entity, values, location, &mut results);
         if results.is_empty() {
             return Ok(());
