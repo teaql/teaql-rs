@@ -354,18 +354,17 @@ impl WebResponse {
     where
         E: Entity + Clone,
     {
-        Self::from_records([entity.clone().into_values().into()])
+        Self::success().with_data(vec![entity.clone().into_json()])
     }
 
     pub fn from_entities<E>(entities: impl IntoIterator<Item = E>) -> Self
     where
         E: Entity,
     {
-        Self::from_records(
-            entities
-                .into_iter()
-                .map(|entity| entity.into_values().into()),
-        )
+        // The mutation representation includes editing metadata and may contain
+        // native defaults for fields outside a projection. Reuse the entity's
+        // presentation boundary instead of interpreting save values as JSON.
+        Self::success().with_data(entities.into_iter().map(Entity::into_json).collect())
     }
 
     pub fn from_smart_list<E>(mut smart_list: SmartList<E>) -> Self
