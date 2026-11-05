@@ -12,7 +12,7 @@ bash examples/facet-trace/verify.sh
 
 Cargo dependencies must already be fetched; the verifier runs offline. Reuse
 `CARGO_TARGET_DIR` to avoid recompiling unchanged dependencies. It creates a fresh
-retained database, executes eight tests twice without cleanup, checks exact
+retained database, executes nine tests twice without cleanup, checks exact
 test identities, and verifies every library input hash before/after.
 
 The original four tests cover 16 combinations: four root/nested include-all/matched-only
@@ -32,6 +32,16 @@ relation ancestry; an empty target skips aggregate SQL instead of fabricating a
 trace. Logging off still verifies real results, with no diagnostic SQL entries.
 `COUNTED_FACET` records contain actual counts, statement paths and intent, and
 privacy isolation from the next independent request.
+
+The response test wraps one bounded, minimally selected entity through the
+single-entity, entity-collection and SmartList Core WebResponse constructors.
+Responses reuse `Entity::into_json()`: unselected fields stay absent, and
+mutation comments, dirty fields and original editing values do not become
+application data. The runtime macro also respects older shared-column load
+states; no generated-library repair is required. First-level Facet values and
+an explicitly supplied total count survive wrapping. The supplied count is an
+adapter calibration, not a claim that the query executed COUNT. Nested Facet
+response metadata remains a separate open contract.
 
 Count methods are discovered through reverse-relation field Assist, for example
 `rust-assist-query/platform.school_type_list` and
