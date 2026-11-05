@@ -81,7 +81,7 @@ async fn main() {
             .get_optional_boolean()
             .try_eval()
             .unwrap(),
-        Some(false)
+        Some(Some(false))
     );
 
     saved.update_required_boolean(false);
@@ -112,7 +112,7 @@ async fn main() {
             .get_optional_boolean()
             .try_eval()
             .unwrap(),
-        Some(true)
+        Some(Some(true))
     );
 
     saved.update_optional_boolean(Value::Null);
