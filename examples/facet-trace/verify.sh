@@ -39,6 +39,14 @@ for round in 1 2; do
       future_count_binding_masks_first_statement_but_not_the_next_request; do
     native_case_passed "$name" "$evidence_dir/count-$round.log"
   done
+  if ! cargo test --offline --locked --manifest-path "$example_dir/Cargo.toml" \
+      --test web_response -- --show-output --test-threads=1 > "$evidence_dir/response-$round.log" 2>&1; then
+    tail -100 "$evidence_dir/response-$round.log" >&2
+    printf 'FAIL: retained response projection evidence %s\n' "$evidence_dir" >&2
+    exit 1
+  fi
+  native_case_passed generated_query_response_omits_unselected_defaults_and_editing_state \
+    "$evidence_dir/response-$round.log"
   printf 'PASS generated Rust Facet round %s: same database, no cleanup\n' "$round"
 done
 hash_library > "$evidence_dir/library-after.sha256"
