@@ -3,6 +3,7 @@
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const cp = require('node:child_process'), crypto = require('node:crypto'), assert = require('node:assert/strict');
 const fixture = require('../tests/loaded-revert/verify-local.cjs');
+const {sourceIdentity} = require('../expression-profiles/verify-local.cjs');
 const {createOwnedRunner, ownedBytes} = require('../tests/loaded-revert/owned-command.cjs');
 const {prepareOwnedSubreaper} = require('../tests/loaded-revert/subreaper.cjs');
 const EXAMPLE = __dirname, ROOT = path.resolve(EXAMPLE, '../..');
@@ -21,7 +22,11 @@ async function main() {
   try {
     const space = fs.statfsSync(os.tmpdir()); assert(space.bavail * space.bsize > 6 * 1024 ** 3);
     report.fixture = fixture.fingerprint();
-    report.sourceCommit = cp.execFileSync('git', ['-C', ROOT, 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
+    // An inventory may run in a byte-identical disposable source copy. The
+    // shared identity check binds that copy to an explicit real Git origin;
+    // never copy or manufacture .git metadata just to satisfy this example.
+    report.sourceBefore = sourceIdentity();
+    report.sourceCommit = report.sourceBefore.commit;
     report.applicationSha256 = sha(fs.readFileSync(path.join(EXAMPLE, 'main.rs')));
     report.controllerSha256 = sha(fs.readFileSync(__filename));
     scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'teaql-boolean-build-'));
@@ -93,7 +98,8 @@ async function main() {
     }
     assert.deepEqual(fixture.fingerprint(), report.fixture);
     assert.equal(sha(fs.readFileSync(path.join(EXAMPLE, 'main.rs'))), report.applicationSha256);
-    assert.equal(cp.execFileSync('git', ['-C', ROOT, 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim(), report.sourceCommit);
+    report.sourceAfter = sourceIdentity();
+    assert.deepEqual(report.sourceAfter, report.sourceBefore);
     report.passed = true;
   } catch (error) { report.error = error.stack; process.exitCode = 1; }
   finally {

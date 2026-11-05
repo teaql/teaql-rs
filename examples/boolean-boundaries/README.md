@@ -5,6 +5,10 @@ The verifier uses the local runtime, the existing evaluated scalar fixture and
 its unchanged generated library. No public package or generator deployment is
 required. The application uses generated Q/E and audited save; direct SQLite
 access is limited to physical assertions and a restored corrupt-storage negative.
+Both `scripts/verify-examples.sh` and `examples/verify-runtime-examples.sh` run
+this example. Full-inventory source copies must set
+`TEAQL_RUST_EXAMPLE_SOURCE_ROOT` to their real Git origin; copy and origin hashes
+must match before and after execution.
 
 Two runs share one retained SQLite database. Each creates and updates true/false,
 clears a nullable Boolean, checks generated true/false/unknown predicates and
