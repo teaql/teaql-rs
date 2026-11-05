@@ -1274,6 +1274,49 @@ impl UserContext {
         result
     }
 
+    /// Recheck intrinsic carriers in an already prepared sparse policy plan.
+    /// Never repeat customer Fix or apply full-object requiredness to changes.
+    pub(crate) fn validate_final_plan_scalars(
+        &self,
+        entity: &str,
+        values: &BTreeMap<String, Value>,
+    ) -> Result<(), RuntimeError> {
+        // A typed SQL null is still null. Normalize only this uncommon case,
+        // borrowing the ordinary plan map without copying its strings/values.
+        let normalized;
+        let values = if values
+            .values()
+            .any(|value| matches!(value, Value::TypedNull(_)))
+        {
+            normalized = values
+                .iter()
+                .map(|(field, value)| {
+                    (
+                        field.clone(),
+                        if matches!(value, Value::TypedNull(_)) {
+                            Value::Null
+                        } else {
+                            value.clone()
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            &normalized
+        } else {
+            values
+        };
+        let mut results = CheckResults::new();
+        let location = ObjectLocation::root();
+        self.collect_boolean_property_results(entity, values, &location, &mut results);
+        self.collect_numeric_property_results(entity, values, &location, &mut results);
+        if results.is_empty() {
+            return Ok(());
+        }
+        // Intrinsic messages describe the expected type, never the input value.
+        self.translate_check_results(&mut results);
+        Err(RuntimeError::Check(results))
+    }
+
     /// Validate required/portable scalar values a ledger CREATE actually inserts.
     /// This is intentionally metadata-only: the complete typed graph already
     /// ran Checker/Fix once, and running it again on sparse changes would

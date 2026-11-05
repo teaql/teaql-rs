@@ -343,6 +343,9 @@ impl UserContext {
         &self,
         plan: &MutationPlan,
     ) -> Result<MutationGovernanceSnapshot, RuntimeError> {
+        for operation in &plan.operations {
+            self.validate_final_plan_scalars(&operation.entity.entity, &operation.changed_values)?;
+        }
         let resolved = self.mutation_policy_registry.resolve(&plan.request_key);
         let (source, policy, approval_status, warning_codes) = match resolved {
             None => (

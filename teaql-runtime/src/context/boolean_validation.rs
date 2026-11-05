@@ -1,5 +1,5 @@
 use super::UserContext;
-use crate::{CheckResult, CheckResults, CheckRule, EntityValues, ObjectLocation};
+use crate::{CheckResult, CheckResults, CheckRule, ObjectLocation};
 use teaql_core::{DataType, Value};
 
 impl UserContext {
@@ -8,7 +8,7 @@ impl UserContext {
     pub(super) fn collect_boolean_property_results(
         &self,
         entity: &str,
-        values: &EntityValues,
+        values: &std::collections::BTreeMap<String, Value>,
         location: &ObjectLocation,
         results: &mut CheckResults,
     ) {
