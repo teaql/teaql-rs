@@ -449,21 +449,71 @@ where
                     entity.set_checker_dirty_fields(dirty_fields, &checker_values.into());
                 }
                 let before_check = entity.clone().into_values();
+                let key = descriptor.id_property().and_then(|property| {
+                    before_check
+                        .get(&property.name)
+                        .map(|id| crate::EntityKey::new(self.entity_name.clone(), id.clone()))
+                });
+                let native_intent = |entity: &T| {
+                    entity
+                        .__teaql_runtime_state_any()
+                        .and_then(|state| state.downcast_ref::<crate::EntityRuntimeState>())
+                        .and_then(|state| {
+                            key.as_ref()
+                                .and_then(|key| state.native_mutation_values_for(key))
+                        })
+                };
+                let before_intent = native_intent(&entity);
                 self.checker
                     .check_and_fix_typed(context, &mut entity, status, location, results);
+                let after_intent = native_intent(&entity);
                 let after_check = entity.into_values();
                 let descriptor = T::entity_descriptor();
+                *values = original_values;
+                for (field, after_value) in after_check {
+                    if before_check.get(&field) != Some(&after_value) {
+                        values.insert(field, after_value);
+                    }
+                }
+                // A required typed member cannot represent Null (or another
+                // unconvertible raw value). Its generated setter preserves the
+                // old typed member and records the exact new intent in the
+                // carrier's ledger. Overlay only NEW customer-Fix intent, not
+                // stale caller intent which would undo direct typed edits.
+                if let Some(after) = after_intent {
+                    let changed: teaql_core::MutationValues = after
+                        .iter()
+                        .filter(|(field, value)| {
+                            before_intent.as_ref().and_then(|before| before.get(*field))
+                                != Some(*value)
+                        })
+                        .map(|(field, value)| (field.clone(), value.clone()))
+                        .collect::<BTreeMap<_, _>>()
+                        .into();
+                    match crate::ledger_keys::storage_values_from_ledger(&descriptor, &changed) {
+                        Ok(changed) => {
+                            for (field, value) in changed {
+                                values.insert(field, value);
+                            }
+                        }
+                        Err(error) => {
+                            results.push(
+                                CheckResult::new(CheckRule::InvalidType, location.clone())
+                                    .with_message(error.to_string()),
+                            );
+                            return;
+                        }
+                    }
+                }
+                // Required observes the actual merged values AFTER typed and
+                // ledger Fix. Missing values stay missing; typed defaults never
+                // materialize omitted caller input into mutation intent.
                 for property in descriptor.properties.iter().filter(|property| {
                     !property.nullable && !property.is_id && !property.is_version
                 }) {
-                    let was_absent_or_null = original_values
+                    if values
                         .get(&property.name)
-                        .is_none_or(|value| matches!(value, Value::Null));
-                    if was_absent_or_null
-                        && after_check.get(&property.name).is_none_or(|value| {
-                            matches!(value, Value::Null)
-                                || before_check.get(&property.name) == Some(value)
-                        })
+                        .is_none_or(|value| matches!(value, Value::Null))
                     {
                         results.push(CheckResult::required(
                             location.clone().member(
@@ -474,12 +524,6 @@ where
                                 .unwrap_or_else(|_| property.name.clone()),
                             ),
                         ));
-                    }
-                }
-                *values = original_values;
-                for (field, after_value) in after_check {
-                    if before_check.get(&field) != Some(&after_value) {
-                        values.insert(field, after_value);
                     }
                 }
             }

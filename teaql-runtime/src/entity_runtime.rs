@@ -1497,6 +1497,23 @@ impl EntityRuntimeState {
         })
     }
 
+    /// Checker-local snapshot of one typed carrier's native intent. Never copy
+    /// unrelated graph entities or allocate a ledger for a readonly carrier.
+    pub(crate) fn native_mutation_values_for(&self, key: &EntityKey) -> Option<MutationValues> {
+        self.read_context(None, |context| {
+            let mut values: Option<MutationValues> = None;
+            for layer in &context.change_sets.stack {
+                if let Some(current) = layer.changes().get(key) {
+                    let values = values.get_or_insert_with(MutationValues::new);
+                    for (field, value) in current.iter() {
+                        values.insert(field.clone(), value.clone());
+                    }
+                }
+            }
+            values
+        })
+    }
+
     pub fn has_pending_dynamic_mutations(&self) -> bool {
         self.read_context(false, |ledger| {
             ledger.change_sets.stack.iter().any(|set| {

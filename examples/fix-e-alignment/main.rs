@@ -6,11 +6,14 @@ use std::sync::{Arc, Mutex};
 use teaql_core::{Entity, Value};
 use teaql_runtime::FixedBusinessClock;
 mod cancelled_root_probe;
+mod checker_pipeline_probe;
 mod checker_range_probe;
 mod checker_type_probe;
+mod checker_wire_probe;
 mod clock_update_probe;
 mod context_root_probe;
 mod loading_probe;
+mod nonroot_completeness_probe;
 mod ownership_probe;
 mod paged_ownership;
 mod partial_ancestor_probe;
@@ -246,6 +249,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     cancelled_root_probe::verify().await?;
     partial_ancestor_probe::verify().await?;
     partial_ancestor_probe::verify_managed_root().await?;
+    checker_pipeline_probe::verify().await?;
+    nonroot_completeness_probe::verify().await?;
+    checker_wire_probe::verify().await?;
     println!(
         "FIX_E_EXAMPLE={}",
         serde_json::json!({"language":"rust", "passed":true,

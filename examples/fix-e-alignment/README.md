@@ -24,6 +24,23 @@ It is not required to preserve the sparse returned-root projection used by other
 languages. The same-graph retry and immutable database oracles verify correctness
 without changing this approved semantic difference.
 
+## Checker admission boundaries
+
+The normal two-round example also runs the retained pipeline and non-root
+completeness probes. They exercise schema-free module installation, explicit
+required-null updates, genuine typed customer Fix/min/max checks, isolated
+NotLoaded business fields with the root FK loaded, and untouched partial
+relations. Business writes use generated Q/E/audited Save. Only the two named
+external-writer controls deliberately issue invalid SQL to verify SQLite's
+NOT NULL defense; these are not application mutation paths.
+
+`checker_wire_probe.rs` composes the existing public object-local JSON adapter
+with generated saves. Three wire naming profiles exercise real accepted aliases,
+unknown object-valued fields, equal/unequal canonical-alias collisions in both
+submitted orders, and valid controls. It is not a new HTTP/TFP endpoint or a
+claim of a generated recursive transport adapter. Invalid input does not reach
+mapping/save; invalid saves are measured after the explicit factory ID reservation.
+
 ## Context-root human diagnostics
 
 The managed-root case checks both the complete structured location and the

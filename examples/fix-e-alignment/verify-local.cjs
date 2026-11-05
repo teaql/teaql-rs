@@ -36,6 +36,7 @@ try {
     '[[bin]]', 'name = "teaql-expression-boundaries"', 'path = "src/expression_boundary_probe.rs"',
     '[dependencies]', 'checker-fix-advanced-core = { path = ' + quote(path.join(example, "generated/lib")) + ' }',
     'teaql-core = { path = ' + local('teaql-core') + ' }', 'teaql-runtime = { path = ' + local('teaql-runtime') + ' }',
+    'teaql-tfp-endpoint = { path = ' + local('teaql-tfp-endpoint') + ' }',
     'chrono = "0.4"', 'serde_json = "1"', 'futures-util = "0.3"', 'rusqlite = { version = "0.40", features = ["bundled", "trace"] }',
     'tokio = { version = "1", features = ["macros", "rt-multi-thread"] }', '[patch.crates-io]',
     ...['teaql-core', 'teaql-macros', 'teaql-runtime', 'teaql-sql', 'teaql-data-service', 'teaql-provider-sqlite'].map(name => name + ' = { path = ' + local(name) + ' }'), ''].join('\n');
@@ -59,10 +60,24 @@ try {
   const binary = path.join(scratch, 'target/debug/teaql-fix-e-example');
   report.binarySha256 = sha(fs.readFileSync(binary));
   for (const round of [1, 2]) {
+    env.TEAQL_CHECKER_PIPELINE_DB = path.join(evidence, 'fixture.sqlite.checker-pipeline.sqlite');
+    env.TEAQL_CHECKER_PIPELINE_ROUND = String(round);
+    env.TEAQL_COMPLETENESS_DB = path.join(evidence, 'fixture.sqlite.nonroot-completeness.sqlite');
+    env.TEAQL_COMPLETENESS_ROUND = String(round);
+    env.TEAQL_CHECKER_WIRE_DB = path.join(evidence, 'fixture.sqlite.checker-wire.sqlite');
+    env.TEAQL_CHECKER_WIRE_ROUND = String(round);
     const log = await run([binary], 'round-' + round + '.log', 90000);
     for (const marker of ['FIX_E_EXAMPLE=', 'CORE_LOAD_EXAMPLE=', 'CORE_MUTATION_OWNERSHIP=', 'CORE_MUTATION_PAGING=', 'RUST_AUTHORITATIVE_TOMBSTONES=', 'RUST_VERSION_BOUNDARIES=', 'RUST_GENERATED_CHECKER_TYPES=', 'RUST_GENERATED_CHECKER_RANGES=', 'RUST_GENERATED_CLOCK_UPDATES=', 'RUST_CONTEXT_ROOT_BOUNDARY=', 'RUST_CANCELLED_CONTEXT_ROOT=', 'RUST_PARTIAL_ANCESTORS_RESULT=', 'RUST_PARTIAL_ANCESTOR_ROOT_RESULT=']) {
       const values = log.split(/\r?\n/).filter(line => line.startsWith(marker)).map(line => JSON.parse(line.slice(marker.length)));
       assert.equal(values.length, 1, marker); assert.equal(values[0].passed, true, marker);
+    }
+    for (const [marker, count] of [['RUST_CHECKER_PIPELINE_CASE=', 10], ['RUST_NONROOT_COMPLETENESS_CASE=', 5], ['RUST_CHECKER_WIRE_CASE=', 21], ['RUST_CHECKER_REQUIRED_FIX_CASE=', 2]]) {
+      const values = log.split(/\r?\n/).filter(line => line.startsWith(marker)).map(line => JSON.parse(line.slice(marker.length)));
+      assert.equal(values.length, count, marker); assert(values.every(row => row.passed && row.round === round), marker);
+    }
+    for (const marker of ['RUST_CHECKER_PIPELINE_RESULT=', 'RUST_NONROOT_COMPLETENESS_RESULT=', 'RUST_CHECKER_WIRE_RESULT=', 'RUST_CHECKER_REQUIRED_FIX_RESULT=']) {
+      const values = log.split(/\r?\n/).filter(line => line.startsWith(marker)).map(line => JSON.parse(line.slice(marker.length)));
+      assert.equal(values.length, 1, marker); assert.equal(values[0].passed, true, marker); assert.equal(values[0].round, round, marker);
     }
     assert.deepEqual(fingerprint(), m);
   }
@@ -86,6 +101,10 @@ try {
   report.partialAncestorApplicationSha256 = sha(fs.readFileSync(path.join(example, 'partial_ancestor_probe.rs')));
   report.partialAncestorRootDatabase = {file: 'fixture.sqlite.partial-ancestor-root.sqlite',
     sha256: sha(fs.readFileSync(path.join(evidence, 'fixture.sqlite.partial-ancestor-root.sqlite')))};
+  report.checkerBoundaryApplications = Object.fromEntries(['checker_pipeline_probe.rs', 'nonroot_completeness_probe.rs', 'checker_wire_probe.rs']
+    .map(file => [file, sha(fs.readFileSync(path.join(example, file)))]));
+  report.checkerBoundaryDatabases = ['fixture.sqlite.checker-pipeline.sqlite', 'fixture.sqlite.checker-pipeline.sqlite.no-schema.sqlite',
+    'fixture.sqlite.nonroot-completeness.sqlite', 'fixture.sqlite.checker-wire.sqlite'].map(file => ({file, sha256: sha(fs.readFileSync(path.join(evidence, file)))}));
   const expressionBinary = path.join(scratch, 'target/debug/teaql-expression-boundaries');
   report.expressionBoundaryBinarySha256 = sha(fs.readFileSync(expressionBinary));
   report.expressionBoundaryApplicationSha256 = sha(fs.readFileSync(path.join(example, 'expression_boundary_probe.rs')));
