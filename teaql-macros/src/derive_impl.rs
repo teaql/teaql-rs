@@ -478,7 +478,18 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         } else {
             quote! { record.insert(#field_name.to_owned(), #into_value); }
         });
-        into_json_fields.push(into_record_fields.last().unwrap().clone());
+        // Presentation obeys every supported availability carrier, including
+        // older SharedColumns/Partial entities. Save-value compatibility is a
+        // separate contract and must not decide which fields appear in JSON.
+        into_json_fields.push(if has_load_state_field {
+            quote! {
+                if self.__load_state.is_loaded(#field_name) {
+                    record.insert(#field_name.to_owned(), #into_value);
+                }
+            }
+        } else {
+            into_record_fields.last().unwrap().clone()
+        });
     }
 
     let identifiable_impl_tokens = id_impl.map(|id_value| {

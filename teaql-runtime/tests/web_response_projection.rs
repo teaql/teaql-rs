@@ -83,6 +83,47 @@ fn existing_entity_presentation_is_safe_without_web_response() {
 }
 
 #[test]
+fn legacy_shared_column_projection_also_omits_unloaded_scalar_defaults() {
+    #[derive(Clone, Debug, TeaqlEntity)]
+    #[teaql(entity = "LegacyResponseProjection")]
+    struct Legacy {
+        #[teaql(id)]
+        id: u64,
+        #[teaql(version)]
+        version: i64,
+        name: String,
+        note: Option<String>,
+        secret_note: String,
+        #[teaql(dynamic)]
+        dynamic: BTreeMap<String, Value>,
+        #[teaql(skip)]
+        __load_state: teaql_core::eval::LoadState,
+    }
+    let row = Legacy::from_compact_row(CompactRow::from_map(Record::from([
+        ("id".into(), Value::U64(41)),
+        ("version".into(), Value::I64(7)),
+        ("name".into(), Value::Text("visible".into())),
+        ("note".into(), Value::Null),
+        ("_count".into(), Value::I64(0)),
+        ("_null".into(), Value::Null),
+    ])))
+    .unwrap();
+    assert!(matches!(
+        row.__load_state,
+        teaql_core::eval::LoadState::SharedColumns(_)
+    ));
+    assert!(!row.is_field_loaded("secret_note"));
+    let before = row.clone().into_values();
+    assert!(
+        before.contains_key("secret_note"),
+        "legacy save compatibility is distinct"
+    );
+    safe(&row.clone().into_json());
+    safe(&WebResponse::from_entity(&row).data[0]);
+    assert_eq!(row.into_values(), before);
+}
+
+#[test]
 fn typed_response_constructors_do_not_publish_mutation_metadata() {
     let row = row();
     let expected = row.clone().into_json();
