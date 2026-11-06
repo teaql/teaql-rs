@@ -1,24 +1,24 @@
 #!/usr/bin/env node
 'use strict';
-const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),assert=require('node:assert/strict'),crypto=require('node:crypto'),cp=require('node:child_process');
+const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),assert=require('node:assert/strict'),crypto=require('node:crypto');
 const {createOwnedRunner,ownedBytes}=require('./verify/owned-command.cjs');
 const {prepareOwnedSubreaper}=require('./verify/subreaper.cjs');
+const {sourceIdentity}=require('./verify/source-identity.cjs');
 const example=__dirname,repo=path.resolve(example,'../..'),sha=b=>crypto.createHash('sha256').update(b).digest('hex');
 function files(dir,prefix=''){const out={};for(const n of fs.readdirSync(dir).sort()){const f=path.join(dir,n),s=fs.lstatSync(f);assert(!s.isSymbolicLink());if(s.isDirectory())Object.assign(out,files(f,prefix+n+'/'));else out[prefix+n]=sha(fs.readFileSync(f));}return out;}
 function fixture(){const m=JSON.parse(fs.readFileSync(path.join(example,'fixture-manifest.json')));assert.equal(m.evaluationErrors,0);assert.equal(sha(fs.readFileSync(path.join(example,'model.xml'))),m.modelSha256);assert.deepEqual(files(path.join(example,'generated')),m.files);return m;}
-function sourceIdentity(){const git=args=>cp.execFileSync('git',['-C',repo,...args],{encoding:'utf8',timeout:30000}).trim();const paths=git(['ls-files','-z']).split('\0').filter(Boolean).sort(),inputs={},h=crypto.createHash('sha256');for(const n of paths){const p=path.join(repo,n),s=fs.lstatSync(p);assert(s.isFile()&&!s.isSymbolicLink());const b=fs.readFileSync(p);inputs[n]=sha(b);h.update(n+'\0'+s.mode+'\0');h.update(b);h.update('\0');}return {directory:repo,commit:git(['rev-parse','HEAD']),status:git(['status','--porcelain=v1','--untracked-files=all']),contentsSha256:h.digest('hex'),files:inputs};}
 async function main(){
  const requested=process.env.TEAQL_REQUEST_ADMISSION_EVIDENCE_DIR;
  const output=requested?path.resolve(requested):fs.mkdtempSync(path.join(os.tmpdir(),'teaql-request-admission-evidence-'));
  if(requested){assert(path.isAbsolute(requested)&&!fs.existsSync(output));fs.mkdirSync(output,{recursive:true});}
  const write=(n,b)=>{const f=path.join(output,n);fs.mkdirSync(path.dirname(f),{recursive:true});fs.writeFileSync(f,typeof b==='string'||Buffer.isBuffer(b)?b:JSON.stringify(b,null,2)+'\n',{flag:'wx'});};
- const r={schema:'teaql.rust-request-admission-example/v1',passed:false,commands:[],rounds:[],sameDatabase:true,
+ const r={schema:'teaql.rust-request-admission-example/v2',passed:false,commands:[],rounds:[],sameDatabase:true,
   providerMetadataIsEntryCounter:false,providerBoundaryStartsInstrumented:true,fullTraceContractAccepted:false,installedSdkAccepted:false,publicPublication:false,allP0P1Complete:false};
  let scratch,runner;
  try{
   assert(fs.statfsSync(os.tmpdir()).bavail*fs.statfsSync(os.tmpdir()).bsize>8*1024**3);
-  r.source=sourceIdentity();
-  r.fixture=fixture();r.inputs=Object.fromEntries(['main.rs','missing_purpose.rs','missing_audit.rs','model.xml','fixture-manifest.json','verify-local.cjs','verify/owned-command.cjs','verify/subreaper.cjs','verify/owned-subreaper.c'].map(n=>[n,sha(fs.readFileSync(path.join(example,n)))]));
+  r.source=sourceIdentity(repo);
+  r.fixture=fixture();r.inputs=Object.fromEntries(['main.rs','missing_purpose.rs','missing_audit.rs','model.xml','fixture-manifest.json','verify-local.cjs','verify/owned-command.cjs','verify/subreaper.cjs','verify/owned-subreaper.c','verify/source-identity.cjs'].map(n=>[n,sha(fs.readFileSync(path.join(example,n)))]));
   for(const n of Object.keys(r.inputs))write('inputs/'+n,fs.readFileSync(path.join(example,n)));
   scratch=fs.mkdtempSync(path.join(os.tmpdir(),'teaql-request-admission-build-'));r.scratch=scratch;runner=createOwnedRunner({supervisor:prepareOwnedSubreaper(scratch)});fs.mkdirSync(path.join(scratch,'src'));
   for(const n of ['main.rs','missing_purpose.rs','missing_audit.rs'])fs.copyFileSync(path.join(example,n),path.join(scratch,'src',n));
@@ -54,7 +54,7 @@ async function main(){
    r.compileFail.push({bin,method,code:'E0599',diagnostics});
   }
   assert.deepEqual(fixture(),r.fixture);for(const[n,h]of Object.entries(r.inputs))assert.equal(sha(fs.readFileSync(path.join(example,n))),h);
-  r.sourceAfter=sourceIdentity();assert.deepEqual(r.sourceAfter,r.source);
+  r.sourceAfter=sourceIdentity(repo);assert.deepEqual(r.sourceAfter,r.source);
   r.database={file:'admission.sqlite',sha256:sha(fs.readFileSync(path.join(output,'admission.sqlite'))),bytes:fs.statSync(path.join(output,'admission.sqlite')).size};r.passed=true;
  }catch(error){r.error=error.stack;console.error(r.error);process.exitCode=1;}
  finally{r.cleanup={scratchRemoved:false,sharedCachesDeleted:false,sourceOrDatabasesDeleted:false};try{assert(!runner||runner.safeToClean);r.cleanup.disposedOwnedBytes=scratch?ownedBytes(scratch):0;if(scratch)fs.rmSync(scratch,{recursive:true});r.cleanup.scratchRemoved=true;}catch(error){r.cleanup.error=error.stack;r.passed=false;process.exitCode=1;}finally{runner?.dispose();write('report.json',r);console.log(JSON.stringify({output,passed:r.passed,error:r.error,cleanup:r.cleanup}));}}
