@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .query_row("SELECT count(*) FROM purchase_order_data", [], |r| r.get(0))?;
     assert_eq!(
         prior,
-        (round - 1) as i64,
+        ((round - 1) * 2) as i64,
         "rounds reuse the unreset business database"
     );
     let mut other = Q::tenants()
@@ -78,6 +78,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     let id = owner.id();
     assert!(id > 0);
+    let mut second = Q::purchase_orders()
+        .comment("Prepare a second ordinary relation target")
+        .purpose("Verify FK invalidation without bypassing context-root immutability")
+        .new_entity(&context);
+    second.update_contact_phone("5550880");
+    second.update_internal_note(Value::Null);
+    let second = second
+        .audit_as("Create the second wrapper fixture")
+        .save(&context)
+        .await?;
+    let mut item = Q::order_items()
+        .comment("Prepare an ordinary mutable FK")
+        .purpose("Verify a loaded target cannot survive retargeting")
+        .new_entity(&context);
+    item.update_purchase_order_id(id);
+    item.update_product_name(format!("Wrapper item {round}"));
+    item.update_unit_price(Value::Decimal("1.00".parse()?));
+    let item = item
+        .audit_as("Create the wrapper relation child")
+        .save(&context)
+        .await?;
     context.enable_all_sql_log();
     pool.lock().unwrap().trace(Some(observe));
     let mut cases = Vec::new();
@@ -156,9 +177,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         json!({"owner":id,"outerNameLoaded":true,"instancePath":error.instance_path,"eStatements":count()-before}),
     );
 
-    let complete = Q::purchase_orders()
-        .with_id_is(id)
-        .select_tenant_with(Q::tenants().limit(1))
+    let complete = Q::order_items()
+        .with_id_is(item.id())
+        .select_purchase_order_with(Q::purchase_orders().limit(1))
         .limit(1)
         .comment("Load a complete old relation target")
         .purpose("Invalidate old views after a pending FK change")
@@ -167,28 +188,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut changed = complete.first().unwrap().clone();
     let before = count();
     assert!(
-        E::purchase_order(&changed)
-            .get_tenant()
-            .get_name()
+        E::order_item(&changed)
+            .get_purchase_order()
+            .get_contact_phone()
             .eval()
             .is_some()
     );
-    changed.update_tenant_id(other.id());
+    changed.update_purchase_order_id(second.id());
     assert_eq!(
-        E::purchase_order(&changed).get_tenant_id().eval(),
-        Some(other.id())
+        E::order_item(&changed).get_purchase_order_id().eval(),
+        Some(second.id())
     );
-    let error = E::purchase_order(&changed)
-        .get_tenant()
-        .get_name()
+    let error = E::order_item(&changed)
+        .get_purchase_order()
+        .get_contact_phone()
         .try_eval()
         .unwrap_err()
         .to_wire();
     record(
         &mut cases,
         "changed-fk-invalidates-edge",
-        count() == before && error.instance_path == "/tenant",
-        json!({"owner":id,"newTarget":other.id(),"instancePath":error.instance_path,"eStatements":count()-before}),
+        count() == before && error.instance_path == "/purchaseOrder",
+        json!({"owner":item.id(),"newTarget":second.id(),"instancePath":error.instance_path,"eStatements":count()-before}),
     );
 
     let metadata: Arc<Mutex<Vec<ExecutionMetadata>>> = Arc::default();
@@ -254,8 +275,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     metadata.lock().unwrap().clear();
     context.clear_sql_logs();
     let mut stream = Q::purchase_orders()
-        .with_id_is(id)
-        .limit(1)
+        .limit(2)
         .stream(1)
         .comment("Drop a consumed but unfinished stream")
         .purpose("Retain a truthful cancellation outcome")
