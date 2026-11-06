@@ -2,7 +2,7 @@
 //! The runner supplies two freshly generated libraries; neither is hand edited.
 use checker_fix_advanced_core::{AuditedSave, E, Q, service_runtime_from_pool};
 use chrono::{TimeZone, Utc};
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 use serde_json::{Value as Json, json};
 use std::sync::{
     Arc, Mutex,
@@ -381,20 +381,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let before = count();
         context.clear_sql_logs();
-        let error = request
-            .purpose("PRIVATE-WRAPPER-CANARY")
-            .execute_for_list(&context)
-            .await
-            .unwrap_err();
-        let structured = matches!(&error, teaql_runtime::RuntimeError::RequestIntent(e) if e.code()=="REQUEST_COMMENT_REQUIRED" && e.field=="comment" && e.request_kind==teaql_core::RequestKind::Query);
+        let result = std::panic::AssertUnwindSafe(async {
+            request
+                .purpose("PRIVATE-WRAPPER-CANARY")
+                .execute_for_list(&context)
+                .await
+        })
+        .catch_unwind()
+        .await;
+        let (boundary, message) = match result {
+            Err(value) => ("panic", panic_text(value)),
+            Ok(Err(error)) => ("result", error.to_string()),
+            Ok(Ok(_)) => ("accepted", String::new()),
+        };
+        let diagnostic = message
+            == "REQUEST_COMMENT_REQUIRED: Query Request requires a non-blank comment; supply it at the request entry point";
         record(
             &mut cases,
             &format!("blank-comment-{kind}"),
-            structured
+            diagnostic
                 && count() == before
                 && context.sql_logs().is_empty()
-                && !error.to_string().contains("PRIVATE-WRAPPER-CANARY"),
-            json!({"structured":structured,"statements":count()-before,"sqlLogs":context.sql_logs().len()}),
+                && !message.contains("PRIVATE-WRAPPER-CANARY"),
+            json!({"diagnosticMatches":diagnostic,"boundary":boundary,"code":"REQUEST_COMMENT_REQUIRED","field":"comment","requestKind":"Query","privateCanaryExposed":message.contains("PRIVATE-WRAPPER-CANARY"),"statements":count()-before,"sqlLogs":context.sql_logs().len()}),
         );
     }
 
