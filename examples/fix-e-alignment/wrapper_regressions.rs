@@ -104,7 +104,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cases = Vec::new();
 
     let filtered = Q::tenants()
-        .with_id_is(1)
+        .with_id_is(1_u64)
         .select_purchase_order_list_with(
             Q::purchase_orders()
                 .with_id_is(id)
@@ -147,7 +147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let sparse = Q::tenants()
-        .with_id_is(1)
+        .with_id_is(1_u64)
         .select_purchase_order_list_with(
             Q::purchase_orders()
                 .with_id_is(id)
@@ -253,6 +253,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     metadata.lock().unwrap().clear();
     context.clear_sql_logs();
+    let before = count();
     let stream = Q::purchase_orders()
         .with_id_is(id)
         .limit(1)
@@ -261,7 +262,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .purpose("Do not manufacture an execution event")
         .execute_for_stream(&context)
         .await?;
-    let before = count();
     drop(stream);
     let observed = metadata.lock().unwrap().len();
     let logs = context.sql_logs().len();
