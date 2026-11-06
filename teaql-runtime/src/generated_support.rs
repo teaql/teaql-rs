@@ -257,7 +257,11 @@ impl PurposedSelectQuery {
         let purpose = purpose.into();
         assert!(
             !purpose.trim().is_empty(),
-            "query purpose must not be empty"
+            "{}",
+            teaql_core::RequestIntentError {
+                request_kind: teaql_core::RequestKind::Query,
+                field: "purpose",
+            }
         );
         query.purpose = Some(purpose.clone());
         if query.request_scope().is_none()
