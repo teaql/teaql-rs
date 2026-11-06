@@ -11,7 +11,8 @@ use std::sync::{
 use teaql_core::{Entity, SelectQuery, Value};
 use teaql_runtime::{
     FixedBusinessClock, MutationDecision, MutationPlan, MutationPolicy, MutationPolicyIdentity,
-    RequestPolicy, RuntimeError, SafeAuditEvent, SafeAuditEventSink, UserContext,
+    RequestPolicy, RuntimeAttributeValue, RuntimeError, RuntimeOperation, RuntimeTelemetry,
+    RuntimeTelemetryScope, SafeAuditEvent, SafeAuditEventSink, UserContext,
 };
 
 static SQL: AtomicUsize = AtomicUsize::new(0);
@@ -25,6 +26,21 @@ struct Counters {
     governance: AtomicUsize,
     provider_metadata: AtomicUsize,
     audits: AtomicUsize,
+    provider_boundary: AtomicUsize,
+}
+struct Telemetry(Arc<Counters>);
+struct Scope;
+impl RuntimeTelemetryScope for Scope {
+    fn success(&mut self, _: std::collections::BTreeMap<String, RuntimeAttributeValue>) {}
+    fn failure(&mut self, _: &str) {}
+}
+impl RuntimeTelemetry for Telemetry {
+    fn start(&self, operation: RuntimeOperation) -> Box<dyn RuntimeTelemetryScope> {
+        if operation.family == "provider" {
+            self.0.provider_boundary.fetch_add(1, Ordering::SeqCst);
+        }
+        Box::new(Scope)
+    }
 }
 struct Policy(Arc<Counters>);
 impl RequestPolicy for Policy {
@@ -60,6 +76,7 @@ fn snapshot(c: &Counters, ctx: &UserContext, pool: &Arc<Mutex<rusqlite::Connecti
         SQL.load(Ordering::SeqCst) as u64,
         ctx.sql_logs().len() as u64,
         pool.lock().unwrap().total_changes(),
+        c.provider_boundary.load(Ordering::SeqCst) as u64,
     ]
 }
 fn effects(before: &[u64], after: &[u64]) -> Json {
@@ -72,6 +89,7 @@ fn effects(before: &[u64], after: &[u64]) -> Json {
         "sqlStatements",
         "sqlLogs",
         "physicalChanges",
+        "providerBoundaryStarts",
     ];
     json!(
         names
@@ -143,6 +161,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?
         .with_active_root("Tenant", 1)
         .with_request_policy(Policy(counts.clone()))
+        .with_runtime_telemetry(Arc::new(Telemetry(counts.clone())))
         .with_custom_event_sink(Audit(counts.clone()))
         .with_mutation_policy_registry(
             move |_: &str| -> Option<Arc<dyn teaql_runtime::MutationPolicy>> {
@@ -349,6 +368,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             && after[4] > before[4]
             && after[5] > before[5]
             && after[7] > before[7]
+            && after[8] > before[8]
             && (after[6] > before[6]) == logging;
         println!(
             "RUST_REQUEST_ADMISSION_CONTROL={}",

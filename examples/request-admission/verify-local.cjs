@@ -13,7 +13,7 @@ async function main(){
  if(requested){assert(path.isAbsolute(requested)&&!fs.existsSync(output));fs.mkdirSync(output,{recursive:true});}
  const write=(n,b)=>{const f=path.join(output,n);fs.mkdirSync(path.dirname(f),{recursive:true});fs.writeFileSync(f,typeof b==='string'||Buffer.isBuffer(b)?b:JSON.stringify(b,null,2)+'\n',{flag:'wx'});};
  const r={schema:'teaql.rust-request-admission-example/v1',passed:false,commands:[],rounds:[],sameDatabase:true,
-  providerMetadataIsEntryCounter:false,fullTraceContractAccepted:false,installedSdkAccepted:false,publicPublication:false,allP0P1Complete:false};
+  providerMetadataIsEntryCounter:false,providerBoundaryStartsInstrumented:true,fullTraceContractAccepted:false,installedSdkAccepted:false,publicPublication:false,allP0P1Complete:false};
  let scratch,runner;
  try{
   assert(fs.statfsSync(os.tmpdir()).bavail*fs.statfsSync(os.tmpdir()).bsize>8*1024**3);

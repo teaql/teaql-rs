@@ -21,10 +21,12 @@ the same unreset SQLite database.
 
 Valid audited graph saves and queries calibrate the query policy, graph Mutation
 Policy, governance registry, SQLite statements, safe audits and metadata callback.
+The existing RuntimeTelemetry SPI independently counts actual provider-scope
+starts before provider work is invoked; no OTLP service or SDK is required.
 Each invalid request must leave all observations, database changes and entity
 identities unchanged. Loaded E traversal must issue no SQL. Provider metadata
-callbacks measure completed observations, **not provider entry**; this example
-does not independently instrument every provider-method entry.
+callbacks measure completed observations, **not provider entry**. Provider-scope
+starts measure the runtime boundary, not every internal provider method.
 
 Two separate Cargo checks must fail with the expected `E0599`: an unpurposed
 request has no list-execution API, and a bare root cannot save even when it
