@@ -10,13 +10,14 @@ async function main(){
  const requested=process.env.TEAQL_REQUEST_ADMISSION_EVIDENCE_DIR;
  const output=requested?path.resolve(requested):fs.mkdtempSync(path.join(os.tmpdir(),'teaql-request-admission-evidence-'));
  if(requested){assert(path.isAbsolute(requested)&&!fs.existsSync(output));fs.mkdirSync(output,{recursive:true});}
- const write=(n,b)=>fs.writeFileSync(path.join(output,n),typeof b==='string'||Buffer.isBuffer(b)?b:JSON.stringify(b,null,2)+'\n',{flag:'wx'});
+ const write=(n,b)=>{const f=path.join(output,n);fs.mkdirSync(path.dirname(f),{recursive:true});fs.writeFileSync(f,typeof b==='string'||Buffer.isBuffer(b)?b:JSON.stringify(b,null,2)+'\n',{flag:'wx'});};
  const r={schema:'teaql.rust-request-admission-example/v1',passed:false,commands:[],rounds:[],sameDatabase:true,
   providerMetadataIsEntryCounter:false,fullTraceContractAccepted:false,installedSdkAccepted:false,publicPublication:false,allP0P1Complete:false};
  let scratch,runner;
  try{
   assert(fs.statfsSync(os.tmpdir()).bavail*fs.statfsSync(os.tmpdir()).bsize>8*1024**3);
   r.fixture=fixture();r.inputs=Object.fromEntries(['main.rs','missing_purpose.rs','missing_audit.rs','model.xml','fixture-manifest.json','verify-local.cjs','verify/owned-command.cjs','verify/subreaper.cjs','verify/owned-subreaper.c'].map(n=>[n,sha(fs.readFileSync(path.join(example,n)))]));
+  for(const n of Object.keys(r.inputs))write('inputs/'+n,fs.readFileSync(path.join(example,n)));
   scratch=fs.mkdtempSync(path.join(os.tmpdir(),'teaql-request-admission-build-'));r.scratch=scratch;runner=createOwnedRunner({supervisor:prepareOwnedSubreaper(scratch)});fs.mkdirSync(path.join(scratch,'src'));
   for(const n of ['main.rs','missing_purpose.rs','missing_audit.rs'])fs.copyFileSync(path.join(example,n),path.join(scratch,'src',n));
   const q=JSON.stringify,crates=['teaql-core','teaql-runtime','teaql-macros','teaql-sql','teaql-data-service','teaql-provider-sqlite'];
