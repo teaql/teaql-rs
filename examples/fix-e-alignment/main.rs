@@ -12,6 +12,7 @@ mod checker_type_probe;
 mod checker_wire_probe;
 mod clock_update_probe;
 mod context_root_probe;
+mod concurrent_query_probe;
 mod loading_probe;
 mod mixed_graph_probe;
 mod nonroot_completeness_probe;
@@ -254,6 +255,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     nonroot_completeness_probe::verify().await?;
     checker_wire_probe::verify().await?;
     mixed_graph_probe::verify().await?;
+    concurrent_query_probe::verify().await?;
     println!(
         "FIX_E_EXAMPLE={}",
         serde_json::json!({"language":"rust", "passed":true,
