@@ -60,6 +60,7 @@ try {
   const binary = path.join(scratch, 'target/debug/teaql-fix-e-example');
   report.binarySha256 = sha(fs.readFileSync(binary));
   for (const round of [1, 2]) {
+    env.TEAQL_MIXED_GRAPH_ROUND = String(round);
     env.TEAQL_CHECKER_PIPELINE_DB = path.join(evidence, 'fixture.sqlite.checker-pipeline.sqlite');
     env.TEAQL_CHECKER_PIPELINE_ROUND = String(round);
     env.TEAQL_COMPLETENESS_DB = path.join(evidence, 'fixture.sqlite.nonroot-completeness.sqlite');
@@ -71,7 +72,7 @@ try {
       const values = log.split(/\r?\n/).filter(line => line.startsWith(marker)).map(line => JSON.parse(line.slice(marker.length)));
       assert.equal(values.length, 1, marker); assert.equal(values[0].passed, true, marker);
     }
-    for (const [marker, count] of [['RUST_CHECKER_PIPELINE_CASE=', 10], ['RUST_NONROOT_COMPLETENESS_CASE=', 5], ['RUST_CHECKER_WIRE_CASE=', 21], ['RUST_CHECKER_REQUIRED_FIX_CASE=', 2]]) {
+    for (const [marker, count] of [['RUST_MIXED_GRAPH_CASE=', 2], ['RUST_CHECKER_PIPELINE_CASE=', 10], ['RUST_NONROOT_COMPLETENESS_CASE=', 5], ['RUST_CHECKER_WIRE_CASE=', 21], ['RUST_CHECKER_REQUIRED_FIX_CASE=', 2]]) {
       const values = log.split(/\r?\n/).filter(line => line.startsWith(marker)).map(line => JSON.parse(line.slice(marker.length)));
       assert.equal(values.length, count, marker); assert(values.every(row => row.passed && row.round === round), marker);
     }
@@ -82,6 +83,9 @@ try {
     assert.deepEqual(fingerprint(), m);
   }
   report.databaseSha256 = sha(fs.readFileSync(path.join(evidence, 'fixture.sqlite')));
+  report.mixedGraphDatabase = {file: 'fixture.sqlite.mixed-graph.sqlite',
+    sha256: sha(fs.readFileSync(path.join(evidence, 'fixture.sqlite.mixed-graph.sqlite')))};
+  report.mixedGraphApplicationSha256 = sha(fs.readFileSync(path.join(example, 'mixed_graph_probe.rs')));
   report.checkerTypeDatabase = {file: 'fixture.sqlite.checker-types.sqlite',
     sha256: sha(fs.readFileSync(path.join(evidence, 'fixture.sqlite.checker-types.sqlite')))};
   report.checkerRangeDatabase = {file: 'fixture.sqlite.checker-ranges.sqlite',
