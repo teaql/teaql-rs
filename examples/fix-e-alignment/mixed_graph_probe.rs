@@ -10,7 +10,10 @@ use rusqlite::functions::FunctionFlags;
 use serde_json::{Value as Json, json};
 use std::{
     collections::BTreeSet,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use teaql_core::{Entity, Value};
 use teaql_runtime::{
@@ -25,16 +28,21 @@ struct Evidence {
     audits: Arc<Mutex<Vec<SafeAuditEvent>>>,
     writes: Arc<Mutex<Vec<Json>>>,
     arm: Arc<Mutex<(bool, usize)>>,
+    reject_commit: Arc<AtomicBool>,
+    commits: Arc<Mutex<Vec<Json>>>,
 }
 impl Evidence {
     fn begin(&self, fail_after: usize) {
         self.plans.lock().unwrap().clear();
         self.audits.lock().unwrap().clear();
         self.writes.lock().unwrap().clear();
+        self.commits.lock().unwrap().clear();
+        self.reject_commit.store(false, Ordering::SeqCst);
         *self.arm.lock().unwrap() = (true, fail_after);
     }
     fn stop(&self) {
         self.arm.lock().unwrap().0 = false;
+        self.reject_commit.store(false, Ordering::SeqCst);
     }
 }
 impl SafeAuditEventSink for Evidence {
@@ -210,6 +218,18 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
     let round: usize = std::env::var("TEAQL_MIXED_GRAPH_ROUND")?.parse()?;
     let pool = Arc::new(Mutex::new(rusqlite::Connection::open(database)?));
     let evidence = Evidence::default();
+    let committing = evidence.clone();
+    pool.lock().unwrap().commit_hook(Some(move || {
+        if !committing.arm.lock().unwrap().0 {
+            return false;
+        }
+        let reject = committing.reject_commit.load(Ordering::SeqCst);
+        committing.commits.lock().unwrap().push(json!({
+            "writes":committing.writes.lock().unwrap().len(),
+            "audits":committing.audits.lock().unwrap().len(),"rejected":reject
+        }));
+        reject
+    }))?;
     let observed = evidence.clone();
     pool.lock().unwrap().create_scalar_function("core236_mixed_probe", 4, FunctionFlags::SQLITE_UTF8, move |args| {
         let (enabled, fail_after) = *observed.arm.lock().unwrap(); if !enabled {return Ok(0i64);}
@@ -232,13 +252,15 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
             .query_row("SELECT count(*) FROM purchase_order_data", [], |r| r.get(0))?;
     assert_eq!(
         count,
-        if round == 1 { 0 } else { 2 },
+        if round == 1 { 0 } else { 3 },
         "round two reuses its unreset database"
     );
     context.set_custom_event_sink(evidence.clone());
     let policy: Arc<dyn MutationPolicy> = Arc::new(Policy(evidence.clone()));
     context.set_mutation_policy_registry(move |_: &str| Some(policy.clone()));
-    for fail in [false, true] {
+    for scenario in ["commit", "rollback-retry", "commit-failure-retry"] {
+        let fail = scenario != "commit";
+        let fail_commit = scenario == "commit-failure-retry";
         evidence.stop();
         let seeded = parent(&context)
             .audit_as("Create the independent mixed owner")
@@ -273,7 +295,8 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
         install_triggers(&pool, owner_id, old_id, new_id);
         let mut failure = Json::Null;
         if fail {
-            evidence.begin(2);
+            evidence.begin(if fail_commit { 0 } else { 2 });
+            evidence.reject_commit.store(fail_commit, Ordering::SeqCst);
             // Clone retains the same pending ledger for retry; composition was
             // already explicit and is not inferred from cloning or Context.
             let result = owner
@@ -283,15 +306,26 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
                 .await;
             let error = result
                 .err()
-                .expect("AFTER trigger must reject the second actual write")
+                .expect("the armed SQLite statement or commit hook must reject this save")
                 .to_string();
-            assert!(
-                error.contains("core236 mixed graph intentional second-write failure"),
-                "{error}"
-            );
+            if !fail_commit {
+                assert!(
+                    error.contains("core236 mixed graph intentional second-write failure"),
+                    "{error}"
+                );
+            }
             let operations = plan(&evidence, owner_id, old_id, new_id);
             let writes = evidence.writes.lock().unwrap().clone();
-            assert_eq!(writes.len(), 2);
+            assert_eq!(writes.len(), if fail_commit { 3 } else { 2 });
+            let commits = evidence.commits.lock().unwrap().clone();
+            assert_eq!(
+                commits,
+                if fail_commit {
+                    vec![json!({"writes":3,"audits":0,"rejected":true})]
+                } else {
+                    vec![]
+                }
+            );
             assert_ne!(writes[0]["visible"], original);
             assert_ne!(writes[1]["visible"], original);
             assert_eq!(snapshot(&pool, owner_id, old_id, new_id), original);
@@ -310,6 +344,7 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
                 pending.new_keys().contains(&new_key) && pending.deleted_keys().contains(&old_key)
             );
             failure = json!({"operations":operations,"actualWritesBeforeFailure":writes,"storedAfterRollback":original,
+                "stage":if fail_commit {"commit"} else {"statement"},"error":error,"commitCallbacks":commits,
                 "committedAudits":0,"pendingCreate":true,"pendingDelete":true,"pendingUpdate":true,"originalVersionsRetained":true});
         }
         evidence.begin(0);
@@ -321,6 +356,11 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
         let writes = evidence.writes.lock().unwrap().clone();
         assert_eq!(writes.len(), 3);
         let audits = audit(&evidence, owner_id, old_id, new_id);
+        let commits = evidence.commits.lock().unwrap().clone();
+        assert_eq!(
+            commits,
+            vec![json!({"writes":3,"audits":0,"rejected":false})]
+        );
         assert_eq!(
             snapshot(&pool, owner_id, old_id, new_id),
             json!({"orderVersion":2,"oldVersion":-2,"newCount":1})
@@ -359,13 +399,14 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
             evidence.plans.lock().unwrap().is_empty()
                 && evidence.audits.lock().unwrap().is_empty()
                 && evidence.writes.lock().unwrap().is_empty()
+                && evidence.commits.lock().unwrap().is_empty()
         );
         evidence.stop();
         println!(
             "RUST_MIXED_GRAPH_CASE={}",
-            json!({"passed":true,"round":round,"case":if fail {"rollback-retry"} else {"commit"},
+            json!({"passed":true,"round":round,"case":scenario,
             "ownerId":owner_id,"oldChildId":old_id,"newChildId":new_id,"plan":operations,"writes":writes,"audits":audits,
-            "failure":failure,"unchangedSaveWrites":0,"unchangedSavePolicyReviews":0,"unchangedSaveAudits":0})
+            "commitCallbacks":commits,"failure":failure,"unchangedSaveWrites":0,"unchangedSavePolicyReviews":0,"unchangedSaveAudits":0})
         );
     }
     Ok(())

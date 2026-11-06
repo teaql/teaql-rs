@@ -37,7 +37,7 @@ try {
     '[dependencies]', 'checker-fix-advanced-core = { path = ' + quote(path.join(example, "generated/lib")) + ' }',
     'teaql-core = { path = ' + local('teaql-core') + ' }', 'teaql-runtime = { path = ' + local('teaql-runtime') + ' }',
     'teaql-tfp-endpoint = { path = ' + local('teaql-tfp-endpoint') + ' }',
-    'chrono = "0.4"', 'serde_json = "1"', 'futures-util = "0.3"', 'rusqlite = { version = "0.40", features = ["bundled", "trace"] }',
+    'chrono = "0.4"', 'serde_json = "1"', 'futures-util = "0.3"', 'rusqlite = { version = "0.40", features = ["bundled", "trace", "hooks"] }',
     'tokio = { version = "1", features = ["macros", "rt-multi-thread"] }', '[patch.crates-io]',
     ...['teaql-core', 'teaql-macros', 'teaql-runtime', 'teaql-sql', 'teaql-data-service', 'teaql-provider-sqlite'].map(name => name + ' = { path = ' + local(name) + ' }'), ''].join('\n');
   fs.writeFileSync(path.join(scratch, "Cargo.toml"), manifest);
@@ -72,7 +72,7 @@ try {
       const values = log.split(/\r?\n/).filter(line => line.startsWith(marker)).map(line => JSON.parse(line.slice(marker.length)));
       assert.equal(values.length, 1, marker); assert.equal(values[0].passed, true, marker);
     }
-    for (const [marker, count] of [['RUST_MIXED_GRAPH_CASE=', 2], ['RUST_CHECKER_PIPELINE_CASE=', 10], ['RUST_NONROOT_COMPLETENESS_CASE=', 5], ['RUST_CHECKER_WIRE_CASE=', 21], ['RUST_CHECKER_REQUIRED_FIX_CASE=', 2]]) {
+    for (const [marker, count] of [['RUST_MIXED_GRAPH_CASE=', 3], ['RUST_CHECKER_PIPELINE_CASE=', 10], ['RUST_NONROOT_COMPLETENESS_CASE=', 5], ['RUST_CHECKER_WIRE_CASE=', 21], ['RUST_CHECKER_REQUIRED_FIX_CASE=', 2]]) {
       const values = log.split(/\r?\n/).filter(line => line.startsWith(marker)).map(line => JSON.parse(line.slice(marker.length)));
       assert.equal(values.length, count, marker); assert(values.every(row => row.passed && row.round === round), marker);
     }
