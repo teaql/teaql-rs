@@ -58,7 +58,7 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
             .query_row("SELECT COUNT(*) FROM purchase_order_data", [], |r| r.get(0))?;
     for (name, cancel) in [("cancel-new-child", true), ("keep-new-child", false)] {
         let rows = Q::tenants()
-            .with_id_is(1)
+            .with_id_is(1_u64)
             .limit(1)
             .comment("Load the existing graph owner")
             .purpose("Verify omission without manufacturing a new contextual owner")
@@ -112,7 +112,7 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
     let id = persisted.id();
     persisted.mark_for_deletion();
     let rows = Q::tenants()
-        .with_id_is(1)
+        .with_id_is(1_u64)
         .limit(1)
         .comment("Load the owner for the existing deletion control")
         .purpose("Verify an existing deleted child cannot skip contextual ownership")

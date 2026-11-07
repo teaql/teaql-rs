@@ -119,7 +119,7 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
     let mut other = Q::tenants()
         .comment("Prepare an independent domain root")
         .purpose("Calibrate cross-context ownership rejection")
-        .new_entity(&owner);
+        .new_entity(&owner)?;
     other.update_name("Independent root");
     let other = other
         .audit_as("Create the other real root")

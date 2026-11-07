@@ -33,7 +33,7 @@ async fn graph(
         Q::order_items()
     };
     let mut rows = Q::tenants_minimal()
-        .with_id_is(1)
+        .with_id_is(1_u64)
         .select_purchase_order_list_with(
             Q::purchase_orders_minimal()
                 .with_id_is(order_id)

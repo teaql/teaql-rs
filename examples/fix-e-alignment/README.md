@@ -49,7 +49,8 @@ messages resolve in English and Chinese, with the existing builtin fallback for
 other supported locales. They describe the field and rule without echoing input
 or system root values. Native regressions also cover partial customer catalogs,
 customer overrides, explicit messages and all three JSON naming profiles.
-# Creation identity
+
+## Creation identity
 
 `new_entity(&context)` returns `Result<Entity, RuntimeError>`. Use `?` in
 application services so allocator failures reach the caller. A successful
@@ -61,4 +62,3 @@ The normal `node examples/fix-e-alignment/verify-local.cjs` gate also runs
 rejection, recovery after allocation failure, and independent mutation ledgers
 for two creations in one context. It uses the fixture regenerated from the
 approved fallible factory template; domain source is not patched by the tests.
-

@@ -8,7 +8,7 @@ pub async fn verify(context: &UserContext, id: u64) -> Result<(), Box<dyn std::e
         .with_id_is(id)
         .select_tenant_with(
             Q::tenants_minimal()
-                .with_id_is(2)
+                .with_id_is(2_u64)
                 .limit(1)
                 .comment("Load only a different tenant's detail"),
         )
