@@ -104,7 +104,7 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
         let mut school = Q::schools()
             .comment("what: allocate a load-state probe School")
             .purpose("why: exercise the generated mutation and Checker contracts")
-            .new_entity(&context);
+            .new_entity(&context).expect("reserve example identity");
         school.update_platform_id(1_u64);
         school.update_school_type_to_primary();
         school.update_name(name.as_str());

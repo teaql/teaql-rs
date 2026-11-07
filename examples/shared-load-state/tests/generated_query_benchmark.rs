@@ -255,7 +255,7 @@ fn generated_wide_dynamic_and_relations() -> Result<(), Error> {
         let mut school = Q::schools()
             .comment("what: allocate generated benchmark prototype")
             .purpose("why: seed through generated audited mutation")
-            .new_entity(&context);
+            .new_entity(&context).expect("reserve example identity");
         school.update_platform_id(1);
         school.update_school_type_to_primary();
         school.update_name("bench-school-1");

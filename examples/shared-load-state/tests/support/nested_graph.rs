@@ -16,7 +16,7 @@ pub async fn verify_dynamic(
     let mut probe = Q::schools()
         .comment("what: allocate a separate nullable extension probe")
         .purpose("why: keep the ordinary sibling mutation-isolation test unchanged")
-        .new_entity(context);
+        .new_entity(context).expect("reserve example identity");
     probe.update_platform_id(1);
     probe.update_school_type_to_primary();
     probe.update_name(null_name.as_str());

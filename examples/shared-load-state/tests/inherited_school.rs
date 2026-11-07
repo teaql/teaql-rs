@@ -40,7 +40,7 @@ async fn inherited_query_expression_mutation_keeps_shared_state_private(
         let mut row = Q::academies()
             .comment("what: create a controlled inherited entity")
             .purpose("why: verify complete generated inherited fields")
-            .new_entity(&context);
+            .new_entity(&context).expect("reserve example identity");
         row.update_platform_id(1_u64);
         row.update_school_type_to_primary();
         row.update_name(code.as_str());
