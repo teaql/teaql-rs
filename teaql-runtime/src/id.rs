@@ -63,7 +63,12 @@ impl AtomicCounterIdGenerator {
 
 impl InternalIdGenerator for AtomicCounterIdGenerator {
     fn generate_id(&self, _entity: &str) -> Result<u64, RuntimeError> {
-        Ok(self.counter.fetch_add(1, Ordering::Relaxed) + 1)
+        self.counter
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_add(1)
+            })
+            .map(|previous| previous + 1)
+            .map_err(|_| RuntimeError::IdGeneration("internal ID counter exhausted".to_owned()))
     }
 
     fn ensure_floor(&self, _entity: &str, floor: u64) -> Result<(), RuntimeError> {

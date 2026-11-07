@@ -821,10 +821,16 @@ impl UserContext {
     }
 
     pub fn next_id(&self, entity: &str) -> Result<u64, RuntimeError> {
-        match self.generate_id(entity)? {
-            Some(id) => Ok(id),
-            None => local_id_generator().generate_id(entity),
+        let id = match self.generate_id(entity)? {
+            Some(id) => id,
+            None => local_id_generator().generate_id(entity)?,
+        };
+        if id == 0 {
+            return Err(RuntimeError::IdGeneration(format!(
+                "ID generator returned reserved zero ID for {entity}"
+            )));
         }
+        Ok(id)
     }
 
     pub fn entity(&self, name: &str) -> Option<&EntityDescriptor> {
