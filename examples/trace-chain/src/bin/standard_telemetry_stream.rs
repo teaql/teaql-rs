@@ -101,7 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "second stream waits on SQLite lease"
     );
     let other = Q::platforms_minimal()
-        .with_id_is(1)
+        .with_id_is(1_u64)
         .limit(1)
         .comment("run independent query between stream polls")
         .purpose("verify stream context isolation")

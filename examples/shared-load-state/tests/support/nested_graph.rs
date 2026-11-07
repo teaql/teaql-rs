@@ -46,7 +46,7 @@ pub async fn verify_dynamic(
         .await?;
 
     let platform = Q::platforms_minimal()
-        .with_id_is(1)
+        .with_id_is(1_u64)
         .select_school_list_with(
             Q::schools_minimal()
                 .with_name_in([renamed, second, null_name.as_str()])
@@ -154,7 +154,7 @@ pub async fn verify(
     second: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let platform = Q::platforms_minimal()
-        .with_id_is(1)
+        .with_id_is(1_u64)
         .select_school_list_with(
             Q::schools_minimal()
                 .with_name_in([renamed, second])
@@ -279,7 +279,7 @@ pub async fn verify(
     assert_eq!(restored_nested.clone().into_json(), nested_json);
 
     let empty = Q::school_types_minimal()
-        .with_id_is(1002)
+        .with_id_is(1002_u64)
         .select_school_list_with(
             Q::schools_minimal()
                 .select_name()
@@ -304,7 +304,7 @@ pub async fn verify(
     assert_eq!(restored_empty.school_list().state(), LoadedRelation::Empty);
 
     let unselected = Q::school_types_minimal()
-        .with_id_is(1002)
+        .with_id_is(1002_u64)
         .limit(1)
         .comment("what: load the same constant without selecting its Schools")
         .purpose("why: NotLoaded must not serialize as an empty list")
@@ -323,7 +323,7 @@ pub async fn verify(
 
     let filtered = Q::schools_minimal()
         .with_id_is(school_id)
-        .select_school_type_with(Q::school_types_minimal().with_id_is(1002))
+        .select_school_type_with(Q::school_types_minimal().with_id_is(1002_u64))
         .limit(1)
         .comment("what: retain Primary FK while excluding it from selected target detail")
         .purpose("why: verify current filtered-forward NotLoaded semantics")
