@@ -221,7 +221,7 @@ where
     log::info!("Generating sample data for School Capacity Summary (expected: {})...", fanout);
 
     for i in 0..fanout {
-        let mut entity = Q::school_capacity_summaries().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context);
+        let mut entity = Q::school_capacity_summaries().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context).map_err(SampleDataError::from_display)?;
         let mut used_refs = std::collections::HashSet::<u64>::new();
 
                 if let Some(ref_id) = state.pick_unused_id("platform", i as usize, &used_refs) {
@@ -293,7 +293,7 @@ where
     log::info!("Generating sample data for school (expected: {})...", fanout);
 
     for i in 0..fanout {
-        let mut entity = Q::schools().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context);
+        let mut entity = Q::schools().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context).map_err(SampleDataError::from_display)?;
         let mut used_refs = std::collections::HashSet::<u64>::new();
 
                 if let Some(ref_id) = state.pick_unused_id("platform", i as usize, &used_refs) {

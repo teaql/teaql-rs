@@ -250,4 +250,33 @@ where
         self.logic
             .check_and_fix_school(context, entity, status, location, results);
     }
+
+    fn check_fixed_values(
+        &self,
+        _context: &UserContext,
+        values: &teaql_runtime::EntityValues,
+        location: &ObjectLocation,
+        results: &mut CheckResults,
+    ) {
+        if let Some(teaql_core::Value::Text(value)) = values.get("name") {
+            let length = value.chars().count() as u64;
+            if length > 100_u64 {
+                results.push(teaql_runtime::CheckResult::max_str(location.clone().member("name"), 100_u64, value.clone()));
+            }
+        }
+
+        if let Some(teaql_core::Value::Text(value)) = values.get("address") {
+            let length = value.chars().count() as u64;
+            if length > 100_u64 {
+                results.push(teaql_runtime::CheckResult::max_str(location.clone().member("address"), 100_u64, value.clone()));
+            }
+        }
+
+
+
+
+
+
+
+    }
 }
