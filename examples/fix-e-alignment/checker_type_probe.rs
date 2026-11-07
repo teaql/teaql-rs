@@ -21,7 +21,7 @@ fn parent(context: &UserContext, valid: bool) -> PurchaseOrder {
     let mut result = Q::purchase_orders()
         .comment("Prepare one Checker identity fixture")
         .purpose("Verify typed violations through ordinary generated saves")
-        .new_entity(context);
+        .new_entity(context).expect("reserve example identity");
     if valid {
         result.update_contact_phone("5550100");
     }
@@ -112,7 +112,7 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
     let mut missing_parent = Q::order_items()
         .comment("Prepare an item without its required parent")
         .purpose("Verify a relation violation keeps its entity identity")
-        .new_entity(&context);
+        .new_entity(&context).expect("reserve example identity");
     missing_parent.update_product_name("Public item");
     missing_parent.update_unit_price(teaql_core::Value::Decimal("10.00".parse()?));
     cases.push(
@@ -152,7 +152,7 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
     let mut child = Q::order_items()
         .comment("Prepare a child with a missing required product name")
         .purpose("Verify child identity and indexed canonical paths survive graph validation")
-        .new_entity(&context);
+        .new_entity(&context).expect("reserve example identity");
     child.update_purchase_order_id(nested.id());
     child.update_unit_price(teaql_core::Value::Decimal("10.00".parse()?));
     nested.include_pending_mutations_from(&child)?;

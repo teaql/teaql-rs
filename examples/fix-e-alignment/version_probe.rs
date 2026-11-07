@@ -54,7 +54,7 @@ pub async fn verify(
         let mut order = Q::purchase_orders()
             .comment("Create a synthetic version boundary fixture")
             .purpose("Verify exact optimistic lifecycle limits")
-            .new_entity(context);
+            .new_entity(context).expect("reserve example identity");
         order.update_contact_phone(phone.to_owned());
         order.update_internal_note(Value::Null);
         let order = order

@@ -21,7 +21,7 @@ pub struct Tenant {
 #[teaql(id)]
     id: u64,
 
-// @source model.xml:3
+// @source main.xml:3
 #[teaql(max_length = 80)]
     name: String,
 #[teaql(version)]

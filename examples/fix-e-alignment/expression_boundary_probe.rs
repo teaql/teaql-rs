@@ -73,7 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut order = Q::purchase_orders()
         .comment("Prepare expression boundary owner")
         .purpose("Verify generated E without implicit loads")
-        .new_entity(&context);
+        .new_entity(&context).expect("reserve example identity");
     order.update_contact_phone("5550390");
     order.update_internal_note(Value::Null);
     let saved = order
@@ -266,7 +266,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut item = Q::order_items()
         .comment("Prepare partial child projection")
         .purpose("Observe canonical list indices through generated E")
-        .new_entity(&context);
+        .new_entity(&context).expect("reserve example identity");
     item.update_purchase_order_id(id);
     item.update_product_name("Private expression item");
     item.update_unit_price(Value::Decimal("1".parse()?));

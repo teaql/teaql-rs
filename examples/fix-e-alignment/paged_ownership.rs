@@ -18,7 +18,7 @@ pub async fn verify(
     let mut sentinel = Q::purchase_orders()
         .comment("Prepare a page-offset sentinel")
         .purpose("Exercise a genuine nonzero page offset")
-        .new_entity(context);
+        .new_entity(context).expect("reserve example identity");
     sentinel.update_contact_phone("5550500");
     sentinel.update_internal_note(Value::Null);
     sentinel

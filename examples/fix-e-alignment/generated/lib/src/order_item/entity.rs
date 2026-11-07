@@ -26,35 +26,35 @@ pub struct OrderItem {
 #[teaql(id)]
     id: u64,
 
-// @source model.xml:16
+// @source main.xml:16
 #[teaql(max_length = 80)]
     product_name: String,
 
-// @source model.xml:16
+// @source main.xml:16
 #[teaql(numeric_precision = 19)]
 #[teaql(numeric_scale = 7)]
     unit_price: rust_decimal::Decimal,
 
-// @source model.xml:16
+// @source main.xml:16
     create_time: teaql_core::time::Timestamp,
 
-// @source model.xml:16
+// @source main.xml:16
     update_time: teaql_core::time::Timestamp,
 #[teaql(version)]
     version: i64,
-// @source model.xml:16
+// @source main.xml:16
 #[teaql(column = "purchase_order")]
     purchase_order_id: u64,
 
-// @source model.xml:16
+// @source main.xml:16
 #[teaql(column = "tenant")]
     #[teaql(context_root = "Tenant")]
     tenant_id: u64,
-// @source model.xml:16
+// @source main.xml:16
 #[teaql(relation(target = "PurchaseOrder", local_key = "purchase_order_id", foreign_key = "id"))]
     purchase_order: Option<Box<crate::PurchaseOrder>>,
 
-// @source model.xml:16
+// @source main.xml:16
 #[teaql(relation(target = "Tenant", local_key = "tenant_id", foreign_key = "id"))]
     tenant: Option<Box<crate::Tenant>>,
     #[teaql(dynamic)]

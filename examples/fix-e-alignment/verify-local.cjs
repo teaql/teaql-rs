@@ -33,6 +33,7 @@ try {
   for (const file of fs.readdirSync(example).filter(file => file.endsWith(".rs"))) fs.copyFileSync(path.join(example, file), path.join(scratch, "src", file));
   const local = name => quote(path.join(repo, name));
   const manifest = ['[package]', 'name = "teaql-fix-e-example"', 'version = "0.0.0"', 'edition = "2024"', 'publish = false',
+    '[[test]]', 'name = "creation_identity"', 'path = "src/creation_identity.rs"',
     '[[bin]]', 'name = "teaql-expression-boundaries"', 'path = "src/expression_boundary_probe.rs"',
     '[dependencies]', 'checker-fix-advanced-core = { path = ' + quote(path.join(example, "generated/lib")) + ' }',
     'teaql-core = { path = ' + local('teaql-core') + ' }', 'teaql-runtime = { path = ' + local('teaql-runtime') + ' }',
@@ -56,6 +57,14 @@ try {
     return bytes.toString();
   }
   await run(['cargo', 'build', '--offline', '--manifest-path', path.join(scratch, 'Cargo.toml')], 'build.log', 540000);
+  report.creationIdentityRounds = [];
+  report.creationIdentityApplicationSha256 = sha(fs.readFileSync(path.join(example, 'creation_identity.rs')));
+  for (const round of [1, 2]) {
+    const log = await run(['cargo', 'test', '--offline', '--test', 'creation_identity', '--', '--test-threads=1', '--nocapture'],
+      'creation-identity-round-' + round + '.log', 540000);
+    assert.match(log, /test result: ok\. 5 passed; 0 failed; 0 ignored/);
+    report.creationIdentityRounds.push({round, passed: 5});
+  }
   fs.copyFileSync(path.join(scratch, 'Cargo.lock'), path.join(evidence, 'consumer-Cargo.lock'));
   const binary = path.join(scratch, 'target/debug/teaql-fix-e-example');
   report.binarySha256 = sha(fs.readFileSync(binary));

@@ -65,7 +65,7 @@ fn parent(context: &UserContext) -> PurchaseOrder {
     let mut value = Q::purchase_orders()
         .comment("Prepare a mixed mutation owner")
         .purpose("Verify one graph save commits create update and deletion")
-        .new_entity(context);
+        .new_entity(context).expect("reserve example identity");
     value.update_contact_phone("5550680");
     value.update_internal_note(Value::Null);
     value
@@ -74,7 +74,7 @@ fn child(context: &UserContext, owner: u64, name: &str) -> OrderItem {
     let mut value = Q::order_items()
         .comment("Prepare a mixed mutation child")
         .purpose("Verify explicit composition and retryable graph mutations")
-        .new_entity(context);
+        .new_entity(context).expect("reserve example identity");
     value.update_purchase_order_id(owner);
     value.update_product_name(name);
     value.update_unit_price(Value::Decimal("10.00".parse().unwrap()));

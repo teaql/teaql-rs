@@ -19,7 +19,7 @@ fn item(context: &UserContext, parent: u64, name: &str, price: &str) -> OrderIte
     let mut result = Q::order_items()
         .comment("Prepare a modeled range fixture")
         .purpose("Verify generated numeric and character bounds before SQL")
-        .new_entity(context);
+        .new_entity(context).expect("reserve example identity");
     result.update_purchase_order_id(parent);
     result.update_product_name(name);
     result.update_unit_price(Value::Decimal(price.parse().unwrap()));
@@ -78,7 +78,7 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
     let mut parent = Q::purchase_orders()
         .comment("Prepare the modeled bounds owner")
         .purpose("Test actual generated constraints without custom Checkers")
-        .new_entity(&context);
+        .new_entity(&context).expect("reserve example identity");
     parent.update_contact_phone("5550100");
     parent.update_internal_note(Value::Null);
     let parent = parent

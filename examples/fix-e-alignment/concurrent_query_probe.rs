@@ -113,7 +113,7 @@ async fn seed(context: &UserContext, label: &str) -> Result<PurchaseOrder, Runti
     let mut parent = Q::purchase_orders()
         .comment("Prepare an isolated query owner")
         .purpose("Seed the concurrent Q example")
-        .new_entity(context);
+        .new_entity(context).expect("reserve example identity");
     parent.update_contact_phone(label);
     parent.update_internal_note(Value::Null);
     let parent = parent
@@ -123,7 +123,7 @@ async fn seed(context: &UserContext, label: &str) -> Result<PurchaseOrder, Runti
     let mut child = Q::order_items()
         .comment("Prepare an isolated query child")
         .purpose("Seed the bounded nested Q example")
-        .new_entity(context);
+        .new_entity(context).expect("reserve example identity");
     child.update_purchase_order_id(parent.id());
     child.update_product_name(format!("{label} child"));
     child.update_unit_price(Value::Decimal("1.00".parse().unwrap()));

@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut order = Q::purchase_orders()
         .comment("Prepare the synthetic clock fixture")
         .purpose("Verify generated audited saves and expression diagnostics")
-        .new_entity(&context);
+        .new_entity(&context).expect("reserve example identity");
     order.update_contact_phone("5550100");
     order.update_internal_note(Value::Null);
     let saved = order

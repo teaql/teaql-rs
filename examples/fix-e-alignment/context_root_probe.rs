@@ -52,7 +52,7 @@ fn parent(context: &UserContext) -> PurchaseOrder {
     let mut value = Q::purchase_orders()
         .comment("Prepare a context-root boundary fixture")
         .purpose("Verify original ownership before persistence or audit effects")
-        .new_entity(context);
+        .new_entity(context).expect("reserve example identity");
     value.update_contact_phone("5550188");
     value.update_internal_note(Value::Null);
     value

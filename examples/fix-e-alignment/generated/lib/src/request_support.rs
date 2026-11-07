@@ -149,22 +149,25 @@ pub type TeaqlDataServiceError<R> = DataServiceError<<R as TeaqlQueryRepository>
 
 pub(crate) fn authorize_query(mut query: SelectQuery) -> Result<PurposedSelectQuery, RuntimeError> {
     if query.comment.as_deref().map(str::trim).filter(|value| !value.is_empty()).is_none() {
-        return Err(RuntimeError::Graph(
-            "generated query reached the repository without .comment(...)".to_owned()
-        ));
+        return Err(teaql_core::RequestIntentError {
+            request_kind: teaql_core::RequestKind::Query,
+            field: "comment",
+        }.into());
     }
     let purpose_index = query
         .trace_chain
         .iter()
         .rposition(|node| node.kind == teaql_core::TraceKind::Purpose)
-        .ok_or_else(|| RuntimeError::Graph(
-            "generated query reached the repository without .purpose(...)".to_owned()
-        ))?;
+        .ok_or_else(|| teaql_core::RequestIntentError {
+            request_kind: teaql_core::RequestKind::Query,
+            field: "purpose",
+        })?;
     let purpose = query.trace_chain.remove(purpose_index).comment;
     if purpose.trim().is_empty() {
-        return Err(RuntimeError::Graph(
-            "generated query reached the repository without .purpose(...)".to_owned()
-        ));
+        return Err(teaql_core::RequestIntentError {
+            request_kind: teaql_core::RequestKind::Query,
+            field: "purpose",
+        }.into());
     }
     Ok(PurposedSelectQuery::new(query, purpose))
 }

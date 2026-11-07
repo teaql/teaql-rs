@@ -27,26 +27,26 @@ pub struct PurchaseOrder {
 #[teaql(id)]
     id: u64,
 
-// @source model.xml:9
+// @source main.xml:9
 #[teaql(max_length = 32)]
     contact_phone: String,
 
-// @source model.xml:9
+// @source main.xml:9
 #[teaql(max_length = 100)]
     internal_note: Option<String>,
 
-// @source model.xml:9
+// @source main.xml:9
     create_time: teaql_core::time::Timestamp,
 
-// @source model.xml:9
+// @source main.xml:9
     update_time: teaql_core::time::Timestamp,
 #[teaql(version)]
     version: i64,
-// @source model.xml:9
+// @source main.xml:9
 #[teaql(column = "tenant")]
     #[teaql(context_root = "Tenant")]
     tenant_id: u64,
-// @source model.xml:9
+// @source main.xml:9
 #[teaql(relation(target = "Tenant", local_key = "tenant_id", foreign_key = "id"))]
     tenant: Option<Box<crate::Tenant>>,
     #[teaql(dynamic)]

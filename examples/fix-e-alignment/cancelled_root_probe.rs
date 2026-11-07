@@ -16,7 +16,7 @@ fn child(context: &UserContext) -> PurchaseOrder {
     let mut value = Q::purchase_orders()
         .comment("Prepare optional child work")
         .purpose("Verify cancelled child omission at the normal audited save boundary")
-        .new_entity(context);
+        .new_entity(context).expect("reserve example identity");
     value.update_contact_phone("5550166");
     value.update_internal_note(Value::Null);
     value

@@ -74,7 +74,7 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
     let mut parent = Q::purchase_orders()
         .comment("Prepare the complete parent control")
         .purpose("Exercise partial graph traversal against real SQLite")
-        .new_entity(&context);
+        .new_entity(&context).expect("reserve example identity");
     parent.update_contact_phone("5550600");
     parent.update_internal_note(Value::Null);
     let parent = parent
@@ -84,7 +84,7 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
     let mut item = Q::order_items()
         .comment("Prepare the complete leaf control")
         .purpose("Persist the fixture only through generated audited saves")
-        .new_entity(&context);
+        .new_entity(&context).expect("reserve example identity");
     item.update_purchase_order_id(parent.id());
     item.update_product_name("Partial graph original");
     item.update_unit_price(Value::Decimal("10.00".parse()?));
@@ -425,7 +425,7 @@ pub async fn verify_managed_root() -> Result<(), Box<dyn std::error::Error>> {
     let mut other = Q::tenants()
         .comment("Prepare a second real root")
         .purpose("Reject incorrect ownership rather than a missing foreign key")
-        .new_entity(&context);
+        .new_entity(&context).expect("reserve example identity");
     other.update_name("Independent partial root");
     let other = other
         .audit_as("Create the other partial-ancestor root")
@@ -438,7 +438,7 @@ pub async fn verify_managed_root() -> Result<(), Box<dyn std::error::Error>> {
     let mut parent = Q::purchase_orders()
         .comment("Prepare a complete graph parent")
         .purpose("Test managed ownership beneath two sparse ancestors")
-        .new_entity(&context);
+        .new_entity(&context).expect("reserve example identity");
     parent.update_contact_phone("5550987");
     parent.update_internal_note(Value::Null);
     let parent = parent
@@ -448,7 +448,7 @@ pub async fn verify_managed_root() -> Result<(), Box<dyn std::error::Error>> {
     let mut item = Q::order_items()
         .comment("Prepare the complete graph child")
         .purpose("Exercise generated mutation and loaded expressions")
-        .new_entity(&context);
+        .new_entity(&context).expect("reserve example identity");
     item.update_purchase_order_id(parent.id());
     item.update_product_name("Partial root original");
     item.update_unit_price(Value::Decimal("1".parse()?));

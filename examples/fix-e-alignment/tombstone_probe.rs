@@ -69,7 +69,7 @@ pub async fn verify(
             let mut order = Q::purchase_orders()
                 .comment("Prepare one authoritative tombstone fixture")
                 .purpose("Verify generated deletion using the ordinary audited Save boundary")
-                .new_entity(context);
+                .new_entity(context).expect("reserve example identity");
             order.update_contact_phone(format!("555094{}", path_index * 2 + usize::from(trigger)));
             order.update_internal_note(Value::Null);
             let mut order = order

@@ -36,7 +36,7 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
     let mut owner = Q::purchase_orders()
         .comment("Prepare a stable-clock owner")
         .purpose("Verify managed time without manufacturing mutation intent")
-        .new_entity(&context);
+        .new_entity(&context).expect("reserve example identity");
     owner.update_contact_phone("5550100");
     owner.update_internal_note(Value::Null);
     let before = statements();
@@ -48,7 +48,7 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
     let mut item = Q::order_items()
         .comment("Prepare a stable-clock child")
         .purpose("Exercise valid updates under the same frozen business time")
-        .new_entity(&context);
+        .new_entity(&context).expect("reserve example identity");
     item.update_purchase_order_id(owner.id());
     item.update_product_name("A");
     item.update_unit_price(Value::Decimal("1.23".parse()?));

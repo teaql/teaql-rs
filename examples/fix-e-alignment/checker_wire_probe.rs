@@ -108,7 +108,7 @@ fn mapped(
     let mut row = Q::purchase_orders()
         .comment("Map one validated canonical input object")
         .purpose("Reject ambiguous wire input before creating mutation intent")
-        .new_entity(context);
+        .new_entity(context).expect("reserve example identity");
     match normalized.values.get("contact_phone").unwrap() {
         Json::Null => row.update_contact_phone(Value::Null),
         Json::String(value) => row.update_contact_phone(value.clone()),

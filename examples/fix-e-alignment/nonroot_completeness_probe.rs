@@ -95,7 +95,7 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
     let mut owner = Q::purchase_orders()
         .comment("Prepare a complete owner for isolated field projections")
         .purpose("Test missing non-root fields rather than the context-root guard")
-        .new_entity(&context);
+        .new_entity(&context).expect("reserve example identity");
     owner.update_contact_phone("5550950");
     owner.update_internal_note(Value::Null);
     let before = effects.snapshot();

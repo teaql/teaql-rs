@@ -60,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut other = Q::tenants()
         .comment("Prepare an alternate relation target")
         .purpose("Verify FK mutation invalidates an old relation view")
-        .new_entity(&context);
+        .new_entity(&context).expect("reserve example identity");
     other.update_name(format!("Other root {round}"));
     let other = other
         .audit_as("Create the independent alternate root")
@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut owner = Q::purchase_orders()
         .comment("Prepare one wrapper fixture")
         .purpose("Verify relation views and stream observation")
-        .new_entity(&context);
+        .new_entity(&context).expect("reserve example identity");
     owner.update_contact_phone("5550880");
     owner.update_internal_note(Value::Null);
     let owner = owner
@@ -81,7 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut second = Q::purchase_orders()
         .comment("Prepare a second ordinary relation target")
         .purpose("Verify FK invalidation without bypassing context-root immutability")
-        .new_entity(&context);
+        .new_entity(&context).expect("reserve example identity");
     second.update_contact_phone("5550880");
     second.update_internal_note(Value::Null);
     let second = second
@@ -91,7 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut item = Q::order_items()
         .comment("Prepare an ordinary mutable FK")
         .purpose("Verify a loaded target cannot survive retargeting")
-        .new_entity(&context);
+        .new_entity(&context).expect("reserve example identity");
     item.update_purchase_order_id(id);
     item.update_product_name(format!("Wrapper item {round}"));
     item.update_unit_price(Value::Decimal("1.00".parse()?));

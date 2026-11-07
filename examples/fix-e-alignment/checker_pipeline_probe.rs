@@ -44,7 +44,7 @@ fn owner(context: &UserContext) -> PurchaseOrder {
     let mut value = Q::purchase_orders()
         .comment("Prepare a small Checker pipeline owner")
         .purpose("Verify generated pre-database validation and persistence")
-        .new_entity(context);
+        .new_entity(context).expect("reserve example identity");
     value.update_contact_phone("5550960");
     value.update_internal_note(Value::Null);
     value
@@ -79,7 +79,7 @@ fn child(context: &UserContext, parent: Option<u64>) -> OrderItem {
     let mut value = Q::order_items()
         .comment("Prepare a small Checker pipeline child")
         .purpose("Verify required relation and post-Fix range constraints")
-        .new_entity(context);
+        .new_entity(context).expect("reserve example identity");
     if let Some(id) = parent {
         value.update_purchase_order_id(id);
     }
@@ -148,7 +148,7 @@ async fn no_schema(round: usize, path: &str) {
     let mut value = Q::purchase_orders()
         .comment("Construct an invalid owner before schema initialization")
         .purpose("Verify module-installed Checker without a database schema")
-        .new_entity(&context);
+        .new_entity(&context).expect("reserve example identity");
     value.update_internal_note(Value::Null);
     let result = value
         .audit_as("Reject missing required input before any tables exist")

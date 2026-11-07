@@ -13,11 +13,11 @@ pub async fn verify(context: &UserContext) -> Result<(), Box<dyn std::error::Err
     let mut first = Q::purchase_orders()
         .comment("Prepare independent new owner A")
         .purpose("Verify Context does not own mutation ledgers")
-        .new_entity(context);
+        .new_entity(context).expect("reserve example identity");
     let mut second = Q::purchase_orders()
         .comment("Prepare independent new owner B")
         .purpose("Verify Context does not own mutation ledgers")
-        .new_entity(context);
+        .new_entity(context).expect("reserve example identity");
     first.update_contact_phone("5550300");
     first.update_internal_note(Value::Null);
     second.update_contact_phone("5550400");
