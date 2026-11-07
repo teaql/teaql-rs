@@ -372,29 +372,29 @@ fn assert_missing_school_type(row: &school_management_service_core::School) {
         .map(String::as_str)
         .or_else(|| failure.downcast_ref::<&str>().copied())
         .unwrap_or("");
-    let machine = diagnostic
-        .lines()
-        .find_map(|line| line.strip_prefix("diagnostic: "))
-        .expect("panic display must include the same structured diagnostic");
-    let machine: teaql_core::serde_json::Value = teaql_core::serde_json::from_str(machine).unwrap();
-    assert_eq!(machine, wire);
+    // Machine diagnostics are obtained through try_eval/to_wire, never embedded
+    // into the human panic message or supplemented with entity IDs.
+    assert!(diagnostic.contains("TeaQLNotLoadedError:"));
+    assert!(!diagnostic.contains("diagnostic: "));
+    assert!(!diagnostic.contains(&format!("School(id={})", row.id())));
     assert!(
         // Rust fails at the unavailable relation before traversing its detail.
-        diagnostic.contains("access_path: [\"school_type\"]"),
+        diagnostic.contains("access_path=school_type"),
         "wrong path: {diagnostic}"
     );
     assert!(
-        diagnostic.contains("break_point: \"school_type\""),
+        diagnostic.contains("break_point=school_type"),
         "wrong break point: {diagnostic}"
     );
     assert!(
-        diagnostic.contains("missing_preload: [\"school_type\"]"),
-        "wrong missing preload: {diagnostic}"
+        diagnostic.contains("select the missing field or relation"),
+        "missing repair guidance: {diagnostic}"
     );
     assert!(
-        diagnostic.contains(&format!("root: School(id={})", row.id())),
-        "wrong root: {diagnostic}"
+        diagnostic.contains("E::school(<root>).get_school_type()<broken>.get_code().eval()"),
+        "incomplete or unredacted expression: {diagnostic}"
     );
+    assert_eq!(diagnostic.matches("<broken>").count(), 1);
 }
 
 fn decode_like<T: Entity>(
