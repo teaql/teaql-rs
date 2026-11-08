@@ -19,6 +19,7 @@ pub struct EntityJsonTraversal {
 pub enum EntityJsonTraversalError {
     Cycle,
     Limit,
+    DynamicPropertyCollision,
 }
 
 impl EntityJsonTraversal {
@@ -31,6 +32,16 @@ impl EntityJsonTraversal {
 
     pub fn failure(&self) -> Option<EntityJsonTraversalError> {
         self.failure
+    }
+
+    /// Only the strict wire codec normalizes legacy query aliases for presentation.
+    pub fn is_strict_wire(&self) -> bool {
+        self.strict_limits.is_some()
+    }
+
+    /// Never silently choose between an alias and an already-prefixed property.
+    pub fn reject_dynamic_property_collision(&mut self) {
+        self.failure = Some(EntityJsonTraversalError::DynamicPropertyCollision);
     }
 
     pub fn enter(&mut self, entity: &'static str, address: usize) -> bool {

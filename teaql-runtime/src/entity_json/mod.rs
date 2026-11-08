@@ -297,6 +297,7 @@ impl Model {
                 match error {
                     EntityJsonTraversalError::Cycle => "WIRE_ENTITY_CYCLE",
                     EntityJsonTraversalError::Limit => "WIRE_JSON_LIMIT",
+                    EntityJsonTraversalError::DynamicPropertyCollision => "WIRE_FIELD_COLLISION",
                 },
                 &ObjectLocation::root(),
                 "",

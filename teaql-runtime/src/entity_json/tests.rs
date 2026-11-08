@@ -260,6 +260,65 @@ fn native() -> Probe {
     )
     .unwrap()
 }
+
+#[test]
+fn typed_json_query_aliases_preserve_selected_null_zero_and_native_field_namespace() {
+    let context = context();
+    for profile in PROFILES {
+        let mut row = native();
+        row.properties.insert("total".into(), Value::Null);
+        row.properties.insert("rows".into(), Value::I64(0));
+        row.properties
+            .insert("reference_code".into(), Value::Text("derived".into()));
+        row.properties.insert("_known".into(), Value::Bool(false));
+        let before = row.clone().into_values();
+        let state = row.loaded_state_snapshot().unwrap();
+        let encoded: serde_json::Value =
+            serde_json::from_str(&context.encode_entity_json(&row, profile).unwrap()).unwrap();
+        assert_eq!(encoded.get("_total"), Some(&serde_json::Value::Null));
+        assert_eq!(encoded["_rows"], 0);
+        assert_eq!(encoded["_known"], false);
+        assert_eq!(encoded["_reference_code"], "derived");
+        assert_eq!(
+            encoded[profile.render("reference_code")],
+            serde_json::Value::Null
+        );
+        assert!(!encoded.as_object().unwrap().contains_key("total"));
+        assert!(!encoded.as_object().unwrap().contains_key("rows"));
+        assert_eq!(row.clone().into_values(), before);
+        assert_eq!(row.loaded_state_snapshot().unwrap(), state);
+        let mut legacy = teaql_core::EntityJsonTraversal::default();
+        let legacy = row.borrowed_json_values(&mut legacy).unwrap();
+        assert!(legacy.contains_key("total"));
+        assert!(!legacy.contains_key("_total"));
+    }
+}
+
+#[test]
+fn typed_json_query_alias_collision_and_reserved_alias_are_rejected_without_value_leak() {
+    let context = context();
+    for profile in PROFILES {
+        for alias in [
+            "total",
+            "comment",
+            "dirty_fields",
+            "original_values",
+            "is_new",
+            "is_deleted",
+        ] {
+            let mut row = native();
+            row.properties
+                .insert(alias.into(), Value::Text("PRIVATE-CANARY".into()));
+            if alias == "total" {
+                row.properties.insert("_total".into(), Value::I64(0));
+            }
+            let error = context.encode_entity_json(&row, profile).unwrap_err();
+            assert_eq!(error.code, "WIRE_FIELD_COLLISION");
+            assert!(!error.to_string().contains("PRIVATE-CANARY"));
+        }
+    }
+}
+
 #[test]
 fn typed_json_scalar_round_trip_uses_three_profiles_without_precision_or_state_loss() {
     let context = context();

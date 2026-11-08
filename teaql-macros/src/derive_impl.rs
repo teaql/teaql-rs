@@ -523,7 +523,25 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 continue;
             }
             if parsed.dynamic {
-                values.push(quote! { if expand { record.extend(self.#ident.iter().map(|(key, value)| (key.clone(), value.clone()))); } });
+                values.push(quote! {
+                    if expand {
+                        for (key, value) in &self.#ident {
+                            let name = if traversal.is_strict_wire() && !key.starts_with(['_', '#']) {
+                                let name = format!("_{key}");
+                                if self.#ident.contains_key(&name)
+                                    || matches!(name.as_str(), "_comment" | "_dirty_fields" | "_original_values" | "_is_new" | "_is_deleted")
+                                {
+                                    traversal.reject_dynamic_property_collision();
+                                    return None;
+                                }
+                                name
+                            } else {
+                                key.clone()
+                            };
+                            record.insert(name, value.clone());
+                        }
+                    }
+                });
                 continue;
             }
             if let Some(relation) = parsed.relation {
