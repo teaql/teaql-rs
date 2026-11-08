@@ -70,7 +70,8 @@ pub async fn generated_database_ids(database_url: String) -> Outcome<()> {
     let mut order = Q::customer_orders()
         .comment("what: construct a database-identified order")
         .purpose("why: verify generated early ID allocation")
-        .new_entity(&context);
+        .new_entity(&context)
+        .expect("reserve trace fixture identity");
     order.update_platform_id(platform.id());
     order.update_order_number("TRACE-DATABASE-ID");
     order.update_description("Database ID graph");
@@ -78,7 +79,8 @@ pub async fn generated_database_ids(database_url: String) -> Outcome<()> {
     let mut item = Q::order_items()
         .comment("what: construct a database-identified order item")
         .purpose("why: verify typed child identity and audited composition")
-        .new_entity(&context);
+        .new_entity(&context)
+        .expect("reserve trace fixture identity");
     item.update_customer_order_id(order_id);
     item.update_name("Database ID item");
     let item_id = item.id();

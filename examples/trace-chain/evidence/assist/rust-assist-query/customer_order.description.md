@@ -5,7 +5,8 @@
 KSML entity: `Customer Order`  
 KSML field: `description`  
 Type: `string`
-
+Named predicate values use `String` (or values convertible to that type).
+For nullable fields, use the known/unknown predicates rather than passing `None`.
 | Capability | Generated API |
 | --- | --- |
 | Select | `select_description()` |
@@ -13,7 +14,8 @@ Type: `string`
 | Equality/set | `with_description_is(value)`, `with_description_is_not(value)`, `with_description_in(values)`, `with_description_not_in(values)` |
 | Comparison | `with_description_greater_than(value)`, `with_description_greater_than_or_equal_to(value)`, `with_description_less_than(value)`, `with_description_less_than_or_equal_to(value)`, `with_description_between(lower, upper)` |
 | Null state | `with_description_is_known()`, `with_description_is_unknown()` |
-| String | `with_description_containing(value)`, `with_description_not_containing(value)`, `with_description_starting_with(value)`, `with_description_ending_with(value)`, `with_description_sounding_like(value)` |
+| Explicit dynamic operator | `with_description(operator, values)` takes `FieldOperator` and values convertible to `teaql_core::Value`. |
+| String | `with_description_containing(value)`, `with_description_not_containing(value)`, `with_description_starting_with(value)`, `with_description_not_starting_with(value)`, `with_description_ending_with(value)`, `with_description_not_ending_with(value)`, `with_description_sounding_like(value)` |
 | Order | `order_by_description_asc()`, `order_by_description_desc()` |
 | Group | `group_by_description()`, `group_by_description_as(alias)` |
 Apply methods before `.purpose(...)`; execution still requires non-empty

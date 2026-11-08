@@ -167,7 +167,7 @@ impl<R> CustomerOrderRequest<R> {
             self.query,
             &self.query_options,
             &self.child_enhancements,
-        ))?;
+        ))?.with_facet_diagnostics(&self.query_options);
         context.fetch_compact_smart_list("CustomerOrder", &query).await
     }
 
@@ -251,7 +251,7 @@ impl<R> CustomerOrderRequest<R> {
             &self.child_enhancements,
         ).limit(1);
         query.relations.clear();
-        let query = authorize_query(query)?;
+        let query = authorize_query(query)?.with_facet_diagnostics(&self.query_options);
         let rows = context.fetch_compact_rows("CustomerOrder", &query).await?;
         Ok(!rows.is_empty())
     }
@@ -863,39 +863,93 @@ impl<R> CustomerOrderRequest<R> {
         )
     }
 
-    pub fn with_id_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("id", value));
+    pub fn with_id_is(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::eq("id", Into::<u64>::into(value)));
         self
     }
 
 
 
-    pub fn with_id_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("id", value));
+    pub fn with_id_is_not(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::ne("id", Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_greater_than(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::gt("id", Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_greater_than_or_equal_to(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::gte("id", Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_less_than(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::lt("id", Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_less_than_or_equal_to(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::lte("id", Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_between(
+        mut self,
+        lower: impl Into<u64>,
+        upper: impl Into<u64>,
+    ) -> Self {
+        self.query = self.query.and_filter(Expr::between("id", Into::<u64>::into(lower), Into::<u64>::into(upper)));
+        self
+    }
+
+    pub fn with_id_between_range<T>(mut self, range: DateRange<T>) -> Self
+    where
+        T: Into<u64>,
+    {
+        self.query = self.query.and_filter(Expr::between(
+            "id",
+            Into::<u64>::into(range.start),
+            Into::<u64>::into(range.end),
+        ));
         self
     }
 
     pub fn with_id_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<u64>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(
             "id",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<u64>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
     pub fn with_id_not_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<u64>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::not_in_list(
             "id",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<u64>::into).map(teaql_core::Value::from),
         ));
         self
     }
+
+    pub fn with_id_is_unknown(mut self) -> Self {
+        self.query = self.query.and_filter(Expr::is_null("id"));
+        self
+    }
+
+
+
+    pub fn with_id_is_known(mut self) -> Self {
+        self.query = self.query.and_filter(Expr::is_not_null("id"));
+        self
+    }
+
 
     pub fn order_by_id_asc(mut self) -> Self {
         self.query = self.query.order_asc("id");
@@ -1031,77 +1085,77 @@ impl<R> CustomerOrderRequest<R> {
         )
     }
 
-    pub fn with_order_number_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("order_number", value));
+    pub fn with_order_number_is(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::eq("order_number", Into::<String>::into(value)));
         self
     }
 
 
 
-    pub fn with_order_number_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("order_number", value));
+    pub fn with_order_number_is_not(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::ne("order_number", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_order_number_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("order_number", value));
+    pub fn with_order_number_greater_than(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::gt("order_number", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_order_number_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("order_number", value));
+    pub fn with_order_number_greater_than_or_equal_to(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::gte("order_number", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_order_number_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("order_number", value));
+    pub fn with_order_number_less_than(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::lt("order_number", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_order_number_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("order_number", value));
+    pub fn with_order_number_less_than_or_equal_to(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::lte("order_number", Into::<String>::into(value)));
         self
     }
 
     pub fn with_order_number_between(
         mut self,
-        lower: impl Into<teaql_core::Value>,
-        upper: impl Into<teaql_core::Value>,
+        lower: impl Into<String>,
+        upper: impl Into<String>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("order_number", lower, upper));
+        self.query = self.query.and_filter(Expr::between("order_number", Into::<String>::into(lower), Into::<String>::into(upper)));
         self
     }
 
     pub fn with_order_number_between_range<T>(mut self, range: DateRange<T>) -> Self
     where
-        T: Into<teaql_core::Value>,
+        T: Into<String>,
     {
         self.query = self.query.and_filter(Expr::between(
             "order_number",
-            range.start,
-            range.end,
+            Into::<String>::into(range.start),
+            Into::<String>::into(range.end),
         ));
         self
     }
 
     pub fn with_order_number_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(
             "order_number",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<String>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
     pub fn with_order_number_not_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::not_in_list(
             "order_number",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<String>::into).map(teaql_core::Value::from),
         ));
         self
     }
@@ -1136,17 +1190,17 @@ impl<R> CustomerOrderRequest<R> {
         self
     }
 
-    pub fn with_order_number_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("order_number", value));
+    pub fn with_order_number_sounding_like(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::sound_like("order_number", Into::<String>::into(value)));
         self
     }
-    pub fn with_order_number_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("order_number", value));
+    pub fn with_order_number_before(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::lt("order_number", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_order_number_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("order_number", value));
+    pub fn with_order_number_after(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::gt("order_number", Into::<String>::into(value)));
         self
     }
 
@@ -1297,77 +1351,77 @@ impl<R> CustomerOrderRequest<R> {
         )
     }
 
-    pub fn with_description_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("description", value));
+    pub fn with_description_is(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::eq("description", Into::<String>::into(value)));
         self
     }
 
 
 
-    pub fn with_description_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("description", value));
+    pub fn with_description_is_not(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::ne("description", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_description_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("description", value));
+    pub fn with_description_greater_than(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::gt("description", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_description_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("description", value));
+    pub fn with_description_greater_than_or_equal_to(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::gte("description", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_description_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("description", value));
+    pub fn with_description_less_than(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::lt("description", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_description_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("description", value));
+    pub fn with_description_less_than_or_equal_to(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::lte("description", Into::<String>::into(value)));
         self
     }
 
     pub fn with_description_between(
         mut self,
-        lower: impl Into<teaql_core::Value>,
-        upper: impl Into<teaql_core::Value>,
+        lower: impl Into<String>,
+        upper: impl Into<String>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("description", lower, upper));
+        self.query = self.query.and_filter(Expr::between("description", Into::<String>::into(lower), Into::<String>::into(upper)));
         self
     }
 
     pub fn with_description_between_range<T>(mut self, range: DateRange<T>) -> Self
     where
-        T: Into<teaql_core::Value>,
+        T: Into<String>,
     {
         self.query = self.query.and_filter(Expr::between(
             "description",
-            range.start,
-            range.end,
+            Into::<String>::into(range.start),
+            Into::<String>::into(range.end),
         ));
         self
     }
 
     pub fn with_description_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(
             "description",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<String>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
     pub fn with_description_not_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::not_in_list(
             "description",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<String>::into).map(teaql_core::Value::from),
         ));
         self
     }
@@ -1402,17 +1456,17 @@ impl<R> CustomerOrderRequest<R> {
         self
     }
 
-    pub fn with_description_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("description", value));
+    pub fn with_description_sounding_like(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::sound_like("description", Into::<String>::into(value)));
         self
     }
-    pub fn with_description_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("description", value));
+    pub fn with_description_before(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::lt("description", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_description_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("description", value));
+    pub fn with_description_after(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::gt("description", Into::<String>::into(value)));
         self
     }
 
@@ -2044,17 +2098,18 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<CustomerOrderRequest<R>> {
         self
     }
 
-    pub fn new_entity<C>(&self, context: &C) -> crate::CustomerOrder
+    pub fn new_entity<C>(&self, context: &C) -> Result<crate::CustomerOrder, RuntimeError>
     where
         C: crate::TeaqlRuntime + ?Sized,
     {
         self.require_comment();
+        // Reserve identity before allocating mutation state. A failed reservation
+        // must not escape as an entity or fall back to a different allocator.
+        let id = context.user_context().next_id(crate::CustomerOrder::ENTITY_NAME)?;
         let mut entity = crate::CustomerOrder::runtime_new(context.user_context().entity_runtime_state());
-        if let Ok(id) = context.user_context().next_id(crate::CustomerOrder::ENTITY_NAME) {
-            entity.update_id(id);
-        }
+        entity.update_id(id);
         teaql_core::Entity::mark_as_new(&mut entity);
-        entity
+        Ok(entity)
     }
 
     fn into_inner_with_trace(mut self) -> CustomerOrderRequest<R> {
@@ -2075,7 +2130,11 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<CustomerOrderRequest<R>> {
                 .comment
                 .as_deref()
                 .is_some_and(|comment| !comment.trim().is_empty()),
-            "query comment must not be empty"
+            "{}",
+            teaql_core::RequestIntentError {
+                request_kind: teaql_core::RequestKind::Query,
+                field: "comment",
+            }
         );
     }
 

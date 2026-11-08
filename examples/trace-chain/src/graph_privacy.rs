@@ -186,7 +186,8 @@ pub async fn loaded_graph_privacy(
     let mut root = Q::customer_orders()
         .comment("prepare privacy root")
         .purpose("exercise generated graph persistence")
-        .new_entity(context);
+        .new_entity(context)
+        .expect("reserve trace fixture identity");
     root.update_platform_id(platform.id());
     root.update_order_number("TRACE-GRAPH-PRIVACY");
     root.update_description("privacy seed");
@@ -194,7 +195,8 @@ pub async fn loaded_graph_privacy(
     let mut child = Q::order_items()
         .comment("prepare private child")
         .purpose("capture a known private loaded value")
-        .new_entity(context);
+        .new_entity(context)
+        .expect("reserve trace fixture identity");
     child.update_customer_order_id(root_id);
     let mut old = format!("RUST-PRIVATE-OLD-{root_id}");
     child.update_name(old.clone());

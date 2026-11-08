@@ -5,7 +5,8 @@
 KSML entity: `Order Item`  
 KSML field: `name`  
 Type: `string`
-
+Named predicate values use `String` (or values convertible to that type).
+For nullable fields, use the known/unknown predicates rather than passing `None`.
 | Capability | Generated API |
 | --- | --- |
 | Select | `select_name()` |
@@ -13,7 +14,8 @@ Type: `string`
 | Equality/set | `with_name_is(value)`, `with_name_is_not(value)`, `with_name_in(values)`, `with_name_not_in(values)` |
 | Comparison | `with_name_greater_than(value)`, `with_name_greater_than_or_equal_to(value)`, `with_name_less_than(value)`, `with_name_less_than_or_equal_to(value)`, `with_name_between(lower, upper)` |
 | Null state | `with_name_is_known()`, `with_name_is_unknown()` |
-| String | `with_name_containing(value)`, `with_name_not_containing(value)`, `with_name_starting_with(value)`, `with_name_ending_with(value)`, `with_name_sounding_like(value)` |
+| Explicit dynamic operator | `with_name(operator, values)` takes `FieldOperator` and values convertible to `teaql_core::Value`. |
+| String | `with_name_containing(value)`, `with_name_not_containing(value)`, `with_name_starting_with(value)`, `with_name_not_starting_with(value)`, `with_name_ending_with(value)`, `with_name_not_ending_with(value)`, `with_name_sounding_like(value)` |
 | Order | `order_by_name_asc()`, `order_by_name_desc()` |
 | Group | `group_by_name()`, `group_by_name_as(alias)` |
 Apply methods before `.purpose(...)`; execution still requires non-empty

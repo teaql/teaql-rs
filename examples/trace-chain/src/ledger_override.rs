@@ -41,7 +41,8 @@ pub async fn ledger_override(
         let mut order = Q::customer_orders()
             .comment("what: create the ledger precedence root")
             .purpose("why: test complete chains instead of appended fallback")
-            .new_entity(context);
+            .new_entity(context)
+            .expect("reserve trace fixture identity");
         order.update_platform_id(platform.id());
         order.update_order_number("LEDGER-OVERRIDE");
         order.update_description("Ledger precedence create");
@@ -49,14 +50,16 @@ pub async fn ledger_override(
         let mut specific = Q::order_items()
             .comment("what: create the annotated ledger item")
             .purpose("why: produce a complete runtime-owned chain")
-            .new_entity(context);
+            .new_entity(context)
+            .expect("reserve trace fixture identity");
         specific.update_customer_order_id(root_id);
         specific.update_name("Special item create");
         let specific_id = specific.id();
         let mut inherited = Q::order_items()
             .comment("what: create the unannotated ledger sibling")
             .purpose("why: retain the root reason without sibling contamination")
-            .new_entity(context);
+            .new_entity(context)
+            .expect("reserve trace fixture identity");
         inherited.update_customer_order_id(root_id);
         inherited.update_name("Ordinary item create");
         let inherited_id = inherited.id();

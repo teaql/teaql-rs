@@ -42,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut order = Q::customer_orders()
             .comment("prepare standard stream fixture")
             .purpose("prepare bounded stream records")
-            .new_entity(&context);
+            .new_entity(&context)?;
         order.update_platform_id(1);
         order.update_order_number(format!("STREAM-{index}"));
         order.update_description("bounded stream fixture");

@@ -184,7 +184,8 @@ pub async fn same_type_batch(
     let mut order = Q::customer_orders()
         .comment("what: prepare a same-type batch root")
         .purpose("why: observe per-item lineage through grouping")
-        .new_entity(context);
+        .new_entity(context)
+        .expect("reserve trace fixture identity");
     order.update_platform_id(platform.id());
     order.update_order_number("TRACE-SAME-TYPE-BATCH");
     order.update_description("Same-type batch draft");
@@ -193,7 +194,8 @@ pub async fn same_type_batch(
     let mut first = Q::order_items()
         .comment("what: prepare the first batched item")
         .purpose("why: retain a distinct local create reason")
-        .new_entity(context);
+        .new_entity(context)
+        .expect("reserve trace fixture identity");
     first.update_customer_order_id(order_id);
     first.update_name("First batch item");
     let first_id = first.id();
@@ -201,7 +203,8 @@ pub async fn same_type_batch(
     let mut second = Q::order_items()
         .comment("what: prepare the second batched item")
         .purpose("why: retain another local create reason")
-        .new_entity(context);
+        .new_entity(context)
+        .expect("reserve trace fixture identity");
     second.update_customer_order_id(order_id);
     second.update_name("Second batch item");
     let second_id = second.id();

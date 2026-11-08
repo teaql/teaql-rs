@@ -86,7 +86,8 @@ pub async fn shared_reference_graphs(
         let mut child = Q::order_items()
             .comment("what: prepare a child for one shared-reference graph")
             .purpose("why: verify pending intent is composed only into its owner")
-            .new_entity(context);
+            .new_entity(context)
+            .expect("reserve trace fixture identity");
         child.update_customer_order_id(root_id);
         child.update_name(name);
         let child_id = child.id();

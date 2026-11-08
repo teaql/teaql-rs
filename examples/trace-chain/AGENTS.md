@@ -73,3 +73,7 @@ Read these only when the task requires them:
 
 * **`TOOL_API_GUIDE.md`**
   Built-in tool integrations (HTTP client, etc.).
+
+## Optional standard telemetry
+
+See [STANDARD_TELEMETRY.md](STANDARD_TELEMETRY.md) for the selected runtime's optional module, trusted activation variables and safe startup diagnostics.

@@ -230,12 +230,14 @@ async fn normative_graph(
             .comment("what: create the normative order")
             .purpose("why: prepare the mixed mutation fixture")
             .new_entity(context)
+            .expect("reserve trace fixture identity")
     };
     let new_payment = || {
         Q::payments()
             .comment("what: create a pending payment")
             .purpose("why: prepare a nested mutation branch")
             .new_entity(context)
+            .expect("reserve trace fixture identity")
     };
     let mut order = new_order();
     let mut payment = new_payment();
@@ -263,7 +265,8 @@ async fn normative_graph(
     let mut available = Q::order_items()
         .comment("what: create an available item")
         .purpose("why: prepare an existing child update")
-        .new_entity(context);
+        .new_entity(context)
+        .expect("reserve trace fixture identity");
     available.update_customer_order_id(order_id);
     available.update_name("Available item");
     let available_id = available.id();
@@ -275,7 +278,8 @@ async fn normative_graph(
     let mut removable = Q::order_items()
         .comment("what: create an unavailable item")
         .purpose("why: prepare an existing child deletion")
-        .new_entity(context);
+        .new_entity(context)
+        .expect("reserve trace fixture identity");
     removable.update_customer_order_id(order_id);
     removable.update_name("Unavailable item");
     let removable_id = removable.id();
@@ -336,7 +340,8 @@ async fn normative_graph(
     let mut attempt = Q::payment_attempts()
         .comment("what: prepare a payment attempt")
         .purpose("why: compose a new grandchild without an extra save")
-        .new_entity(context);
+        .new_entity(context)
+        .expect("reserve trace fixture identity");
     attempt.update_payment_id(payment_id);
     attempt.update_reference_code("TRACE-ATTEMPT-001");
     let attempt_id = attempt.id();
@@ -344,7 +349,8 @@ async fn normative_graph(
     let mut shipment = Q::shipments()
         .comment("what: prepare a shipment")
         .purpose("why: compose an independent sibling branch")
-        .new_entity(context);
+        .new_entity(context)
+        .expect("reserve trace fixture identity");
     shipment.update_customer_order_id(order_id);
     shipment.update_reference_code("TRACE-SHIPMENT-001");
     let shipment_id = shipment.id();

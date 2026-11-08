@@ -213,7 +213,7 @@ where
     log::info!("Generating sample data for Customer Order (expected: {})...", fanout);
 
     for i in 0..fanout {
-        let mut entity = Q::customer_orders().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context);
+        let mut entity = Q::customer_orders().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context).map_err(SampleDataError::from_display)?;
         let mut used_refs = std::collections::HashSet::<u64>::new();
 
                 if let Some(ref_id) = state.pick_unused_id("Platform", i as usize, &used_refs) {
@@ -270,7 +270,7 @@ where
     log::info!("Generating sample data for Order Item (expected: {})...", fanout);
 
     for i in 0..fanout {
-        let mut entity = Q::order_items().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context);
+        let mut entity = Q::order_items().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context).map_err(SampleDataError::from_display)?;
         let mut used_refs = std::collections::HashSet::<u64>::new();
 
                 if let Some(ref_id) = state.pick_unused_id("Customer Order", i as usize, &used_refs) {
@@ -324,7 +324,7 @@ where
     log::info!("Generating sample data for Payment (expected: {})...", fanout);
 
     for i in 0..fanout {
-        let mut entity = Q::payments().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context);
+        let mut entity = Q::payments().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context).map_err(SampleDataError::from_display)?;
         let mut used_refs = std::collections::HashSet::<u64>::new();
 
                 if let Some(ref_id) = state.pick_unused_id("Customer Order", i as usize, &used_refs) {
@@ -379,7 +379,7 @@ where
     log::info!("Generating sample data for Shipment (expected: {})...", fanout);
 
     for i in 0..fanout {
-        let mut entity = Q::shipments().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context);
+        let mut entity = Q::shipments().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context).map_err(SampleDataError::from_display)?;
         let mut used_refs = std::collections::HashSet::<u64>::new();
 
                 if let Some(ref_id) = state.pick_unused_id("Customer Order", i as usize, &used_refs) {
@@ -433,7 +433,7 @@ where
     log::info!("Generating sample data for Payment Attempt (expected: {})...", fanout);
 
     for i in 0..fanout {
-        let mut entity = Q::payment_attempts().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context);
+        let mut entity = Q::payment_attempts().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context).map_err(SampleDataError::from_display)?;
         let mut used_refs = std::collections::HashSet::<u64>::new();
 
                 if let Some(ref_id) = state.pick_unused_id("Payment", i as usize, &used_refs) {

@@ -65,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut order = Q::customer_orders()
         .comment("prepare standard graph order")
         .purpose("prepare governed graph fixture")
-        .new_entity(&context);
+        .new_entity(&context)?;
     order.update_platform_id(1);
     order.update_order_number("STANDARD-GRAPH-ORDER");
     order.update_description("governed graph fixture");
@@ -73,7 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut payment = Q::payments()
         .comment("prepare standard graph payment")
         .purpose("prepare governed graph fixture")
-        .new_entity(&context);
+        .new_entity(&context)?;
     payment.update_customer_order_id(order_id);
     payment.update_reference_code("STANDARD-GRAPH-PAYMENT");
     let payment_id = payment.id();
@@ -83,7 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut attempt = Q::payment_attempts()
         .comment("prepare standard graph attempt")
         .purpose("prepare governed graph fixture")
-        .new_entity(&context);
+        .new_entity(&context)?;
     attempt.update_payment_id(payment_id);
     attempt.update_reference_code("STANDARD-GRAPH-ATTEMPT");
     let attempt_id = attempt.id();

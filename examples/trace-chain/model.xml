@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <root name="trace-chain-service" org="teaql" data_service="sqlite"
-      teaql_rs_version="5.0.5" _module_key="root">
+      teaql_rs_version="5.0.7" _module_key="root">
   <platform _name="Platform" _module="Trace Chain" _module_key="trace-chain"
             name="Trace Chain Verification"/>
   <customer_order _name="Customer Order" _module="Trace Chain" _module_key="trace-chain"

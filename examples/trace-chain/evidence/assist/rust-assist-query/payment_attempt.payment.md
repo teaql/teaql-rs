@@ -5,7 +5,6 @@
 KSML entity: `Payment Attempt`  
 KSML field: `Payment`  
 Type: `Payment`
-
 | Capability | Generated API |
 | --- | --- |
 | Select | `select_payment()`, `select_payment_with(Q::payments_minimal())` |

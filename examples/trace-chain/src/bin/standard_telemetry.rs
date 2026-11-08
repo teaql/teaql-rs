@@ -65,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     for _ in 0..2 {
         let rows = Q::platforms_minimal()
-            .with_id_is(1)
+            .with_id_is(1_u64)
             .order_by_id_asc()
             .limit(1)
             .comment("load seeded platform")

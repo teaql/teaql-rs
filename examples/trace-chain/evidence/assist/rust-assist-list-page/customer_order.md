@@ -18,6 +18,9 @@ pub async fn list_customer_order_page(
     offset: u64,
     limit: u64,
 ) -> Result<SmartList<CustomerOrder>, Box<dyn std::error::Error>> {
+    if limit == 0 || limit > 10_000 {
+        return Err("page size must be between 1 and 10,000".into());
+    }
     let page = Q::customer_orders_minimal()
         .select_order_number()
         .select_description()
@@ -26,9 +29,10 @@ pub async fn list_customer_order_page(
         .select_payment_list()
         .select_shipment_list()
         .order_by_id_asc()
+        .offset(offset, limit).count()
         .comment("what: load a stable page of Customer Order rows")
         .purpose("why: serve the authorized bounded Customer Order list")
-        .execute_for_page(context, offset, limit)
+        .execute_for_list(context)
         .await?;
 
     Ok(page)
@@ -44,40 +48,28 @@ selection, stable non-overlapping pages, filtered total count, enforcement of
 the default 10,000-row hard limit, intent checks, and compilation failure for
 unknown fields or client-controlled hard-limit APIs.
 
-## Bounded scalar streaming
+## Bounded stream
 
-Use `futures_util::StreamExt` (an application dependency) to consume the stream.
-This is a scalar-only request: relation and aggregate streaming is not supported.
-Chunk size controls delivery, not the total query bound; keep `.limit(...)`.
+Streaming emits typed entities. Set the chunk size before `purpose`; consume
+with `futures_util::StreamExt` and retain no more rows than the declared limit.
+This ID-only projection does not load ordinary fields or relation details.
 
 ```rust
 use futures_util::StreamExt;
+use trace_chain_service_core::{Q, TeaqlRuntime};
 
-let mut rows = Q::customer_orders_minimal()
-    .select_order_number()
-    .select_description()
-    .order_by_id_asc()
-    .limit(20)
-    .stream(1)
-    .comment("what: stream bounded Customer Order scalar rows")
-    .purpose("why: process authorized rows incrementally")
-    .execute_for_stream(context)
-    .await?;
-while let Some(row) = rows.next().await {
-    let row = row?;
-    // Use current expression Assist to read selected fields through E.
+pub async fn stream_customer_order_ids(context: &impl TeaqlRuntime)
+    -> Result<Vec<u64>, Box<dyn std::error::Error>> {
+    let mut stream = Q::customer_orders_minimal()
+        .order_by_id_asc().limit(100).stream(32)
+        .comment("what: stream bounded Customer Order identities")
+        .purpose("why: process a small authorized batch")
+        .execute_for_stream(context).await?;
+    let mut ids = Vec::new();
+    while let Some(row) = stream.next().await { ids.push(row?.id()); }
+    Ok(ids)
 }
-drop(rows);
 ```
-
-The request owns its intent; consuming it later must not borrow another query's
-comment or purpose. Exhaustion reports success; dropping a partially consumed
-stream releases its cursor and reports cancellation when diagnostics are enabled.
-The diagnostic row count is rows delivered by the provider in chunks, not the
-number already processed by application code. Use chunk size 1 for exact
-single-row early-close probes. A never-polled generated stream issues no SQL
-and must not invent an executed SQL record. For mutation, fully load all fields
-using the non-minimal Q entry point and use the current update/save Assist.
 
 
 ---

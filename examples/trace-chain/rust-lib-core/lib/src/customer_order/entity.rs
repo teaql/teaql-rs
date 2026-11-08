@@ -22,19 +22,19 @@ pub struct CustomerOrder {
 #[teaql(id)]
     id: u64,
 
-// @source main.xml:8
+// @source model.xml:8
 #[teaql(max_length = 100)]
     order_number: String,
 
-// @source main.xml:8
+// @source model.xml:8
 #[teaql(max_length = 100)]
     description: String,
 #[teaql(version)]
     version: i64,
-// @source main.xml:8
+// @source model.xml:8
 #[teaql(column = "platform")]
     platform_id: u64,
-// @source main.xml:8
+// @source model.xml:8
 #[teaql(relation(target = "Platform", local_key = "platform_id", foreign_key = "id"))]
     platform: Option<Box<crate::Platform>>,
     #[teaql(dynamic)]
@@ -203,13 +203,13 @@ impl CustomerOrder {
     pub fn update_platform_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.platform_id = value.try_u64().unwrap_or(self.platform_id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "platform_id", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "platform", value);
         self.__load_state.mark_loaded("platform_id").expect("generated field layout");
         self
     }
 
     pub fn changed_platform_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "platform_id")
+        self.__teaql_runtime_state().get(&self.entity_key(), "platform")
     }
 
     pub fn eval_platform_id(&self) -> teaql_core::eval::EvalResult<u64> {

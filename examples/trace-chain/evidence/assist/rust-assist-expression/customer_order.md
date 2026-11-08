@@ -10,6 +10,16 @@ TeaQL expressions preserve three states until evaluation:
 - `NotLoaded` means the query did not preload required data. This is a coding
   error and `.eval()` intentionally panics with the missing access path.
 
+At a JSON boundary, use `.try_eval()` instead: it returns a Rust `Result` with
+a loaded optional or a `teaql_core::eval_location::NotLoadedDiagnostic` error,
+without turning NotLoaded into Null. Render the error with `.to_wire()`; `location`
+retains canonical KSML segments and `instancePath` is an RFC 6901 JSON Pointer
+in the model's naming profile. Do not parse panic text or legacy preload hints.
+`attemptedLocation` preserves the complete suffix; `originalExpression` and
+`expressionWithBrokenPoint` reconstruct native calls with one `<broken>` at
+the first missing node. `suggestedFix.location` identifies what to preload;
+discover the matching Q API through Assist instead of guessing method names.
+
 When a default is required only for loaded Null, the underlying generated API
 provides `.or_if_null(value)`, `.or_else_if_null(|| value)`, and
 `.or_default_if_null()`. These deliberately preserve the same fail-fast behavior for `NotLoaded`.
@@ -105,6 +115,38 @@ pub fn get_customer_order_shipment_list_id(entity: &CustomerOrder, index: usize)
 Use only the generated functions above. Select every traversed field or
 relation in the corresponding query. A loaded null/list miss may be handled as
 `None`; do not catch or default a NotLoaded panic.
+
+## Typed entity JSON boundary
+
+Generated `module()` variants and `service_runtime(...)` install immutable,
+model-owned JSON metadata. Use the context codec, not the legacy presentation
+serializer, when crossing a typed JSON boundary:
+
+```rust
+use trace_chain_service_core::{generated_json_field_naming_profile, CustomerOrder};
+use teaql_runtime::{entity_json, JsonFieldNamingProfile, UserContext};
+
+pub fn encode_customer_order(context: &UserContext, entity: &CustomerOrder) -> Result<String, entity_json::Error> {
+    context.encode_entity_json(entity, generated_json_field_naming_profile())
+}
+
+pub fn decode_customer_order(context: &UserContext, payload: &str) -> Result<CustomerOrder, entity_json::Error> {
+    context.decode_entity_json::<CustomerOrder>(payload, generated_json_field_naming_profile())
+}
+```
+
+Select the same naming profile for encode and decode: `CamelCase` (default),
+`SnakeCase`, or `PascalCase`. For the model's default, use
+`generated_json_field_naming_profile()` on both sides. Long, ID, version and exact
+Decimal values use strings; Integer is a bounded i32 JSON number. Float and Double
+must be finite. Date, Time and DateTime retain their distinct semantic types.
+Omitted fields remain NotLoaded; explicit nullable values remain loaded Null.
+Forward FK-only values do not claim the related object was loaded. Inverse
+relations retain object/null/omitted and list/empty/omitted distinctions.
+Duplicate aliases, unknown fields, invalid scalars and private runtime state are
+rejected with value-free structured errors (`to_wire()`). JSON hydration is not
+authorization, an authenticated editing snapshot, or permission to save supplied
+values; the application must still enforce request policy and audited saves.
 >>
 
 

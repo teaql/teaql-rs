@@ -11,6 +11,8 @@ Child entity: `shipment`
 | Select | `.select_shipment_list()`, `.select_shipment_list_with(Q::shipments_minimal())` |
 | Filter nested request | `with_shipment_list_matching(request)`, `without_shipment_list_matching(request)` |
 | Presence | `have_shipments()`, `have_no_shipments()` |
+| Count | `count_shipments()`, `count_shipments_as(alias)`, `count_shipments_with(alias, child_request)` |
+| Grouped statistics | `stats_from_shipments_as(alias, request)` |
 | Entity access | `entity.shipment_list()` returns `RelationHandle<'_, SmartList<Shipment>>` |
 
 `RelationHandle` never performs an implicit database query. Inspect `state()` when the distinction matters, and call `value()` only after the relation was explicitly selected. `value()` is present for Loaded and loaded-empty lists; it is absent for NotLoaded (and for an empty to-one relation).
@@ -19,6 +21,19 @@ Child entity: `shipment`
 let handle = entity.shipment_list();
 let value = handle.value().ok_or("shipment_list was not loaded")?;
 ```
+
+Facet membership counts: configure this reverse-relation count on the Facet target request. The runtime intersects it with the full active outer filter, ignoring the outer page limit/offset. Read the configured alias from the Facet row; an absent alias is not a zero count. Do not substitute the target's ordinary `count_as(alias)` aggregate.
+
+For a generated typed entity, use the runtime `Entity` projection to read the alias without changing the ledger:
+
+```rust
+use teaql_core::{Entity as _, Value};
+let values = entity.clone().into_values();
+let count = values.get("configuredCountAlias").and_then(Value::try_i64)
+    .ok_or("requested aggregate alias was not returned")?;
+```
+
+Generated entities do not implement `BaseEntity`; do not call `dynamic_i64` on them. Facet rows are `CompactRow` values: use `row.get(alias)` directly there. Never default a missing alias to zero.
 
 Apply query methods before `.purpose(...)`; execution still requires non-empty `.comment(...)`, `.purpose(...)`, and exactly one context argument.
 

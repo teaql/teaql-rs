@@ -20,15 +20,15 @@ pub struct Payment {
 #[teaql(id)]
     id: u64,
 
-// @source main.xml:13
+// @source model.xml:13
 #[teaql(max_length = 100)]
     reference_code: String,
 #[teaql(version)]
     version: i64,
-// @source main.xml:13
+// @source model.xml:13
 #[teaql(column = "customer_order")]
     customer_order_id: u64,
-// @source main.xml:13
+// @source model.xml:13
 #[teaql(relation(target = "CustomerOrder", local_key = "customer_order_id", foreign_key = "id"))]
     customer_order: Option<Box<crate::CustomerOrder>>,
     #[teaql(dynamic)]
@@ -170,13 +170,13 @@ impl Payment {
     pub fn update_customer_order_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.customer_order_id = value.try_u64().unwrap_or(self.customer_order_id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "customer_order_id", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "customer_order", value);
         self.__load_state.mark_loaded("customer_order_id").expect("generated field layout");
         self
     }
 
     pub fn changed_customer_order_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "customer_order_id")
+        self.__teaql_runtime_state().get(&self.entity_key(), "customer_order")
     }
 
     pub fn eval_customer_order_id(&self) -> teaql_core::eval::EvalResult<u64> {

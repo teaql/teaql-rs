@@ -40,6 +40,33 @@ For field-specific predicates and projections, request
 `rust-assist-query/Order Item.[field_name]`; boolean fields have distinct
 true, false, known, and unknown predicates in that field-level help.
 
+## Facet membership counts
+
+Use the target object's reverse-relation field Assist to find its exact related
+count and filtered-count methods. Configure the count on the Facet target
+request before passing it to the field-specific `facet_by_..._as_with_options`
+API. Membership counts use the full active outer filter, not the visible page.
+Read `result.facet(name)` and the configured alias from each Facet row; an
+absent alias is not a zero count. Requested empty nested Facets retain SmartList
+metadata, including inside an explicitly loaded relation.
+
+`count_as(alias)` is an ordinary aggregate on the current query,
+not an outer Facet membership count. Do not substitute it for the reverse-relation count.
+
+Generated typed entities retain configured aggregate aliases. Read an alias using
+the runtime `Entity` projection (this does not mutate or save the entity):
+
+```rust
+use teaql_core::{Entity as _, Value};
+let values = entity.clone().into_values();
+let count = values.get("configuredCountAlias").and_then(Value::try_i64)
+    .ok_or("requested aggregate alias was not returned")?;
+```
+
+Generated entities do not implement `BaseEntity`; do not call `dynamic_i64` on
+them. Facet rows are `CompactRow` values: use `row.get(alias)` directly there.
+Never default a missing alias to zero.
+
 
 ## Field-specific Query Assist
 

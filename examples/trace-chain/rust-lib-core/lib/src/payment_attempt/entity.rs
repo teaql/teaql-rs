@@ -19,15 +19,15 @@ pub struct PaymentAttempt {
 #[teaql(id)]
     id: u64,
 
-// @source main.xml:15
+// @source model.xml:15
 #[teaql(max_length = 100)]
     reference_code: String,
 #[teaql(version)]
     version: i64,
-// @source main.xml:15
+// @source model.xml:15
 #[teaql(column = "payment")]
     payment_id: u64,
-// @source main.xml:15
+// @source model.xml:15
 #[teaql(relation(target = "Payment", local_key = "payment_id", foreign_key = "id"))]
     payment: Option<Box<crate::Payment>>,
     #[teaql(dynamic)]
@@ -169,13 +169,13 @@ impl PaymentAttempt {
     pub fn update_payment_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.payment_id = value.try_u64().unwrap_or(self.payment_id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "payment_id", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "payment", value);
         self.__load_state.mark_loaded("payment_id").expect("generated field layout");
         self
     }
 
     pub fn changed_payment_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "payment_id")
+        self.__teaql_runtime_state().get(&self.entity_key(), "payment")
     }
 
     pub fn eval_payment_id(&self) -> teaql_core::eval::EvalResult<u64> {

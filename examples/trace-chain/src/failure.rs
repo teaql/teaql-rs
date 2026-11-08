@@ -38,7 +38,8 @@ pub async fn failed_graph(
     let mut order = Q::customer_orders()
         .comment("what: prepare a new root for a failing graph")
         .purpose("why: ensure an earlier successful INSERT is rolled back")
-        .new_entity(context);
+        .new_entity(context)
+        .expect("reserve trace fixture identity");
     order.update_platform_id(platform.id());
     order.update_order_number("TRACE-ROLLBACK-001");
     order.update_description("A draft that must not be committed");
@@ -51,7 +52,8 @@ pub async fn failed_graph(
     let mut duplicate = Q::payments()
         .comment("what: prepare a payment with a deliberately broken allocator")
         .purpose("why: force a real provider failure after the root INSERT")
-        .new_entity(context);
+        .new_entity(context)
+        .expect("reserve trace fixture identity");
     duplicate.update_customer_order_id(order_id);
     duplicate.update_reference_code("TRACE-MUST-NOT-COMMIT");
     assert_eq!(duplicate.id(), duplicate_payment_id);
@@ -252,7 +254,8 @@ pub async fn failed_readback(
     let mut order = Q::customer_orders()
         .comment("what: create an order for the readback failure probe")
         .purpose("why: verify successful write metadata survives readback failure")
-        .new_entity(&context);
+        .new_entity(&context)
+        .expect("reserve trace fixture identity");
     order.update_platform_id(platform.id());
     order.update_order_number("TRACE-READBACK-001");
     order.update_description("Readback failure draft");

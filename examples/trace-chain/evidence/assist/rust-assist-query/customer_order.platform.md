@@ -5,7 +5,6 @@
 KSML entity: `Customer Order`  
 KSML field: `Platform`  
 Type: `Platform`
-
 | Capability | Generated API |
 | --- | --- |
 | Select | `select_platform()`, `select_platform_with(Q::platforms_minimal())` |
