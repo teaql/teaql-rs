@@ -766,6 +766,8 @@ mod tests {
     #[test]
     fn exact_sum_group_order_does_not_collapse_decimal_and_integer_domains() {
         let query = SelectQuery::new("ExactGroups")
+            .comment("order exact aggregate domains")
+            .purpose("prevent large numeric grouping precision loss")
             .group_by("bucket")
             .aggregate(Aggregate::sum("amount", "total"))
             .order_by(OrderBy::desc("total"))
@@ -777,6 +779,8 @@ mod tests {
     #[test]
     fn exact_sum_having_compares_decimal_total_against_integer_threshold_exactly() {
         let query = SelectQuery::new("ExactGroups")
+            .comment("filter exact aggregate domains")
+            .purpose("preserve exact decimal HAVING thresholds")
             .group_by("bucket")
             .aggregate(Aggregate::sum("amount", "total"))
             .having(Expr::gt("total", 9_007_199_254_740_992_i64));
@@ -797,6 +801,8 @@ mod tests {
                 vec![large.clone(), small.clone()],
             ] {
                 let query = SelectQuery::new("ExactGroups")
+                    .comment("compare exact numeric domains")
+                    .purpose("preserve MIN and MAX across integral and Decimal inputs")
                     .aggregate(Aggregate::min("amount", "minimum"))
                     .aggregate(Aggregate::max("amount", "maximum"));
                 let rows = values
