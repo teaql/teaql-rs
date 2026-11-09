@@ -427,6 +427,10 @@ fn compare_values(a: &Value, b: &Value) -> Ordering {
         (Value::U64(a), Value::I64(b)) => compare_i64_u64(*b, *a).reverse(),
         (Value::F64(a), Value::F64(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
         (Value::Decimal(a), Value::Decimal(b)) => a.cmp(b),
+        (Value::Decimal(a), Value::I64(b)) => a.cmp(&teaql_core::Decimal::from(*b)),
+        (Value::I64(a), Value::Decimal(b)) => teaql_core::Decimal::from(*a).cmp(b),
+        (Value::Decimal(a), Value::U64(b)) => a.cmp(&teaql_core::Decimal::from(*b)),
+        (Value::U64(a), Value::Decimal(b)) => teaql_core::Decimal::from(*a).cmp(b),
         (Value::Text(a), Value::Text(b)) => a.cmp(b),
         (Value::Date(a), Value::Date(b)) => a.cmp(b),
         (Value::Timestamp(a), Value::Timestamp(b)) => a.cmp(b),
@@ -741,5 +745,68 @@ mod tests {
 
         let expr_miss = Expr::in_list("status", vec![Value::Text("closed".to_owned())]);
         assert!(!ExprEvaluator::eval(&expr_miss, &row));
+    }
+
+    fn exact_domain_rows() -> Vec<CompactRow> {
+        vec![
+            make_row(vec![
+                ("bucket", Value::from("integer")),
+                ("amount", Value::U64(9_007_199_254_740_992)),
+            ]),
+            make_row(vec![
+                ("bucket", Value::from("decimal")),
+                (
+                    "amount",
+                    Value::Decimal("9007199254740992.01".parse().unwrap()),
+                ),
+            ]),
+        ]
+    }
+
+    #[test]
+    fn exact_sum_group_order_does_not_collapse_decimal_and_integer_domains() {
+        let query = SelectQuery::new("ExactGroups")
+            .group_by("bucket")
+            .aggregate(Aggregate::sum("amount", "total"))
+            .order_by(OrderBy::desc("total"))
+            .limit(1);
+        let result = InMemoryQueryEngine::execute(&query, exact_domain_rows()).unwrap();
+        assert_eq!(result.rows[0].get("bucket"), Some(&Value::from("decimal")));
+    }
+
+    #[test]
+    fn exact_sum_having_compares_decimal_total_against_integer_threshold_exactly() {
+        let query = SelectQuery::new("ExactGroups")
+            .group_by("bucket")
+            .aggregate(Aggregate::sum("amount", "total"))
+            .having(Expr::gt("total", 9_007_199_254_740_992_i64));
+        let result = InMemoryQueryEngine::execute(&query, exact_domain_rows()).unwrap();
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("bucket"), Some(&Value::from("decimal")));
+    }
+
+    #[test]
+    fn exact_domain_min_max_order_is_independent_of_input_domain_order() {
+        let large = Value::Decimal("9007199254740992.01".parse().unwrap());
+        for small in [
+            Value::I64(9_007_199_254_740_992),
+            Value::U64(9_007_199_254_740_992),
+        ] {
+            for values in [
+                vec![small.clone(), large.clone()],
+                vec![large.clone(), small.clone()],
+            ] {
+                let query = SelectQuery::new("ExactGroups")
+                    .aggregate(Aggregate::min("amount", "minimum"))
+                    .aggregate(Aggregate::max("amount", "maximum"));
+                let rows = values
+                    .into_iter()
+                    .map(|v| make_row(vec![("amount", v)]))
+                    .collect();
+                let result = InMemoryQueryEngine::execute(&query, rows).unwrap();
+                assert_eq!(result.rows[0].get("minimum"), Some(&small));
+                assert_eq!(result.rows[0].get("maximum"), Some(&large));
+            }
+        }
     }
 }
