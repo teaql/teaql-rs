@@ -30,7 +30,7 @@ fn names(rows: &[CompactRow]) -> Vec<&str> {
 #[test]
 fn memory_aggregate_pipeline_having_filters_aggregate_aliases() {
     let query = grouped().having(Expr::gt("total", 5_i64));
-    let result = InMemoryQueryEngine::execute(&query, rows());
+    let result = InMemoryQueryEngine::execute(&query, rows()).expect("valid in-memory query");
     assert_eq!(names(&result.rows), ["A", "C"]);
     assert_eq!(result.metadata.result_count, Some(2));
 }
@@ -41,7 +41,7 @@ fn memory_aggregate_pipeline_orders_before_limit_and_offset() {
         .order_by(OrderBy::desc("total"))
         .offset(1)
         .limit(1);
-    let result = InMemoryQueryEngine::execute(&query, rows());
+    let result = InMemoryQueryEngine::execute(&query, rows()).expect("valid in-memory query");
     assert_eq!(names(&result.rows), ["C"]);
     assert_eq!(result.metadata.result_count, Some(1));
 }
@@ -52,7 +52,7 @@ fn memory_aggregate_pipeline_having_precedes_sort_and_slice() {
         .having(Expr::gt("total", 5_i64))
         .order_by(OrderBy::asc("total"))
         .limit(1);
-    let result = InMemoryQueryEngine::execute(&query, rows());
+    let result = InMemoryQueryEngine::execute(&query, rows()).expect("valid in-memory query");
     assert_eq!(names(&result.rows), ["C"]);
     assert_eq!(result.metadata.result_count, Some(1));
 }
@@ -62,7 +62,7 @@ fn memory_aggregate_pipeline_having_may_remove_a_scalar_aggregate_row() {
     let query = SelectQuery::new("PipelineProbe")
         .aggregate(Aggregate::count("n"))
         .having(Expr::gt("n", 50_i64));
-    let result = InMemoryQueryEngine::execute(&query, rows());
+    let result = InMemoryQueryEngine::execute(&query, rows()).expect("valid in-memory query");
     assert!(result.rows.is_empty());
     assert_eq!(result.metadata.result_count, Some(0));
 }
@@ -72,7 +72,7 @@ fn memory_aggregate_pipeline_limit_zero_removes_scalar_result_without_changing_c
     let query = SelectQuery::new("PipelineProbe")
         .aggregate(Aggregate::count("n"))
         .limit(0);
-    let result = InMemoryQueryEngine::execute(&query, rows());
+    let result = InMemoryQueryEngine::execute(&query, rows()).expect("valid in-memory query");
     assert!(result.rows.is_empty());
     assert_eq!(result.metadata.result_count, Some(0));
 }
@@ -80,7 +80,7 @@ fn memory_aggregate_pipeline_limit_zero_removes_scalar_result_without_changing_c
 #[test]
 fn memory_aggregate_pipeline_where_still_runs_before_grouping() {
     let query = grouped().and_filter(Expr::gt("amount", 3_i64));
-    let result = InMemoryQueryEngine::execute(&query, rows());
+    let result = InMemoryQueryEngine::execute(&query, rows()).expect("valid in-memory query");
     assert_eq!(names(&result.rows), ["A", "C"]);
     assert_eq!(
         result.rows[0].get("total").and_then(Value::try_f64),
@@ -95,7 +95,8 @@ fn memory_aggregate_pipeline_where_still_runs_before_grouping() {
 #[test]
 fn memory_aggregate_pipeline_empty_grouped_input_stays_empty() {
     let result =
-        InMemoryQueryEngine::execute(&grouped().order_by(OrderBy::desc("total")).limit(1), vec![]);
+        InMemoryQueryEngine::execute(&grouped().order_by(OrderBy::desc("total")).limit(1), vec![])
+            .expect("valid in-memory query");
     assert!(result.rows.is_empty());
     assert_eq!(result.metadata.result_count, Some(0));
 }

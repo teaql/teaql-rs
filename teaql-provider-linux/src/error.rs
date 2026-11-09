@@ -9,6 +9,8 @@ pub enum LinuxProviderError {
     ProcFs(String),
     /// A standard I/O error.
     Io(std::io::Error),
+    /// A collected numeric aggregate cannot be evaluated without loss.
+    Query(teaql_runtime::InMemoryQueryError),
 }
 
 impl fmt::Display for LinuxProviderError {
@@ -17,6 +19,7 @@ impl fmt::Display for LinuxProviderError {
             Self::UnknownEntity(name) => write!(f, "unknown entity: {name}"),
             Self::ProcFs(msg) => write!(f, "procfs error: {msg}"),
             Self::Io(err) => write!(f, "I/O error: {err}"),
+            Self::Query(err) => err.fmt(f),
         }
     }
 }
@@ -25,6 +28,7 @@ impl std::error::Error for LinuxProviderError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(err) => Some(err),
+            Self::Query(err) => Some(err),
             _ => None,
         }
     }
@@ -33,6 +37,12 @@ impl std::error::Error for LinuxProviderError {
 impl From<std::io::Error> for LinuxProviderError {
     fn from(err: std::io::Error) -> Self {
         Self::Io(err)
+    }
+}
+
+impl From<teaql_runtime::InMemoryQueryError> for LinuxProviderError {
+    fn from(err: teaql_runtime::InMemoryQueryError) -> Self {
+        Self::Query(err)
     }
 }
 

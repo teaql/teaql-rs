@@ -3759,6 +3759,8 @@ dependencies = [
  "futures-util",
  "hkdf",
  "hmac 0.12.1",
+ "num-bigint",
+ "num-traits",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-proto",

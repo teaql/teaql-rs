@@ -7,6 +7,10 @@ use teaql_core::{
 };
 use teaql_data_service::{DataServiceOperation, ExecutionMetadata, QueryResult};
 
+mod error;
+mod sum;
+pub use error::{InMemoryQueryError, InMemoryQueryErrorKind};
+
 /// A general-purpose in-memory query engine that executes [`SelectQuery`] against a
 /// compact rows. This replaces the database engine for non-SQL data sources.
 pub struct InMemoryQueryEngine;
@@ -16,7 +20,10 @@ impl InMemoryQueryEngine {
     ///
     /// Processing order: filter → optional aggregation/HAVING → sort → paginate.
     /// Non-aggregate queries then apply their ordinary field projection.
-    pub fn execute(query: &SelectQuery, mut rows: Vec<CompactRow>) -> QueryResult {
+    pub fn execute(
+        query: &SelectQuery,
+        mut rows: Vec<CompactRow>,
+    ) -> Result<QueryResult, InMemoryQueryError> {
         let started_at = SystemTime::now();
 
         // 1. Filter
@@ -27,7 +34,7 @@ impl InMemoryQueryEngine {
         // Aggregate aliases only exist after grouping. Apply HAVING, ordering
         // and slicing to those result rows, not to their contributing inputs.
         if !query.aggregates.is_empty() {
-            let mut result = Self::aggregate(query, rows);
+            let mut result = Self::aggregate(query, rows)?;
             if let Some(having) = &query.having {
                 Self::filter(&mut result.rows, having);
             }
@@ -40,7 +47,7 @@ impl InMemoryQueryEngine {
             result.metadata.result_count = Some(result.rows.len());
             result.metadata.started_at = started_at;
             result.metadata.ended_at = SystemTime::now();
-            return result;
+            return Ok(result);
         }
 
         // 3. Sort
@@ -59,7 +66,7 @@ impl InMemoryQueryEngine {
         }
 
         let count = rows.len();
-        QueryResult {
+        Ok(QueryResult {
             rows,
             metadata: ExecutionMetadata {
                 statements: Vec::new(),
@@ -77,7 +84,7 @@ impl InMemoryQueryEngine {
                 parameterized_query: None,
                 params: Vec::new(),
             },
-        }
+        })
     }
 
     /// Retain only the rows for which the expression evaluates to `true`.
@@ -130,7 +137,10 @@ impl InMemoryQueryEngine {
 
     /// Compute aggregations over the (already-filtered) rows and return the result
     /// as a single-row [`QueryResult`].
-    fn aggregate(query: &SelectQuery, rows: Vec<CompactRow>) -> QueryResult {
+    fn aggregate(
+        query: &SelectQuery,
+        rows: Vec<CompactRow>,
+    ) -> Result<QueryResult, InMemoryQueryError> {
         let started_at = SystemTime::now();
 
         // If there are group-by fields, partition the rows into groups.
@@ -141,13 +151,13 @@ impl InMemoryQueryEngine {
         // No group-by: single aggregation over all rows.
         let mut result_row = std::collections::BTreeMap::new();
         for agg in &query.aggregates {
-            let value = compute_aggregate(agg, &rows);
+            let value = compute_aggregate(agg, &rows)?;
             result_row.insert(agg.alias.clone(), value);
         }
 
         let result_rows = vec![CompactRow::from_map(result_row)];
         let count = result_rows.len();
-        QueryResult {
+        Ok(QueryResult {
             rows: result_rows,
             metadata: ExecutionMetadata {
                 statements: Vec::new(),
@@ -165,7 +175,7 @@ impl InMemoryQueryEngine {
                 parameterized_query: None,
                 params: Vec::new(),
             },
-        }
+        })
     }
 
     /// Aggregate with GROUP BY support.
@@ -173,7 +183,7 @@ impl InMemoryQueryEngine {
         query: &SelectQuery,
         rows: Vec<CompactRow>,
         started_at: SystemTime,
-    ) -> QueryResult {
+    ) -> Result<QueryResult, InMemoryQueryError> {
         // Build groups keyed by the group-by field values.
         let mut groups: Vec<(Vec<Value>, Vec<CompactRow>)> = Vec::new();
 
@@ -201,7 +211,7 @@ impl InMemoryQueryEngine {
 
             // Compute each aggregate over this group.
             for agg in &query.aggregates {
-                let value = compute_aggregate(agg, group_rows);
+                let value = compute_aggregate(agg, group_rows)?;
                 result_row.insert(agg.alias.clone(), value);
             }
 
@@ -209,7 +219,7 @@ impl InMemoryQueryEngine {
         }
 
         let count = result_rows.len();
-        QueryResult {
+        Ok(QueryResult {
             rows: result_rows,
             metadata: ExecutionMetadata {
                 statements: Vec::new(),
@@ -227,7 +237,7 @@ impl InMemoryQueryEngine {
                 parameterized_query: None,
                 params: Vec::new(),
             },
-        }
+        })
     }
 }
 
@@ -446,22 +456,10 @@ fn count_rows(rows: &[CompactRow], field: &str) -> Value {
 }
 
 /// Compute a single aggregate over a slice of rows.
-fn compute_aggregate(agg: &Aggregate, rows: &[CompactRow]) -> Value {
-    match agg.function {
+fn compute_aggregate(agg: &Aggregate, rows: &[CompactRow]) -> Result<Value, InMemoryQueryError> {
+    Ok(match agg.function {
         AggregateFunction::Count => count_rows(rows, &agg.field),
-        AggregateFunction::Sum => {
-            let mut sum: f64 = 0.0;
-            let mut found = false;
-            for row in rows {
-                if let Some(v) = row.get(&agg.field)
-                    && let Some(f) = v.try_f64()
-                {
-                    sum += f;
-                    found = true;
-                }
-            }
-            if found { Value::F64(sum) } else { Value::Null }
-        }
+        AggregateFunction::Sum => return sum::exact_sum(agg, rows),
         AggregateFunction::Avg => {
             let mut sum: f64 = 0.0;
             let mut count: u64 = 0;
@@ -519,7 +517,7 @@ fn compute_aggregate(agg: &Aggregate, rows: &[CompactRow]) -> Value {
         | AggregateFunction::BitAnd
         | AggregateFunction::BitOr
         | AggregateFunction::BitXor => Value::Null,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -554,7 +552,8 @@ mod tests {
     #[test]
     fn test_execute_no_filter() {
         let query = SelectQuery::new("User");
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
         assert_eq!(result.rows.len(), 3);
         assert_eq!(result.metadata.backend, "memory");
     }
@@ -562,7 +561,8 @@ mod tests {
     #[test]
     fn test_execute_with_eq_filter() {
         let query = SelectQuery::new("User").filter(Expr::eq("name", "Bob"));
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
         assert_eq!(result.rows.len(), 1);
         assert_eq!(
             result.rows[0].get("name"),
@@ -573,14 +573,16 @@ mod tests {
     #[test]
     fn test_execute_with_gt_filter() {
         let query = SelectQuery::new("User").filter(Expr::gt("age", 28_i64));
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
         assert_eq!(result.rows.len(), 2); // Alice(30) and Charlie(35)
     }
 
     #[test]
     fn test_sort_ascending() {
         let query = SelectQuery::new("User").order_by(teaql_core::OrderBy::asc("age"));
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
         let ages: Vec<_> = result
             .rows
             .iter()
@@ -592,7 +594,8 @@ mod tests {
     #[test]
     fn test_sort_descending() {
         let query = SelectQuery::new("User").order_by(teaql_core::OrderBy::desc("age"));
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
         let ages: Vec<_> = result
             .rows
             .iter()
@@ -604,7 +607,8 @@ mod tests {
     #[test]
     fn test_paginate() {
         let query = SelectQuery::new("User").page(1, 1);
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
         assert_eq!(result.rows.len(), 1);
         assert_eq!(
             result.rows[0].get("name"),
@@ -615,7 +619,8 @@ mod tests {
     #[test]
     fn test_projection() {
         let query = SelectQuery::new("User").projects(["name"]);
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
         for row in &result.rows {
             assert!(row.contains_key("name"));
             assert!(!row.contains_key("id"));
@@ -626,7 +631,8 @@ mod tests {
     #[test]
     fn test_count_aggregate() {
         let query = SelectQuery::new("User").aggregate(Aggregate::count("total"));
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("total"), Some(&Value::I64(3)));
     }
@@ -634,28 +640,32 @@ mod tests {
     #[test]
     fn test_sum_aggregate() {
         let query = SelectQuery::new("User").aggregate(Aggregate::sum("age", "age_sum"));
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
-        assert_eq!(result.rows[0].get("age_sum"), Some(&Value::F64(90.0)));
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
+        assert_eq!(result.rows[0].get("age_sum"), Some(&Value::I64(90)));
     }
 
     #[test]
     fn test_avg_aggregate() {
         let query = SelectQuery::new("User").aggregate(Aggregate::avg("age", "age_avg"));
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
         assert_eq!(result.rows[0].get("age_avg"), Some(&Value::F64(30.0)));
     }
 
     #[test]
     fn test_max_aggregate() {
         let query = SelectQuery::new("User").aggregate(Aggregate::max("age", "age_max"));
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
         assert_eq!(result.rows[0].get("age_max"), Some(&Value::I64(35)));
     }
 
     #[test]
     fn test_min_aggregate() {
         let query = SelectQuery::new("User").aggregate(Aggregate::min("age", "age_min"));
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
         assert_eq!(result.rows[0].get("age_min"), Some(&Value::I64(25)));
     }
 

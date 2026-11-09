@@ -83,7 +83,7 @@ impl QueryExecutor for LinuxDataServiceExecutor {
             rows.into_iter()
                 .map(teaql_core::CompactRow::from_map)
                 .collect(),
-        );
+        )?;
         result.metadata.backend = "linux-proc".to_owned();
         result.metadata.started_at = started_at;
         result.metadata.ended_at = SystemTime::now();
@@ -207,6 +207,58 @@ mod tests {
             Some("Load the second matching fixture")
         );
         assert!(result.metadata.started_at <= result.metadata.ended_at);
+    }
+
+    #[tokio::test]
+    async fn query_preserves_exact_integer_sum_above_float_precision() {
+        let executor = LinuxDataServiceExecutor::new().with_collector(Box::new(StaticCollector {
+            rows: vec![row("one", 9_007_199_254_740_993), row("two", 2)],
+        }));
+        let request = QueryRequest::new(
+            SelectQuery::new("Fixture")
+                .aggregate(Aggregate::sum("score", "total"))
+                .limit(1),
+            teaql_core::QueryIntent::new("sum exact fixture scores", "verify provider precision")
+                .unwrap(),
+        );
+        let result = executor.query(request).await.unwrap();
+        assert_eq!(
+            result.rows[0].get("total"),
+            Some(&Value::I64(9_007_199_254_740_995))
+        );
+        assert_eq!(result.metadata.backend, "linux-proc");
+        assert_eq!(result.metadata.result_count, Some(1));
+    }
+
+    #[tokio::test]
+    async fn query_retains_structured_aggregate_error_and_source() {
+        let executor = LinuxDataServiceExecutor::new().with_collector(Box::new(StaticCollector {
+            rows: vec![row("one", i64::MAX), row("two", 1)],
+        }));
+        let request = QueryRequest::new(
+            SelectQuery::new("Fixture")
+                .aggregate(Aggregate::sum("score", "total"))
+                .limit(1),
+            teaql_core::QueryIntent::new("inspect sum overflow", "verify typed provider errors")
+                .unwrap(),
+        );
+        let error = executor.query(request).await.unwrap_err();
+        let LinuxProviderError::Query(aggregate) = &error else {
+            panic!("aggregate error type erased")
+        };
+        assert_eq!(
+            aggregate.kind,
+            teaql_runtime::InMemoryQueryErrorKind::NumericOverflow
+        );
+        assert_eq!(aggregate.field, "score");
+        assert_eq!(aggregate.alias, "total");
+        assert!(
+            std::error::Error::source(&error)
+                .unwrap()
+                .downcast_ref::<teaql_runtime::InMemoryQueryError>()
+                .is_some()
+        );
+        assert!(!format!("{error}").contains(&i64::MAX.to_string()));
     }
 
     #[tokio::test]

@@ -110,7 +110,9 @@ pub(crate) use id::local_id_generator;
 pub use id::{
     AtomicCounterIdGenerator, InternalIdGenerator, SnowflakeIdGenerator, canonical_id_space_entity,
 };
-pub use inmemory_engine::{ExprEvaluator, InMemoryQueryEngine};
+pub use inmemory_engine::{
+    ExprEvaluator, InMemoryQueryEngine, InMemoryQueryError, InMemoryQueryErrorKind,
+};
 pub use language::{
     BuiltinTranslator, Language, Locale, MessageTranslator, translate_check_result,
     translate_location,
