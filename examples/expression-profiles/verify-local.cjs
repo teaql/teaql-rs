@@ -47,6 +47,7 @@ async function main(){
   }
   for(const profile of ['camelCase','snake_case','PascalCase']){
    const work=path.join(scratch,profile);fs.mkdirSync(work);fs.cpSync(path.join(EXAMPLE,'generated',profile,'lib'),path.join(work,'lib'),{recursive:true});fs.copyFileSync(path.join(EXAMPLE,'main.rs'),path.join(work,'main.rs'));
+   report.libraryMetadata??={};report.libraryMetadata[profile]=require('../../scripts/pin-local-example-library.cjs').pin(path.join(work,'lib'),RUNTIME,scratch);
    const cargo=['[package]','name="teaql-generated-expression-profile-example"','version="0.0.0"','edition="2024"','publish=false','[workspace]',
     '[[bin]]','name="expression-profile"','path="main.rs"','[dependencies]','scalar-type-conformance-service-core={path="lib"}',
     ...CRATES.map(n=>n+'={path='+JSON.stringify(path.join(RUNTIME,n))+'}'),'serde_json="1"','rusqlite={version="0.40",features=["bundled","trace"]}',

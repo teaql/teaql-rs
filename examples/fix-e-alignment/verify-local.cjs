@@ -29,13 +29,15 @@ async function main() {
 try {
   assert(fs.statfsSync(scratch).bavail * fs.statfsSync(scratch).bsize > 8 * 1024 ** 3, "8 GiB free build space required");
   const m = fingerprint(); report.modelSha256 = m.modelSha256;
+  fs.cpSync(path.join(example, 'generated/lib'), path.join(scratch, 'lib'), {recursive: true});
+  report.libraryMetadata = require('../../scripts/pin-local-example-library.cjs').pin(path.join(scratch, 'lib'), repo, scratch);
   fs.mkdirSync(path.join(scratch, "src"));
   for (const file of fs.readdirSync(example).filter(file => file.endsWith(".rs"))) fs.copyFileSync(path.join(example, file), path.join(scratch, "src", file));
   const local = name => quote(path.join(repo, name));
   const manifest = ['[package]', 'name = "teaql-fix-e-example"', 'version = "0.0.0"', 'edition = "2024"', 'publish = false',
     '[[test]]', 'name = "creation_identity"', 'path = "src/creation_identity.rs"',
     '[[bin]]', 'name = "teaql-expression-boundaries"', 'path = "src/expression_boundary_probe.rs"',
-    '[dependencies]', 'checker-fix-advanced-core = { path = ' + quote(path.join(example, "generated/lib")) + ' }',
+    '[dependencies]', 'checker-fix-advanced-core = { path = ' + quote(path.join(scratch, 'lib')) + ' }',
     'teaql-core = { path = ' + local('teaql-core') + ' }', 'teaql-runtime = { path = ' + local('teaql-runtime') + ' }',
     'teaql-tfp-endpoint = { path = ' + local('teaql-tfp-endpoint') + ' }',
     'chrono = "0.4"', 'serde_json = "1"', 'futures-util = "0.3"', 'rusqlite = { version = "0.40", features = ["bundled", "trace", "hooks"] }',

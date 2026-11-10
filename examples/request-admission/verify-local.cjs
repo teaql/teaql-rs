@@ -22,10 +22,12 @@ async function main(){
   for(const n of Object.keys(r.inputs))write('inputs/'+n,fs.readFileSync(path.join(example,n)));
   scratch=fs.mkdtempSync(path.join(os.tmpdir(),'teaql-request-admission-build-'));r.scratch=scratch;runner=createOwnedRunner({supervisor:prepareOwnedSubreaper(scratch)});fs.mkdirSync(path.join(scratch,'src'));
   for(const n of ['main.rs','missing_purpose.rs','missing_audit.rs'])fs.copyFileSync(path.join(example,n),path.join(scratch,'src',n));
+  fs.cpSync(path.join(example,'generated/lib'),path.join(scratch,'lib'),{recursive:true});
+  r.libraryMetadata=require('../../scripts/pin-local-example-library.cjs').pin(path.join(scratch,'lib'),repo,scratch);
   const q=JSON.stringify,crates=['teaql-core','teaql-runtime','teaql-macros','teaql-sql','teaql-data-service','teaql-provider-sqlite'];
   const manifest=['[package]','name="teaql-request-admission-example"','version="0.0.0"','edition="2024"','publish=false',
    ...[['request-admission','main.rs'],['missing-purpose','missing_purpose.rs'],['missing-audit','missing_audit.rs']].flatMap(([n,f])=>['[[bin]]','name='+q(n),'path='+q('src/'+f)]),
-   '[dependencies]','checker-fix-advanced-core={path='+q(path.join(example,'generated/lib'))+'}',
+   '[dependencies]','checker-fix-advanced-core={path='+q(path.join(scratch,'lib'))+'}',
    'teaql-core={path='+q(path.join(repo,'teaql-core'))+'}','teaql-runtime={path='+q(path.join(repo,'teaql-runtime'))+'}',
    'chrono="0.4"','serde_json="1"','futures-util="0.3"','tokio={version="1",features=["macros","rt-multi-thread"]}',
    'rusqlite={version="0.40",features=["bundled","trace"]}',

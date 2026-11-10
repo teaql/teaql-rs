@@ -21,6 +21,8 @@ if [[ "$generate" == false && ! -f "$example_dir/target/generated/lib/Cargo.toml
   (cd "$fixture" && sha256sum --check --quiet SHA256SUMS)
   mkdir -p "$example_dir/target/generated"
   cp -R "$fixture/lib" "$example_dir/target/generated/"
+  node "$runtime_dir/scripts/pin-local-example-library.cjs" \
+    "$example_dir/target/generated/lib" "$runtime_dir" "$example_dir/target"
   cp "$fixture/model-under-test.xml" "$fixture/fixture-mode.txt" \
     "$fixture/fixture-inheritance.txt" "$example_dir/target/generated/"
 fi

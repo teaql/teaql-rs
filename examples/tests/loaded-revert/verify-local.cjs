@@ -23,6 +23,7 @@ async function main(){
   assert(fs.statfsSync(os.tmpdir()).bavail*fs.statfsSync(os.tmpdir()).bsize>8*1024**3,'8 GiB free build space required');
   report.fixture=fingerprint();scratch=fs.mkdtempSync(path.join(os.tmpdir(),'teaql-restoration-build-'));runner=createOwnedRunner({supervisor:prepareOwnedSubreaper(scratch)});
   for(const file of Object.keys(report.fixture.files).filter(file=>file.startsWith('generated/'))){const relative=file.slice('generated/'.length),to=path.join(scratch,relative);fs.mkdirSync(path.dirname(to),{recursive:true});fs.copyFileSync(path.join(example,file),to);}
+  report.libraryMetadata=require('../../../scripts/pin-local-example-library.cjs').pin(path.join(scratch,'lib'),repo,scratch);
   for(const file of ['rust-loaded-revert.rs','rust-integral-generated.rs'])fs.copyFileSync(path.join(example,file),path.join(scratch,file));
   const cargo=['[package]','name="teaql-loaded-revert-example"','version="0.0.0"','edition="2024"','publish=false','[workspace]',
    '[[test]]','name="restoration"','path="rust-loaded-revert.rs"','[dependencies]','scalar-type-conformance-service-core={path="lib"}',

@@ -33,6 +33,7 @@ async function main() {
     report.scratch = scratch;
     runner = createOwnedRunner({supervisor: prepareOwnedSubreaper(scratch)});
     fs.cpSync(path.join(FIXTURE, 'generated/lib'), path.join(scratch, 'lib'), {recursive: true});
+    report.libraryMetadata = require('../../scripts/pin-local-example-library.cjs').pin(path.join(scratch, 'lib'), ROOT, scratch);
     fs.copyFileSync(path.join(FIXTURE, 'rust-integral-generated.rs'), path.join(scratch, 'prepared.rs'));
     fs.copyFileSync(path.join(EXAMPLE, 'main.rs'), path.join(scratch, 'main.rs'));
     for (const name of ['main.rs', 'prepared.rs']) fs.copyFileSync(path.join(scratch, name), path.join(output, name));
