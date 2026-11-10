@@ -3588,7 +3588,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-core"
-version = "5.0.7"
+version = "6.0.0"
 dependencies = [
  "bytes",
  "chrono",
@@ -3602,7 +3602,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-data-service"
-version = "5.0.7"
+version = "6.0.0"
 dependencies = [
  "futures-core",
  "serde_json",
@@ -3611,7 +3611,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-examples"
-version = "5.0.7"
+version = "6.0.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3631,7 +3631,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-http-reqwest"
-version = "5.0.7"
+version = "6.0.0"
 dependencies = [
  "async-trait",
  "reqwest 0.13.4",
@@ -3642,7 +3642,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-macros"
-version = "5.0.7"
+version = "6.0.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3651,7 +3651,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-object-storage-s3"
-version = "5.0.7"
+version = "6.0.0"
 dependencies = [
  "async-trait",
  "aws-sdk-s3",
@@ -3691,7 +3691,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-provider-mysql"
-version = "5.0.7"
+version = "6.0.0"
 dependencies = [
  "async-stream",
  "chrono",
@@ -3709,7 +3709,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-provider-postgres"
-version = "5.0.7"
+version = "6.0.0"
 dependencies = [
  "async-stream",
  "bytes",
@@ -3729,7 +3729,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-provider-sqlite"
-version = "5.0.7"
+version = "6.0.0"
 dependencies = [
  "async-stream",
  "chrono",
@@ -3749,7 +3749,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-runtime"
-version = "5.0.7"
+version = "6.0.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -3783,7 +3783,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-sql"
-version = "5.0.7"
+version = "6.0.0"
 dependencies = [
  "futures-core",
  "futures-util",
@@ -3794,7 +3794,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-tfp-endpoint"
-version = "5.0.7"
+version = "6.0.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -3812,7 +3812,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-web-integration-axum"
-version = "5.0.7"
+version = "6.0.0"
 dependencies = [
  "axum",
  "serde",

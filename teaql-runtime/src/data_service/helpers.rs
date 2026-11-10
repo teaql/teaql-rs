@@ -10,13 +10,64 @@ use crate::{DataServiceError, GraphNode, RuntimeError};
 
 use super::{AggregationCacheBackend, RelationLoadPlan};
 
-pub(super) fn default_aggregate_value(aggregate: &RelationAggregate) -> Value {
-    match aggregate.single_result {
-        true if matches!(aggregate.query.aggregates.as_slice(), [value] if value.function == teaql_core::AggregateFunction::Sum) => {
+pub(crate) fn default_aggregate_value(aggregate: &RelationAggregate) -> Value {
+    if !aggregate.single_result {
+        return Value::List(Vec::new());
+    }
+    let scalar = |item: &teaql_core::Aggregate| {
+        if item.function == teaql_core::AggregateFunction::Count {
+            Value::U64(0)
+        } else {
             Value::Null
         }
-        true => Value::U64(0),
-        false => Value::List(Vec::new()),
+    };
+    match aggregate.query.aggregates.as_slice() {
+        [] => Value::U64(0),
+        [item] => scalar(item),
+        items => Value::Object(
+            items
+                .iter()
+                .map(|item| (item.alias.clone(), scalar(item)))
+                .collect(),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod smart_list_aggregate_default_tests {
+    use super::*;
+
+    #[test]
+    fn missing_relation_buckets_preserve_empty_sql_scalar_semantics() {
+        let count =
+            RelationAggregate::new("items", "count", SelectQuery::new("Item").count("n"), true);
+        let sum = RelationAggregate::new(
+            "items",
+            "total",
+            SelectQuery::new("Item").sum("amount", "total"),
+            true,
+        );
+        assert_eq!(default_aggregate_value(&count), Value::U64(0));
+        assert_eq!(default_aggregate_value(&sum), Value::Null);
+        assert_eq!(relation_aggregate_value(&[], &sum), Value::Null);
+        let present_null = CompactRow::from(BTreeMap::from([("total".to_owned(), Value::Null)]));
+        assert_eq!(relation_aggregate_value(&[present_null], &sum), Value::Null);
+        let multiple = RelationAggregate::new(
+            "items",
+            "stats",
+            SelectQuery::new("Item").count("n").sum("amount", "sum"),
+            true,
+        );
+        assert_eq!(
+            default_aggregate_value(&multiple),
+            Value::Object(BTreeMap::from([
+                ("n".to_owned(), Value::U64(0)),
+                ("sum".to_owned(), Value::Null),
+            ]))
+        );
+        let mut parents = vec![CompactRow::from(BTreeMap::new())];
+        attach_empty_relation_aggregate(&mut parents, &sum);
+        assert_eq!(parents[0].get("total"), Some(&Value::Null));
     }
 }
 

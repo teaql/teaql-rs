@@ -193,6 +193,22 @@ impl<T> SmartList<T> {
         }
     }
 
+    /// A derived row selection has no exact source-query statistics of its own.
+    pub fn filter(self, predicate: impl FnMut(&T) -> bool) -> Self {
+        let mut result = Self::new(self.data.into_iter().filter(predicate).collect());
+        result.is_loaded = self.is_loaded;
+        result
+    }
+
+    pub fn flat_map<U, I>(self, mapper: impl FnMut(T) -> I) -> SmartList<U>
+    where
+        I: IntoIterator<Item = U>,
+    {
+        let mut result = SmartList::new(self.data.into_iter().flat_map(mapper).collect());
+        result.is_loaded = self.is_loaded;
+        result
+    }
+
     pub fn to_list<U>(&self, mapper: impl FnMut(&T) -> U) -> Vec<U> {
         self.data.iter().map(mapper).collect()
     }
@@ -284,7 +300,10 @@ where
     {
         self.data
             .iter()
-            .map(|item| (id_key(&item.id_value()), item.clone()))
+            .filter_map(|item| match item.id_value() {
+                Value::Null | Value::TypedNull(_) => None,
+                id => Some((id_key(&id), item.clone())),
+            })
             .collect()
     }
 }

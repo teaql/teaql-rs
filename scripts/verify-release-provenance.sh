@@ -12,6 +12,8 @@ crates=(
     teaql-provider-postgres
     teaql-provider-sqlite
     teaql-provider-mysql
+    teaql-http-reqwest
+    teaql-object-storage-s3
     teaql-tfp-endpoint
     teaql-web-integration-axum
 )

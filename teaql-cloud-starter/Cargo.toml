@@ -1,6 +1,6 @@
 [package]
 name = "teaql-cloud-starter"
-version.workspace = true
+version = "5.0.7"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true

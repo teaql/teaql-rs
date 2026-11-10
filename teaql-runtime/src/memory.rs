@@ -10,6 +10,7 @@ use teaql_core::{
     UpdateCommand, Value,
 };
 
+use crate::data_service::default_aggregate_value;
 use crate::{DataServiceError, InMemoryMetadataStore, MetadataStore, RuntimeError};
 
 #[derive(Debug)]
@@ -450,16 +451,6 @@ where
                 id: format!("{id:?}"),
             },
         ))
-    }
-}
-
-fn default_aggregate_value(aggregate: &RelationAggregate) -> Value {
-    match aggregate.single_result {
-        true if matches!(aggregate.query.aggregates.as_slice(), [value] if value.function == AggregateFunction::Sum) => {
-            Value::Null
-        }
-        true => Value::U64(0),
-        false => Value::List(Vec::new()),
     }
 }
 

@@ -226,7 +226,7 @@ impl std::fmt::Debug for PurposedSelectQuery {
 
 impl PurposedSelectQuery {
     /// Split an explicitly declared ungrouped count from an ordinary entity list.
-    /// Mixed/grouped aggregates remain aggregate requests, not implicit pagination.
+    /// Other scalar aliases remain aggregation metadata; grouped projections stay separate.
     #[doc(hidden)]
     pub fn take_requested_list_count(&mut self, options: &QueryOptions) -> Option<(String, Self)> {
         let operation = options.page_count_operation.clone()?;
@@ -237,10 +237,11 @@ impl PurposedSelectQuery {
             || !self.query.object_group_bys.is_empty()
             || self.query.having.is_some()
             || self.query.partition_by.is_some()
-            || self.query.aggregates.len() != 1
-            || self.query.aggregates[0].function != teaql_core::AggregateFunction::Count
-            || self.query.aggregates[0].field != "*"
-            || self.query.aggregates[0].alias != alias
+            || !self.query.aggregates.iter().any(|aggregate| {
+                aggregate.function == teaql_core::AggregateFunction::Count
+                    && aggregate.field == "*"
+                    && aggregate.alias == alias
+            })
         {
             return None;
         }
@@ -249,7 +250,11 @@ impl PurposedSelectQuery {
             .clone()
             .with_facet_diagnostics(options)
             .for_exact_count_with_operation(&alias, operation);
-        self.query.aggregates.clear();
+        self.query.aggregates.retain(|aggregate| {
+            !(aggregate.function == teaql_core::AggregateFunction::Count
+                && aggregate.field == "*"
+                && aggregate.alias == alias)
+        });
         Some((alias, count))
     }
 
