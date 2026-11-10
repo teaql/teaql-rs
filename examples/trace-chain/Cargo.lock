@@ -1685,7 +1685,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-core"
-version = "5.0.7"
+version = "6.0.0"
 dependencies = [
  "bytes",
  "chrono",
@@ -1698,7 +1698,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-data-service"
-version = "5.0.7"
+version = "6.0.0"
 dependencies = [
  "futures-core",
  "teaql-core",
@@ -1706,7 +1706,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-macros"
-version = "5.0.7"
+version = "6.0.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1715,7 +1715,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-provider-sqlite"
-version = "5.0.7"
+version = "6.0.0"
 dependencies = [
  "async-stream",
  "chrono",
@@ -1732,7 +1732,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-runtime"
-version = "5.0.7"
+version = "6.0.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -1764,7 +1764,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-sql"
-version = "5.0.7"
+version = "6.0.0"
 dependencies = [
  "futures-core",
  "futures-util",
