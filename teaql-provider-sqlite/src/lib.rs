@@ -1950,7 +1950,6 @@ fn cached_column_layout(
 fn statement_columns(statement: &rusqlite::Statement<'_>) -> Vec<ColumnInfo> {
     statement
         .columns()
-        .into_iter()
         .map(|column| ColumnInfo {
             name: column.name().to_owned(),
             decode_kind: sqlite_decode_kind(column.decl_type()),
