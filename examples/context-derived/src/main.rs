@@ -19,6 +19,7 @@ struct State {
     calls: AtomicUsize,
     checks: AtomicUsize,
     fail: AtomicUsize,
+    normalized_name: Mutex<String>,
 }
 struct Resolver(Arc<State>);
 impl ContextFixResolver for Resolver {
@@ -97,6 +98,9 @@ impl EntryCheckerLogic for Logic {
             results,
         ) {
             entity.update_changed_by(v);
+        }
+        if entity.name() == "NORMALIZE" {
+            entity.update_name(self.0.normalized_name.lock().unwrap().clone());
         }
     }
     fn check_entry(
@@ -281,6 +285,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     zero();
     assert_eq!(state.calls.load(SeqCst), 0);
     assert_eq!(entry.version(), version);
+    *state.normalized_name.lock().unwrap() = entry.name();
+    entry.update_name("NORMALIZE");
+    reset();
+    entry = entry
+        .audit_as("Normalize the last business edit back to its persisted value")
+        .save(&context)
+        .await?;
+    zero();
+    assert_eq!(entry.version(), version);
+    assert_eq!(entry.touched_at().0, a.timestamp_millis());
+    assert_eq!(entry.name(), *state.normalized_name.lock().unwrap());
     entry.update_name(format!("updated-{suffix}"));
     reset();
     entry = entry

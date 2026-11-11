@@ -2582,6 +2582,7 @@ where
         let mut context_undo = context_undo::ContextUndo::capture(context, &root, &node);
         preflight_graph(context, &mut node, &ObjectLocation::root(), Some(&root))?;
         merge_relation_mutations_into_root(context, &root, &node)?;
+        restoration::prepare(context, &root, &mut node)?;
         preflight_pending_dynamic_entities(context, &root, &node)?;
         capture_ledger_trace_scopes(&root, &node)?;
         let has_ledger_changes = !root.current_change_set().is_empty()
@@ -2742,6 +2743,7 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
         let mut context_undo = context_undo::ContextUndo::capture(context, &root, &node);
         preflight_graph(context, &mut node, &ObjectLocation::root(), Some(&root))?;
         merge_relation_mutations_into_root(context, &root, &node)?;
+        restoration::prepare(context, &root, &mut node)?;
         preflight_pending_dynamic_entities(context, &root, &node)?;
         capture_ledger_trace_scopes(&root, &node)?;
         let has_ledger_changes = !root.current_change_set().is_empty()

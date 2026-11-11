@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -65,6 +66,7 @@ def run(command, env, log):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--unit-tests", action="store_true", help="Also run core/runtime/macro all-target tests with disposable outputs")
     args = parser.parse_args()
     output = args.output.resolve() if args.output else Path(tempfile.mkdtemp(prefix="teaql-context-evidence-"))
     output.mkdir(parents=True, exist_ok=True)
@@ -77,6 +79,12 @@ def main():
         cargo = shutil.which("cargo") or str(Path.home() / ".cargo/bin/cargo")
         env = dict(os.environ, CARGO_TARGET_DIR=str(scratch / "target"), CARGO_INCREMENTAL="0", CARGO_BUILD_JOBS="4", CARGO_PROFILE_DEV_DEBUG="0", CARGO_PROFILE_TEST_DEBUG="0", TEAQL_CONTEXT_FIX_DB=str(output / "fixture.sqlite"))
         report["buildOutput"] = str(scratch)
+        if args.unit_tests:
+            command = [cargo, "test", "--locked", "--manifest-path", str(REPO / "Cargo.toml"), "-p", "teaql-runtime", "-p", "teaql-core", "-p", "teaql-macros", "--all-targets"]
+            code = run(command, env, output / "unit.log")
+            summaries = re.findall(r"test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored", (output / "unit.log").read_text())
+            report["unit"] = dict(command=command, exitCode=code, passed=sum(int(s[0]) for s in summaries), failed=sum(int(s[1]) for s in summaries), ignored=sum(int(s[2]) for s in summaries), targets=len(summaries))
+            assert code == 0 and report["unit"]["passed"] >= 750 and report["unit"]["failed"] == 0, "unit tests failed; see unit.log"
         command = [cargo, "build", "--locked", "--manifest-path", str(EXAMPLE / "Cargo.toml")]
         report["buildCommand"] = command
         assert run(command, env, output / "build.log") == 0, "build failed; see build.log"

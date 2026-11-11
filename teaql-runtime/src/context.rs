@@ -1368,8 +1368,43 @@ impl UserContext {
             .map(|checker| checker.custom_context_fields())
             .unwrap_or(&[]);
         let changed = intent.has_effective_change(values, descriptor, fields, custom);
+        let automatic = crate::ledger_keys::storage_fields_from_ledger(
+            descriptor,
+            &fields
+                .iter()
+                .chain(custom)
+                .map(|field| (*field).to_owned())
+                .collect(),
+        )?;
+        let before: Vec<_> = automatic
+            .into_iter()
+            .map(|field| {
+                let value = values.get(&field).cloned();
+                (field, value)
+            })
+            .collect();
+        let create = crate::CheckObjectStatus::from_values(values).is_create();
         let result = self.check_and_fix_values_scoped(entity, values, location, Some(changed));
         crate::ledger_keys::map_checker_values(descriptor, values, false)?;
+        // Inspect final persisted business values, not only the caller's dirty
+        // names: Fix can both repair an edit and introduce another valid edit.
+        // No original snapshot means no proof for cancelling unknown input.
+        if result.is_ok() && !create && intent.original.is_some() {
+            let final_intent = crate::checker::CheckMutationState {
+                original: intent.original,
+                dirty: None,
+                dynamic_changed: intent.dynamic_changed,
+            };
+            if !final_intent.has_effective_change(values, descriptor, fields, custom) {
+                for (field, old) in before {
+                    if let Some(old) = old {
+                        values.insert(field, old);
+                    } else {
+                        values.remove(&field);
+                    }
+                }
+            }
+        }
         result
     }
 

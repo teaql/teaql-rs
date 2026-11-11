@@ -727,6 +727,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn final_intent_separates_restored_edits_from_other_business_repairs() {
+        use teaql_core::{DataType, EntityDescriptor, EntitySnapshot, PropertyDescriptor};
+        let descriptor = EntityDescriptor::new("Entry")
+            .property(PropertyDescriptor::new("name", DataType::Text))
+            .property(PropertyDescriptor::new("memo", DataType::Text))
+            .property(PropertyDescriptor::new("touched_at", DataType::I64));
+        let old = BTreeMap::from([
+            ("name".into(), Value::from("original")),
+            ("memo".into(), Value::from("old memo")),
+            ("touched_at".into(), Value::I64(100)),
+        ]);
+        let snapshot = EntitySnapshot::from(old.clone());
+        let mut values = EntityValues::from(old);
+        values.insert("touched_at".into(), Value::I64(200));
+        let state = CheckMutationState {
+            original: Some(&snapshot),
+            dirty: None,
+            dynamic_changed: false,
+        };
+        assert!(!state.has_effective_change(&values, &descriptor, &["touched_at"], &[]));
+        values.insert("memo".into(), Value::from("business repair"));
+        assert!(state.has_effective_change(&values, &descriptor, &["touched_at"], &[]));
+    }
+
+    #[test]
+    fn final_intent_cannot_cancel_dynamic_changes_or_unknown_original_values() {
+        use teaql_core::{DataType, EntityDescriptor, PropertyDescriptor};
+        let descriptor = EntityDescriptor::new("Entry")
+            .property(PropertyDescriptor::new("name", DataType::Text));
+        let values = EntityValues::from(BTreeMap::from([(
+            "name".into(),
+            Value::from("unknown baseline"),
+        )]));
+        let unknown = CheckMutationState {
+            original: None,
+            dirty: None,
+            dynamic_changed: false,
+        };
+        assert!(unknown.has_effective_change(&values, &descriptor, &[], &[]));
+        let dynamic = CheckMutationState {
+            original: None,
+            dirty: None,
+            dynamic_changed: true,
+        };
+        assert!(dynamic.has_effective_change(&EntityValues::new(), &descriptor, &[], &[]));
+    }
+
+    #[test]
     fn test_object_location_formatting_and_nesting_levels() {
         // Test root
         let root = ObjectLocation::root();
