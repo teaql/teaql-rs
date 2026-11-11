@@ -5,25 +5,22 @@ use teaql_core::{Entity, Value, eval::LoadState, time::Timestamp};
 
 #[teaql_macros::teaql_entity]
 #[derive(Clone, Debug, teaql_macros::TeaqlEntity)]
-#[teaql(
-    entity = "WireRoot",
-    indexed_layout,
-    reverse_relation(
-        name = "single_probe",
-        target = "WireProbe",
-        local_key = "id",
-        foreign_key = "root_record_id",
-        json_type = "Probe"
-    ),
-    reverse_relation(
-        name = "probe_list",
-        target = "WireProbe",
-        local_key = "id",
-        foreign_key = "root_record_id",
-        many,
-        json_type = "Probe"
-    )
-)]
+#[teaql(entity = "WireRoot", indexed_layout)]
+#[teaql(reverse_relation(
+    name = "single_probe",
+    target = "WireProbe",
+    local_key = "id",
+    foreign_key = "root_record_id",
+    json_type = "Probe"
+))]
+#[teaql(reverse_relation(
+    name = "probe_list",
+    target = "WireProbe",
+    local_key = "id",
+    foreign_key = "root_record_id",
+    many,
+    json_type = "Probe"
+))]
 struct Root {
     #[teaql(id)]
     id: u64,

@@ -62,6 +62,10 @@ impl AtomicCounterIdGenerator {
 }
 
 impl InternalIdGenerator for AtomicCounterIdGenerator {
+    #[allow(
+        deprecated,
+        reason = "fetch_update supports pre-1.99 compilers; try_update is not yet available on the retained toolchain"
+    )]
     fn generate_id(&self, _entity: &str) -> Result<u64, RuntimeError> {
         self.counter
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
