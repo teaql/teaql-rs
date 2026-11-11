@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.1] - 2026-11-11
+
+Tracking: [Rust #317](https://github.com/teaql/teaql-rs/issues/317).
+
+- Construct business futures lazily and pin them once in the data-service
+  observation state machine. The optional boxed telemetry observer borrows
+  pinned work instead of storing another large business future.
+- Preserve physical SQL observation, request lineage, failure propagation and
+  cancellation. Add seven bounded-size and lifecycle regression tests.
+- Fix a generated local-time decoding Clippy diagnostic without changing
+  hydration or privacy semantics.
+- The generator's previously overflowing shared Order SQLite tests pass twice
+  on the default test-thread stack; no `RUST_MIN_STACK` increase is required.
+  Final-version, artifact and publication qualification are separate gates.
+
 ## [5.0.7] - 2026-10-13
 
 Tracking: [Rust #247](https://github.com/teaql/teaql-rs/issues/247) and

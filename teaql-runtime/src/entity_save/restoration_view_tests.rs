@@ -193,7 +193,7 @@ async fn restored_known_null_keeps_partial_mask_and_readonly_metadata() {
 }
 #[tokio::test]
 async fn empty_audit_intent_is_rejected_at_request_construction() {
-    let (context, calls, [first, _]) = fixture(false);
+    let (_context, calls, [first, _]) = fixture(false);
     assert!(
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| teaql_core::Audited::new(
             first, " "
