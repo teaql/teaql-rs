@@ -575,6 +575,26 @@ impl EntityChangeSet {
             .insert(code, mutation);
     }
 
+    fn clear_dynamic_field(&mut self, key: &EntityKey, code: &str) {
+        if let Some(changes) = self.dynamic_changes.as_mut() {
+            if let Some(fields) = changes.get_mut(key) {
+                fields.remove(code);
+                if fields.is_empty() {
+                    changes.remove(key);
+                }
+            }
+        }
+        if let Some(metadata) = self.dynamic_metadata.as_mut() {
+            if let Some(originals) = metadata.originals.get_mut(key) {
+                originals.remove(code);
+                if originals.is_empty() {
+                    metadata.originals.remove(key);
+                    metadata.definitions.remove(key);
+                }
+            }
+        }
+    }
+
     /// Remove all pending changes for a specific entity key.
     pub fn clear_entity(&mut self, key: &EntityKey) {
         self.changes.remove(key);
@@ -1532,6 +1552,7 @@ impl EntityRuntimeState {
         value: Value,
     ) -> Result<bool, teaql_core::dynamic_fields::DynamicFieldError> {
         use teaql_core::dynamic_fields::{DynamicFieldError, DynamicFieldMutation};
+        let creating = self.is_new(&key);
         let fields = self
             .dynamic_fields
             .as_mut()
@@ -1549,6 +1570,33 @@ impl EntityRuntimeState {
         let original = fields.values().get(code).cloned();
         let definitions = fields.definitions().clone();
         fields.assign(code, value.clone())?;
+        let baseline = self.read_context(original.clone(), |ledger| {
+            for frame in &ledger.change_sets.stack {
+                if let Some(original) = frame
+                    .dynamic_originals(&key)
+                    .and_then(|fields| fields.get(code))
+                {
+                    return original.clone();
+                }
+            }
+            original.clone()
+        });
+        if !creating
+            && baseline
+                .as_ref()
+                .is_some_and(|before| same_dynamic_baseline(before, &value))
+        {
+            // Do not allocate a ledger for an equal loaded assignment. If this
+            // code was edited earlier, cancel only it across all staged frames.
+            if self.inner.get().is_some() {
+                self.write_context(|ledger| {
+                    for frame in &mut ledger.change_sets.stack {
+                        frame.clear_dynamic_field(&key, code);
+                    }
+                });
+            }
+            return Ok(!was_loaded);
+        }
         self.write_context(|ledger| {
             ledger.change_sets.current_mut().set_dynamic(
                 key,
@@ -1857,6 +1905,23 @@ impl EntityRuntimeState {
         self.read_context(None, |context| context.composition_errors.first().cloned())
     }
 }
+
+// Definitions validate the value type first. Preserve representation-sensitive
+// numeric/JSON edits instead of treating them as proven baseline restoration.
+fn same_dynamic_baseline(before: &Value, current: &Value) -> bool {
+    match (before, current) {
+        (Value::F64(a), Value::F64(b)) => {
+            a.is_finite() && b.is_finite() && a.to_bits() == b.to_bits()
+        }
+        (Value::Decimal(a), Value::Decimal(b)) => a.serialize() == b.serialize(),
+        (Value::Json(a), Value::Json(b)) => a.to_string() == b.to_string(),
+        _ => before == current,
+    }
+}
+
+#[cfg(test)]
+#[path = "entity_runtime/dynamic_normalization_tests.rs"]
+mod dynamic_normalization_tests;
 
 /// An explicit graph composition failed before any database write.
 #[derive(Clone, Debug, Eq, PartialEq)]

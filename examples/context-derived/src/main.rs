@@ -3,10 +3,15 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering::SeqCst},
 };
-use teaql_core::{Entity, Value};
+use teaql_core::dynamic_fields::{
+    DynamicFieldDefinitions, DynamicFieldSelection, DynamicFieldState,
+};
+use teaql_core::dynamic_properties::DynamicPropertyDefinitions;
+use teaql_core::{DataType, Entity, Expr, Value};
 use teaql_data_service::{
     DataServiceExecutor, MutationExecutor, QueryExecutor, Transaction, TransactionExecutor,
 };
+use teaql_runtime::dynamic_fields::DatabaseDynamicFieldsProvider;
 use teaql_runtime::{
     CheckObjectStatus, CheckResults, ContextFixError, ContextFixInput, ContextFixResolver,
     FixedBusinessClock, InMemoryCheckerRegistry, ObjectLocation, RawAuditEventKind, RuntimeError,
@@ -206,6 +211,20 @@ async fn load(context: &UserContext, id: u64) -> Result<Entry, RuntimeError> {
         .await?;
     Ok(rows.data.remove(0))
 }
+async fn load_extensions(context: &UserContext, id: u64) -> Result<Entry, RuntimeError> {
+    let mut rows = Q::entries()
+        .with_id_is(id)
+        .limit(1)
+        .select_dynamic_fields_with(
+            DynamicFieldSelection::fields([("context_note".into(), DataType::Text)])
+                .map_err(RuntimeError::DynamicField)?,
+        )
+        .comment("Load the persistent extension alongside its owner")
+        .purpose("Verify Context Fix eligibility for dynamic-only writes")
+        .execute_for_list(context)
+        .await?;
+    Ok(rows.data.remove(0))
+}
 fn rejection(error: RuntimeError, path: &str) {
     let RuntimeError::Check(results) = error else {
         panic!("expected Check, got {error:?}");
@@ -246,6 +265,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         inner: actual,
         calls: calls.clone(),
     });
+    let definitions = DynamicFieldDefinitions::new(
+        "Entry",
+        "context-example-v1",
+        [("context_note".into(), DataType::Text)],
+    )?;
+    context.set_dynamic_fields_provider(Arc::new(DatabaseDynamicFieldsProvider::<
+        ServiceRuntimeExecutor,
+    >::new("context-example", [definitions])?));
+    context.ensure_schema().await?;
     let suffix = std::process::id();
     let reset = || {
         calls.store(0, SeqCst);
@@ -427,6 +455,96 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let persisted = load(&context, first.id()).await?;
     assert_eq!(persisted.name(), "accepted-first");
     assert_eq!(persisted.last_ip(), "ip-D");
+    // The Q builder remains generated. Extend its typed AST through the same
+    // generated runtime bridge because no field-specific readonly selector exists.
+    let query = Q::entries()
+        .with_id_is(entry.id())
+        .limit(1)
+        .comment("Load a readonly typed property on an otherwise complete view")
+        .into_query()
+        .comment("Load a readonly typed property through the generated runtime bridge")
+        .project_expr("_name_copy", Expr::column("name"))
+        .with_dynamic_property_definitions(DynamicPropertyDefinitions::new([(
+            "_name_copy".into(),
+            DataType::Text,
+        )])?);
+    let rows = context
+        .fetch_entity_smart_list::<Entry>(
+            "Entry",
+            teaql_runtime::PurposedSelectQuery::new(
+                query,
+                "Verify readonly property materialization",
+            ),
+            vec![],
+        )
+        .await?;
+    let readonly = rows.data[0].clone();
+    assert_eq!(
+        readonly.dynamic_property("_name_copy"),
+        Some(&Value::Text(entry.name()))
+    );
+    *state.phase.lock().unwrap() = "E".into();
+    let c = b + chrono::Duration::hours(1);
+    context.set_business_clock(FixedBusinessClock::new(c));
+    reset();
+    let readonly = readonly
+        .audit_as("A readonly property cannot justify Context-only writes")
+        .save(&context)
+        .await?;
+    zero();
+    assert_eq!(readonly.version(), entry.version());
+    assert_eq!(
+        readonly.dynamic_property("_name_copy"),
+        Some(&Value::Text(entry.name()))
+    );
+    let mut dynamic = load_extensions(&context, entry.id()).await?;
+    assert_eq!(
+        dynamic
+            .dynamic_field_values()
+            .unwrap()
+            .field("context_note")?
+            .state(),
+        DynamicFieldState::NotLoaded
+    );
+    let dynamic_version = dynamic.version();
+    dynamic.update_dynamic_field("context_note", Value::from("dynamic-only"))?;
+    reset();
+    let dynamic = dynamic
+        .audit_as("Persist only an extension edit with update Context defaults")
+        .save(&context)
+        .await?;
+    assert_eq!(audits.load(SeqCst), 1);
+    assert_eq!(dynamic.version(), dynamic_version + 1);
+    assert_eq!(
+        E::entry(&dynamic).get_touched_at().eval().unwrap().0,
+        c.timestamp_millis()
+    );
+    assert_eq!(dynamic.last_ip(), "ip-E");
+    assert_eq!(dynamic.changed_by(), "actor-E");
+    assert_eq!(dynamic.born_at().0, a.timestamp_millis());
+    let mut dynamic = load_extensions(&context, entry.id()).await?;
+    assert_eq!(
+        dynamic
+            .dynamic_field_values()
+            .unwrap()
+            .field("context_note")?
+            .value(),
+        Some(&Value::from("dynamic-only"))
+    );
+    *state.phase.lock().unwrap() = "F".into();
+    context.set_business_clock(FixedBusinessClock::new(c + chrono::Duration::hours(1)));
+    dynamic.update_dynamic_field("context_note", Value::from("dynamic-only"))?;
+    reset();
+    let dynamic = dynamic
+        .audit_as("An equal extension value cannot create a Context-only write")
+        .save(&context)
+        .await?;
+    zero();
+    assert_eq!(dynamic.version(), dynamic_version + 1);
+    assert_eq!(dynamic.changed_by(), "actor-E");
+    println!(
+        "RUST_CONTEXT_FIX_EXTENSIONS_PASS dynamic_only=true readonly_noop=true equal_dynamic_noop=true"
+    );
     let conn = pool.lock().unwrap();
     let actual: (String, String, i64) = conn.query_row(
         "SELECT name,last_ip,version FROM entry_data WHERE id=?",

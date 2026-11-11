@@ -99,6 +99,7 @@ def main():
             code = run([str(scratch / "target/debug/context-derived-example")], env, log)
             report["rounds"].append(dict(round=attempt, exitCode=code, log=log.name))
             assert code == 0 and "RUST_CONTEXT_FIX_SQLITE_PASS" in log.read_text(), f"round {attempt} failed"
+            assert "RUST_CONTEXT_FIX_EXTENSIONS_PASS dynamic_only=true readonly_noop=true equal_dynamic_noop=true" in log.read_text(), "missing extension acceptance cases"
             with sqlite3.connect(f"file:{output / 'fixture.sqlite'}?mode=ro", uri=True) as connection:
                 rows = connection.execute("SELECT name,last_ip,source_ip,changed_by,opened_by,version FROM entry_data ORDER BY id").fetchall()
                 assert any(r[:5] == ("accepted-first", "ip-D", "ip-C", "actor-D", "actor-C") for r in rows)
