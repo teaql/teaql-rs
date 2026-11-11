@@ -29,12 +29,14 @@ async fn main() {
         "PascalCase" => "/ScalarTypeProbeList/0/RequiredString",
         _ => unreachable!(),
     };
-    let connection =
+    let mut connection =
         rusqlite::Connection::open(std::env::var("TEAQL_EXPRESSION_DB").unwrap()).unwrap();
-    connection.trace_v2(
-        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
-        Some(observe_statement),
-    );
+    connection
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(observe_statement),
+        )
+        .unwrap();
     let pool = Arc::new(Mutex::new(connection));
     let context = service_runtime_from_pool(pool).await.unwrap();
     context.ensure_schema().await.unwrap();
