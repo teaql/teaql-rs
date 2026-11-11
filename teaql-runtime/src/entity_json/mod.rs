@@ -218,13 +218,12 @@ impl Model {
                 {
                     return Err(invalid());
                 }
-                if let Kind::Reference { target, detail_key } = &field.kind {
-                    if target.is_empty()
+                if let Kind::Reference { target, detail_key } = &field.kind
+                    && (target.is_empty()
                         || detail_key.is_empty()
-                        || !keys.insert(detail_key.clone())
-                    {
-                        return Err(invalid());
-                    }
+                        || !keys.insert(detail_key.clone()))
+                {
+                    return Err(invalid());
                 }
                 if matches!(field.kind, Kind::Id | Kind::Version | Kind::Many { .. })
                     && field.nullable
@@ -253,13 +252,11 @@ impl Model {
         }
         for schema in schemas.values() {
             for field in &schema.fields {
-                if let Kind::Reference { target, .. }
-                | Kind::One { target }
-                | Kind::Many { target } = &field.kind
+                if let Kind::Reference { target, .. } | Kind::One { target } | Kind::Many { target } =
+                    &field.kind
+                    && !schemas.contains_key(target)
                 {
-                    if !schemas.contains_key(target) {
-                        return Err(invalid());
-                    }
+                    return Err(invalid());
                 }
             }
         }

@@ -56,9 +56,12 @@ pub fn decode_value_tokens(
             }
         },
         Some("i64") => quote! {
-            (#value_expr).try_i64().ok_or_else(|| ::teaql_core::EntityError::new(
-                #entity_name, format!("invalid field {}: expected an exact signed 64-bit integer", #field_name)
-            ))?
+            match (#value_expr).try_i64() {
+                Some(value) => value,
+                None => return Err(::teaql_core::EntityError::new(
+                    #entity_name, format!("invalid field {}: expected an exact signed 64-bit integer", #field_name)
+                )),
+            }
         },
         Some("i16") => quote! {
             match #value_expr {
@@ -79,9 +82,12 @@ pub fn decode_value_tokens(
             }
         },
         Some("u64") => quote! {
-            (#value_expr).try_u64().ok_or_else(|| ::teaql_core::EntityError::new(
-                #entity_name, format!("invalid field {}: expected an exact unsigned 64-bit integer", #field_name)
-            ))?
+            match (#value_expr).try_u64() {
+                Some(value) => value,
+                None => return Err(::teaql_core::EntityError::new(
+                    #entity_name, format!("invalid field {}: expected an exact unsigned 64-bit integer", #field_name)
+                )),
+            }
         },
         Some("u16") => quote! {
             match #value_expr {

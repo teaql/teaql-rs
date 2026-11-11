@@ -167,7 +167,8 @@ struct RelationListKey {
 // One function pointer per selected relation, not a path/map on every row.
 // Identity visitation is lazy: ordinary relation reads and hydration do not
 // allocate path collections or serialize entity payloads.
-type RelationIdentityVisitor = fn(&dyn Any, &mut dyn FnMut(&str, u64, u64, Option<usize>));
+type RelationIdentityCallback<'a> = dyn FnMut(&str, u64, u64, Option<usize>) + 'a;
+type RelationIdentityVisitor = fn(&dyn Any, &mut RelationIdentityCallback<'_>);
 struct RelationValue {
     value: Box<dyn Any + Send + Sync>,
     identities: Option<RelationIdentityVisitor>,
@@ -186,7 +187,7 @@ impl RelationValue {
 fn visit_relation_entity<T: teaql_core::IdentifiableEntity + 'static>(
     entity: &T,
     index: Option<usize>,
-    visitor: &mut dyn FnMut(&str, u64, u64, Option<usize>),
+    visitor: &mut RelationIdentityCallback<'_>,
 ) {
     if entity.is_field_loaded("id")
         && let Some(id) = entity.id_value().try_u64()
@@ -200,7 +201,7 @@ fn visit_relation_entity<T: teaql_core::IdentifiableEntity + 'static>(
 }
 fn visit_relation_list<T: teaql_core::IdentifiableEntity + 'static>(
     value: &dyn Any,
-    visitor: &mut dyn FnMut(&str, u64, u64, Option<usize>),
+    visitor: &mut RelationIdentityCallback<'_>,
 ) {
     for (index, entity) in value
         .downcast_ref::<SmartList<T>>()
@@ -213,7 +214,7 @@ fn visit_relation_list<T: teaql_core::IdentifiableEntity + 'static>(
 }
 fn visit_relation_option<T: teaql_core::IdentifiableEntity + 'static>(
     value: &dyn Any,
-    visitor: &mut dyn FnMut(&str, u64, u64, Option<usize>),
+    visitor: &mut RelationIdentityCallback<'_>,
 ) {
     if let Some(entity) = value
         .downcast_ref::<Option<T>>()

@@ -25,6 +25,10 @@ impl Model {
         *budget -= 1;
         Ok(())
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep independent JSON path, depth and node-budget guards explicit"
+    )]
     pub(super) fn write_entity(
         &self,
         entity: &str,
@@ -59,48 +63,44 @@ impl Model {
             let child = location.clone().member(&field.canonical);
             let child_path = pointer(path, &spelling);
             let mut value = record.get(&field.record);
-            if let Kind::Reference { target, detail_key } = &field.kind {
-                if let Some(detail) = record.get(detail_key) {
-                    match detail {
-                        Value::Object(detail) => {
-                            let target_schema = self.schema(target, &child, &child_path)?;
-                            let id = target_schema
-                                .fields
-                                .iter()
-                                .find(|field| matches!(field.kind, Kind::Id))
-                                .and_then(|field| detail.get(&field.record))
-                                .and_then(key)
-                                .ok_or_else(|| {
-                                    failure("WIRE_REFERENCE_ID_REQUIRED", &child, &child_path)
-                                })?;
-                            if value.is_some_and(|value| key(value) != Some(id)) {
-                                return Err(failure(
-                                    "WIRE_REFERENCE_ID_MISMATCH",
-                                    &child,
-                                    &child_path,
-                                ));
-                            }
-                            output.insert(
-                                spelling,
-                                self.write_entity(
-                                    target,
-                                    detail,
-                                    profile,
-                                    &child,
-                                    &child_path,
-                                    depth + 1,
-                                    budget,
-                                )?,
-                            );
-                            continue;
+            if let Kind::Reference { target, detail_key } = &field.kind
+                && let Some(detail) = record.get(detail_key)
+            {
+                match detail {
+                    Value::Object(detail) => {
+                        let target_schema = self.schema(target, &child, &child_path)?;
+                        let id = target_schema
+                            .fields
+                            .iter()
+                            .find(|field| matches!(field.kind, Kind::Id))
+                            .and_then(|field| detail.get(&field.record))
+                            .and_then(key)
+                            .ok_or_else(|| {
+                                failure("WIRE_REFERENCE_ID_REQUIRED", &child, &child_path)
+                            })?;
+                        if value.is_some_and(|value| key(value) != Some(id)) {
+                            return Err(failure("WIRE_REFERENCE_ID_MISMATCH", &child, &child_path));
                         }
-                        Value::Null => {
-                            if value.is_none() {
-                                value = Some(detail)
-                            }
-                        }
-                        _ => return Err(failure("WIRE_INVALID_TYPE", &child, &child_path)),
+                        output.insert(
+                            spelling,
+                            self.write_entity(
+                                target,
+                                detail,
+                                profile,
+                                &child,
+                                &child_path,
+                                depth + 1,
+                                budget,
+                            )?,
+                        );
+                        continue;
                     }
+                    Value::Null => {
+                        if value.is_none() {
+                            value = Some(detail)
+                        }
+                    }
+                    _ => return Err(failure("WIRE_INVALID_TYPE", &child, &child_path)),
                 }
             }
             let Some(value) = value else { continue };

@@ -119,7 +119,13 @@ fn same_value(before: &Value, current: &Value) -> bool {
             a.is_finite() && b.is_finite() && a.to_bits() == b.to_bits()
         }
         (Value::Decimal(a), Value::Decimal(b)) => a.serialize() == b.serialize(),
-        (Value::Json(a), Value::Json(b)) => a.to_string() == b.to_string(),
+        (Value::Json(a), Value::Json(b)) => {
+            // Compare wire representations, not JSON numeric equality: signed
+            // floating zero and decimal spelling remain significant here.
+            let before_json = a.to_string();
+            let current_json = b.to_string();
+            before_json == current_json
+        }
         (Value::Object(a), Value::Object(b)) => {
             a.len() == b.len()
                 && a.iter()
