@@ -5,7 +5,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 verification_dir="${TEAQL_EXAMPLES_EVIDENCE_DIR:-$(mktemp -d -t teaql-rust-examples-evidence.XXXXXXXX)}/runtime"
 mkdir -p "$verification_dir"
 echo "Retained compact example logs and databases: $verification_dir"
-expected=(boolean-boundaries business-id-runtime conformance context-bound-order-document expression-profiles facet-trace fix-e-alignment http-resilience object-storage order-management request-admission school-management shared-load-state tests trace-chain)
+expected=(boolean-boundaries business-id-runtime conformance context-bound-order-document context-derived expression-profiles facet-trace fix-e-alignment http-resilience object-storage order-management request-admission school-management shared-load-state tests trace-chain)
 mapfile -t actual < <(find "$repo/examples" -mindepth 1 -maxdepth 1 -type d ! -name src -printf '%f\n' | sort)
 if [[ "${actual[*]}" != "${expected[*]}" ]]; then
   echo "example inventory changed; update scripts/verify-examples.sh: ${actual[*]}" >&2
@@ -15,6 +15,7 @@ fi
 cd "$repo"
 node scripts/test-sqlite-probe-adapter.cjs
 node examples/fix-e-alignment/verify-local.cjs
+python3 examples/context-derived/verify-local.py --output "${verification_dir%/runtime}/context-derived"
 TEAQL_REQUEST_ADMISSION_EVIDENCE_DIR="${verification_dir%/runtime}/request-admission" \
   node examples/request-admission/verify-local.cjs
 TEAQL_BOOLEAN_EVIDENCE_DIR="${verification_dir%/runtime}/boolean-boundaries" \
