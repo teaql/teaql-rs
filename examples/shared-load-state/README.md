@@ -1,5 +1,23 @@
 # Generated shared load state example
 
+## Isolated mainstream reference
+
+`node verify-mainstream-reference.cjs` runs the original bounded Diesel/TeaQL
+agreement assertions (full and sparse projections, 1/100/10,000 rows, both
+independent filters, loaded state, shared snapshots and clean mutation state).
+`bash benchmark-mainstream.sh` uses the release profile and 31 samples instead.
+
+Each ORM has a separate executable and reused connection to the same trusted
+fixture file. Diesel 2.3.14 still requires the legacy SQLite binding; it is
+confined to the standalone, non-publishable `diesel-reference` test package.
+It must not open customer-supplied databases. Production TeaQL uses the patched
+SQLite binding and never links this reference dependency. Measurements cover
+only queries inside each process, excluding connection setup, JSON and IPC.
+Both engine versions are recorded: these new timings are not evidence of a
+same-engine comparison and do not replace historical benchmark results.
+Disposable compiler outputs are reaped and removed; compact logs and the
+synthetic database are retained.
+
 This small SQLite example verifies a freshly generated School library against
 the runtime source in this repository. It never substitutes published TeaQL
 crates and never edits generated library source.

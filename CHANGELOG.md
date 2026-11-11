@@ -7,9 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [6.0.1] - 2026-11-11
+## [7.0.0] - 2026-11-11
 
 Tracking: [Rust #317](https://github.com/teaql/teaql-rs/issues/317).
+
+The security follow-up supersedes the unpublished 6.0.1 plan. SQLite's public
+connection/error types now use rusqlite 0.41 rather than 0.40, requiring a major
+version boundary. Regenerate consumers or align direct rusqlite requirements;
+do not combine old generated driver metadata with this runtime.
+
+- Upgrade the production SQLite driver to rusqlite 0.41.1 / libsqlite3-sys
+  0.39, and refresh vulnerable TLS/cryptographic and Tokio/rustix lock entries
+  without adding advisory ignores. Track dependency qualification in #319.
+- Keep all mainstream Diesel reference assertions in an isolated test-only
+  process; record each engine version and exclude IPC from query timing.
 
 - Construct business futures lazily and pin them once in the data-service
   observation state machine. The optional boxed telemetry observer borrows

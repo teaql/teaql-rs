@@ -87,4 +87,6 @@ cargo test -p teaql-tfp-endpoint --examples
 bash examples/trace-chain/verify.sh
 bash examples/facet-trace/verify.sh
 bash examples/shared-load-state/verify.sh
+TEAQL_MAINSTREAM_EVIDENCE_DIR="${verification_dir%/runtime}/mainstream-reference" \
+  node examples/shared-load-state/verify-mainstream-reference.cjs
 echo "PASS: all Rust examples"

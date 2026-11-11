@@ -21,6 +21,12 @@ function pin(library, runtime, ownedRoot) {
     changes.push({name, from: matches[0][2], to: '=' + version});
     after = after.replace(pattern, (_, start) => start + '"=' + version + '"');
   }
+  // Historical fixtures retain their original driver coordinates. Only this
+  // owned consumer manifest follows the selected runtime's SQLite ABI.
+  const sqlite = rootCargo.match(/^rusqlite = \{ version = "([^"]+)"/m);
+  assert(sqlite, 'Runtime must declare its SQLite driver');
+  assert.equal((after.match(/^rusqlite\s*=/gm) || []).length, 1);
+  after = after.replace(/^(rusqlite\s*=\s*\{\s*version\s*=\s*)"[^"]+"/m, (_, start) => start + '"' + sqlite[1] + '"');
   const implementation = [];
   function visit(dir) {for (const entry of fs.readdirSync(dir, {withFileTypes: true})) {
     const full = path.join(dir, entry.name); assert(!entry.isSymbolicLink());
@@ -29,7 +35,7 @@ function pin(library, runtime, ownedRoot) {
   visit(library); fs.writeFileSync(file, after);
   for (const [full, digest] of implementation) assert.equal(sha(fs.readFileSync(full)), digest);
   return {version, changes, originalManifestSha256: sha(before), consumerManifestSha256: sha(after),
-    implementationFilesUnchanged: true, implementationFiles: implementation.length, sourceFixtureEdited: false};
+    implementationFilesUnchanged: true, implementationFiles: implementation.length, sourceFixtureEdited: false, sqliteDriverVersion: sqlite[1]};
 }
 module.exports = {pin};
 if (require.main === module) console.log(JSON.stringify(pin(...process.argv.slice(2))));

@@ -30,7 +30,7 @@ async function main(){
    '[dependencies]','checker-fix-advanced-core={path='+q(path.join(scratch,'lib'))+'}',
    'teaql-core={path='+q(path.join(repo,'teaql-core'))+'}','teaql-runtime={path='+q(path.join(repo,'teaql-runtime'))+'}',
    'chrono="0.4"','serde_json="1"','futures-util="0.3"','tokio={version="1",features=["macros","rt-multi-thread"]}',
-   'rusqlite={version="0.40",features=["bundled","trace"]}',
+   'rusqlite={version="0.41.1",features=["bundled","trace"]}',
    '[patch.crates-io]',...crates.map(n=>n+'={path='+q(path.join(repo,n))+'}'),''].join('\n');
   fs.writeFileSync(path.join(scratch,'Cargo.toml'),manifest);write('Cargo.toml',manifest);
   const env={...process.env};for(const n of Object.keys(env))if(/^(TEAQL_|CORE236_|OTEL_)/.test(n)||/TOKEN|PASSWORD|SECRET|AUTH|API_KEY/.test(n)||['CARGO_TARGET_DIR','RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS','RUSTC_WRAPPER','RUSTC_WORKSPACE_WRAPPER'].includes(n))delete env[n];

@@ -43,7 +43,7 @@ async function main() {
       ...CRATES.map(n => n + '={path=' + JSON.stringify(path.join(ROOT, n)) + '}'),
       'chrono={version="0.4",features=["serde"]}', 'serde_json="1"',
       'rust_decimal={version="=1.42.1",features=["serde"]}',
-      'rusqlite={version="0.40",features=["bundled","trace","hooks"]}',
+      'rusqlite={version="0.41.1",features=["bundled","trace","hooks"]}',
       'tokio={version="1",features=["macros","rt-multi-thread"]}',
       '[patch.crates-io]', ...CRATES.map(n => n + '={path=' + JSON.stringify(path.join(ROOT, n)) + '}'), ''].join('\n');
     fs.writeFileSync(path.join(scratch, 'Cargo.toml'), cargo);

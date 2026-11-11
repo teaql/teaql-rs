@@ -28,7 +28,7 @@ async function main(){
   const cargo=['[package]','name="teaql-loaded-revert-example"','version="0.0.0"','edition="2024"','publish=false','[workspace]',
    '[[test]]','name="restoration"','path="rust-loaded-revert.rs"','[dependencies]','scalar-type-conformance-service-core={path="lib"}',
    ...CRATES.map(name=>name+'={path='+JSON.stringify(path.join(repo,name))+'}'),'chrono={version="0.4",features=["serde"]}','serde_json="1"','rust_decimal={version="=1.42.1",features=["serde"]}',
-   'rusqlite={version="0.40",features=["bundled","trace","hooks"]}','tokio={version="1",features=["macros","rt-multi-thread"]}',
+   'rusqlite={version="0.41.1",features=["bundled","trace","hooks"]}','tokio={version="1",features=["macros","rt-multi-thread"]}',
    '[patch.crates-io]',...CRATES.map(name=>name+'={path='+JSON.stringify(path.join(repo,name))+'}'),''].join('\n');
   fs.writeFileSync(path.join(scratch,'Cargo.toml'),cargo);fs.writeFileSync(path.join(output,'consumer-Cargo.toml'),cargo);fs.copyFileSync(path.join(repo,'Cargo.lock'),path.join(scratch,'Cargo.lock'));
   const env={...process.env,TMPDIR:scratch,CARGO_TARGET_DIR:path.join(scratch,'target'),CARGO_INCREMENTAL:'0',CARGO_BUILD_JOBS:'2',CARGO_PROFILE_DEV_DEBUG:'0',CARGO_PROFILE_TEST_DEBUG:'0',TEAQL_REVERT_DB:path.join(output,'restoration.sqlite')};delete env.TEAQL_ALLOW_SENSITIVE_PLAINTEXT_LOGS;

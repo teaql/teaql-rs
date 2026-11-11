@@ -40,7 +40,7 @@ try {
     '[dependencies]', 'checker-fix-advanced-core = { path = ' + quote(path.join(scratch, 'lib')) + ' }',
     'teaql-core = { path = ' + local('teaql-core') + ' }', 'teaql-runtime = { path = ' + local('teaql-runtime') + ' }',
     'teaql-tfp-endpoint = { path = ' + local('teaql-tfp-endpoint') + ' }',
-    'chrono = "0.4"', 'serde_json = "1"', 'futures-util = "0.3"', 'rusqlite = { version = "0.40", features = ["bundled", "trace", "hooks"] }',
+    'chrono = "0.4"', 'serde_json = "1"', 'futures-util = "0.3"', 'rusqlite = { version = "0.41.1", features = ["bundled", "trace", "hooks"] }',
     'tokio = { version = "1", features = ["macros", "rt-multi-thread"] }', '[patch.crates-io]',
     ...['teaql-core', 'teaql-macros', 'teaql-runtime', 'teaql-sql', 'teaql-data-service', 'teaql-provider-sqlite'].map(name => name + ' = { path = ' + local(name) + ' }'), ''].join('\n');
   fs.writeFileSync(path.join(scratch, "Cargo.toml"), manifest);

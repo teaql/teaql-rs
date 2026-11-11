@@ -50,7 +50,7 @@ async function main(){
    report.libraryMetadata??={};report.libraryMetadata[profile]=require('../../scripts/pin-local-example-library.cjs').pin(path.join(work,'lib'),RUNTIME,scratch);
    const cargo=['[package]','name="teaql-generated-expression-profile-example"','version="0.0.0"','edition="2024"','publish=false','[workspace]',
     '[[bin]]','name="expression-profile"','path="main.rs"','[dependencies]','scalar-type-conformance-service-core={path="lib"}',
-    ...CRATES.map(n=>n+'={path='+JSON.stringify(path.join(RUNTIME,n))+'}'),'serde_json="1"','rusqlite={version="0.40",features=["bundled","trace"]}',
+    ...CRATES.map(n=>n+'={path='+JSON.stringify(path.join(RUNTIME,n))+'}'),'serde_json="1"','rusqlite={version="0.41.1",features=["bundled","trace"]}',
     'tokio={version="1",features=["macros","rt-multi-thread"]}','[patch.crates-io]',...CRATES.map(n=>n+'={path='+JSON.stringify(path.join(RUNTIME,n))+'}'),''].join('\n');
    fs.writeFileSync(path.join(work,'Cargo.toml'),cargo);fs.copyFileSync(path.join(RUNTIME,'Cargo.lock'),path.join(work,'Cargo.lock'));
    const metadata=JSON.parse((await run(profile,'resolution',['cargo','metadata','--offline','--format-version=1'],work)).split('\n').find(l=>l.startsWith('{"packages"')));
