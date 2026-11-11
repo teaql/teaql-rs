@@ -232,7 +232,6 @@ impl ContextBoundDocumentService for GeneratedOrderDocumentService {
         {
             return Err(DocumentRoundTripError::revision_conflict());
         }
-        let total_amount = required(E::customer_order(&order).get_total_amount().eval())?;
         let lines = required(E::customer_order(&order).get_order_line_list().eval())?;
         let mut current: BTreeMap<u64, OrderLine> = lines
             .iter()
@@ -331,6 +330,18 @@ impl ContextBoundDocumentService for GeneratedOrderDocumentService {
         let (new_revision, changed_entities) = if changed.is_empty() && removed.is_empty() {
             (order_version, Vec::new())
         } else {
+            // This fixture prices every unit at 2.50, on the server. A real
+            // amount change advances the parent revision; rewriting the same
+            // value must remain a no-op in the mutation ledger.
+            let total_amount = current.values().try_fold(Decimal::ZERO, |total, line| {
+                let quantity = required(E::order_line(line).get_quantity().eval())?;
+                let line_amount = Decimal::from(quantity)
+                    .checked_mul(Decimal::new(250, 2))
+                    .ok_or_else(DocumentRoundTripError::validation_failed)?;
+                total
+                    .checked_add(line_amount)
+                    .ok_or_else(DocumentRoundTripError::validation_failed)
+            })?;
             order.update_total_amount(total_amount);
             context
                 .execute_in_send_transaction::<DataServiceExecutor, _, _>(|scope| {
@@ -492,7 +503,7 @@ async fn seed(context: &UserContext) -> Result<SeededIds, Box<dyn std::error::Er
     order
         .update_order_number(ORDER_NUMBER)
         .update_order_date(NaiveDate::from_ymd_opt(2026, 10, 1).unwrap())
-        .update_total_amount(Decimal::new(2500, 2))
+        .update_total_amount(Decimal::new(2750, 2))
         .update_status_to_pending()
         .update_customer_id(customer_id)
         .update_commerce_platform_id(platform_id);
@@ -657,12 +668,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         required(E::customer_order(&rolled_back).get_version().eval())?,
         1
     );
+    assert_eq!(
+        required(E::customer_order(&rolled_back).get_total_amount().eval())?,
+        Decimal::new(2750, 2)
+    );
     connection.execute_batch("DROP TRIGGER fail_document_line_update")?;
 
     let accepted = restarted
         .accept_document(submit(&original, "rollback-retry", update_body))
         .await?;
     assert_eq!((accepted.previous_revision, accepted.new_revision), (1, 2));
+    let repriced = Q::customer_orders()
+        .with_id_is(ids.order_id)
+        .comment("reload repriced Order after accepted item quantities")
+        .purpose("verify actual parent amount mutation, not a forced no-op write")
+        .execute_for_one(&restarted)
+        .await?
+        .unwrap();
+    assert_eq!(
+        required(E::customer_order(&repriced).get_total_amount().eval())?,
+        Decimal::new(3250, 2)
+    );
     let updated_line = Q::order_lines()
         .with_id_is(ids.first_line_id)
         .comment("what: reload the generated line after document acceptance")
@@ -711,6 +737,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .accept_document(submit(&fresh, "explicit-remove", remove_body))
         .await?;
     assert_eq!(removed.new_revision, 3);
+    let repriced_after_removal = Q::customer_orders()
+        .with_id_is(ids.order_id)
+        .comment("reload Order after removing an explicitly projected item")
+        .purpose("verify amount matches the retained ten units")
+        .execute_for_one(&restarted)
+        .await?
+        .unwrap();
+    assert_eq!(
+        required(
+            E::customer_order(&repriced_after_removal)
+                .get_total_amount()
+                .eval()
+        )?,
+        Decimal::new(2500, 2)
+    );
     let remaining = Q::order_lines()
         .with_customer_order_matching(Q::customer_orders_minimal().with_id_is(ids.order_id))
         .order_by_id_asc()
