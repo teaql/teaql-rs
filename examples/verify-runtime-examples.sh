@@ -33,6 +33,7 @@ run_example() {
 
 run_example "conformance" "$repo_dir/examples/conformance/Cargo.toml" \
   "PASS Rust minimum runtime conformance: 8/8"
+python3 "$repo_dir/examples/context-derived/verify-local.py"
 node "$repo_dir/examples/boolean-boundaries/verify-local.cjs"
 run_example "security-foundations" "$repo_dir/examples/Cargo.toml" \
   "PASS Rust security foundations: opaque reference is portable and purpose-bound" \

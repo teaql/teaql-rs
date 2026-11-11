@@ -209,8 +209,63 @@ impl std::fmt::Display for CheckResult {
 
 pub type CheckResults = Vec<CheckResult>;
 
+/// Runtime-owned, per-entity intent. Never accepted as a JSON eligibility flag.
+pub(crate) struct CheckMutationState<'a> {
+    pub original: Option<&'a teaql_core::EntitySnapshot>,
+    pub dirty: Option<&'a std::collections::BTreeSet<String>>,
+    pub dynamic_changed: bool,
+}
+
+impl CheckMutationState<'_> {
+    pub(crate) fn has_effective_change(
+        &self,
+        values: &EntityValues,
+        descriptor: &teaql_core::EntityDescriptor,
+        context_fields: &[&str],
+        custom_context_fields: &[&str],
+    ) -> bool {
+        if self.dynamic_changed {
+            return true;
+        }
+        let changed = |field: &str| {
+            let canonical = crate::ledger_keys::canonical_field_from_storage(descriptor, field)
+                .unwrap_or_else(|_| field.to_owned());
+            !canonical.starts_with('_')
+                && canonical != "id"
+                && canonical != "version"
+                && !context_fields.contains(&canonical.as_str())
+                && !custom_context_fields.contains(&canonical.as_str())
+                && self
+                    .original
+                    .is_none_or(|old| old.get(field) != values.get(field))
+        };
+        self.dirty.map_or_else(
+            || values.keys().any(|field| changed(field)),
+            |fields| fields.iter().any(|field| changed(field)),
+        )
+    }
+}
+
 pub trait Checker: Send + Sync {
     fn entity(&self) -> &str;
+
+    fn managed_context_fields(&self) -> &'static [&'static str] {
+        &[]
+    }
+    fn custom_context_fields(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    fn check_and_fix_for_mutation(
+        &self,
+        context: &UserContext,
+        values: &mut EntityValues,
+        location: &ObjectLocation,
+        results: &mut CheckResults,
+        _has_effective_change: bool,
+    ) {
+        self.check_and_fix(context, values, location, results);
+    }
 
     fn check_and_fix(
         &self,
@@ -313,6 +368,34 @@ impl CheckerRegistry for InMemoryCheckerRegistry {
 /// them in [`TypedEntityChecker`] so they satisfy the [`Checker`] trait
 /// expected by [`InMemoryCheckerRegistry`].
 pub trait TypedChecker<T>: Send + Sync {
+    fn separate_fix_and_check(&self) -> bool {
+        false
+    }
+    fn managed_context_fields(&self) -> &'static [&'static str] {
+        &[]
+    }
+    fn custom_context_fields(&self) -> &'static [&'static str] {
+        &[]
+    }
+    fn fix_typed(
+        &self,
+        _context: &UserContext,
+        _entity: &mut T,
+        _status: CheckObjectStatus,
+        _location: &ObjectLocation,
+        _results: &mut CheckResults,
+    ) {
+    }
+    fn check_typed(
+        &self,
+        _context: &UserContext,
+        _entity: &T,
+        _status: CheckObjectStatus,
+        _location: &ObjectLocation,
+        _results: &mut CheckResults,
+        _has_mutation: bool,
+    ) {
+    }
     fn check_and_fix_typed(
         &self,
         context: &UserContext,
@@ -372,12 +455,47 @@ where
         &self.entity_name
     }
 
+    fn managed_context_fields(&self) -> &'static [&'static str] {
+        self.checker.managed_context_fields()
+    }
+    fn custom_context_fields(&self) -> &'static [&'static str] {
+        self.checker.custom_context_fields()
+    }
+
     fn check_and_fix(
         &self,
         context: &UserContext,
         values: &mut EntityValues,
         location: &ObjectLocation,
         results: &mut CheckResults,
+    ) {
+        self.check_and_fix_scoped(context, values, location, results, None);
+    }
+
+    fn check_and_fix_for_mutation(
+        &self,
+        context: &UserContext,
+        values: &mut EntityValues,
+        location: &ObjectLocation,
+        results: &mut CheckResults,
+        changed: bool,
+    ) {
+        self.check_and_fix_scoped(context, values, location, results, Some(changed));
+    }
+}
+
+impl<T, C> TypedEntityChecker<T, C>
+where
+    T: Entity + TeaqlEntity + Send + Sync + Clone,
+    C: TypedChecker<T>,
+{
+    fn check_and_fix_scoped(
+        &self,
+        context: &UserContext,
+        values: &mut EntityValues,
+        location: &ObjectLocation,
+        results: &mut CheckResults,
+        has_effective_change: Option<bool>,
     ) {
         let descriptor = T::entity_descriptor();
         if let Err(error) = crate::ledger_keys::map_checker_values(&descriptor, values, false) {
@@ -418,6 +536,29 @@ where
             _ => None,
         };
         let owned_record = original_values.clone().into();
+        let eligible = status.is_create()
+            || has_effective_change.unwrap_or_else(|| {
+                let business = |field: &str| {
+                    let field =
+                        crate::ledger_keys::canonical_field_from_storage(&descriptor, field)
+                            .unwrap_or_else(|_| field.to_owned());
+                    !field.starts_with('_')
+                        && field != "id"
+                        && field != "version"
+                        && !self
+                            .checker
+                            .managed_context_fields()
+                            .contains(&field.as_str())
+                        && !self
+                            .checker
+                            .custom_context_fields()
+                            .contains(&field.as_str())
+                };
+                dirty_fields.as_ref().map_or_else(
+                    || original_values.keys().any(|field| business(field)),
+                    |fields| fields.iter().any(|field| business(field)),
+                )
+            });
         match T::from_compact_row(teaql_core::CompactRow::from_map(owned_record)) {
             Ok(mut entity) => {
                 if let Some(loaded_fields) = loaded_fields {
@@ -464,8 +605,22 @@ where
                         })
                 };
                 let before_intent = native_intent(&entity);
-                self.checker
-                    .check_and_fix_typed(context, &mut entity, status, location, results);
+                if self.checker.separate_fix_and_check() {
+                    if eligible {
+                        self.checker
+                            .fix_typed(context, &mut entity, status, location, results);
+                    }
+                    self.checker
+                        .check_typed(context, &entity, status, location, results, eligible);
+                } else {
+                    self.checker.check_and_fix_typed(
+                        context,
+                        &mut entity,
+                        status,
+                        location,
+                        results,
+                    );
+                }
                 let after_intent = native_intent(&entity);
                 let after_check = entity.into_values();
                 let descriptor = T::entity_descriptor();

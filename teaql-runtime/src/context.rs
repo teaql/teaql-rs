@@ -1224,6 +1224,63 @@ impl UserContext {
         values: &mut crate::EntityValues,
         location: &ObjectLocation,
     ) -> Result<(), RuntimeError> {
+        self.check_and_fix_values_scoped(entity, values, location, None)
+    }
+
+    fn check_and_fix_values_scoped(
+        &self,
+        entity: &str,
+        values: &mut crate::EntityValues,
+        location: &ObjectLocation,
+        changed: Option<bool>,
+    ) -> Result<(), RuntimeError> {
+        if let Some(descriptor) = self.entity(entity) {
+            crate::ledger_keys::map_checker_values(descriptor, values, true)?;
+        }
+        let checker = self
+            .checker_registry
+            .as_ref()
+            .and_then(|registry| registry.checker(entity));
+        let fields: std::collections::BTreeSet<_> = checker
+            .as_ref()
+            .map(|checker| {
+                checker
+                    .managed_context_fields()
+                    .iter()
+                    .chain(checker.custom_context_fields())
+                    .copied()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let before: BTreeMap<_, _> = fields
+            .iter()
+            .filter_map(|field| {
+                values
+                    .get(*field)
+                    .cloned()
+                    .map(|value| ((*field).to_owned(), value))
+            })
+            .collect();
+        let result = self.check_and_fix_values_inner(entity, values, location, changed);
+        if result.is_err() {
+            for field in fields {
+                if let Some(value) = before.get(field) {
+                    values.insert(field.to_owned(), value.clone());
+                } else {
+                    values.remove(field);
+                }
+            }
+        }
+        result
+    }
+
+    fn check_and_fix_values_inner(
+        &self,
+        entity: &str,
+        values: &mut crate::EntityValues,
+        location: &ObjectLocation,
+        changed: Option<bool>,
+    ) -> Result<(), RuntimeError> {
         if let Some(descriptor) = self.entity(entity) {
             crate::ledger_keys::map_checker_values(descriptor, values, true)?;
         }
@@ -1235,7 +1292,17 @@ impl UserContext {
         let mut results = CheckResults::new();
         if let Some(checker) = checker {
             crate::entity_save::with_fix_time(self, || {
-                checker.check_and_fix(self, values, location, &mut results);
+                if let Some(changed) = changed {
+                    checker.check_and_fix_for_mutation(
+                        self,
+                        values,
+                        location,
+                        &mut results,
+                        changed,
+                    );
+                } else {
+                    checker.check_and_fix(self, values, location, &mut results);
+                }
             });
             // Bind rule ownership before localization. Nested/custom checkers
             // may already provide a more specific type; never replace it with
@@ -1277,6 +1344,32 @@ impl UserContext {
         if let Some(descriptor) = self.entity(entity) {
             crate::ledger_keys::map_checker_values(descriptor, values, false)?;
         }
+        result
+    }
+
+    pub(crate) fn check_and_fix_storage_mutation_at(
+        &self,
+        entity: &str,
+        values: &mut crate::EntityValues,
+        location: &ObjectLocation,
+        intent: crate::checker::CheckMutationState<'_>,
+    ) -> Result<(), RuntimeError> {
+        let descriptor = self.require_entity(entity)?;
+        let checker = self
+            .checker_registry
+            .as_ref()
+            .and_then(|registry| registry.checker(entity));
+        let fields = checker
+            .as_ref()
+            .map(|checker| checker.managed_context_fields())
+            .unwrap_or(&[]);
+        let custom = checker
+            .as_ref()
+            .map(|checker| checker.custom_context_fields())
+            .unwrap_or(&[]);
+        let changed = intent.has_effective_change(values, descriptor, fields, custom);
+        let result = self.check_and_fix_values_scoped(entity, values, location, Some(changed));
+        crate::ledger_keys::map_checker_values(descriptor, values, false)?;
         result
     }
 

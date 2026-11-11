@@ -17,6 +17,7 @@ use crate::{
 };
 
 mod context_roots;
+mod context_undo;
 mod restoration;
 #[cfg(test)]
 mod restoration_view_tests;
@@ -2274,8 +2275,23 @@ fn preflight_graph_inner(
                 Value::List(fields.iter().cloned().map(Value::Text).collect()),
             );
         }
-        let result =
-            context.check_and_fix_storage_values_at(&node.entity, &mut node.values, location);
+        let dynamic_changed = root.zip(node.values.get("id")).is_some_and(|(root, id)| {
+            root.current_change_set()
+                .dynamic_changes()
+                .is_some_and(|changes| {
+                    changes.contains_key(&crate::EntityKey::new(node.entity.clone(), id.clone()))
+                })
+        });
+        let result = context.check_and_fix_storage_mutation_at(
+            &node.entity,
+            &mut node.values,
+            location,
+            crate::checker::CheckMutationState {
+                original: node.original_values.as_ref(),
+                dirty: node.dirty_fields.as_ref(),
+                dynamic_changed,
+            },
+        );
         crate::clear_entity_status(&mut node.values);
         node.values.remove("_dirty_fields");
         result?;
@@ -2563,6 +2579,7 @@ where
         let mut visited = BTreeSet::from([root_key.clone()]);
         hydrate_ledger_relations(context, &root, &mut node, &mut visited)?;
         restoration::prepare(context, &root, &mut node)?;
+        let mut context_undo = context_undo::ContextUndo::capture(context, &root, &node);
         preflight_graph(context, &mut node, &ObjectLocation::root(), Some(&root))?;
         merge_relation_mutations_into_root(context, &root, &node)?;
         preflight_pending_dynamic_entities(context, &root, &node)?;
@@ -2592,6 +2609,8 @@ where
             )
             .await
             .map_err(data_service_error_into_runtime)?;
+
+            context_undo.accept();
 
             if let Some(readbacks) = &mut generated_ids.dynamic_readbacks {
                 node.dynamic_fields = readbacks
@@ -2635,6 +2654,7 @@ where
         }
         if restoration::graph_is_unchanged(&node) {
             teaql_core::MutationIntent::from_optional(node.comment.as_deref())?;
+            context_undo.accept();
             return decode_unchanged_ledger_entity::<T>(
                 node,
                 &root,
@@ -2719,6 +2739,7 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
         let mut visited = BTreeSet::from([root_key.clone()]);
         hydrate_ledger_relations(context, &root, &mut node, &mut visited)?;
         restoration::prepare(context, &root, &mut node)?;
+        let mut context_undo = context_undo::ContextUndo::capture(context, &root, &node);
         preflight_graph(context, &mut node, &ObjectLocation::root(), Some(&root))?;
         merge_relation_mutations_into_root(context, &root, &node)?;
         preflight_pending_dynamic_entities(context, &root, &node)?;
@@ -2730,6 +2751,7 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
             let descriptor = context.require_entity(&node.entity)?;
             let preserve_relations = can_preserve_loaded_relations(&root, &root_key, descriptor);
             let saved = saver.save_ledger_dyn(context, node, root.clone()).await?;
+            context_undo.accept();
             return decode_saved_ledger_entity::<T>(
                 saved,
                 &root,
@@ -2739,6 +2761,7 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
         }
         if restoration::graph_is_unchanged(&node) {
             teaql_core::MutationIntent::from_optional(node.comment.as_deref())?;
+            context_undo.accept();
             return decode_unchanged_ledger_entity::<T>(
                 node,
                 &root,

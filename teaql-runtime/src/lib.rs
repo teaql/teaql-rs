@@ -1,10 +1,13 @@
 extern crate self as teaql_runtime;
 
+pub use context_fix::{ContextFixError, ContextFixInput, ContextFixResolver};
+
 /// Compile-time contract for generated contextual-ownership save admission.
 #[doc(hidden)]
 pub const CONTEXT_ROOT_SAVE_ADMISSION_REVISION: u32 = 1;
 mod business_id;
 mod checker;
+mod context_fix;
 mod checker_privacy;
 mod commit_audit;
 mod context;
