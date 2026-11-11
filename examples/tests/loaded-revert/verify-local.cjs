@@ -25,6 +25,7 @@ async function main(){
   for(const file of Object.keys(report.fixture.files).filter(file=>file.startsWith('generated/'))){const relative=file.slice('generated/'.length),to=path.join(scratch,relative);fs.mkdirSync(path.dirname(to),{recursive:true});fs.copyFileSync(path.join(example,file),to);}
   report.libraryMetadata=require('../../../scripts/pin-local-example-library.cjs').pin(path.join(scratch,'lib'),repo,scratch);
   for(const file of ['rust-loaded-revert.rs','rust-integral-generated.rs'])fs.copyFileSync(path.join(example,file),path.join(scratch,file));
+  report.applicationDriverAdaptations=['rust-loaded-revert.rs','rust-integral-generated.rs'].map(file=>({file,...require('../../../scripts/adapt-sqlite-probe.cjs').adapt(path.join(scratch,file),scratch)}));
   const cargo=['[package]','name="teaql-loaded-revert-example"','version="0.0.0"','edition="2024"','publish=false','[workspace]',
    '[[test]]','name="restoration"','path="rust-loaded-revert.rs"','[dependencies]','scalar-type-conformance-service-core={path="lib"}',
    ...CRATES.map(name=>name+'={path='+JSON.stringify(path.join(repo,name))+'}'),'chrono={version="0.4",features=["serde"]}','serde_json="1"','rust_decimal={version="=1.42.1",features=["serde"]}',

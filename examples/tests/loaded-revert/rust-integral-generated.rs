@@ -78,11 +78,7 @@ impl Checker for FractionalFix {
         self.calls.fetch_add(1, Ordering::SeqCst);
         // Case labels retain the native carrier name used by historical
         // evidence; the public Checker/Fix map itself uses KSML vocabulary.
-        let canonical = if self.field == "type_platform_id" {
-            "type_platform"
-        } else {
-            self.field
-        };
+        let canonical = if self.field == "type_platform_id" { "type_platform" } else { self.field };
         input.insert(canonical.to_owned(), self.value.clone());
         let now = context.fix_time();
         input
@@ -100,23 +96,7 @@ async fn generated_integral_exactness_after_fix_preserves_database_and_version()
     ));
     let mut context = service_runtime_from_pool(pool.clone()).await.unwrap();
     context.ensure_schema().await.unwrap();
-    pool.lock()
-        .unwrap()
-        .trace_v2(
-            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
-            Some(|event: rusqlite::trace::TraceEvent<'_>| {
-                if let rusqlite::trace::TraceEvent::Stmt(statement, sql) = event {
-                    if sql.starts_with("--") {
-                        count_statement(sql);
-                    } else {
-                        count_statement(
-                            &statement.expanded_sql().expect("expanded SQLite trace SQL"),
-                        );
-                    }
-                }
-            }),
-        )
-        .unwrap();
+    pool.lock().unwrap().trace(Some(count_statement));
     let before = STATEMENTS.load(Ordering::SeqCst);
     let name = format!("Exact integral round {round}");
     let control_calls = Arc::new(AtomicUsize::new(0));
