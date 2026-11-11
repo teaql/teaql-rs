@@ -13,6 +13,7 @@ if [[ "${actual[*]}" != "${expected[*]}" ]]; then
 fi
 
 cd "$repo"
+node scripts/test-sqlite-probe-adapter.cjs
 node examples/fix-e-alignment/verify-local.cjs
 TEAQL_REQUEST_ADMISSION_EVIDENCE_DIR="${verification_dir%/runtime}/request-admission" \
   node examples/request-admission/verify-local.cjs
