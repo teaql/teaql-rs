@@ -1,18 +1,18 @@
 //! Test-only boundary for frozen Result constructors and current direct entities.
 //! Result keeps its inherent `expect`; direct entities must already own an ID.
-use teaql_core::Entity;
+use teaql_core::BaseEntity;
 
 fn require_reserved_id(id: u64, message: &str) {
     assert_ne!(id, 0, "{message}");
 }
 
-pub(crate) trait ReservedExampleIdentity: Entity + Sized {
+pub(crate) trait ReservedExampleIdentity: BaseEntity + Sized {
     fn expect(self, message: &str) -> Self {
         require_reserved_id(self.id(), message);
         self
     }
 }
-impl<T: Entity> ReservedExampleIdentity for T {}
+impl<T: BaseEntity> ReservedExampleIdentity for T {}
 
 #[test]
 fn accepts_an_actual_reserved_identity() {
