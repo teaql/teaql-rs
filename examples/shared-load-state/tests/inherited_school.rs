@@ -1,5 +1,9 @@
 #![cfg(feature = "inheritance")]
 
+#[path = "support/reserved_identity.rs"]
+mod reserved_identity;
+use reserved_identity::ReservedExampleIdentity as _;
+
 use school_management_service_core::{
     service_runtime, Academy, AuditedSave, School, ServiceRuntimeConfig, E, Q,
 };

@@ -8,6 +8,10 @@ use teaql_core::dynamic_fields::{
 use teaql_core::{Entity, TeaqlEntity, Value, time::Timestamp};
 use teaql_runtime::dynamic_fields::DatabaseDynamicFieldsProvider;
 
+#[path = "support/reserved_identity.rs"]
+mod reserved_identity;
+use reserved_identity::ReservedExampleIdentity as _;
+
 #[path = "support/checker_allocations.rs"]
 mod allocation_counter;
 #[path = "support/checker_state.rs"]

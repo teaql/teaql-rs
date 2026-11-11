@@ -1,4 +1,7 @@
 //! Generated Q/E read shapes; fixture expansion SQL is outside measurements.
+#[path = "support/reserved_identity.rs"]
+mod reserved_identity;
+use reserved_identity::ReservedExampleIdentity as _;
 #[path = "../../../teaql-runtime/tests/support/allocation_counter.rs"]
 mod allocation_counter;
 use allocation_counter::measured;

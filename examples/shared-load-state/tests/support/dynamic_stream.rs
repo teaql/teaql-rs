@@ -1,4 +1,5 @@
 //! Generated Q/E and audited mutations on a real cursor with durable extensions.
+use crate::reserved_identity::ReservedExampleIdentity as _;
 use futures_util::StreamExt;
 use school_management_service_core::{
     service_runtime, AuditedSave, School, ServiceRuntimeConfig, ServiceRuntimeExecutor, E, Q,

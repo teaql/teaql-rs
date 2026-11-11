@@ -1,4 +1,5 @@
 //! Application-owned graph acceptance. API names come from retained current Assist.
+use crate::reserved_identity::ReservedExampleIdentity as _;
 use school_management_service_core::{AuditedSave, E, Q, TeaqlRuntime};
 use std::sync::Arc;
 use teaql_core::{Entity, serde_json};

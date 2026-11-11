@@ -22,6 +22,12 @@ This small SQLite example verifies a freshly generated School library against
 the runtime source in this repository. It never substitutes published TeaQL
 crates and never edits generated library source.
 
+Test consumers support both the sealed legacy `Result` constructor and the
+current generated direct entity constructor. The private test-only
+`ReservedExampleIdentity` boundary leaves `Result::expect` unchanged and checks
+that a direct entity already has a nonzero reserved ID. It cannot turn a failed
+allocation into an accepted entity. This is not a runtime or generated API shim.
+
 ## Run
 
 Requires the local generator checkout, Java/Maven, Cargo, Bash, `rg`, `jq`, and

@@ -1,4 +1,5 @@
 //! A readonly calculated property is persisted only by an explicit modeled target.
+use crate::reserved_identity::ReservedExampleIdentity as _;
 use school_management_service_core::{
     service_runtime, AuditedSave, School, SchoolCapacitySummary, ServiceRuntimeConfig, E, Q,
 };
