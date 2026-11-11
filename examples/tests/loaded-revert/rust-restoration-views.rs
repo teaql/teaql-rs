@@ -102,21 +102,7 @@ async fn generated_restoration_views_and_outer_transactions() {
     ));
     let mut context = service_runtime_from_pool(pool.clone()).await.unwrap();
     context.ensure_schema().await.unwrap();
-    pool.lock()
-        .unwrap()
-        .trace_v2(
-            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
-            Some(|event: rusqlite::trace::TraceEvent<'_>| {
-                if let rusqlite::trace::TraceEvent::Stmt(statement, sql) = event {
-                    if sql.starts_with("--") {
-                        observe(sql);
-                    } else {
-                        observe(&statement.expanded_sql().expect("expanded SQLite trace SQL"));
-                    }
-                }
-            }),
-        )
-        .unwrap();
+    pool.lock().unwrap().trace(Some(observe));
     let first_name = format!("views first {round}");
     let second_name = format!("views second {round}");
     let mut first = exact::prepared(&context, &first_name);

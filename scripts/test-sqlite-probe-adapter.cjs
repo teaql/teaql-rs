@@ -2,6 +2,7 @@
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), assert = require('node:assert/strict');
 const {adapt} = require('./adapt-sqlite-probe.cjs');
 require('../examples/tests/loaded-revert/verify-local.cjs').fingerprint();
+require('../examples/tests/loaded-revert/verify-views.cjs').application();
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'teaql-probe-adapter-test-'));
 try {
   const file = path.join(temp, 'probe.rs'); fs.writeFileSync(file, 'pool.trace(Some(observe)); assert_eq!(count, 2); pool.trace(None);');
