@@ -3,6 +3,10 @@ use crate::RuntimeModule;
 use std::collections::BTreeMap;
 use teaql_core::{Entity, Value, eval::LoadState, time::Timestamp};
 
+#[expect(
+    clippy::duplicated_attributes,
+    reason = "Independent one/many reverse relations intentionally share target and key metadata"
+)]
 #[teaql_macros::teaql_entity]
 #[derive(Clone, Debug, teaql_macros::TeaqlEntity)]
 #[teaql(entity = "WireRoot", indexed_layout)]
