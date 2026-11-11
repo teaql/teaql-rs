@@ -2,6 +2,17 @@ use super::*;
 use crate::{EntityKey, EntityRuntimeState, InMemoryMetadataStore};
 use teaql_core::{CompactRow, DataType, EntityDescriptor, PropertyDescriptor, RelationDescriptor};
 
+#[test]
+fn json_restoration_keeps_numeric_wire_representations_distinct() {
+    let value = |text| Value::Json(serde_json::from_str(text).unwrap());
+    assert!(!same_value(&value("0.0"), &value("-0.0")));
+    assert!(!same_value(&value("1"), &value("1.0")));
+    assert!(same_value(
+        &value(r#"{"count":1.0}"#),
+        &value(r#"{"count":1.0}"#)
+    ));
+}
+
 fn context() -> UserContext {
     let descriptor = |name| {
         EntityDescriptor::new(name)
