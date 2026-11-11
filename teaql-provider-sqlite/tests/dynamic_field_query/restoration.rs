@@ -58,11 +58,13 @@ fn restoration_preserves_real_dynamic_edit_and_excludes_restored_native_intent()
                 .value(),
             Some(&Value::from("remaining edit"))
         );
-        let plans = plans.lock().unwrap();
-        assert_eq!(plans.len(), 1);
-        assert_eq!(plans[0].operations.len(), 1);
-        assert!(!plans[0].operations[0].changed_values.contains_key("name"));
-        assert!(plans[0].operations[0].changed_values.contains_key("#note"));
+        {
+            let plans = plans.lock().unwrap();
+            assert_eq!(plans.len(), 1);
+            assert_eq!(plans[0].operations.len(), 1);
+            assert!(!plans[0].operations[0].changed_values.contains_key("name"));
+            assert!(plans[0].operations[0].changed_values.contains_key("#note"));
+        }
         assert_eq!(audits.lock().unwrap().len(), 1);
         assert_eq!(
             physical(&transport),

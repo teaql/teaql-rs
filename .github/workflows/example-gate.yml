@@ -20,6 +20,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Fetch committed dependencies for offline standalone replays
         run: |
+          # Offline source probes use optional scalar dependencies not present
+          # in the two standalone application graphs. Prepare their locked
+          # index/archive inputs before the unchanged offline acceptance phase.
+          cargo fetch --locked
           cargo fetch --locked --manifest-path examples/facet-trace/Cargo.toml
           cargo fetch --locked --manifest-path examples/trace-chain/Cargo.toml
       - name: Start dedicated S3 example fixture
