@@ -32,11 +32,26 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
         .with_active_root("Tenant", 1);
     context.set_business_clock(FixedBusinessClock::new(first));
     context.ensure_schema().await?;
-    pool.lock().unwrap().trace(Some(observe));
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(|event: rusqlite::trace::TraceEvent<'_>| {
+                if let rusqlite::trace::TraceEvent::Stmt(statement, sql) = event {
+                    if sql.starts_with("--") {
+                        observe(sql);
+                    } else {
+                        observe(&statement.expanded_sql().expect("expanded SQLite trace SQL"));
+                    }
+                }
+            }),
+        )
+        .unwrap();
     let mut owner = Q::purchase_orders()
         .comment("Prepare a stable-clock owner")
         .purpose("Verify managed time without manufacturing mutation intent")
-        .new_entity(&context).expect("reserve example identity");
+        .new_entity(&context)
+        .expect("reserve example identity");
     owner.update_contact_phone("5550100");
     owner.update_internal_note(Value::Null);
     let before = statements();
@@ -48,7 +63,8 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
     let mut item = Q::order_items()
         .comment("Prepare a stable-clock child")
         .purpose("Exercise valid updates under the same frozen business time")
-        .new_entity(&context).expect("reserve example identity");
+        .new_entity(&context)
+        .expect("reserve example identity");
     item.update_purchase_order_id(owner.id());
     item.update_product_name("A");
     item.update_unit_price(Value::Decimal("1.23".parse()?));
@@ -173,7 +189,13 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
         "unchangedOwnerSQLStatements":noop_owner_sql,"restoredOwnerSQLStatements":restored_sql,
         "unchangedChildSQLStatements":noop_item_sql,"advancedUpdateSQLStatements":advanced_sql})
     );
-    pool.lock().unwrap().trace(None);
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::empty(),
+            None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+        )
+        .unwrap();
     assert!(
         passed,
         "business time and no-op mutation boundaries must remain consistent"

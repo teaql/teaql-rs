@@ -70,11 +70,26 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
         .with_active_root("Tenant", 1);
     context.set_business_clock(FixedBusinessClock::new(first));
     context.ensure_schema().await?;
-    pool.lock().unwrap().trace(Some(observe));
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(|event: rusqlite::trace::TraceEvent<'_>| {
+                if let rusqlite::trace::TraceEvent::Stmt(statement, sql) = event {
+                    if sql.starts_with("--") {
+                        observe(sql);
+                    } else {
+                        observe(&statement.expanded_sql().expect("expanded SQLite trace SQL"));
+                    }
+                }
+            }),
+        )
+        .unwrap();
     let mut parent = Q::purchase_orders()
         .comment("Prepare the complete parent control")
         .purpose("Exercise partial graph traversal against real SQLite")
-        .new_entity(&context).expect("reserve example identity");
+        .new_entity(&context)
+        .expect("reserve example identity");
     parent.update_contact_phone("5550600");
     parent.update_internal_note(Value::Null);
     let parent = parent
@@ -84,7 +99,8 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
     let mut item = Q::order_items()
         .comment("Prepare the complete leaf control")
         .purpose("Persist the fixture only through generated audited saves")
-        .new_entity(&context).expect("reserve example identity");
+        .new_entity(&context)
+        .expect("reserve example identity");
     item.update_purchase_order_id(parent.id());
     item.update_product_name("Partial graph original");
     item.update_unit_price(Value::Decimal("10.00".parse()?));
@@ -421,11 +437,26 @@ pub async fn verify_managed_root() -> Result<(), Box<dyn std::error::Error>> {
         .with_active_root("Tenant", 1);
     managed_instrument(&mut context, &evidence);
     context.ensure_schema().await?;
-    pool.lock().unwrap().trace(Some(observe));
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(|event: rusqlite::trace::TraceEvent<'_>| {
+                if let rusqlite::trace::TraceEvent::Stmt(statement, sql) = event {
+                    if sql.starts_with("--") {
+                        observe(sql);
+                    } else {
+                        observe(&statement.expanded_sql().expect("expanded SQLite trace SQL"));
+                    }
+                }
+            }),
+        )
+        .unwrap();
     let mut other = Q::tenants()
         .comment("Prepare a second real root")
         .purpose("Reject incorrect ownership rather than a missing foreign key")
-        .new_entity(&context).expect("reserve example identity");
+        .new_entity(&context)
+        .expect("reserve example identity");
     other.update_name("Independent partial root");
     let other = other
         .audit_as("Create the other partial-ancestor root")
@@ -438,7 +469,8 @@ pub async fn verify_managed_root() -> Result<(), Box<dyn std::error::Error>> {
     let mut parent = Q::purchase_orders()
         .comment("Prepare a complete graph parent")
         .purpose("Test managed ownership beneath two sparse ancestors")
-        .new_entity(&context).expect("reserve example identity");
+        .new_entity(&context)
+        .expect("reserve example identity");
     parent.update_contact_phone("5550987");
     parent.update_internal_note(Value::Null);
     let parent = parent
@@ -448,7 +480,8 @@ pub async fn verify_managed_root() -> Result<(), Box<dyn std::error::Error>> {
     let mut item = Q::order_items()
         .comment("Prepare the complete graph child")
         .purpose("Exercise generated mutation and loaded expressions")
-        .new_entity(&context).expect("reserve example identity");
+        .new_entity(&context)
+        .expect("reserve example identity");
     item.update_purchase_order_id(parent.id());
     item.update_product_name("Partial root original");
     item.update_unit_price(Value::Decimal("1".parse()?));
@@ -587,7 +620,13 @@ pub async fn verify_managed_root() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(E::order_item(stored).get_version().eval(), Some(2));
     let rows = managed_storage(&pool)?;
     assert_eq!(rows["parents"], original["parents"]);
-    pool.lock().unwrap().trace(None);
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::empty(),
+            None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+        )
+        .unwrap();
     println!(
         "RUST_PARTIAL_ANCESTOR_ROOT_RESULT={}",
         serde_json::json!({"passed":true,"orderId":parent.id(),"leafId":item.id(),

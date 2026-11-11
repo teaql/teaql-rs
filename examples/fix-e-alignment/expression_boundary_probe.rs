@@ -69,11 +69,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap(),
     ));
     context.ensure_schema().await?;
-    pool.lock().unwrap().trace(Some(observe));
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(|event: rusqlite::trace::TraceEvent<'_>| {
+                if let rusqlite::trace::TraceEvent::Stmt(statement, sql) = event {
+                    if sql.starts_with("--") {
+                        observe(sql);
+                    } else {
+                        observe(&statement.expanded_sql().expect("expanded SQLite trace SQL"));
+                    }
+                }
+            }),
+        )
+        .unwrap();
     let mut order = Q::purchase_orders()
         .comment("Prepare expression boundary owner")
         .purpose("Verify generated E without implicit loads")
-        .new_entity(&context).expect("reserve example identity");
+        .new_entity(&context)
+        .expect("reserve example identity");
     order.update_contact_phone("5550390");
     order.update_internal_note(Value::Null);
     let saved = order
@@ -266,7 +281,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut item = Q::order_items()
         .comment("Prepare partial child projection")
         .purpose("Observe canonical list indices through generated E")
-        .new_entity(&context).expect("reserve example identity");
+        .new_entity(&context)
+        .expect("reserve example identity");
     item.update_purchase_order_id(id);
     item.update_product_name("Private expression item");
     item.update_unit_price(Value::Decimal("1".parse()?));

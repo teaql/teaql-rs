@@ -45,7 +45,21 @@ pub async fn verify(
     context.set_custom_event_sink(evidence.clone());
     let policy: Arc<dyn MutationPolicy> = Arc::new(Policy(evidence.clone()));
     context.set_mutation_policy_registry(move |_: &str| Some(policy.clone()));
-    pool.lock().unwrap().trace(Some(observe));
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(|event: rusqlite::trace::TraceEvent<'_>| {
+                if let rusqlite::trace::TraceEvent::Stmt(statement, sql) = event {
+                    if sql.starts_with("--") {
+                        observe(sql);
+                    } else {
+                        observe(&statement.expanded_sql().expect("expanded SQLite trace SQL"));
+                    }
+                }
+            }),
+        )
+        .unwrap();
     let mut cases = Vec::new();
     for (case, phone, initial) in [
         ("last-representable-update", "5550950", i64::MAX - 1),
@@ -54,7 +68,8 @@ pub async fn verify(
         let mut order = Q::purchase_orders()
             .comment("Create a synthetic version boundary fixture")
             .purpose("Verify exact optimistic lifecycle limits")
-            .new_entity(context).expect("reserve example identity");
+            .new_entity(context)
+            .expect("reserve example identity");
         order.update_contact_phone(phone.to_owned());
         order.update_internal_note(Value::Null);
         let order = order
@@ -145,7 +160,13 @@ pub async fn verify(
             "storedNote":stored_note,"validUpdateStatements":valid_statements,"rejectionRule":wire.rule_id,"rejectionPath":wire.instance_path,
             "rejectionStatements":statements,"rejectionPolicyReviews":reviews,"rejectionAudits":audits,"pendingIntentPreserved":true}));
     }
-    pool.lock().unwrap().trace(None);
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::empty(),
+            None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+        )
+        .unwrap();
     println!(
         "RUST_VERSION_BOUNDARIES={}",
         serde_json::json!({"language":"rust","passed":true,"cases":cases})

@@ -44,7 +44,8 @@ fn owner(context: &UserContext) -> PurchaseOrder {
     let mut value = Q::purchase_orders()
         .comment("Prepare a small Checker pipeline owner")
         .purpose("Verify generated pre-database validation and persistence")
-        .new_entity(context).expect("reserve example identity");
+        .new_entity(context)
+        .expect("reserve example identity");
     value.update_contact_phone("5550960");
     value.update_internal_note(Value::Null);
     value
@@ -79,7 +80,8 @@ fn child(context: &UserContext, parent: Option<u64>) -> OrderItem {
     let mut value = Q::order_items()
         .comment("Prepare a small Checker pipeline child")
         .purpose("Verify required relation and post-Fix range constraints")
-        .new_entity(context).expect("reserve example identity");
+        .new_entity(context)
+        .expect("reserve example identity");
     if let Some(id) = parent {
         value.update_purchase_order_id(id);
     }
@@ -135,7 +137,21 @@ impl OrderItemCheckerLogic for DeliberatePriceFix {
 }
 async fn no_schema(round: usize, path: &str) {
     let pool = Arc::new(Mutex::new(rusqlite::Connection::open(path).unwrap()));
-    pool.lock().unwrap().trace(Some(observe));
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(|event: rusqlite::trace::TraceEvent<'_>| {
+                if let rusqlite::trace::TraceEvent::Stmt(statement, sql) = event {
+                    if sql.starts_with("--") {
+                        observe(sql);
+                    } else {
+                        observe(&statement.expanded_sql().expect("expanded SQLite trace SQL"));
+                    }
+                }
+            }),
+        )
+        .unwrap();
     let before = count();
     let mut context = service_runtime_from_pool(pool.clone())
         .await
@@ -148,7 +164,8 @@ async fn no_schema(round: usize, path: &str) {
     let mut value = Q::purchase_orders()
         .comment("Construct an invalid owner before schema initialization")
         .purpose("Verify module-installed Checker without a database schema")
-        .new_entity(&context).expect("reserve example identity");
+        .new_entity(&context)
+        .expect("reserve example identity");
     value.update_internal_note(Value::Null);
     let result = value
         .audit_as("Reject missing required input before any tables exist")
@@ -168,7 +185,13 @@ async fn no_schema(round: usize, path: &str) {
         "the schema-free connection observer must remain live"
     );
     facts["observerCalibrationStatements"] = json!(1);
-    pool.lock().unwrap().trace(None);
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::empty(),
+            None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+        )
+        .unwrap();
     let tables: i64 = pool
         .lock()
         .unwrap()
@@ -225,7 +248,21 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
         .with_active_root("Tenant", 1);
     context.set_business_clock(FixedBusinessClock::new(instant));
     context.ensure_schema().await?;
-    pool.lock().unwrap().trace(Some(observe));
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(|event: rusqlite::trace::TraceEvent<'_>| {
+                if let rusqlite::trace::TraceEvent::Stmt(statement, sql) = event {
+                    if sql.starts_with("--") {
+                        observe(sql);
+                    } else {
+                        observe(&statement.expanded_sql().expect("expanded SQLite trace SQL"));
+                    }
+                }
+            }),
+        )
+        .unwrap();
     let value = owner(&context);
     let before_time = E::purchase_order(&value)
         .get_create_time()
@@ -505,7 +542,13 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
         json!({"language":"rust","round":round,"cases":2,"passed":true,
         "actualTypedCustomerFix":true,"allP0P1Complete":false})
     );
-    pool.lock().unwrap().trace(None);
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::empty(),
+            None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+        )
+        .unwrap();
     println!(
         "RUST_CHECKER_PIPELINE_RESULT={}",
         json!({"language":"rust","round":round,"cases":10,"passed":true,

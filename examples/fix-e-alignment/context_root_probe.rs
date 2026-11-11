@@ -52,7 +52,8 @@ fn parent(context: &UserContext) -> PurchaseOrder {
     let mut value = Q::purchase_orders()
         .comment("Prepare a context-root boundary fixture")
         .purpose("Verify original ownership before persistence or audit effects")
-        .new_entity(context).expect("reserve example identity");
+        .new_entity(context)
+        .expect("reserve example identity");
     value.update_contact_phone("5550188");
     value.update_internal_note(Value::Null);
     value
@@ -135,7 +136,21 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
     for context in [&mut wrong, &mut missing, &mut wrong_type] {
         instrument(context, &evidence);
     }
-    pool.lock().unwrap().trace(Some(observe));
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(|event: rusqlite::trace::TraceEvent<'_>| {
+                if let rusqlite::trace::TraceEvent::Stmt(statement, sql) = event {
+                    if sql.starts_with("--") {
+                        observe(sql);
+                    } else {
+                        observe(&statement.expanded_sql().expect("expanded SQLite trace SQL"));
+                    }
+                }
+            }),
+        )
+        .unwrap();
     let mut cases = Vec::new();
     let before_sql = STATEMENTS.load(Ordering::SeqCst);
     let before_reviews = evidence.reviews.load(Ordering::SeqCst);
@@ -240,7 +255,13 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
         .save(&owner)
         .await?;
     cases.push(serde_json::json!({"case":"valid-delete","id":good.id(),"passed":E::purchase_order(&good).get_version().eval()==Some(-3)}));
-    pool.lock().unwrap().trace(None);
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::empty(),
+            None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+        )
+        .unwrap();
     let passed = cases.iter().all(|case| case["passed"] == true);
     println!(
         "RUST_CONTEXT_ROOT_BOUNDARY={}",

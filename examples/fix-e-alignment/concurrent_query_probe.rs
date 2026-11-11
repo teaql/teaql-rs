@@ -113,7 +113,8 @@ async fn seed(context: &UserContext, label: &str) -> Result<PurchaseOrder, Runti
     let mut parent = Q::purchase_orders()
         .comment("Prepare an isolated query owner")
         .purpose("Seed the concurrent Q example")
-        .new_entity(context).expect("reserve example identity");
+        .new_entity(context)
+        .expect("reserve example identity");
     parent.update_contact_phone(label);
     parent.update_internal_note(Value::Null);
     let parent = parent
@@ -123,7 +124,8 @@ async fn seed(context: &UserContext, label: &str) -> Result<PurchaseOrder, Runti
     let mut child = Q::order_items()
         .comment("Prepare an isolated query child")
         .purpose("Seed the bounded nested Q example")
-        .new_entity(context).expect("reserve example identity");
+        .new_entity(context)
+        .expect("reserve example identity");
     child.update_purchase_order_id(parent.id());
     child.update_product_name(format!("{label} child"));
     child.update_unit_price(Value::Decimal("1.00".parse().unwrap()));
@@ -189,7 +191,21 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
     context.enable_all_sql_log();
     context.clear_sql_logs();
     gate.audits.store(0, Ordering::SeqCst);
-    pool.lock().unwrap().trace(Some(observe));
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(|event: rusqlite::trace::TraceEvent<'_>| {
+                if let rusqlite::trace::TraceEvent::Stmt(statement, sql) = event {
+                    if sql.starts_with("--") {
+                        observe(sql);
+                    } else {
+                        observe(&statement.expanded_sql().expect("expanded SQLite trace SQL"));
+                    }
+                }
+            }),
+        )
+        .unwrap();
     gate.context
         .store(&context as *const UserContext as usize, Ordering::SeqCst);
     context.set_request_policy(Policy(gate.clone()));

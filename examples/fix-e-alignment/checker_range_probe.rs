@@ -19,7 +19,8 @@ fn item(context: &UserContext, parent: u64, name: &str, price: &str) -> OrderIte
     let mut result = Q::order_items()
         .comment("Prepare a modeled range fixture")
         .purpose("Verify generated numeric and character bounds before SQL")
-        .new_entity(context).expect("reserve example identity");
+        .new_entity(context)
+        .expect("reserve example identity");
     result.update_purchase_order_id(parent);
     result.update_product_name(name);
     result.update_unit_price(Value::Decimal(price.parse().unwrap()));
@@ -73,12 +74,27 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
         .with_active_root("Tenant", 1);
     context.set_business_clock(FixedBusinessClock::new(time));
     context.ensure_schema().await?;
-    pool.lock().unwrap().trace(Some(observe));
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(|event: rusqlite::trace::TraceEvent<'_>| {
+                if let rusqlite::trace::TraceEvent::Stmt(statement, sql) = event {
+                    if sql.starts_with("--") {
+                        observe(sql);
+                    } else {
+                        observe(&statement.expanded_sql().expect("expanded SQLite trace SQL"));
+                    }
+                }
+            }),
+        )
+        .unwrap();
     let mut cases = Vec::new();
     let mut parent = Q::purchase_orders()
         .comment("Prepare the modeled bounds owner")
         .purpose("Test actual generated constraints without custom Checkers")
-        .new_entity(&context).expect("reserve example identity");
+        .new_entity(&context)
+        .expect("reserve example identity");
     parent.update_contact_phone("5550100");
     parent.update_internal_note(Value::Null);
     let parent = parent
@@ -175,7 +191,13 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
     cases.push(serde_json::json!({"case":"unchanged-readback","id":good.id(),"version":E::order_item(&persisted).get_version().eval(),
         "passed":E::order_item(&persisted).get_version().eval()==Some(1)&&E::order_item(&persisted).get_product_name().eval().as_deref()==Some("A")
         &&E::order_item(&persisted).get_unit_price().eval().map(Value::Decimal)==Some(Value::Decimal("0.01".parse()?))}));
-    pool.lock().unwrap().trace(None);
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::empty(),
+            None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+        )
+        .unwrap();
     let passed = cases.iter().all(|r| r["passed"] == true);
     println!(
         "RUST_GENERATED_CHECKER_RANGES={}",

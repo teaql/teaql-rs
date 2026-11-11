@@ -16,7 +16,8 @@ fn child(context: &UserContext) -> PurchaseOrder {
     let mut value = Q::purchase_orders()
         .comment("Prepare optional child work")
         .purpose("Verify cancelled child omission at the normal audited save boundary")
-        .new_entity(context).expect("reserve example identity");
+        .new_entity(context)
+        .expect("reserve example identity");
     value.update_contact_phone("5550166");
     value.update_internal_note(Value::Null);
     value
@@ -50,7 +51,21 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
     owner.set_business_clock(FixedBusinessClock::new(now));
     missing.set_business_clock(FixedBusinessClock::new(now));
     owner.ensure_schema().await?;
-    pool.lock().unwrap().trace(Some(trace));
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(|event: rusqlite::trace::TraceEvent<'_>| {
+                if let rusqlite::trace::TraceEvent::Stmt(statement, sql) = event {
+                    if sql.starts_with("--") {
+                        trace(sql);
+                    } else {
+                        trace(&statement.expanded_sql().expect("expanded SQLite trace SQL"));
+                    }
+                }
+            }),
+        )
+        .unwrap();
     let mut cases = Vec::new();
     let initial_children: i64 =
         pool.lock()
@@ -135,7 +150,13 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     cases.push(serde_json::json!({"case":"delete-existing-child","passed":kind=="check"&&statements==0&&version==1,
         "errorKind":kind,"violations":violations,"saveStatements":statements,"childVersion":version}));
-    pool.lock().unwrap().trace(None);
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::empty(),
+            None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+        )
+        .unwrap();
     let passed = cases.iter().all(|c| c["passed"] == true);
     println!(
         "RUST_CANCELLED_CONTEXT_ROOT={}",

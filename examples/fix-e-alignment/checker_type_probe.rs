@@ -21,7 +21,8 @@ fn parent(context: &UserContext, valid: bool) -> PurchaseOrder {
     let mut result = Q::purchase_orders()
         .comment("Prepare one Checker identity fixture")
         .purpose("Verify typed violations through ordinary generated saves")
-        .new_entity(context).expect("reserve example identity");
+        .new_entity(context)
+        .expect("reserve example identity");
     if valid {
         result.update_contact_phone("5550100");
     }
@@ -82,7 +83,21 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
         .with_active_root("Tenant", 1);
     context.set_business_clock(FixedBusinessClock::new(first));
     context.ensure_schema().await?;
-    pool.lock().unwrap().trace(Some(observe));
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(|event: rusqlite::trace::TraceEvent<'_>| {
+                if let rusqlite::trace::TraceEvent::Stmt(statement, sql) = event {
+                    if sql.starts_with("--") {
+                        observe(sql);
+                    } else {
+                        observe(&statement.expanded_sql().expect("expanded SQLite trace SQL"));
+                    }
+                }
+            }),
+        )
+        .unwrap();
     let mut cases = Vec::new();
     let value = parent(&context, true);
     let before = statements();
@@ -112,7 +127,8 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
     let mut missing_parent = Q::order_items()
         .comment("Prepare an item without its required parent")
         .purpose("Verify a relation violation keeps its entity identity")
-        .new_entity(&context).expect("reserve example identity");
+        .new_entity(&context)
+        .expect("reserve example identity");
     missing_parent.update_product_name("Public item");
     missing_parent.update_unit_price(teaql_core::Value::Decimal("10.00".parse()?));
     cases.push(
@@ -152,7 +168,8 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
     let mut child = Q::order_items()
         .comment("Prepare a child with a missing required product name")
         .purpose("Verify child identity and indexed canonical paths survive graph validation")
-        .new_entity(&context).expect("reserve example identity");
+        .new_entity(&context)
+        .expect("reserve example identity");
     child.update_purchase_order_id(nested.id());
     child.update_unit_price(teaql_core::Value::Decimal("10.00".parse()?));
     nested.include_pending_mutations_from(&child)?;
@@ -191,7 +208,13 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
     let persisted = rows.first().ok_or("valid control missing")?;
     cases.push(serde_json::json!({"case":"valid-readback","id":good.id(),"version":E::purchase_order(persisted).get_version().eval(),
         "passed":E::purchase_order(persisted).get_contact_phone().eval().as_deref()==Some("5550100")&&E::purchase_order(persisted).get_version().eval()==Some(1)}));
-    pool.lock().unwrap().trace(None);
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::empty(),
+            None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+        )
+        .unwrap();
     let passed = cases.iter().all(|c| c["passed"] == true);
     println!(
         "RUST_GENERATED_CHECKER_TYPES={}",

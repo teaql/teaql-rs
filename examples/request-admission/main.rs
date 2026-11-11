@@ -183,7 +183,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             capture.provider_metadata.fetch_add(1, Ordering::SeqCst);
         }));
     ctx.register_executor(executor);
-    pool.lock().unwrap().trace(Some(observe));
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(|event: rusqlite::trace::TraceEvent<'_>| {
+                if let rusqlite::trace::TraceEvent::Stmt(statement, sql) = event {
+                    if sql.starts_with("--") {
+                        observe(sql);
+                    } else {
+                        observe(&statement.expanded_sql().expect("expanded SQLite trace SQL"));
+                    }
+                }
+            }),
+        )
+        .unwrap();
     let prior: i64 =
         pool.lock()
             .unwrap()

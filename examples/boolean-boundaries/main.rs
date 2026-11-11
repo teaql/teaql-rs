@@ -50,7 +50,7 @@ async fn main() {
     let pool = Arc::new(Mutex::new(rusqlite::Connection::open(database).unwrap()));
     let context = service_runtime_from_pool(pool.clone()).await.unwrap();
     context.ensure_schema().await.unwrap();
-    pool.lock().unwrap().trace(Some(observe));
+    pool.lock().unwrap().trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT, Some(|event: rusqlite::trace::TraceEvent<'_>| { if let rusqlite::trace::TraceEvent::Stmt(statement, sql) = event { if sql.starts_with("--") { observe(sql); } else { observe(&statement.expanded_sql().expect("expanded SQLite trace SQL")); } } })).unwrap();
     let mut entity = exact::prepared(&context, &format!("Boolean round {round}"));
     entity.update_required_boolean(true);
     entity.update_optional_boolean(false);

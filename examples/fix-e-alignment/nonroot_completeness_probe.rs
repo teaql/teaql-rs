@@ -91,11 +91,26 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
     context.set_custom_event_sink(effects.clone());
     let policy: Arc<dyn MutationPolicy> = Arc::new(effects.clone());
     context.set_mutation_policy_registry(move |_: &str| Some(policy.clone()));
-    pool.lock().unwrap().trace(Some(observe));
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(|event: rusqlite::trace::TraceEvent<'_>| {
+                if let rusqlite::trace::TraceEvent::Stmt(statement, sql) = event {
+                    if sql.starts_with("--") {
+                        observe(sql);
+                    } else {
+                        observe(&statement.expanded_sql().expect("expanded SQLite trace SQL"));
+                    }
+                }
+            }),
+        )
+        .unwrap();
     let mut owner = Q::purchase_orders()
         .comment("Prepare a complete owner for isolated field projections")
         .purpose("Test missing non-root fields rather than the context-root guard")
-        .new_entity(&context).expect("reserve example identity");
+        .new_entity(&context)
+        .expect("reserve example identity");
     owner.update_contact_phone("5550950");
     owner.update_internal_note(Value::Null);
     let before = effects.snapshot();
@@ -266,7 +281,13 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
         json!({"id":owner.id(),"effects":delta,"relationMissing":relation_missing,
         "version":2,"phone":format!("555095{round}"),"completeOwnerState":state(&persisted)}),
     );
-    pool.lock().unwrap().trace(None);
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::empty(),
+            None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+        )
+        .unwrap();
     println!(
         "RUST_NONROOT_COMPLETENESS_RESULT={}",
         json!({"language":"rust","round":round,"cases":5,"passed":true,

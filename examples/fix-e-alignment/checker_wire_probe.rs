@@ -108,7 +108,8 @@ fn mapped(
     let mut row = Q::purchase_orders()
         .comment("Map one validated canonical input object")
         .purpose("Reject ambiguous wire input before creating mutation intent")
-        .new_entity(context).expect("reserve example identity");
+        .new_entity(context)
+        .expect("reserve example identity");
     match normalized.values.get("contact_phone").unwrap() {
         Json::Null => row.update_contact_phone(Value::Null),
         Json::String(value) => row.update_contact_phone(value.clone()),
@@ -145,7 +146,21 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
         inner: checker_registry(),
         effects: effects.clone(),
     });
-    pool.lock().unwrap().trace(Some(observe));
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(|event: rusqlite::trace::TraceEvent<'_>| {
+                if let rusqlite::trace::TraceEvent::Stmt(statement, sql) = event {
+                    if sql.starts_with("--") {
+                        observe(sql);
+                    } else {
+                        observe(&statement.expanded_sql().expect("expanded SQLite trace SQL"));
+                    }
+                }
+            }),
+        )
+        .unwrap();
     let profiles = [
         (
             "camelCase",
@@ -307,7 +322,13 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
             json!({"id":stored.id(),"phone":phone,"version":1,"providerInserts":inserts,"effects":delta}),
         );
     }
-    pool.lock().unwrap().trace(None);
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::empty(),
+            None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+        )
+        .unwrap();
     println!(
         "RUST_CHECKER_WIRE_RESULT={}",
         json!({"language":"rust","round":round,"passed":true,"cases":21,"sameDatabase":true,

@@ -44,7 +44,21 @@ pub async fn verify(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let clock = Utc.with_ymd_and_hms(2032, 4, 5, 9, 0, 0).single().unwrap();
     context.set_business_clock(FixedBusinessClock::new(clock));
-    pool.lock().unwrap().trace(Some(observe));
+    pool.lock()
+        .unwrap()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(|event: rusqlite::trace::TraceEvent<'_>| {
+                if let rusqlite::trace::TraceEvent::Stmt(statement, sql) = event {
+                    if sql.starts_with("--") {
+                        observe(sql);
+                    } else {
+                        observe(&statement.expanded_sql().expect("expanded SQLite trace SQL"));
+                    }
+                }
+            }),
+        )
+        .unwrap();
     pool.lock().unwrap().execute_batch(
         "CREATE TRIGGER IF NOT EXISTS core_ml13_authoritative_tombstone
          AFTER UPDATE OF version ON purchase_order_data
@@ -69,7 +83,8 @@ pub async fn verify(
             let mut order = Q::purchase_orders()
                 .comment("Prepare one authoritative tombstone fixture")
                 .purpose("Verify generated deletion using the ordinary audited Save boundary")
-                .new_entity(context).expect("reserve example identity");
+                .new_entity(context)
+                .expect("reserve example identity");
             order.update_contact_phone(format!("555094{}", path_index * 2 + usize::from(trigger)));
             order.update_internal_note(Value::Null);
             let mut order = order
