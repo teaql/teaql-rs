@@ -1071,15 +1071,13 @@ async fn blank_local_context(logging: bool) -> (UserContext, Capture, SqliteMuta
         parent("PaymentAttempt", "payment"),
         parent("Shipment", "customer_order"),
     ];
-    let directory = std::env::temp_dir().join(format!(
-        "teaql-rust-blank-local-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&directory).unwrap();
+    // Atomically allocate the directory: parallel tests can share a clock tick.
+    // Keep the database for the outer evidence owner, which cleans its scratch.
+    let directory = tempfile::Builder::new()
+        .prefix("teaql-rust-blank-local-")
+        .tempdir()
+        .expect("unique SQLite trace fixture directory")
+        .keep();
     let database = directory.join("trace.sqlite");
     let transport =
         SqliteMutationExecutor::from_connection(rusqlite::Connection::open(&database).unwrap());
