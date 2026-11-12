@@ -1,6 +1,6 @@
 use super::*;
 use teaql_core::aggregation_plan::StatisticalPlan;
-use teaql_core::{PropertyDescriptor as P, RelationDescriptor as R, SelectQuery};
+use teaql_core::{BinaryOp, PropertyDescriptor as P, RelationDescriptor as R, SelectQuery};
 
 fn descriptors() -> Vec<EntityDescriptor> {
     vec![
@@ -279,6 +279,59 @@ fn layered_rollup_context_having_removes_final_cells() {
     )
     .unwrap();
     assert!(rows.is_empty());
+}
+
+#[test]
+fn ordinary_statistics_having_count_alias_filters_scalar_result() {
+    let context = runtime_context(executor(), policy(false, false));
+    let query = SelectQuery::new("School")
+        .count("schools")
+        .having(Expr::gt("schools", 4))
+        .comment("Filter the selected school count")
+        .purpose("Prove result aliases work without a roll-up");
+    let rows = fetch(&context, query.clone()).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(5)));
+    assert!(
+        fetch(&context, query.having(Expr::gt("schools", 5)))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn ordinary_statistics_having_alias_composes_with_source_filter_and_aggregate_expression() {
+    let context = runtime_context(executor(), policy(false, false));
+    let query = SelectQuery::new("School")
+        .group_by("kind_id")
+        .aggregate(Aggregate::sum("capacity", "total"))
+        .filter(Expr::gte("capacity", 100))
+        .having(Expr::and([
+            Expr::gt("total", 3000),
+            Expr::binary(Expr::count_all(), BinaryOp::Gt, Expr::value(2)),
+        ]))
+        .comment("Filter completed kind totals using aliases and explicit aggregates")
+        .purpose("Keep HAVING after population filtering and grouping");
+    let rows = fetch(&context, query).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("kind_id"), Some(&Value::I64(1001)));
+    assert_eq!(rows[0].get("total"), Some(&Value::I64(3200)));
+}
+
+#[test]
+fn ordinary_statistics_having_named_dimension_uses_legacy_column_binding() {
+    let context = runtime_context(executor(), policy(false, false));
+    let query = SelectQuery::new("School")
+        .group_by("capacity")
+        .project_expr("bucket", Expr::column("capacity"))
+        .count("schools")
+        .having(Expr::gte("bucket", 800))
+        .comment("Select the named capacity dimension")
+        .purpose("Resolve dimension aliases through logical metadata");
+    let rows = fetch(&context, query).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("bucket"), Some(&Value::I64(800)));
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(4)));
 }
 
 #[test]

@@ -222,6 +222,12 @@ fn compile_select_with_cache<D: SqlDialect>(
     entity: &EntityDescriptor,
     query: &SelectQuery,
 ) -> Result<CompiledQuery, SqlCompileError> {
+    if crate::having::requires_fresh_compilation(query)? {
+        // Alias expansion can introduce projection operands a second time.
+        // The ordinary cache collects operands from the original AST, so do
+        // not reuse its parameter layout for this rewritten expression.
+        return dialect.compile_select(entity, query);
+    }
     if let Ok(cache) = plan_cache.read()
         && let Some((_, _, sql, log_context)) =
             cache.iter().find(|(descriptor, candidate, _, _)| {
@@ -1508,6 +1514,31 @@ mod tests {
             )),
         )
         .await;
+    }
+
+    #[test]
+    fn having_alias_recompilation_preserves_current_expanded_operands() {
+        let cache = RwLock::new(Vec::new());
+        for (marker, threshold) in [(7_i64, 2_i64), (13, 5)] {
+            let query = SelectQuery::new("Order")
+                .group_by("name")
+                .project_expr("marker", Expr::sum_expr(Expr::value(marker)))
+                .having(Expr::gt("marker", threshold));
+            let actual =
+                compile_select_with_cache(&TestDialect, &cache, &test_entity(), &query).unwrap();
+            let fresh = TestDialect.compile_select(&test_entity(), &query).unwrap();
+            assert_eq!(actual, fresh);
+            assert_eq!(
+                actual.params,
+                [
+                    Value::I64(marker),
+                    Value::I64(marker),
+                    Value::I64(threshold)
+                ]
+            );
+        }
+        // No original-AST parameter layout is admitted for expanded aliases.
+        assert!(cache.read().unwrap().is_empty());
     }
 }
 

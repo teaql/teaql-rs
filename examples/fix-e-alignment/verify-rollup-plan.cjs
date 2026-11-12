@@ -16,6 +16,7 @@ async function main() {
         receipt.sourceHashes = {};
         for (const name of ['Cargo.toml', 'Cargo.lock', 'teaql-core/src/aggregation_plan.rs', 'teaql-core/src/lib.rs',
             'teaql-core/src/query.rs', 'teaql-sql/src/executor.rs', 'teaql-sql/src/execution_tests.rs',
+            'teaql-sql/src/dialect.rs', 'teaql-sql/src/having.rs', 'teaql-sql/src/bindings.rs',
             'teaql-runtime/src/data_service/mod.rs', 'teaql-runtime/src/data_service/resolved.rs',
             'teaql-runtime/src/data_service/statistics.rs',
             'teaql-sql/src/statistical.rs', 'teaql-sql/src/lib.rs', 'teaql-provider-sqlite/src/statistical_tests.rs',
@@ -28,13 +29,13 @@ async function main() {
             CARGO_BUILD_JOBS: '4', CARGO_PROFILE_TEST_DEBUG: '0', CARGO_PROFILE_DEV_DEBUG: '0'};
         receipt.commands = [];
         for (const [crate, filter, minimum] of [['teaql-core', 'aggregation_plan::tests::', 11],
-            ['teaql-provider-sqlite', 'statistical_tests::layered_rollup_', 22]]) {
+            ['teaql-provider-sqlite', 'statistical_tests::', 25]]) {
             const command = [process.env.CARGO || 'cargo', 'test', '--offline', '--locked', '-p', crate, filter];
             const logPath = path.join(output, crate + '.log'), fd = fs.openSync(logPath, 'wx'); let result;
             try { result = await runner.run(command, {cwd: repo, env, timeout: 900000, stdio: ['ignore', fd, fd]}); }
             finally { fs.closeSync(fd); }
             const log = fs.readFileSync(logPath);
-            const testsPassed = (log.toString().match(/test (?:aggregation_plan::tests::|statistical_tests::layered_rollup_)[^\n]+ \.\.\. ok/g) || []).length;
+            const testsPassed = (log.toString().match(/test (?:aggregation_plan::tests::|statistical_tests::)[^\n]+ \.\.\. ok/g) || []).length;
             receipt.commands.push({command, result, testsPassed, logSha256: hash(log)});
             assert(result.status === 0 && testsPassed >= minimum, log.toString().slice(-6000));
         }
@@ -47,7 +48,7 @@ async function main() {
         const testsPassed = [...log.matchAll(/test result: ok\. (\d+) passed;/g)]
             .reduce((count, match) => count + Number(match[1]), 0);
         receipt.commands.push({command, result, testsPassed, logSha256: hash(bytes)});
-        assert(result.status === 0 && testsPassed >= 1059, log.slice(-6000));
+        assert(result.status === 0 && testsPassed >= 1102, log.slice(-6000));
         for (const [name, expected] of Object.entries(receipt.sourceHashes)) {
             assert.equal(hash(fs.readFileSync(path.join(repo, name))), expected, 'Source changed during verification: ' + name);
         }

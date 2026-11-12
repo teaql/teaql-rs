@@ -452,7 +452,8 @@ pub trait SqlDialect {
         }
 
         if let Some(having) = &query.having {
-            let having_sql = self.compile_expr(entity, having, params)?;
+            let having = crate::having::bind(query, having)?;
+            let having_sql = self.compile_expr(entity, &having, params)?;
             sql.push_str(" HAVING ");
             sql.push_str(&having_sql);
         }
