@@ -282,6 +282,61 @@ fn layered_rollup_context_having_removes_final_cells() {
 }
 
 #[test]
+fn layered_rollup_named_source_dimension_supports_having_and_preserves_owner_grain() {
+    let context = runtime_context(executor(), policy(false, false));
+    let query = source(SelectQuery::new("Kind").group_by("label").count("kinds"))
+        .group_by("capacity")
+        .project_expr("bucket", Expr::column("capacity"))
+        .having(Expr::gte("bucket", 800))
+        .order_desc("bucket");
+    let rows = fetch(&context, query).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("bucket"), Some(&Value::I64(800)));
+    assert_eq!(rows[0].get("capacity"), Some(&Value::I64(800)));
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(4)));
+    assert_eq!(rows[0].get("total"), Some(&Value::I64(3200)));
+    let Some(Value::Object(kind)) = rows[0].get("kind") else {
+        panic!("missing kind");
+    };
+    assert_eq!(kind.get("kinds"), Some(&Value::I64(1)));
+}
+
+#[test]
+fn layered_rollup_named_parent_dimension_supports_cell_paging() {
+    let context = runtime_context(executor(), policy(false, false));
+    let parent = SelectQuery::new("Kind")
+        .group_by("ordinal")
+        .project_expr("rank", Expr::column("ordinal"))
+        .order_desc("rank")
+        .limit(1);
+    let rows = fetch(&context, source(parent)).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(1)));
+    let Some(Value::Object(kind)) = rows[0].get("kind") else {
+        panic!("missing kind");
+    };
+    assert_eq!(kind.get("rank"), Some(&Value::I64(2)));
+}
+
+#[test]
+fn layered_rollup_conflicting_alias_fails_before_sql() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute("DROP TABLE legacy_school", [])
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let query = source(SelectQuery::new("Kind").group_by("label"))
+        .group_by("capacity")
+        .project_expr("kind.label", Expr::column("capacity"));
+    let error = fetch(&context, query).unwrap_err();
+    assert!(error.contains("statistical result path"), "{error}");
+    assert!(!error.contains("no such table"), "{error}");
+}
+
+#[test]
 fn layered_rollup_context_parent_bindings_do_not_reuse_previous_values() {
     let context = runtime_context(executor(), policy(false, false));
     for (ordinal, count) in [(1, 4), (2, 1), (1, 4)] {

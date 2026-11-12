@@ -10,7 +10,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use crate::{Aggregate, AggregateFunction, EntityDescriptor, SelectQuery};
+use crate::{Aggregate, AggregateFunction, EntityDescriptor, Expr, SelectQuery};
 
 const MAX_LAYERS: usize = 64;
 
@@ -86,7 +86,9 @@ impl StatisticalPlan {
             .chain(plan.measures.iter().map(|binding| &binding.output_path))
         {
             if paths.iter().any(|existing: &Vec<String>| {
-                existing.starts_with(path) || path.starts_with(existing)
+                existing.starts_with(path)
+                    || path.starts_with(existing)
+                    || existing.join(".") == path.join(".")
             }) {
                 return Err(StatisticalPlanError(format!(
                     "duplicate statistical result path: {path:?}"
@@ -163,6 +165,35 @@ impl StatisticalPlan {
                     owner_layer: owner,
                     field: field.clone(),
                     output_path: result_path(field),
+                });
+            }
+        }
+        // Existing generated group_by_*_as helpers project an additional named
+        // view of a grouping key. Preserve that view at every statistical layer;
+        // do not treat it as a measure or silently drop it from the output.
+        for projection in &query.expr_projection {
+            let Expr::Column(field) = &projection.expr else {
+                return Err(StatisticalPlanError(
+                    "statistical expression projection requires further lowering".into(),
+                ));
+            };
+            field_exists(field)?;
+            if !query.group_by.contains(field) || rolled_fields.contains(field.as_str()) {
+                return Err(StatisticalPlanError(format!(
+                    "statistical alias {} must refer to a final grouping key",
+                    projection.alias
+                )));
+            }
+            if projection.alias.trim().is_empty() {
+                return Err(StatisticalPlanError(
+                    "statistical dimension alias must not be empty".into(),
+                ));
+            }
+            if projection.alias != *field {
+                self.dimensions.push(DimensionBinding {
+                    owner_layer: owner,
+                    field: field.clone(),
+                    output_path: result_path(&projection.alias),
                 });
             }
         }
@@ -334,6 +365,43 @@ mod tests {
                 .column_name,
             "Legacy Kind Key"
         );
+    }
+
+    #[test]
+    fn named_group_projection_survives_rollup_without_becoming_a_measure() {
+        let query = SelectQuery::new("School")
+            .group_by("capacity")
+            .project_expr("bucket", Expr::column("capacity"))
+            .aggregate(Aggregate::count("schools"))
+            .object_group_by("kind", "kind_id", SelectQuery::new("Kind").group_by("name"));
+        let plan = build(&query).unwrap();
+        assert!(
+            plan.dimensions
+                .iter()
+                .any(|binding| binding.owner_layer == 0
+                    && binding.field == "capacity"
+                    && binding.output_path == ["bucket"])
+        );
+        assert_eq!(plan.measures.len(), 1);
+        assert_eq!(plan.layers[0].request, query);
+    }
+
+    #[test]
+    fn non_grouped_expression_projection_is_not_silently_discarded() {
+        let query = SelectQuery::new("School")
+            .group_by("capacity")
+            .project_expr("not_a_dimension", Expr::column("id"))
+            .object_group_by("kind", "kind_id", SelectQuery::new("Kind").group_by("name"));
+        assert!(build(&query).is_err());
+    }
+
+    #[test]
+    fn literal_alias_cannot_shadow_a_nested_result_path() {
+        let query = SelectQuery::new("School")
+            .group_by("capacity")
+            .project_expr("kind.name", Expr::column("capacity"))
+            .object_group_by("kind", "kind_id", SelectQuery::new("Kind").group_by("name"));
+        assert!(build(&query).is_err());
     }
 
     #[test]

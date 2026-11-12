@@ -27,8 +27,8 @@ async function main() {
         const env = {...process.env, CARGO_TARGET_DIR: path.join(scratch, 'target'), CARGO_INCREMENTAL: '0',
             CARGO_BUILD_JOBS: '4', CARGO_PROFILE_TEST_DEBUG: '0', CARGO_PROFILE_DEV_DEBUG: '0'};
         receipt.commands = [];
-        for (const [crate, filter, minimum] of [['teaql-core', 'aggregation_plan::tests::', 8],
-            ['teaql-provider-sqlite', 'statistical_tests::layered_rollup_', 19]]) {
+        for (const [crate, filter, minimum] of [['teaql-core', 'aggregation_plan::tests::', 11],
+            ['teaql-provider-sqlite', 'statistical_tests::layered_rollup_', 22]]) {
             const command = [process.env.CARGO || 'cargo', 'test', '--offline', '--locked', '-p', crate, filter];
             const logPath = path.join(output, crate + '.log'), fd = fs.openSync(logPath, 'wx'); let result;
             try { result = await runner.run(command, {cwd: repo, env, timeout: 900000, stdio: ['ignore', fd, fd]}); }
@@ -60,7 +60,9 @@ async function main() {
         } else receipt.unsafeRetention = {scratch, processGroup: runner.unsafeGroup};
         runner.dispose();
         fs.writeFileSync(path.join(output, 'receipt.json'), JSON.stringify(receipt, null, 2) + '\n');
-        process.stdout.write(JSON.stringify(receipt, null, 2) + '\n');
+        process.stdout.write(JSON.stringify({passed: receipt.passed, evidence: output, error: receipt.error?.slice(-700),
+            commands: receipt.commands?.map(command => ({exitCode: command.result.status, testsPassed: command.testsPassed})),
+            disposableBytesRemoved: receipt.cleanup?.bytes}) + '\n');
     }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -37,7 +37,6 @@ pub fn compile_statistical_plan(
         let request = &layer.request;
         if request.partition_by.is_some()
             || request.raw_sql.is_some()
-            || !request.expr_projection.is_empty()
             || !request.raw_projections.is_empty()
             || !request.dynamic_properties.is_empty()
             || request.dynamic_field_selection.is_some()
@@ -46,7 +45,28 @@ pub fn compile_statistical_plan(
                 "layered statistics expression projections or entity extensions require further lowering",
             ));
         }
+        for projection in &request.expr_projection {
+            let Expr::Column(field) = &projection.expr else {
+                return Err(invalid(
+                    "layered statistics expression requires further lowering",
+                ));
+            };
+            let mut path = layer.output_path.clone();
+            path.push(projection.alias.clone());
+            if !request.group_by.contains(field)
+                || !plan.dimensions.iter().any(|dimension| {
+                    dimension.owner_layer == index
+                        && dimension.field == *field
+                        && dimension.output_path == path
+                })
+            {
+                return Err(invalid(
+                    "statistical alias is not bound to a final grouping dimension",
+                ));
+            }
+        }
         let mut population = request.clone();
+        population.expr_projection.clear();
         population.group_by.clear();
         population.aggregates.clear();
         population.object_group_bys.clear();
