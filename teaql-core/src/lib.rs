@@ -1,5 +1,6 @@
 extern crate self as teaql_core;
 
+pub mod aggregation_plan;
 pub mod business_id;
 pub mod dynamic_fields;
 pub mod dynamic_properties;

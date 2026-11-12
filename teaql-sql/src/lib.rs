@@ -1,4 +1,6 @@
 mod bindings;
+mod statistical;
+pub use statistical::compile_statistical_plan;
 mod dialect;
 pub use bindings::SqlBindings;
 #[cfg(test)]

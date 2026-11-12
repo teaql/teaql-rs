@@ -30,6 +30,8 @@ use teaql_sql::{
 mod decimal_functions;
 mod dynamic_fields;
 mod transaction;
+#[cfg(test)]
+mod statistical_tests;
 pub use transaction::SqliteTransaction;
 
 pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";

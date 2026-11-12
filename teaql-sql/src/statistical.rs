@@ -1,0 +1,224 @@
+//! SQL lowering for metadata-bound layered statistics. Each measure owner is
+//! deduplicated at entity identity + final dimensions before aggregation. In
+//! particular AVG is computed from source observations, never group averages.
+
+use teaql_core::aggregation_plan::StatisticalPlan;
+use teaql_core::{AggregateFunction, SelectQuery};
+
+use crate::{CompiledQuery, SqlBindings, SqlCompileError, SqlDialect};
+
+/// Compile a complete population join, then one aggregate CTE per measure
+/// owner. Result columns use stable internal labels (`__teaql_dN`,
+/// `__teaql_mN`); the plan supplies their logical, possibly nested paths.
+///
+/// This lowering entry point is not yet the public request execution path.
+/// Unsupported post-aggregation layer shapes fail explicitly rather than
+/// silently applying pre-aggregation pagination or dropping predicates.
+pub fn compile_statistical_plan(
+    dialect: &impl SqlDialect,
+    plan: &StatisticalPlan,
+) -> Result<CompiledQuery, SqlCompileError> {
+    let invalid = |message: &str| SqlCompileError::InvalidFunctionArguments(message.to_owned());
+    let Some(root) = plan.layers.first() else {
+        return Err(invalid("empty statistical plan"));
+    };
+    if plan.dimensions.is_empty() && plan.measures.is_empty() {
+        return Err(invalid(
+            "statistical plan has neither dimensions nor measures",
+        ));
+    }
+    let q = |name: &str| dialect.quote_ident(name);
+    let mut params = SqlBindings::new();
+    let mut ctes = Vec::new();
+    for (index, layer) in plan.layers.iter().enumerate() {
+        let request = &layer.request;
+        if request.having.is_some()
+            || !request.order_by.is_empty()
+            || request.slice.is_some()
+            || request.partition_by.is_some()
+            || request.raw_sql.is_some()
+            || !request.expr_projection.is_empty()
+            || !request.raw_projections.is_empty()
+            || !request.dynamic_properties.is_empty()
+        {
+            return Err(invalid(
+                "layered statistics post-aggregate expressions and pagination require further lowering",
+            ));
+        }
+        let mut population = request.clone();
+        population.group_by.clear();
+        population.aggregates.clear();
+        population.object_group_bys.clear();
+        population.projection = layer
+            .descriptor
+            .properties
+            .iter()
+            .map(|property| property.name.clone())
+            .collect();
+        let sql = dialect.compile_select_sql(&layer.descriptor, &population, &mut params)?;
+        ctes.push(format!("{} AS ({sql})", q(&format!("__teaql_q{index}"))));
+    }
+    let field = |layer: usize, name: &str| -> Result<String, SqlCompileError> {
+        let descriptor = &plan
+            .layers
+            .get(layer)
+            .ok_or_else(|| invalid("invalid statistics owner index"))?
+            .descriptor;
+        if descriptor.property_by_name(name).is_none() {
+            return Err(SqlCompileError::UnknownField(name.into()));
+        }
+        Ok(format!("{}.{}", q(&format!("l{layer}")), q(name)))
+    };
+    let mut joins = format!("{} AS {}", q("__teaql_q0"), q("l0"));
+    for (index, layer) in plan.layers.iter().enumerate().skip(1) {
+        let edge = layer
+            .incoming
+            .as_ref()
+            .ok_or_else(|| invalid("non-source statistics layer requires an incoming edge"))?;
+        if edge.source_layer >= index {
+            return Err(invalid("statistics layer edges must be acyclic"));
+        }
+        // Eligibility is represented by each filtered population, not by a
+        // second grouped request misused as an entity-ID membership query.
+        joins.push_str(&format!(
+            " JOIN {} AS {} ON {} = {}",
+            q(&format!("__teaql_q{index}")),
+            q(&format!("l{index}")),
+            field(edge.source_layer, &edge.source_field)?,
+            field(index, &edge.target_field)?
+        ));
+    }
+    let dimension_names = (0..plan.dimensions.len())
+        .map(|index| q(&format!("__teaql_d{index}")))
+        .collect::<Vec<_>>();
+    let mut selected = Vec::new();
+    for (index, dimension) in plan.dimensions.iter().enumerate() {
+        selected.push(format!(
+            "{} AS {}",
+            field(dimension.owner_layer, &dimension.field)?,
+            dimension_names[index]
+        ));
+    }
+    for (index, layer) in plan.layers.iter().enumerate() {
+        selected.push(format!(
+            "{} AS {}",
+            field(index, &layer.identity_field)?,
+            q(&format!("__teaql_id{index}"))
+        ));
+    }
+    for (index, measure) in plan.measures.iter().enumerate() {
+        if measure.aggregate.field != "*" {
+            selected.push(format!(
+                "{} AS {}",
+                field(measure.owner_layer, &measure.aggregate.field)?,
+                q(&format!("__teaql_v{index}"))
+            ));
+        }
+    }
+    ctes.push(format!(
+        "{} AS (SELECT {} FROM {joins})",
+        q("__teaql_population"),
+        selected.join(", ")
+    ));
+    let dimensions = dimension_names.join(", ");
+    let dimension_prefix = if dimensions.is_empty() {
+        String::new()
+    } else {
+        format!("{dimensions}, ")
+    };
+    let group_clause = if dimensions.is_empty() {
+        String::new()
+    } else {
+        format!(" GROUP BY {dimensions}")
+    };
+    // A scalar aggregate still returns one row for an empty population.
+    let cells_sql = if dimensions.is_empty() {
+        "SELECT 1 AS __teaql_unit".to_owned()
+    } else {
+        format!(
+            "SELECT DISTINCT {dimensions} FROM {}",
+            q("__teaql_population")
+        )
+    };
+    ctes.push(format!("{} AS ({cells_sql})", q("__teaql_cells")));
+    let mut result = dimension_names
+        .iter()
+        .map(|name| format!("{}.{} AS {name}", q("c"), name))
+        .collect::<Vec<_>>();
+    let mut result_joins = format!("{} AS {}", q("__teaql_cells"), q("c"));
+    for (owner, layer) in plan.layers.iter().enumerate() {
+        let measures = plan
+            .measures
+            .iter()
+            .enumerate()
+            .filter(|(_, measure)| measure.owner_layer == owner)
+            .collect::<Vec<_>>();
+        if measures.is_empty() {
+            continue;
+        }
+        let grain_name = q(&format!("__teaql_grain{owner}"));
+        let id = q(&format!("__teaql_id{owner}"));
+        let mut grain_fields = dimension_names.clone();
+        grain_fields.push(id.clone());
+        grain_fields.extend(
+            measures
+                .iter()
+                .filter(|(_, measure)| measure.aggregate.field != "*")
+                .map(|(index, _)| q(&format!("__teaql_v{index}"))),
+        );
+        ctes.push(format!(
+            "{grain_name} AS (SELECT DISTINCT {} FROM {} WHERE {id} IS NOT NULL)",
+            grain_fields.join(", "),
+            q("__teaql_population")
+        ));
+        let mut calls = Vec::new();
+        for (index, measure) in measures {
+            let operand = if measure.aggregate.field == "*" {
+                "*".to_owned()
+            } else {
+                q(&format!("__teaql_v{index}"))
+            };
+            let call =
+                dialect.aggregate_call_sql_for(&layer.descriptor, &measure.aggregate, &operand)?;
+            let label = q(&format!("__teaql_m{index}"));
+            calls.push(format!("{call} AS {label}"));
+            let value = format!("{}.{}", q(&format!("m{owner}")), label);
+            let value = if measure.aggregate.function == AggregateFunction::Count {
+                format!("COALESCE({value}, 0)")
+            } else {
+                value
+            };
+            result.push(format!("{value} AS {label}"));
+        }
+        let aggregate_name = q(&format!("__teaql_measure{owner}"));
+        ctes.push(format!(
+            "{aggregate_name} AS (SELECT {dimension_prefix}{} FROM {grain_name}{group_clause})",
+            calls.join(", ")
+        ));
+        let alias = q(&format!("m{owner}"));
+        let on = if dimension_names.is_empty() {
+            "1 = 1".to_owned()
+        } else {
+            dimension_names
+                .iter()
+                .map(|name| {
+                    let left = format!("{}.{}", q("c"), name);
+                    let right = format!("{alias}.{name}");
+                    format!("({left} = {right} OR ({left} IS NULL AND {right} IS NULL))")
+                })
+                .collect::<Vec<_>>()
+                .join(" AND ")
+        };
+        result_joins.push_str(&format!(" LEFT JOIN {aggregate_name} AS {alias} ON {on}"));
+    }
+    Ok(CompiledQuery {
+        sql: format!(
+            "WITH {} SELECT {} FROM {result_joins}",
+            ctes.join(", "),
+            result.join(", ")
+        ),
+        log_context: params.log_context(dialect.kind()),
+        params: params.into_values(),
+        comment: root.request.comment.clone(),
+    })
+}
