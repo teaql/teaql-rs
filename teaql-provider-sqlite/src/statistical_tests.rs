@@ -454,3 +454,68 @@ fn layered_rollup_decoder_preserves_dots_in_a_measure_alias() {
     assert_eq!(result.rows[0].get("school.count"), Some(&Value::I64(5)));
     assert!(!result.rows[0].contains_key("school"));
 }
+
+#[test]
+fn layered_rollup_parent_limit_selects_cells_not_first_parent_id() {
+    let context = runtime_context(executor(), policy(false, false));
+    let rows = fetch(
+        &context,
+        source(SelectQuery::new("Kind").group_by("label").limit(1)),
+    )
+    .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(5)));
+}
+
+#[test]
+fn layered_rollup_parent_page_is_computed_after_source_filters() {
+    let context = runtime_context(executor(), policy(false, false));
+    let parent = SelectQuery::new("Kind")
+        .group_by("ordinal")
+        .order_desc("ordinal")
+        .limit(1);
+    let rows = fetch(&context, source(parent.clone())).unwrap();
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(1)));
+    let rows = fetch(
+        &context,
+        source(parent).and_filter(Expr::gte("capacity", 800)),
+    )
+    .unwrap();
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(4)));
+    let Some(Value::Object(kind)) = rows[0].get("kind") else {
+        panic!("missing dimension");
+    };
+    assert_eq!(kind.get("ordinal"), Some(&Value::I64(1)));
+}
+
+#[test]
+fn layered_rollup_parent_having_uses_deduplicated_owner_measures() {
+    let context = runtime_context(executor(), policy(false, false));
+    let parent = SelectQuery::new("Kind")
+        .group_by("label")
+        .aggregate(Aggregate::count("kinds"))
+        .having(Expr::gt("kinds", 1));
+    let rows = fetch(&context, source(parent.clone())).unwrap();
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(5)));
+    assert!(
+        fetch(
+            &context,
+            source(parent).and_filter(Expr::gte("capacity", 800))
+        )
+        .unwrap()
+        .is_empty()
+    );
+}
+
+#[test]
+fn layered_rollup_parent_measure_order_does_not_multiply_by_source_children() {
+    let context = runtime_context(executor(), policy(false, false));
+    let parent = SelectQuery::new("Kind")
+        .group_by("ordinal")
+        .aggregate(Aggregate::sum("ordinal", "ordinalTotal"))
+        .order_desc("ordinalTotal")
+        .limit(1);
+    let rows = fetch(&context, source(parent)).unwrap();
+    // A child-weighted sum incorrectly ranks kind 1001 (4 * 1) over 1002 (1 * 2).
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(1)));
+}

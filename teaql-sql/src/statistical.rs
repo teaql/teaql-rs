@@ -2,11 +2,11 @@
 //! deduplicated at entity identity + final dimensions before aggregation. In
 //! particular AVG is computed from source observations, never group averages.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use teaql_core::aggregation_plan::StatisticalPlan;
 use teaql_core::{
-    AggregateFunction, CompactRow, DataType, EntityDescriptor, PropertyDescriptor, SelectQuery,
-    Value,
+    AggregateFunction, CompactRow, DataType, EntityDescriptor, Expr, PropertyDescriptor,
+    SelectQuery, Value,
 };
 
 use crate::{CompiledQuery, SqlBindings, SqlCompileError, SqlDialect};
@@ -35,11 +35,7 @@ pub fn compile_statistical_plan(
     let mut ctes = Vec::new();
     for (index, layer) in plan.layers.iter().enumerate() {
         let request = &layer.request;
-        if (index != 0
-            && (request.having.is_some()
-                || !request.order_by.is_empty()
-                || request.slice.is_some()))
-            || request.partition_by.is_some()
+        if request.partition_by.is_some()
             || request.raw_sql.is_some()
             || !request.expr_projection.is_empty()
             || !request.raw_projections.is_empty()
@@ -47,7 +43,7 @@ pub fn compile_statistical_plan(
             || request.dynamic_field_selection.is_some()
         {
             return Err(invalid(
-                "layered statistics parent post-aggregate expressions or entity extensions require further lowering",
+                "layered statistics expression projections or entity extensions require further lowering",
             ));
         }
         let mut population = request.clone();
@@ -57,12 +53,30 @@ pub fn compile_statistical_plan(
         population.having = None;
         population.order_by.clear();
         population.slice = None;
-        population.projection = layer
-            .descriptor
-            .properties
-            .iter()
-            .map(|property| property.name.clone())
-            .collect();
+        let mut fields = BTreeSet::from([layer.identity_field.clone()]);
+        fields.extend(
+            plan.dimensions
+                .iter()
+                .filter(|dimension| dimension.owner_layer == index)
+                .map(|dimension| dimension.field.clone()),
+        );
+        fields.extend(
+            plan.measures
+                .iter()
+                .filter(|measure| measure.owner_layer == index && measure.aggregate.field != "*")
+                .map(|measure| measure.aggregate.field.clone()),
+        );
+        for child in &plan.layers {
+            if let Some(edge) = &child.incoming {
+                if edge.source_layer == index {
+                    fields.insert(edge.source_field.clone());
+                }
+            }
+        }
+        if let Some(edge) = &layer.incoming {
+            fields.insert(edge.target_field.clone());
+        }
+        population.projection = fields.into_iter().collect();
         let sql = dialect.compile_select_sql(&layer.descriptor, &population, &mut params)?;
         ctes.push(format!("{} AS ({sql})", q(&format!("__teaql_q{index}"))));
     }
@@ -125,8 +139,36 @@ pub fn compile_statistical_plan(
     }
     ctes.push(format!(
         "{} AS (SELECT {} FROM {joins})",
-        q("__teaql_population"),
+        q("__teaql_base"),
         selected.join(", ")
+    ));
+    let mut eligibility = Vec::new();
+    for (owner, layer) in plan.layers.iter().enumerate().skip(1) {
+        if layer.request.having.is_none()
+            && layer.request.order_by.is_empty()
+            && layer.request.slice.is_none()
+        {
+            continue;
+        }
+        let (eligible, labels) =
+            compile_parent_cells(dialect, plan, owner, &mut ctes, &mut params)?;
+        eligibility.push(format!(
+            "EXISTS (SELECT 1 FROM {} AS {} WHERE {})",
+            q(&eligible),
+            q("e"),
+            match_dimensions(dialect, &labels, "p", "e")
+        ));
+    }
+    ctes.push(format!(
+        "{} AS (SELECT * FROM {} AS {}{})",
+        q("__teaql_population"),
+        q("__teaql_base"),
+        q("p"),
+        if eligibility.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", eligibility.join(" AND "))
+        }
     ));
     let dimensions = dimension_names.join(", ");
     let dimension_prefix = if dimensions.is_empty() {
@@ -254,6 +296,141 @@ pub fn compile_statistical_plan(
         params: params.into_values(),
         comment: root.request.comment.clone(),
     })
+}
+
+/// Evaluate each parent's bounds at its own descendant dimension grain, using
+/// the source-filtered population. Picking parent IDs before grouping would
+/// discard other IDs that belong to the same eligible business dimension.
+fn compile_parent_cells(
+    dialect: &impl SqlDialect,
+    plan: &StatisticalPlan,
+    owner: usize,
+    ctes: &mut Vec<String>,
+    params: &mut SqlBindings,
+) -> Result<(String, Vec<String>), SqlCompileError> {
+    let q = |name: &str| dialect.quote_ident(name);
+    let layer = &plan.layers[owner];
+    let dimensions = plan
+        .dimensions
+        .iter()
+        .enumerate()
+        .filter(|(_, binding)| binding.output_path.starts_with(&layer.output_path))
+        .collect::<Vec<_>>();
+    let measures = plan
+        .measures
+        .iter()
+        .enumerate()
+        .filter(|(_, binding)| binding.owner_layer == owner)
+        .collect::<Vec<_>>();
+    let labels = dimensions
+        .iter()
+        .map(|(index, _)| q(&format!("__teaql_d{index}")))
+        .collect::<Vec<_>>();
+    let dimension_sql = labels.join(", ");
+    let body = if measures.is_empty() {
+        if dimensions.is_empty() {
+            format!("SELECT 1 AS {}", q("__teaql_unit"))
+        } else {
+            format!("SELECT DISTINCT {dimension_sql} FROM {}", q("__teaql_base"))
+        }
+    } else {
+        let id = q(&format!("__teaql_id{owner}"));
+        let grain = q(&format!("__teaql_parent_grain{owner}"));
+        let mut fields = labels.clone();
+        fields.push(id.clone());
+        fields.extend(
+            measures
+                .iter()
+                .filter(|(_, binding)| binding.aggregate.field != "*")
+                .map(|(index, _)| q(&format!("__teaql_v{index}"))),
+        );
+        ctes.push(format!(
+            "{grain} AS (SELECT DISTINCT {} FROM {} WHERE {id} IS NOT NULL)",
+            fields.join(", "),
+            q("__teaql_base")
+        ));
+        let mut selections = labels.clone();
+        for (index, binding) in &measures {
+            let operand = if binding.aggregate.field == "*" {
+                "*".into()
+            } else {
+                q(&format!("__teaql_v{index}"))
+            };
+            let call =
+                dialect.aggregate_call_sql_for(&layer.descriptor, &binding.aggregate, &operand)?;
+            selections.push(format!("{call} AS {}", q(&format!("__teaql_m{index}"))));
+        }
+        format!(
+            "SELECT {} FROM {grain}{}",
+            selections.join(", "),
+            if labels.is_empty() {
+                String::new()
+            } else {
+                format!(" GROUP BY {dimension_sql}")
+            }
+        )
+    };
+    let raw_name = format!("__teaql_parent_cells{owner}");
+    ctes.push(format!("{} AS ({body})", q(&raw_name)));
+    let mut descriptor = EntityDescriptor::new(&raw_name).table_name(&raw_name);
+    let mut query = SelectQuery::new(&raw_name);
+    let complete = result_descriptor(plan)?;
+    for (index, binding) in &dimensions {
+        let label = format!("__teaql_d{index}");
+        let property = complete
+            .properties
+            .iter()
+            .find(|property| property.column_name == label)
+            .unwrap();
+        let name = binding.output_path[layer.output_path.len()..].join(".");
+        descriptor = descriptor
+            .property(PropertyDescriptor::new(&name, property.data_type).column_name(&label));
+        query = query.project_expr(label, Expr::column(name));
+    }
+    for (index, binding) in &measures {
+        let label = format!("__teaql_m{index}");
+        let property = complete
+            .properties
+            .iter()
+            .find(|property| property.column_name == label)
+            .unwrap();
+        descriptor = descriptor.property(
+            PropertyDescriptor::new(&binding.aggregate.alias, property.data_type)
+                .column_name(&label),
+        );
+        query = query.project_expr(label, Expr::column(&binding.aggregate.alias));
+    }
+    if dimensions.is_empty() && measures.is_empty() {
+        descriptor = descriptor.property(PropertyDescriptor::new("__teaql_unit", DataType::I64));
+        query = query.project("__teaql_unit");
+    }
+    query.filter = layer.request.having.clone();
+    query.order_by = layer.request.order_by.clone();
+    query.slice = layer.request.slice;
+    let sql = dialect.compile_select_sql(&descriptor, &query, params)?;
+    let eligible = format!("__teaql_eligible{owner}");
+    ctes.push(format!("{} AS ({sql})", q(&eligible)));
+    Ok((eligible, labels))
+}
+
+fn match_dimensions(
+    dialect: &impl SqlDialect,
+    labels: &[String],
+    left: &str,
+    right: &str,
+) -> String {
+    if labels.is_empty() {
+        return "1 = 1".into();
+    }
+    labels
+        .iter()
+        .map(|label| {
+            let a = format!("{}.{label}", dialect.quote_ident(left));
+            let b = format!("{}.{label}", dialect.quote_ident(right));
+            format!("({a} = {b} OR ({a} IS NULL AND {b} IS NULL))")
+        })
+        .collect::<Vec<_>>()
+        .join(" AND ")
 }
 
 fn result_descriptor(plan: &StatisticalPlan) -> Result<EntityDescriptor, SqlCompileError> {
