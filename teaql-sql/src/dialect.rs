@@ -224,6 +224,13 @@ pub trait SqlDialect {
     fn quote_ident(&self, ident: &str) -> String;
     fn placeholder(&self, index: usize) -> String;
 
+    /// Result keys are logical API names, not legacy storage identifiers.
+    /// Providers which fold unquoted identifiers must preserve alias spelling
+    /// without changing how existing table/column names bind to storage.
+    fn quote_result_alias(&self, alias: &str) -> String {
+        self.quote_ident(alias)
+    }
+
     /// Whether `IN_LARGE` / `NOT_IN_LARGE` bind the complete value list as a
     /// single dialect-native array parameter instead of scalar placeholders.
     fn large_in_uses_array_param(&self) -> bool {
@@ -1120,7 +1127,7 @@ pub trait SqlDialect {
         }
         for projection in &query.expr_projection {
             let expr = self.compile_expr(entity, &projection.expr, params)?;
-            parts.push(format!("{expr} AS {}", self.quote_ident(&projection.alias)));
+            parts.push(format!("{expr} AS {}", self.quote_result_alias(&projection.alias)));
         }
         for projection in query
             .raw_projections
@@ -1130,7 +1137,7 @@ pub trait SqlDialect {
             parts.push(format!(
                 "{} AS {}",
                 projection.raw_sql_segment,
-                self.quote_ident(&projection.property_name)
+                self.quote_result_alias(&projection.property_name)
             ));
         }
         Ok(parts.join(", "))
@@ -1161,7 +1168,7 @@ pub trait SqlDialect {
         }
         for projection in &query.expr_projection {
             let expr = self.compile_expr(entity, &projection.expr, params)?;
-            let aliased = format!("{expr} AS {}", self.quote_ident(&projection.alias));
+            let aliased = format!("{expr} AS {}", self.quote_result_alias(&projection.alias));
             if !parts.contains(&aliased) {
                 parts.push(aliased);
             }
@@ -1174,7 +1181,7 @@ pub trait SqlDialect {
             let aliased = format!(
                 "{} AS {}",
                 projection.raw_sql_segment,
-                self.quote_ident(&projection.property_name)
+                self.quote_result_alias(&projection.property_name)
             );
             if !parts.contains(&aliased) {
                 parts.push(aliased);
@@ -1189,7 +1196,7 @@ pub trait SqlDialect {
                     let call = self.aggregate_call_sql_for(entity, aggregate, &field)?;
                     Ok::<_, SqlCompileError>(format!(
                         "{call} AS {}",
-                        self.quote_ident(&aggregate.alias)
+                        self.quote_result_alias(&aggregate.alias)
                     ))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
@@ -1494,7 +1501,7 @@ pub trait SqlDialect {
         let column = self.quote_ident(&property.column_name);
         match property.column_name == property.name {
             true => column,
-            false => format!("{column} AS {}", self.quote_ident(&property.name)),
+            false => format!("{column} AS {}", self.quote_result_alias(&property.name)),
         }
     }
 

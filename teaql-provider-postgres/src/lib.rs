@@ -115,6 +115,14 @@ impl SqlDialect for PostgresDialect {
         format!("${index}")
     }
 
+    fn quote_result_alias(&self, alias: &str) -> String {
+        if alias.chars().any(|ch| ch.is_ascii_uppercase() || ch == '"') {
+            format!("\"{}\"", alias.replace('"', "\"\""))
+        } else {
+            self.quote_ident(alias)
+        }
+    }
+
     fn schema_setup_sqls(&self) -> &'static [&'static str] {
         &[CREATE_SOUNDEX_FUNCTION]
     }
@@ -1154,6 +1162,9 @@ pub(crate) async fn ensure_postgres_schema_for(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod statistical_binding_tests;
 
 #[cfg(test)]
 mod streaming_tests {
@@ -3148,6 +3159,7 @@ impl tokio_postgres::types::ToSql for PgInteger {
             tokio_postgres::types::Type::INT2 => i16::try_from(self.0)?.to_sql(ty, out),
             tokio_postgres::types::Type::INT4 => i32::try_from(self.0)?.to_sql(ty, out),
             tokio_postgres::types::Type::INT8 => self.0.to_sql(ty, out),
+            tokio_postgres::types::Type::NUMERIC => Decimal::from(self.0).to_sql(ty, out),
             _ => Err(format!("integer cannot be encoded as PostgreSQL type {ty}").into()),
         }
     }
@@ -3158,6 +3170,7 @@ impl tokio_postgres::types::ToSql for PgInteger {
             tokio_postgres::types::Type::INT2
                 | tokio_postgres::types::Type::INT4
                 | tokio_postgres::types::Type::INT8
+                | tokio_postgres::types::Type::NUMERIC
         )
     }
 
