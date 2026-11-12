@@ -28,6 +28,7 @@ use teaql_sql::{
 };
 
 mod decimal_functions;
+mod statistical_functions;
 mod dynamic_fields;
 mod transaction;
 #[cfg(test)]
@@ -717,6 +718,7 @@ impl SqliteMutationExecutor {
         if !self.functions_registered.load(Ordering::Acquire) {
             Self::ensure_soundex_function(&connection)?;
             decimal_functions::register(&connection)?;
+            statistical_functions::register(&connection)?;
             self.functions_registered.store(true, Ordering::Release);
         }
         Ok(connection)

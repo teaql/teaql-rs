@@ -20,7 +20,8 @@ async function main() {
             'teaql-runtime/src/data_service/mod.rs', 'teaql-runtime/src/data_service/resolved.rs',
             'teaql-runtime/src/data_service/statistics.rs',
             'teaql-sql/src/statistical.rs', 'teaql-sql/src/lib.rs', 'teaql-provider-sqlite/src/statistical_tests.rs',
-            'teaql-provider-sqlite/src/lib.rs', 'examples/fix-e-alignment/verify-rollup-plan.cjs']) {
+            'teaql-provider-sqlite/src/lib.rs', 'teaql-provider-sqlite/src/statistical_functions.rs',
+            'examples/fix-e-alignment/verify-rollup-plan.cjs']) {
             const bytes = fs.readFileSync(path.join(repo, name)); receipt.sourceHashes[name] = hash(bytes);
             const target = path.join(output, 'sources', name); fs.mkdirSync(path.dirname(target), {recursive: true});
             fs.writeFileSync(target, bytes);
@@ -29,13 +30,15 @@ async function main() {
             CARGO_BUILD_JOBS: '4', CARGO_PROFILE_TEST_DEBUG: '0', CARGO_PROFILE_DEV_DEBUG: '0'};
         receipt.commands = [];
         for (const [crate, filter, minimum] of [['teaql-core', 'aggregation_plan::tests::', 11],
-            ['teaql-provider-sqlite', 'statistical_tests::', 25]]) {
+            ['teaql-provider-sqlite', 'statistical_tests::', 28],
+            ['teaql-provider-sqlite', 'statistical_functions::tests::', 7]]) {
             const command = [process.env.CARGO || 'cargo', 'test', '--offline', '--locked', '-p', crate, filter];
-            const logPath = path.join(output, crate + '.log'), fd = fs.openSync(logPath, 'wx'); let result;
+            const suffix = filter.startsWith('statistical_functions::') ? '-functions' : '';
+            const logPath = path.join(output, crate + suffix + '.log'), fd = fs.openSync(logPath, 'wx'); let result;
             try { result = await runner.run(command, {cwd: repo, env, timeout: 900000, stdio: ['ignore', fd, fd]}); }
             finally { fs.closeSync(fd); }
             const log = fs.readFileSync(logPath);
-            const testsPassed = (log.toString().match(/test (?:aggregation_plan::tests::|statistical_tests::)[^\n]+ \.\.\. ok/g) || []).length;
+            const testsPassed = (log.toString().match(/test (?:aggregation_plan::tests::|statistical_tests::|statistical_functions::tests::)[^\n]+ \.\.\. ok/g) || []).length;
             receipt.commands.push({command, result, testsPassed, logSha256: hash(log)});
             assert(result.status === 0 && testsPassed >= minimum, log.toString().slice(-6000));
         }
@@ -48,7 +51,7 @@ async function main() {
         const testsPassed = [...log.matchAll(/test result: ok\. (\d+) passed;/g)]
             .reduce((count, match) => count + Number(match[1]), 0);
         receipt.commands.push({command, result, testsPassed, logSha256: hash(bytes)});
-        assert(result.status === 0 && testsPassed >= 1102, log.slice(-6000));
+        assert(result.status === 0 && testsPassed >= 1112, log.slice(-6000));
         for (const [name, expected] of Object.entries(receipt.sourceHashes)) {
             assert.equal(hash(fs.readFileSync(path.join(repo, name))), expected, 'Source changed during verification: ' + name);
         }

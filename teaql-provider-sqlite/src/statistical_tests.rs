@@ -220,6 +220,133 @@ fn fetch(context: &UserContext, query: SelectQuery) -> Result<Vec<CompactRow>, S
     futures_executor::block_on(service.fetch_all(&request)).map_err(|error| error.to_string())
 }
 
+fn extended(query: SelectQuery, field: &str) -> SelectQuery {
+    query
+        .stddev(field, "stddev")
+        .stddev_pop(field, "stddevPop")
+        .var_samp(field, "variance")
+        .var_pop(field, "variancePop")
+        .bit_and(field, "bitAnd")
+        .bit_or(field, "bitOr")
+        .bit_xor(field, "bitXor")
+}
+
+#[test]
+fn layered_rollup_extended_functions_preserve_source_and_parent_owner_grain() {
+    let context = runtime_context(executor(), policy(false, false));
+    let parent = extended(
+        SelectQuery::new("Kind").group_by("label").count("kinds"),
+        "ordinal",
+    );
+    let rows = fetch(&context, extended(source(parent), "capacity")).unwrap();
+    assert_eq!(rows.len(), 1);
+    let root = &rows[0];
+    let Some(Value::Object(kind)) = root.get("kind") else {
+        panic!("missing kind")
+    };
+    for (name, expected) in [
+        ("variance", 98000.0),
+        ("variancePop", 78400.0),
+        ("stddev", 98000_f64.sqrt()),
+        ("stddevPop", 280.0),
+    ] {
+        assert!(
+            (root.get(name).and_then(Value::try_f64).unwrap() - expected).abs() < 1e-8,
+            "{name}"
+        );
+    }
+    for (name, expected) in [
+        ("variance", 0.5),
+        ("variancePop", 0.25),
+        ("stddev", 0.5_f64.sqrt()),
+        ("stddevPop", 0.5),
+    ] {
+        assert!(
+            (kind.get(name).and_then(Value::try_f64).unwrap() - expected).abs() < 1e-12,
+            "parent {name}"
+        );
+    }
+    for (name, expected) in [("bitAnd", 32), ("bitOr", 868), ("bitXor", 100)] {
+        assert_eq!(root.get(name).and_then(Value::try_i64), Some(expected));
+    }
+    for (name, expected) in [("bitAnd", 0), ("bitOr", 3), ("bitXor", 3)] {
+        assert_eq!(kind.get(name).and_then(Value::try_i64), Some(expected));
+    }
+    assert_eq!(kind.get("kinds").and_then(Value::try_i64), Some(2));
+}
+
+#[test]
+fn layered_rollup_extended_empty_population_keeps_null_not_identity_values() {
+    let context = runtime_context(executor(), policy(false, false));
+    let parent = extended(SelectQuery::new("Kind").count("kinds"), "ordinal");
+    let rows = fetch(
+        &context,
+        extended(source(parent), "capacity").and_filter(Expr::lt("id", 0_i64)),
+    )
+    .unwrap();
+    assert_eq!(rows.len(), 1);
+    let Some(Value::Object(kind)) = rows[0].get("kind") else {
+        panic!("missing kind")
+    };
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(0)));
+    assert_eq!(kind.get("kinds"), Some(&Value::I64(0)));
+    for name in [
+        "variance",
+        "variancePop",
+        "stddev",
+        "stddevPop",
+        "bitAnd",
+        "bitOr",
+        "bitXor",
+    ] {
+        assert_eq!(rows[0].get(name), Some(&Value::Null));
+        assert_eq!(kind.get(name), Some(&Value::Null));
+    }
+}
+
+#[test]
+fn layered_rollup_all_null_source_and_singleton_parent_have_distinct_variance_semantics() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE legacy_school SET \"Legacy Capacity\"=NULL WHERE id=5",
+            [],
+        )
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let parent = extended(
+        SelectQuery::new("Kind").group_by("label").count("kinds"),
+        "ordinal",
+    );
+    let rows = fetch(
+        &context,
+        extended(source(parent), "capacity").and_filter(Expr::eq("id", 5_i64)),
+    )
+    .unwrap();
+    assert_eq!(rows.len(), 1);
+    let Some(Value::Object(kind)) = rows[0].get("kind") else {
+        panic!("missing kind")
+    };
+    for name in [
+        "variance",
+        "variancePop",
+        "stddev",
+        "stddevPop",
+        "bitAnd",
+        "bitOr",
+        "bitXor",
+    ] {
+        assert_eq!(rows[0].get(name), Some(&Value::Null));
+    }
+    assert_eq!(kind.get("variance"), Some(&Value::Null));
+    assert_eq!(kind.get("stddev"), Some(&Value::Null));
+    assert_eq!(kind.get("variancePop").and_then(Value::try_f64), Some(0.0));
+    assert_eq!(kind.get("stddevPop").and_then(Value::try_f64), Some(0.0));
+}
+
 #[test]
 fn layered_rollup_context_applies_each_population_policy_and_restores_logical_paths() {
     let policy = policy(true, false);
