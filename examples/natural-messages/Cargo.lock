@@ -171,6 +171,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
+name = "checker-natural-message-service-core"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "chrono",
+ "futures-util",
+ "log",
+ "rusqlite",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "teaql-core",
+ "teaql-data-service",
+ "teaql-macros",
+ "teaql-provider-sqlite",
+ "teaql-runtime",
+ "teaql-sql",
+ "tokio",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -192,28 +214,6 @@ checksum = "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad"
 dependencies = [
  "crypto-common",
  "inout",
-]
-
-[[package]]
-name = "context-fix-service-core"
-version = "0.1.0"
-dependencies = [
- "async-stream",
- "async-trait",
- "chrono",
- "futures-util",
- "log",
- "rusqlite",
- "rust_decimal",
- "serde",
- "serde_json",
- "teaql-core",
- "teaql-data-service",
- "teaql-macros",
- "teaql-provider-sqlite",
- "teaql-runtime",
- "teaql-sql",
- "tokio",
 ]
 
 [[package]]
@@ -636,7 +636,8 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 name = "natural-messages-example"
 version = "0.0.0"
 dependencies = [
- "context-fix-service-core",
+ "checker-natural-message-service-core",
+ "chrono",
  "rusqlite",
  "serde_json",
  "teaql-core",

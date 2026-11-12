@@ -2253,7 +2253,34 @@ fn preflight_graph(
     let origin = node.entity.clone();
     crate::checker_messages::with_origin(context, &origin, || {
         context_roots::validate(context, node, location, root)?;
-        preflight_graph_inner(context, node, location, root)
+        // Hydration orders sparse pending entities by identity, not by their
+        // selected list positions. Capture their actual loaded locations once,
+        // before customer Fix/Checker sees them. This reads immutable edges only;
+        // it neither loads entities nor changes the mutation plan or its order.
+        let selected = root
+            .zip(node.values.get("id"))
+            .map(|(root, id)| {
+                let wanted = ledger_object_locations(node).into_keys().collect();
+                root.loaded_object_locations(
+                    &crate::EntityKey::new(origin.clone(), id.clone()),
+                    &wanted,
+                )
+                .into_iter()
+                .map(|(key, selected)| {
+                    let selected =
+                        selected
+                            .segments()
+                            .iter()
+                            .fold(location.clone(), |at, segment| match segment {
+                                crate::LocationSegment::Member(name) => at.member(name),
+                                crate::LocationSegment::Index(index) => at.element(*index),
+                            });
+                    (key, selected)
+                })
+                .collect()
+            })
+            .unwrap_or_default();
+        preflight_graph_inner(context, node, location, root, &selected)
     })
 }
 
@@ -2262,7 +2289,13 @@ fn preflight_graph_inner(
     node: &mut GraphNode,
     location: &ObjectLocation,
     root: Option<&crate::EntityRuntimeState>,
+    selected: &BTreeMap<crate::EntityKey, ObjectLocation>,
 ) -> Result<(), RuntimeError> {
+    let location = node
+        .values
+        .get("id")
+        .and_then(|id| selected.get(&crate::EntityKey::new(node.entity.clone(), id.clone())))
+        .unwrap_or(location);
     if !matches!(
         node.operation,
         GraphOperation::Remove | GraphOperation::Reference
@@ -2318,7 +2351,7 @@ fn preflight_graph_inner(
     for (relation, children) in &mut node.relations {
         for (index, child) in children.iter_mut().enumerate() {
             let child_location = location.clone().member(relation).element(index);
-            preflight_graph_inner(context, child, &child_location, root)?;
+            preflight_graph_inner(context, child, &child_location, root, selected)?;
         }
     }
     Ok(())

@@ -1,0 +1,13 @@
+{
+  "schema": "teaql.generated-example-provenance/v1",
+  "generatorCommit": "dd1534b6bbc20e3beeabb48021e0f84893a72d24",
+  "upstreamTest": "com.skynet.codegenerator.RustNaturalMessagesGenerationTest",
+  "fixtureOutputProperty": "teaql.rust.natural.fixture.output",
+  "scope": "rust-lib-core",
+  "runtimeDependency": "local repository source",
+  "modelSha256": "07c2b5b72abc3e2ed691677c1e0843b7eb49a881bf0f697bce58d1b22ed01f39",
+  "generationReceipt": "teaql-conformance/evidence/2026-11-12-natural-checker-rust-generation-abi-qualified/receipt.json",
+  "generationReceiptSha256": "52fdfd1bb120a90e6c58fd5165cd7b657c8a1091c56411307d41f263338209db",
+  "implementationHandEdited": false,
+  "publicPublication": false
+}

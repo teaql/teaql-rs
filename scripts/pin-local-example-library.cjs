@@ -16,8 +16,9 @@ function pin(library, runtime, ownedRoot) {
   const file = path.join(library, 'Cargo.toml'), before = fs.readFileSync(file, 'utf8');
   let after = before; const changes = [];
   for (const name of CRATES) {
-    const pattern = new RegExp('^(' + name + '\\s*=\\s*)"(=?\\d+\\.\\d+\\.\\d+)"$', 'gm');
-    const matches = [...before.matchAll(pattern)]; assert.equal(matches.length, 1, 'Expected one numeric dependency: ' + name);
+    const coordinate = '=?\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?';
+    const pattern = new RegExp('^(' + name + '\\s*=\\s*)"(' + coordinate + ')"$', 'gm');
+    const matches = [...before.matchAll(pattern)]; assert.equal(matches.length, 1, 'Expected one exact dependency: ' + name);
     changes.push({name, from: matches[0][2], to: '=' + version});
     after = after.replace(pattern, (_, start) => start + '"=' + version + '"');
   }
@@ -26,6 +27,8 @@ function pin(library, runtime, ownedRoot) {
   const sqlite = rootCargo.match(/^rusqlite = \{ version = "([^"]+)"/m);
   assert(sqlite, 'Runtime must declare its SQLite driver');
   assert.equal((after.match(/^rusqlite\s*=/gm) || []).length, 1);
+  const originalSqlite = before.match(/^rusqlite\s*=\s*\{\s*version\s*=\s*"([^"]+)"/m);
+  assert(originalSqlite, 'Generated library must declare its SQLite driver');
   after = after.replace(/^(rusqlite\s*=\s*\{\s*version\s*=\s*)"[^"]+"/m, (_, start) => start + '"' + sqlite[1] + '"');
   const implementation = [];
   function visit(dir) {for (const entry of fs.readdirSync(dir, {withFileTypes: true})) {
@@ -35,7 +38,8 @@ function pin(library, runtime, ownedRoot) {
   visit(library); fs.writeFileSync(file, after);
   for (const [full, digest] of implementation) assert.equal(sha(fs.readFileSync(full)), digest);
   return {version, changes, originalManifestSha256: sha(before), consumerManifestSha256: sha(after),
-    implementationFilesUnchanged: true, implementationFiles: implementation.length, sourceFixtureEdited: false, sqliteDriverVersion: sqlite[1]};
+    implementationFilesUnchanged: true, implementationFiles: implementation.length, sourceFixtureEdited: false,
+    sqliteDriverVersion: sqlite[1], originalSqliteDriverVersion: originalSqlite[1], sqliteDriverChanged: originalSqlite[1] !== sqlite[1]};
 }
 module.exports = {pin};
 if (require.main === module) console.log(JSON.stringify(pin(...process.argv.slice(2))));

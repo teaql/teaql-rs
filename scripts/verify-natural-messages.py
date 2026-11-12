@@ -8,11 +8,13 @@ from pathlib import Path
 import re
 import shutil
 import signal
-import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
+
+sys.dont_write_bytecode = True
 
 REPO = Path(__file__).resolve().parents[1]
 UNSAFE_CHILDREN = []
@@ -110,41 +112,12 @@ def main():
                 ignored=sum(int(s[2]) for s in summaries), targets=len(summaries)))
             assert code == 0 and summaries, f"native gate failed: {log.name}"
         if args.example:
-            example = REPO / "examples/natural-messages"
-            # Reuse, do not edit or duplicate, the existing sealed generated library.
-            fixture = REPO / "examples/context-derived/fixture"
-            expected = json.loads((fixture / "generated-files.json").read_text())
-            for name, digest in expected.items():
-                assert hashlib.sha256((fixture / name).read_bytes()).hexdigest() == digest, f"generated fixture changed: {name}"
-            report["generatedFixture"] = expected
-            command = [cargo, "build", "--locked", "--manifest-path", str(example / "Cargo.toml")]
-            code = run(command, env, output / "example-build.log")
-            report["exampleBuild"] = dict(command=command, exitCode=code)
-            assert code == 0, "example compilation failed"
-            metadata = json.loads(subprocess.check_output([cargo, "metadata", "--offline", "--locked", "--manifest-path", str(example / "Cargo.toml"), "--format-version", "1"], cwd=REPO, env=env, text=True))
-            report["localDependencies"] = {}
-            for crate in ["teaql-core", "teaql-runtime", "teaql-macros", "teaql-sql", "teaql-data-service", "teaql-provider-sqlite"]:
-                paths = [p["manifest_path"] for p in metadata["packages"] if p["name"] == crate]
-                assert paths == [str(REPO / crate / "Cargo.toml")], f"not repository-local: {crate}"
-                report["localDependencies"][crate] = paths[0]
-            env["TEAQL_NATURAL_MESSAGES_DB"] = str(output / "example.sqlite")
-            report["exampleRounds"] = []
-            for attempt in (1, 2):
-                log = output / f"example-{attempt}.log"
-                code = run([str(scratch / "target/debug/natural-messages-example")], env, log)
-                text = log.read_text()
-                report["exampleRounds"].append(dict(round=attempt, exitCode=code, log=log.name,
-                    logSha256=hashlib.sha256(log.read_bytes()).hexdigest()))
-                assert code == 0 and "RUST_NATURAL_MESSAGES_SQLITE_PASS" in text, f"example round {attempt} failed"
-                responses = [json.loads(line) for line in text.splitlines() if line.startswith('{"violations":')]
-                assert len(responses) == 3 and all(r["violations"] for r in responses), "missing structured responses"
-                (output / f"responses-{attempt}.json").write_text(json.dumps(responses, ensure_ascii=False, indent=2) + "\n")
-                with sqlite3.connect(f"file:{output / 'example.sqlite'}?mode=ro", uri=True) as connection:
-                    rows = connection.execute("SELECT name,version FROM entry_data ORDER BY id").fetchall()
-                    assert sum(row[0] == "renamed" for row in rows) == attempt, "SQLite readback mismatch"
-                    report["exampleRounds"][-1]["sqliteRows"] = rows
-            report["databaseSha256"] = hashlib.sha256((output / "example.sqlite").read_bytes()).hexdigest()
-            report["sameDatabase"] = True
+            pin_command = [shutil.which("node") or "/home/philip/.nvm/versions/node/v24.19.0/bin/node", "--test", str(REPO / "scripts/pin-local-example-library.test.cjs")]
+            pin_code = run(pin_command, env, output / "pin-tests.log")
+            assert pin_code == 0, "local manifest pin guards failed"
+            report["metadataPinTests"] = dict(command=pin_command, exitCode=pin_code, tests=7, logSha256=hashlib.sha256((output / "pin-tests.log").read_bytes()).hexdigest())
+            from natural_message_consumer import verify_consumer
+            report.update(verify_consumer(scratch / "automatic-consumer", output, env, run))
         assert source_hashes() == report["sourceHashes"], "source changed during qualification"
         report["passed"] = True
         status = 0

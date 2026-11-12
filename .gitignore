@@ -9,8 +9,10 @@ app.log
 *.py
 !scripts/verify-natural-messages.py
 !scripts/test-natural-message-verifier.py
+!scripts/natural_message_consumer.py
 !examples/context-derived/verify-local.py
 !examples/context-derived/test_verify.py
+__pycache__/
 *.log
 
 # Sensitive

@@ -8,9 +8,9 @@ function fixture(run) {
     const runtime = path.join(scratch, 'runtime'), owned = path.join(scratch, 'consumer');
     const library = path.join(owned, 'lib');
     fs.mkdirSync(runtime); fs.mkdirSync(path.join(library, 'src'), {recursive: true});
-    fs.writeFileSync(path.join(runtime, 'Cargo.toml'), '[workspace.package]\nversion = "6.0.0"\n');
+    fs.writeFileSync(path.join(runtime, 'Cargo.toml'), '[workspace.package]\nversion = "6.0.0"\n[workspace.dependencies]\nrusqlite = { version = "0.41.1" }\n');
     const cargo = '[package]\nname="generated-example"\nversion="0.1.0"\n[dependencies]\n' +
-      ['teaql-core','teaql-macros','teaql-runtime','teaql-sql','teaql-data-service','teaql-provider-sqlite'].map(name => name + ' = "5.0.7"').join('\n') + '\n';
+      ['teaql-core','teaql-macros','teaql-runtime','teaql-sql','teaql-data-service','teaql-provider-sqlite'].map(name => name + ' = "5.0.7"').join('\n') + '\nrusqlite = { version = "0.40", features = ["bundled"] }\n';
     fs.writeFileSync(path.join(library, 'Cargo.toml'), cargo);
     fs.writeFileSync(path.join(library, 'src/lib.rs'), 'pub const ORIGINAL: &str = "5.0.7";\n');
     run({runtime, owned, library, cargo});
@@ -41,4 +41,17 @@ test('rejects symlinked generated implementation before writing', () => fixture(
   fs.symlinkSync(path.join(library, 'src/lib.rs'), path.join(library, 'linked.rs'));
   assert.throws(() => pin(library, runtime, owned));
   assert.equal(fs.readFileSync(path.join(library, 'Cargo.toml'), 'utf8'), cargo);
+}));
+test('pins exact prerelease coordinates without editing generated implementation', () => fixture(({runtime, owned, library, cargo}) => {
+  fs.writeFileSync(path.join(library, 'Cargo.toml'), cargo.replaceAll('"5.0.7"', '"7.1.0-dev.0+local.1"').replace('version = "0.40"','version = "0.41.1"'));
+  const result = pin(library, runtime, owned);
+  assert.equal(result.changes.length, 6); assert.equal(result.sqliteDriverChanged, false);
+  assert.equal(result.originalSqliteDriverVersion, '0.41.1');
+  assert.equal(fs.readFileSync(path.join(library, 'src/lib.rs'), 'utf8'), 'pub const ORIGINAL: &str = "5.0.7";\n');
+}));
+test('rejects ranged prerelease coordinates before writing', () => fixture(({runtime, owned, library, cargo}) => {
+  const invalid = cargo.replace('teaql-core = "5.0.7"', 'teaql-core = ">=7.1.0-dev.0"');
+  fs.writeFileSync(path.join(library, 'Cargo.toml'), invalid);
+  assert.throws(() => pin(library, runtime, owned), /teaql-core/);
+  assert.equal(fs.readFileSync(path.join(library, 'Cargo.toml'), 'utf8'), invalid);
 }));
