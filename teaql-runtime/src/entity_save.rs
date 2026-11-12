@@ -18,6 +18,8 @@ use crate::{
 
 mod context_roots;
 mod context_undo;
+#[cfg(test)]
+mod natural_message_tests;
 mod restoration;
 #[cfg(test)]
 mod restoration_view_tests;
@@ -2248,8 +2250,11 @@ fn preflight_graph(
 ) -> Result<(), RuntimeError> {
     // Validate the entire intended graph before any customizable Fix executes.
     // Removal intentionally skips ordinary Checker, but never contextual ownership.
-    context_roots::validate(context, node, location, root)?;
-    preflight_graph_inner(context, node, location, root)
+    let origin = node.entity.clone();
+    crate::checker_messages::with_origin(context, &origin, || {
+        context_roots::validate(context, node, location, root)?;
+        preflight_graph_inner(context, node, location, root)
+    })
 }
 
 fn preflight_graph_inner(

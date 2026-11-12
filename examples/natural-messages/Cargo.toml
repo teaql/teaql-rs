@@ -1,0 +1,23 @@
+[package]
+name = "natural-messages-example"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+context-fix-service-core = { path = "../context-derived/fixture/lib" }
+teaql-core = "7.0.0"
+teaql-runtime = "7.0.0"
+serde_json = "1"
+rusqlite = { version = "0.41.1", features = ["bundled", "chrono", "column_decltype"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[patch.crates-io]
+teaql-core = { path = "../../teaql-core" }
+teaql-runtime = { path = "../../teaql-runtime" }
+teaql-macros = { path = "../../teaql-macros" }
+teaql-data-service = { path = "../../teaql-data-service" }
+teaql-sql = { path = "../../teaql-sql" }
+teaql-provider-sqlite = { path = "../../teaql-provider-sqlite" }

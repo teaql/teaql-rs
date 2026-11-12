@@ -7,6 +7,7 @@ pub use context_fix::{ContextFixError, ContextFixInput, ContextFixResolver};
 pub const CONTEXT_ROOT_SAVE_ADMISSION_REVISION: u32 = 1;
 mod business_id;
 mod checker;
+pub mod checker_messages;
 mod context_fix;
 mod checker_privacy;
 mod commit_audit;
@@ -2276,12 +2277,9 @@ mod tests {
         match error {
             RuntimeError::Check(results) => {
                 assert_eq!(results.len(), 1);
-                assert!(
-                    results[0]
-                        .message
-                        .as_ref()
-                        .is_some_and(|message| message.contains("必填"))
-                );
+                assert_eq!(results[0].rule, CheckRule::Required);
+                assert_eq!(results[0].location.instance_path(), "/name");
+                assert_eq!(results[0].message.as_deref(), Some("请填写name。\n位置：当前对象"));
             }
             other => panic!("unexpected checker error: {other:?}"),
         }

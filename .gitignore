@@ -7,6 +7,8 @@ compile_errors.log
 app.log
 
 *.py
+!scripts/verify-natural-messages.py
+!scripts/test-natural-message-verifier.py
 !examples/context-derived/verify-local.py
 !examples/context-derived/test_verify.py
 *.log

@@ -66,12 +66,13 @@ pub(crate) fn translate(
     secrets.sort_by(|left, right| right.len().cmp(&left.len()).then(left.cmp(right)));
     secrets.dedup();
     for (result, input_len) in results.iter_mut().zip(input_lengths) {
-        if let Some(message) = result.message.as_mut() {
-            // A customer message may echo a sensitive value reported by another
-            // rule in this batch. Do not discard its safe explanatory content.
-            crate::log_privacy::scrub(message, &secrets);
-        } else {
+        if result.message.is_none() {
             result.message = Some(render(result, input_len));
+        }
+        if let Some(message) = result.message.as_mut() {
+            // Both literal and custom-renderer text may echo a sensitive value
+            // from another violation. Scrub before any consumer sees the result.
+            crate::log_privacy::scrub(message, &secrets);
         }
     }
 }

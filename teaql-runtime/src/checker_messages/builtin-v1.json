@@ -1,0 +1,591 @@
+{
+  "schema": "teaql.checker-messages/v1",
+  "defaultLocale": "en",
+  "locales": {
+    "en": {
+      "rules": {
+        "checker.required": {
+          "one": "The {field} is required.",
+          "two": "The {field} of {object} is required.",
+          "deep": "The {field} is required.\nLocation: {objectPath}"
+        },
+        "checker.min": {
+          "one": "The {field} must be at least {system}.",
+          "two": "The {field} of {object} must be at least {system}.",
+          "deep": "The {field} must be at least {system}.\nLocation: {objectPath}"
+        },
+        "checker.max": {
+          "one": "The {field} must not exceed {system}.",
+          "two": "The {field} of {object} must not exceed {system}.",
+          "deep": "The {field} must not exceed {system}.\nLocation: {objectPath}"
+        },
+        "checker.minLength": {
+          "one": "The {field} must contain at least {system} {unit}; its current length is {input_len}.",
+          "two": "The {field} of {object} must contain at least {system} {unit}; its current length is {input_len}.",
+          "deep": "The {field} must contain at least {system} {unit}; its current length is {input_len}.\nLocation: {objectPath}"
+        },
+        "checker.maxLength": {
+          "one": "The {field} must not exceed {system} {unit}; its current length is {input_len}.",
+          "two": "The {field} of {object} must not exceed {system} {unit}; its current length is {input_len}.",
+          "deep": "The {field} must not exceed {system} {unit}; its current length is {input_len}.\nLocation: {objectPath}"
+        },
+        "checker.invalid": {
+          "one": "The {field} is invalid.",
+          "two": "The {field} of {object} is invalid.",
+          "deep": "The {field} is invalid.\nLocation: {objectPath}"
+        }
+      },
+      "locationPatterns": {
+        "reference": "the {relation}",
+        "item": "the {ordinal} {relation}",
+        "separator": " → "
+      }
+    },
+    "zh-CN": {
+      "rules": {
+        "checker.required": {
+          "one": "请填写{field}。",
+          "two": "请填写{object}的{field}。",
+          "deep": "请填写{field}。\n位置：{objectPath}"
+        },
+        "checker.min": {
+          "one": "{field}不得小于{system}。",
+          "two": "{object}的{field}不得小于{system}。",
+          "deep": "{field}不得小于{system}。\n位置：{objectPath}"
+        },
+        "checker.max": {
+          "one": "{field}不得大于{system}。",
+          "two": "{object}的{field}不得大于{system}。",
+          "deep": "{field}不得大于{system}。\n位置：{objectPath}"
+        },
+        "checker.minLength": {
+          "one": "{field}至少需要{system}{unit}，当前长度为{input_len}。",
+          "two": "{object}的{field}至少需要{system}{unit}，当前长度为{input_len}。",
+          "deep": "{field}至少需要{system}{unit}，当前长度为{input_len}。\n位置：{objectPath}"
+        },
+        "checker.maxLength": {
+          "one": "{field}最多允许{system}{unit}，当前长度为{input_len}。",
+          "two": "{object}的{field}最多允许{system}{unit}，当前长度为{input_len}。",
+          "deep": "{field}最多允许{system}{unit}，当前长度为{input_len}。\n位置：{objectPath}"
+        },
+        "checker.invalid": {
+          "one": "{field}无效。",
+          "two": "{object}的{field}无效。",
+          "deep": "{field}无效。\n位置：{objectPath}"
+        }
+      },
+      "locationPatterns": {
+        "reference": "{relation}",
+        "item": "第{position}{classifier}{relation}",
+        "separator": " → "
+      }
+    },
+    "zh-TW": {
+      "rules": {
+        "checker.required": {
+          "one": "請填寫{field}。",
+          "two": "請填寫{object}的{field}。",
+          "deep": "請填寫{field}。\n位置：{objectPath}"
+        },
+        "checker.min": {
+          "one": "{field}不得小於{system}。",
+          "two": "{object}的{field}不得小於{system}。",
+          "deep": "{field}不得小於{system}。\n位置：{objectPath}"
+        },
+        "checker.max": {
+          "one": "{field}不得大於{system}。",
+          "two": "{object}的{field}不得大於{system}。",
+          "deep": "{field}不得大於{system}。\n位置：{objectPath}"
+        },
+        "checker.minLength": {
+          "one": "{field}至少需要{system}{unit}，目前長度為{input_len}。",
+          "two": "{object}的{field}至少需要{system}{unit}，目前長度為{input_len}。",
+          "deep": "{field}至少需要{system}{unit}，目前長度為{input_len}。\n位置：{objectPath}"
+        },
+        "checker.maxLength": {
+          "one": "{field}最多允許{system}{unit}，目前長度為{input_len}。",
+          "two": "{object}的{field}最多允許{system}{unit}，目前長度為{input_len}。",
+          "deep": "{field}最多允許{system}{unit}，目前長度為{input_len}。\n位置：{objectPath}"
+        },
+        "checker.invalid": {
+          "one": "{field}無效。",
+          "two": "{object}的{field}無效。",
+          "deep": "{field}無效。\n位置：{objectPath}"
+        }
+      },
+      "locationPatterns": {
+        "reference": "{relation}",
+        "item": "第{position}{classifier}{relation}",
+        "separator": " → "
+      }
+    },
+    "ja": {
+      "rules": {
+        "checker.required": {
+          "one": "{field}は必須です。",
+          "two": "{object}の{field}は必須です。",
+          "deep": "{field}は必須です。\n場所: {objectPath}"
+        },
+        "checker.min": {
+          "one": "{field}は{system}以上である必要があります。",
+          "two": "{object}の{field}は{system}以上である必要があります。",
+          "deep": "{field}は{system}以上である必要があります。\n場所: {objectPath}"
+        },
+        "checker.max": {
+          "one": "{field}は{system}以下である必要があります。",
+          "two": "{object}の{field}は{system}以下である必要があります。",
+          "deep": "{field}は{system}以下である必要があります。\n場所: {objectPath}"
+        },
+        "checker.minLength": {
+          "one": "{field}には少なくとも{system}{unit}が必要です。現在の長さは{input_len}です。",
+          "two": "{object}の{field}には少なくとも{system}{unit}が必要です。現在の長さは{input_len}です。",
+          "deep": "{field}には少なくとも{system}{unit}が必要です。現在の長さは{input_len}です。\n場所: {objectPath}"
+        },
+        "checker.maxLength": {
+          "one": "{field}は最大{system}{unit}です。現在の長さは{input_len}です。",
+          "two": "{object}の{field}は最大{system}{unit}です。現在の長さは{input_len}です。",
+          "deep": "{field}は最大{system}{unit}です。現在の長さは{input_len}です。\n場所: {objectPath}"
+        },
+        "checker.invalid": {
+          "one": "{field}が無効です。",
+          "two": "{object}の{field}が無効です。",
+          "deep": "{field}が無効です。\n場所: {objectPath}"
+        }
+      },
+      "locationPatterns": {
+        "reference": "{relation}",
+        "item": "{position}番目の{relation}",
+        "separator": " → "
+      }
+    },
+    "ko": {
+      "rules": {
+        "checker.required": {
+          "one": "{field} 항목은 필수입니다.",
+          "two": "{object}의 {field} 항목은 필수입니다.",
+          "deep": "{field} 항목은 필수입니다.\n위치: {objectPath}"
+        },
+        "checker.min": {
+          "one": "{field} 값은 {system} 이상이어야 합니다.",
+          "two": "{object}의 {field} 값은 {system} 이상이어야 합니다.",
+          "deep": "{field} 값은 {system} 이상이어야 합니다.\n위치: {objectPath}"
+        },
+        "checker.max": {
+          "one": "{field} 값은 {system} 이하여야 합니다.",
+          "two": "{object}의 {field} 값은 {system} 이하여야 합니다.",
+          "deep": "{field} 값은 {system} 이하여야 합니다.\n위치: {objectPath}"
+        },
+        "checker.minLength": {
+          "one": "{field} 길이는 최소 {system} {unit}이어야 합니다. 현재 길이는 {input_len}입니다.",
+          "two": "{object}의 {field} 길이는 최소 {system} {unit}이어야 합니다. 현재 길이는 {input_len}입니다.",
+          "deep": "{field} 길이는 최소 {system} {unit}이어야 합니다. 현재 길이는 {input_len}입니다.\n위치: {objectPath}"
+        },
+        "checker.maxLength": {
+          "one": "{field} 길이는 최대 {system} {unit}이어야 합니다. 현재 길이는 {input_len}입니다.",
+          "two": "{object}의 {field} 길이는 최대 {system} {unit}이어야 합니다. 현재 길이는 {input_len}입니다.",
+          "deep": "{field} 길이는 최대 {system} {unit}이어야 합니다. 현재 길이는 {input_len}입니다.\n위치: {objectPath}"
+        },
+        "checker.invalid": {
+          "one": "{field} 항목이 유효하지 않습니다.",
+          "two": "{object}의 {field} 항목이 유효하지 않습니다.",
+          "deep": "{field} 항목이 유효하지 않습니다.\n위치: {objectPath}"
+        }
+      },
+      "locationPatterns": {
+        "reference": "{relation}",
+        "item": "{position}번째 {relation}",
+        "separator": " → "
+      }
+    },
+    "de": {
+      "rules": {
+        "checker.required": {
+          "one": "Das Feld {field} ist erforderlich.",
+          "two": "Das Feld {field} bei {object} ist erforderlich.",
+          "deep": "Das Feld {field} ist erforderlich.\nPosition: {objectPath}"
+        },
+        "checker.min": {
+          "one": "Das Feld {field} muss mindestens {system} betragen.",
+          "two": "Das Feld {field} bei {object} muss mindestens {system} betragen.",
+          "deep": "Das Feld {field} muss mindestens {system} betragen.\nPosition: {objectPath}"
+        },
+        "checker.max": {
+          "one": "Das Feld {field} darf höchstens {system} betragen.",
+          "two": "Das Feld {field} bei {object} darf höchstens {system} betragen.",
+          "deep": "Das Feld {field} darf höchstens {system} betragen.\nPosition: {objectPath}"
+        },
+        "checker.minLength": {
+          "one": "Das Feld {field} muss mindestens {system} {unit} enthalten; die aktuelle Länge ist {input_len}.",
+          "two": "Das Feld {field} bei {object} muss mindestens {system} {unit} enthalten; die aktuelle Länge ist {input_len}.",
+          "deep": "Das Feld {field} muss mindestens {system} {unit} enthalten; die aktuelle Länge ist {input_len}.\nPosition: {objectPath}"
+        },
+        "checker.maxLength": {
+          "one": "Das Feld {field} darf höchstens {system} {unit} enthalten; die aktuelle Länge ist {input_len}.",
+          "two": "Das Feld {field} bei {object} darf höchstens {system} {unit} enthalten; die aktuelle Länge ist {input_len}.",
+          "deep": "Das Feld {field} darf höchstens {system} {unit} enthalten; die aktuelle Länge ist {input_len}.\nPosition: {objectPath}"
+        },
+        "checker.invalid": {
+          "one": "Das Feld {field} ist ungültig.",
+          "two": "Das Feld {field} bei {object} ist ungültig.",
+          "deep": "Das Feld {field} ist ungültig.\nPosition: {objectPath}"
+        }
+      },
+      "locationPatterns": {
+        "reference": "{relation}",
+        "item": "{relation} Nr. {position}",
+        "separator": " → "
+      }
+    },
+    "fr": {
+      "rules": {
+        "checker.required": {
+          "one": "Le champ {field} est obligatoire.",
+          "two": "Le champ {field} de {object} est obligatoire.",
+          "deep": "Le champ {field} est obligatoire.\nEmplacement: {objectPath}"
+        },
+        "checker.min": {
+          "one": "Le champ {field} doit être au moins égal à {system}.",
+          "two": "Le champ {field} de {object} doit être au moins égal à {system}.",
+          "deep": "Le champ {field} doit être au moins égal à {system}.\nEmplacement: {objectPath}"
+        },
+        "checker.max": {
+          "one": "Le champ {field} ne doit pas dépasser {system}.",
+          "two": "Le champ {field} de {object} ne doit pas dépasser {system}.",
+          "deep": "Le champ {field} ne doit pas dépasser {system}.\nEmplacement: {objectPath}"
+        },
+        "checker.minLength": {
+          "one": "Le champ {field} doit contenir au moins {system} {unit} ; sa longueur actuelle est {input_len}.",
+          "two": "Le champ {field} de {object} doit contenir au moins {system} {unit} ; sa longueur actuelle est {input_len}.",
+          "deep": "Le champ {field} doit contenir au moins {system} {unit} ; sa longueur actuelle est {input_len}.\nEmplacement: {objectPath}"
+        },
+        "checker.maxLength": {
+          "one": "Le champ {field} ne doit pas dépasser {system} {unit} ; sa longueur actuelle est {input_len}.",
+          "two": "Le champ {field} de {object} ne doit pas dépasser {system} {unit} ; sa longueur actuelle est {input_len}.",
+          "deep": "Le champ {field} ne doit pas dépasser {system} {unit} ; sa longueur actuelle est {input_len}.\nEmplacement: {objectPath}"
+        },
+        "checker.invalid": {
+          "one": "Le champ {field} est invalide.",
+          "two": "Le champ {field} de {object} est invalide.",
+          "deep": "Le champ {field} est invalide.\nEmplacement: {objectPath}"
+        }
+      },
+      "locationPatterns": {
+        "reference": "{relation}",
+        "item": "{relation} n° {position}",
+        "separator": " → "
+      }
+    },
+    "es": {
+      "rules": {
+        "checker.required": {
+          "one": "El campo {field} es obligatorio.",
+          "two": "El campo {field} de {object} es obligatorio.",
+          "deep": "El campo {field} es obligatorio.\nUbicación: {objectPath}"
+        },
+        "checker.min": {
+          "one": "El campo {field} debe ser al menos {system}.",
+          "two": "El campo {field} de {object} debe ser al menos {system}.",
+          "deep": "El campo {field} debe ser al menos {system}.\nUbicación: {objectPath}"
+        },
+        "checker.max": {
+          "one": "El campo {field} no debe superar {system}.",
+          "two": "El campo {field} de {object} no debe superar {system}.",
+          "deep": "El campo {field} no debe superar {system}.\nUbicación: {objectPath}"
+        },
+        "checker.minLength": {
+          "one": "El campo {field} debe contener al menos {system} {unit}; su longitud actual es {input_len}.",
+          "two": "El campo {field} de {object} debe contener al menos {system} {unit}; su longitud actual es {input_len}.",
+          "deep": "El campo {field} debe contener al menos {system} {unit}; su longitud actual es {input_len}.\nUbicación: {objectPath}"
+        },
+        "checker.maxLength": {
+          "one": "El campo {field} no debe superar {system} {unit}; su longitud actual es {input_len}.",
+          "two": "El campo {field} de {object} no debe superar {system} {unit}; su longitud actual es {input_len}.",
+          "deep": "El campo {field} no debe superar {system} {unit}; su longitud actual es {input_len}.\nUbicación: {objectPath}"
+        },
+        "checker.invalid": {
+          "one": "El campo {field} no es válido.",
+          "two": "El campo {field} de {object} no es válido.",
+          "deep": "El campo {field} no es válido.\nUbicación: {objectPath}"
+        }
+      },
+      "locationPatterns": {
+        "reference": "{relation}",
+        "item": "{relation} n.º {position}",
+        "separator": " → "
+      }
+    },
+    "pt": {
+      "rules": {
+        "checker.required": {
+          "one": "O campo {field} é obrigatório.",
+          "two": "O campo {field} de {object} é obrigatório.",
+          "deep": "O campo {field} é obrigatório.\nLocalização: {objectPath}"
+        },
+        "checker.min": {
+          "one": "O campo {field} deve ser pelo menos {system}.",
+          "two": "O campo {field} de {object} deve ser pelo menos {system}.",
+          "deep": "O campo {field} deve ser pelo menos {system}.\nLocalização: {objectPath}"
+        },
+        "checker.max": {
+          "one": "O campo {field} não deve exceder {system}.",
+          "two": "O campo {field} de {object} não deve exceder {system}.",
+          "deep": "O campo {field} não deve exceder {system}.\nLocalização: {objectPath}"
+        },
+        "checker.minLength": {
+          "one": "O campo {field} deve conter pelo menos {system} {unit}; o comprimento atual é {input_len}.",
+          "two": "O campo {field} de {object} deve conter pelo menos {system} {unit}; o comprimento atual é {input_len}.",
+          "deep": "O campo {field} deve conter pelo menos {system} {unit}; o comprimento atual é {input_len}.\nLocalização: {objectPath}"
+        },
+        "checker.maxLength": {
+          "one": "O campo {field} não deve exceder {system} {unit}; o comprimento atual é {input_len}.",
+          "two": "O campo {field} de {object} não deve exceder {system} {unit}; o comprimento atual é {input_len}.",
+          "deep": "O campo {field} não deve exceder {system} {unit}; o comprimento atual é {input_len}.\nLocalização: {objectPath}"
+        },
+        "checker.invalid": {
+          "one": "O campo {field} é inválido.",
+          "two": "O campo {field} de {object} é inválido.",
+          "deep": "O campo {field} é inválido.\nLocalização: {objectPath}"
+        }
+      },
+      "locationPatterns": {
+        "reference": "{relation}",
+        "item": "{relation} n.º {position}",
+        "separator": " → "
+      }
+    },
+    "ar": {
+      "rules": {
+        "checker.required": {
+          "one": "الحقل {field} مطلوب.",
+          "two": "الحقل {field} في {object} مطلوب.",
+          "deep": "الحقل {field} مطلوب.\nالموقع: {objectPath}"
+        },
+        "checker.min": {
+          "one": "يجب ألا تقل قيمة الحقل {field} عن {system}.",
+          "two": "يجب ألا تقل قيمة الحقل {field} في {object} عن {system}.",
+          "deep": "يجب ألا تقل قيمة الحقل {field} عن {system}.\nالموقع: {objectPath}"
+        },
+        "checker.max": {
+          "one": "يجب ألا تزيد قيمة الحقل {field} عن {system}.",
+          "two": "يجب ألا تزيد قيمة الحقل {field} في {object} عن {system}.",
+          "deep": "يجب ألا تزيد قيمة الحقل {field} عن {system}.\nالموقع: {objectPath}"
+        },
+        "checker.minLength": {
+          "one": "يجب ألا يقل طول الحقل {field} عن {system} {unit}؛ الطول الحالي هو {input_len}.",
+          "two": "يجب ألا يقل طول الحقل {field} في {object} عن {system} {unit}؛ الطول الحالي هو {input_len}.",
+          "deep": "يجب ألا يقل طول الحقل {field} عن {system} {unit}؛ الطول الحالي هو {input_len}.\nالموقع: {objectPath}"
+        },
+        "checker.maxLength": {
+          "one": "يجب ألا يزيد طول الحقل {field} عن {system} {unit}؛ الطول الحالي هو {input_len}.",
+          "two": "يجب ألا يزيد طول الحقل {field} في {object} عن {system} {unit}؛ الطول الحالي هو {input_len}.",
+          "deep": "يجب ألا يزيد طول الحقل {field} عن {system} {unit}؛ الطول الحالي هو {input_len}.\nالموقع: {objectPath}"
+        },
+        "checker.invalid": {
+          "one": "الحقل {field} غير صالح.",
+          "two": "الحقل {field} في {object} غير صالح.",
+          "deep": "الحقل {field} غير صالح.\nالموقع: {objectPath}"
+        }
+      },
+      "locationPatterns": {
+        "reference": "{relation}",
+        "item": "{relation} رقم {position}",
+        "separator": " → "
+      }
+    },
+    "th": {
+      "rules": {
+        "checker.required": {
+          "one": "ต้องระบุ{field}",
+          "two": "ต้องระบุ{field}ของ{object}",
+          "deep": "ต้องระบุ{field}\nตำแหน่ง: {objectPath}"
+        },
+        "checker.min": {
+          "one": "{field}ต้องมีค่าอย่างน้อย {system}",
+          "two": "{field}ของ{object}ต้องมีค่าอย่างน้อย {system}",
+          "deep": "{field}ต้องมีค่าอย่างน้อย {system}\nตำแหน่ง: {objectPath}"
+        },
+        "checker.max": {
+          "one": "{field}ต้องมีค่าไม่เกิน {system}",
+          "two": "{field}ของ{object}ต้องมีค่าไม่เกิน {system}",
+          "deep": "{field}ต้องมีค่าไม่เกิน {system}\nตำแหน่ง: {objectPath}"
+        },
+        "checker.minLength": {
+          "one": "{field}ต้องมีความยาวอย่างน้อย {system} {unit} ความยาวปัจจุบันคือ {input_len}",
+          "two": "{field}ของ{object}ต้องมีความยาวอย่างน้อย {system} {unit} ความยาวปัจจุบันคือ {input_len}",
+          "deep": "{field}ต้องมีความยาวอย่างน้อย {system} {unit} ความยาวปัจจุบันคือ {input_len}\nตำแหน่ง: {objectPath}"
+        },
+        "checker.maxLength": {
+          "one": "{field}ต้องมีความยาวไม่เกิน {system} {unit} ความยาวปัจจุบันคือ {input_len}",
+          "two": "{field}ของ{object}ต้องมีความยาวไม่เกิน {system} {unit} ความยาวปัจจุบันคือ {input_len}",
+          "deep": "{field}ต้องมีความยาวไม่เกิน {system} {unit} ความยาวปัจจุบันคือ {input_len}\nตำแหน่ง: {objectPath}"
+        },
+        "checker.invalid": {
+          "one": "{field}ไม่ถูกต้อง",
+          "two": "{field}ของ{object}ไม่ถูกต้อง",
+          "deep": "{field}ไม่ถูกต้อง\nตำแหน่ง: {objectPath}"
+        }
+      },
+      "locationPatterns": {
+        "reference": "{relation}",
+        "item": "{relation}ลำดับที่ {position}",
+        "separator": " → "
+      }
+    },
+    "id": {
+      "rules": {
+        "checker.required": {
+          "one": "Kolom {field} wajib diisi.",
+          "two": "Kolom {field} pada {object} wajib diisi.",
+          "deep": "Kolom {field} wajib diisi.\nLokasi: {objectPath}"
+        },
+        "checker.min": {
+          "one": "Nilai {field} minimal {system}.",
+          "two": "Nilai {field} pada {object} minimal {system}.",
+          "deep": "Nilai {field} minimal {system}.\nLokasi: {objectPath}"
+        },
+        "checker.max": {
+          "one": "Nilai {field} maksimal {system}.",
+          "two": "Nilai {field} pada {object} maksimal {system}.",
+          "deep": "Nilai {field} maksimal {system}.\nLokasi: {objectPath}"
+        },
+        "checker.minLength": {
+          "one": "Panjang {field} minimal {system} {unit}; panjang saat ini {input_len}.",
+          "two": "Panjang {field} pada {object} minimal {system} {unit}; panjang saat ini {input_len}.",
+          "deep": "Panjang {field} minimal {system} {unit}; panjang saat ini {input_len}.\nLokasi: {objectPath}"
+        },
+        "checker.maxLength": {
+          "one": "Panjang {field} maksimal {system} {unit}; panjang saat ini {input_len}.",
+          "two": "Panjang {field} pada {object} maksimal {system} {unit}; panjang saat ini {input_len}.",
+          "deep": "Panjang {field} maksimal {system} {unit}; panjang saat ini {input_len}.\nLokasi: {objectPath}"
+        },
+        "checker.invalid": {
+          "one": "Kolom {field} tidak valid.",
+          "two": "Kolom {field} pada {object} tidak valid.",
+          "deep": "Kolom {field} tidak valid.\nLokasi: {objectPath}"
+        }
+      },
+      "locationPatterns": {
+        "reference": "{relation}",
+        "item": "{relation} ke-{position}",
+        "separator": " → "
+      }
+    },
+    "fil": {
+      "rules": {
+        "checker.required": {
+          "one": "Kinakailangan ang {field}.",
+          "two": "Kinakailangan ang {field} ng {object}.",
+          "deep": "Kinakailangan ang {field}.\nLokasyon: {objectPath}"
+        },
+        "checker.min": {
+          "one": "Ang {field} ay dapat hindi bababa sa {system}.",
+          "two": "Ang {field} ng {object} ay dapat hindi bababa sa {system}.",
+          "deep": "Ang {field} ay dapat hindi bababa sa {system}.\nLokasyon: {objectPath}"
+        },
+        "checker.max": {
+          "one": "Ang {field} ay dapat hindi lumampas sa {system}.",
+          "two": "Ang {field} ng {object} ay dapat hindi lumampas sa {system}.",
+          "deep": "Ang {field} ay dapat hindi lumampas sa {system}.\nLokasyon: {objectPath}"
+        },
+        "checker.minLength": {
+          "one": "Ang {field} ay dapat may hindi bababa sa {system} {unit}; ang kasalukuyang haba ay {input_len}.",
+          "two": "Ang {field} ng {object} ay dapat may hindi bababa sa {system} {unit}; ang kasalukuyang haba ay {input_len}.",
+          "deep": "Ang {field} ay dapat may hindi bababa sa {system} {unit}; ang kasalukuyang haba ay {input_len}.\nLokasyon: {objectPath}"
+        },
+        "checker.maxLength": {
+          "one": "Ang {field} ay dapat may hindi hihigit sa {system} {unit}; ang kasalukuyang haba ay {input_len}.",
+          "two": "Ang {field} ng {object} ay dapat may hindi hihigit sa {system} {unit}; ang kasalukuyang haba ay {input_len}.",
+          "deep": "Ang {field} ay dapat may hindi hihigit sa {system} {unit}; ang kasalukuyang haba ay {input_len}.\nLokasyon: {objectPath}"
+        },
+        "checker.invalid": {
+          "one": "Hindi wasto ang {field}.",
+          "two": "Hindi wasto ang {field} ng {object}.",
+          "deep": "Hindi wasto ang {field}.\nLokasyon: {objectPath}"
+        }
+      },
+      "locationPatterns": {
+        "reference": "{relation}",
+        "item": "{relation} bilang {position}",
+        "separator": " → "
+      }
+    },
+    "uk": {
+      "rules": {
+        "checker.required": {
+          "one": "Поле {field} є обов’язковим.",
+          "two": "Поле {field} для {object} є обов’язковим.",
+          "deep": "Поле {field} є обов’язковим.\nРозташування: {objectPath}"
+        },
+        "checker.min": {
+          "one": "Значення поля {field} має бути не менше {system}.",
+          "two": "Значення поля {field} для {object} має бути не менше {system}.",
+          "deep": "Значення поля {field} має бути не менше {system}.\nРозташування: {objectPath}"
+        },
+        "checker.max": {
+          "one": "Значення поля {field} має бути не більше {system}.",
+          "two": "Значення поля {field} для {object} має бути не більше {system}.",
+          "deep": "Значення поля {field} має бути не більше {system}.\nРозташування: {objectPath}"
+        },
+        "checker.minLength": {
+          "one": "Поле {field} має містити щонайменше {system} {unit}; поточна довжина — {input_len}.",
+          "two": "Поле {field} для {object} має містити щонайменше {system} {unit}; поточна довжина — {input_len}.",
+          "deep": "Поле {field} має містити щонайменше {system} {unit}; поточна довжина — {input_len}.\nРозташування: {objectPath}"
+        },
+        "checker.maxLength": {
+          "one": "Поле {field} має містити не більше {system} {unit}; поточна довжина — {input_len}.",
+          "two": "Поле {field} для {object} має містити не більше {system} {unit}; поточна довжина — {input_len}.",
+          "deep": "Поле {field} має містити не більше {system} {unit}; поточна довжина — {input_len}.\nРозташування: {objectPath}"
+        },
+        "checker.invalid": {
+          "one": "Поле {field} є недійсним.",
+          "two": "Поле {field} для {object} є недійсним.",
+          "deep": "Поле {field} є недійсним.\nРозташування: {objectPath}"
+        }
+      },
+      "locationPatterns": {
+        "reference": "{relation}",
+        "item": "{relation} № {position}",
+        "separator": " → "
+      }
+    },
+    "vi": {
+      "rules": {
+        "checker.required": {
+          "one": "Trường {field} là bắt buộc.",
+          "two": "Trường {field} của {object} là bắt buộc.",
+          "deep": "Trường {field} là bắt buộc.\nVị trí: {objectPath}"
+        },
+        "checker.min": {
+          "one": "Giá trị {field} phải ít nhất là {system}.",
+          "two": "Giá trị {field} của {object} phải ít nhất là {system}.",
+          "deep": "Giá trị {field} phải ít nhất là {system}.\nVị trí: {objectPath}"
+        },
+        "checker.max": {
+          "one": "Giá trị {field} không được vượt quá {system}.",
+          "two": "Giá trị {field} của {object} không được vượt quá {system}.",
+          "deep": "Giá trị {field} không được vượt quá {system}.\nVị trí: {objectPath}"
+        },
+        "checker.minLength": {
+          "one": "Độ dài {field} phải ít nhất là {system} {unit}; độ dài hiện tại là {input_len}.",
+          "two": "Độ dài {field} của {object} phải ít nhất là {system} {unit}; độ dài hiện tại là {input_len}.",
+          "deep": "Độ dài {field} phải ít nhất là {system} {unit}; độ dài hiện tại là {input_len}.\nVị trí: {objectPath}"
+        },
+        "checker.maxLength": {
+          "one": "Độ dài {field} không được vượt quá {system} {unit}; độ dài hiện tại là {input_len}.",
+          "two": "Độ dài {field} của {object} không được vượt quá {system} {unit}; độ dài hiện tại là {input_len}.",
+          "deep": "Độ dài {field} không được vượt quá {system} {unit}; độ dài hiện tại là {input_len}.\nVị trí: {objectPath}"
+        },
+        "checker.invalid": {
+          "one": "Trường {field} không hợp lệ.",
+          "two": "Trường {field} của {object} không hợp lệ.",
+          "deep": "Trường {field} không hợp lệ.\nVị trí: {objectPath}"
+        }
+      },
+      "locationPatterns": {
+        "reference": "{relation}",
+        "item": "{relation} thứ {position}",
+        "separator": " → "
+      }
+    }
+  }
+}

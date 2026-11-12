@@ -703,6 +703,7 @@ pub struct RuntimeModule {
     generated_schema_bootstraps: Vec<crate::GeneratedSchemaBootstrap>,
     graph_decoders: InMemoryEntityGraphDecoderRegistry,
     entity_json_model: Option<crate::entity_json::Model>,
+    checker_presentation_model: Option<Arc<crate::checker_messages::CheckerPresentationModel>>,
 }
 
 impl RuntimeModule {
@@ -802,6 +803,15 @@ impl RuntimeModule {
         self
     }
 
+    /// Passive, immutable model vocabulary, not an invocation or entity ledger.
+    pub fn checker_presentation_model(
+        mut self,
+        model: Arc<crate::checker_messages::CheckerPresentationModel>,
+    ) -> Self {
+        self.checker_presentation_model = Some(model);
+        self
+    }
+
     pub fn apply_to(self, context: &mut UserContext) {
         context.set_metadata(self.metadata);
         context.set_entity_registry(self.entity_registry);
@@ -814,6 +824,9 @@ impl RuntimeModule {
         context.set_entity_graph_decoder_registry(self.graph_decoders);
         if let Some(model) = self.entity_json_model {
             context.insert_resource(model);
+        }
+        if let Some(model) = self.checker_presentation_model {
+            context.set_checker_presentation_model(model);
         }
         if let Some(language) = self.language {
             context.set_language(language);

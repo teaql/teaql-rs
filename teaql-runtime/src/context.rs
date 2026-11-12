@@ -195,7 +195,10 @@ pub struct UserContext {
     schema_provider: Option<Box<dyn SchemaProvider>>,
     generated_schema_bootstraps: Vec<GeneratedSchemaBootstrap>,
     language: Language,
-    i18n_catalog: Arc<crate::I18nCatalog>,
+    pub(crate) i18n_catalog: Arc<crate::I18nCatalog>,
+    pub(crate) checker_message_catalog: Arc<crate::checker_messages::CheckerMessageCatalog>,
+    pub(crate) checker_presentation_model: Arc<crate::checker_messages::CheckerPresentationModel>,
+    pub(crate) checker_message_renderer: Arc<dyn crate::checker_messages::CheckerMessageRenderer>,
     typed_resources: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
     named_resources: BTreeMap<String, Box<dyn Any + Send + Sync>>,
     locals: BTreeMap<String, Value>,
@@ -219,6 +222,7 @@ pub struct UserContext {
 
 impl Default for UserContext {
     fn default() -> Self {
+        crate::checker_messages::prepare();
         let pid = std::process::id();
         let thread_id_str = format!("{:?}", std::thread::current().id());
         let numeric_thread_id = thread_id_str
@@ -249,6 +253,13 @@ impl Default for UserContext {
             schema_provider: None,
             language: Language::default(),
             i18n_catalog: crate::I18nCatalog::builtin().clone(),
+            checker_message_catalog: crate::checker_messages::CheckerMessageCatalog::builtin()
+                .clone(),
+            checker_presentation_model: crate::checker_messages::CheckerPresentationModel::empty()
+                .clone(),
+            checker_message_renderer: Arc::new(
+                crate::checker_messages::StandardCheckerMessageRenderer,
+            ),
             typed_resources: HashMap::new(),
             named_resources: BTreeMap::new(),
             locals: BTreeMap::new(),
@@ -797,6 +808,35 @@ impl UserContext {
         self.i18n_catalog = catalog;
     }
 
+    pub fn set_checker_message_catalog(
+        &mut self,
+        catalog: Arc<crate::checker_messages::CheckerMessageCatalog>,
+    ) {
+        self.checker_message_catalog = catalog;
+    }
+
+    /// Validation and compilation precede replacement; a bad resource cannot
+    /// leave a partially installed catalog in this Context.
+    pub fn install_checker_message_catalog(&mut self, source: &str) -> Result<(), RuntimeError> {
+        let catalog = crate::checker_messages::CheckerMessageCatalog::from_json(source)?;
+        self.checker_message_catalog = Arc::new(catalog);
+        Ok(())
+    }
+
+    pub fn set_checker_presentation_model(
+        &mut self,
+        model: Arc<crate::checker_messages::CheckerPresentationModel>,
+    ) {
+        self.checker_presentation_model = model;
+    }
+
+    pub fn set_checker_message_renderer(
+        &mut self,
+        renderer: Arc<dyn crate::checker_messages::CheckerMessageRenderer>,
+    ) {
+        self.checker_message_renderer = renderer;
+    }
+
     pub fn language(&self) -> Language {
         self.language
     }
@@ -1261,7 +1301,9 @@ impl UserContext {
                     .map(|value| ((*field).to_owned(), value))
             })
             .collect();
-        let result = self.check_and_fix_values_inner(entity, values, location, changed);
+        let result = crate::checker_messages::with_check_origin(self, entity, location, || {
+            self.check_and_fix_values_inner(entity, values, location, changed)
+        });
         if result.is_err() {
             for field in fields {
                 if let Some(value) = before.get(field) {
@@ -1526,21 +1568,26 @@ impl UserContext {
         self.translate_check_results_with_values(results, None);
     }
 
+    /// For callers that already own a structured graph validation origin.
+    /// This argument is not the violation's declaring entity type.
+    pub fn translate_check_results_from(&self, origin: &str, results: &mut CheckResults) {
+        crate::checker_messages::with_origin(self, origin, || {
+            self.translate_check_results(results)
+        });
+    }
+
     fn translate_check_results_with_values(
         &self,
         results: &mut CheckResults,
         source_values: Option<(&str, &crate::EntityValues)>,
     ) {
+        let warnings = std::cell::RefCell::new(BTreeSet::new());
         crate::checker_privacy::translate(
             self,
             results,
             source_values,
             |result, original_input_length| {
-                self.i18n_catalog.translate_check_result_with_input_length(
-                    self.language,
-                    result,
-                    original_input_length,
-                )
+                crate::checker_messages::render(self, result, original_input_length, &warnings)
             },
         );
     }

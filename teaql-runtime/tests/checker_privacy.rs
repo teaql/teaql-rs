@@ -95,7 +95,7 @@ fn localized_credential_length_uses_original_unicode_length() {
         12,
         secret,
     )]);
-    for (locale, phrase) in [("en-US", "is 6"), ("zh-CN", "实际长度为 6")] {
+    for (locale, phrase) in [("en-US", "is 6"), ("zh-CN", "当前长度为6")] {
         context.set_locale_code(locale).unwrap();
         let result = &errors(&context)[0];
         assert_eq!(result.input_value, Some(Value::from("[REDACTED]")));
@@ -296,14 +296,33 @@ fn message_only_root_errors_use_checked_values_without_guessing_a_field_path() {
 
 #[test]
 fn model_masked_numeric_rules_render_the_mask_and_preserve_the_expected_bound() {
-    let context = context(vec![CheckResult::min(
+    let mut context = context(vec![CheckResult::min(
         ObjectLocation::root().member("contact_phone"),
         999999_i64,
         12345_i64,
     )]);
+    // The natural builtin explains the bound without echoing input. Customers
+    // can still request a projected numeric input; preserve that capability.
+    context
+        .install_checker_message_catalog(
+            r#"{
+        "schema":"teaql.checker-messages/v1","defaultLocale":"en",
+        "locales":{"en":{"rules":{"checker.min":{
+            "one":"The {field} must be at least {system}; input is {input}",
+            "deep":"The {field} at {objectPath} must be at least {system}; input is {input}"
+        }}}}
+    }"#,
+        )
+        .unwrap();
     let result = &errors(&context)[0];
     assert_eq!(result.input_value, Some(Value::from("*****")));
     assert_eq!(result.system_value, Some(Value::I64(999999)));
+    assert!(result.message.as_deref().unwrap().contains("999999"));
+    assert!(
+        !serde_json::to_string(&result.to_wire(JsonFieldNamingProfile::CamelCase))
+            .unwrap()
+            .contains("12345")
+    );
     assert!(
         result
             .message

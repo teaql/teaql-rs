@@ -133,6 +133,17 @@ impl I18nCatalog {
             .unwrap_or_else(|| key.to_owned())
     }
 
+    /// Explicit application text only; builtin legacy templates do not override
+    /// the new natural catalog. Effective Locale selection remains in the caller.
+    pub(crate) fn application_message(&self, language: Language, key: &str) -> Option<&str> {
+        self.fallback.as_ref()?;
+        self.locales
+            .get(language.code())?
+            .messages
+            .get(key)
+            .map(String::as_str)
+    }
+
     pub fn translate_check_result(&self, language: Language, result: &CheckResult) -> String {
         self.translate_check_result_with_input_length(language, result, None)
     }
@@ -276,7 +287,7 @@ fn render_template(template: &str, arguments: &[(&str, &str)]) -> String {
         })
 }
 
-fn translate_location(location: &ObjectLocation) -> String {
+pub(crate) fn translate_location(location: &ObjectLocation) -> String {
     title_case_path(&location.to_string())
 }
 

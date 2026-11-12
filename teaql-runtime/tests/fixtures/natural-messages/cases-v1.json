@@ -1,0 +1,405 @@
+{
+  "schema": "teaql.checker-natural-fixtures/v1",
+  "revision": "natural-small-v1",
+  "origin": "Catalog",
+  "currentObject": {
+    "en": "current object",
+    "zh-CN": "当前对象",
+    "zh-TW": "目前物件"
+  },
+  "entities": {
+    "Catalog": {
+      "labels": {
+        "en": "catalog",
+        "zh-CN": "目录"
+      },
+      "fields": [
+        {
+          "name": "name",
+          "labels": {
+            "en": "name",
+            "zh-CN": "名称"
+          }
+        },
+        {
+          "name": "entry_list",
+          "targetType": "Entry",
+          "labels": {
+            "en": "entry",
+            "zh-CN": "明细"
+          },
+          "classifiers": {
+            "zh-CN": "条"
+          },
+          "aliases": [
+            "entryList"
+          ]
+        },
+        {
+          "name": "batch_list",
+          "targetType": "Batch",
+          "labels": {
+            "en": "batch",
+            "zh-CN": "批次"
+          },
+          "classifiers": {
+            "zh-CN": "个"
+          }
+        },
+        {
+          "name": "school_type",
+          "targetType": "Person",
+          "labels": {
+            "en": "school type",
+            "zh-CN": "学校类型"
+          }
+        },
+        {
+          "name": "payer",
+          "targetType": "Person",
+          "labels": {
+            "en": "payer",
+            "zh-CN": "付款人"
+          }
+        },
+        {
+          "name": "beneficiary",
+          "targetType": "Person",
+          "labels": {
+            "en": "beneficiary",
+            "zh-CN": "收款人"
+          }
+        },
+        {
+          "name": "amount",
+          "labels": {
+            "en": "amount",
+            "zh-CN": "金额"
+          }
+        },
+        {
+          "name": "a/b~c",
+          "labels": {
+            "en": "external reference",
+            "zh-CN": "外部引用"
+          }
+        }
+      ]
+    },
+    "Entry": {
+      "labels": {
+        "en": "entry",
+        "zh-CN": "明细"
+      },
+      "fields": [
+        {
+          "name": "name",
+          "labels": {
+            "en": "name",
+            "zh-CN": "名称"
+          }
+        },
+        {
+          "name": "description",
+          "labels": {
+            "en": "description",
+            "zh-CN": "描述"
+          }
+        },
+        {
+          "name": "entry_list",
+          "targetType": "Entry",
+          "labels": {
+            "en": "entry",
+            "zh-CN": "明细"
+          },
+          "classifiers": {
+            "zh-CN": "条"
+          }
+        }
+      ]
+    },
+    "Batch": {
+      "labels": {
+        "en": "batch",
+        "zh-CN": "批次"
+      },
+      "fields": [
+        {
+          "name": "entry_list",
+          "targetType": "Entry",
+          "labels": {
+            "en": "entry",
+            "zh-CN": "明细"
+          },
+          "classifiers": {
+            "zh-CN": "条"
+          }
+        }
+      ]
+    },
+    "Person": {
+      "labels": {
+        "en": "person",
+        "zh-CN": "人员"
+      },
+      "fields": [
+        {
+          "name": "name",
+          "labels": {
+            "en": "name",
+            "zh-CN": "名称"
+          }
+        }
+      ]
+    }
+  },
+  "cases": [
+    {
+      "name": "one",
+      "path": [
+        "name"
+      ],
+      "locale": "en",
+      "rule": "checker.required",
+      "shape": "ONE",
+      "expected": "The name is required."
+    },
+    {
+      "name": "one-zh",
+      "path": [
+        "name"
+      ],
+      "locale": "zh-CN",
+      "rule": "checker.required",
+      "shape": "ONE",
+      "expected": "请填写名称。"
+    },
+    {
+      "name": "two-list",
+      "path": [
+        "entry_list",
+        1,
+        "name"
+      ],
+      "locale": "en",
+      "rule": "checker.required",
+      "shape": "TWO",
+      "expected": "The name of the 2nd entry is required."
+    },
+    {
+      "name": "two-list-zh",
+      "path": [
+        "entry_list",
+        1,
+        "name"
+      ],
+      "locale": "zh-CN",
+      "rule": "checker.required",
+      "shape": "TWO",
+      "expected": "请填写第2条明细的名称。"
+    },
+    {
+      "name": "two-ref",
+      "path": [
+        "school_type",
+        "name"
+      ],
+      "locale": "en",
+      "rule": "checker.required",
+      "shape": "TWO",
+      "expected": "The name of the school type is required."
+    },
+    {
+      "name": "payer",
+      "path": [
+        "payer",
+        "name"
+      ],
+      "locale": "en",
+      "rule": "checker.required",
+      "shape": "TWO",
+      "expected": "The name of the payer is required."
+    },
+    {
+      "name": "beneficiary",
+      "path": [
+        "beneficiary",
+        "name"
+      ],
+      "locale": "en",
+      "rule": "checker.required",
+      "shape": "TWO",
+      "expected": "The name of the beneficiary is required."
+    },
+    {
+      "name": "three",
+      "path": [
+        "batch_list",
+        2,
+        "entry_list",
+        1,
+        "name"
+      ],
+      "locale": "en",
+      "rule": "checker.required",
+      "shape": "DEEP",
+      "expected": "The name is required.\nLocation: the 3rd batch → the 2nd entry"
+    },
+    {
+      "name": "three-zh",
+      "path": [
+        "batch_list",
+        2,
+        "entry_list",
+        1,
+        "name"
+      ],
+      "locale": "zh-CN",
+      "rule": "checker.required",
+      "shape": "DEEP",
+      "expected": "请填写名称。\n位置：第3个批次 → 第2条明细"
+    },
+    {
+      "name": "four",
+      "path": [
+        "batch_list",
+        2,
+        "entry_list",
+        1,
+        "entry_list",
+        3,
+        "name"
+      ],
+      "locale": "en",
+      "rule": "checker.required",
+      "shape": "DEEP",
+      "expected": "The name is required.\nLocation: the 3rd batch → the 2nd entry → the 4th entry"
+    },
+    {
+      "name": "explicit-alias",
+      "path": [
+        "entryList",
+        1,
+        "name"
+      ],
+      "locale": "en",
+      "rule": "checker.required",
+      "shape": "TWO",
+      "expected": "The name of the 2nd entry is required."
+    },
+    {
+      "name": "pointer-escaping",
+      "path": [
+        "a/b~c"
+      ],
+      "locale": "en",
+      "rule": "checker.required",
+      "shape": "ONE",
+      "expected": "The external reference is required.",
+      "instancePath": "/a~1b~0c"
+    },
+    {
+      "name": "numeric-min",
+      "path": [
+        "amount"
+      ],
+      "locale": "en",
+      "rule": "checker.min",
+      "shape": "ONE",
+      "arguments": {
+        "system": 0,
+        "input": -10
+      },
+      "expected": "The amount must be at least 0."
+    },
+    {
+      "name": "numeric-max",
+      "path": [
+        "amount"
+      ],
+      "locale": "en",
+      "rule": "checker.max",
+      "shape": "ONE",
+      "arguments": {
+        "system": 10,
+        "input": 11
+      },
+      "expected": "The amount must not exceed 10."
+    },
+    {
+      "name": "length-unit",
+      "path": [
+        "entry_list",
+        1,
+        "description"
+      ],
+      "locale": "en",
+      "rule": "checker.maxLength",
+      "shape": "TWO",
+      "arguments": {
+        "system": 8,
+        "input_len": 9,
+        "unit": "UTF-16 code units"
+      },
+      "expected": "The description of the 2nd entry must not exceed 8 UTF-16 code units; its current length is 9."
+    },
+    {
+      "name": "root",
+      "path": [],
+      "locale": "en",
+      "rule": "checker.invalid",
+      "shape": "DEEP",
+      "expected": "The catalog is invalid.\nLocation: catalog"
+    },
+    {
+      "name": "root-array",
+      "path": [
+        2,
+        "name"
+      ],
+      "locale": "en",
+      "rule": "checker.required",
+      "shape": "DEEP",
+      "expected": "The name is required.\nLocation: the 3rd catalog"
+    },
+    {
+      "name": "multi-selector",
+      "path": [
+        "entry_list",
+        1,
+        2,
+        "name"
+      ],
+      "locale": "en",
+      "rule": "checker.required",
+      "shape": "DEEP",
+      "expected": "The name is required.\nLocation: the 2nd entry → the 3rd current object"
+    },
+    {
+      "name": "missing-origin",
+      "origin": null,
+      "path": [
+        "entry_list",
+        1,
+        "name"
+      ],
+      "locale": "en",
+      "rule": "checker.required",
+      "shape": "DEEP",
+      "expected": "The name is required.\nLocation: the 2nd entry list"
+    },
+    {
+      "name": "unknown-rule",
+      "path": [
+        "entry_list",
+        1,
+        "name"
+      ],
+      "locale": "en",
+      "rule": "checker.custom",
+      "shape": "TWO",
+      "expected": "The name of the 2nd entry is invalid."
+    }
+  ]
+}
