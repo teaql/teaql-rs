@@ -46,3 +46,33 @@ CRUD, cache reuse and independent batch statements without changing stored value
 An explicit debug sink always labels its opt-in; unknown bindings and credentials
 remain hidden. A stale-write sensitive name must not appear in ordinary logs or
 unapproved debug sinks; the explicit plaintext debug sink remains opt-in.
+
+## Grouped queries over mapped columns
+
+Logical fields and physical database columns are separate metadata. For example,
+School's logical FK key is `school_type_id`, while its SQLite column is
+`school_type`. A grouped row must expose `school_type_id`; selecting grouped
+details adds a `school_type` object without replacing the scalar FK. An explicit
+`kindKey` projection is an additional result alias, not a renamed database column.
+
+From the repository root, run:
+
+```bash
+node examples/school-management/verify-grouped-mapping.cjs --native --output /absolute/new/evidence-directory
+```
+
+`tests/grouped_field_mapping.rs` starts with existing legacy tables whose columns
+include `Legacy Kind Key` and `Legacy Display Text`. Audited Context mutations
+populate them. The tests check logical keys, explicit aliases, grouped SUM and
+COUNT, grouped relation details through both row and SmartList execution, and
+grouping without aggregate functions. The original table definitions must remain
+unchanged. Physical column names are not accepted as logical query fields.
+
+The application-owned `grouped_mapping_probe` exercises the unchanged generated
+Q API: `group_by_school_type`, explicit aliases, `group_by_school_type_with_details`,
+and `roll_up_to_school_type`. It runs twice on one SQLite file, and an independent
+read-only query checks the stored FK values. Grouping without an aggregate returns
+only dimensions, not arbitrary fields from one member of the group. The verifier
+checks generated-library hashes and removes its disposable compilation output.
+The optional `--native` flag also runs all targets of the core, SQL, runtime and
+SQLite crates. This is local-source verification, not release acceptance.

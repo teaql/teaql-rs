@@ -1491,6 +1491,20 @@ where
             .prepare_select_query(query)
             .map_err(DataServiceError::Runtime)?;
 
+        if !query.object_group_bys.is_empty()
+            || !query.child_enhancements.is_empty()
+            || !query.relations.is_empty()
+            || !query.relation_aggregates.is_empty()
+            || query.continuous_page_fetch.is_some()
+        {
+            // A row-shaped SmartList is not permission to discard requested
+            // relation/group enhancements. Keep the ordinary compact fast path
+            // below, and box the rich future so it cannot inflate every caller.
+            return Box::pin(self.fetch_prepared_all(&query))
+                .await
+                .map(SmartList::from);
+        }
+
         self.fetch_prepared_compact_owned(query)
             .await
             .map(SmartList::from)

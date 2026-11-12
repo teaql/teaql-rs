@@ -92,6 +92,37 @@ mod tests {
     }
 
     #[test]
+    fn grouped_mapped_properties_return_logical_keys_and_explicit_aliases() {
+        let descriptor = entity().property(
+            PropertyDescriptor::new("kind_id", DataType::I64).column_name("Legacy Kind Key"),
+        );
+        let query = SelectQuery::new("Order")
+            .group_by("kind_id")
+            .project_expr("kindKey", Expr::column("kind_id"))
+            .count("n");
+        let compiled = TestDialect.compile_select(&descriptor, &query).unwrap();
+        assert_eq!(
+            compiled.sql,
+            "SELECT \"Legacy Kind Key\" AS \"kind_id\", \"Legacy Kind Key\" AS \"kindKey\", COUNT(*) AS \"n\" FROM \"orders\" GROUP BY \"Legacy Kind Key\""
+        );
+    }
+
+    #[test]
+    fn grouping_without_aggregates_does_not_select_unrelated_entity_fields() {
+        let descriptor = entity().property(
+            PropertyDescriptor::new("kind_id", DataType::I64).column_name("Legacy Kind Key"),
+        );
+        let query = SelectQuery::new("Order")
+            .project("id")
+            .project("name")
+            .group_by("kind_id");
+        assert_eq!(
+            TestDialect.compile_select(&descriptor, &query).unwrap().sql,
+            "SELECT \"Legacy Kind Key\" AS \"kind_id\" FROM \"orders\" GROUP BY \"Legacy Kind Key\""
+        );
+    }
+
+    #[test]
     fn quotes_identifiers_only_when_needed() {
         assert_eq!(
             crate::quote_identifier_if_needed("stock_item_data", '"'),

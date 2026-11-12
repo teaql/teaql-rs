@@ -931,7 +931,12 @@ version = "0.1.0"
 dependencies = [
  "rusqlite",
  "school-management-service-core",
+ "serde_json",
+ "teaql-core",
+ "teaql-data-service",
+ "teaql-provider-sqlite",
  "teaql-runtime",
+ "teaql-sql",
  "tokio",
 ]
 

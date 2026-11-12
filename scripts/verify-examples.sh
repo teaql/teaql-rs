@@ -16,6 +16,7 @@ cd "$repo"
 node scripts/test-sqlite-probe-adapter.cjs
 TEAQL_FIX_E_EVIDENCE_DIR="${verification_dir%/runtime}/fix-e" \
   node examples/fix-e-alignment/verify-local.cjs
+node examples/school-management/verify-grouped-mapping.cjs --output "${verification_dir%/runtime}/grouped-mapping"
 python3 examples/context-derived/verify-local.py --output "${verification_dir%/runtime}/context-derived"
 python3 scripts/verify-natural-messages.py --example --output "${verification_dir%/runtime}/natural-messages"
 TEAQL_REQUEST_ADMISSION_EVIDENCE_DIR="${verification_dir%/runtime}/request-admission" \

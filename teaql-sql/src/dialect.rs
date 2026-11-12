@@ -1147,7 +1147,13 @@ pub trait SqlDialect {
         // otherwise generated requests produce invalid SQL such as
         // `SELECT id, COUNT(id) ...` without grouping by `id`.
         for field in &query.group_by {
-            let column = self.column_sql(entity, field)?;
+            let property = entity
+                .property_by_name(field)
+                .ok_or_else(|| SqlCompileError::UnknownField(field.to_owned()))?;
+            // Drivers return SQL result labels, not descriptor keys. Preserve
+            // the same logical-name contract as an ordinary projection; a
+            // grouped relation is assembled using that key after execution.
+            let column = self.column_with_alias(property);
             if !parts.contains(&column) {
                 parts.push(column);
             }
@@ -1465,7 +1471,7 @@ pub trait SqlDialect {
         query: &SelectQuery,
         params: &mut crate::SqlBindings,
     ) -> Result<String, SqlCompileError> {
-        match query.aggregates.is_empty() {
+        match query.aggregates.is_empty() && query.group_by.is_empty() {
             true => self.select_projection(entity, query, params),
             false => self.aggregate_projection(entity, query, params),
         }

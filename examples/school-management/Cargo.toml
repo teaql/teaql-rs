@@ -9,6 +9,11 @@ school_management_service_core = { package = "school-management-service-core", p
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 rusqlite = "0.41.1"
 teaql-runtime = { path = "../../teaql-runtime" }
+teaql-core = { path = "../../teaql-core" }
+teaql-sql = { path = "../../teaql-sql" }
+teaql-data-service = { path = "../../teaql-data-service" }
+teaql-provider-sqlite = { path = "../../teaql-provider-sqlite" }
+serde_json = "1"
 
 [workspace]
 

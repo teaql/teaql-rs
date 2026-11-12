@@ -2,9 +2,13 @@ use crate::{DataType, default_table_name};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PropertyDescriptor {
+    /// Logical property key used by query expressions, returned rows and
+    /// mutation values. A mapped database column must not rename this key.
     pub name: String,
     pub data_type: DataType,
     pub nullable: bool,
+    /// Physical database identifier. This may differ from `name`, including
+    /// when a model is mapped onto an existing legacy schema.
     pub column_name: String,
     pub is_id: bool,
     pub is_version: bool,
