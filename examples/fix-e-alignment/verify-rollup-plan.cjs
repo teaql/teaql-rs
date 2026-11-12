@@ -14,7 +14,7 @@ async function main() {
         commit: cp.execFileSync('git', ['rev-parse', 'HEAD'], {cwd: repo, encoding: 'utf8'}).trim()};
     try {
         receipt.sourceHashes = {};
-        for (const name of ['teaql-core/src/aggregation_plan.rs', 'teaql-core/src/lib.rs',
+        for (const name of ['Cargo.toml', 'Cargo.lock', 'teaql-core/src/aggregation_plan.rs', 'teaql-core/src/lib.rs',
             'teaql-core/src/query.rs', 'teaql-sql/src/executor.rs', 'teaql-sql/src/execution_tests.rs',
             'teaql-runtime/src/data_service/mod.rs', 'teaql-runtime/src/data_service/resolved.rs',
             'teaql-runtime/src/data_service/statistics.rs',
