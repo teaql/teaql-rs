@@ -2,8 +2,12 @@
 //! deduplicated at entity identity + final dimensions before aggregation. In
 //! particular AVG is computed from source observations, never group averages.
 
+use std::collections::BTreeMap;
 use teaql_core::aggregation_plan::StatisticalPlan;
-use teaql_core::{AggregateFunction, SelectQuery};
+use teaql_core::{
+    AggregateFunction, CompactRow, DataType, EntityDescriptor, PropertyDescriptor, SelectQuery,
+    Value,
+};
 
 use crate::{CompiledQuery, SqlBindings, SqlCompileError, SqlDialect};
 
@@ -11,7 +15,6 @@ use crate::{CompiledQuery, SqlBindings, SqlCompileError, SqlDialect};
 /// owner. Result columns use stable internal labels (`__teaql_dN`,
 /// `__teaql_mN`); the plan supplies their logical, possibly nested paths.
 ///
-/// This lowering entry point is not yet the public request execution path.
 /// Unsupported post-aggregation layer shapes fail explicitly rather than
 /// silently applying pre-aggregation pagination or dropping predicates.
 pub fn compile_statistical_plan(
@@ -32,23 +35,28 @@ pub fn compile_statistical_plan(
     let mut ctes = Vec::new();
     for (index, layer) in plan.layers.iter().enumerate() {
         let request = &layer.request;
-        if request.having.is_some()
-            || !request.order_by.is_empty()
-            || request.slice.is_some()
+        if (index != 0
+            && (request.having.is_some()
+                || !request.order_by.is_empty()
+                || request.slice.is_some()))
             || request.partition_by.is_some()
             || request.raw_sql.is_some()
             || !request.expr_projection.is_empty()
             || !request.raw_projections.is_empty()
             || !request.dynamic_properties.is_empty()
+            || request.dynamic_field_selection.is_some()
         {
             return Err(invalid(
-                "layered statistics post-aggregate expressions and pagination require further lowering",
+                "layered statistics parent post-aggregate expressions or entity extensions require further lowering",
             ));
         }
         let mut population = request.clone();
         population.group_by.clear();
         population.aggregates.clear();
         population.object_group_bys.clear();
+        population.having = None;
+        population.order_by.clear();
+        population.slice = None;
         population.projection = layer
             .descriptor
             .properties
@@ -211,14 +219,145 @@ pub fn compile_statistical_plan(
         };
         result_joins.push_str(&format!(" LEFT JOIN {aggregate_name} AS {alias} ON {on}"));
     }
-    Ok(CompiledQuery {
-        sql: format!(
-            "WITH {} SELECT {} FROM {result_joins}",
+    let mut sql = format!(
+        "WITH {} SELECT {} FROM {result_joins}",
+        ctes.join(", "),
+        result.join(", ")
+    );
+    if root.request.having.is_some()
+        || !root.request.order_by.is_empty()
+        || root.request.slice.is_some()
+    {
+        // Filter and page final cells, never the source population. Aliases
+        // bind through a result descriptor, not a second raw SQL substitution.
+        let descriptor = result_descriptor(plan)?;
+        let mut outer = SelectQuery::new("__teaql_statistical_result");
+        outer.projection = descriptor
+            .properties
+            .iter()
+            .map(|property| property.name.clone())
+            .collect();
+        outer.filter = root.request.having.clone();
+        outer.order_by = root.request.order_by.clone();
+        outer.slice = root.request.slice;
+        let outer_sql = dialect.compile_select_sql(&descriptor, &outer, &mut params)?;
+        sql = format!(
+            "WITH {} , {} AS (SELECT {} FROM {result_joins}) {outer_sql}",
             ctes.join(", "),
+            q("__teaql_statistical_result"),
             result.join(", ")
-        ),
+        );
+    }
+    Ok(CompiledQuery {
+        sql,
         log_context: params.log_context(dialect.kind()),
         params: params.into_values(),
         comment: root.request.comment.clone(),
     })
+}
+
+fn result_descriptor(plan: &StatisticalPlan) -> Result<EntityDescriptor, SqlCompileError> {
+    let mut descriptor = EntityDescriptor::new("__teaql_statistical_result")
+        .table_name("__teaql_statistical_result");
+    for (index, dimension) in plan.dimensions.iter().enumerate() {
+        let property = plan.layers[dimension.owner_layer]
+            .descriptor
+            .property_by_name(&dimension.field)
+            .ok_or_else(|| SqlCompileError::UnknownField(dimension.field.clone()))?;
+        descriptor = descriptor.property(
+            PropertyDescriptor::new(dimension.output_path.join("."), property.data_type)
+                .column_name(format!("__teaql_d{index}")),
+        );
+    }
+    for (index, measure) in plan.measures.iter().enumerate() {
+        let data_type = if measure.aggregate.function == AggregateFunction::Count {
+            DataType::I64
+        } else {
+            plan.layers[measure.owner_layer]
+                .descriptor
+                .property_by_name(&measure.aggregate.field)
+                .ok_or_else(|| SqlCompileError::UnknownField(measure.aggregate.field.clone()))?
+                .data_type
+        };
+        descriptor = descriptor.property(
+            PropertyDescriptor::new(measure.output_path.join("."), data_type)
+                .column_name(format!("__teaql_m{index}")),
+        );
+    }
+    Ok(descriptor)
+}
+
+/// Restore logical result paths after a driver returns the compiler's neutral
+/// column labels. Statistical rows are DTOs, never invented entity identities.
+pub fn decode_statistical_rows(
+    plan: &StatisticalPlan,
+    rows: Vec<CompactRow>,
+) -> Result<Vec<CompactRow>, String> {
+    fn insert(
+        row: &mut BTreeMap<String, Value>,
+        path: &[String],
+        value: Value,
+    ) -> Result<(), String> {
+        let Some((name, rest)) = path.split_first() else {
+            return Err("empty statistical result path".into());
+        };
+        if rest.is_empty() {
+            if row.insert(name.clone(), value).is_some() {
+                return Err(format!("conflicting statistical result path: {path:?}"));
+            }
+            return Ok(());
+        }
+        let entry = row
+            .entry(name.clone())
+            .or_insert_with(|| Value::Object(BTreeMap::new()));
+        let Value::Object(object) = entry else {
+            return Err(format!("conflicting statistical result path: {path:?}"));
+        };
+        insert(object, rest, value)
+    }
+    let descriptor = result_descriptor(plan).map_err(|error| error.to_string())?;
+    rows.into_iter()
+        .map(|row| {
+            let mut result = BTreeMap::new();
+            for property in &descriptor.properties {
+                let mut value = row
+                    .get(&property.column_name)
+                    .or_else(|| row.get(&property.name))
+                    .cloned()
+                    .ok_or_else(|| {
+                        format!("missing statistical result column {}", property.column_name)
+                    })?;
+                if property.data_type == DataType::Decimal
+                    && !matches!(value, Value::Null | Value::TypedNull(_))
+                {
+                    if matches!(value, Value::F64(_)) {
+                        return Err(
+                            "exact Decimal statistical result arrived as floating point".into()
+                        );
+                    }
+                    value =
+                        Value::Decimal(value.try_decimal().ok_or_else(|| {
+                            "invalid exact Decimal statistical result".to_owned()
+                        })?);
+                }
+                let path = if let Some(index) = property.column_name.strip_prefix("__teaql_d") {
+                    &plan.dimensions[index
+                        .parse::<usize>()
+                        .map_err(|_| "invalid dimension column")?]
+                    .output_path
+                } else {
+                    let index = property
+                        .column_name
+                        .strip_prefix("__teaql_m")
+                        .ok_or("invalid measure column")?;
+                    &plan.measures[index
+                        .parse::<usize>()
+                        .map_err(|_| "invalid measure column")?]
+                    .output_path
+                };
+                insert(&mut result, path, value)?;
+            }
+            Ok(CompactRow::from(result))
+        })
+        .collect()
 }

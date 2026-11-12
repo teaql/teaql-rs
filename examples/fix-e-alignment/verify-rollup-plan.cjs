@@ -15,6 +15,9 @@ async function main() {
     try {
         receipt.sourceHashes = {};
         for (const name of ['teaql-core/src/aggregation_plan.rs', 'teaql-core/src/lib.rs',
+            'teaql-core/src/query.rs', 'teaql-sql/src/executor.rs', 'teaql-sql/src/execution_tests.rs',
+            'teaql-runtime/src/data_service/mod.rs', 'teaql-runtime/src/data_service/resolved.rs',
+            'teaql-runtime/src/data_service/statistics.rs',
             'teaql-sql/src/statistical.rs', 'teaql-sql/src/lib.rs', 'teaql-provider-sqlite/src/statistical_tests.rs',
             'teaql-provider-sqlite/src/lib.rs', 'examples/fix-e-alignment/verify-rollup-plan.cjs']) {
             const bytes = fs.readFileSync(path.join(repo, name)); receipt.sourceHashes[name] = hash(bytes);
@@ -24,8 +27,8 @@ async function main() {
         const env = {...process.env, CARGO_TARGET_DIR: path.join(scratch, 'target'), CARGO_INCREMENTAL: '0',
             CARGO_BUILD_JOBS: '4', CARGO_PROFILE_TEST_DEBUG: '0', CARGO_PROFILE_DEV_DEBUG: '0'};
         receipt.commands = [];
-        for (const [crate, filter] of [['teaql-core', 'aggregation_plan::tests::'],
-            ['teaql-provider-sqlite', 'statistical_tests::layered_rollup_']]) {
+        for (const [crate, filter, minimum] of [['teaql-core', 'aggregation_plan::tests::', 8],
+            ['teaql-provider-sqlite', 'statistical_tests::layered_rollup_', 15]]) {
             const command = [process.env.CARGO || 'cargo', 'test', '--offline', '--locked', '-p', crate, filter];
             const logPath = path.join(output, crate + '.log'), fd = fs.openSync(logPath, 'wx'); let result;
             try { result = await runner.run(command, {cwd: repo, env, timeout: 900000, stdio: ['ignore', fd, fd]}); }
@@ -33,7 +36,20 @@ async function main() {
             const log = fs.readFileSync(logPath);
             const testsPassed = (log.toString().match(/test (?:aggregation_plan::tests::|statistical_tests::layered_rollup_)[^\n]+ \.\.\. ok/g) || []).length;
             receipt.commands.push({command, result, testsPassed, logSha256: hash(log)});
-            assert(result.status === 0 && testsPassed >= 6, log.toString().slice(-6000));
+            assert(result.status === 0 && testsPassed >= minimum, log.toString().slice(-6000));
+        }
+        const command = [process.env.CARGO || 'cargo', 'test', '--offline', '--locked',
+            '-p', 'teaql-core', '-p', 'teaql-sql', '-p', 'teaql-runtime', '-p', 'teaql-provider-sqlite', '--all-targets'];
+        const fd = fs.openSync(path.join(output, 'native-regression.log'), 'wx'); let result;
+        try { result = await runner.run(command, {cwd: repo, env, timeout: 900000, stdio: ['ignore', fd, fd]}); }
+        finally { fs.closeSync(fd); }
+        const bytes = fs.readFileSync(path.join(output, 'native-regression.log')), log = bytes.toString();
+        const testsPassed = [...log.matchAll(/test result: ok\. (\d+) passed;/g)]
+            .reduce((count, match) => count + Number(match[1]), 0);
+        receipt.commands.push({command, result, testsPassed, logSha256: hash(bytes)});
+        assert(result.status === 0 && testsPassed >= 1059, log.slice(-6000));
+        for (const [name, expected] of Object.entries(receipt.sourceHashes)) {
+            assert.equal(hash(fs.readFileSync(path.join(repo, name))), expected, 'Source changed during verification: ' + name);
         }
         receipt.passed = true;
     } catch (error) { receipt.error = error.message; process.exitCode = 1; }

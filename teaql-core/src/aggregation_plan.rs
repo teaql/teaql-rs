@@ -85,11 +85,14 @@ impl StatisticalPlan {
             .map(|binding| &binding.output_path)
             .chain(plan.measures.iter().map(|binding| &binding.output_path))
         {
-            if !paths.insert(path.clone()) {
+            if paths.iter().any(|existing: &Vec<String>| {
+                existing.starts_with(path) || path.starts_with(existing)
+            }) {
                 return Err(StatisticalPlanError(format!(
                     "duplicate statistical result path: {path:?}"
                 )));
             }
+            paths.insert(path.clone());
         }
         Ok(plan)
     }
@@ -109,6 +112,15 @@ impl StatisticalPlan {
         let descriptor = lookup(&query.entity).ok_or_else(|| {
             StatisticalPlanError(format!("missing statistics metadata for {}", query.entity))
         })?;
+        if self
+            .layers
+            .first()
+            .is_some_and(|source| source.descriptor.data_service != descriptor.data_service)
+        {
+            return Err(StatisticalPlanError(
+                "statistical SQL populations must use the same data service".into(),
+            ));
+        }
         let identity = descriptor.id_property().ok_or_else(|| {
             StatisticalPlanError(format!(
                 "statistics layer {} has no identity grain",
@@ -185,6 +197,25 @@ impl StatisticalPlan {
                 field: identity.name.clone(),
                 output_path: result_path(&identity.name),
             });
+            let fields = if query.projection.is_empty() {
+                descriptor
+                    .properties
+                    .iter()
+                    .map(|property| property.name.as_str())
+                    .collect::<Vec<_>>()
+            } else {
+                query.projection.iter().map(String::as_str).collect()
+            };
+            for field in fields {
+                field_exists(field)?;
+                if field != identity.name {
+                    self.dimensions.push(DimensionBinding {
+                        owner_layer: owner,
+                        field: field.into(),
+                        output_path: result_path(field),
+                    });
+                }
+            }
         }
         let mut relation_outputs = BTreeSet::new();
         for group in &query.object_group_bys {
@@ -413,5 +444,34 @@ mod tests {
         .unwrap();
         assert_eq!(plan.measures[0].output_path, ["n"]);
         assert_eq!(plan.measures[1].output_path, ["kind", "n"]);
+    }
+
+    #[test]
+    fn scalar_alias_cannot_overwrite_a_nested_dimension_container() {
+        assert!(
+            build(
+                &SelectQuery::new("School")
+                    .aggregate(Aggregate::count("kind"))
+                    .object_group_by("kind", "kind_id", SelectQuery::new("Kind").group_by("name"))
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn joined_populations_cannot_cross_data_service_boundaries() {
+        let mut descriptors = fixture();
+        descriptors[1].data_service = Some("external".into());
+        let query = SelectQuery::new("School").object_group_by(
+            "kind",
+            "kind_id",
+            SelectQuery::new("Kind").group_by("name"),
+        );
+        assert!(
+            StatisticalPlan::build(&query, |name| descriptors
+                .iter()
+                .find(|descriptor| descriptor.name == name))
+            .is_err()
+        );
     }
 }

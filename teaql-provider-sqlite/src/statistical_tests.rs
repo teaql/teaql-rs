@@ -150,3 +150,307 @@ fn layered_rollup_null_dimension_joins_its_measure_cell() {
     assert_eq!(rows[0].get("__teaql_d0"), Some(&Value::Null));
     assert_eq!(rows[0].get("__teaql_m0"), Some(&Value::I64(5)));
 }
+
+type StatisticalExecutor = teaql_sql::SqlDataServiceExecutor<
+    SqliteDialect,
+    SqliteMutationExecutor,
+    teaql_runtime::InMemoryMetadataStore,
+>;
+
+#[derive(Clone)]
+struct LayerPolicy {
+    restrict_kind: bool,
+    deny_platform: bool,
+    seen: Arc<Mutex<Vec<(String, String)>>>,
+}
+
+impl teaql_runtime::RequestPolicy for LayerPolicy {
+    fn enforce_select(
+        &self,
+        _context: &UserContext,
+        query: &mut SelectQuery,
+    ) -> Result<(), RuntimeError> {
+        self.seen.lock().unwrap().push((
+            query.entity.clone(),
+            query.request_scope().unwrap().comment().to_owned(),
+        ));
+        if query.entity == "Kind" && self.restrict_kind {
+            query.filter = Some(match query.filter.take() {
+                Some(filter) => filter.and_expr(Expr::eq("ordinal", 1)),
+                None => Expr::eq("ordinal", 1),
+            });
+        }
+        if query.entity == "Platform" && self.deny_platform {
+            return Err(RuntimeError::Policy("STATISTICS_PLATFORM_DENIED".into()));
+        }
+        Ok(())
+    }
+}
+
+fn runtime_context(transport: SqliteMutationExecutor, policy: LayerPolicy) -> UserContext {
+    let metadata = descriptors().into_iter().fold(
+        teaql_runtime::InMemoryMetadataStore::new(),
+        |metadata, descriptor| metadata.with_entity(descriptor),
+    );
+    let service =
+        teaql_sql::SqlDataServiceExecutor::new(SqliteDialect, transport, metadata.clone());
+    let mut context = UserContext::new()
+        .with_metadata(metadata)
+        .with_request_policy(policy);
+    context.register_executor(service);
+    context
+}
+
+fn policy(restrict_kind: bool, deny_platform: bool) -> LayerPolicy {
+    LayerPolicy {
+        restrict_kind,
+        deny_platform,
+        seen: Arc::new(Mutex::new(Vec::new())),
+    }
+}
+
+fn fetch(context: &UserContext, query: SelectQuery) -> Result<Vec<CompactRow>, String> {
+    let request = teaql_runtime::PurposedSelectQuery::new(
+        query,
+        "Validate Context-scoped layered statistics",
+    );
+    let service = context
+        .entity_data_service::<StatisticalExecutor>("School")
+        .unwrap();
+    futures_executor::block_on(service.fetch_all(&request)).map_err(|error| error.to_string())
+}
+
+#[test]
+fn layered_rollup_context_applies_each_population_policy_and_restores_logical_paths() {
+    let policy = policy(true, false);
+    let seen = policy.seen.clone();
+    let context = runtime_context(executor(), policy);
+    let parent = SelectQuery::new("Kind")
+        .group_by("label")
+        .comment("Group eligible school types");
+    let rows = fetch(
+        &context,
+        source(parent).limit(10).having(Expr::gt("schools", 2)),
+    )
+    .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(4)));
+    assert_eq!(rows[0].get("total"), Some(&Value::I64(3200)));
+    let Some(Value::Object(kind)) = rows[0].get("kind") else {
+        panic!("missing typed dimension object");
+    };
+    assert_eq!(kind.get("label"), Some(&Value::from("shared")));
+    assert!(!rows[0].contains_key("kind_id"));
+    assert!(!rows[0].contains_key("__teaql_m0"));
+    assert_eq!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .map(|(entity, _)| entity.as_str())
+            .collect::<Vec<_>>(),
+        ["School", "Kind"]
+    );
+    assert_eq!(seen.lock().unwrap()[1].1, "Group eligible school types");
+}
+
+#[test]
+fn layered_rollup_context_orders_and_pages_final_cells_not_source_rows() {
+    let context = runtime_context(executor(), policy(false, false));
+    let query = source(SelectQuery::new("Kind").group_by("ordinal"))
+        .order_desc("schools")
+        .limit(1)
+        .offset(1);
+    let rows = fetch(&context, query).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(1)));
+    assert_eq!(rows[0].get("total"), Some(&Value::I64(100)));
+    let Some(Value::Object(kind)) = rows[0].get("kind") else {
+        panic!("missing dimension");
+    };
+    assert_eq!(kind.get("ordinal"), Some(&Value::I64(2)));
+}
+
+#[test]
+fn layered_rollup_context_having_removes_final_cells() {
+    let context = runtime_context(executor(), policy(false, false));
+    let rows = fetch(
+        &context,
+        source(SelectQuery::new("Kind").group_by("label")).having(Expr::gt("schools", 5)),
+    )
+    .unwrap();
+    assert!(rows.is_empty());
+}
+
+#[test]
+fn layered_rollup_context_parent_bindings_do_not_reuse_previous_values() {
+    let context = runtime_context(executor(), policy(false, false));
+    for (ordinal, count) in [(1, 4), (2, 1), (1, 4)] {
+        let rows = fetch(
+            &context,
+            source(
+                SelectQuery::new("Kind")
+                    .group_by("label")
+                    .and_filter(Expr::eq("ordinal", ordinal)),
+            ),
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("schools"), Some(&Value::I64(count)));
+    }
+}
+
+#[test]
+fn layered_rollup_context_denied_parent_stops_before_sql() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute("DROP TABLE legacy_school", [])
+        .unwrap();
+    let policy = policy(false, true);
+    let seen = policy.seen.clone();
+    let context = runtime_context(transport, policy);
+    let parent = SelectQuery::new("Kind")
+        .group_by("platform_id")
+        .object_group_by(
+            "platform",
+            "platform_id",
+            SelectQuery::new("Platform").group_by("name"),
+        );
+    let error = fetch(&context, source(parent)).unwrap_err();
+    assert!(error.contains("STATISTICS_PLATFORM_DENIED"), "{error}");
+    assert!(
+        !error.contains("no such table"),
+        "SQL must not run before all population policies"
+    );
+    assert_eq!(seen.lock().unwrap().len(), 3);
+}
+
+#[test]
+fn layered_rollup_context_multihop_preserves_parent_measure_grain() {
+    let context = runtime_context(executor(), policy(false, false));
+    let parent = SelectQuery::new("Kind")
+        .aggregate(Aggregate::sum("ordinal", "ordinalTotal"))
+        .group_by("platform_id")
+        .object_group_by(
+            "platform",
+            "platform_id",
+            SelectQuery::new("Platform").group_by("name"),
+        );
+    let rows = fetch(&context, source(parent)).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(5)));
+    let Some(Value::Object(kind)) = rows[0].get("kind") else {
+        panic!("missing kind result");
+    };
+    assert_eq!(kind.get("ordinalTotal"), Some(&Value::I64(3)));
+    let Some(Value::Object(platform)) = kind.get("platform") else {
+        panic!("missing platform dimension");
+    };
+    assert_eq!(platform.get("name"), Some(&Value::from("Campus")));
+}
+
+fn direct_executor() -> StatisticalExecutor {
+    let metadata = descriptors().into_iter().fold(
+        teaql_runtime::InMemoryMetadataStore::new(),
+        |metadata, descriptor| metadata.with_entity(descriptor),
+    );
+    teaql_sql::SqlDataServiceExecutor::new(SqliteDialect, executor(), metadata)
+}
+
+fn query_request(query: SelectQuery, capture: bool) -> teaql_data_service::QueryRequest {
+    teaql_data_service::QueryRequest {
+        intent: teaql_core::QueryIntent::new(
+            query.comment.clone().unwrap(),
+            query.purpose.clone().unwrap(),
+        )
+        .unwrap(),
+        query,
+        trace_chain: Vec::new(),
+        capture_execution_metadata: capture,
+        capture_debug_query: false,
+    }
+}
+
+#[test]
+fn layered_rollup_native_stream_restores_paths_for_every_chunk() {
+    use futures_util::StreamExt;
+    let executor = direct_executor();
+    let query = source(SelectQuery::new("Kind").group_by("ordinal")).order_desc("schools");
+    let mut stream = teaql_data_service::StreamQueryExecutor::query_stream(
+        &executor,
+        query_request(query, false),
+        1,
+    );
+    let rows = futures_executor::block_on(async {
+        let mut rows = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.unwrap();
+            assert_eq!(chunk.rows.len(), 1);
+            rows.extend(chunk.rows);
+        }
+        rows
+    });
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(4)));
+    assert_eq!(rows[1].get("schools"), Some(&Value::I64(1)));
+    assert!(rows.iter().all(|row| {
+        row.get("kind")
+            .is_some_and(|value| matches!(value, Value::Object(_)))
+    }));
+}
+
+#[test]
+fn layered_rollup_observed_stream_reports_final_logical_rows() {
+    use futures_util::StreamExt;
+    let executor = direct_executor();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let observed = events.clone();
+    let query = source(SelectQuery::new("Kind").group_by("label")).limit(1);
+    let mut stream = teaql_data_service::StreamQueryExecutor::query_stream_observed(
+        &executor,
+        query_request(query, true),
+        1,
+        Arc::new(move |metadata| observed.lock().unwrap().push(metadata)),
+    );
+    futures_executor::block_on(async {
+        let first = stream.next().await.unwrap().unwrap();
+        assert_eq!(first.rows[0].get("schools"), Some(&Value::I64(5)));
+        assert!(stream.next().await.is_none());
+    });
+    drop(stream);
+    let events = events.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].result_count, Some(1));
+    assert!(
+        events[0]
+            .parameterized_query
+            .as_ref()
+            .unwrap()
+            .contains("__teaql_grain0")
+    );
+}
+
+#[test]
+fn layered_rollup_decoder_preserves_dots_in_a_measure_alias() {
+    let executor = direct_executor();
+    let query = SelectQuery::new("School")
+        .aggregate(Aggregate::count("school.count"))
+        .group_by("kind_id")
+        .object_group_by(
+            "kind",
+            "kind_id",
+            SelectQuery::new("Kind").group_by("label"),
+        )
+        .comment("Preserve caller supplied alias spelling")
+        .purpose("Verify paths do not split alias text")
+        .limit(1);
+    let result = futures_executor::block_on(teaql_data_service::QueryExecutor::query(
+        &executor,
+        query_request(query, false),
+    ))
+    .unwrap();
+    assert_eq!(result.rows[0].get("school.count"), Some(&Value::I64(5)));
+    assert!(!result.rows[0].contains_key("school"));
+}

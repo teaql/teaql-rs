@@ -8,6 +8,7 @@ mod graph_readback_tests;
 mod helpers;
 mod relation;
 mod resolved;
+mod statistics;
 mod types;
 
 pub use cache::{AggregationCacheBackend, InMemoryAggregationCache};

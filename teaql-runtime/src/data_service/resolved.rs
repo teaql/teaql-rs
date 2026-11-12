@@ -378,7 +378,7 @@ where
         self.prepare_select_query_owned(query.clone())
     }
 
-    fn prepare_select_query_owned(
+    pub(super) fn prepare_select_query_owned(
         &self,
         mut query: SelectQuery,
     ) -> Result<SelectQuery, RuntimeError> {
@@ -1192,6 +1192,21 @@ where
             .clone()
             .prepare_for_list()
             .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
+        if query.has_layered_statistics() {
+            if !relation_aggregates.is_empty()
+                || !query.relations.is_empty()
+                || !query.child_enhancements.is_empty()
+                || query.continuous_page_fetch.is_some()
+            {
+                return Err(DataServiceError::Runtime(RuntimeError::Graph(
+                    "layered statistics cannot use entity-row enhancements".into(),
+                )));
+            }
+            let query = self
+                .prepare_statistical_layers(query)
+                .map_err(DataServiceError::Runtime)?;
+            return Box::pin(self.fetch_prepared_query(&query)).await;
+        }
         if relation_aggregates.is_empty()
             && query.continuous_page_fetch.is_none()
             && query.object_group_bys.is_empty()

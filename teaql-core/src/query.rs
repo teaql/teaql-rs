@@ -497,6 +497,16 @@ pub struct SelectQuery {
 }
 
 impl SelectQuery {
+    /// A grouped parent changes the final statistical grain. It cannot be
+    /// hydrated through the ordinary entity-ID detail enhancement path.
+    pub fn has_layered_statistics(&self) -> bool {
+        self.object_group_bys.iter().any(|group| {
+            !group.query.group_by.is_empty()
+                || !group.query.aggregates.is_empty()
+                || !group.query.object_group_bys.is_empty()
+        })
+    }
+
     pub fn new(entity: impl Into<String>) -> Self {
         Self {
             hard_limit: 10_000,

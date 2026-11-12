@@ -162,8 +162,58 @@ where
         entity: &EntityDescriptor,
         query: &SelectQuery,
     ) -> Result<CompiledQuery, SqlCompileError> {
+        if query.has_layered_statistics() {
+            return compile_layered_statistics(&self.dialect, &self.schema_provider, query)
+                .map(|(_, compiled)| compiled);
+        }
         compile_select_with_cache(&self.dialect, &self.select_plan_cache, entity, query)
     }
+}
+
+fn compile_layered_statistics<D: SqlDialect, S: teaql_data_service::SchemaProvider>(
+    dialect: &D,
+    schema: &S,
+    query: &SelectQuery,
+) -> Result<(teaql_core::aggregation_plan::StatisticalPlan, CompiledQuery), SqlCompileError> {
+    let mut descriptors = std::collections::BTreeMap::new();
+    let mut pending = vec![query];
+    let mut count = 0;
+    while let Some(layer) = pending.pop() {
+        count += 1;
+        if count > 64 {
+            return Err(SqlCompileError::InvalidFunctionArguments(
+                "statistical plan exceeds 64 layers".into(),
+            ));
+        }
+        descriptors.entry(layer.entity.clone()).or_insert(
+            schema
+                .get_entity(&layer.entity)
+                .ok_or_else(|| SqlCompileError::UnknownEntity(layer.entity.clone()))?,
+        );
+        pending.extend(layer.object_group_bys.iter().map(|group| &group.query));
+    }
+    let plan = teaql_core::aggregation_plan::StatisticalPlan::build(query, |name| {
+        descriptors.get(name).map(AsRef::as_ref)
+    })
+    .map_err(|error| SqlCompileError::InvalidFunctionArguments(error.to_string()))?;
+    let compiled = crate::compile_statistical_plan(dialect, &plan)?;
+    Ok((plan, compiled))
+}
+
+fn decode_statistical_stream<'a, E: std::error::Error + Send + Sync + 'static>(
+    source: teaql_data_service::QueryStream<'a, SqlExecutorError<E>>,
+    plan: Option<teaql_core::aggregation_plan::StatisticalPlan>,
+) -> teaql_data_service::QueryStream<'a, SqlExecutorError<E>> {
+    use futures_util::StreamExt;
+    let Some(plan) = plan else {
+        return source;
+    };
+    Box::pin(source.map(move |chunk| {
+        let mut chunk = chunk?;
+        chunk.rows = crate::decode_statistical_rows(&plan, chunk.rows)
+            .map_err(SqlExecutorError::PersistedRecord)?;
+        Ok(chunk)
+    }))
 }
 
 fn compile_select_with_cache<D: SqlDialect>(
@@ -1527,6 +1577,17 @@ impl<
                 }
             }
 
+            if request.query.has_layered_statistics() {
+                return Box::pin(execute_layered_query(
+                    &self.dialect,
+                    &self.schema_provider,
+                    &self.transport,
+                    &entity_desc,
+                    request,
+                    observer,
+                ))
+                .await;
+            }
             let compiled = self
                 .compile_select_cached(&entity_desc, &request.query)
                 .map_err(SqlExecutorError::Compile)?;
@@ -1593,13 +1654,104 @@ where
     }
 }
 
-async fn execute_compiled_query<D: SqlDialect + Sync, T: SqlTransport>(
+trait QueryRowsDecoder {
+    fn decode(
+        self,
+        kind: DatabaseKind,
+        entity: &EntityDescriptor,
+        query: &SelectQuery,
+        rows: Vec<CompactRow>,
+    ) -> Result<Vec<CompactRow>, String>;
+}
+
+struct OrdinaryRows;
+impl QueryRowsDecoder for OrdinaryRows {
+    fn decode(
+        self,
+        kind: DatabaseKind,
+        entity: &EntityDescriptor,
+        query: &SelectQuery,
+        mut rows: Vec<CompactRow>,
+    ) -> Result<Vec<CompactRow>, String> {
+        if kind == DatabaseKind::Sqlite {
+            normalize_exact_decimal_aggregates(entity, query, &mut rows)?;
+        }
+        Ok(rows)
+    }
+}
+struct StatisticalRows<'a>(&'a teaql_core::aggregation_plan::StatisticalPlan);
+impl QueryRowsDecoder for StatisticalRows<'_> {
+    fn decode(
+        self,
+        _kind: DatabaseKind,
+        _entity: &EntityDescriptor,
+        _query: &SelectQuery,
+        rows: Vec<CompactRow>,
+    ) -> Result<Vec<CompactRow>, String> {
+        crate::decode_statistical_rows(self.0, rows)
+    }
+}
+
+// A non-async wrapper introduces no second Future frame. The ordinary decoder
+// is zero-sized; statistics state exists only in the boxed specialized path.
+fn execute_compiled_query<'a, D: SqlDialect + Sync, T: SqlTransport>(
+    dialect: &'a D,
+    transport: &'a T,
+    entity: &'a EntityDescriptor,
+    compiled: CompiledQuery,
+    request: QueryRequest,
+    observer: Option<teaql_data_service::ExecutionObserver<'a>>,
+) -> impl std::future::Future<Output = Result<QueryResult, SqlExecutorError<T::Error>>> + Send + 'a
+{
+    execute_decoded_query(
+        dialect,
+        transport,
+        entity,
+        compiled,
+        request,
+        observer,
+        OrdinaryRows,
+    )
+}
+
+async fn execute_layered_query<
+    D: SqlDialect + Sync,
+    T: SqlTransport,
+    S: teaql_data_service::SchemaProvider,
+>(
+    dialect: &D,
+    schema: &S,
+    transport: &T,
+    entity: &EntityDescriptor,
+    request: QueryRequest,
+    observer: Option<teaql_data_service::ExecutionObserver<'_>>,
+) -> Result<QueryResult, SqlExecutorError<T::Error>> {
+    let (plan, compiled) = compile_layered_statistics(dialect, schema, &request.query)
+        .map_err(SqlExecutorError::Compile)?;
+    execute_decoded_query(
+        dialect,
+        transport,
+        entity,
+        compiled,
+        request,
+        observer,
+        StatisticalRows(&plan),
+    )
+    .await
+}
+
+async fn execute_decoded_query<
+    D: SqlDialect + Sync,
+    T: SqlTransport,
+    R: QueryRowsDecoder + Send,
+>(
     dialect: &D,
     transport: &T,
     entity: &EntityDescriptor,
     compiled: CompiledQuery,
     request: QueryRequest,
     observer: Option<teaql_data_service::ExecutionObserver<'_>>,
+    decoder: R,
 ) -> Result<QueryResult, SqlExecutorError<T::Error>> {
     let metadata = request
         .capture_execution_metadata
@@ -1608,16 +1760,16 @@ async fn execute_compiled_query<D: SqlDialect + Sync, T: SqlTransport>(
     let result = diagnostic
         .run(transport.fetch_all_compact_sql(&compiled))
         .await;
-    let mut rows = result.map_err(|error| {
+    let rows = result.map_err(|error| {
         diagnostic.fail();
         SqlExecutorError::Transport(error)
     })?;
-    if dialect.kind() == DatabaseKind::Sqlite
-        && let Err(error) = normalize_exact_decimal_aggregates(entity, &request.query, &mut rows)
-    {
-        diagnostic.fail();
-        return Err(SqlExecutorError::PersistedRecord(error));
-    }
+    let rows = decoder
+        .decode(dialect.kind(), entity, &request.query, rows)
+        .map_err(|error| {
+            diagnostic.fail();
+            SqlExecutorError::PersistedRecord(error)
+        })?;
     let mut metadata = diagnostic
         .success()
         .unwrap_or_else(|| ExecutionMetadata::unrecorded_query(rows.len()));
@@ -1939,6 +2091,10 @@ where
     where
         D: SqlDialect,
     {
+        if query.has_layered_statistics() {
+            return compile_layered_statistics(self.dialect, self.schema_provider, query)
+                .map(|(_, compiled)| compiled);
+        }
         compile_select_with_cache(self.dialect, &self.select_plan_cache, entity, query)
     }
 }
@@ -2052,6 +2208,17 @@ impl<
                     ))
                 })?;
 
+            if request.query.has_layered_statistics() {
+                return Box::pin(execute_layered_query(
+                    self.dialect,
+                    self.schema_provider,
+                    &self.transport,
+                    &entity_desc,
+                    request,
+                    observer,
+                ))
+                .await;
+            }
             let compiled = self
                 .compile_select_cached(&entity_desc, &request.query)
                 .map_err(SqlExecutorError::Compile)?;
@@ -2299,8 +2466,16 @@ impl<
         let compiled = self
             .entity_descriptor(&request.query.entity)
             .ok_or_else(|| SqlCompileError::UnknownEntity(request.query.entity.clone()))
-            .and_then(|entity| self.compile_select_cached(&entity, &request.query));
-        let compiled = match compiled {
+            .and_then(|entity| {
+                if request.query.has_layered_statistics() {
+                    compile_layered_statistics(&self.dialect, &self.schema_provider, &request.query)
+                        .map(|(plan, compiled)| (Some(plan), compiled))
+                } else {
+                    self.compile_select_cached(&entity, &request.query)
+                        .map(|compiled| (None, compiled))
+                }
+            });
+        let (plan, compiled) = match compiled {
             Ok(compiled) => compiled,
             // No SQL was compiled/executed, so do not invent an SQL diagnostic.
             Err(error) => {
@@ -2315,6 +2490,7 @@ impl<
                 .stream_sql(compiled, chunk_size)
                 .map(|item| item.map_err(SqlExecutorError::Transport)),
         );
+        let source = decode_statistical_stream(source, plan);
         crate::diagnostic_stream::DiagnosticStream::wrap(source, metadata, observer)
     }
 
@@ -2334,11 +2510,21 @@ impl<
                 }));
             }
         };
-        match self.compile_select_cached(&entity, &request.query) {
-            Ok(compiled) => Box::pin(
-                self.transport
-                    .stream_sql(compiled, chunk_size)
-                    .map(|r| r.map_err(SqlExecutorError::Transport)),
+        let compiled = if request.query.has_layered_statistics() {
+            compile_layered_statistics(&self.dialect, &self.schema_provider, &request.query)
+                .map(|(plan, compiled)| (Some(plan), compiled))
+        } else {
+            self.compile_select_cached(&entity, &request.query)
+                .map(|compiled| (None, compiled))
+        };
+        match compiled {
+            Ok((plan, compiled)) => decode_statistical_stream(
+                Box::pin(
+                    self.transport
+                        .stream_sql(compiled, chunk_size)
+                        .map(|r| r.map_err(SqlExecutorError::Transport)),
+                ),
+                plan,
             ),
             Err(error) => Box::pin(futures_util::stream::once(async {
                 Err(SqlExecutorError::Compile(error))
