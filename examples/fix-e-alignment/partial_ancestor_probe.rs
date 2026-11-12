@@ -555,7 +555,7 @@ pub async fn verify_managed_root() -> Result<(), Box<dyn std::error::Error>> {
             assert_eq!(
                 violation.message.as_deref(),
                 Some(
-                    "The Purchase_order_list[0].Order_item_list[0].Tenant does not match the active context root"
+                    "The tenant is invalid.\nLocation: the 1st purchase order list → the 1st order item list"
                 )
             );
             assert_eq!(
