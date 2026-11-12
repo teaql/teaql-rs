@@ -113,10 +113,8 @@ fn nested_child_mask_keeps_canonical_alias_and_wire_paths() {
         .member("contact_phone");
     let result =
         invalid("contact_phone", SECRET).with_source_instance_path("/items/2/legacy~0phone");
-    let mut result = CheckResult {
-        location: location.clone(),
-        ..result
-    };
+    let mut result = result;
+    result.location = location.clone();
     result.entity_type = Some("OrderItem".into());
     let result = &errors(&context(vec![result]))[0];
     assert_ne!(result.input_value, Some(Value::from(SECRET)));

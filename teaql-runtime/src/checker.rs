@@ -94,7 +94,7 @@ pub use teaql_core::object_location::{
     JsonFieldNamingProfile, LocationSegment, ObjectLocation, WireLocationSegment,
 };
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct CheckResult {
     pub rule: CheckRule,
     pub location: ObjectLocation,
@@ -103,6 +103,20 @@ pub struct CheckResult {
     pub message: Option<String>,
     pub entity_type: Option<String>,
     pub source_instance_path: Option<String>,
+    pub(crate) presentation: Option<Arc<crate::checker_messages::RenderedState>>,
+}
+
+// Presentation caching is not part of a violation's public identity or equality.
+impl PartialEq for CheckResult {
+    fn eq(&self, other: &Self) -> bool {
+        self.rule == other.rule
+            && self.location == other.location
+            && self.input_value == other.input_value
+            && self.system_value == other.system_value
+            && self.message == other.message
+            && self.entity_type == other.entity_type
+            && self.source_instance_path == other.source_instance_path
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -128,6 +142,7 @@ impl CheckResult {
             message: None,
             entity_type: None,
             source_instance_path: None,
+            presentation: None,
         }
     }
 

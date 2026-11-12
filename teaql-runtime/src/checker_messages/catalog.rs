@@ -32,9 +32,48 @@ enum Node {
 }
 
 #[derive(Debug, Clone)]
-struct Template(Arc<[Node]>);
+pub(super) struct Template(Arc<[Node]>);
 
 impl Template {
+    pub(super) fn project(&self, projection: &impl Fn(&str) -> String) -> Self {
+        Self(
+            self.0
+                .iter()
+                .map(|node| match node {
+                    Node::Literal(text) => Node::Literal(projection(text)),
+                    Node::Argument(name) => Node::Argument(name.clone()),
+                })
+                .collect::<Vec<_>>()
+                .into(),
+        )
+    }
+
+    pub(super) fn legacy(source: &str) -> Self {
+        let mut nodes = Vec::new();
+        let mut literal = String::new();
+        let mut offset = 0;
+        while offset < source.len() {
+            let rest = &source[offset..];
+            if let Some(name) = ["location", "system", "input", "input_len"]
+                .into_iter()
+                .find(|name| rest.starts_with(&format!("{{{name}}}")))
+            {
+                if !literal.is_empty() {
+                    nodes.push(Node::Literal(std::mem::take(&mut literal)));
+                }
+                nodes.push(Node::Argument(name.into()));
+                offset += name.len() + 2;
+            } else {
+                let c = rest.chars().next().expect("remaining UTF-8");
+                literal.push(c);
+                offset += c.len_utf8();
+            }
+        }
+        if !literal.is_empty() {
+            nodes.push(Node::Literal(literal));
+        }
+        Self(nodes.into())
+    }
     fn compile(text: &str, allowed: &[&str], required: &[&str]) -> Result<Self, RuntimeError> {
         if text.trim().is_empty() {
             return Err(invalid());
@@ -84,7 +123,7 @@ impl Template {
         Ok(Self(nodes.into()))
     }
 
-    fn render(&self, args: &BTreeMap<String, String>) -> String {
+    pub(super) fn render(&self, args: &BTreeMap<String, String>) -> String {
         let mut out = String::new();
         for node in self.0.iter() {
             match node {
@@ -125,12 +164,50 @@ pub struct MessageSelection {
 }
 
 impl MessageSelection {
+    pub(super) fn project(&self, projection: &impl Fn(&str) -> String) -> Self {
+        Self {
+            language: self.language,
+            template: self.template.project(projection),
+        }
+    }
     pub fn render(&self, safe_arguments: &BTreeMap<String, String>) -> String {
         self.template.render(safe_arguments)
     }
 }
 
 impl CheckerMessageCatalog {
+    /// Retain one rule and safe custom location patterns, never the raw application catalog.
+    pub(super) fn project_rule(
+        self: &Arc<Self>,
+        rule: &str,
+        projection: &impl Fn(&str) -> String,
+    ) -> Arc<Self> {
+        if !self.application {
+            return self.clone();
+        }
+        let locales = self
+            .locales
+            .iter()
+            .map(|(language, locale)| {
+                let rules = locale
+                    .rules
+                    .iter()
+                    .filter(|((name, _), _)| name == rule)
+                    .map(|(key, template)| (key.clone(), template.project(projection)))
+                    .collect();
+                let patterns = locale.patterns.as_ref().map(|patterns| Patterns {
+                    reference: patterns.reference.project(projection),
+                    item: patterns.item.project(projection),
+                    separator: projection(&patterns.separator),
+                });
+                (*language, Locale { rules, patterns })
+            })
+            .collect();
+        Arc::new(Self {
+            locales,
+            application: true,
+        })
+    }
     pub fn from_json(source: &str) -> Result<Self, RuntimeError> {
         Self::parse(source, false)
     }

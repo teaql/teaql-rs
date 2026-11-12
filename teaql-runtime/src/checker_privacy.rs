@@ -10,7 +10,9 @@ pub(crate) fn translate(
     context: &UserContext,
     results: &mut CheckResults,
     source_values: Option<(&str, &EntityValues)>,
-    render: impl Fn(&CheckResult, Option<usize>) -> String,
+    warnings: &std::cell::RefCell<
+        std::collections::BTreeSet<crate::checker_messages::CheckerMessageWarning>,
+    >,
 ) {
     let allow = crate::log_privacy::plaintext_enabled();
     let mut secrets = Vec::new();
@@ -31,10 +33,7 @@ pub(crate) fn translate(
     let mut input_lengths = Vec::with_capacity(results.len());
     for result in results.iter_mut() {
         // Keep only the scalar length during projection, never a hidden raw input.
-        input_lengths.push(result.input_value.as_ref().and_then(|value| match value {
-            Value::Text(text) => Some(text.chars().count()),
-            _ => None,
-        }));
+        input_lengths.push(crate::checker_messages::original_input_length(result));
         let credential = result.location.segments().iter().any(|segment| {
             matches!(segment, LocationSegment::Member(name) if crate::log_privacy::credential_name(name))
         });
@@ -66,14 +65,9 @@ pub(crate) fn translate(
     secrets.sort_by(|left, right| right.len().cmp(&left.len()).then(left.cmp(right)));
     secrets.dedup();
     for (result, input_len) in results.iter_mut().zip(input_lengths) {
-        if result.message.is_none() {
-            result.message = Some(render(result, input_len));
-        }
-        if let Some(message) = result.message.as_mut() {
-            // Both literal and custom-renderer text may echo a sensitive value
-            // from another violation. Scrub before any consumer sees the result.
-            crate::log_privacy::scrub(message, &secrets);
-        }
+        // Project custom literal nodes before interpolation. Scrubbing a whole
+        // generated sentence would also destroy typed positions/bounds/lengths.
+        crate::checker_messages::render(context, result, input_len, &secrets, warnings);
     }
 }
 

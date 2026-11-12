@@ -22,11 +22,13 @@ def source_hashes():
     names = subprocess.check_output(
         ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], cwd=REPO
     ).decode().split("\0")
-    return {
-        name: hashlib.sha256((REPO / name).read_bytes()).hexdigest()
-        for name in sorted(set(names))
-        if name and (REPO / name).is_file() and not (REPO / name).is_symlink()
-    }
+    hashes = {}
+    for name in sorted(set(names) - {""}):
+        source = REPO / name
+        assert source.is_file() and not source.is_symlink(), f"missing or non-regular source: {name}"
+        assert source.resolve() == source, f"source traverses a link: {name}"
+        hashes[name] = hashlib.sha256(source.read_bytes()).hexdigest()
+    return hashes
 
 
 def run(command, env, log):
@@ -88,6 +90,7 @@ def main():
         report["sourceHashes"] = source_hashes()
         report["rustc"] = subprocess.check_output([str(Path.home() / ".cargo/bin/rustc"), "--version"], text=True).strip()
         report["freeBytesBefore"] = shutil.disk_usage(scratch).free
+        assert report["freeBytesBefore"] > 8 * 1024**3, "insufficient owned build space"
         env = dict(os.environ, CARGO_TARGET_DIR=str(scratch / "target"),
                    CARGO_INCREMENTAL="0", CARGO_BUILD_JOBS="4",
                    CARGO_PROFILE_DEV_DEBUG="0", CARGO_PROFILE_TEST_DEBUG="0")

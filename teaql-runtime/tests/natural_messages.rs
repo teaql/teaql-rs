@@ -423,6 +423,214 @@ fn custom_renderer_errors_fall_back_and_output_is_projected() {
 }
 
 #[test]
+fn short_credentials_do_not_corrupt_public_positions_bounds_lengths_or_rule_words() {
+    let context = pipeline_context();
+    for secret in ["1", "required"] {
+        let mut errors = vec![
+            CheckResult::min_str(
+                ObjectLocation::root()
+                    .member("entry_list")
+                    .element(0)
+                    .member("password"),
+                12,
+                secret,
+            )
+            .with_entity_type("Entry"),
+            CheckResult::required(ObjectLocation::root().member("name")),
+        ];
+        context.translate_check_results_from("Catalog", &mut errors);
+        assert_eq!(
+            errors[0].input_value,
+            Some(Value::Text("[REDACTED]".into()))
+        );
+        assert_eq!(errors[0].message.as_deref(), Some(format!(
+            "The password of the 1st entry must contain at least 12 Unicode scalar values; its current length is {}.",
+            secret.chars().count()
+        ).as_str()));
+        assert_eq!(errors[1].message.as_deref(), Some("The name is required."));
+    }
+}
+
+#[test]
+fn cached_messages_keep_original_measurement_and_origin_across_relocation_and_locale_changes() {
+    let mut context = pipeline_context();
+    let mut errors = vec![
+        CheckResult::min_str(ObjectLocation::root().member("password"), 12, "密钥🔑abc")
+            .with_entity_type("Entry"),
+    ];
+    context.translate_check_results_from("Catalog", &mut errors);
+    assert_eq!(
+        errors[0].message.as_deref(),
+        Some(
+            "The password must contain at least 12 Unicode scalar values; its current length is 6."
+        )
+    );
+    errors[0].location = ObjectLocation::root()
+        .member("entry_list")
+        .element(1)
+        .member("password");
+    context.set_language(Language::Chinese);
+    context.translate_check_results(&mut errors);
+    assert_eq!(
+        errors[0].message.as_deref(),
+        Some("第2条明细的password至少需要12个 Unicode 标量值，当前长度为6。")
+    );
+    assert_eq!(errors[0].location.instance_path(), "/entryList/1/password");
+    assert_eq!(
+        errors[0].input_value,
+        Some(Value::Text("[REDACTED]".into()))
+    );
+}
+
+#[test]
+fn retained_custom_nodes_reproject_without_scrubbing_typed_numbers() {
+    let mut context = pipeline_context();
+    context
+        .install_checker_message_catalog(&catalog(json!({"en":{"rules":{
+            "checker.min":{"two":"Private 1 {field} of {object}: {system}."}
+        }}})))
+        .unwrap();
+    let mut errors = vec![
+        CheckResult::min(
+            ObjectLocation::root()
+                .member("entry_list")
+                .element(0)
+                .member("name"),
+            12_i64,
+            0_i64,
+        )
+        .with_entity_type("Entry"),
+    ];
+    context.translate_check_results_from("Catalog", &mut errors);
+    assert_eq!(
+        errors[0].message.as_deref(),
+        Some("Private 1 name of the 1st entry: 12.")
+    );
+    errors.push(
+        CheckResult::min_str(ObjectLocation::root().member("password"), 2, "1")
+            .with_entity_type("Entry"),
+    );
+    context.translate_check_results_from("Catalog", &mut errors);
+    assert_eq!(
+        errors[0].message.as_deref(),
+        Some("Private [REDACTED] name of the 1st entry: 12.")
+    );
+    errors.truncate(1);
+    errors[0].location = ObjectLocation::root()
+        .member("entry_list")
+        .element(1)
+        .member("name");
+    context.translate_check_results(&mut errors);
+    assert_eq!(
+        errors[0].message.as_deref(),
+        Some("Private [REDACTED] name of the 2nd entry: 12.")
+    );
+}
+
+#[test]
+fn relocation_uses_safe_custom_templates_and_patterns_after_the_original_scope_ends() {
+    let mut context = pipeline_context();
+    let secret = "密钥🔑abc";
+    context.install_checker_message_catalog(&catalog(json!({"en":{
+        "rules":{"checker.maxLength":{"two":format!("Private {secret}: {{field}} of {{object}}, {{input_len}}/{{system}} {{unit}}.")}},
+        "locationPatterns":{"reference":"the {relation}","item":format!("{secret} {{ordinal}} {{relation}}"),"separator":" → "}
+    }}))).unwrap();
+    let mut errors = vec![
+        CheckResult::max_str(ObjectLocation::root().member("description"), 4, secret)
+            .with_entity_type("Entry"),
+    ];
+    context.translate_check_results_from("Catalog", &mut errors);
+    errors[0].location = ObjectLocation::root()
+        .member("entry_list")
+        .element(1)
+        .member("description");
+    context.translate_check_results(&mut errors);
+    assert_eq!(
+        errors[0].message.as_deref(),
+        Some("Private [REDACTED]: description of [REDACTED] 2nd entry, 6/4 Unicode scalar values.")
+    );
+    assert_eq!(
+        errors[0].location.instance_path(),
+        "/entryList/1/description"
+    );
+    assert!(!format!("{:?}", errors[0]).contains(secret));
+}
+
+struct CountingRenderer(Arc<std::sync::atomic::AtomicUsize>, bool);
+impl CheckerMessageRenderer for CountingRenderer {
+    fn render(
+        &self,
+        request: &CheckerMessageRequest,
+    ) -> Result<CheckerMessageOutput, CheckerMessageRenderError> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        assert_ne!(
+            request.safe_arguments.get("input").map(String::as_str),
+            Some("密钥🔑abc")
+        );
+        if self.1 {
+            return Err(CheckerMessageRenderError);
+        }
+        Ok(CheckerMessageOutput {
+            message: "Review 密钥🔑abc".into(),
+            warnings: BTreeSet::new(),
+        })
+    }
+}
+
+#[test]
+fn retained_customer_renderer_text_is_reprojected_without_recalling_the_callback() {
+    let mut context = pipeline_context();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    context.set_checker_message_renderer(Arc::new(CountingRenderer(calls.clone(), false)));
+    let mut errors = vec![CheckResult::required(ObjectLocation::root().member("name"))];
+    context.translate_check_results_from("Catalog", &mut errors);
+    assert_eq!(errors[0].message.as_deref(), Some("Review 密钥🔑abc"));
+    errors.push(
+        CheckResult::min_str(ObjectLocation::root().member("password"), 12, "密钥🔑abc")
+            .with_entity_type("Entry"),
+    );
+    context.translate_check_results_from("Catalog", &mut errors);
+    assert_eq!(errors[0].message.as_deref(), Some("Review [REDACTED]"));
+    errors[0].location = ObjectLocation::root()
+        .member("entry_list")
+        .element(1)
+        .member("name");
+    context.set_language(Language::Chinese);
+    context.translate_check_results(&mut errors);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert!(
+        errors
+            .iter()
+            .all(|error| error.message.as_deref() == Some("Review [REDACTED]"))
+    );
+    let wire = serde_json::to_value(errors[0].to_wire(JsonFieldNamingProfile::CamelCase)).unwrap();
+    assert_eq!(wire["instancePath"], "/entryList/1/name");
+    assert!(wire.get("presentation").is_none());
+}
+
+#[test]
+fn failed_customer_renderer_is_not_retried_after_relocation() {
+    let mut context = pipeline_context();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    context.set_checker_message_renderer(Arc::new(CountingRenderer(calls.clone(), true)));
+    let mut errors = vec![CheckResult::required(ObjectLocation::root().member("name"))];
+    context.translate_check_results_from("Catalog", &mut errors);
+    errors[0].location = ObjectLocation::root()
+        .member("entry_list")
+        .element(1)
+        .member("name");
+    context.translate_check_results(&mut errors);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        errors[0].message.as_deref(),
+        Some("The name of the 2nd entry is invalid.")
+    );
+    let expected = CheckResult::required(errors[0].location.clone())
+        .with_message(errors[0].message.clone().unwrap());
+    assert_eq!(errors[0], expected); // Internal caching does not change public violation equality.
+}
+
+#[test]
 fn brace_values_and_control_labels_are_not_template_instructions() {
     let mut fixture = fixture();
     fixture["entities"]["Catalog"]["fields"][0]["labels"]["en"] =

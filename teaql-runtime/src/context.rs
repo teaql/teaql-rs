@@ -1582,14 +1582,7 @@ impl UserContext {
         source_values: Option<(&str, &crate::EntityValues)>,
     ) {
         let warnings = std::cell::RefCell::new(BTreeSet::new());
-        crate::checker_privacy::translate(
-            self,
-            results,
-            source_values,
-            |result, original_input_length| {
-                crate::checker_messages::render(self, result, original_input_length, &warnings)
-            },
-        );
+        crate::checker_privacy::translate(self, results, source_values, &warnings);
     }
 
     pub fn send_event(&self, mut event: RawAuditEvent) -> Result<(), RuntimeError> {
