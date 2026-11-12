@@ -164,6 +164,7 @@ impl OrderBy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AggregateFunction {
     Count,
+    CountDistinct,
     Sum,
     Avg,
     Min,
@@ -203,6 +204,10 @@ impl Aggregate {
 
     pub fn count_field(field: impl Into<String>, alias: impl Into<String>) -> Self {
         Self::new(AggregateFunction::Count, field, alias)
+    }
+
+    pub fn count_distinct(field: impl Into<String>, alias: impl Into<String>) -> Self {
+        Self::new(AggregateFunction::CountDistinct, field, alias)
     }
 
     pub fn sum(field: impl Into<String>, alias: impl Into<String>) -> Self {
@@ -704,6 +709,10 @@ impl SelectQuery {
 
     pub fn count_field(self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.aggregate(Aggregate::count_field(field, alias))
+    }
+
+    pub fn count_distinct(self, field: impl Into<String>, alias: impl Into<String>) -> Self {
+        self.aggregate(Aggregate::count_distinct(field, alias))
     }
 
     pub fn sum(self, field: impl Into<String>, alias: impl Into<String>) -> Self {

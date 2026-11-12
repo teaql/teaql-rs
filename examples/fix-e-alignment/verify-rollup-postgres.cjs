@@ -37,7 +37,8 @@ async function main() {
     assert(secret, 'Existing local PostgreSQL container needs POSTGRES_PASSWORD');
     connectionUrl = 'postgresql://postgres:' + encodeURIComponent(secret) + '@127.0.0.1:' + port + '/' + database;
     receipt.sourceHashes = {};
-    for (const file of ['Cargo.toml','Cargo.lock','teaql-core/src/query.rs','teaql-core/src/value.rs','teaql-core/src/aggregation_plan.rs',
+    for (const file of ['Cargo.toml','Cargo.lock','teaql-core/src/query.rs','teaql-core/src/expr.rs','teaql-core/src/value.rs','teaql-core/src/aggregation_plan.rs',
+      'teaql-runtime/src/inmemory_engine.rs','teaql-runtime/src/memory.rs','teaql-runtime/src/data_service/helpers.rs',
       'teaql-sql/src/dialect.rs','teaql-sql/src/having.rs','teaql-sql/src/statistical.rs','teaql-sql/src/executor.rs',
       'teaql-runtime/src/data_service/resolved.rs','teaql-runtime/src/data_service/statistics.rs',
       'teaql-provider-postgres/Cargo.toml','teaql-provider-postgres/src/lib.rs','teaql-provider-postgres/src/statistical_binding_tests.rs',
@@ -77,21 +78,21 @@ async function main() {
       const observations = log.split('\n').filter(line=>line.startsWith('ROLLUP_POSTGRES_CASE='))
         .map(line=>JSON.parse(line.slice('ROLLUP_POSTGRES_CASE='.length)));
       assert.deepEqual(observations.map(o=>o.case).sort(), ['extended-owner-grain','parent-cell-page-and-having','ordinary-having',
-        'empty-scalar','all-null-source-and-singleton-parent'].sort());
-      assert.equal(receipt.commands.at(-1).testsPassed,3);
+        'empty-scalar','all-null-source-and-singleton-parent','distinct-overlap','distinct-empty','distinct-null','ordinary-distinct-having'].sort());
+      assert.equal(receipt.commands.at(-1).testsPassed,4);
       receipt.rounds.push({round,observations});
     }
     const oracleSql = "SELECT json_build_object('schools',COUNT(*),'nonnull',COUNT(\"Legacy Capacity\"),'capacity',SUM(\"Legacy Capacity\"),'types',(SELECT COUNT(*) FROM legacy_kind),'platforms',(SELECT COUNT(*) FROM legacy_platform)) FROM legacy_school;";
     const oracle = cp.execFileSync('docker',['exec','-i','-u','postgres',container,'psql','-X','-v','ON_ERROR_STOP=1','-d',database,'-At'],
       {input:oracleSql,encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();
     receipt.independentOracle = JSON.parse(oracle);
-    assert.deepEqual(receipt.independentOracle,{schools:6,nonnull:5,capacity:3300,types:2,platforms:1});
+    assert.deepEqual(receipt.independentOracle,{schools:7,nonnull:6,capacity:4100,types:2,platforms:1});
     fs.writeFileSync(path.join(output,'oracle.sql'),oracleSql+'\n');
     fs.writeFileSync(path.join(output,'oracle.json'),oracle+'\n');
     const nativeEnv = {...env}; delete nativeEnv.TEAQL_TEST_POSTGRES_URL; delete nativeEnv.TEAQL_REQUIRE_LIVE_DB;
     await run([process.env.CARGO || 'cargo','test','--offline','--locked','-p','teaql-core','-p','teaql-sql','-p','teaql-runtime','-p','teaql-provider-sqlite','--all-targets'],
       'native-regression.log', nativeEnv);
-    assert(receipt.commands.at(-1).testsPassed >= 1102);
+    assert(receipt.commands.at(-1).testsPassed >= 1115);
     for(const [name, expected] of Object.entries(receipt.sourceHashes)) assert.equal(hash(fs.readFileSync(path.join(repo,name))),expected,'Source changed: '+name);
     receipt.sameDatabase = true; receipt.passed = true;
   } catch(error) {

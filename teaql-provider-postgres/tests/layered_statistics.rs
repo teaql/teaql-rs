@@ -67,7 +67,7 @@ async fn fixture() -> Option<(UserContext, Pool)> {
              CREATE TABLE IF NOT EXISTS legacy_school(id BIGINT PRIMARY KEY, \"Legacy Capacity\" BIGINT, \"Legacy Kind Key\" BIGINT);
              INSERT INTO legacy_platform VALUES(1,'Campus') ON CONFLICT DO NOTHING;
              INSERT INTO legacy_kind VALUES(1001,'shared',1,1),(1002,'shared',2,1) ON CONFLICT DO NOTHING;
-             INSERT INTO legacy_school VALUES(1,800,1001),(2,800,1001),(3,800,1001),(4,800,1001),(5,100,1002),(6,NULL,1001) ON CONFLICT DO NOTHING;"
+             INSERT INTO legacy_school VALUES(1,800,1001),(2,800,1001),(3,800,1001),(4,800,1001),(5,100,1002),(6,NULL,1001),(7,800,1002) ON CONFLICT DO NOTHING;"
         ).await.unwrap();
     }
     let metadata = descriptors()
@@ -160,7 +160,10 @@ fn observe(label: &str, rows: &[CompactRow]) {
                 .collect::<std::collections::BTreeMap<_, _>>()
         })
         .collect::<Vec<_>>();
-    println!("\nROLLUP_POSTGRES_CASE={}", json!({"case":label,"rows":rows}));
+    println!(
+        "\nROLLUP_POSTGRES_CASE={}",
+        json!({"case":label,"rows":rows})
+    );
 }
 
 #[tokio::test]
@@ -349,4 +352,84 @@ async fn live_rollup_empty_and_null_measures() {
     assert_eq!(kind.get("variance"), Some(&Value::Null));
     assert_numeric(kind, "variancePop", 0.0);
     observe("all-null-source-and-singleton-parent", &rows);
+}
+
+#[tokio::test]
+async fn live_distinct_count_uses_final_population_and_ignores_nulls() {
+    let Some((context, pool)) = fixture().await else {
+        return;
+    };
+    let parent = SelectQuery::new("Kind")
+        .group_by("label")
+        .count("kinds")
+        .count_distinct("label", "labels")
+        .having(Expr::eq("labels", 1_i64));
+    let query = SelectQuery::new("School")
+        .count("schools")
+        .count_distinct("capacity", "capacities")
+        .object_group_by("kind", "kind_id", parent)
+        .having(Expr::eq("capacities", 2_i64))
+        .comment("Count distinct observations after merging intermediate kinds")
+        .purpose("Reject the sum-of-distinct-counts approximation");
+    let rows = fetch(&context, query).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(7));
+    assert_eq!(rows[0].get("capacities").and_then(Value::try_i64), Some(2));
+    assert_eq!(
+        object(&rows[0], "kind")
+            .get("labels")
+            .and_then(Value::try_i64),
+        Some(1)
+    );
+    assert_eq!(
+        object(&rows[0], "kind")
+            .get("kinds")
+            .and_then(Value::try_i64),
+        Some(2)
+    );
+    let client = pool.get().await.unwrap();
+    let oracle: i64 = client
+        .query_one(
+            "SELECT COUNT(DISTINCT \"Legacy Capacity\") FROM legacy_school",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let wrong_sum: i64 = client.query_one("SELECT SUM(n)::bigint FROM(SELECT COUNT(DISTINCT \"Legacy Capacity\") n FROM legacy_school GROUP BY \"Legacy Kind Key\")t", &[]).await.unwrap().get(0);
+    assert_eq!(oracle, 2);
+    assert_eq!(wrong_sum, 3);
+    observe("distinct-overlap", &rows);
+    for (id, expected_label, label) in [(-1_i64, 0, "distinct-empty"), (6_i64, 1, "distinct-null")]
+    {
+        let query = SelectQuery::new("School")
+            .filter(Expr::eq("id", id))
+            .count_distinct("capacity", "capacities")
+            .object_group_by(
+                "kind",
+                "kind_id",
+                SelectQuery::new("Kind").count_distinct("label", "labels"),
+            )
+            .comment("Preserve empty and null distinct count semantics")
+            .purpose("Verify source and parent empty scalar results");
+        let rows = fetch(&context, query).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("capacities").and_then(Value::try_i64), Some(0));
+        assert_eq!(
+            object(&rows[0], "kind")
+                .get("labels")
+                .and_then(Value::try_i64),
+            Some(expected_label)
+        );
+        observe(label, &rows);
+    }
+    let ordinary = SelectQuery::new("School")
+        .count_distinct("capacity", "capacities")
+        .having(Expr::eq("capacities", 2_i64))
+        .comment("Filter a distinct count alias without roll-up")
+        .purpose("Verify ordinary and layered operator parity");
+    let rows = fetch(&context, ordinary).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("capacities").and_then(Value::try_i64), Some(2));
+    observe("ordinary-distinct-having", &rows);
 }

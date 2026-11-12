@@ -253,7 +253,10 @@ pub fn compile_statistical_plan(
             let label = q(&format!("__teaql_m{index}"));
             calls.push(format!("{call} AS {label}"));
             let value = format!("{}.{}", q(&format!("m{owner}")), label);
-            let value = if measure.aggregate.function == AggregateFunction::Count {
+            let value = if matches!(
+                measure.aggregate.function,
+                AggregateFunction::Count | AggregateFunction::CountDistinct
+            ) {
                 format!("COALESCE({value}, 0)")
             } else {
                 value
@@ -467,7 +470,10 @@ fn result_descriptor(plan: &StatisticalPlan) -> Result<EntityDescriptor, SqlComp
         );
     }
     for (index, measure) in plan.measures.iter().enumerate() {
-        let data_type = if measure.aggregate.function == AggregateFunction::Count {
+        let data_type = if matches!(
+            measure.aggregate.function,
+            AggregateFunction::Count | AggregateFunction::CountDistinct
+        ) {
             DataType::I64
         } else {
             plan.layers[measure.owner_layer]

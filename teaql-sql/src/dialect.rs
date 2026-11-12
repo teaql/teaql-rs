@@ -1127,7 +1127,10 @@ pub trait SqlDialect {
         }
         for projection in &query.expr_projection {
             let expr = self.compile_expr(entity, &projection.expr, params)?;
-            parts.push(format!("{expr} AS {}", self.quote_result_alias(&projection.alias)));
+            parts.push(format!(
+                "{expr} AS {}",
+                self.quote_result_alias(&projection.alias)
+            ));
         }
         for projection in query
             .raw_projections
@@ -1205,6 +1208,9 @@ pub trait SqlDialect {
     }
 
     fn aggregate_call_sql(&self, function: AggregateFunction, field: &str) -> String {
+        if function == AggregateFunction::CountDistinct {
+            return format!("COUNT(DISTINCT {field})");
+        }
         let function_sql = self.aggregate_function_sql(function);
         format!("{function_sql}({field})")
     }
@@ -1223,6 +1229,7 @@ pub trait SqlDialect {
     fn aggregate_function_sql(&self, function: AggregateFunction) -> &'static str {
         match function {
             AggregateFunction::Count => "COUNT",
+            AggregateFunction::CountDistinct => "COUNT",
             AggregateFunction::Sum => "SUM",
             AggregateFunction::Avg => "AVG",
             AggregateFunction::Min => "MIN",
@@ -1342,6 +1349,15 @@ pub trait SqlDialect {
             ExprFunction::Gbk => self.compile_gbk_function(entity, args, params),
             ExprFunction::Count if args.is_empty() => Ok("COUNT(*)".to_owned()),
             ExprFunction::Count => self.compile_single_arg_function(entity, "COUNT", args, params),
+            ExprFunction::CountDistinct => {
+                let [arg] = args else {
+                    return Err(SqlCompileError::InvalidFunctionArguments(
+                        "COUNT DISTINCT expects exactly one argument".into(),
+                    ));
+                };
+                let arg = self.compile_expr(entity, arg, params)?;
+                Ok(format!("COUNT(DISTINCT {arg})"))
+            }
             ExprFunction::Sum => self.compile_single_arg_function(entity, "SUM", args, params),
             ExprFunction::Avg => self.compile_single_arg_function(entity, "AVG", args, params),
             ExprFunction::Min => self.compile_single_arg_function(entity, "MIN", args, params),

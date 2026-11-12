@@ -15,7 +15,10 @@ pub(crate) fn default_aggregate_value(aggregate: &RelationAggregate) -> Value {
         return Value::List(Vec::new());
     }
     let scalar = |item: &teaql_core::Aggregate| {
-        if item.function == teaql_core::AggregateFunction::Count {
+        if matches!(
+            item.function,
+            teaql_core::AggregateFunction::Count | teaql_core::AggregateFunction::CountDistinct
+        ) {
             Value::U64(0)
         } else {
             Value::Null

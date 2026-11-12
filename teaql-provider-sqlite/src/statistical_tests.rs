@@ -75,6 +75,83 @@ fn layered_rollup_grouped_parent_merges_source_counts_and_weighted_average() {
 }
 
 #[test]
+fn layered_rollup_distinct_counts_use_final_population_not_intermediate_totals() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute_batch("INSERT INTO legacy_school VALUES(6,800,1002),(7,NULL,1002);")
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let parent = SelectQuery::new("Kind")
+        .group_by("label")
+        .count_distinct("label", "labels")
+        .having(Expr::eq("labels", 1));
+    let query = source(parent)
+        .count_distinct("capacity", "capacities")
+        .having(Expr::eq("capacities", 2))
+        .order_by(teaql_core::OrderBy::desc("capacities"));
+    for _ in 0..2 {
+        let result = fetch(&context, query.clone()).unwrap();
+        assert_eq!(result.len(), 1);
+        let row = &result[0];
+        assert_eq!(row.get("schools").and_then(Value::try_i64), Some(7));
+        assert_eq!(row.get("capacities").and_then(Value::try_i64), Some(2));
+        let Some(Value::Object(parent)) = row.get("kind") else {
+            panic!("missing parent measures")
+        };
+        assert_eq!(parent.get("labels").and_then(Value::try_i64), Some(1));
+    }
+}
+
+#[test]
+fn layered_rollup_distinct_count_empty_null_and_ordinary_having() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute_batch("INSERT INTO legacy_school VALUES(7,NULL,1002);")
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    for (id, expected_parent) in [(7, 1), (999, 0)] {
+        let parent = SelectQuery::new("Kind").count_distinct("label", "labels");
+        let query = source(parent)
+            .count_distinct("capacity", "capacities")
+            .and_filter(Expr::eq("id", id));
+        let result = fetch(&context, query).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].get("capacities").and_then(Value::try_i64),
+            Some(0)
+        );
+        let Some(Value::Object(parent)) = result[0].get("kind") else {
+            panic!("missing parent measures")
+        };
+        assert_eq!(
+            parent.get("labels").and_then(Value::try_i64),
+            Some(expected_parent)
+        );
+    }
+    let ordinary = SelectQuery::new("School")
+        .count_distinct("capacity", "capacities")
+        .having(Expr::eq("capacities", 2))
+        .comment("Count distinct mapped capacities")
+        .purpose("Verify ordinary statistical HAVING");
+    let result = fetch(&context, ordinary.clone()).unwrap();
+    assert_eq!(
+        result[0].get("capacities").and_then(Value::try_i64),
+        Some(2)
+    );
+    assert!(
+        fetch(&context, ordinary.having(Expr::gt("capacities", 2)))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn layered_rollup_parent_filter_restricts_source_population() {
     let rows = execute(
         &executor(),

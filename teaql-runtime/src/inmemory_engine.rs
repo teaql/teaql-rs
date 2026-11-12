@@ -463,6 +463,9 @@ fn count_rows(rows: &[CompactRow], field: &str) -> Value {
 fn compute_aggregate(agg: &Aggregate, rows: &[CompactRow]) -> Result<Value, InMemoryQueryError> {
     Ok(match agg.function {
         AggregateFunction::Count => count_rows(rows, &agg.field),
+        AggregateFunction::CountDistinct => {
+            count_distinct_values(rows.iter().filter_map(|row| row.get(&agg.field)))
+        }
         AggregateFunction::Sum => return sum::exact_sum(agg, rows),
         AggregateFunction::Avg => {
             let mut sum: f64 = 0.0;
@@ -524,10 +527,57 @@ fn compute_aggregate(agg: &Aggregate, rows: &[CompactRow]) -> Result<Value, InMe
     })
 }
 
+/// Distinct scalar observations, without a floating conversion of integers or
+/// exact Decimal values. Normalized Decimal scale must not create extra values.
+pub(crate) fn count_distinct_values<'a>(values: impl Iterator<Item = &'a Value>) -> Value {
+    let keys: std::collections::BTreeSet<String> = values
+        .filter_map(|value| {
+            Some(match value {
+                Value::Null | Value::TypedNull(_) => return None,
+                Value::Decimal(value) => format!("n:{}", value.normalize()),
+                Value::I64(value) => format!("n:{value}"),
+                Value::U64(value) => format!("n:{value}"),
+                Value::F64(value) if *value == 0.0 => "f:0".into(),
+                other => format!("{other:?}"),
+            })
+        })
+        .collect();
+    Value::I64(keys.len() as i64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use teaql_core::{Aggregate, CompactRow, SelectQuery, Value};
+
+    #[test]
+    fn distinct_count_ignores_nulls_and_preserves_exact_numeric_identity() {
+        let values = [
+            Value::I64(i64::MAX),
+            Value::I64(i64::MAX - 1),
+            Value::I64(i64::MAX),
+            Value::Decimal("1.00".parse().unwrap()),
+            Value::Decimal("1.0".parse().unwrap()),
+            Value::Null,
+            Value::TypedNull(teaql_core::DataType::Decimal),
+        ];
+        let rows = values
+            .into_iter()
+            .map(|value| {
+                CompactRow::from_map(std::collections::BTreeMap::from([("amount".into(), value)]))
+            })
+            .collect();
+        let query = SelectQuery::new("Item").count_distinct("amount", "unique");
+        let result = InMemoryQueryEngine::execute(&query, rows).unwrap();
+        assert_eq!(result.rows[0].get("unique"), Some(&Value::I64(3)));
+        assert_eq!(
+            InMemoryQueryEngine::execute(&query, Vec::new())
+                .unwrap()
+                .rows[0]
+                .get("unique"),
+            Some(&Value::I64(0))
+        );
+    }
 
     fn make_row(pairs: Vec<(&str, Value)>) -> CompactRow {
         CompactRow::from_map(pairs.into_iter().map(|(k, v)| (k.to_owned(), v)).collect())

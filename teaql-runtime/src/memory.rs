@@ -782,6 +782,11 @@ fn aggregate_rows(
             for aggregate in &query.aggregates {
                 let value = match aggregate.function {
                     AggregateFunction::Count => count_rows(&rows, &aggregate.field),
+                    AggregateFunction::CountDistinct => {
+                        crate::inmemory_engine::count_distinct_values(
+                            rows.iter().filter_map(|row| row.get(&aggregate.field)),
+                        )
+                    }
                     AggregateFunction::Sum => numeric_sum(&rows, &aggregate.field)?,
                     AggregateFunction::Avg => numeric_avg(&rows, &aggregate.field)?,
                     AggregateFunction::Min => min_max(&rows, &aggregate.field, false)?,

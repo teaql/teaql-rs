@@ -152,6 +152,7 @@ pub(crate) fn bind(query: &SelectQuery, expr: &Expr) -> Result<Expr, SqlCompileE
 fn aggregate_expr(aggregate: &Aggregate) -> Expr {
     let function = match aggregate.function {
         A::Count => F::Count,
+        A::CountDistinct => F::CountDistinct,
         A::Sum => F::Sum,
         A::Avg => F::Avg,
         A::Min => F::Min,

@@ -66,7 +66,7 @@ impl SqlDialect for SqliteDialect {
         aggregate: &Aggregate,
         field: &str,
     ) -> Result<String, SqlCompileError> {
-        if aggregate.function != AggregateFunction::Count
+        if !matches!(aggregate.function, AggregateFunction::Count | AggregateFunction::CountDistinct)
             && entity
                 .property_by_name(&aggregate.field)
                 .is_some_and(|property| property.data_type == DataType::Decimal)

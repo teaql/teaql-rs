@@ -21,6 +21,7 @@ pub enum ExprFunction {
     Soundex,
     Gbk,
     Count,
+    CountDistinct,
     Sum,
     Avg,
     Min,
@@ -107,6 +108,10 @@ impl Expr {
 
     pub fn count_expr(expr: Expr) -> Self {
         Self::function(ExprFunction::Count, [expr])
+    }
+
+    pub fn count_distinct(expr: Expr) -> Self {
+        Self::function(ExprFunction::CountDistinct, [expr])
     }
 
     pub fn sum_expr(expr: Expr) -> Self {
