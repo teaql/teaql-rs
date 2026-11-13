@@ -355,6 +355,72 @@ fn layered_order_matches_selected_expressions_not_source_population() {
 }
 
 #[test]
+fn ordinary_statistics_reject_unselected_order_before_sql() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute("DROP TABLE legacy_school", [])
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let base = SelectQuery::new("School")
+        .group_by("kind_id")
+        .sum("capacity", "total")
+        .comment("Reject sorting a completed cell by an unselected observation")
+        .purpose("Validate result bindings before contacting the database");
+    for query in [
+        base.clone().order_desc("id"),
+        base.clone().order_desc("capacity"),
+        base.order_expr_desc(Expr::sum_expr(Expr::column("id"))),
+    ] {
+        let original = query.clone();
+        let error = fetch(&context, query.clone()).unwrap_err();
+        assert!(
+            error.contains("not a selected statistical result"),
+            "{error}"
+        );
+        assert!(
+            !error.contains("no such table"),
+            "SQL ran before result validation: {error}"
+        );
+        assert_eq!(query, original);
+    }
+}
+
+#[test]
+fn ordinary_statistics_order_selected_aliases_and_expressions_without_mutating_query() {
+    let context = runtime_context(executor(), policy(false, false));
+    let base = SelectQuery::new("School")
+        .group_by_expr("bucket", Expr::identity(Expr::column("capacity")))
+        .count("schools")
+        .sum("capacity", "total")
+        .limit(1)
+        .comment("Order only selected ordinary statistical cells")
+        .purpose("Retain aliases, mapped columns and exact selected expressions");
+    for query in [
+        base.clone().order_desc("bucket"),
+        base.clone().order_desc("capacity"),
+        base.clone()
+            .order_expr_desc(Expr::identity(Expr::column("bucket"))),
+        base.clone()
+            .order_expr_desc(Expr::sum_expr(Expr::column("capacity"))),
+        base.order_desc("total"),
+    ] {
+        let original = query.clone();
+        for _ in 0..2 {
+            let rows = fetch(&context, query.clone()).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].get("bucket"), Some(&Value::I64(800)));
+            assert_eq!(rows[0].get("schools"), Some(&Value::I64(4)));
+            assert_eq!(rows[0].get("total"), Some(&Value::I64(3200)));
+            assert!(!rows[0].contains_key("capacity"));
+            assert_eq!(query, original);
+        }
+    }
+}
+
+#[test]
 fn layered_order_rejects_ambiguous_and_unselected_expressions_before_sql() {
     let transport = executor();
     transport

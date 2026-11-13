@@ -396,7 +396,18 @@ pub trait SqlDialect {
                 let order_by = query
                     .order_by
                     .iter()
-                    .map(|order| self.order_by_sql(entity, order, params))
+                    .map(|order| {
+                        if query.group_by.is_empty() && query.aggregates.is_empty() {
+                            return self.order_by_sql(entity, order, params);
+                        }
+                        let expression = order
+                            .expr
+                            .clone()
+                            .unwrap_or_else(|| Expr::column(&order.field));
+                        let mut bound = order.clone();
+                        bound.expr = Some(crate::having::bind_order(query, &expression)?);
+                        self.order_by_sql(entity, &bound, params)
+                    })
                     .collect::<Result<Vec<_>, _>>()?
                     .join(", ");
                 format!(" ORDER BY {order_by}")
@@ -505,7 +516,7 @@ pub trait SqlDialect {
                         .clone()
                         .unwrap_or_else(|| Expr::column(&order.field));
                     let mut bound = order.clone();
-                    bound.expr = Some(crate::having::bind(query, &expression)?);
+                    bound.expr = Some(crate::having::bind_order(query, &expression)?);
                     self.order_by_sql(entity, &bound, params)
                 })
                 .collect::<Result<Vec<_>, _>>()?

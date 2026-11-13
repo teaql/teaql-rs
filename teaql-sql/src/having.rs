@@ -22,7 +22,7 @@ pub(crate) fn requires_fresh_compilation(query: &SelectQuery) -> Result<bool, Sq
                 .expr
                 .clone()
                 .unwrap_or_else(|| Expr::column(&order.field));
-            if bind(query, &expression)? != expression {
+            if bind_order(query, &expression)? != expression {
                 return Ok(true);
             }
         }
@@ -49,6 +49,92 @@ pub(crate) fn requires_fresh_compilation(query: &SelectQuery) -> Result<bool, Sq
         }
     }
     Ok(false)
+}
+
+/// Ordinary statistics sort completed selected cells, never arbitrary source
+/// observations. Keep this binding separate from HAVING: HAVING's source-field
+/// fallback is not authorization to use an unselected ORDER BY operand.
+pub(crate) fn bind_order(query: &SelectQuery, expression: &Expr) -> Result<Expr, SqlCompileError> {
+    fn identity_operand(mut expression: &Expr) -> Result<&Expr, SqlCompileError> {
+        for _ in 0..64 {
+            if let Expr::Function {
+                function: F::Identity,
+                args,
+            } = expression
+            {
+                let [argument] = args.as_slice() else {
+                    return Err(SqlCompileError::InvalidFunctionArguments(
+                        "IDENTITY expects exactly one argument".into(),
+                    ));
+                };
+                expression = argument;
+            } else {
+                return Ok(expression);
+            }
+        }
+        Err(SqlCompileError::InvalidFunctionArguments(
+            "statistical order expression exceeds depth limit".into(),
+        ))
+    }
+    let key = identity_operand(expression)?;
+    // GBK is an existing ordering modifier, not permission to read another
+    // source field. Preserve its real provider transform over a selected cell;
+    // do not add a binary projection or substitute an identity fallback.
+    let gbk_key = if let Expr::Function {
+        function: F::Gbk,
+        args,
+    } = key
+    {
+        let [argument] = args.as_slice() else {
+            return Err(SqlCompileError::InvalidFunctionArguments(
+                "GBK expects exactly one argument".into(),
+            ));
+        };
+        Some(identity_operand(argument)?)
+    } else {
+        None
+    };
+    let mut selected = None;
+    let mut consider = |alias: &str, candidate: &Expr| -> Result<(), SqlCompileError> {
+        let candidate_key = identity_operand(candidate)?;
+        let direct = matches!(key, Expr::Column(name) if name == alias) || key == candidate_key;
+        let modifier = gbk_key.is_some_and(|operand| {
+            matches!(operand, Expr::Column(name) if name == alias) || operand == candidate_key
+        });
+        if direct || modifier {
+            if selected.is_some() {
+                return Err(SqlCompileError::InvalidFunctionArguments(
+                    "ambiguous statistical order expression".into(),
+                ));
+            }
+            selected = Some(if direct {
+                candidate.clone()
+            } else {
+                Expr::gbk(candidate.clone())
+            });
+        }
+        Ok(())
+    };
+    for field in &query.group_by {
+        if !query
+            .expr_projection
+            .iter()
+            .any(|projection| projection.alias == *field)
+        {
+            consider(field, &Expr::column(field))?;
+        }
+    }
+    for projection in &query.expr_projection {
+        consider(&projection.alias, &projection.expr)?;
+    }
+    for aggregate in &query.aggregates {
+        consider(&aggregate.alias, &aggregate_expr(aggregate))?;
+    }
+    selected.ok_or_else(|| {
+        SqlCompileError::InvalidFunctionArguments(
+            "order expression is not a selected statistical result".into(),
+        )
+    })
 }
 
 fn nested_requires_fresh_compilation(expr: &Expr) -> Result<bool, SqlCompileError> {
@@ -385,6 +471,103 @@ mod tests {
         assert!(compiled.sql.ends_with("ORDER BY SUM($2) DESC"));
         assert_eq!(compiled.params, [Value::I64(7), Value::I64(7)]);
         assert!(requires_fresh_compilation(&query).unwrap());
+    }
+
+    #[test]
+    fn ordinary_order_rejects_unselected_fields_and_ambiguous_results() {
+        let base = SelectQuery::new("School")
+            .group_by("id")
+            .sum("capacity", "total");
+        for query in [
+            base.clone().order_desc("capacity"),
+            base.clone().order_desc("missing"),
+            base.clone()
+                .order_expr_desc(Expr::sum_expr(Expr::column("id"))),
+            base.order_expr_desc(Expr::value("PRIVATE-ORDER-OPERAND")),
+        ] {
+            let error = Dialect
+                .compile_select(&entity(), &query)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("not a selected statistical result"),
+                "{error}"
+            );
+            assert!(!error.contains("PRIVATE-ORDER-OPERAND"));
+        }
+        let query = SelectQuery::new("School")
+            .group_by_expr("a", Expr::column("capacity"))
+            .group_by_expr("b", Expr::identity(Expr::column("capacity")))
+            .count("schools")
+            .order_desc("capacity");
+        let error = Dialect
+            .compile_select(&entity(), &query)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("ambiguous statistical order"), "{error}");
+    }
+
+    #[test]
+    fn ordinary_order_retains_selected_identity_alias_and_trusted_parameters() {
+        let query = SelectQuery::new("School")
+            .group_by_expr("bucket", Expr::identity(Expr::column("capacity")))
+            .count("schools")
+            .filter(Expr::gt("capacity", 7))
+            .order_desc("capacity");
+        let original = query.clone();
+        let compiled = Dialect.compile_select(&entity(), &query).unwrap();
+        assert!(compiled.sql.ends_with("ORDER BY \"Legacy Capacity\" DESC"));
+        assert_eq!(compiled.params, [Value::I64(7)]);
+        assert_eq!(
+            compiled.log_context.parameter_policies,
+            [SqlParameterLogPolicy::Masked]
+        );
+        assert_eq!(query, original);
+    }
+
+    #[test]
+    fn partitioned_statistics_cannot_bypass_selected_order_validation() {
+        let query = SelectQuery::new("School")
+            .group_by("id")
+            .count("schools")
+            .order_desc("capacity")
+            .partition_by("id")
+            .limit(1);
+        let error = Dialect
+            .compile_select(&entity(), &query)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("not a selected statistical result"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn gbk_order_is_preserved_only_for_a_selected_result() {
+        let query = SelectQuery::new("School").group_by("id").count("schools");
+        let error = Dialect
+            .compile_select(&entity(), &query.order_gbk_asc("capacity"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("not a selected statistical result"),
+            "{error}"
+        );
+        let query = SelectQuery::new("School")
+            .group_by("id")
+            .count("schools")
+            .order_by(teaql_core::OrderBy::asc_expr(Expr::function(
+                F::Gbk,
+                Vec::new(),
+            )));
+        assert!(
+            Dialect
+                .compile_select(&entity(), &query)
+                .unwrap_err()
+                .to_string()
+                .contains("GBK expects exactly one argument")
+        );
     }
 
     #[test]

@@ -1381,6 +1381,7 @@ mod tests {
         for (number, original) in [(1_i64, "FIRST-SECRET"), (11, "SECOND-SECRET")] {
             let query = SelectQuery::new("Order")
                 .project_expr("marker", Expr::value(number))
+                .project_expr("sortMarker", Expr::value(number + 3))
                 .filter(Expr::gt("id", number + 1))
                 .search_with_text(format!("SEARCH-{number}"))
                 .group_by("id")
@@ -1405,6 +1406,7 @@ mod tests {
                 fresh.params,
                 vec![
                     Value::I64(number),
+                    Value::I64(number + 3),
                     Value::I64(number + 3),
                     Value::I64(number + 1),
                     Value::from(format!("%SEARCH-{number}%")),
