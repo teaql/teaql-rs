@@ -5,7 +5,7 @@ mod dialect;
 mod having;
 mod integer_operand;
 mod inheritance;
-pub use inheritance::physical_entity_descriptors;
+pub use inheritance::{physical_entity_descriptors, validate_inherited_storage_columns};
 pub use bindings::SqlBindings;
 #[cfg(test)]
 mod binding_tests;

@@ -4,8 +4,9 @@ use teaql_core::{
     UpdateCommand,
 };
 use teaql_data_service::{
-    MutationCommand, MutationExecutor, MutationRequest, QueryExecutor, QueryRequest,
-    SchemaProvider as QuerySchema, Transaction, TransactionExecutor,
+    GuardedMutationExecutor, GuardedMutationRequest, MutationCommand, MutationExecutor,
+    MutationRequest, QueryExecutor, QueryRequest, SchemaProvider as QuerySchema, Transaction,
+    TransactionExecutor,
 };
 
 #[derive(Clone)]
@@ -19,10 +20,285 @@ impl QuerySchema for Schema {
             .map(Arc::new)
     }
 }
+
+#[test]
+fn inherited_guards_are_atomic_at_all_depths_and_cannot_escape_on_readback() {
+    futures_executor::block_on(async {
+        let (executor, connection) = fixture();
+        for id in [1_i64, 2] {
+            let tx = executor.begin().await.unwrap();
+            tx.mutate(insert(id)).await.unwrap();
+            tx.commit().await.unwrap();
+        }
+        for id in [1_i64, 2] {
+            let update = || {
+                mutation(MutationCommand::Update(
+                    UpdateCommand::new("TrainingAcademy", id)
+                        .expected_version(1)
+                        .value("name", "Approved school")
+                        .value("specialty", "mechanics"),
+                ))
+            };
+            assert!(
+                executor
+                    .mutate_guarded(GuardedMutationRequest::new(
+                        update(),
+                        Expr::eq("campus", "NORTH")
+                    ))
+                    .await
+                    .is_err()
+            );
+            let tx = executor.begin().await.unwrap();
+            let denied = tx
+                .mutate_guarded(GuardedMutationRequest::new(
+                    update(),
+                    Expr::eq("specialty", "forbidden"),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(denied.affected_rows, 0);
+            tx.commit().await.unwrap();
+            let tx = executor.begin().await.unwrap();
+            let allowed = tx
+                .mutate_guarded(GuardedMutationRequest::new(
+                    update(),
+                    Expr::and([
+                        Expr::eq("name", "Original school"),
+                        Expr::eq("campus", "NORTH"),
+                        Expr::eq("specialty", "robotics"),
+                    ]),
+                ))
+                .await;
+            // Changing a field in the guard makes authoritative readback fail.
+            assert!(allowed.is_err());
+            tx.rollback().await.unwrap();
+            let tx = executor.begin().await.unwrap();
+            let allowed = tx
+                .mutate_guarded(GuardedMutationRequest::new(
+                    update(),
+                    Expr::eq("campus", "NORTH"),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(allowed.affected_rows, 1);
+            assert_eq!(
+                allowed.persisted_snapshot.unwrap().get("version"),
+                Some(&Value::I64(2))
+            );
+            tx.commit().await.unwrap();
+            let tx = executor.begin().await.unwrap();
+            assert!(
+                tx.mutate_guarded(GuardedMutationRequest::new(
+                    mutation(MutationCommand::Update(
+                        UpdateCommand::new("TrainingAcademy", id)
+                            .expected_version(2)
+                            .value("campus", "SOUTH")
+                    )),
+                    Expr::eq("campus", "NORTH")
+                ))
+                .await
+                .is_err()
+            );
+            tx.rollback().await.unwrap();
+            let leaf = executor.query(query("TrainingAcademy", id)).await.unwrap();
+            assert_eq!(leaf.rows[0].get("version"), Some(&Value::I64(2)));
+            assert_eq!(leaf.rows[0].get("campus"), Some(&Value::from("NORTH")));
+
+            let tx = executor.begin().await.unwrap();
+            tx.mutate_guarded(GuardedMutationRequest::new(
+                mutation(MutationCommand::Delete(
+                    DeleteCommand::new("TrainingAcademy", id).expected_version(2),
+                )),
+                Expr::eq("campus", "NORTH"),
+            ))
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+            let tx = executor.begin().await.unwrap();
+            tx.mutate_guarded(GuardedMutationRequest::new(
+                mutation(MutationCommand::Recover(RecoverCommand::new(
+                    "TrainingAcademy",
+                    id,
+                    -3,
+                ))),
+                Expr::eq("campus", "NORTH"),
+            ))
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+            let tx = executor.begin().await.unwrap();
+            let denied = tx
+                .mutate_guarded(GuardedMutationRequest::new(
+                    mutation(MutationCommand::Delete(
+                        DeleteCommand::new("TrainingAcademy", id)
+                            .expected_version(4)
+                            .hard_delete(),
+                    )),
+                    Expr::eq("campus", "SOUTH"),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(denied.affected_rows, 0);
+            tx.commit().await.unwrap();
+            let tx = executor.begin().await.unwrap();
+            tx.mutate_guarded(GuardedMutationRequest::new(
+                mutation(MutationCommand::Delete(
+                    DeleteCommand::new("TrainingAcademy", id)
+                        .expected_version(4)
+                        .hard_delete(),
+                )),
+                Expr::eq("campus", "NORTH"),
+            ))
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+            for entity in ["School", "Academy", "TrainingAcademy"] {
+                assert!(
+                    executor
+                        .query(query(entity, id))
+                        .await
+                        .unwrap()
+                        .rows
+                        .is_empty()
+                );
+            }
+        }
+        assert_eq!(
+            connection
+                .lock()
+                .unwrap()
+                .query_row("SELECT count(*) FROM school_data", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    });
+}
+
+#[test]
+fn inherited_hard_delete_rolls_back_when_the_final_root_version_conflicts() {
+    futures_executor::block_on(async {
+        let (executor, connection) = fixture();
+        connection.lock().unwrap().execute_batch(
+            "CREATE TRIGGER change_version AFTER DELETE ON training_academy_data BEGIN UPDATE school_data SET version=version+1 WHERE id=old.id; END;"
+        ).unwrap();
+        for id in [1_i64, 2] {
+            let tx = executor.begin().await.unwrap();
+            tx.mutate(insert(id)).await.unwrap();
+            tx.commit().await.unwrap();
+            let tx = executor.begin().await.unwrap();
+            assert!(
+                tx.mutate_guarded(GuardedMutationRequest::new(
+                    mutation(MutationCommand::Delete(
+                        DeleteCommand::new("TrainingAcademy", id)
+                            .expected_version(1)
+                            .hard_delete()
+                    )),
+                    Expr::eq("campus", "NORTH")
+                ))
+                .await
+                .is_err()
+            );
+            tx.rollback().await.unwrap();
+            let leaf = executor.query(query("TrainingAcademy", id)).await.unwrap();
+            assert_eq!(leaf.rows.len(), 1);
+            assert_eq!(leaf.rows[0].get("version"), Some(&Value::I64(1)));
+        }
+    });
+}
+
+#[test]
+fn legacy_flattened_inheritance_requires_explicit_migration_without_ddl_or_data_changes() {
+    let root = EntityDescriptor::new("School")
+        .property(P::new("id", DataType::I64).id())
+        .property(P::new("version", DataType::I64).version())
+        .property(P::new("name", DataType::Text));
+    let child = EntityDescriptor::new("Academy")
+        .inherits(root)
+        .property(P::new("campus", DataType::Text));
+    let transport = SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+    transport.connection().lock().unwrap().execute_batch(
+        "CREATE TABLE academy_data(id INTEGER PRIMARY KEY,version INTEGER NOT NULL,name TEXT,campus TEXT);
+         INSERT INTO academy_data VALUES(7,1,'Legacy academy','NORTH');"
+    ).unwrap();
+    for _ in 0..2 {
+        let error = transport
+            .ensure_schema(&SqliteDialect, &[&child])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("migrate flattened inherited storage explicitly"),
+            "{error}"
+        );
+        assert!(
+            error.contains("academy_data") && error.contains("inherited column"),
+            "{error}"
+        );
+        let connection = transport.connection();
+        let db = connection.lock().unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT name FROM academy_data WHERE id=7 AND version=1",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "Legacy academy"
+        );
+    }
+}
+
+#[test]
+fn inherited_privacy_includes_future_table_values_before_the_first_statement() {
+    futures_executor::block_on(async {
+        let (executor, _) = fixture();
+        let tx = executor.begin().await.unwrap();
+        let mut request = insert(1);
+        if let MutationCommand::Insert(command) = &mut request.command {
+            command
+                .values
+                .insert("specialty".into(), Value::from("LATER-TABLE-SECRET"));
+        }
+        // Successful diagnostics are returned in the result; the observer is
+        // reserved for exceptional exits, not a second success notification.
+        let result = tx.mutate(request).await.unwrap();
+        tx.commit().await.unwrap();
+        let first = &result.metadata.statements[0];
+        assert!(
+            first
+                .parameterized_query
+                .as_ref()
+                .unwrap()
+                .contains("school_data")
+        );
+        let mut secrets = Vec::new();
+        first
+            .sql_log
+            .intent_redactions
+            .extend_secrets(false, &mut secrets);
+        assert!(
+            secrets.contains(&"LATER-TABLE-SECRET".to_owned()),
+            "later child values must already be scrubbed from the root reason"
+        );
+    });
+}
 type Executor = teaql_sql::SqlDataServiceExecutor<SqliteDialect, SqliteMutationExecutor, Schema>;
 
 fn fixture() -> (Executor, Arc<Mutex<Connection>>) {
-    let school = EntityDescriptor::new("School")
+    fixture_with_log_policies(false)
+}
+
+fn fixture_with_log_policies(explicit: bool) -> (Executor, Arc<Mutex<Connection>>) {
+    let mut school = EntityDescriptor::new("School")
         .property(P::new("id", DataType::I64).id().not_null())
         .property(P::new("version", DataType::I64).version().not_null())
         .property(
@@ -30,12 +306,21 @@ fn fixture() -> (Executor, Arc<Mutex<Connection>>) {
                 .column_name("Legacy Name")
                 .not_null(),
         );
-    let academy = EntityDescriptor::new("Academy")
+    if explicit {
+        school = school.audit_mask_fields(vec![]);
+    }
+    let mut academy = EntityDescriptor::new("Academy")
         .inherits(school.clone())
         .property(P::new("campus", DataType::Text).not_null());
-    let training = EntityDescriptor::new("TrainingAcademy")
+    if explicit {
+        academy = academy.audit_mask_fields(vec!["campus".into()]);
+    }
+    let mut training = EntityDescriptor::new("TrainingAcademy")
         .inherits(academy.clone())
         .property(P::new("specialty", DataType::Text).not_null());
+    if explicit {
+        training = training.audit_mask_fields(vec!["name".into(), "specialty".into()]);
+    }
     let transport = SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
     transport
         .connection()
@@ -57,6 +342,41 @@ fn fixture() -> (Executor, Arc<Mutex<Connection>>) {
         ),
         connection,
     )
+}
+
+#[test]
+fn inherited_physical_statements_keep_the_logical_subtypes_stricter_mask_policy() {
+    futures_executor::block_on(async {
+        let (executor, _) = fixture_with_log_policies(true);
+        let tx = executor.begin().await.unwrap();
+        let mut request = insert(1);
+        if let MutationCommand::Insert(command) = &mut request.command {
+            command
+                .values
+                .insert("name".into(), Value::from("CHILD-PRIVATE-NAME"));
+            command
+                .values
+                .insert("campus".into(), Value::from("MIDDLE-PRIVATE-CAMPUS"));
+        }
+        let result = tx.mutate(request).await.unwrap();
+        tx.commit().await.unwrap();
+        let first = &result.metadata.statements[0];
+        let index = first
+            .params
+            .iter()
+            .position(|value| value == &Value::from("CHILD-PRIVATE-NAME"))
+            .unwrap();
+        assert_eq!(
+            first.sql_log.parameter_policies[index],
+            teaql_data_service::SqlParameterLogPolicy::Masked
+        );
+        let mut secrets = Vec::new();
+        first
+            .sql_log
+            .intent_redactions
+            .extend_secrets(false, &mut secrets);
+        assert!(secrets.contains(&"MIDDLE-PRIVATE-CAMPUS".to_owned()));
+    });
 }
 
 fn mutation(command: impl Into<MutationCommand>) -> MutationRequest {
@@ -221,9 +541,11 @@ fn inherited_delete_and_recovery_change_only_the_shared_version() {
             );
             tx.commit().await.unwrap();
             let tx = executor.begin().await.unwrap();
-            tx.mutate(mutation(MutationCommand::Recover(
-                RecoverCommand::new("TrainingAcademy", id, -2),
-            )))
+            tx.mutate(mutation(MutationCommand::Recover(RecoverCommand::new(
+                "TrainingAcademy",
+                id,
+                -2,
+            ))))
             .await
             .unwrap();
             tx.commit().await.unwrap();

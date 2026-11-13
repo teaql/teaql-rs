@@ -2182,6 +2182,7 @@ impl<
                 &entity,
                 &self.select_plan_cache,
                 request,
+                false,
                 observer,
             )
             .await
@@ -2295,6 +2296,7 @@ impl<
                 &entity,
                 &self.select_plan_cache,
                 request,
+                true,
                 observer,
             )
             .await

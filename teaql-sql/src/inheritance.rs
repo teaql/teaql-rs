@@ -61,6 +61,30 @@ fn invalid(message: &str) -> SqlCompileError {
     SqlCompileError::InvalidFunctionArguments(format!("joined inheritance: {message}"))
 }
 
+/// Existing flattened child tables need an explicit migration. Merely adding
+/// ancestor tables would leave old rows invisible and duplicated values stale.
+pub fn validate_inherited_storage_columns<'a>(
+    entity: &EntityDescriptor,
+    columns: impl IntoIterator<Item = &'a str>,
+) -> Result<(), SqlCompileError> {
+    let Some(parent) = &entity.joined_parent else {
+        return Ok(());
+    };
+    for column in columns {
+        if parent
+            .properties
+            .iter()
+            .any(|property| !property.is_id && property.column_name.eq_ignore_ascii_case(column))
+        {
+            return Err(invalid(&format!(
+                "{} table {} contains inherited column {}; migrate flattened inherited storage explicitly before ensure_schema; no data was rewritten",
+                entity.name, entity.table_name, column,
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Translate complete logical descriptors to declaring-table schemas. Ancestors
 /// are included even when a caller registers only a leaf. The synthetic join FK
 /// is schema-only and never becomes an application relation or a graph node.

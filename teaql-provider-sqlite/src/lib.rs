@@ -469,12 +469,14 @@ impl SqliteMutationExecutor {
         dialect: &SqliteDialect,
         entities: &[&EntityDescriptor],
     ) -> Result<(), MutationExecutorError> {
+        let logical_entities = entities;
         let physical = teaql_sql::physical_entity_descriptors(entities)?;
         let entities = physical.iter().collect::<Vec<_>>();
         let connection = self.lock()?;
         connection.pragma_update(None, "foreign_keys", true)?;
         connection.execute("BEGIN IMMEDIATE", [])?;
-        let result = Self::ensure_schema_with_connection(&connection, dialect, &entities);
+        let result = ensure_joined_storage_layout(&connection, logical_entities)
+            .and_then(|_| Self::ensure_schema_with_connection(&connection, dialect, &entities));
         match result {
             Ok(()) => {
                 if let Err(error) = connection.execute("COMMIT", []) {
@@ -1414,6 +1416,23 @@ impl teaql_data_service::StreamQueryExecutor for SqliteMutationExecutor {
     }
 }
 
+fn ensure_joined_storage_layout(
+    connection: &Connection,
+    entities: &[&EntityDescriptor],
+) -> Result<(), MutationExecutorError> {
+    for entity in entities {
+        let mut current = *entity;
+        while let Some(parent) = &current.joined_parent {
+            if SqliteMutationExecutor::table_exists_with_connection(connection, &current.table_name)? {
+                let columns = SqliteMutationExecutor::table_columns_with_connection(connection, &current.table_name)?;
+                teaql_sql::validate_inherited_storage_columns(current, columns.keys().map(String::as_str))?;
+            }
+            current = parent;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn ensure_sqlite_physical_schema_for(
     context: &UserContext,
 ) -> Result<(), MutationExecutorError> {
@@ -1432,6 +1451,7 @@ pub(crate) fn ensure_sqlite_physical_schema_for(
     connection.pragma_update(None, "foreign_keys", true)?;
     connection.execute("BEGIN IMMEDIATE", [])?;
     let result = (|| -> Result<(), MutationExecutorError> {
+        ensure_joined_storage_layout(&connection, &context.all_entities())?;
         SqliteMutationExecutor::ensure_id_space_table_with_connection(
             &connection,
             DEFAULT_ID_SPACE_TABLE,
