@@ -59,6 +59,10 @@ statistics request. Parent filters and projections remain linked even while its
 handle is alive; no closure or finalization call is required. An explicit
 `.clone()` takes an independent snapshot.
 The selected Rust 7.1 runtime also supports grouped/aggregate parent requests and
+repeated navigation: navigating the same relation again replaces only its previous
+navigation binding, including on a cloned request. Independent business filters
+remain in effect, and the original request is not rebound by changes to its clone.
+It also supports
 multi-hop roll-up. Parent-local measures retain their own entity identity grain;
 they are not counted once per source child. A grouped parent's result keys replace
 the intermediate FK dimension; inspect the parent object at

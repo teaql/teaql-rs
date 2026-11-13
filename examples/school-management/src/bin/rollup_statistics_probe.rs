@@ -717,6 +717,154 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(!result[0].contains_key("student_capacity"));
     evidence.push(record("alias-escaped-ordinary", &result[0]));
 
+    let types = Q::school_types_minimal()
+        .group_by_id()
+        .sum_display_order_as("rankTotal")
+        .having(Expr::gte("rankTotal", 2_i64))
+        .comment("Select independently grouped school types by their completed rank");
+    let mut request = source().with_school_type_matching(types);
+    request
+        .roll_up_to_school_type()
+        .group_by_platform()
+        .count_as("types");
+    let result = rows(
+        request,
+        &context,
+        "Use a generated statistical relation predicate",
+    )
+    .await?;
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].get("schools").and_then(Value::try_i64), Some(1));
+    assert_eq!(
+        result[0].get("capacity").and_then(Value::try_i64),
+        Some(100)
+    );
+    evidence.push(record(
+        "typed-independent-statistical-membership",
+        &result[0],
+    ));
+
+    let mut types = Q::school_types_minimal()
+        .group_by_id()
+        .sum_display_order_as("rankTotal")
+        .having(Expr::gte("rankTotal", 1_i64))
+        .order_by_id_desc()
+        .limit(1)
+        .comment("Page independently grouped types after navigating to Platform");
+    types.roll_up_to_platform().group_by_name();
+    let mut request = source().with_school_type_matching(types.clone());
+    request.roll_up_to_school_type().group_by_platform();
+    let result = rows(
+        request,
+        &context,
+        "Embed a generated roll-up request in a typed relation filter",
+    )
+    .await?;
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].get("schools").and_then(Value::try_i64), Some(1));
+    assert_eq!(
+        result[0].get("capacity").and_then(Value::try_i64),
+        Some(100)
+    );
+    let negative = rows(
+        source().without_school_type_matching(types),
+        &context,
+        "Negate independent layered membership on an ordinary statistical request",
+    )
+    .await?;
+    assert_eq!(negative[0].get("schools").and_then(Value::try_i64), Some(4));
+    assert_eq!(
+        negative[0].get("capacity").and_then(Value::try_i64),
+        Some(3200)
+    );
+    evidence.push(record("typed-independent-layered-membership", &result[0]));
+
+    let mut original = source();
+    original
+        .roll_up_to_school_type()
+        .group_by_platform()
+        .with_id_is(1001_u64);
+    let mut rebound = original.clone();
+    rebound
+        .roll_up_to_school_type()
+        .group_by_platform()
+        .with_id_is(1002_u64);
+    let result = rows(
+        rebound,
+        &context,
+        "Renavigate an independent grouped-parent copy",
+    )
+    .await?;
+    assert_eq!(result[0].get("schools").and_then(Value::try_i64), Some(1));
+    assert_eq!(
+        rows(
+            original,
+            &context,
+            "Keep the original grouped parent unchanged"
+        )
+        .await?[0]
+            .get("schools")
+            .and_then(Value::try_i64),
+        Some(4)
+    );
+    evidence.push(record("renavigate-grouped-copy", &result[0]));
+
+    let mut original = source();
+    original.roll_up_to_school_type().with_id_is(1001_u64);
+    let mut rebound = original.clone();
+    rebound
+        .roll_up_to_school_type()
+        .group_by_platform()
+        .with_id_is(1002_u64);
+    let result = rows(
+        rebound,
+        &context,
+        "Replace an entity-shaped navigation with a grouped parent",
+    )
+    .await?;
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].get("schools").and_then(Value::try_i64), Some(1));
+    assert_eq!(
+        rows(
+            original,
+            &context,
+            "Do not rebind the original entity parent"
+        )
+        .await?[0]
+            .get("schools")
+            .and_then(Value::try_i64),
+        Some(4)
+    );
+    evidence.push(record("renavigate-entity-copy", &result[0]));
+
+    let mut original =
+        source().with_school_type_matching(Q::school_types_minimal().with_id_is(1001_u64));
+    original.roll_up_to_school_type().group_by_platform();
+    let mut rebound = original.clone();
+    rebound
+        .roll_up_to_school_type()
+        .group_by_platform()
+        .with_id_is(1002_u64);
+    let result = rows(
+        rebound,
+        &context,
+        "Retain an independent business predicate while renavigating",
+    )
+    .await?;
+    assert!(result.is_empty());
+    assert_eq!(
+        rows(
+            original,
+            &context,
+            "Retain the original independent predicate"
+        )
+        .await?[0]
+            .get("schools")
+            .and_then(Value::try_i64),
+        Some(4)
+    );
+    evidence.push(serde_json::json!({"case":"renavigate-keeps-independent-filter","rows":0}));
+
     let mut collision = source().group_by_student_capacity_as("school_type.platform_id");
     collision.roll_up_to_school_type().group_by_platform();
     let error = rows(

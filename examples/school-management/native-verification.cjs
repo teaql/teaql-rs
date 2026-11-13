@@ -26,16 +26,24 @@ async function runAdditionalProbes(run,cargo,repo,example,target,output,env){
     'grouped_legacy_smart_list_keeps_explicit_relation_enhancements','grouped_legacy_relations_load_details_using_the_logical_foreign_key'])
     assert(build.includes('test '+name+' ... ok'),'Missing executed legacy mapping case: '+name);
   const unit=await run([cargo,'test','--offline','--locked','--manifest-path',manifest,'-p','school-management-service-core','--lib'],'generated-helper-tests.log');
-  assert(unit.includes('5 passed; 0 failed'),'Generated navigation/copy guards must execute');
+  assert(unit.includes('6 passed; 0 failed'),'Generated navigation/copy guards must execute');
+  assert(unit.includes('independent_relation_filter_metadata_survives_navigation ... ok'));
   await run([cargo,'build','--offline','--locked','--manifest-path',manifest,'--bins'],'all-binaries.log');
   const statistics=[];
   for(const round of [1,2]){
     const log=await run([path.join(target,'debug/rollup_statistics_probe')],'statistics-round-'+round+'.log',example);
     const lines=log.split('\n').filter(l=>l.startsWith('LAYERED_ROLLUP='));assert.equal(lines.length,1);
-    const proof=JSON.parse(lines[0].slice('LAYERED_ROLLUP='.length));assert(proof.passed&&proof.javaShaped);assert.equal(proof.caseCount,26);
+    const proof=JSON.parse(lines[0].slice('LAYERED_ROLLUP='.length));assert(proof.passed&&proof.javaShaped);assert.equal(proof.caseCount,31);
     assert.equal(proof.observations[0].row.schools,5);assert.equal(Number(proof.observations[0].row.capacity),3300);
     const aliases=proof.observations.filter(item=>item.case.startsWith('alias-'));assert.equal(aliases.length,5);
-    assert.deepEqual(aliases[0].rows.map(row=>row.kindKey),[1001,1002]);statistics.push(proof);
+    assert.deepEqual(aliases[0].rows.map(row=>row.kindKey),[1001,1002]);
+    for(const name of ['typed-independent-statistical-membership','typed-independent-layered-membership',
+      'renavigate-grouped-copy','renavigate-entity-copy']){
+      const item=proof.observations.find(item=>item.case===name);assert(item,'Missing '+name);
+      assert.equal(item.row.schools,1);assert.equal(Number(item.row.capacity),100);
+    }
+    assert.equal(proof.observations.find(item=>item.case==='renavigate-keeps-independent-filter')?.rows,0);
+    statistics.push(proof);
   }
   env.TEAQL_SCHOOL_EXAMPLE_DATABASE=path.join(output,'main.sqlite');
   assert((await run([path.join(target,'debug/school-management-bootstrap-example')],'main-smoke.log',example)).includes('PASS Rust School bootstrap'));
@@ -51,6 +59,6 @@ async function runAdditionalProbes(run,cargo,repo,example,target,output,env){
     const log=await run([path.join(target,'debug/bootstrap_trace_probe')],'bootstrap-'+logging+'-'+round+'.log',example);
     assert(log.includes('PASS Rust generated bootstrap trace logging='+(logging==='on')));runs.push('bootstrap-'+logging+'-'+round);
   }
-  return {statistics,runs,allTargets:true,mainSmoke:true,generatedHelperTests:5};
+  return {statistics,runs,allTargets:true,mainSmoke:true,generatedHelperTests:6};
 }
 module.exports={verifySources,runAdditionalProbes};

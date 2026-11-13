@@ -20,7 +20,8 @@ async function main(){
       'examples/school-management/src/bin/grouped_mapping_probe.rs','examples/school-management/tests/grouped_field_mapping.rs',
       'examples/school-management/native-verification.cjs','examples/school-management/src/bin/rollup_statistics_probe.rs',
       'examples/school-management/models/school-model.xml','examples/school-management/Cargo.toml','examples/school-management/Cargo.lock',
-      'Cargo.toml','Cargo.lock','teaql-core/src/aggregation_plan.rs','teaql-sql/src/statistical.rs'];
+      'Cargo.toml','Cargo.lock','teaql-core/src/aggregation_plan.rs','teaql-sql/src/statistical.rs',
+      'teaql-core/src/query.rs','teaql-core/src/request.rs','teaql-core/tests/rollup_navigation.rs'];
     const sourceHashes=()=>Object.fromEntries(sources.map(name=>[name,sha(fs.readFileSync(path.join(repo,name)))]));
     receipt.sourceHashes=sourceHashes();
     receipt.generatedFiles=files(path.join(__dirname,'lib'));

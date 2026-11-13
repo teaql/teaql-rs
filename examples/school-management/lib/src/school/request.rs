@@ -2775,7 +2775,7 @@ impl<R> SchoolRequest<R> {
         self.query = self.query.and_filter(Expr::in_subquery(
             "platform_id",
             <crate::Platform as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.query.clone(),
+            selection.clone().into_query(),
             "id",
         ));
         self.relation_filters.push(RelationFilter::new("platform", selection));
@@ -2788,7 +2788,7 @@ impl<R> SchoolRequest<R> {
         self.query = self.query.and_filter(Expr::not_in_subquery(
             "platform_id",
             <crate::Platform as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.query.clone(),
+            selection.clone().into_query(),
             "id",
         ));
         self.relation_filters.push(RelationFilter::new("platform", selection));
@@ -2867,6 +2867,8 @@ impl<R> SchoolRequest<R> {
             assert!(!crate::rollup_support::reaches(&target, source).expect("invalid roll-up configuration"),
                 "cyclic roll-up configuration");
         }
+        teaql_core::request::clear_rollup_navigation(&mut self.query,
+            "platform", "id").expect("invalid roll-up configuration");
         self.roll_up_links.retain(|link| link.property != "platform");
         self.roll_up_links.push(RollupLink {
             property: "platform".into(),
@@ -2930,7 +2932,7 @@ impl<R> SchoolRequest<R> {
         self.query = self.query.and_filter(Expr::in_subquery(
             "school_type_id",
             <crate::SchoolType as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.query.clone(),
+            selection.clone().into_query(),
             "id",
         ));
         self.relation_filters.push(RelationFilter::new("school_type", selection));
@@ -2960,7 +2962,7 @@ impl<R> SchoolRequest<R> {
         self.query = self.query.and_filter(Expr::not_in_subquery(
             "school_type_id",
             <crate::SchoolType as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.query.clone(),
+            selection.clone().into_query(),
             "id",
         ));
         self.relation_filters.push(RelationFilter::new("school_type", selection));
@@ -3039,6 +3041,8 @@ impl<R> SchoolRequest<R> {
             assert!(!crate::rollup_support::reaches(&target, source).expect("invalid roll-up configuration"),
                 "cyclic roll-up configuration");
         }
+        teaql_core::request::clear_rollup_navigation(&mut self.query,
+            "school_type", "id").expect("invalid roll-up configuration");
         self.roll_up_links.retain(|link| link.property != "school_type");
         self.roll_up_links.push(RollupLink {
             property: "school_type".into(),

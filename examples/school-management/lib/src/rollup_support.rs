@@ -1,7 +1,7 @@
 //! Internal live parent configurations. No database or Context is accessed here.
 use std::{collections::{BTreeMap, BTreeSet}, sync::{Arc, Mutex}};
-use teaql_core::{EntityDescriptor, Expr};
-use teaql_core::request::{ObjectGroupBy, QuerySelection, RelationFilter};
+use teaql_core::EntityDescriptor;
+use teaql_core::request::{ObjectGroupBy, QuerySelection};
 use teaql_runtime::RuntimeError;
 
 pub(crate) type RollupTarget = Arc<Mutex<RollupState>>;
@@ -72,14 +72,12 @@ impl Resolver {
             let statistical = !parent.query.group_by.is_empty() || !parent.query.aggregates.is_empty()
                 || !parent.query_options.object_group_bys.is_empty();
             if !statistical {
-                source.query = source.query.and_filter(Expr::in_subquery(
-                    &link.storage, link.descriptor.clone(), parent.clone().into_query(), "id"));
+                source.query = source.query.and_filter(teaql_core::request::rollup_navigation_membership(
+                    &link.property, &link.storage, link.descriptor.clone(), parent.clone().into_query()));
             }
             if !source.query.group_by.contains(&link.storage) {
                 source.query = source.query.group_by(&link.storage);
             }
-            source.relation_filters.retain(|filter| filter.name != link.property);
-            if !statistical { source.relation_filters.push(RelationFilter::new(&link.property, parent.clone())); }
             source.query_options.object_group_bys.retain(|group| group.property_name != link.property);
             source.query_options.object_group_bys.push(ObjectGroupBy::new(
                 &link.property, &link.storage, parent));
@@ -146,5 +144,16 @@ mod tests {
         let target = target("AnotherType");
         let result = resolve_rollup_links(QuerySelection::new(SelectQuery::new("Child")), &[link(&target)]);
         assert!(result.unwrap_err().to_string().contains("does not match"));
+    }
+
+    #[test]
+    fn independent_relation_filter_metadata_survives_navigation() {
+        let target = target("Parent");
+        let mut source = QuerySelection::new(SelectQuery::new("Child"));
+        source.relation_filters.push(teaql_core::request::RelationFilter::new(
+            "parent", SelectQuery::new("Parent").filter(teaql_core::Expr::eq("id", 7_i64))));
+        let expected = source.relation_filters.clone();
+        let resolved = resolve_rollup_links(source, &[link(&target)]).unwrap();
+        assert_eq!(resolved.relation_filters, expected);
     }
 }
