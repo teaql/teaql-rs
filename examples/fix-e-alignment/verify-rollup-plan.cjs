@@ -33,7 +33,7 @@ async function main() {
             CARGO_BUILD_JOBS: '4', CARGO_PROFILE_TEST_DEBUG: '0', CARGO_PROFILE_DEV_DEBUG: '0'};
         receipt.commands = [];
         for (const [crate, filter, minimum] of [['teaql-core', 'aggregation_plan::tests::', 13],
-            ['teaql-provider-sqlite', 'statistical_tests::', 33],
+            ['teaql-provider-sqlite', 'statistical_tests::', 36],
             ['teaql-provider-sqlite', 'statistical_functions::tests::', 7]]) {
             const command = [process.env.CARGO || 'cargo', 'test', '--offline', '--locked', '-p', crate, filter];
             const suffix = filter.startsWith('statistical_functions::') ? '-functions' : '';
@@ -54,7 +54,7 @@ async function main() {
         const testsPassed = [...log.matchAll(/test result: ok\. (\d+) passed;/g)]
             .reduce((count, match) => count + Number(match[1]), 0);
         receipt.commands.push({command, result, testsPassed, logSha256: hash(bytes)});
-        assert(result.status === 0 && testsPassed >= 1122, log.slice(-6000));
+        assert(result.status === 0 && testsPassed >= 1125, log.slice(-6000));
         for (const [name, expected] of Object.entries(receipt.sourceHashes)) {
             assert.equal(hash(fs.readFileSync(path.join(repo, name))), expected, 'Source changed during verification: ' + name);
         }

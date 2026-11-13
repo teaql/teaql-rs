@@ -317,6 +317,188 @@ fn layered_rollup_null_dimension_joins_its_measure_cell() {
     assert_eq!(rows[0].get("__teaql_m0"), Some(&Value::I64(5)));
 }
 
+fn rollup_object<'a>(
+    row: &'a CompactRow,
+    key: &str,
+) -> &'a std::collections::BTreeMap<String, Value> {
+    let Some(Value::Object(object)) = row.get(key) else {
+        panic!("missing {key}");
+    };
+    object
+}
+
+#[test]
+fn missing_parent_references_are_not_an_existing_null_dimension() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO legacy_school VALUES(6,50,NULL),(7,700,9999);
+         UPDATE legacy_kind SET \"Legacy Kind Label\"=NULL WHERE id=1001;",
+        )
+        .unwrap();
+    let oracle: (i64,i64) = transport.connection().lock().unwrap().query_row(
+        "SELECT COUNT(*),SUM(s.\"Legacy Capacity\") FROM legacy_school s JOIN legacy_kind k ON k.id=s.\"Legacy Kind Key\"", [],
+        |row| Ok((row.get(0)?,row.get(1)?))
+    ).unwrap();
+    assert_eq!(oracle, (5, 3300));
+    let context = runtime_context(transport, policy(false, false));
+    let raw = SelectQuery::new("School")
+        .group_by("kind_id")
+        .count("schools")
+        .sum("capacity", "total")
+        .comment("Retain null and orphan identities when grouping the raw foreign key");
+    let raw_rows = fetch(&context, raw).unwrap();
+    assert_eq!(raw_rows.len(), 4);
+    assert_eq!(
+        raw_rows
+            .iter()
+            .map(|row| row.get("schools").and_then(Value::try_i64).unwrap())
+            .sum::<i64>(),
+        7
+    );
+    assert!(
+        raw_rows
+            .iter()
+            .any(|row| row.get("kind_id") == Some(&Value::Null)
+                && row.get("total").and_then(Value::try_i64) == Some(50))
+    );
+    assert!(
+        raw_rows
+            .iter()
+            .any(|row| row.get("kind_id").and_then(Value::try_i64) == Some(9999))
+    );
+    let parent = SelectQuery::new("Kind")
+        .group_by("label")
+        .count("types")
+        .sum("ordinal", "ordinalTotal");
+    let rows = fetch(&context, source(parent)).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.get("schools").and_then(Value::try_i64).unwrap())
+            .sum::<i64>(),
+        oracle.0
+    );
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.get("total").and_then(Value::try_i64).unwrap())
+            .sum::<i64>(),
+        oracle.1
+    );
+    let cell = rows
+        .iter()
+        .find(|row| rollup_object(row, "kind").get("label") == Some(&Value::Null))
+        .unwrap();
+    assert_eq!(cell.get("schools").and_then(Value::try_i64), Some(4));
+    assert_eq!(cell.get("total").and_then(Value::try_i64), Some(3200));
+    assert_eq!(
+        rollup_object(cell, "kind")
+            .get("types")
+            .and_then(Value::try_i64),
+        Some(1)
+    );
+}
+
+#[test]
+fn every_rollup_hop_requires_an_existing_parent_not_a_non_null_label() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO legacy_kind VALUES(1003,'no root',3,NULL),(1004,'orphan root',4,9999);
+         INSERT INTO legacy_school VALUES(6,50,1003),(7,700,1004);
+         UPDATE legacy_platform SET name=NULL;",
+        )
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let one = fetch(&context, source(SelectQuery::new("Kind").group_by("label"))).unwrap();
+    assert_eq!(one.len(), 3);
+    assert_eq!(
+        one.iter()
+            .map(|row| row.get("schools").and_then(Value::try_i64).unwrap())
+            .sum::<i64>(),
+        7
+    );
+    assert_eq!(
+        one.iter()
+            .map(|row| row.get("total").and_then(Value::try_i64).unwrap())
+            .sum::<i64>(),
+        4050
+    );
+    let platform = SelectQuery::new("Platform")
+        .group_by("name")
+        .count("platforms");
+    let parent = SelectQuery::new("Kind")
+        .count("types")
+        .sum("ordinal", "ordinalTotal")
+        .group_by("platform_id")
+        .object_group_by("platform", "platform_id", platform);
+    let rows = fetch(&context, source(parent)).unwrap();
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row.get("schools").and_then(Value::try_i64), Some(5));
+    assert_eq!(row.get("total").and_then(Value::try_i64), Some(3300));
+    let kind = rollup_object(row, "kind");
+    assert_eq!(kind.get("types").and_then(Value::try_i64), Some(2));
+    assert_eq!(kind.get("ordinalTotal").and_then(Value::try_i64), Some(3));
+    let Some(Value::Object(platform)) = kind.get("platform") else {
+        panic!("missing platform");
+    };
+    assert_eq!(platform.get("name"), Some(&Value::Null));
+    assert_eq!(platform.get("platforms").and_then(Value::try_i64), Some(1));
+}
+
+#[test]
+fn filtered_and_missing_parents_keep_empty_group_and_scalar_semantics_distinct() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO legacy_school VALUES(6,50,NULL),(7,700,9999);
+         UPDATE legacy_kind SET \"Legacy Kind Label\"=NULL WHERE id=1002;",
+        )
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let parent = SelectQuery::new("Kind")
+        .group_by("label")
+        .count("types")
+        .filter(Expr::eq("ordinal", 2));
+    let rows = fetch(&context, source(parent)).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(1));
+    assert_eq!(rows[0].get("total").and_then(Value::try_i64), Some(100));
+    assert_eq!(
+        rollup_object(&rows[0], "kind").get("label"),
+        Some(&Value::Null)
+    );
+    assert!(
+        fetch(
+            &context,
+            source(SelectQuery::new("Kind").group_by("label")).and_filter(Expr::gte("id", 6))
+        )
+        .unwrap()
+        .is_empty()
+    );
+    let scalar = SelectQuery::new("Kind")
+        .count("types")
+        .sum("ordinal", "ordinalTotal");
+    let rows = fetch(&context, source(scalar).and_filter(Expr::gte("id", 6))).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(0));
+    assert_eq!(rows[0].get("total"), Some(&Value::Null));
+    assert_eq!(rows[0].get("mean"), Some(&Value::Null));
+    let kind = rollup_object(&rows[0], "kind");
+    assert_eq!(kind.get("types").and_then(Value::try_i64), Some(0));
+    assert_eq!(kind.get("ordinalTotal"), Some(&Value::Null));
+}
+
 type StatisticalExecutor = teaql_sql::SqlDataServiceExecutor<
     SqliteDialect,
     SqliteMutationExecutor,

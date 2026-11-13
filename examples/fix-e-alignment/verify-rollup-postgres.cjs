@@ -85,8 +85,9 @@ async function main() {
         .map(line=>JSON.parse(line.slice('ROLLUP_POSTGRES_CASE='.length)));
       assert.deepEqual(observations.map(o=>o.case).sort(), ['extended-owner-grain','parent-cell-page-and-having','ordinary-having',
         'empty-scalar','all-null-source-and-singleton-parent','distinct-overlap','distinct-empty','distinct-null','ordinary-distinct-having',
-        'computed-parent-group','computed-multihop-group','computed-ordinary-group'].sort());
-      assert.equal(receipt.commands.at(-1).testsPassed,5);
+        'computed-parent-group','computed-multihop-group','computed-ordinary-group',
+        'nullable-raw-foreign-keys','nullable-parent-membership','nullable-grandparent-membership','nullable-empty-scalar'].sort());
+      assert.equal(receipt.commands.at(-1).testsPassed,6);
       receipt.rounds.push({round,observations});
     }
     const oracleSql = "SELECT json_build_object('schools',COUNT(*),'nonnull',COUNT(\"Legacy Capacity\"),'capacity',SUM(\"Legacy Capacity\"),'types',(SELECT COUNT(*) FROM legacy_kind),'platforms',(SELECT COUNT(*) FROM legacy_platform)) FROM legacy_school;";
@@ -99,7 +100,7 @@ async function main() {
     const nativeEnv = {...env}; delete nativeEnv.TEAQL_TEST_POSTGRES_URL; delete nativeEnv.TEAQL_REQUIRE_LIVE_DB;
     await run([process.env.CARGO || 'cargo','test','--offline','--locked','-p','teaql-core','-p','teaql-sql','-p','teaql-runtime','-p','teaql-provider-sqlite','--all-targets'],
       'native-regression.log', nativeEnv);
-    assert(receipt.commands.at(-1).testsPassed >= 1122);
+    assert(receipt.commands.at(-1).testsPassed >= 1125);
     for(const [name, expected] of Object.entries(receipt.sourceHashes)) assert.equal(hash(fs.readFileSync(path.join(repo,name))),expected,'Source changed: '+name);
     receipt.sameDatabase = true; receipt.passed = true;
   } catch(error) {

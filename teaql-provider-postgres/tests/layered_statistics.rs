@@ -204,6 +204,152 @@ async fn live_computed_grouping_merges_keys_and_preserves_owner_grain() {
     observe("computed-ordinary-group", &rows);
 }
 
+#[tokio::test]
+async fn live_nullable_and_orphan_membership_is_distinct_from_a_null_dimension() {
+    let Some((_context, pool)) = fixture().await else {
+        return;
+    };
+    {
+        let client = pool.get().await.unwrap();
+        client.batch_execute(
+            "CREATE TABLE IF NOT EXISTS membership_platform(id BIGINT PRIMARY KEY,name TEXT);
+             CREATE TABLE IF NOT EXISTS membership_kind(id BIGINT PRIMARY KEY,\"Legacy Kind Label\" TEXT,ordinal BIGINT,platform_id BIGINT);
+             CREATE TABLE IF NOT EXISTS membership_school(id BIGINT PRIMARY KEY,\"Legacy Capacity\" BIGINT,\"Legacy Kind Key\" BIGINT);
+             INSERT INTO membership_platform VALUES(1,NULL) ON CONFLICT DO NOTHING;
+             INSERT INTO membership_kind VALUES(1001,NULL,1,1),(1002,'shared',2,1),(1003,'no root',3,NULL),(1004,'orphan root',4,9999) ON CONFLICT DO NOTHING;
+             INSERT INTO membership_school VALUES(1,800,1001),(2,800,1001),(3,800,1001),(4,800,1001),(5,100,1002),(6,50,NULL),(7,700,9999),(8,30,1003),(9,40,1004) ON CONFLICT DO NOTHING;"
+        ).await.unwrap();
+    }
+    let metadata =
+        descriptors()
+            .into_iter()
+            .fold(InMemoryMetadataStore::new(), |metadata, mut descriptor| {
+                descriptor.table_name = descriptor.table_name.replacen("legacy_", "membership_", 1);
+                metadata.with_entity(descriptor)
+            });
+    let mut context = UserContext::new().with_metadata(metadata.clone());
+    context.register_executor(SqlDataServiceExecutor::new(
+        PostgresDialect,
+        PgMutationExecutor::new(pool.clone()),
+        metadata,
+    ));
+    let raw = SelectQuery::new("School")
+        .group_by("kind_id")
+        .count("n")
+        .sum("capacity", "total")
+        .comment("Compare raw foreign key groups with matched-parent roll-up membership");
+    let rows = fetch(&context, raw).await;
+    assert_eq!(rows.len(), 6);
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.get("n").and_then(Value::try_i64).unwrap())
+            .sum::<i64>(),
+        9
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.get("kind_id") == Some(&Value::Null))
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.get("kind_id").and_then(Value::try_i64) == Some(9999))
+    );
+    observe("nullable-raw-foreign-keys", &rows);
+    let source = |parent: SelectQuery| {
+        SelectQuery::new("School")
+            .count("n")
+            .sum("capacity", "total")
+            .group_by("kind_id")
+            .object_group_by("kind", "kind_id", parent)
+            .comment("Require a matching parent at every declared roll-up edge")
+    };
+    let rows = fetch(
+        &context,
+        source(SelectQuery::new("Kind").group_by("label").count("kinds")),
+    )
+    .await;
+    assert_eq!(rows.len(), 4);
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.get("n").and_then(Value::try_i64).unwrap())
+            .sum::<i64>(),
+        7
+    );
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.get("total").and_then(Value::try_i64).unwrap())
+            .sum::<i64>(),
+        3370
+    );
+    let null_cell = rows
+        .iter()
+        .find(|row| object(*row, "kind").get("label") == Some(&Value::Null))
+        .unwrap();
+    assert_eq!(null_cell.get("n").and_then(Value::try_i64), Some(4));
+    assert_eq!(null_cell.get("total").and_then(Value::try_i64), Some(3200));
+    assert_eq!(
+        object(null_cell, "kind")
+            .get("kinds")
+            .and_then(Value::try_i64),
+        Some(1)
+    );
+    observe("nullable-parent-membership", &rows);
+    let platform = SelectQuery::new("Platform")
+        .group_by("name")
+        .count("platforms");
+    let parent = SelectQuery::new("Kind")
+        .count("kinds")
+        .sum("ordinal", "ordinalTotal")
+        .group_by("platform_id")
+        .object_group_by("platform", "platform_id", platform);
+    let rows = fetch(&context, source(parent)).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("n").and_then(Value::try_i64), Some(5));
+    assert_eq!(rows[0].get("total").and_then(Value::try_i64), Some(3300));
+    let kind = object(&rows[0], "kind");
+    assert_eq!(kind.get("kinds").and_then(Value::try_i64), Some(2));
+    assert_eq!(kind.get("ordinalTotal").and_then(Value::try_i64), Some(3));
+    let platform = object(kind, "platform");
+    assert_eq!(platform.get("name"), Some(&Value::Null));
+    assert_eq!(platform.get("platforms").and_then(Value::try_i64), Some(1));
+    let client = pool.get().await.unwrap();
+    let oracle=client.query_one("SELECT COUNT(*),SUM(s.\"Legacy Capacity\")::bigint FROM membership_school s JOIN membership_kind k ON k.id=s.\"Legacy Kind Key\" JOIN membership_platform p ON p.id=k.platform_id",&[]).await.unwrap();
+    assert_eq!(
+        rows[0].get("n").and_then(Value::try_i64),
+        Some(oracle.get::<_, i64>(0))
+    );
+    assert_eq!(
+        rows[0].get("total").and_then(Value::try_i64),
+        Some(oracle.get::<_, i64>(1))
+    );
+    drop(client);
+    observe("nullable-grandparent-membership", &rows);
+    let grouped = source(SelectQuery::new("Kind").group_by("label"))
+        .and_filter(Expr::in_list("id", [6_i64, 7].map(Value::from)));
+    assert!(fetch(&context, grouped).await.is_empty());
+    let scalar = source(
+        SelectQuery::new("Kind")
+            .count("kinds")
+            .sum("ordinal", "ordinalTotal"),
+    )
+    .and_filter(Expr::in_list("id", [6_i64, 7].map(Value::from)));
+    let rows = fetch(&context, scalar).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("n").and_then(Value::try_i64), Some(0));
+    assert_eq!(rows[0].get("total"), Some(&Value::Null));
+    assert_eq!(
+        object(&rows[0], "kind")
+            .get("kinds")
+            .and_then(Value::try_i64),
+        Some(0)
+    );
+    assert_eq!(
+        object(&rows[0], "kind").get("ordinalTotal"),
+        Some(&Value::Null)
+    );
+    observe("nullable-empty-scalar", &rows);
+}
+
 async fn fetch(context: &UserContext, query: SelectQuery) -> Vec<CompactRow> {
     let request = PurposedSelectQuery::new(query, "Verify live PostgreSQL roll-up statistics");
     context
