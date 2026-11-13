@@ -109,6 +109,101 @@ fn source(parent: SelectQuery) -> SelectQuery {
         .purpose("Verify mapped, layered statistics through the PostgreSQL provider")
 }
 
+#[tokio::test]
+async fn live_computed_grouping_merges_keys_and_preserves_owner_grain() {
+    let Some((_context, pool)) = fixture().await else {
+        return;
+    };
+    // A separate, stable fixture leaves the existing retained baseline intact.
+    // Both rounds reuse these same rows; no cleanup or reseeding between runs.
+    {
+        let client = pool.get().await.unwrap();
+        client.batch_execute(
+            "CREATE TABLE IF NOT EXISTS computed_platform(id BIGINT PRIMARY KEY,name TEXT);
+             CREATE TABLE IF NOT EXISTS computed_kind(id BIGINT PRIMARY KEY,\"Legacy Kind Label\" TEXT,ordinal BIGINT,platform_id BIGINT);
+             CREATE TABLE IF NOT EXISTS computed_school(id BIGINT PRIMARY KEY,\"Legacy Capacity\" BIGINT,\"Legacy Kind Key\" BIGINT);
+             INSERT INTO computed_platform VALUES(1,'Robert'),(2,'Rupert') ON CONFLICT DO NOTHING;
+             INSERT INTO computed_kind VALUES(1001,'Robert',1,1),(1002,'Rupert',2,2) ON CONFLICT DO NOTHING;
+             INSERT INTO computed_school VALUES(1,800,1001),(2,800,1001),(3,800,1001),(4,800,1001),(5,100,1002) ON CONFLICT DO NOTHING;"
+        ).await.unwrap();
+    }
+    let metadata =
+        descriptors()
+            .into_iter()
+            .fold(InMemoryMetadataStore::new(), |metadata, mut descriptor| {
+                descriptor.table_name = descriptor.table_name.replacen("legacy_", "computed_", 1);
+                metadata.with_entity(descriptor)
+            });
+    let executor = SqlDataServiceExecutor::new(
+        PostgresDialect,
+        PgMutationExecutor::new(pool.clone()),
+        metadata.clone(),
+    );
+    let mut context = UserContext::new().with_metadata(metadata);
+    context.register_executor(executor);
+    let parent = SelectQuery::new("Kind")
+        .group_by_expr("phonetic", Expr::soundex(Expr::column("label")))
+        .count("kinds")
+        .sum("ordinal", "ordinalTotal")
+        .having(Expr::eq("phonetic", "R163"))
+        .order_asc("phonetic")
+        .limit(1)
+        .comment("Merge school types by their phonetic key before paging");
+    let rows = fetch(&context, source(parent)).await;
+    assert_eq!(rows.len(), 1);
+    let kind = object(&rows[0], "kind");
+    assert_eq!(kind.get("phonetic"), Some(&Value::from("R163")));
+    assert_eq!(kind.get("kinds").and_then(Value::try_i64), Some(2));
+    assert_eq!(kind.get("ordinalTotal").and_then(Value::try_i64), Some(3));
+    assert_eq!(rows[0].get("n").and_then(Value::try_i64), Some(5));
+    assert_eq!(rows[0].get("total").and_then(Value::try_i64), Some(3300));
+    let client = pool.get().await.unwrap();
+    let oracle = client.query_one("SELECT soundex(\"Legacy Kind Label\"),COUNT(*),SUM(ordinal)::bigint FROM computed_kind GROUP BY soundex(\"Legacy Kind Label\")", &[]).await.unwrap();
+    assert_eq!(oracle.get::<_, String>(0), "R163");
+    assert_eq!(
+        kind.get("kinds").and_then(Value::try_i64),
+        Some(oracle.get::<_, i64>(1))
+    );
+    assert_eq!(
+        kind.get("ordinalTotal").and_then(Value::try_i64),
+        Some(oracle.get::<_, i64>(2))
+    );
+    drop(client);
+    observe("computed-parent-group", &rows);
+    let platform = SelectQuery::new("Platform")
+        .group_by_expr("phonetic", Expr::soundex(Expr::column("name")))
+        .count("platforms")
+        .comment("Merge distinct platform identities under one computed key");
+    let parent = SelectQuery::new("Kind")
+        .count("kinds")
+        .sum("ordinal", "ordinalTotal")
+        .group_by("platform_id")
+        .object_group_by("platform", "platform_id", platform)
+        .comment("Retain school type grain through two roll-up levels");
+    let rows = fetch(&context, source(parent)).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("total").and_then(Value::try_i64), Some(3300));
+    let kind = object(&rows[0], "kind");
+    assert_eq!(kind.get("kinds").and_then(Value::try_i64), Some(2));
+    assert_eq!(kind.get("ordinalTotal").and_then(Value::try_i64), Some(3));
+    let platform = object(kind, "platform");
+    assert_eq!(platform.get("phonetic"), Some(&Value::from("R163")));
+    assert_eq!(platform.get("platforms").and_then(Value::try_i64), Some(2));
+    observe("computed-multihop-group", &rows);
+    let query = SelectQuery::new("Kind")
+        .group_by_expr("phonetic", Expr::soundex(Expr::column("label")))
+        .count("kinds")
+        .having(Expr::eq("phonetic", "R163"))
+        .order_desc("kinds")
+        .limit(1)
+        .comment("Use the same computed key in ordinary statistics");
+    let rows = fetch(&context, query).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("phonetic"), Some(&Value::from("R163")));
+    assert_eq!(rows[0].get("kinds").and_then(Value::try_i64), Some(2));
+    observe("computed-ordinary-group", &rows);
+}
+
 async fn fetch(context: &UserContext, query: SelectQuery) -> Vec<CompactRow> {
     let request = PurposedSelectQuery::new(query, "Verify live PostgreSQL roll-up statistics");
     context

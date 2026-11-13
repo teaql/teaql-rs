@@ -451,7 +451,19 @@ pub trait SqlDialect {
             let group_by = query
                 .group_by
                 .iter()
-                .map(|field| self.column_sql(entity, field))
+                .map(|field| {
+                    if let Some(expression) = grouping_projection(query, field)? {
+                        teaql_core::aggregation_plan::grouping_expression_source(
+                            entity, expression,
+                        )
+                        .map_err(|error| {
+                            SqlCompileError::InvalidFunctionArguments(error.to_string())
+                        })?;
+                        self.compile_expr(entity, expression, params)
+                    } else {
+                        self.column_sql(entity, field)
+                    }
+                })
                 .collect::<Result<Vec<_>, _>>()?
                 .join(", ");
             sql.push_str(" GROUP BY ");
@@ -484,7 +496,18 @@ pub trait SqlDialect {
             let order_by = query
                 .order_by
                 .iter()
-                .map(|order| self.order_by_sql(entity, order, params))
+                .map(|order| {
+                    if query.group_by.is_empty() && query.aggregates.is_empty() {
+                        return self.order_by_sql(entity, order, params);
+                    }
+                    let expression = order
+                        .expr
+                        .clone()
+                        .unwrap_or_else(|| Expr::column(&order.field));
+                    let mut bound = order.clone();
+                    bound.expr = Some(crate::having::bind(query, &expression)?);
+                    self.order_by_sql(entity, &bound, params)
+                })
                 .collect::<Result<Vec<_>, _>>()?
                 .join(", ");
             sql.push_str(" ORDER BY ");
@@ -1158,6 +1181,13 @@ pub trait SqlDialect {
         // otherwise generated requests produce invalid SQL such as
         // `SELECT id, COUNT(id) ...` without grouping by `id`.
         for field in &query.group_by {
+            if let Some(expression) = grouping_projection(query, field)? {
+                teaql_core::aggregation_plan::grouping_expression_source(entity, expression)
+                    .map_err(|error| {
+                        SqlCompileError::InvalidFunctionArguments(error.to_string())
+                    })?;
+                continue;
+            }
             let property = entity
                 .property_by_name(field)
                 .ok_or_else(|| SqlCompileError::UnknownField(field.to_owned()))?;
@@ -1531,6 +1561,28 @@ pub trait SqlDialect {
             false => self.column_sql(entity, &aggregate.field),
         }
     }
+}
+
+fn grouping_projection<'a>(
+    query: &'a SelectQuery,
+    field: &str,
+) -> Result<Option<&'a Expr>, SqlCompileError> {
+    let mut matches = query
+        .expr_projection
+        .iter()
+        .filter(|item| item.alias == field);
+    let first = matches.next();
+    if matches.next().is_some()
+        || query
+            .aggregates
+            .iter()
+            .any(|measure| measure.alias == field)
+    {
+        return Err(SqlCompileError::InvalidFunctionArguments(format!(
+            "ambiguous grouping result alias: {field}"
+        )));
+    }
+    Ok(first.map(|projection| &projection.expr))
 }
 
 fn validate_schema_shape(property: &PropertyDescriptor) -> Result<(), SqlCompileError> {

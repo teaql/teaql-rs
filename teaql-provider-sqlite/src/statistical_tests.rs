@@ -152,6 +152,95 @@ fn layered_rollup_distinct_count_empty_null_and_ordinary_having() {
 }
 
 #[test]
+fn layered_rollup_function_dimension_merges_distinct_source_values() {
+    let transport = executor();
+    transport.connection().lock().unwrap().execute_batch(
+        "UPDATE legacy_kind SET \"Legacy Kind Label\"=CASE id WHEN 1001 THEN 'Robert' ELSE 'Rupert' END;"
+    ).unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let parent = SelectQuery::new("Kind")
+        .group_by("phonetic")
+        .project_expr("phonetic", Expr::soundex(Expr::column("label")))
+        .count("kinds")
+        .sum("ordinal", "ordinalTotal")
+        .having(Expr::eq("phonetic", "R163"))
+        .order_asc("phonetic")
+        .limit(1);
+    for _ in 0..2 {
+        let rows = fetch(&context, source(parent.clone())).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(5));
+        assert_eq!(rows[0].get("total").and_then(Value::try_i64), Some(3300));
+        let Some(Value::Object(kind)) = rows[0].get("kind") else {
+            panic!("missing parent")
+        };
+        assert_eq!(kind.get("phonetic"), Some(&Value::from("R163")));
+        assert_eq!(kind.get("kinds").and_then(Value::try_i64), Some(2));
+        assert_eq!(kind.get("ordinalTotal").and_then(Value::try_i64), Some(3));
+        assert!(!kind.contains_key("label"));
+    }
+}
+
+#[test]
+fn layered_rollup_multihop_function_dimension_keeps_owner_grains() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "UPDATE legacy_platform SET name='Robert' WHERE id=1;
+         INSERT INTO legacy_platform VALUES(2,'Rupert');
+         UPDATE legacy_kind SET platform_id=2 WHERE id=1002;",
+        )
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let platform = SelectQuery::new("Platform")
+        .group_by("phonetic")
+        .project_expr("phonetic", Expr::soundex(Expr::column("name")))
+        .count("platforms");
+    let parent = SelectQuery::new("Kind")
+        .count("kinds")
+        .sum("ordinal", "ordinalTotal")
+        .group_by("platform_id")
+        .object_group_by("platform", "platform_id", platform);
+    let rows = fetch(&context, source(parent)).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(5));
+    let Some(Value::Object(kind)) = rows[0].get("kind") else {
+        panic!("missing parent")
+    };
+    assert_eq!(kind.get("kinds").and_then(Value::try_i64), Some(2));
+    assert_eq!(kind.get("ordinalTotal").and_then(Value::try_i64), Some(3));
+    let Some(Value::Object(platform)) = kind.get("platform") else {
+        panic!("missing grandparent")
+    };
+    assert_eq!(platform.get("phonetic"), Some(&Value::from("R163")));
+    assert_eq!(platform.get("platforms").and_then(Value::try_i64), Some(2));
+}
+
+#[test]
+fn ordinary_function_grouping_uses_the_transformed_key_and_having() {
+    let transport = executor();
+    transport.connection().lock().unwrap().execute_batch(
+        "UPDATE legacy_kind SET \"Legacy Kind Label\"=CASE id WHEN 1001 THEN 'Robert' ELSE 'Rupert' END;"
+    ).unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let request = SelectQuery::new("Kind")
+        .group_by_expr("phonetic", Expr::soundex(Expr::column("label")))
+        .count("kinds")
+        .having(Expr::eq("phonetic", "R163"))
+        .order_asc("phonetic")
+        .limit(1)
+        .comment("Group transformed parent labels without a roll-up");
+    let rows = fetch(&context, request).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("phonetic"), Some(&Value::from("R163")));
+    assert_eq!(rows[0].get("kinds").and_then(Value::try_i64), Some(2));
+    assert!(!rows[0].contains_key("label"));
+}
+
+#[test]
 fn layered_rollup_parent_filter_restricts_source_population() {
     let rows = execute(
         &executor(),

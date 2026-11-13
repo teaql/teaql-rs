@@ -698,6 +698,11 @@ impl SelectQuery {
         self
     }
 
+    pub fn group_by_expr(self, alias: impl Into<String>, expression: Expr) -> Self {
+        let alias = alias.into();
+        self.group_by(alias.clone()).project_expr(alias, expression)
+    }
+
     pub fn aggregate(mut self, aggregate: Aggregate) -> Self {
         self.aggregates.push(aggregate);
         self

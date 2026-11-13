@@ -10,7 +10,9 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use crate::{Aggregate, AggregateFunction, EntityDescriptor, Expr, SelectQuery};
+use crate::{
+    Aggregate, AggregateFunction, DataType, EntityDescriptor, Expr, ExprFunction, SelectQuery,
+};
 
 const MAX_LAYERS: usize = 64;
 
@@ -42,11 +44,69 @@ pub struct RollupEdge {
     pub target_field: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DimensionBinding {
     pub owner_layer: usize,
     pub field: String,
     pub output_path: Vec<String>,
+    /// Validated scalar transform over `field`, evaluated before owner deduplication.
+    pub expression: Option<Expr>,
+    pub result_type: DataType,
+}
+
+/// Bind one scalar grouping expression without interpreting strings as code.
+/// Aggregate functions, subqueries, literals and unsupported binary results are
+/// not grouping transforms. Keep this validation shared by ordinary/layered SQL.
+pub fn grouping_expression_source(
+    descriptor: &EntityDescriptor,
+    expression: &Expr,
+) -> Result<(String, DataType), StatisticalPlanError> {
+    fn bind(
+        descriptor: &EntityDescriptor,
+        expression: &Expr,
+        depth: usize,
+    ) -> Result<(String, DataType), StatisticalPlanError> {
+        if depth > 64 {
+            return Err(StatisticalPlanError(
+                "statistical grouping expression exceeds 64 levels".into(),
+            ));
+        }
+        match expression {
+            Expr::Column(field) => descriptor
+                .property_by_name(field)
+                .map(|property| (field.clone(), property.data_type))
+                .ok_or_else(|| {
+                    StatisticalPlanError(format!(
+                        "unknown logical grouping field {}.{field}",
+                        descriptor.name
+                    ))
+                }),
+            Expr::Function {
+                function: ExprFunction::Soundex,
+                args,
+            } if args.len() == 1 => {
+                let (field, input) = bind(descriptor, &args[0], depth + 1)?;
+                if !matches!(input, DataType::Text | DataType::LargeText) {
+                    return Err(StatisticalPlanError(
+                        "SOUNDEX grouping requires a text field".into(),
+                    ));
+                }
+                Ok((field, DataType::Text))
+            }
+            Expr::Function {
+                function: ExprFunction::Gbk,
+                ..
+            } => Err(StatisticalPlanError(
+                "GBK grouping requires binary result support; it cannot be an identity fallback"
+                    .into(),
+            )),
+            _ => Err(StatisticalPlanError(
+                "unsupported statistical grouping expression; a scalar field transform is required"
+                    .into(),
+            )),
+        }
+    }
+    bind(descriptor, expression, 0)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,6 +217,34 @@ impl StatisticalPlan {
             .map(|group| group.storage_field.as_str())
             .collect();
         for field in &query.group_by {
+            let expressions = query
+                .expr_projection
+                .iter()
+                .filter(|item| item.alias == *field)
+                .collect::<Vec<_>>();
+            if expressions.len() > 1 {
+                return Err(StatisticalPlanError(format!(
+                    "ambiguous grouping expression alias: {field}"
+                )));
+            }
+            if let Some(projection) = expressions.first() {
+                if field.trim().is_empty() || rolled_fields.contains(field.as_str()) {
+                    return Err(StatisticalPlanError(
+                        "grouping expression cannot replace an intermediate roll-up key".into(),
+                    ));
+                }
+                let (source, result_type) =
+                    grouping_expression_source(descriptor, &projection.expr)?;
+                self.dimensions.push(DimensionBinding {
+                    owner_layer: owner,
+                    field: source,
+                    output_path: result_path(field),
+                    expression: (!matches!(projection.expr, Expr::Column(_)))
+                        .then(|| projection.expr.clone()),
+                    result_type,
+                });
+                continue;
+            }
             field_exists(field)?;
             // The FK is an intermediate join key, not a final dimension if the
             // parent request declares a different grouping grain.
@@ -165,6 +253,8 @@ impl StatisticalPlan {
                     owner_layer: owner,
                     field: field.clone(),
                     output_path: result_path(field),
+                    expression: None,
+                    result_type: descriptor.property_by_name(field).unwrap().data_type,
                 });
             }
         }
@@ -172,6 +262,9 @@ impl StatisticalPlan {
         // view of a grouping key. Preserve that view at every statistical layer;
         // do not treat it as a measure or silently drop it from the output.
         for projection in &query.expr_projection {
+            if query.group_by.contains(&projection.alias) {
+                continue;
+            }
             let Expr::Column(field) = &projection.expr else {
                 return Err(StatisticalPlanError(
                     "statistical expression projection requires further lowering".into(),
@@ -194,6 +287,8 @@ impl StatisticalPlan {
                     owner_layer: owner,
                     field: field.clone(),
                     output_path: result_path(&projection.alias),
+                    expression: None,
+                    result_type: descriptor.property_by_name(field).unwrap().data_type,
                 });
             }
         }
@@ -227,6 +322,8 @@ impl StatisticalPlan {
                 owner_layer: owner,
                 field: identity.name.clone(),
                 output_path: result_path(&identity.name),
+                expression: None,
+                result_type: identity.data_type,
             });
             let fields = if query.projection.is_empty() {
                 descriptor
@@ -244,6 +341,8 @@ impl StatisticalPlan {
                         owner_layer: owner,
                         field: field.into(),
                         output_path: result_path(field),
+                        expression: None,
+                        result_type: descriptor.property_by_name(field).unwrap().data_type,
                     });
                 }
             }
@@ -337,6 +436,53 @@ mod tests {
     }
 
     #[test]
+    fn computed_dimensions_bind_their_source_and_result_type() {
+        let expression = Expr::soundex(Expr::column("name"));
+        let query = SelectQuery::new("Kind")
+            .group_by_expr("phonetic", expression.clone())
+            .count("n");
+        let plan = build(&query).unwrap();
+        assert_eq!(plan.dimensions.len(), 1);
+        assert_eq!(plan.dimensions[0].field, "name");
+        assert_eq!(plan.dimensions[0].output_path, vec!["phonetic"]);
+        assert_eq!(plan.dimensions[0].expression, Some(expression));
+        assert_eq!(plan.dimensions[0].result_type, DataType::Text);
+    }
+
+    #[test]
+    fn grouping_functions_reject_aggregates_wrong_types_unknown_fields_and_depth() {
+        for expression in [
+            Expr::count_all(),
+            Expr::soundex(Expr::column("ordinal")),
+            Expr::soundex(Expr::column("missing")),
+            Expr::gbk(Expr::column("name")),
+        ] {
+            assert!(
+                build(
+                    &SelectQuery::new("Kind")
+                        .group_by_expr("key", expression)
+                        .count("n")
+                )
+                .is_err()
+            );
+        }
+        let mut expression = Expr::column("name");
+        for _ in 0..70 {
+            expression = Expr::soundex(expression);
+        }
+        assert!(
+            build(
+                &SelectQuery::new("Kind")
+                    .group_by_expr("key", expression)
+                    .count("n")
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("64 levels")
+        );
+    }
+
+    #[test]
     fn grouped_parent_replaces_intermediate_fk_without_losing_source_measures() {
         let source = SelectQuery::new("School")
             .group_by("kind_id")
@@ -352,6 +498,8 @@ mod tests {
                 owner_layer: 1,
                 field: "name".into(),
                 output_path: vec!["kind".into(), "name".into()],
+                expression: None,
+                result_type: DataType::Text,
             }]
         );
         assert_eq!(plan.measures.len(), 2);

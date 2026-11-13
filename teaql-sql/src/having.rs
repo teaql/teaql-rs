@@ -16,6 +16,17 @@ pub(crate) fn requires_fresh_compilation(query: &SelectQuery) -> Result<bool, Sq
     {
         return Ok(true);
     }
+    if !query.group_by.is_empty() || !query.aggregates.is_empty() {
+        for order in &query.order_by {
+            let expression = order
+                .expr
+                .clone()
+                .unwrap_or_else(|| Expr::column(&order.field));
+            if bind(query, &expression)? != expression {
+                return Ok(true);
+            }
+        }
+    }
     for expr in query
         .filter
         .iter()
@@ -317,5 +328,32 @@ mod tests {
             [Value::I64(7), Value::I64(7), Value::I64(2)]
         );
         assert!(compiled.sql.contains("HAVING (SUM($2) > $3)"));
+    }
+
+    #[test]
+    fn statistical_order_binds_alias_and_recompiles_parameterized_projection() {
+        let query = SelectQuery::new("School")
+            .project_expr("total", Expr::sum_expr(Expr::value(7)))
+            .count("schools")
+            .order_desc("total");
+        let compiled = Dialect.compile_select(&entity(), &query).unwrap();
+        assert!(compiled.sql.ends_with("ORDER BY SUM($2) DESC"));
+        assert_eq!(compiled.params, [Value::I64(7), Value::I64(7)]);
+        assert!(requires_fresh_compilation(&query).unwrap());
+    }
+
+    #[test]
+    fn duplicate_grouping_alias_fails_without_having_or_ordering() {
+        let query = SelectQuery::new("School")
+            .group_by_expr("band", Expr::column("capacity"))
+            .project_expr("band", Expr::column("id"))
+            .count("schools");
+        assert!(
+            Dialect
+                .compile_select(&entity(), &query)
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous grouping")
+        );
     }
 }

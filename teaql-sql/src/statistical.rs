@@ -46,20 +46,17 @@ pub fn compile_statistical_plan(
             ));
         }
         for projection in &request.expr_projection {
-            let Expr::Column(field) = &projection.expr else {
-                return Err(invalid(
-                    "layered statistics expression requires further lowering",
-                ));
-            };
             let mut path = layer.output_path.clone();
             path.push(projection.alias.clone());
-            if !request.group_by.contains(field)
-                || !plan.dimensions.iter().any(|dimension| {
-                    dimension.owner_layer == index
-                        && dimension.field == *field
-                        && dimension.output_path == path
-                })
-            {
+            if !plan.dimensions.iter().any(|dimension| {
+                dimension.owner_layer == index
+                    && dimension.output_path == path
+                    && dimension
+                        .expression
+                        .clone()
+                        .unwrap_or_else(|| Expr::column(&dimension.field))
+                        == projection.expr
+            }) {
                 return Err(invalid(
                     "statistical alias is not bound to a final grouping dimension",
                 ));
@@ -97,6 +94,14 @@ pub fn compile_statistical_plan(
             fields.insert(edge.target_field.clone());
         }
         population.projection = fields.into_iter().collect();
+        for (dimension_index, dimension) in plan.dimensions.iter().enumerate() {
+            if dimension.owner_layer == index {
+                if let Some(expression) = &dimension.expression {
+                    population = population
+                        .project_expr(computed_input(plan, dimension_index), expression.clone());
+                }
+            }
+        }
         let sql = dialect.compile_select_sql(&layer.descriptor, &population, &mut params)?;
         ctes.push(format!("{} AS ({sql})", q(&format!("__teaql_q{index}"))));
     }
@@ -135,11 +140,16 @@ pub fn compile_statistical_plan(
         .collect::<Vec<_>>();
     let mut selected = Vec::new();
     for (index, dimension) in plan.dimensions.iter().enumerate() {
-        selected.push(format!(
-            "{} AS {}",
-            field(dimension.owner_layer, &dimension.field)?,
-            dimension_names[index]
-        ));
+        let input = if dimension.expression.is_some() {
+            format!(
+                "{}.{}",
+                q(&format!("l{}", dimension.owner_layer)),
+                q(&computed_input(plan, index))
+            )
+        } else {
+            field(dimension.owner_layer, &dimension.field)?
+        };
+        selected.push(format!("{} AS {}", input, dimension_names[index]));
     }
     for (index, layer) in plan.layers.iter().enumerate() {
         selected.push(format!(
@@ -460,12 +470,8 @@ fn result_descriptor(plan: &StatisticalPlan) -> Result<EntityDescriptor, SqlComp
     let mut descriptor = EntityDescriptor::new("__teaql_statistical_result")
         .table_name("__teaql_statistical_result");
     for (index, dimension) in plan.dimensions.iter().enumerate() {
-        let property = plan.layers[dimension.owner_layer]
-            .descriptor
-            .property_by_name(&dimension.field)
-            .ok_or_else(|| SqlCompileError::UnknownField(dimension.field.clone()))?;
         descriptor = descriptor.property(
-            PropertyDescriptor::new(dimension.output_path.join("."), property.data_type)
+            PropertyDescriptor::new(dimension.output_path.join("."), dimension.result_type)
                 .column_name(format!("__teaql_d{index}")),
         );
     }
@@ -488,6 +494,16 @@ fn result_descriptor(plan: &StatisticalPlan) -> Result<EntityDescriptor, SqlComp
         );
     }
     Ok(descriptor)
+}
+
+fn computed_input(plan: &StatisticalPlan, index: usize) -> String {
+    let dimension = &plan.dimensions[index];
+    let descriptor = &plan.layers[dimension.owner_layer].descriptor;
+    let mut name = format!("__teaql_group_expr{index}");
+    while descriptor.property_by_name(&name).is_some() {
+        name.push('_');
+    }
+    name
 }
 
 /// Restore logical result paths after a driver returns the compiler's neutral
