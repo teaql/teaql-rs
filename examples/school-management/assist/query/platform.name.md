@@ -2,7 +2,7 @@
 
 # Rust Query Field Assist — `platform.name`
 
-KSML entity: `Platform`  
+KSML entity: `platform`  
 KSML field: `name`  
 Type: `string`
 

@@ -2125,7 +2125,7 @@ impl<R> SchoolTypeRequest<R> {
         self.aggregate_count_field("platform_id", alias)
     }
     pub fn count_distinct_platform(self) -> Self {
-        self.count_distinct_platform_as("Platform_distinct_count")
+        self.count_distinct_platform_as("platform_distinct_count")
     }
 
     pub fn count_distinct_platform_as(self, alias: impl Into<String>) -> Self {

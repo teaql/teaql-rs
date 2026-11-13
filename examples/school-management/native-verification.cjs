@@ -43,7 +43,7 @@ async function runAdditionalProbes(run,cargo,repo,example,target,output,env){
   for(const round of [1,2]){
     env.TEAQL_SCHOOL_DELETE_PROBE_DATABASE=path.join(output,'delete.sqlite');
     await run([path.join(target,'debug/soft_delete_return_probe')],'delete-round-'+round+'.log',example);runs.push('delete-'+round);
-    env.SCHOOL_MANAGEMENT_SERVICE_DATABASE_URL=path.join(output,'environment.sqlite');
+    env.SCHOOL_MANAGEMENT_SERVICE_CORE_DATABASE_URL=path.join(output,'environment.sqlite');
     await run([path.join(target,'debug/env_runtime_save_probe')],'environment-round-'+round+'.log',example);runs.push('environment-'+round);
   }
   for(const logging of ['on','off'])for(const round of [1,2]){

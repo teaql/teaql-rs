@@ -2,9 +2,9 @@
 
 # Rust Query Field Assist — `school.school_type`
 
-KSML entity: `School`  
-KSML field: `School Type`  
-Type: `reference to School Type`
+KSML entity: `school`  
+KSML field: `school_type`  
+Type: `reference to school_type`
 
 | Capability | Generated API |
 | --- | --- |

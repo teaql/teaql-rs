@@ -2,7 +2,7 @@
 
 # Rust Query Field Assist — `school.student_capacity`
 
-KSML entity: `School`  
+KSML entity: `school`  
 KSML field: `student_capacity`  
 Type: `integer`
 
