@@ -20,6 +20,7 @@ Type: `integer`
 | Group expression | `group_by_student_capacity_with_function(alias, function)` |
 | Filter statistical results | `having(expr)`; repeated calls combine with AND |
 | Order statistical results | `add_order_by_ascending(result_key)`, `add_order_by_descending(result_key)` |
+| Bitwise aggregates | `aggregate_bit_and("student_capacity", alias)`, `aggregate_bit_or("student_capacity", alias)`, `aggregate_bit_xor("student_capacity", alias)` |
 | Count non-null values | `count_student_capacity()`, `count_student_capacity_as(alias)` |
 | Aggregate | `min_student_capacity()`, `min_student_capacity_as(alias)` |
 | Aggregate | `max_student_capacity()`, `max_student_capacity_as(alias)` |
@@ -60,6 +61,12 @@ or `add_order_by_descending(result_key)` before `limit(...)`. The key must be an
 already selected statistical result, not a physical column or SQL fragment.
 These methods preserve the live parent configuration and match Java's
 `addOrderByAscending` / `addOrderByDescending`, with Rust builder ownership.
+Bitwise aggregates use this field's logical key shown above, not its database
+column name. Configure them on the request that owns the observations. Parent
+measures count each parent identity once per final cell, not once per child.
+Null observations are ignored; an empty scalar population returns null for each
+bitwise result, while an empty grouped population returns no cells. SQLite and
+PostgreSQL execute these integer operations without floating-point conversion.
 
 
 ---

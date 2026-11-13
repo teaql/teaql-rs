@@ -45,7 +45,7 @@ async function runAdditionalProbes(run,cargo,repo,example,target,output,env){
     assert.equal(proof.observations.find(item=>item.case==='renavigate-keeps-independent-filter')?.rows,0);
     statistics.push(proof);
   }
-  const numeric=[],gbk=[];
+  const numeric=[],gbk=[],bitwise=[];
   for(const round of [1,2]){
     const log=await run([path.join(target,'debug/numeric_rollup_probe')],'numeric-round-'+round+'.log',example);
     const lines=log.split('\n').filter(l=>l.startsWith('GENERATED_NUMERIC_ROLLUP='));assert.equal(lines.length,1);
@@ -62,6 +62,12 @@ async function runAdditionalProbes(run,cargo,repo,example,target,output,env){
     assert.deepEqual(capability.restoredNames,['Primary','Secondary']);
     assert.deepEqual(capability.observations.map(x=>x.case),['gbk-ordinary-asc','gbk-ordinary-desc','gbk-parent','gbk-nested']);
     assert(capability.observations.every(x=>x.supported===false));gbk.push(capability);
+    const bitLines=log.split('\n').filter(l=>l.startsWith('GENERATED_BITWISE_ROLLUP='));assert.equal(bitLines.length,1);
+    const bits=JSON.parse(bitLines[0].slice('GENERATED_BITWISE_ROLLUP='.length));
+    assert(bits.passed&&bits.generatedQ&&bits.integerResults);assert.equal(bits.caseCount,8);
+    assert.deepEqual(bits.observations.map(x=>x.case),['bitwise-ordinary','bitwise-grouped','bitwise-parent',
+      'bitwise-two-hop','bitwise-having-page','bitwise-empty-scalar','bitwise-empty-layered','bitwise-empty-grouped']);
+    bitwise.push(bits);
   }
   env.TEAQL_SCHOOL_EXAMPLE_DATABASE=path.join(output,'main.sqlite');
   assert((await run([path.join(target,'debug/school-management-bootstrap-example')],'main-smoke.log',example)).includes('PASS Rust School bootstrap'));
@@ -77,6 +83,6 @@ async function runAdditionalProbes(run,cargo,repo,example,target,output,env){
     const log=await run([path.join(target,'debug/bootstrap_trace_probe')],'bootstrap-'+logging+'-'+round+'.log',example);
     assert(log.includes('PASS Rust generated bootstrap trace logging='+(logging==='on')));runs.push('bootstrap-'+logging+'-'+round);
   }
-  return {statistics,numeric,gbk,runs,allTargets:true,mainSmoke:true,generatedHelperTests:6};
+  return {statistics,numeric,gbk,bitwise,runs,allTargets:true,mainSmoke:true,generatedHelperTests:6};
 }
 module.exports={verifySources,runAdditionalProbes};
