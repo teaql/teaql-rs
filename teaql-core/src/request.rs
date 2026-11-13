@@ -126,6 +126,91 @@ impl From<SelectQuery> for QuerySelection {
     }
 }
 
+/// Framework-owned eligibility for an entity-shaped roll-up target. The
+/// immutable origin survives a request clone but cannot tag a business filter.
+#[doc(hidden)]
+pub fn rollup_navigation_membership(
+    relation: &str,
+    storage: &str,
+    descriptor: crate::EntityDescriptor,
+    query: SelectQuery,
+) -> Expr {
+    let mut membership = Expr::in_subquery(storage, descriptor, query, "id");
+    if let Expr::SubQuery { query, .. } = &mut membership {
+        query.mark_navigation_origin(relation);
+    }
+    membership
+}
+
+/// Replace only navigation-owned eligibility, retaining independent predicates
+/// even when their relation, target and values are identical. None means TRUE
+/// while rewriting Boolean trees; unrelated branches remain for validation.
+#[doc(hidden)]
+pub fn clear_rollup_navigation(
+    query: &mut SelectQuery,
+    relation: &str,
+    identity: &str,
+) -> Result<(), String> {
+    crate::aggregation_plan::statistical_query_graph(query).map_err(|error| error.to_string())?;
+    fn rewrite(
+        expr: &Expr,
+        relation: &str,
+        identity: &str,
+        depth: usize,
+    ) -> Result<Option<Expr>, String> {
+        if depth > 64 {
+            return Err("roll-up navigation expression exceeds 64 levels".into());
+        }
+        if let Expr::SubQuery { query, .. } = expr {
+            if query.navigation_origin() == Some(relation) {
+                return Ok(None);
+            }
+        }
+        let operand = |expr: &Expr| -> Result<Expr, String> {
+            Ok(rewrite(expr, relation, identity, depth + 1)?
+                .unwrap_or_else(|| Expr::is_not_null(identity)))
+        };
+        Ok(Some(match expr {
+            Expr::And(parts) => {
+                let mut remaining = Vec::new();
+                for part in parts {
+                    if let Some(part) = rewrite(part, relation, identity, depth + 1)? {
+                        remaining.push(part);
+                    }
+                }
+                return Ok(match remaining.len() {
+                    0 => None,
+                    1 => remaining.pop(),
+                    _ => Some(Expr::And(remaining)),
+                });
+            }
+            Expr::Or(parts) => Expr::Or(parts.iter().map(operand).collect::<Result<_, _>>()?),
+            Expr::Not(expr) => Expr::Not(Box::new(operand(expr)?)),
+            Expr::Function { function, args } => Expr::Function {
+                function: *function,
+                args: args.iter().map(operand).collect::<Result<_, _>>()?,
+            },
+            Expr::Binary { left, op, right } => Expr::binary(operand(left)?, *op, operand(right)?),
+            Expr::Between { expr, lower, upper } => Expr::Between {
+                expr: Box::new(operand(expr)?),
+                lower: Box::new(operand(lower)?),
+                upper: Box::new(operand(upper)?),
+            },
+            Expr::IsNull(expr) => Expr::IsNull(Box::new(operand(expr)?)),
+            Expr::IsNotNull(expr) => Expr::IsNotNull(Box::new(operand(expr)?)),
+            other => other.clone(),
+        }))
+    }
+    let filter = query
+        .filter
+        .as_ref()
+        .map(|expr| rewrite(expr, relation, identity, 0))
+        .transpose()?
+        .flatten();
+    query.filter = filter;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // RelationSelection
 // ---------------------------------------------------------------------------

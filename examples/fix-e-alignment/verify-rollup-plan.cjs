@@ -16,6 +16,7 @@ async function main() {
         receipt.sourceHashes = {};
         for (const name of ['Cargo.toml', 'Cargo.lock', 'teaql-core/src/aggregation_plan.rs', 'teaql-core/src/lib.rs',
             'teaql-core/src/query.rs', 'teaql-core/src/expr.rs',
+            'teaql-core/src/request.rs', 'teaql-core/tests/rollup_navigation.rs',
             'teaql-runtime/src/inmemory_engine.rs', 'teaql-runtime/src/memory.rs',
             'teaql-runtime/src/data_service/helpers.rs',
             'teaql-sql/src/executor.rs', 'teaql-sql/src/execution_tests.rs',

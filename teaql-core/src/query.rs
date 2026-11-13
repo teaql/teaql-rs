@@ -448,10 +448,19 @@ impl Default for StreamConfig {
     }
 }
 
+/// Optional process-local provenance shares one pointer in the query body.
+/// Copy-on-write keeps builder changes isolated without growing every async
+/// query frame when a new kind of internal provenance is introduced.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct QueryProvenance {
+    request_scope: Option<crate::QueryRequestScope>,
+    navigation_origin: Option<Arc<String>>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectQuery {
-    // Private, clone-preserved execution capability. Remote decoders cannot set it.
-    request_scope: Option<crate::QueryRequestScope>,
+    // Private capabilities: never populated by remote request decoders.
+    provenance: Option<Arc<QueryProvenance>>,
     /// Safety ceiling for a fully materialized outer query.
     pub hard_limit: u64,
     pub entity: String,
@@ -515,7 +524,7 @@ impl SelectQuery {
     pub fn new(entity: impl Into<String>) -> Self {
         Self {
             hard_limit: 10_000,
-            request_scope: None,
+            provenance: None,
             entity: entity.into(),
             projection: Vec::new(),
             expr_projection: Vec::new(),
@@ -550,20 +559,26 @@ impl SelectQuery {
     }
 
     pub fn request_scope(&self) -> Option<&crate::QueryRequestScope> {
-        self.request_scope.as_ref()
+        self.provenance.as_ref()?.request_scope.as_ref()
     }
 
     #[doc(hidden)]
     pub fn with_request_scope(mut self, scope: crate::QueryRequestScope) -> Self {
         self.comment = Some(scope.intent().comment().to_owned());
         self.purpose = Some(scope.purpose().to_owned());
-        self.request_scope = Some(scope);
+        Arc::make_mut(self.provenance.get_or_insert_with(Default::default)).request_scope =
+            Some(scope);
         self
     }
 
     #[doc(hidden)]
     pub fn clear_request_scope(&mut self) {
-        self.request_scope = None;
+        if let Some(provenance) = &mut self.provenance {
+            Arc::make_mut(provenance).request_scope = None;
+            if provenance.navigation_origin.is_none() {
+                self.provenance = None;
+            }
+        }
     }
 
     pub fn project(mut self, field: impl Into<String>) -> Self {
@@ -625,6 +640,19 @@ impl SelectQuery {
     pub fn filter(mut self, filter: Expr) -> Self {
         self.filter = Some(filter);
         self
+    }
+
+    pub(crate) fn mark_navigation_origin(&mut self, relation: &str) {
+        Arc::make_mut(self.provenance.get_or_insert_with(Default::default)).navigation_origin =
+            Some(Arc::new(relation.to_owned()));
+    }
+
+    pub(crate) fn navigation_origin(&self) -> Option<&str> {
+        self.provenance
+            .as_ref()?
+            .navigation_origin
+            .as_deref()
+            .map(String::as_str)
     }
 
     pub fn and_filter(mut self, filter: Expr) -> Self {
