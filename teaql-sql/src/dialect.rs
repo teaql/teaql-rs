@@ -380,6 +380,7 @@ pub trait SqlDialect {
         query: &SelectQuery,
         params: &mut crate::SqlBindings,
     ) -> Result<String, SqlCompileError> {
+        params.capture_query_scope(query);
         if query.raw_sql.is_some()
             || !query.raw_sql_search_criteria.is_empty()
             || !query.raw_projections.is_empty()

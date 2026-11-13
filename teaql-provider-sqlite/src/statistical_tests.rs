@@ -1467,6 +1467,134 @@ fn layered_rollup_native_operation_and_local_comment_reach_each_policy_scope() {
 }
 
 #[test]
+fn combined_statistics_log_preserves_each_real_request_branch() {
+    use teaql_runtime::log_formatter::{HumanReaderFormatter, LogFormatter};
+    struct Telemetry(Arc<Mutex<Vec<teaql_runtime::RuntimeDiagnosticEvent>>>);
+    struct Scope;
+    impl teaql_runtime::RuntimeTelemetryScope for Scope {
+        fn correlation(
+            &self,
+        ) -> Option<teaql_data_service::statement_telemetry::SqlExecutionCorrelation> {
+            Some(
+                teaql_data_service::statement_telemetry::SqlExecutionCorrelation {
+                    trace_id: "11111111111111111111111111111111".into(),
+                    span_id: "2222222222222222".into(),
+                },
+            )
+        }
+        fn success(
+            &mut self,
+            _: std::collections::BTreeMap<String, teaql_runtime::RuntimeAttributeValue>,
+        ) {
+        }
+        fn failure(&mut self, _: &str) {}
+    }
+    impl teaql_runtime::RuntimeTelemetry for Telemetry {
+        fn start(
+            &self,
+            _: teaql_runtime::RuntimeOperation,
+        ) -> Box<dyn teaql_runtime::RuntimeTelemetryScope> {
+            Box::new(Scope)
+        }
+        fn records_sql_diagnostics(&self) -> bool {
+            true
+        }
+        fn record_diagnostic(&self, event: teaql_runtime::RuntimeDiagnosticEvent) {
+            self.0.lock().unwrap().push(event);
+        }
+    }
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let context = runtime_context(executor(), policy(false, false))
+        .with_runtime_telemetry(Arc::new(Telemetry(events.clone())));
+    let kind = descriptors()
+        .into_iter()
+        .find(|entity| entity.name == "Kind")
+        .unwrap();
+    let parent = SelectQuery::new("Kind")
+        .group_by("label")
+        .count("types")
+        .comment("Group visible type population");
+    let independent = SelectQuery::new("Kind")
+        .group_by("id")
+        .count("eligible")
+        .limit(10)
+        .comment("Choose eligible type IDs");
+    let mut query =
+        source(parent).and_filter(Expr::in_subquery("kind_id", kind, independent, "id"));
+    query.object_group_bys[0].operation = Some(
+        teaql_core::QueryOperation::new(
+            teaql_core::QueryOperationKind::Aggregate,
+            "roll_up_to_kind",
+        )
+        .with_relation("kind"),
+    );
+    for _ in 0..2 {
+        context.clear_sql_logs();
+        events.lock().unwrap().clear();
+        let rows = fetch(&context, query.clone()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(5));
+        let logs = context.sql_logs();
+        assert_eq!(
+            logs.len(),
+            1,
+            "one physical statement, not fabricated child statements"
+        );
+        let nodes = logs[0]
+            .log_context
+            .request_tree
+            .as_deref()
+            .expect("actual inline requests retained");
+        let operation = nodes
+            .iter()
+            .find(|node| node.method.as_deref() == Some("roll_up_to_kind"))
+            .unwrap();
+        let parent = nodes
+            .iter()
+            .find(|node| node.detail == "Group visible type population")
+            .unwrap();
+        let independent = nodes
+            .iter()
+            .find(|node| node.detail == "Choose eligible type IDs")
+            .unwrap();
+        assert_eq!(parent.parent_id, Some(operation.id));
+        assert_ne!(independent.parent_id, Some(parent.id));
+        for (index, node) in nodes.iter().enumerate() {
+            assert_eq!(node.id, index);
+            assert!(node.parent_id.is_none_or(|parent| parent < index));
+        }
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 1, "one real SQL diagnostic exported");
+        let Some(teaql_runtime::RuntimeAttributeValue::String(exported)) =
+            events[0].attributes.get("teaql.request_tree")
+        else {
+            panic!("real Context telemetry export lost request tree");
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(exported).unwrap(),
+            teaql_core::QueryRequestTraceNode::to_json_value(nodes)
+        );
+        let text = HumanReaderFormatter.format_sql_log(&logs[0].trace_path, &logs[0]);
+        for expected in [
+            "Group visible type population",
+            "Choose eligible type IDs",
+            "roll_up_to_kind()",
+        ] {
+            assert!(
+                text.contains(expected),
+                "Missing actual request branch: {expected}"
+            );
+        }
+        println!(
+            "COMBINED_STATISTICS_LOG={}",
+            serde_json::json!({"physicalStatements":logs.len(),
+            "rows":rows.len(), "requestTree":teaql_core::QueryRequestTraceNode::to_json_value(nodes),
+            "text":text})
+        );
+    }
+}
+
+#[test]
 fn independent_grouped_membership_preserves_having_and_one_selected_column() {
     let context = runtime_context(executor(), policy(false, false));
     let kind = descriptors()
@@ -1497,6 +1625,79 @@ fn independent_grouped_membership_preserves_having_and_one_selected_column() {
             rows[0].get("schools").and_then(Value::try_i64),
             Some(if threshold == 2 { 4 } else { 5 })
         );
+    }
+}
+
+#[test]
+fn ordinary_wrapper_keeps_nested_statistics_scope_and_denial_before_sql() {
+    for deny in [false, true] {
+        let policy = policy(false, deny);
+        let scopes = policy.scopes.clone();
+        let context = runtime_context(executor(), policy);
+        let kind = descriptors()
+            .into_iter()
+            .find(|entity| entity.name == "Kind")
+            .unwrap();
+        let platform = descriptors()
+            .into_iter()
+            .find(|entity| entity.name == "Platform")
+            .unwrap();
+        let totals = SelectQuery::new("Platform")
+            .group_by("id")
+            .count("eligible")
+            .limit(10)
+            .comment("Read eligible platform statistics");
+        let wrapper = SelectQuery::new("Kind")
+            .project("id")
+            .limit(10)
+            .filter(Expr::in_subquery("platform_id", platform, totals, "id"))
+            .comment("Route through ordinary type identities");
+        let query = source(SelectQuery::new("Kind").group_by("label"))
+            .and_filter(Expr::in_subquery("kind_id", kind, wrapper, "id"));
+        for _ in 0..2 {
+            context.clear_sql_logs();
+            scopes.lock().unwrap().clear();
+            let result = fetch(&context, query.clone());
+            if deny {
+                assert!(result.unwrap_err().contains("STATISTICS_PLATFORM_DENIED"));
+                assert!(
+                    context.sql_logs().is_empty(),
+                    "denied descendant never reaches SQL"
+                );
+            } else {
+                let rows = result.unwrap();
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(5));
+                let logs = context.sql_logs();
+                assert_eq!(logs.len(), 1);
+                let nodes = logs[0].log_context.request_tree.as_deref().unwrap();
+                let wrapper_node = nodes
+                    .iter()
+                    .find(|node| node.detail == "Route through ordinary type identities")
+                    .unwrap();
+                let leaf = nodes
+                    .iter()
+                    .find(|node| node.detail == "Read eligible platform statistics")
+                    .unwrap();
+                let operation = &nodes[leaf.parent_id.unwrap()];
+                assert_eq!(operation.parent_id, Some(wrapper_node.id));
+                assert_eq!(wrapper_node.parent_id, Some(1));
+                println!(
+                    "ORDINARY_WRAPPER_STATISTICS_LOG={}",
+                    serde_json::json!({"rows":rows.len(),
+                    "physicalStatements":logs.len(), "requestTree":teaql_core::QueryRequestTraceNode::to_json_value(nodes)})
+                );
+            }
+            let scopes = scopes.lock().unwrap();
+            let wrapper_scope = scopes
+                .iter()
+                .find(|scope| scope.comment() == "Route through ordinary type identities")
+                .unwrap();
+            assert_eq!(
+                wrapper_scope.parent_request(),
+                Some(wrapper_scope.root_request())
+            );
+        }
     }
 }
 

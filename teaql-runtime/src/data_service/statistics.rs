@@ -136,11 +136,21 @@ where
                         "statistical membership requires a matching entity and data service".into(),
                     ));
                 }
-                let operation = scope.derive_operation(
-                    &target.name,
-                    QueryOperation::framework(QueryOperationKind::Aggregate),
-                );
-                let child_scope = operation.derive_child(&target.name, query.comment.as_deref())?;
+                // Ordinary wrappers retain their own request boundary, but are
+                // not aggregate operations merely because a descendant is one.
+                let parent_scope = if query.has_aggregate_projection()
+                    || !query.object_group_bys.is_empty()
+                    || !query.group_by.is_empty()
+                {
+                    scope.derive_operation(
+                        &target.name,
+                        QueryOperation::framework(QueryOperationKind::Aggregate),
+                    )
+                } else {
+                    scope.clone()
+                };
+                let child_scope =
+                    parent_scope.derive_child(&target.name, query.comment.as_deref())?;
                 let mut service = self
                     .scoped_data_service_internal(target.name.clone())
                     .with_request_scope(child_scope.clone());

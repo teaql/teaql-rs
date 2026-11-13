@@ -17,11 +17,15 @@ async function main() {
         for (const name of ['Cargo.toml', 'Cargo.lock', 'teaql-core/src/aggregation_plan.rs',
             'teaql-core/src/aggregation_plan/measure_expression.rs', 'teaql-core/src/lib.rs',
             'teaql-core/src/query.rs', 'teaql-core/src/expr.rs',
+            'teaql-core/src/request_tree.rs', 'teaql-data-service/src/sql_log.rs',
+            'teaql-runtime/src/log_formatter.rs', 'teaql-runtime/src/log_privacy.rs',
+            'teaql-runtime/src/telemetry_sql.rs',
             'teaql-core/src/request.rs', 'teaql-core/tests/rollup_navigation.rs',
             'teaql-core/tests/criteria_alternatives.rs',
             'teaql-runtime/src/inmemory_engine.rs', 'teaql-runtime/src/memory.rs',
             'teaql-runtime/src/data_service/helpers.rs',
             'teaql-sql/src/executor.rs', 'teaql-sql/src/execution_tests.rs',
+            'teaql-sql/src/diagnostic_execution.rs',
             'teaql-sql/src/dialect.rs', 'teaql-sql/src/having.rs', 'teaql-sql/src/bindings.rs',
             'teaql-runtime/src/data_service/mod.rs', 'teaql-runtime/src/data_service/resolved.rs',
             'teaql-runtime/src/data_service/statistics.rs',
@@ -47,14 +51,18 @@ async function main() {
         receipt.commands.push({command: criteriaCommand, result: criteriaResult, testsPassed: criteriaPassed, logSha256: hash(criteriaLog)});
         assert(criteriaResult.status === 0 && criteriaPassed === 5, criteriaLog.toString().slice(-6000));
         for (const [crate, filter, minimum] of [['teaql-core', 'aggregation_plan::tests::', 19],
+            ['teaql-core', 'request_tree::request_trace_tree_tests::', 4],
+            ['teaql-sql', 'bindings::request_tree_tests::', 2],
+            ['teaql-runtime', 'log_privacy::tests::request_tree_', 3],
             ['teaql-core', 'aggregation_plan::measure_expression::tests::', 5],
             ['teaql-core', 'query::aggregate_expression_tests::', 3],
-            ['teaql-provider-sqlite', 'statistical_tests::', 71],
+            ['teaql-provider-sqlite', 'statistical_tests::', 76],
             ['teaql-provider-sqlite', 'decimal_functions::tests::', 4],
             ['teaql-provider-sqlite', 'gbk_functions::tests::', 3],
             ['teaql-provider-sqlite', 'statistical_functions::tests::', 7]]) {
-            const command = [process.env.CARGO || 'cargo', 'test', '--offline', '--locked', '-p', crate, filter];
-            const suffix = filter.startsWith('query::aggregate_expression_tests::') ? '-named-expressions'
+            const command = [process.env.CARGO || 'cargo', 'test', '--offline', '--locked', '-p', crate, filter, '--', '--nocapture'];
+            const suffix = filter.includes('request_tree') || filter.includes('request_trace_tree') ? '-request-tree'
+                : filter.startsWith('query::aggregate_expression_tests::') ? '-named-expressions'
                 : filter.startsWith('aggregation_plan::measure_expression::') ? '-measure-expressions'
                 : filter.startsWith('gbk_functions::') ? '-gbk-functions'
                 : filter.startsWith('statistical_functions::') ? '-functions'
@@ -63,7 +71,8 @@ async function main() {
             try { result = await runner.run(command, {cwd: repo, env, timeout: 900000, stdio: ['ignore', fd, fd]}); }
             finally { fs.closeSync(fd); }
             const log = fs.readFileSync(logPath);
-            const testsPassed = (log.toString().match(/test (?:aggregation_plan::tests::|aggregation_plan::measure_expression::tests::|query::aggregate_expression_tests::|statistical_tests::|statistical_functions::tests::|gbk_functions::tests::|decimal_functions::tests::)[^\n]+ \.\.\. ok/g) || []).length;
+            const testsPassed = [...log.toString().matchAll(/test result: ok\. (\d+) passed;/g)]
+                .reduce((count, match) => count + Number(match[1]), 0);
             receipt.commands.push({command, result, testsPassed, logSha256: hash(log)});
             assert(result.status === 0 && testsPassed >= minimum, log.toString().slice(-6000));
         }

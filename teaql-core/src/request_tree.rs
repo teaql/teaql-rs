@@ -135,6 +135,166 @@ struct Header {
 #[derive(Clone)]
 pub struct QueryRequestScope(Arc<Header>);
 
+/// Invocation-local diagnostics, not a writable request-parent API. Equal
+/// comments never merge different headers; ids are local serialization indices.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryRequestTraceNode {
+    pub id: usize,
+    pub parent_id: Option<usize>,
+    pub kind: TraceKind,
+    pub name: String,
+    pub detail: String,
+    pub method: Option<String>,
+}
+
+impl QueryRequestTraceNode {
+    pub fn from_scopes(scopes: &[QueryRequestScope]) -> Vec<Self> {
+        use std::collections::{HashMap, HashSet};
+        if scopes.len() < 2 {
+            return Vec::new();
+        }
+        let identity = |scope: &QueryRequestScope| Arc::as_ptr(&scope.0) as usize;
+        if scopes.iter().map(identity).collect::<HashSet<_>>().len() < 2 {
+            return Vec::new(); // Ordinary traceChain already represents one request.
+        }
+        let mut indices = HashMap::new();
+        let mut nodes = Vec::new();
+        for leaf in scopes {
+            let mut ancestry = Vec::new();
+            let mut current = Some(leaf);
+            while let Some(scope) = current {
+                ancestry.push(scope);
+                current = scope.parent_request();
+            }
+            for scope in ancestry.into_iter().rev() {
+                let key = identity(scope);
+                if indices.contains_key(&key) {
+                    continue;
+                }
+                let parent_id = if let Some(parent) = scope.parent_request() {
+                    *indices
+                        .get(&identity(parent))
+                        .expect("parent emitted before child")
+                } else {
+                    let id = nodes.len();
+                    nodes.push(Self {
+                        id,
+                        parent_id: None,
+                        kind: TraceKind::Purpose,
+                        name: scope.request_name().into(),
+                        detail: scope.purpose().into(),
+                        method: None,
+                    });
+                    id
+                };
+                let id = nodes.len();
+                nodes.push(Self {
+                    id,
+                    parent_id: Some(parent_id),
+                    kind: TraceKind::Comment,
+                    name: scope.request_name().into(),
+                    detail: scope.comment().into(),
+                    method: scope
+                        .operation()
+                        .and_then(QueryOperation::method)
+                        .map(str::to_owned),
+                });
+                indices.insert(key, id);
+            }
+        }
+        nodes
+    }
+
+    /// Common text-log/telemetry shape. Callers must project privacy first.
+    pub fn to_json_value(nodes: &[Self]) -> serde_json::Value {
+        serde_json::Value::Array(
+            nodes
+                .iter()
+                .map(|node| {
+                    let mut value = serde_json::json!({"id":node.id,"parentId":node.parent_id,
+                "kind":if node.kind == TraceKind::Purpose {"purpose"} else {"comment"},
+                "name":node.name,"detail":node.detail});
+                    if let Some(method) = &node.method {
+                        value["method"] = method.clone().into();
+                    }
+                    value
+                })
+                .collect(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod request_trace_tree_tests {
+    use super::*;
+
+    fn root() -> QueryRequestScope {
+        QueryRequestScope::root(
+            "School",
+            QueryIntent::new("Load schools", "Render the dashboard").unwrap(),
+        )
+    }
+
+    #[test]
+    fn one_request_uses_existing_chain_without_a_duplicate_tree() {
+        let root = root();
+        assert!(QueryRequestTraceNode::from_scopes(&[]).is_empty());
+        assert!(QueryRequestTraceNode::from_scopes(&[root.clone()]).is_empty());
+        assert!(QueryRequestTraceNode::from_scopes(&[root.clone(), root]).is_empty());
+    }
+
+    #[test]
+    fn identical_comments_on_siblings_do_not_invent_ancestry() {
+        let root = root();
+        let left = root
+            .derive_child("Kind", Some("Same local comment"))
+            .unwrap();
+        let right = root
+            .derive_child("Kind", Some("Same local comment"))
+            .unwrap();
+        let nodes = QueryRequestTraceNode::from_scopes(&[left.clone(), right, root, left]);
+        assert_eq!(nodes.len(), 4);
+        assert_eq!(nodes[0].kind, TraceKind::Purpose);
+        assert_eq!(nodes[0].parent_id, None);
+        assert_eq!(nodes[2].parent_id, Some(1));
+        assert_eq!(nodes[3].parent_id, Some(1));
+        assert_eq!(nodes[2].detail, nodes[3].detail);
+        for (index, node) in nodes.iter().enumerate() {
+            assert_eq!(node.id, index);
+            assert!(node.parent_id.is_none_or(|parent| parent < index));
+        }
+    }
+
+    #[test]
+    fn native_operation_and_local_comment_are_separate_nodes() {
+        let root = root();
+        let operation = root.derive_operation(
+            "Kind",
+            QueryOperation::new(QueryOperationKind::Aggregate, "roll_up_to_kind"),
+        );
+        let child = operation
+            .derive_child("Kind", Some("Group visible types"))
+            .unwrap();
+        let nodes = QueryRequestTraceNode::from_scopes(&[child, root]);
+        let json = QueryRequestTraceNode::to_json_value(&nodes);
+        assert_eq!(json[0]["parentId"], serde_json::Value::Null);
+        assert_eq!(json[2]["method"], "roll_up_to_kind");
+        assert_eq!(json[2]["detail"], "roll_up_to_kind()");
+        assert_eq!(json[3]["parentId"], 2);
+        assert_eq!(json[3]["detail"], "Group visible types");
+        assert!(json[3].get("method").is_none());
+    }
+
+    #[test]
+    fn independent_equal_roots_are_not_merged_by_content() {
+        let nodes = QueryRequestTraceNode::from_scopes(&[root(), root()]);
+        assert_eq!(nodes.len(), 4);
+        assert_eq!(nodes[0].parent_id, None);
+        assert_eq!(nodes[2].parent_id, None);
+        assert_eq!(nodes[3].parent_id, Some(2));
+    }
+}
+
 impl std::fmt::Debug for QueryRequestScope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("QueryRequestScope")

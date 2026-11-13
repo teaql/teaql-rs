@@ -122,6 +122,18 @@ pub(crate) fn scrub_trace(trace: &mut [TraceNode], secrets: &[String]) {
     }
 }
 
+fn scrub_request_tree(context: &mut teaql_data_service::SqlLogContext, secrets: &[String]) {
+    if let Some(nodes) = &mut context.request_tree {
+        for node in std::sync::Arc::make_mut(nodes) {
+            scrub(&mut node.name, secrets);
+            scrub(&mut node.detail, secrets);
+            if let Some(method) = &mut node.method {
+                scrub(method, secrets);
+            }
+        }
+    }
+}
+
 pub(crate) fn mask_business_value(value: &Value) -> Value {
     match value {
         Value::Null | Value::TypedNull(_) => value.clone(),
@@ -240,6 +252,7 @@ fn sql_entry_inner(entry: &SqlLogEntry, allow: bool, hide_intent: bool) -> SqlLo
     scrub(&mut result.result_summary, &secrets);
     scrub_trace(&mut result.trace_path, &secrets);
     scrub_trace(&mut result.trace_chain, &secrets);
+    scrub_request_tree(&mut result.log_context, &secrets);
     if let Some(telemetry) = &mut result.log_context.telemetry {
         scrub_trace(
             &mut std::sync::Arc::make_mut(telemetry).mutation_lineage,
@@ -321,6 +334,7 @@ fn sql_entry_inner(entry: &SqlLogEntry, allow: bool, hide_intent: bool) -> SqlLo
             scrub(&mut result.result_summary, &secrets);
             scrub_trace(&mut result.trace_path, &secrets);
             scrub_trace(&mut result.trace_chain, &secrets);
+            scrub_request_tree(&mut result.log_context, &secrets);
             if let Some(telemetry) = &mut result.log_context.telemetry {
                 scrub_trace(
                     &mut std::sync::Arc::make_mut(telemetry).mutation_lineage,
@@ -381,6 +395,15 @@ fn sql_entry_inner(entry: &SqlLogEntry, allow: bool, hide_intent: bool) -> SqlLo
         for node in &mut result.trace_chain {
             node.comment = REDACTED.into();
             node.entity_type = REDACTED.into();
+        }
+        if let Some(nodes) = &mut result.log_context.request_tree {
+            for node in std::sync::Arc::make_mut(nodes) {
+                node.name = REDACTED.into();
+                node.detail = REDACTED.into();
+                if node.method.is_some() {
+                    node.method = Some(REDACTED.into());
+                }
+            }
         }
         if let Some(telemetry) = &mut result.log_context.telemetry {
             for node in &mut std::sync::Arc::make_mut(telemetry).mutation_lineage {
@@ -461,6 +484,99 @@ pub(crate) fn audit_event(event: &RawAuditEvent, allow: bool) -> RawAuditEvent {
 
 #[cfg(test)]
 mod tests {
+    fn request_tree_entry() -> SqlLogEntry {
+        use teaql_core::{QueryIntent, QueryRequestScope, QueryRequestTraceNode};
+        let root = QueryRequestScope::root(
+            "School",
+            QueryIntent::new("Load schools", "Render dashboard").unwrap(),
+        );
+        let child = root
+            .derive_child("Kind PRIVATE-CANARY", Some("Read PRIVATE-CANARY"))
+            .unwrap();
+        let mut nodes = QueryRequestTraceNode::from_scopes(&[root, child]);
+        nodes.last_mut().unwrap().method = Some("PRIVATE-CANARY".into());
+        let now = std::time::SystemTime::now();
+        SqlLogEntry {
+            log_context: teaql_data_service::SqlLogContext {
+                database_kind: Some("sqlite".into()),
+                generated_sql: true,
+                parameter_policies: vec![teaql_data_service::SqlParameterLogPolicy::Masked],
+                request_tree: Some(nodes.into()),
+                ..Default::default()
+            },
+            operation: crate::SqlLogOperation::Select,
+            comment: Some("Load schools".into()),
+            purpose: Some("Render dashboard".into()),
+            audit_reason: None,
+            trace_path: vec![],
+            trace_chain: vec![],
+            sql: "SELECT id FROM school WHERE name = ?".into(),
+            params: vec![Value::from("PRIVATE-CANARY")],
+            debug_sql: String::new(),
+            pretty_sql: String::new(),
+            started_at: now,
+            ended_at: now,
+            elapsed: std::time::Duration::ZERO,
+            result_count: Some(1),
+            result_type: None,
+            affected_rows: None,
+            result_summary: "1 row".into(),
+        }
+    }
+
+    #[test]
+    fn request_tree_projection_masks_every_text_field_and_preserves_structure() {
+        let raw = request_tree_entry();
+        let safe = sql_entry(&raw, false);
+        let nodes = safe.log_context.request_tree.as_deref().unwrap();
+        let text = teaql_core::QueryRequestTraceNode::to_json_value(nodes).to_string();
+        assert!(!text.contains("PRIVATE-CANARY"));
+        assert_eq!(nodes[2].parent_id, Some(1));
+        assert_eq!(nodes[2].detail, "Read [REDACTED]");
+        assert!(
+            raw.log_context.request_tree.as_ref().unwrap()[2]
+                .detail
+                .contains("PRIVATE-CANARY")
+        );
+        let debug = sql_entry(&raw, true);
+        assert!(
+            debug.log_context.request_tree.as_ref().unwrap()[2]
+                .detail
+                .contains("PRIVATE-CANARY")
+        );
+        assert_eq!(
+            sql_entry(&debug, false).log_context.request_tree,
+            safe.log_context.request_tree
+        );
+    }
+
+    #[test]
+    fn request_tree_changes_invalidate_debug_downgrade_fingerprint() {
+        let mut debug = sql_entry(&request_tree_entry(), true);
+        let nodes = std::sync::Arc::make_mut(debug.log_context.request_tree.as_mut().unwrap());
+        nodes[2].detail = "NEW-UNBOUND-PRIVATE-CANARY".into();
+        let safe = sql_entry(&debug, false);
+        let nodes = safe.log_context.request_tree.as_deref().unwrap();
+        assert_eq!(nodes[2].detail, REDACTED);
+        assert_eq!(nodes[2].name, REDACTED);
+        assert_eq!(nodes[2].method.as_deref(), Some(REDACTED));
+        assert_eq!(nodes[2].parent_id, Some(1));
+    }
+
+    #[test]
+    fn request_tree_credentials_stay_hidden_even_with_debug_opt_in() {
+        let mut raw = request_tree_entry();
+        raw.log_context.parameter_policies =
+            vec![teaql_data_service::SqlParameterLogPolicy::Credential];
+        let debug = sql_entry(&raw, true);
+        let nodes = debug.log_context.request_tree.as_deref().unwrap();
+        assert!(
+            !teaql_core::QueryRequestTraceNode::to_json_value(nodes)
+                .to_string()
+                .contains("PRIVATE-CANARY")
+        );
+    }
+
     #[test]
     fn binary_secrets_are_fully_masked_and_all_representations_are_scrubbed() {
         let value = Value::Binary(b"BINARY-SECRET".to_vec());

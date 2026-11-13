@@ -204,6 +204,14 @@ impl crate::UserContext {
             "teaql.mutation_lineage".into(),
             path(&state.mutation_lineage).into(),
         );
+        if let Some(nodes) = entry.log_context.request_tree.as_deref() {
+            attributes.insert(
+                "teaql.request_tree".into(),
+                teaql_core::QueryRequestTraceNode::to_json_value(nodes)
+                    .to_string()
+                    .into(),
+            );
+        }
         if let Some(count) = entry.result_count {
             attributes.insert("teaql.sql.result_count".into(), count.into());
         }

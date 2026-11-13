@@ -110,13 +110,25 @@ impl LogFormatter for HumanReaderFormatter {
             entry.audit_reason,
             self.format_trace_chain(&entry.trace_chain)
         );
+        let tree = entry
+            .log_context
+            .request_tree
+            .as_deref()
+            .map(|nodes| {
+                format!(
+                    " requestTree={}",
+                    teaql_core::QueryRequestTraceNode::to_json_value(nodes)
+                )
+            })
+            .unwrap_or_default();
         format!(
-            "[{}]-[{:>5}µs]-[DEBUG]-SqlLogEntry{} - [{}] {}\n          SQL: {}",
+            "[{}]-[{:>5}µs]-[DEBUG]-SqlLogEntry{} - [{}] {}{}\n          SQL: {}",
             ts,
             elapsed_us,
             trace_display,
             entry.result_summary,
             intent,
+            tree,
             if entry.debug_sql.is_empty() {
                 "[SQL omitted: missing safe projection; NOT REPLAYABLE]"
             } else {

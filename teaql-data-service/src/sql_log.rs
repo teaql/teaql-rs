@@ -35,6 +35,8 @@ pub struct SqlLogContext {
     pub telemetry: Option<std::sync::Arc<SqlTelemetryState>>,
     /// Business Request ancestry, independent of the executor's physical route.
     pub request_trace_chain: Vec<teaql_core::TraceNode>,
+    /// Real participating requests in one statement; absent for a single chain.
+    pub request_tree: Option<std::sync::Arc<[teaql_core::QueryRequestTraceNode]>>,
     /// Opaque runtime-only state for safe reprojection; never wire data.
     #[doc(hidden)]
     pub projection_state: SqlProjectionState,

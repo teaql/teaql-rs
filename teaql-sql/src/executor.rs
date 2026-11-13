@@ -294,6 +294,7 @@ fn compile_select_with_cache<D: SqlDialect>(
         }) {
             let mut log_context = compiled.log_context.clone();
             log_context.intent_redactions.clear();
+            log_context.request_tree = None;
             cache.push((entity.clone(), key, compiled.sql.clone(), log_context));
         }
     }
@@ -515,6 +516,7 @@ fn append_select_params(
     large_in_uses_array_param: bool,
     params: &mut crate::SqlBindings,
 ) {
+    params.capture_query_scope(query);
     if query.raw_sql.is_some() {
         return;
     }
@@ -959,6 +961,68 @@ mod tests {
         .unwrap();
         assert_eq!(public.log_context.parameter_policies, [Plain]);
         assert_eq!(counter.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn cached_inline_membership_tree_is_current_and_not_retained_by_plan_cache() {
+        struct CountingDialect(Arc<AtomicUsize>);
+        impl SqlDialect for CountingDialect {
+            fn kind(&self) -> crate::DatabaseKind {
+                crate::DatabaseKind::PostgreSql
+            }
+            fn quote_ident(&self, name: &str) -> String {
+                TestDialect.quote_ident(name)
+            }
+            fn placeholder(&self, index: usize) -> String {
+                TestDialect.placeholder(index)
+            }
+            fn compile_select(
+                &self,
+                entity: &EntityDescriptor,
+                query: &SelectQuery,
+            ) -> Result<CompiledQuery, SqlCompileError> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                TestDialect.compile_select(entity, query)
+            }
+        }
+        let count = Arc::new(AtomicUsize::new(0));
+        let dialect = CountingDialect(count.clone());
+        let cache = RwLock::new(Vec::new());
+        for comment in ["FIRST-INVOCATION", "SECOND-INVOCATION"] {
+            let scope = teaql_core::QueryRequestScope::root(
+                "Order",
+                teaql_core::QueryIntent::new(comment, "Check cache isolation").unwrap(),
+            );
+            let child_scope = scope.derive_child("Order", Some(comment)).unwrap();
+            let child = SelectQuery::new("Order")
+                .project("id")
+                .limit(5)
+                .with_request_scope(child_scope);
+            let query = SelectQuery::new("Order")
+                .filter(Expr::in_subquery("id", test_entity(), child, "id"))
+                .with_request_scope(scope);
+            let compiled =
+                compile_select_with_cache(&dialect, &cache, &test_entity(), &query).unwrap();
+            let nodes = compiled.log_context.request_tree.as_deref().unwrap();
+            assert_eq!(nodes.len(), 3);
+            assert_eq!(nodes[1].detail, comment);
+            assert_eq!(nodes[2].detail, comment);
+            let cached = cache.read().unwrap();
+            assert_eq!(cached.len(), 1);
+            assert!(cached[0].3.request_tree.is_none());
+            assert!(cached[0].1.request_scope().is_none());
+            if let Some(Expr::SubQuery { query, .. }) = &cached[0].1.filter {
+                assert!(query.request_scope().is_none());
+                assert!(query.comment.is_none());
+            } else {
+                panic!("cache lost membership shape");
+            }
+        }
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            1,
+            "must exercise a real cache hit"
+        );
     }
 
     #[tokio::test]

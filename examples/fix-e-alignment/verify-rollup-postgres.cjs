@@ -45,6 +45,9 @@ async function main() {
     receipt.sourceHashes = {};
     for (const file of ['Cargo.toml','Cargo.lock','teaql-core/src/query.rs','teaql-core/src/expr.rs','teaql-core/src/value.rs','teaql-core/src/aggregation_plan.rs',
       'teaql-core/src/aggregation_plan/measure_expression.rs',
+      'teaql-core/src/request_tree.rs','teaql-data-service/src/sql_log.rs',
+      'teaql-runtime/src/log_formatter.rs','teaql-runtime/src/log_privacy.rs','teaql-runtime/src/telemetry_sql.rs',
+      'teaql-sql/src/diagnostic_execution.rs',
       'teaql-runtime/src/inmemory_engine.rs','teaql-runtime/src/memory.rs','teaql-runtime/src/data_service/helpers.rs',
       'teaql-sql/src/dialect.rs','teaql-sql/src/having.rs','teaql-sql/src/statistical.rs','teaql-sql/src/executor.rs','teaql-sql/src/bindings.rs',
       'teaql-provider-sqlite/Cargo.toml','teaql-provider-sqlite/src/lib.rs','teaql-provider-sqlite/src/decimal_functions.rs',
@@ -56,6 +59,7 @@ async function main() {
       'teaql-provider-postgres/tests/layered_statistics/gbk_order.rs',
       'teaql-provider-postgres/tests/layered_statistics/integer_operand.rs',
       'teaql-provider-postgres/tests/layered_statistics/measure_expression.rs',
+      'teaql-provider-postgres/tests/layered_statistics/request_tree.rs',
       'examples/fix-e-alignment/verify-rollup-postgres.cjs']) {
       const bytes = fs.readFileSync(path.join(repo,file)); receipt.sourceHashes[file] = hash(bytes);
       const target = path.join(output,'sources',file); fs.mkdirSync(path.dirname(target),{recursive:true}); fs.writeFileSync(target,bytes);
@@ -102,8 +106,12 @@ async function main() {
         ...['positive','negative','neighboring'].flatMap(kind=>['ordinary','parent','nested'].map(layer=>'numeric-'+layer+'-'+kind)),
         'gbk-ordinary','gbk-parent','gbk-nested','gbk-binary-ordinary','gbk-binary-parent','bitwise-expression-fields','bitwise-expression-parameters',
         'expression-measure-owner-grain','expression-measure-transforms','expression-measure-order'].sort());
-      assert.equal(receipt.commands.at(-1).testsPassed,15);
-      receipt.rounds.push({round,observations});
+      assert.equal(receipt.commands.at(-1).testsPassed,16);
+      const requestTrees=log.split('\n').filter(line=>line.startsWith('COMBINED_POSTGRES_TREE='))
+        .map(line=>JSON.parse(line.slice('COMBINED_POSTGRES_TREE='.length)));
+      assert.equal(requestTrees.length,2,'Missing repeated real combined-statement log evidence');
+      for(const tree of requestTrees){assert.equal(tree.physicalStatements,1);assert.equal(tree.schools,5);assert.equal(tree.total,3300);}
+      receipt.rounds.push({round,observations,requestTrees});
     }
     const oracleSql = "SELECT json_build_object('schools',COUNT(*),'nonnull',COUNT(\"Legacy Capacity\"),'capacity',SUM(\"Legacy Capacity\"),'types',(SELECT COUNT(*) FROM legacy_kind),'platforms',(SELECT COUNT(*) FROM legacy_platform)) FROM legacy_school;";
     const oracle = cp.execFileSync('docker',['exec','-i','-u','postgres',container,'psql','-X','-v','ON_ERROR_STOP=1','-d',database,'-At'],

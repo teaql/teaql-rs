@@ -6,6 +6,8 @@ mod gbk_order;
 mod integer_operand;
 #[path = "layered_statistics/measure_expression.rs"]
 mod measure_expression;
+#[path = "layered_statistics/request_tree.rs"]
+mod request_tree;
 use deadpool_postgres::{Pool, Runtime};
 use serde_json::json;
 use teaql_core::{

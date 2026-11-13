@@ -13,12 +13,20 @@ pub struct SqlBindings {
     originals: Vec<(usize, Value)>,
     pub(crate) scope: Option<Policy>,
     pub(crate) metadata: Option<std::sync::Arc<CompilationMetadata>>,
+    request_scopes: Vec<teaql_core::QueryRequestScope>,
     untrusted_sql: bool,
 }
 
 impl SqlBindings {
     pub fn new() -> Self {
         Self::default()
+    }
+    pub(crate) fn capture_query_scope(&mut self, query: &teaql_core::SelectQuery) {
+        if let Some(scope) = query.request_scope() {
+            if !self.request_scopes.iter().any(|previous| previous == scope) {
+                self.request_scopes.push(scope.clone());
+            }
+        }
     }
     pub fn push(&mut self, value: Value) {
         self.values.push(value);
@@ -37,6 +45,8 @@ impl SqlBindings {
     /// operands and the compiled plan's field policies, never cached raw text.
     pub(crate) fn rebind_log_context(&self, source: &SqlLogContext) -> SqlLogContext {
         let mut context = source.clone();
+        let nodes = teaql_core::QueryRequestTraceNode::from_scopes(&self.request_scopes);
+        context.request_tree = (!nodes.is_empty()).then(|| nodes.into());
         let original_source = SqlLogContext {
             generated_sql: source.generated_sql,
             parameter_policies: self
@@ -81,6 +91,57 @@ impl std::ops::Deref for SqlBindings {
     type Target = [Value];
     fn deref(&self) -> &Self::Target {
         &self.values
+    }
+}
+
+#[cfg(test)]
+mod request_tree_tests {
+    use super::*;
+    use teaql_core::{QueryIntent, QueryRequestScope, SelectQuery};
+
+    #[test]
+    fn rebind_replaces_cached_request_text_with_current_scope_identity() {
+        fn bindings(comment: &str) -> SqlBindings {
+            let root = QueryRequestScope::root(
+                "School",
+                QueryIntent::new(comment, "Render dashboard").unwrap(),
+            );
+            let child = root.derive_child("Kind", Some(comment)).unwrap();
+            let mut bindings = SqlBindings::new();
+            bindings.capture_query_scope(&SelectQuery::new("School").with_request_scope(root));
+            bindings.capture_query_scope(&SelectQuery::new("Kind").with_request_scope(child));
+            bindings
+        }
+        let source = bindings("OLD-INVOCATION").log_context(DatabaseKind::Sqlite);
+        let current = bindings("CURRENT-INVOCATION").rebind_log_context(&source);
+        let nodes = current.request_tree.as_deref().unwrap();
+        assert_eq!(nodes.len(), 3);
+        assert!(nodes.iter().any(|node| node.detail == "CURRENT-INVOCATION"));
+        assert!(
+            nodes
+                .iter()
+                .all(|node| !node.detail.contains("OLD-INVOCATION"))
+        );
+        assert_eq!(nodes[2].parent_id, Some(1));
+        assert!(
+            source
+                .request_tree
+                .unwrap()
+                .iter()
+                .any(|node| node.detail == "OLD-INVOCATION")
+        );
+    }
+
+    #[test]
+    fn ordinary_query_rebinding_drops_any_previous_tree() {
+        let mut source = SqlLogContext::default();
+        source.request_tree = Some(Vec::<teaql_core::QueryRequestTraceNode>::new().into());
+        assert!(
+            SqlBindings::new()
+                .rebind_log_context(&source)
+                .request_tree
+                .is_none()
+        );
     }
 }
 

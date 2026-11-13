@@ -5,7 +5,9 @@ use teaql_data_service::{ExecutionMetadata, ExecutionObserver, SqlExecutionOutco
 /// Success metadata is returned to the existing runtime path. Exceptional exits
 /// use the observer, including dropping an in-flight future. No error text is logged.
 pub(crate) struct StatementDiagnostic<'a> {
-    metadata: Option<ExecutionMetadata>,
+    // Diagnostics are optional and grow independently of the query engine. Keep
+    // them out of every ordinary Future frame; disabled logging allocates none.
+    metadata: Option<Box<ExecutionMetadata>>,
     observer: Option<ExecutionObserver<'a>>,
     scope: Option<Box<dyn teaql_data_service::statement_telemetry::SqlStatementTelemetryScope>>,
 }
@@ -31,7 +33,7 @@ impl<'a> StatementDiagnostic<'a> {
             Some(scope)
         });
         Self {
-            metadata,
+            metadata: metadata.map(Box::new),
             observer,
             scope,
         }
@@ -72,7 +74,7 @@ impl<'a> StatementDiagnostic<'a> {
         self.metadata.take().map(|mut metadata| {
             metadata.ended_at = SystemTime::now();
             metadata.sql_log.execution_outcome = Some(SqlExecutionOutcome::Success);
-            metadata
+            *metadata
         })
     }
 
@@ -87,7 +89,7 @@ impl<'a> StatementDiagnostic<'a> {
             metadata.sql_log.execution_outcome = Some(outcome);
             if let Some(observer) = &self.observer {
                 let _ =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer(metadata)));
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer(*metadata)));
             }
         }
     }

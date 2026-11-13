@@ -54,7 +54,7 @@ pub use query::{
     record_to_json_value,
 };
 pub use request_intent::{MutationIntent, QueryIntent, RequestIntentError, RequestKind};
-pub use request_tree::{QueryOperation, QueryOperationKind, QueryRequestScope};
+pub use request_tree::{QueryOperation, QueryOperationKind, QueryRequestScope, QueryRequestTraceNode};
 pub use safe_expression::{SafeExpression, TeaqlEmpty};
 #[doc(hidden)]
 pub use serde_json;
