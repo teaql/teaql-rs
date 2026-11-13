@@ -426,7 +426,7 @@ pub trait SqlDialect {
 
         let mut sql = format!(
             "SELECT {projection} FROM {}",
-            self.quote_ident(&entity.table_name)
+            crate::inheritance::source(self, entity)?
         );
 
         let mut where_parts = Vec::new();

@@ -71,6 +71,10 @@ pub trait TeaqlEntity {
     #[doc(hidden)]
     const CONTEXT_ROOT_METADATA_REVISION: u32 = 0;
 
+    /// An older derive must not silently erase generated inheritance metadata.
+    #[doc(hidden)]
+    const JOINED_INHERITANCE_METADATA_REVISION: u32 = 0;
+
     fn entity_descriptor() -> EntityDescriptor;
 
     /// Fixed metadata supplied by generation; hand-written adapters may remain unindexed.

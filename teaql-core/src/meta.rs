@@ -177,6 +177,10 @@ pub struct EntityDescriptor {
     /// False for legacy metadata that never declared a complete field log policy.
     pub audit_mask_fields_declared: bool,
     pub audit_value_max_len: Option<usize>,
+    /// Joined inheritance is storage metadata, not a relation or a second
+    /// logical mutation participant. Inherited values and optimistic version
+    /// belong to their declaring table; identity belongs to the whole family.
+    pub joined_parent: Option<std::sync::Arc<EntityDescriptor>>,
 }
 
 impl EntityDescriptor {
@@ -191,6 +195,7 @@ impl EntityDescriptor {
             audit_mask_fields: Vec::new(),
             audit_mask_fields_declared: false,
             audit_value_max_len: None,
+            joined_parent: None,
         }
     }
 
@@ -207,6 +212,47 @@ impl EntityDescriptor {
     pub fn property(mut self, property: PropertyDescriptor) -> Self {
         self.properties.push(property);
         self
+    }
+
+    /// Declare a joined parent while retaining the complete logical field
+    /// layout required by Q/E, checkers, row decoding and mutation policies.
+    pub fn inherits(mut self, parent: EntityDescriptor) -> Self {
+        for property in &parent.properties {
+            if self.property_by_name(&property.name).is_none() {
+                self.properties.push(property.clone());
+            }
+        }
+        self.joined_parent = Some(std::sync::Arc::new(parent));
+        self
+    }
+
+    /// Root table owns the family-wide identity allocator and version.
+    pub fn inheritance_root(&self) -> &EntityDescriptor {
+        let mut root = self;
+        while let Some(parent) = &root.joined_parent {
+            root = parent;
+        }
+        root
+    }
+
+    /// Physical schema/write shape for this table only. Identity is repeated
+    /// as a join key; inherited fields (including version) are not copied.
+    pub fn storage_descriptor(&self) -> EntityDescriptor {
+        let mut storage = self.clone();
+        if let Some(parent) = &self.joined_parent {
+            storage.properties.retain(|property| {
+                property.is_id || parent.property_by_name(&property.name).is_none()
+            });
+            storage.relations.retain(|relation| {
+                parent.relation_by_name(&relation.name).is_none()
+                    && storage
+                        .properties
+                        .iter()
+                        .any(|property| property.name == relation.local_key)
+            });
+        }
+        storage.joined_parent = None;
+        storage
     }
 
     pub fn relation(mut self, relation: RelationDescriptor) -> Self {

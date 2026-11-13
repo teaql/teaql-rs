@@ -570,7 +570,9 @@ impl PgMutationExecutor {
         dialect: &PostgresDialect,
         entities: &[&EntityDescriptor],
     ) -> Result<(), MutationExecutorError> {
-        validate_schema_identifier_lengths(entities, 63)?;
+        let physical = teaql_sql::physical_entity_descriptors(entities)?;
+        let entities = physical.iter().collect::<Vec<_>>();
+        validate_schema_identifier_lengths(&entities, 63)?;
         let mut client = self
             .pool
             .get()
@@ -584,7 +586,7 @@ impl PgMutationExecutor {
             )
             .await?;
         let result = self
-            .ensure_schema_with_client(&transaction, dialect, entities)
+            .ensure_schema_with_client(&transaction, dialect, &entities)
             .await;
         match result {
             Ok(()) => transaction.commit().await?,

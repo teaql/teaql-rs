@@ -93,6 +93,10 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     let table_name = attrs.table_name;
     let data_service = attrs.data_service;
     let indexed_layout = attrs.indexed_layout;
+    let joined_inheritance_revision = u32::from(attrs.joined_parent.is_some());
+    let joined_parent_token = attrs.joined_parent.map(|parent| quote! {
+        descriptor = descriptor.inherits(<#parent as ::teaql_core::TeaqlEntity>::entity_descriptor());
+    });
     let mut materialized_relation_names: Vec<String> = attrs
         .reverse_relations
         .iter()
@@ -997,6 +1001,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         impl ::teaql_core::TeaqlEntity for #struct_name {
             const ENTITY_NAME: &'static str = #entity_name;
             const CONTEXT_ROOT_METADATA_REVISION: u32 = #context_root_metadata_revision;
+            const JOINED_INHERITANCE_METADATA_REVISION: u32 = #joined_inheritance_revision;
 
             #field_layout_impl
 
@@ -1012,6 +1017,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 #(#property_tokens)*
                 #(#relation_tokens)*
                 #(#container_relation_tokens)*
+                #joined_parent_token
                 descriptor
             }
         }

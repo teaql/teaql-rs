@@ -10,6 +10,7 @@ pub struct ContainerAttrs {
     pub audit_value_max_len: Option<usize>,
     pub reverse_relations: Vec<ParsedContainerRelation>,
     pub indexed_layout: bool,
+    pub joined_parent: Option<syn::Path>,
 }
 
 #[derive(Default)]
@@ -32,6 +33,7 @@ pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> Co
         audit_value_max_len: None,
         reverse_relations: Vec::new(),
         indexed_layout: false,
+        joined_parent: None,
     };
 
     for attr in attrs {
@@ -44,6 +46,8 @@ pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> Co
             } else if meta.path.is_ident("entity") {
                 let value = meta.value()?;
                 attrs_out.entity_name = parse_string_expr(&value.parse::<Expr>()?);
+            } else if meta.path.is_ident("parent") {
+                attrs_out.joined_parent = Some(meta.value()?.parse::<syn::Path>()?);
             } else if meta.path.is_ident("table") {
                 let value = meta.value()?;
                 attrs_out.table_name = parse_string_expr(&value.parse::<Expr>()?);

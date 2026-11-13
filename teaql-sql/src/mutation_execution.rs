@@ -413,6 +413,89 @@ where
     let entity = lookup(entity_name).ok_or_else(|| {
         SqlExecutorError::Compile(SqlCompileError::UnknownEntity(entity_name.clone()))
     })?;
+    if entity.joined_parent.is_some() {
+        if !readback {
+            // Multi-table writes require the transaction-owned executor. Do not
+            // start a sequence of autocommit statements and hope it succeeds.
+            return Err(SqlExecutorError::PersistedRecord(
+                "joined inheritance mutations require an explicit transaction".into(),
+            ));
+        }
+        return execute_inherited(dialect, transport, cache, request, &entity, scope).await;
+    }
+    execute_one(dialect, transport, cache, request, &entity, &entity, readback, scope).await
+}
+
+async fn execute_inherited<D: SqlDialect + Sync, T: SqlTransport>(
+    dialect: &D,
+    transport: &T,
+    cache: &RwLock<Vec<CachedSelectPlan>>,
+    request: MutationRequest,
+    entity: &EntityDescriptor,
+    scope: MutationExecutionScope,
+) -> Result<MutationResult, SqlExecutorError<T::Error>> {
+    use teaql_data_service::MutationCommand;
+    let chain = crate::inheritance::hierarchy(entity).map_err(SqlExecutorError::Compile)?;
+    let mut physical = Vec::new();
+    for (index, descriptor) in chain.iter().enumerate() {
+        let storage = descriptor.storage_descriptor();
+        let mut part = request.clone();
+        match &mut part.command {
+            MutationCommand::Insert(command) => {
+                command.values.retain(|field, _| storage.property_by_name(field).is_some());
+            }
+            MutationCommand::Update(command) => {
+                command.values.retain(|field, _| storage.property_by_name(field).is_some());
+                if index != 0 {
+                    command.expected_version = None;
+                    if command.values.is_empty() { continue; }
+                }
+            }
+            MutationCommand::Delete(command) => {
+                if command.soft_delete && index != 0 { continue; }
+                if index != 0 { command.expected_version = None; }
+            }
+            MutationCommand::Recover(_) if index != 0 => continue,
+            MutationCommand::Recover(_) => {},
+            MutationCommand::Batch(_) => unreachable!("batch expanded before inheritance"),
+        }
+        physical.push((storage, part));
+    }
+    if matches!(&request.command, MutationCommand::Delete(command) if !command.soft_delete) {
+        physical.reverse();
+    }
+    let mut statements = Vec::new();
+    let mut last = None;
+    let count = physical.len();
+    for (index, (storage, part)) in physical.into_iter().enumerate() {
+        let result = execute_one(dialect, transport, cache, part, &storage, entity, index + 1 == count, scope.clone()).await?;
+        if result.affected_rows != 1 {
+            return Err(SqlExecutorError::PersistedRecord(format!(
+                "joined {} mutation rejected: missing row or optimistic-version conflict at {}",
+                entity.name, storage.table_name,
+            )));
+        }
+        statements.push(result.metadata.clone());
+        last = Some(result);
+    }
+    let mut result = last.expect("validated inheritance has a root table");
+    result.affected_rows = 1;
+    result.metadata.affected_rows = Some(1);
+    result.metadata.statements = statements;
+    Ok(result)
+}
+
+async fn execute_one<D: SqlDialect + Sync, T: SqlTransport>(
+    dialect: &D,
+    transport: &T,
+    cache: &RwLock<Vec<CachedSelectPlan>>,
+    request: MutationRequest,
+    entity: &EntityDescriptor,
+    readback_entity: &EntityDescriptor,
+    readback: bool,
+    scope: MutationExecutionScope,
+) -> Result<MutationResult, SqlExecutorError<T::Error>> {
+    let entity_name = &readback_entity.name;
     let (compiled, operation, persisted_id) = match &request.command {
         teaql_data_service::MutationCommand::Insert(cmd) => (
             dialect.compile_insert(&entity, cmd),
@@ -468,7 +551,7 @@ where
     let persisted_snapshot = if readback && affected_rows == 1 {
         if let Some(id) = persisted_id {
             let query = SelectQuery::new(entity_name.clone()).filter(Expr::eq("id", id));
-            let compiled_readback = compile_select_with_cache(dialect, cache, &entity, &query)
+            let compiled_readback = compile_select_with_cache(dialect, cache, readback_entity, &query)
                 .map_err(SqlExecutorError::Compile)?;
             let mut rows = observed
                 .fetch_all_compact_sql(&compiled_readback)
@@ -503,6 +586,13 @@ pub(super) async fn guarded<D: SqlDialect + Sync, T: SqlTransport>(
     request: GuardedMutationRequest,
     observer: Option<ExecutionObserver<'_>>,
 ) -> Result<MutationResult, SqlExecutorError<T::Error>> {
+    if entity.joined_parent.is_some() {
+        // The joined guarded-write plan is a separate path. Never compile a
+        // flattened subtype UPDATE or drop its guard while that path is absent.
+        return Err(SqlExecutorError::PersistedRecord(
+            "guarded joined inheritance mutation is not yet supported".into(),
+        ));
+    }
     let operation = match &request.mutation.command {
         teaql_data_service::MutationCommand::Update(_) => DataServiceOperation::Update,
         teaql_data_service::MutationCommand::Delete(_) => DataServiceOperation::Delete,

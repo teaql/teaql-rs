@@ -469,10 +469,12 @@ impl SqliteMutationExecutor {
         dialect: &SqliteDialect,
         entities: &[&EntityDescriptor],
     ) -> Result<(), MutationExecutorError> {
+        let physical = teaql_sql::physical_entity_descriptors(entities)?;
+        let entities = physical.iter().collect::<Vec<_>>();
         let connection = self.lock()?;
         connection.pragma_update(None, "foreign_keys", true)?;
         connection.execute("BEGIN IMMEDIATE", [])?;
-        let result = Self::ensure_schema_with_connection(&connection, dialect, entities);
+        let result = Self::ensure_schema_with_connection(&connection, dialect, &entities);
         match result {
             Ok(()) => {
                 if let Err(error) = connection.execute("COMMIT", []) {
@@ -1424,7 +1426,8 @@ pub(crate) fn ensure_sqlite_physical_schema_for(
             MutationExecutorError::Bind("missing typed resource: SqliteMutationExecutor".to_owned())
         })?;
 
-    let entities = context.all_entities();
+    let physical = teaql_sql::physical_entity_descriptors(&context.all_entities())?;
+    let entities = physical.iter().collect::<Vec<_>>();
     let connection = executor.lock()?;
     connection.pragma_update(None, "foreign_keys", true)?;
     connection.execute("BEGIN IMMEDIATE", [])?;
@@ -1524,6 +1527,9 @@ pub(crate) fn ensure_sqlite_schema_for(context: &UserContext) -> Result<(), Muta
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SqliteSchemaProvider;
+
+#[cfg(test)]
+mod inheritance_tests;
 
 impl SchemaProvider for SqliteSchemaProvider {
     fn ensure_schema<'a>(
