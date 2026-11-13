@@ -33,6 +33,7 @@ pub use teaql_core::request::{
 };
 
 
+pub(crate) use teaql_core::request::criteria_alternatives_excluding_version;
 pub trait TeaqlQueryRepository {
     type Error: std::error::Error + Send + Sync + 'static;
 

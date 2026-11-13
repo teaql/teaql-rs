@@ -71,9 +71,10 @@ already selected statistical result, not a physical column or SQL fragment.
 These methods preserve the live parent configuration and match Java's
 `addOrderByAscending` / `addOrderByDescending`, with Rust builder ownership.
 For a selected text result, the GBK variants preserve real encoding semantics.
-PostgreSQL supports GBK ordering, including parent and nested result paths.
-SQLite currently rejects it before SQL because its GBK encoder is not installed;
-an unsupported error is not a successful GBK sort. Numeric results are rejected.
+PostgreSQL and the current SQLite provider support GBK ordering, including
+parent and nested result paths. SQLite uses a connection-local encoder qualified
+against PostgreSQL's profile. Numeric results and unmappable text are rejected;
+there is no unchanged-UTF8 fallback.
 This sort modifier does not add a binary projection or enable GBK grouping.
 
 

@@ -112,7 +112,7 @@ pub async fn verify(
         .roll_up_to_platform()
         .group_by_name()
         .having(Expr::eq("name", "NO MATCHING PLATFORM CELL"));
-    let matched = count(Q::school_types_minimal().matching_any_of(types), context).await?;
+    let matched = count(Q::school_types_minimal().matching_ids_of(types), context).await?;
     assert_eq!(
         matched, 0,
         "same-entity membership must not discard the parent result filter"

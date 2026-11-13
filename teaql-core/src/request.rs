@@ -644,6 +644,31 @@ pub fn required_text(operator: FieldOperator, values: &[Value], index: usize) ->
 // remove_default_live_filter / remove_filter_expr
 // ---------------------------------------------------------------------------
 
+/// Java leaf-request `matchingAnyOf`: OR the supplied request's top-level
+/// non-version criteria. The caller ANDs this group with its own unchanged
+/// criteria. Nested Boolean groups and independent subqueries stay intact;
+/// grouping, HAVING, ordering and paging are not criteria alternatives.
+pub fn criteria_alternatives_excluding_version(filter: Option<Expr>) -> Option<Expr> {
+    fn version(criterion: &Expr) -> bool {
+        let operand = match criterion {
+            Expr::Binary { left, .. } => left.as_ref(),
+            Expr::Between { expr, .. } | Expr::IsNull(expr) | Expr::IsNotNull(expr) => expr.as_ref(),
+            _ => return false,
+        };
+        matches!(operand, Expr::Column(name) if name == "version")
+    }
+    let parts = match filter? {
+        Expr::And(parts) => parts,
+        other => vec![other],
+    };
+    let mut alternatives = parts.into_iter().filter(|part| !version(part)).collect::<Vec<_>>();
+    match alternatives.len() {
+        0 => None,
+        1 => alternatives.pop(),
+        _ => Some(Expr::or(alternatives)),
+    }
+}
+
 pub fn remove_default_live_filter(filter: Option<Expr>) -> Option<Expr> {
     let default_filter = Expr::gt("version", 0_i64);
     remove_filter_expr(filter?, &default_filter)

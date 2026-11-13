@@ -2,6 +2,7 @@
 mod expression_measure_cases;
 mod reverse_rollup_cases;
 mod rollup_trace_cases;
+mod matching_criteria_cases;
 use school_management_service_core::{E, request_support::AuditedSave as _};
 use school_management_service_core::{
     Q, SchoolRequest, ServiceRuntimeConfig, TeaqlRuntime, service_runtime,
@@ -84,6 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(school.version(), 1);
     }
     rollup_trace_cases::verify(&mut context).await?;
+    matching_criteria_cases::verify(&context).await?;
     let mut evidence = Vec::new();
 
     let mut request = source();

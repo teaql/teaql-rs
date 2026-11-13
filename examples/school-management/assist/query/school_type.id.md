@@ -12,6 +12,7 @@ Type: `id`
 | --- | --- |
 | Select | `select_id()` |
 | Entity accessor | `id()` |
+| Independent ID membership | `matching_ids_of(other_request)` |
 | Equality/set | `with_id_is(value)`, `with_id_is_not(value)`, `with_id_in(values)`, `with_id_not_in(values)` |
 | Comparison | `with_id_greater_than(value)`, `with_id_greater_than_or_equal_to(value)`, `with_id_less_than(value)`, `with_id_less_than_or_equal_to(value)`, `with_id_between(lower, upper)` |
 | Null state | `with_id_is_known()`, `with_id_is_unknown()` |

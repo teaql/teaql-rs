@@ -18,6 +18,7 @@ async function main() {
             'teaql-core/src/aggregation_plan/measure_expression.rs', 'teaql-core/src/lib.rs',
             'teaql-core/src/query.rs', 'teaql-core/src/expr.rs',
             'teaql-core/src/request.rs', 'teaql-core/tests/rollup_navigation.rs',
+            'teaql-core/tests/criteria_alternatives.rs',
             'teaql-runtime/src/inmemory_engine.rs', 'teaql-runtime/src/memory.rs',
             'teaql-runtime/src/data_service/helpers.rs',
             'teaql-sql/src/executor.rs', 'teaql-sql/src/execution_tests.rs',
@@ -37,6 +38,14 @@ async function main() {
         const env = {...process.env, CARGO_TARGET_DIR: path.join(scratch, 'target'), CARGO_INCREMENTAL: '0',
             CARGO_BUILD_JOBS: '4', CARGO_PROFILE_TEST_DEBUG: '0', CARGO_PROFILE_DEV_DEBUG: '0'};
         receipt.commands = [];
+        const criteriaCommand = [process.env.CARGO || 'cargo', 'test', '--offline', '--locked', '-p', 'teaql-core', '--test', 'criteria_alternatives'];
+        const criteriaPath = path.join(output, 'criteria-alternatives.log'), criteriaFd = fs.openSync(criteriaPath, 'wx'); let criteriaResult;
+        try { criteriaResult = await runner.run(criteriaCommand, {cwd: repo, env, timeout: 900000, stdio: ['ignore', criteriaFd, criteriaFd]}); }
+        finally { fs.closeSync(criteriaFd); }
+        const criteriaLog = fs.readFileSync(criteriaPath);
+        const criteriaPassed = (criteriaLog.toString().match(/^test [^\n]+ \.\.\. ok$/gm) || []).length;
+        receipt.commands.push({command: criteriaCommand, result: criteriaResult, testsPassed: criteriaPassed, logSha256: hash(criteriaLog)});
+        assert(criteriaResult.status === 0 && criteriaPassed === 5, criteriaLog.toString().slice(-6000));
         for (const [crate, filter, minimum] of [['teaql-core', 'aggregation_plan::tests::', 19],
             ['teaql-core', 'aggregation_plan::measure_expression::tests::', 5],
             ['teaql-core', 'query::aggregate_expression_tests::', 3],

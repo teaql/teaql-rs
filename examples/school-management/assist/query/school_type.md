@@ -40,10 +40,17 @@ For field-specific predicates and projections, request
 `rust-assist-query/school_type.[field_name]`; boolean fields have distinct
 true, false, known, and unknown predicates in that field-level help.
 
-## Independent request membership
+## Criteria alternatives and independent membership
 
-Use `matching_any_of(other_request)` (or its `match_any_of` alias) for
-independent same-entity membership. The supplied request retains its complete
+Use `matching_any_of(other_request)` (or its `match_any_of` alias) to add an OR
+of the other same-entity request's top-level non-version conditions. This group
+is ANDed with the receiver's existing conditions, including its live-row guard.
+Empty or version-only input is a no-op. Nested Boolean groups remain grouped.
+The source request's projection, grouping, HAVING, ordering and page are not
+copied; this method is not an ID subquery.
+
+Use `matching_ids_of(other_request)` for independent same-entity ID membership.
+The supplied request retains its complete
 roll-up configuration, filters, HAVING and statistical cell page. A statistical
 request must select `id` as a final result key; grouping it away is not an entity
 ID lookup and fails before SQL. Relation membership uses the exact forward or

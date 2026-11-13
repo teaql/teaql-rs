@@ -393,15 +393,22 @@ impl<R> SchoolTypeRequest<R> {
         self.__synced()
     }
 
-    pub fn matching_any_of(mut self, request: impl Into<QuerySelection>) -> Self {
-        let selection = request.into();
-        let entity = <crate::SchoolType as teaql_core::TeaqlEntity>::entity_descriptor();
-        self.query = self.query.and_filter(Expr::in_subquery("id", entity, selection.into_query(), "id"));
+    pub fn matching_any_of<O>(mut self, request: SchoolTypeRequest<O>) -> Self {
+        let filter = QuerySelection::from(request).into_query().filter;
+        if let Some(criteria) = crate::request_support::criteria_alternatives_excluding_version(filter) {
+            self.query = self.query.and_filter(criteria);
+        }
         self.__synced()
     }
 
-    pub fn match_any_of(self, request: impl Into<QuerySelection>) -> Self {
+    pub fn match_any_of<O>(self, request: SchoolTypeRequest<O>) -> Self {
         self.matching_any_of(request)
+    }
+
+    pub fn matching_ids_of<O>(mut self, request: SchoolTypeRequest<O>) -> Self {
+        let entity = <crate::SchoolType as teaql_core::TeaqlEntity>::entity_descriptor();
+        self.query = self.query.and_filter(Expr::in_subquery("id", entity, QuerySelection::from(request).into_query(), "id"));
+        self.__synced()
     }
 
     pub fn enhance_child(mut self, request: impl Into<QuerySelection>) -> Self {
