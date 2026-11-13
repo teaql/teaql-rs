@@ -848,6 +848,224 @@ fn independent_grouped_membership_rejects_unselected_identity() {
     assert!(!error.contains("Transport error"));
 }
 
+#[test]
+fn multilayer_membership_selects_a_completed_nested_dimension() {
+    let context = runtime_context(executor(), policy(false, false));
+    let school = descriptors()
+        .into_iter()
+        .find(|entity| entity.name == "School")
+        .unwrap();
+    let independent =
+        source(SelectQuery::new("Kind").group_by("id")).having(Expr::gte("schools", 4));
+    for negative in [false, true] {
+        let membership = if negative {
+            Expr::not_in_subquery("kind_id", school.clone(), independent.clone(), "kind.id")
+        } else {
+            Expr::in_subquery("kind_id", school.clone(), independent.clone(), "kind.id")
+        };
+        let query = source(SelectQuery::new("Kind").group_by("label")).and_filter(membership);
+        let rows = fetch(&context, query).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("schools").and_then(Value::try_i64),
+            Some(if negative { 1 } else { 4 })
+        );
+        assert_eq!(
+            rows[0].get("total").and_then(Value::try_i64),
+            Some(if negative { 100 } else { 3200 })
+        );
+    }
+}
+
+#[test]
+fn ordinary_statistics_authorize_a_multilayer_memberships_descendants() {
+    let policy = policy(true, false);
+    let seen = policy.seen.clone();
+    let context = runtime_context(executor(), policy);
+    let school = descriptors()
+        .into_iter()
+        .find(|entity| entity.name == "School")
+        .unwrap();
+    let independent = source(
+        SelectQuery::new("Kind")
+            .group_by("id")
+            .comment("Authorize the independent roll-up type"),
+    )
+    .having(Expr::lte("schools", 1));
+    let query = SelectQuery::new("School")
+        .count("schools")
+        .filter(Expr::in_subquery("kind_id", school, independent, "kind.id"))
+        .comment("Count schools using independent roll-up eligibility");
+    let rows = fetch(&context, query).unwrap();
+    assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(0));
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|(entity, comment)| entity == "Kind"
+                && comment == "Authorize the independent roll-up type")
+    );
+}
+
+#[test]
+fn multilayer_membership_keeps_its_page_parameters_and_builder_snapshot() {
+    let context = runtime_context(executor(), policy(false, false));
+    let school = descriptors()
+        .into_iter()
+        .find(|entity| entity.name == "School")
+        .unwrap();
+    let parent = SelectQuery::new("Kind")
+        .group_by("id")
+        .filter(Expr::gte("ordinal", 1));
+    let independent = source(parent)
+        .and_filter(Expr::gte("capacity", 100))
+        .having(Expr::gte("schools", 1))
+        .order_desc("kind.id")
+        .limit(1);
+    let query = source(SelectQuery::new("Kind").group_by("label"))
+        .and_filter(Expr::lte("capacity", 1000))
+        .and_filter(Expr::in_subquery(
+            "kind_id",
+            school,
+            independent.clone(),
+            "kind.id",
+        ));
+    let before = query.clone();
+    let rows = fetch(&context, query.clone()).unwrap();
+    assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(1));
+    assert_eq!(rows[0].get("total").and_then(Value::try_i64), Some(100));
+    assert_eq!(query, before);
+    assert_eq!(independent.slice.unwrap().limit, Some(1));
+}
+
+fn decimal_membership_context(first: &str, second: &str) -> (UserContext, EntityDescriptor) {
+    let transport = executor();
+    {
+        let handle = transport.connection();
+        let connection = handle.lock().unwrap();
+        super::decimal_functions::register(&connection).unwrap();
+        connection
+            .execute_batch(
+                "DROP TABLE legacy_kind;
+            CREATE TABLE legacy_kind(id INTEGER PRIMARY KEY, \"Legacy Kind Label\" TEXT,
+                ordinal DECIMAL_TEXT COLLATE TEAQL_DECIMAL, platform_id INTEGER);",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO legacy_kind VALUES(1001,'shared',?1,1),(1002,'shared',?2,1)",
+                [first, second],
+            )
+            .unwrap();
+    }
+    let mut entities = descriptors();
+    let kind = entities
+        .iter_mut()
+        .find(|entity| entity.name == "Kind")
+        .unwrap();
+    kind.properties
+        .iter_mut()
+        .find(|property| property.name == "ordinal")
+        .unwrap()
+        .data_type = DataType::Decimal;
+    let kind = kind.clone();
+    let metadata = entities.into_iter().fold(
+        teaql_runtime::InMemoryMetadataStore::new(),
+        |store, entity| store.with_entity(entity),
+    );
+    let service =
+        teaql_sql::SqlDataServiceExecutor::new(SqliteDialect, transport, metadata.clone());
+    let mut context = UserContext::new().with_metadata(metadata);
+    context.register_executor(service);
+    (context, kind)
+}
+
+#[test]
+fn decimal_statistical_membership_compares_integer_thresholds_in_the_exact_domain() {
+    let (context, kind) = decimal_membership_context("1", "2");
+    let checks = [
+        (BinaryOp::Eq, 2, 1),
+        (BinaryOp::Ne, 2, 4),
+        (BinaryOp::Gt, 1, 1),
+        (BinaryOp::Gte, 2, 1),
+        (BinaryOp::Lt, 2, 4),
+        (BinaryOp::Lte, 1, 4),
+    ];
+    for (op, threshold, count) in checks {
+        let independent = SelectQuery::new("Kind")
+            .group_by("id")
+            .sum("ordinal", "rankTotal")
+            .having(Expr::binary(
+                Expr::column("rankTotal"),
+                op,
+                Expr::value(threshold),
+            ));
+        let query = source(SelectQuery::new("Kind").group_by("label")).and_filter(
+            Expr::in_subquery("kind_id", kind.clone(), independent, "id"),
+        );
+        assert_eq!(
+            fetch(&context, query).unwrap()[0]
+                .get("schools")
+                .and_then(Value::try_i64),
+            Some(count)
+        );
+    }
+    for condition in [
+        Expr::between("rankTotal", 1, 1),
+        Expr::in_list("rankTotal", [Value::I64(1)]),
+    ] {
+        let independent = SelectQuery::new("Kind")
+            .group_by("id")
+            .sum("ordinal", "rankTotal")
+            .having(condition);
+        let query = source(SelectQuery::new("Kind").group_by("label")).and_filter(
+            Expr::in_subquery("kind_id", kind.clone(), independent, "id"),
+        );
+        assert_eq!(
+            fetch(&context, query).unwrap()[0]
+                .get("schools")
+                .and_then(Value::try_i64),
+            Some(4)
+        );
+    }
+}
+
+#[test]
+fn decimal_statistical_comparison_preserves_neighboring_exact_values_and_rejects_float() {
+    let first = "9007199254740992.000000001";
+    let (context, kind) = decimal_membership_context(first, "9007199254740992.000000002");
+    let threshold = first.parse::<rust_decimal::Decimal>().unwrap();
+    let independent = SelectQuery::new("Kind")
+        .group_by("id")
+        .sum("ordinal", "rankTotal")
+        .having(Expr::gt("rankTotal", Value::Decimal(threshold)));
+    let query = source(SelectQuery::new("Kind").group_by("label")).and_filter(Expr::in_subquery(
+        "kind_id",
+        kind.clone(),
+        independent,
+        "id",
+    ));
+    assert_eq!(
+        fetch(&context, query).unwrap()[0]
+            .get("schools")
+            .and_then(Value::try_i64),
+        Some(1)
+    );
+    let independent = SelectQuery::new("Kind")
+        .group_by("id")
+        .sum("ordinal", "rankTotal")
+        .having(Expr::gt("rankTotal", 1.0));
+    let query = source(SelectQuery::new("Kind").group_by("label")).and_filter(Expr::in_subquery(
+        "kind_id",
+        kind,
+        independent,
+        "id",
+    ));
+    let error = fetch(&context, query).unwrap_err();
+    assert!(error.contains("exact numeric operand"), "{error}");
+    assert!(!error.contains("Transport error"));
+}
+
 fn fetch(context: &UserContext, query: SelectQuery) -> Result<Vec<CompactRow>, String> {
     let request = teaql_runtime::PurposedSelectQuery::new(
         query,

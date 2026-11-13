@@ -16,6 +16,150 @@ use crate::{
 
 const MAX_LAYERS: usize = 64;
 
+/// The requests embedded in one statistical SQL statement, including independent
+/// predicate subqueries. Entity relation enhancements execute separately.
+pub fn statistical_query_graph(
+    query: &SelectQuery,
+) -> Result<Vec<&SelectQuery>, StatisticalPlanError> {
+    fn append<'a>(
+        queries: &mut Vec<&'a SelectQuery>,
+        query: &'a SelectQuery,
+    ) -> Result<(), StatisticalPlanError> {
+        if queries.len() >= MAX_LAYERS {
+            return Err(StatisticalPlanError(
+                "statistical request graph exceeds 64 queries".into(),
+            ));
+        }
+        queries.push(query);
+        Ok(())
+    }
+    fn expression<'a>(
+        expr: &'a Expr,
+        queries: &mut Vec<&'a SelectQuery>,
+        depth: usize,
+    ) -> Result<(), StatisticalPlanError> {
+        if depth > 64 {
+            return Err(StatisticalPlanError(
+                "statistical request expression exceeds 64 levels".into(),
+            ));
+        }
+        match expr {
+            Expr::SubQuery { left, query, .. } => {
+                expression(left, queries, depth + 1)?;
+                append(queries, query)?;
+            }
+            Expr::Function { args, .. } | Expr::And(args) | Expr::Or(args) => {
+                for arg in args {
+                    expression(arg, queries, depth + 1)?;
+                }
+            }
+            Expr::Binary { left, right, .. } => {
+                expression(left, queries, depth + 1)?;
+                expression(right, queries, depth + 1)?;
+            }
+            Expr::Between { expr, lower, upper } => {
+                for arg in [expr, lower, upper] {
+                    expression(arg, queries, depth + 1)?;
+                }
+            }
+            Expr::IsNull(expr) | Expr::IsNotNull(expr) | Expr::Not(expr) => {
+                expression(expr, queries, depth + 1)?
+            }
+            Expr::Column(_) | Expr::Value(_) | Expr::LikePattern { .. } => {}
+        }
+        Ok(())
+    }
+    let mut queries = vec![query];
+    let mut index = 0;
+    while index < queries.len() {
+        let query = queries[index];
+        index += 1;
+        for group in &query.object_group_bys {
+            append(&mut queries, &group.query)?;
+        }
+        for expr in query.filter.iter().chain(query.having.iter()) {
+            expression(expr, &mut queries, 0)?;
+        }
+        for projection in &query.expr_projection {
+            expression(&projection.expr, &mut queries, 0)?;
+        }
+        for order in &query.order_by {
+            if let Some(expr) = &order.expr {
+                expression(expr, &mut queries, 0)?;
+            }
+        }
+    }
+    Ok(queries)
+}
+
+pub fn has_nested_statistics(query: &SelectQuery) -> Result<bool, StatisticalPlanError> {
+    fn contains_query(expr: &Expr, depth: usize) -> Result<bool, StatisticalPlanError> {
+        if depth > 64 {
+            return Err(StatisticalPlanError(
+                "statistical request expression exceeds 64 levels".into(),
+            ));
+        }
+        let mut found = false;
+        match expr {
+            Expr::SubQuery { .. } => return Ok(true),
+            Expr::Function { args, .. } | Expr::And(args) | Expr::Or(args) => {
+                for arg in args {
+                    found |= contains_query(arg, depth + 1)?;
+                }
+            }
+            Expr::Binary { left, right, .. } => {
+                found |= contains_query(left, depth + 1)?;
+                found |= contains_query(right, depth + 1)?;
+            }
+            Expr::Between { expr, lower, upper } => {
+                for arg in [expr, lower, upper] {
+                    found |= contains_query(arg, depth + 1)?;
+                }
+            }
+            Expr::IsNull(expr) | Expr::IsNotNull(expr) | Expr::Not(expr) => {
+                found = contains_query(expr, depth + 1)?
+            }
+            Expr::Column(_) | Expr::Value(_) | Expr::LikePattern { .. } => {}
+        }
+        Ok(found)
+    }
+    // Ordinary scalar predicates need neither a heap-allocated request graph
+    // nor copied compilation metadata on the hot query path.
+    if query.object_group_bys.is_empty() {
+        let mut found = false;
+        for expr in query
+            .filter
+            .iter()
+            .chain(query.having.iter())
+            .chain(
+                query
+                    .expr_projection
+                    .iter()
+                    .map(|projection| &projection.expr),
+            )
+            .chain(
+                query
+                    .order_by
+                    .iter()
+                    .filter_map(|order| order.expr.as_ref()),
+            )
+        {
+            found |= contains_query(expr, 0)?;
+        }
+        if !found {
+            return Ok(false);
+        }
+    }
+    Ok(statistical_query_graph(query)?
+        .into_iter()
+        .skip(1)
+        .any(|child| {
+            !child.group_by.is_empty()
+                || !child.aggregates.is_empty()
+                || child.has_layered_statistics()
+        }))
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct StatisticalPlan {
     /// Source first; each incoming edge refers to an earlier layer.
@@ -437,6 +581,82 @@ mod tests {
                 .iter()
                 .find(|descriptor| descriptor.name == name)
         })
+    }
+
+    #[test]
+    fn ordinary_scalar_queries_have_no_nested_statistics() {
+        let query = SelectQuery::new("School")
+            .filter(Expr::gte("capacity", 10))
+            .count("schools");
+        assert!(!has_nested_statistics(&query).unwrap());
+        assert_eq!(statistical_query_graph(&query).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn embedded_request_graph_includes_independent_rollup_descendants() {
+        let child = SelectQuery::new("School").count("schools").object_group_by(
+            "kind",
+            "kind_id",
+            SelectQuery::new("Kind").object_group_by(
+                "platform",
+                "platform_id",
+                SelectQuery::new("Platform").group_by("name"),
+            ),
+        );
+        let query = SelectQuery::new("School").filter(Expr::in_subquery(
+            "kind_id",
+            EntityDescriptor::new("School"),
+            child,
+            "kind.platform.name",
+        ));
+        assert!(has_nested_statistics(&query).unwrap());
+        assert_eq!(
+            statistical_query_graph(&query)
+                .unwrap()
+                .iter()
+                .map(|query| query.entity.as_str())
+                .collect::<Vec<_>>(),
+            ["School", "School", "Kind", "Platform"]
+        );
+    }
+
+    #[test]
+    fn independent_requests_share_the_complete_statement_query_budget() {
+        let query = SelectQuery::new("School").filter(Expr::And(
+            (0..64)
+                .map(|_| {
+                    Expr::in_subquery(
+                        "kind_id",
+                        EntityDescriptor::new("Kind"),
+                        SelectQuery::new("Kind").group_by("id"),
+                        "id",
+                    )
+                })
+                .collect(),
+        ));
+        assert!(
+            statistical_query_graph(&query)
+                .unwrap_err()
+                .to_string()
+                .contains("64 queries")
+        );
+        assert!(has_nested_statistics(&query).is_err());
+    }
+
+    #[test]
+    fn nested_detection_rejects_oversized_expression_trees() {
+        let mut expression = Expr::eq("capacity", 1);
+        for _ in 0..65 {
+            expression = Expr::Not(Box::new(expression));
+        }
+        let query = SelectQuery::new("School").filter(expression);
+        assert!(
+            has_nested_statistics(&query)
+                .unwrap_err()
+                .to_string()
+                .contains("64 levels")
+        );
+        assert!(statistical_query_graph(&query).is_err());
     }
 
     #[test]

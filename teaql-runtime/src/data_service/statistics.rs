@@ -21,6 +21,19 @@ where
         Ok(root)
     }
 
+    pub(super) fn prepare_nested_statistical_layers(
+        &self,
+        root: SelectQuery,
+    ) -> Result<SelectQuery, RuntimeError> {
+        if teaql_core::aggregation_plan::has_nested_statistics(&root)
+            .map_err(|error| RuntimeError::Graph(error.to_string()))?
+        {
+            self.prepare_statistical_layers(root)
+        } else {
+            Ok(root)
+        }
+    }
+
     fn prepare_statistical_children(
         &self,
         parent: &mut SelectQuery,

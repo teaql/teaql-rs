@@ -110,6 +110,108 @@ fn source(parent: SelectQuery) -> SelectQuery {
 }
 
 #[tokio::test]
+async fn live_multilayer_membership_retains_nested_cells_and_ordinary_query_policy() {
+    let Some((context, _pool)) = fixture().await else {
+        return;
+    };
+    let school = descriptors()
+        .into_iter()
+        .find(|entity| entity.name == "School")
+        .unwrap();
+    let independent = source(SelectQuery::new("Kind").group_by("id")).having(Expr::gte("n", 4));
+    for negative in [false, true] {
+        let membership = if negative {
+            Expr::not_in_subquery("kind_id", school.clone(), independent.clone(), "kind.id")
+        } else {
+            Expr::in_subquery("kind_id", school.clone(), independent.clone(), "kind.id")
+        };
+        let rows = fetch(
+            &context,
+            source(SelectQuery::new("Kind").group_by("label")).and_filter(membership),
+        )
+        .await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("n").and_then(Value::try_i64),
+            Some(if negative { 1 } else { 4 })
+        );
+        observe(
+            if negative {
+                "multilayer-membership-negative"
+            } else {
+                "multilayer-membership-positive"
+            },
+            &rows,
+        );
+    }
+    let parent = SelectQuery::new("Kind")
+        .group_by("id")
+        .filter(Expr::gte("ordinal", 1));
+    let independent = source(parent)
+        .and_filter(Expr::gte("capacity", 100))
+        .having(Expr::gte("n", 1))
+        .order_desc("kind.id")
+        .limit(1);
+    let query = source(SelectQuery::new("Kind").group_by("label"))
+        .and_filter(Expr::lte("capacity", 1000))
+        .and_filter(Expr::in_subquery(
+            "kind_id",
+            school.clone(),
+            independent,
+            "kind.id",
+        ));
+    let rows = fetch(&context, query).await;
+    assert_eq!(rows[0].get("n").and_then(Value::try_i64), Some(1));
+    observe("multilayer-membership-page-and-parameters", &rows);
+    #[derive(Clone)]
+    struct NestedPolicy(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+    impl teaql_runtime::RequestPolicy for NestedPolicy {
+        fn enforce_select(
+            &self,
+            _context: &UserContext,
+            query: &mut SelectQuery,
+        ) -> Result<(), teaql_runtime::RuntimeError> {
+            if query.entity == "Kind" {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(query.request_scope().unwrap().comment().to_owned());
+                query.filter = Some(
+                    query
+                        .filter
+                        .take()
+                        .map(|filter| filter.and_expr(Expr::eq("ordinal", 1)))
+                        .unwrap_or_else(|| Expr::eq("ordinal", 1)),
+                );
+            }
+            Ok(())
+        }
+    }
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let context = context.with_request_policy(NestedPolicy(seen.clone()));
+    let independent = source(
+        SelectQuery::new("Kind")
+            .group_by("id")
+            .comment("Authorize nested independent types"),
+    )
+    .having(Expr::lte("n", 1));
+    let query = SelectQuery::new("School")
+        .count("schools")
+        .filter(Expr::lte("id", 5))
+        .and_filter(Expr::in_subquery("kind_id", school, independent, "kind.id"))
+        .comment("An ordinary scalar request must authorize nested roll-up filters");
+    let rows = fetch(&context, query).await;
+    assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(0));
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|comment| comment == "Authorize nested independent types")
+    );
+    observe("multilayer-membership-ordinary-policy", &rows);
+}
+
+#[tokio::test]
 async fn live_independent_grouped_membership_keeps_cells_and_context_policy() {
     let Some((context, _pool)) = fixture().await else {
         return;

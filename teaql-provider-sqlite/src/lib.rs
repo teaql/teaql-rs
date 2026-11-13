@@ -28,11 +28,11 @@ use teaql_sql::{
 };
 
 mod decimal_functions;
-mod statistical_functions;
 mod dynamic_fields;
-mod transaction;
+mod statistical_functions;
 #[cfg(test)]
 mod statistical_tests;
+mod transaction;
 pub use transaction::SqliteTransaction;
 
 pub const DEFAULT_ID_SPACE_TABLE: &str = "teaql_id_space";
@@ -60,16 +60,92 @@ impl SqlDialect for SqliteDialect {
         true
     }
 
+    fn comparison_operand_sql(
+        &self,
+        entity: &EntityDescriptor,
+        operand: &Expr,
+        peers: &[&Expr],
+        sql: String,
+    ) -> Result<String, SqlCompileError> {
+        fn decimal(entity: &EntityDescriptor, expr: &Expr) -> bool {
+            match expr {
+                Expr::Column(name) => entity
+                    .property_by_name(name)
+                    .is_some_and(|property| property.data_type == DataType::Decimal),
+                Expr::Value(Value::Decimal(_)) => true,
+                Expr::Value(Value::List(values)) => values
+                    .iter()
+                    .any(|value| matches!(value, Value::Decimal(_))),
+                Expr::Function { function, args }
+                    if matches!(
+                        function,
+                        teaql_core::ExprFunction::Identity
+                            | teaql_core::ExprFunction::Sum
+                            | teaql_core::ExprFunction::Min
+                            | teaql_core::ExprFunction::Max
+                    ) =>
+                {
+                    args.iter().any(|arg| decimal(entity, arg))
+                }
+                _ => false,
+            }
+        }
+        if !decimal(entity, operand) && !peers.iter().any(|peer| decimal(entity, peer)) {
+            return Ok(sql);
+        }
+        fn exact(entity: &EntityDescriptor, operand: &Expr) -> bool {
+            match operand {
+                Expr::Value(
+                    Value::Decimal(_)
+                    | Value::I64(_)
+                    | Value::U64(_)
+                    | Value::Null
+                    | Value::TypedNull(_),
+                ) => true,
+                Expr::Value(Value::Text(text)) => text.parse::<Decimal>().is_ok(),
+                Expr::Column(name) => entity.property_by_name(name).is_some_and(|property| {
+                    matches!(
+                        property.data_type,
+                        DataType::Decimal | DataType::I64 | DataType::U64
+                    )
+                }),
+                Expr::Function {
+                    function:
+                        teaql_core::ExprFunction::Count | teaql_core::ExprFunction::CountDistinct,
+                    ..
+                } => true,
+                Expr::Function {
+                    function:
+                        teaql_core::ExprFunction::Sum
+                        | teaql_core::ExprFunction::Min
+                        | teaql_core::ExprFunction::Max
+                        | teaql_core::ExprFunction::Identity,
+                    args,
+                } => args.iter().all(|arg| exact(entity, arg)),
+                _ => false,
+            }
+        }
+        let valid = exact(entity, operand);
+        if !valid {
+            return Err(SqlCompileError::InvalidFunctionArguments(
+                "SQLite exact Decimal comparison requires an exact numeric operand".into(),
+            ));
+        }
+        Ok(format!("(CAST({sql} AS TEXT) COLLATE TEAQL_DECIMAL)"))
+    }
+
     fn aggregate_call_sql_for(
         &self,
         entity: &EntityDescriptor,
         aggregate: &Aggregate,
         field: &str,
     ) -> Result<String, SqlCompileError> {
-        if !matches!(aggregate.function, AggregateFunction::Count | AggregateFunction::CountDistinct)
-            && entity
-                .property_by_name(&aggregate.field)
-                .is_some_and(|property| property.data_type == DataType::Decimal)
+        if !matches!(
+            aggregate.function,
+            AggregateFunction::Count | AggregateFunction::CountDistinct
+        ) && entity
+            .property_by_name(&aggregate.field)
+            .is_some_and(|property| property.data_type == DataType::Decimal)
         {
             return match aggregate.function {
                 AggregateFunction::Sum => Ok(format!("teaql_decimal_sum({field})")),

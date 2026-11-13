@@ -45,7 +45,8 @@ async function main() {
     receipt.sourceHashes = {};
     for (const file of ['Cargo.toml','Cargo.lock','teaql-core/src/query.rs','teaql-core/src/expr.rs','teaql-core/src/value.rs','teaql-core/src/aggregation_plan.rs',
       'teaql-runtime/src/inmemory_engine.rs','teaql-runtime/src/memory.rs','teaql-runtime/src/data_service/helpers.rs',
-      'teaql-sql/src/dialect.rs','teaql-sql/src/having.rs','teaql-sql/src/statistical.rs','teaql-sql/src/executor.rs',
+      'teaql-sql/src/dialect.rs','teaql-sql/src/having.rs','teaql-sql/src/statistical.rs','teaql-sql/src/executor.rs','teaql-sql/src/bindings.rs',
+      'teaql-provider-sqlite/src/lib.rs','teaql-provider-sqlite/src/decimal_functions.rs',
       'teaql-runtime/src/data_service/resolved.rs','teaql-runtime/src/data_service/statistics.rs',
       'teaql-provider-postgres/Cargo.toml','teaql-provider-postgres/src/lib.rs','teaql-provider-postgres/src/statistical_binding_tests.rs',
       'teaql-provider-postgres/tests/layered_statistics.rs',
@@ -89,8 +90,10 @@ async function main() {
         'identity-ordinary-group','identity-parent-group','identity-multihop-group',
         'nullable-raw-foreign-keys','nullable-parent-membership','nullable-grandparent-membership','nullable-empty-scalar',
         'independent-grouped-membership','independent-grouped-empty','independent-grouped-alias-page',
-        'independent-grouped-null','independent-grouped-policy'].sort());
-      assert.equal(receipt.commands.at(-1).testsPassed,8);
+        'independent-grouped-null','independent-grouped-policy',
+        'multilayer-membership-positive','multilayer-membership-negative',
+        'multilayer-membership-page-and-parameters','multilayer-membership-ordinary-policy'].sort());
+      assert.equal(receipt.commands.at(-1).testsPassed,9);
       receipt.rounds.push({round,observations});
     }
     const oracleSql = "SELECT json_build_object('schools',COUNT(*),'nonnull',COUNT(\"Legacy Capacity\"),'capacity',SUM(\"Legacy Capacity\"),'types',(SELECT COUNT(*) FROM legacy_kind),'platforms',(SELECT COUNT(*) FROM legacy_platform)) FROM legacy_school;";

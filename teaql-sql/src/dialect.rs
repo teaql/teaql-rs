@@ -1305,7 +1305,9 @@ pub trait SqlDialect {
                 ) {
                     return self.compile_in(entity, left, *op, right, params);
                 }
+                let peers = [left.as_ref(), right.as_ref()];
                 let lhs = self.compile_expr(entity, left, params)?;
+                let lhs = self.comparison_operand_sql(entity, left, &peers, lhs)?;
                 let rhs =
                     if let Some((pattern, original)) = crate::bindings::like_operand(*op, right) {
                         params.push_like_pattern(pattern, original);
@@ -1313,6 +1315,7 @@ pub trait SqlDialect {
                     } else {
                         self.compile_expr(entity, right, params)?
                     };
+                let rhs = self.comparison_operand_sql(entity, right, &peers, rhs)?;
                 let op = match op {
                     BinaryOp::Eq => "=",
                     BinaryOp::Ne => "!=",
@@ -1335,10 +1338,14 @@ pub trait SqlDialect {
                 query,
             } => self.compile_subquery(entity, left, *op, sub_entity, query, params),
             Expr::Between { expr, lower, upper } => {
-                let expr = self.compile_expr(entity, expr, params)?;
-                let lower = self.compile_expr(entity, lower, params)?;
-                let upper = self.compile_expr(entity, upper, params)?;
-                Ok(format!("({expr} BETWEEN {lower} AND {upper})"))
+                let peers = [expr.as_ref(), lower.as_ref(), upper.as_ref()];
+                let value = self.compile_expr(entity, expr, params)?;
+                let value = self.comparison_operand_sql(entity, expr, &peers, value)?;
+                let low = self.compile_expr(entity, lower, params)?;
+                let low = self.comparison_operand_sql(entity, lower, &peers, low)?;
+                let high = self.compile_expr(entity, upper, params)?;
+                let high = self.comparison_operand_sql(entity, upper, &peers, high)?;
+                Ok(format!("({value} BETWEEN {low} AND {high})"))
             }
             Expr::IsNull(expr) => {
                 let expr = self.compile_expr(entity, expr, params)?;
@@ -1357,6 +1364,18 @@ pub trait SqlDialect {
         })();
         params.scope = previous_scope;
         result
+    }
+
+    /// Preserve a provider's exact comparison domain without changing the
+    /// parameter values or their field-aware logging provenance.
+    fn comparison_operand_sql(
+        &self,
+        _entity: &EntityDescriptor,
+        _operand: &Expr,
+        _peers: &[&Expr],
+        sql: String,
+    ) -> Result<String, SqlCompileError> {
+        Ok(sql)
     }
 
     fn compile_function(
@@ -1474,9 +1493,58 @@ pub trait SqlDialect {
             _ => return Err(SqlCompileError::InvalidSubQueryOperator(format!("{op:?}"))),
         };
         let statistical = !query.group_by.is_empty() || !query.aggregates.is_empty();
+        if let Some(metadata) = &params.metadata {
+            let descriptor = metadata
+                .get(&query.entity)
+                .ok_or_else(|| SqlCompileError::UnknownEntity(query.entity.clone()))?;
+            if descriptor.as_ref() != sub_entity {
+                return Err(SqlCompileError::InvalidFunctionArguments(
+                    "statistical membership descriptor does not match registered metadata".into(),
+                ));
+            }
+        }
         if query.has_layered_statistics() {
-            return Err(SqlCompileError::InvalidFunctionArguments(
-                "layered statistical membership requires metadata-bound result lowering".into(),
+            let metadata = params.metadata.clone().ok_or_else(|| {
+                SqlCompileError::InvalidFunctionArguments(
+                    "layered statistical membership requires registered metadata".into(),
+                )
+            })?;
+            let plan = teaql_core::aggregation_plan::StatisticalPlan::build(query, |name| {
+                metadata.get(name).map(AsRef::as_ref)
+            })
+            .map_err(|error| SqlCompileError::InvalidFunctionArguments(error.to_string()))?;
+            let [key] = query.projection.as_slice() else {
+                return Err(SqlCompileError::InvalidFunctionArguments(
+                    "statistical membership requires exactly one selected result key".into(),
+                ));
+            };
+            let candidates = plan
+                .dimensions
+                .iter()
+                .enumerate()
+                .filter(|(_, binding)| binding.output_path.join(".") == *key)
+                .map(|(index, _)| format!("__teaql_d{index}"))
+                .chain(
+                    plan.measures
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, binding)| binding.output_path.join(".") == *key)
+                        .map(|(index, _)| format!("__teaql_m{index}")),
+                )
+                .collect::<Vec<_>>();
+            let [column] = candidates.as_slice() else {
+                return Err(SqlCompileError::InvalidFunctionArguments(
+                    "membership key is not an unambiguous selected statistical result".into(),
+                ));
+            };
+            let outer_scope = params.scope.take();
+            let subquery = crate::statistical::compile_statistical_plan_sql(self, &plan, params);
+            params.scope = outer_scope;
+            let subquery = subquery?;
+            let alias = self.quote_ident("__teaql_membership");
+            let key = format!("{alias}.{}", self.quote_ident(column));
+            return Ok(format!(
+                "({lhs} {operator} (SELECT {key} FROM ({subquery}) AS {alias} WHERE {key} IS NOT NULL))"
             ));
         }
         let key = if statistical {
@@ -1536,7 +1604,9 @@ pub trait SqlDialect {
         right: &Expr,
         params: &mut crate::SqlBindings,
     ) -> Result<String, SqlCompileError> {
+        let peers = [left, right];
         let lhs = self.compile_expr(entity, left, params)?;
+        let lhs = self.comparison_operand_sql(entity, left, &peers, lhs)?;
         let operator = match op {
             BinaryOp::In | BinaryOp::InLarge => "IN",
             BinaryOp::NotIn | BinaryOp::NotInLarge => "NOT IN",
@@ -1550,12 +1620,18 @@ pub trait SqlDialect {
                 let mut placeholders = Vec::with_capacity(values.len());
                 for value in values {
                     params.push(value.clone());
-                    placeholders.push(self.placeholder(params.len()));
+                    placeholders.push(self.comparison_operand_sql(
+                        entity,
+                        &Expr::Value(value.clone()),
+                        &peers,
+                        self.placeholder(params.len()),
+                    )?);
                 }
                 Ok(format!("({lhs} {operator} ({}))", placeholders.join(", ")))
             }
             _ => {
                 let rhs = self.compile_expr(entity, right, params)?;
+                let rhs = self.comparison_operand_sql(entity, right, &peers, rhs)?;
                 Ok(format!("({lhs} {operator} ({rhs}))"))
             }
         }

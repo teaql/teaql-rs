@@ -18,9 +18,44 @@ use crate::{CompiledQuery, SqlBindings, SqlCompileError, SqlDialect};
 /// Unsupported post-aggregation layer shapes fail explicitly rather than
 /// silently applying pre-aggregation pagination or dropping predicates.
 pub fn compile_statistical_plan(
-    dialect: &impl SqlDialect,
+    dialect: &(impl SqlDialect + ?Sized),
     plan: &StatisticalPlan,
 ) -> Result<CompiledQuery, SqlCompileError> {
+    let metadata = plan
+        .layers
+        .iter()
+        .map(|layer| {
+            (
+                layer.descriptor.name.clone(),
+                std::sync::Arc::new(layer.descriptor.clone()),
+            )
+        })
+        .collect();
+    compile_statistical_plan_with_metadata(dialect, plan, std::sync::Arc::new(metadata))
+}
+
+pub(crate) fn compile_statistical_plan_with_metadata(
+    dialect: &(impl SqlDialect + ?Sized),
+    plan: &StatisticalPlan,
+    metadata: std::sync::Arc<crate::bindings::CompilationMetadata>,
+) -> Result<CompiledQuery, SqlCompileError> {
+    let mut params = SqlBindings::new();
+    params.metadata = Some(metadata);
+    let sql = compile_statistical_plan_sql(dialect, plan, &mut params)?;
+    Ok(CompiledQuery {
+        sql,
+        log_context: params.log_context(dialect.kind()),
+        params: params.into_values(),
+        comment: plan.layers[0].request.comment.clone(),
+    })
+}
+
+/// Reuse the enclosing statement's parameter numbering and masking provenance.
+pub(crate) fn compile_statistical_plan_sql(
+    dialect: &(impl SqlDialect + ?Sized),
+    plan: &StatisticalPlan,
+    params: &mut SqlBindings,
+) -> Result<String, SqlCompileError> {
     let invalid = |message: &str| SqlCompileError::InvalidFunctionArguments(message.to_owned());
     let Some(root) = plan.layers.first() else {
         return Err(invalid("empty statistical plan"));
@@ -31,7 +66,6 @@ pub fn compile_statistical_plan(
         ));
     }
     let q = |name: &str| dialect.quote_ident(name);
-    let mut params = SqlBindings::new();
     let mut ctes = Vec::new();
     for (index, layer) in plan.layers.iter().enumerate() {
         let request = &layer.request;
@@ -102,7 +136,7 @@ pub fn compile_statistical_plan(
                 }
             }
         }
-        let sql = dialect.compile_select_sql(&layer.descriptor, &population, &mut params)?;
+        let sql = dialect.compile_select_sql(&layer.descriptor, &population, params)?;
         ctes.push(format!("{} AS ({sql})", q(&format!("__teaql_q{index}"))));
     }
     let field = |layer: usize, name: &str| -> Result<String, SqlCompileError> {
@@ -180,8 +214,7 @@ pub fn compile_statistical_plan(
         {
             continue;
         }
-        let (eligible, labels) =
-            compile_parent_cells(dialect, plan, owner, &mut ctes, &mut params)?;
+        let (eligible, labels) = compile_parent_cells(dialect, plan, owner, &mut ctes, params)?;
         eligibility.push(format!(
             "EXISTS (SELECT 1 FROM {} AS {} WHERE {})",
             q(&eligible),
@@ -307,15 +340,13 @@ pub fn compile_statistical_plan(
         // bind through a result descriptor, not a second raw SQL substitution.
         let descriptor = result_descriptor(plan)?;
         let mut outer = SelectQuery::new("__teaql_statistical_result");
-        outer.projection = descriptor
-            .properties
-            .iter()
-            .map(|property| property.name.clone())
-            .collect();
+        for property in &descriptor.properties {
+            outer = outer.project_expr(&property.column_name, Expr::column(&property.name));
+        }
         outer.filter = root.request.having.clone();
         outer.order_by = result_orders(plan, 0, &descriptor)?;
         outer.slice = root.request.slice;
-        let outer_sql = dialect.compile_select_sql(&descriptor, &outer, &mut params)?;
+        let outer_sql = dialect.compile_select_sql(&descriptor, &outer, params)?;
         sql = format!(
             "WITH {} , {} AS (SELECT {} FROM {result_joins}) {outer_sql}",
             ctes.join(", "),
@@ -323,19 +354,14 @@ pub fn compile_statistical_plan(
             result.join(", ")
         );
     }
-    Ok(CompiledQuery {
-        sql,
-        log_context: params.log_context(dialect.kind()),
-        params: params.into_values(),
-        comment: root.request.comment.clone(),
-    })
+    Ok(sql)
 }
 
 /// Evaluate each parent's bounds at its own descendant dimension grain, using
 /// the source-filtered population. Picking parent IDs before grouping would
 /// discard other IDs that belong to the same eligible business dimension.
 fn compile_parent_cells(
-    dialect: &impl SqlDialect,
+    dialect: &(impl SqlDialect + ?Sized),
     plan: &StatisticalPlan,
     owner: usize,
     ctes: &mut Vec<String>,
@@ -526,7 +552,7 @@ fn result_orders(
 }
 
 fn match_dimensions(
-    dialect: &impl SqlDialect,
+    dialect: &(impl SqlDialect + ?Sized),
     labels: &[String],
     left: &str,
     right: &str,

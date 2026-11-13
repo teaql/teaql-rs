@@ -529,6 +529,9 @@ where
             && query.child_enhancements.is_empty()
             && query.relations.is_empty()
         {
+            let query = self
+                .prepare_nested_statistical_layers(query)
+                .map_err(DataServiceError::Runtime)?;
             return self.fetch_prepared_query_owned(query).await;
         }
         self.fetch_prepared_all(&query).await
@@ -548,6 +551,9 @@ where
             && query.child_enhancements.is_empty()
             && query.relations.is_empty()
         {
+            let query = self
+                .prepare_nested_statistical_layers(query)
+                .map_err(DataServiceError::Runtime)?;
             return self.fetch_prepared_query_owned(query).await;
         }
         self.fetch_prepared_all(&query).await
@@ -573,6 +579,9 @@ where
             && query.child_enhancements.is_empty()
             && query.relations.is_empty()
         {
+            let query = self
+                .prepare_nested_statistical_layers(query)
+                .map_err(DataServiceError::Runtime)?;
             return self.fetch_prepared_query_owned(query).await;
         }
         self.fetch_prepared_all(&query).await
@@ -1207,6 +1216,9 @@ where
                 .map_err(DataServiceError::Runtime)?;
             return Box::pin(self.fetch_prepared_query(&query)).await;
         }
+        let query = self
+            .prepare_nested_statistical_layers(query)
+            .map_err(DataServiceError::Runtime)?;
         if relation_aggregates.is_empty()
             && query.continuous_page_fetch.is_none()
             && query.object_group_bys.is_empty()
@@ -1655,6 +1667,9 @@ where
             .prepare_for_list()
             .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
         let root = crate::EntityRuntimeState::default();
+        let query = self
+            .prepare_nested_statistical_layers(query)
+            .map_err(DataServiceError::Runtime)?;
         let rows = self.fetch_prepared_query_owned(query).await?;
         let decoded = if let Some(selection) = selection.as_ref().filter(|_| !rows.is_empty()) {
             self.decode_with_dynamic_fields::<T>(rows, &root, selection)

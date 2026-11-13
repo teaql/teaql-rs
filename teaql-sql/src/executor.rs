@@ -166,8 +166,63 @@ where
             return compile_layered_statistics(&self.dialect, &self.schema_provider, query)
                 .map(|(_, compiled)| compiled);
         }
+        if teaql_core::aggregation_plan::has_nested_statistics(query)
+            .map_err(|error| SqlCompileError::InvalidFunctionArguments(error.to_string()))?
+        {
+            return compile_nested_statistics(&self.dialect, &self.schema_provider, entity, query);
+        }
         compile_select_with_cache(&self.dialect, &self.select_plan_cache, entity, query)
     }
+}
+
+fn statistical_metadata<S: teaql_data_service::SchemaProvider>(
+    schema: &S,
+    query: &SelectQuery,
+) -> Result<Arc<crate::bindings::CompilationMetadata>, SqlCompileError> {
+    let mut descriptors = std::collections::BTreeMap::new();
+    let requests = teaql_core::aggregation_plan::statistical_query_graph(query)
+        .map_err(|error| SqlCompileError::InvalidFunctionArguments(error.to_string()))?;
+    let mut source_route = None;
+    for request in requests {
+        let descriptor = schema
+            .get_entity(&request.entity)
+            .ok_or_else(|| SqlCompileError::UnknownEntity(request.entity.clone()))?;
+        let route = descriptor
+            .data_service
+            .as_deref()
+            .filter(|route| !route.is_empty())
+            .unwrap_or("default");
+        if source_route
+            .as_deref()
+            .is_some_and(|source| source != route)
+        {
+            return Err(SqlCompileError::InvalidFunctionArguments(
+                "statistical SQL populations must use the same data service".into(),
+            ));
+        }
+        source_route.get_or_insert_with(|| route.to_owned());
+        descriptors
+            .entry(request.entity.clone())
+            .or_insert(descriptor);
+    }
+    Ok(Arc::new(descriptors))
+}
+
+fn compile_nested_statistics<D: SqlDialect, S: teaql_data_service::SchemaProvider>(
+    dialect: &D,
+    schema: &S,
+    entity: &EntityDescriptor,
+    query: &SelectQuery,
+) -> Result<CompiledQuery, SqlCompileError> {
+    let mut params = crate::SqlBindings::new();
+    params.metadata = Some(statistical_metadata(schema, query)?);
+    let sql = dialect.compile_select_sql(entity, query, &mut params)?;
+    Ok(CompiledQuery {
+        sql,
+        log_context: params.log_context(dialect.kind()),
+        params: params.into_values(),
+        comment: query.comment.clone(),
+    })
 }
 
 fn compile_layered_statistics<D: SqlDialect, S: teaql_data_service::SchemaProvider>(
@@ -175,28 +230,13 @@ fn compile_layered_statistics<D: SqlDialect, S: teaql_data_service::SchemaProvid
     schema: &S,
     query: &SelectQuery,
 ) -> Result<(teaql_core::aggregation_plan::StatisticalPlan, CompiledQuery), SqlCompileError> {
-    let mut descriptors = std::collections::BTreeMap::new();
-    let mut pending = vec![query];
-    let mut count = 0;
-    while let Some(layer) = pending.pop() {
-        count += 1;
-        if count > 64 {
-            return Err(SqlCompileError::InvalidFunctionArguments(
-                "statistical plan exceeds 64 layers".into(),
-            ));
-        }
-        descriptors.entry(layer.entity.clone()).or_insert(
-            schema
-                .get_entity(&layer.entity)
-                .ok_or_else(|| SqlCompileError::UnknownEntity(layer.entity.clone()))?,
-        );
-        pending.extend(layer.object_group_bys.iter().map(|group| &group.query));
-    }
+    let descriptors = statistical_metadata(schema, query)?;
     let plan = teaql_core::aggregation_plan::StatisticalPlan::build(query, |name| {
         descriptors.get(name).map(AsRef::as_ref)
     })
     .map_err(|error| SqlCompileError::InvalidFunctionArguments(error.to_string()))?;
-    let compiled = crate::compile_statistical_plan(dialect, &plan)?;
+    let compiled =
+        crate::statistical::compile_statistical_plan_with_metadata(dialect, &plan, descriptors)?;
     Ok((plan, compiled))
 }
 
@@ -2125,6 +2165,11 @@ where
         if query.has_layered_statistics() {
             return compile_layered_statistics(self.dialect, self.schema_provider, query)
                 .map(|(_, compiled)| compiled);
+        }
+        if teaql_core::aggregation_plan::has_nested_statistics(query)
+            .map_err(|error| SqlCompileError::InvalidFunctionArguments(error.to_string()))?
+        {
+            return compile_nested_statistics(self.dialect, self.schema_provider, entity, query);
         }
         compile_select_with_cache(self.dialect, &self.select_plan_cache, entity, query)
     }

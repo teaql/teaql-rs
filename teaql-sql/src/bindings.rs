@@ -3,12 +3,16 @@ use crate::DatabaseKind;
 use teaql_core::{BinaryOp, EntityDescriptor, Expr, Value};
 use teaql_data_service::{SqlIntentRedactions, SqlLogContext, SqlParameterLogPolicy as Policy};
 
+pub(crate) type CompilationMetadata =
+    std::collections::BTreeMap<String, std::sync::Arc<EntityDescriptor>>;
+
 #[derive(Debug, Clone, Default)]
 pub struct SqlBindings {
     values: Vec<Value>,
     policies: Vec<Policy>,
     originals: Vec<(usize, Value)>,
     pub(crate) scope: Option<Policy>,
+    pub(crate) metadata: Option<std::sync::Arc<CompilationMetadata>>,
     untrusted_sql: bool,
 }
 
