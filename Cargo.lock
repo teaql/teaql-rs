@@ -3733,6 +3733,7 @@ version = "7.1.0"
 dependencies = [
  "async-stream",
  "chrono",
+ "encoding_rs",
  "futures-core",
  "futures-executor",
  "futures-util",

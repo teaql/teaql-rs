@@ -288,7 +288,7 @@ async fn main() -> Result<(), Error> {
 
     set_rank(&context, 1001, first).await?;
     set_rank(&context, 1002, second).await?;
-    gbk_rollup_cases::verify(&context, false).await?;
+    gbk_rollup_cases::verify(&context, true).await?;
     bitwise_rollup_cases::verify(&context).await?;
     println!(
         "GENERATED_NUMERIC_ROLLUP={}",

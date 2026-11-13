@@ -29,6 +29,8 @@ use teaql_sql::{
 
 mod decimal_functions;
 mod dynamic_fields;
+mod gbk_encoding;
+mod gbk_functions;
 mod statistical_functions;
 #[cfg(test)]
 mod statistical_tests;
@@ -58,6 +60,16 @@ impl SqlDialect for SqliteDialect {
 
     fn prefers_small_parent_relation_probes(&self) -> bool {
         true
+    }
+
+    fn compile_gbk_function(
+        &self,
+        entity: &EntityDescriptor,
+        args: &[Expr],
+        params: &mut teaql_sql::SqlBindings,
+    ) -> Result<String, SqlCompileError> {
+        let operand = self.compile_gbk_text_operand(entity, args, params)?;
+        Ok(format!("teaql_gbk({operand})"))
     }
 
     fn order_by_sql(
@@ -833,6 +845,7 @@ impl SqliteMutationExecutor {
             Self::ensure_soundex_function(&connection)?;
             decimal_functions::register(&connection)?;
             statistical_functions::register(&connection)?;
+            gbk_functions::register(&connection)?;
             self.functions_registered.store(true, Ordering::Release);
         }
         Ok(connection)

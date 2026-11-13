@@ -489,9 +489,11 @@ fn layered_rollup_distinct_count_empty_null_and_ordinary_having() {
         result[0].get("capacities").and_then(Value::try_i64),
         Some(2)
     );
-    assert!(fetch(&context, ordinary.having(Expr::gt("capacities", 2)))
-        .unwrap()
-        .is_empty());
+    assert!(
+        fetch(&context, ordinary.having(Expr::gt("capacities", 2)))
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -698,7 +700,7 @@ fn layered_order_matches_selected_expressions_not_source_population() {
 }
 
 #[test]
-fn unavailable_gbk_is_rejected_before_sql_not_silently_sorted_as_utf8() {
+fn non_text_gbk_is_rejected_before_sql_not_silently_coerced() {
     let transport = executor();
     transport
         .connection()
@@ -710,13 +712,97 @@ fn unavailable_gbk_is_rejected_before_sql_not_silently_sorted_as_utf8() {
     let query = SelectQuery::new("Kind")
         .group_by("label")
         .count("types")
-        .order_gbk_asc("label")
+        .order_gbk_asc("types")
         .limit(1)
-        .comment("Reject unavailable GBK encoding rather than silently sorting UTF8")
-        .purpose("Prove unsupported provider capability fails before the missing table");
+        .comment("Reject non-text GBK operands")
+        .purpose("Prove typed sorting fails before the missing table");
     let error = fetch(&context, query).unwrap_err();
-    assert!(error.contains("GBK is unsupported"), "{error}");
+    assert!(error.contains("text"), "{error}");
     assert!(!error.contains("no such table"), "{error}");
+}
+
+#[test]
+fn gbk_orders_ordinary_parent_and_final_cells_by_encoded_bytes() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "UPDATE legacy_kind SET \"Legacy Kind Label\"='中' WHERE id=1001;
+         UPDATE legacy_kind SET \"Legacy Kind Label\"='阿' WHERE id=1002;
+         INSERT INTO legacy_kind VALUES(1003,'文',3,1),(1004,NULL,4,1);
+         INSERT INTO legacy_school VALUES(6,50,1003);",
+        )
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let ordinary = SelectQuery::new("Kind")
+        .group_by_expr("caption", Expr::identity(Expr::column("label")))
+        .count("types")
+        .filter(Expr::is_not_null("label"))
+        .order_gbk_asc("caption")
+        .comment("Order completed Chinese cells using their GBK bytes")
+        .limit(2);
+    for _ in 0..2 {
+        let rows = fetch(&context, ordinary.clone()).unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|r| r.get("caption").unwrap().clone())
+                .collect::<Vec<_>>(),
+            vec![Value::from("阿"), Value::from("文")]
+        );
+        let descending = fetch(
+            &context,
+            SelectQuery::new("Kind")
+                .group_by("label")
+                .filter(Expr::is_not_null("label"))
+                .count("types")
+                .order_gbk_desc("label")
+                .offset(1)
+                .comment("Page completed Chinese cells in reverse GBK order")
+                .limit(1),
+        )
+        .unwrap();
+        assert_eq!(descending[0].get("label"), Some(&Value::from("文")));
+        let parent = SelectQuery::new("Kind")
+            .group_by("label")
+            .count("types")
+            .order_gbk_asc("label")
+            .offset(1)
+            .limit(1);
+        let rows = fetch(&context, source(parent)).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rollup_object(&rows[0], "kind").get("label"),
+            Some(&Value::from("文"))
+        );
+        assert_eq!(rows[0].get("schools"), Some(&Value::I64(1)));
+        assert_eq!(rows[0].get("total"), Some(&Value::I64(50)));
+        let rows = fetch(
+            &context,
+            source(SelectQuery::new("Kind").group_by("label").count("types"))
+                .order_gbk_asc("kind.label")
+                .limit(1),
+        )
+        .unwrap();
+        assert_eq!(
+            rollup_object(&rows[0], "kind").get("label"),
+            Some(&Value::from("阿"))
+        );
+        assert_eq!(rows[0].get("total"), Some(&Value::I64(100)));
+        let rows = fetch(
+            &context,
+            SelectQuery::new("Kind")
+                .group_by("label")
+                .filter(Expr::is_null("label"))
+                .count("types")
+                .comment("Keep null GBK keys distinct from empty text")
+                .order_gbk_asc("label"),
+        )
+        .unwrap();
+        assert_eq!(rows[0].get("label"), Some(&Value::Null));
+        assert_eq!(rows[0].get("types"), Some(&Value::I64(1)));
+    }
 }
 
 #[test]
@@ -1022,13 +1108,17 @@ fn missing_parent_references_are_not_an_existing_null_dimension() {
             .sum::<i64>(),
         7
     );
-    assert!(raw_rows
-        .iter()
-        .any(|row| row.get("kind_id") == Some(&Value::Null)
-            && row.get("total").and_then(Value::try_i64) == Some(50)));
-    assert!(raw_rows
-        .iter()
-        .any(|row| row.get("kind_id").and_then(Value::try_i64) == Some(9999)));
+    assert!(
+        raw_rows
+            .iter()
+            .any(|row| row.get("kind_id") == Some(&Value::Null)
+                && row.get("total").and_then(Value::try_i64) == Some(50))
+    );
+    assert!(
+        raw_rows
+            .iter()
+            .any(|row| row.get("kind_id").and_then(Value::try_i64) == Some(9999))
+    );
     let parent = SelectQuery::new("Kind")
         .group_by("label")
         .count("types")
@@ -1137,12 +1227,14 @@ fn filtered_and_missing_parents_keep_empty_group_and_scalar_semantics_distinct()
         rollup_object(&rows[0], "kind").get("label"),
         Some(&Value::Null)
     );
-    assert!(fetch(
-        &context,
-        source(SelectQuery::new("Kind").group_by("label")).and_filter(Expr::gte("id", 6))
-    )
-    .unwrap()
-    .is_empty());
+    assert!(
+        fetch(
+            &context,
+            source(SelectQuery::new("Kind").group_by("label")).and_filter(Expr::gte("id", 6))
+        )
+        .unwrap()
+        .is_empty()
+    );
     let scalar = SelectQuery::new("Kind")
         .count("types")
         .sum("ordinal", "ordinalTotal");
@@ -1330,12 +1422,13 @@ fn independent_grouped_membership_receives_its_own_context_policy() {
         "id",
     ));
     assert!(fetch(&context, query).unwrap().is_empty());
-    assert!(seen
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|(entity, comment)| entity == "Kind"
-            && comment == "Authorize the independent statistical business filter"));
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|(entity, comment)| entity == "Kind"
+                && comment == "Authorize the independent statistical business filter")
+    );
 }
 
 #[test]
@@ -1469,12 +1562,13 @@ fn ordinary_statistics_authorize_a_multilayer_memberships_descendants() {
         .comment("Count schools using independent roll-up eligibility");
     let rows = fetch(&context, query).unwrap();
     assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(0));
-    assert!(seen
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|(entity, comment)| entity == "Kind"
-            && comment == "Authorize the independent roll-up type"));
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|(entity, comment)| entity == "Kind"
+                && comment == "Authorize the independent roll-up type")
+    );
 }
 
 #[test]
@@ -1983,9 +2077,11 @@ fn ordinary_statistics_having_count_alias_filters_scalar_result() {
     let rows = fetch(&context, query.clone()).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].get("schools"), Some(&Value::I64(5)));
-    assert!(fetch(&context, query.having(Expr::gt("schools", 5)))
-        .unwrap()
-        .is_empty());
+    assert!(
+        fetch(&context, query.having(Expr::gt("schools", 5)))
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -2220,11 +2316,13 @@ fn layered_rollup_observed_stream_reports_final_logical_rows() {
     let events = events.lock().unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].result_count, Some(1));
-    assert!(events[0]
-        .parameterized_query
-        .as_ref()
-        .unwrap()
-        .contains("__teaql_grain0"));
+    assert!(
+        events[0]
+            .parameterized_query
+            .as_ref()
+            .unwrap()
+            .contains("__teaql_grain0")
+    );
 }
 
 #[test]
@@ -2292,12 +2390,14 @@ fn layered_rollup_parent_having_uses_deduplicated_owner_measures() {
         .having(Expr::gt("kinds", 1));
     let rows = fetch(&context, source(parent.clone())).unwrap();
     assert_eq!(rows[0].get("schools"), Some(&Value::I64(5)));
-    assert!(fetch(
-        &context,
-        source(parent).and_filter(Expr::gte("capacity", 800))
-    )
-    .unwrap()
-    .is_empty());
+    assert!(
+        fetch(
+            &context,
+            source(parent).and_filter(Expr::gte("capacity", 800))
+        )
+        .unwrap()
+        .is_empty()
+    );
 }
 
 #[test]

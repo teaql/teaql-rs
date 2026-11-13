@@ -29,6 +29,8 @@ async function main(){
       'Cargo.toml','Cargo.lock','teaql-core/src/aggregation_plan.rs','teaql-core/src/aggregation_plan/measure_expression.rs','teaql-sql/src/statistical.rs',
       'teaql-core/src/query.rs','teaql-core/src/request.rs','teaql-core/tests/rollup_navigation.rs'];
     sources.push('teaql-sql/src/integer_operand.rs','teaql-provider-sqlite/src/lib.rs');
+    sources.push('teaql-provider-sqlite/Cargo.toml','teaql-provider-sqlite/src/gbk_encoding.rs',
+      'teaql-provider-sqlite/src/gbk_functions.rs');
     const sourceHashes=()=>Object.fromEntries(sources.map(name=>[name,sha(fs.readFileSync(path.join(repo,name)))]));
     receipt.sourceHashes=sourceHashes();
     receipt.generatedFiles=files(path.join(__dirname,'lib'));
