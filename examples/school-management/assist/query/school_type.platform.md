@@ -17,6 +17,7 @@ Type: `reference to platform`
 | Group | `group_by_platform()`, `group_by_platform_as(alias)` |
 | Group expression | `group_by_platform_with_function(alias, function)` |
 | Filter statistical results | `having(expr)`; repeated calls combine with AND |
+| Order statistical results | `add_order_by_ascending(result_key)`, `add_order_by_descending(result_key)` |
 | Count non-null references | `count_platform()`, `count_platform_as(alias)` |
 | Group with details | `group_by_platform_with_details()`, `group_by_platform_with_details_from(request)` |
 | Configure parent for roll-up | `roll_up_to_platform()`, `roll_up_to_platform_with(request)` |
@@ -47,6 +48,11 @@ Use `having(teaql_core::Expr::gt("selected_measure_alias", value))` for predicat
 on completed statistical cells, not a field filter on the source rows. A parent
 request's HAVING is applied to its own grouped cells before its ordering/page;
 configure it on the typed parent returned by roll-up.
+For a measure alias or nested result path, use `add_order_by_ascending(result_key)`
+or `add_order_by_descending(result_key)` before `limit(...)`. The key must be an
+already selected statistical result, not a physical column or SQL fragment.
+These methods preserve the live parent configuration and match Java's
+`addOrderByAscending` / `addOrderByDescending`, with Rust builder ownership.
 Grouped details add an object at `row.get("platform")` and retain
 the scalar FK at `row.get("platform_id")`.
 

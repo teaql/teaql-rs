@@ -746,6 +746,17 @@ impl<R> SchoolRequest<R> {
         self.__synced()
     }
 
+    /// Order a selected statistical alias or nested result path, matching Java.
+    pub fn add_order_by_ascending(mut self, result_key: impl Into<String>) -> Self {
+        self.query = self.query.order_asc(result_key);
+        self.__synced()
+    }
+
+    pub fn add_order_by_descending(mut self, result_key: impl Into<String>) -> Self {
+        self.query = self.query.order_desc(result_key);
+        self.__synced()
+    }
+
     pub fn count(mut self) -> Self {
         self.query_options.page_count_operation = Some(QueryOperation::new(QueryOperationKind::NamedCount, "count"));
         self.aggregate_count("count")

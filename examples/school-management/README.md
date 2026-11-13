@@ -94,6 +94,14 @@ such as `School Type`.
 The optional `--native` flag also runs all targets of the core, SQL, runtime and
 SQLite crates. This is local-source verification, not release acceptance.
 
+The gate also runs `numeric_rollup_probe` twice. It changes only the mutable
+SchoolType presentation ranks through audited Mutation, checks persistence with
+Q/E, and restores them after each run. Totals of 2 and 10 exercise numeric rather
+than lexical ordering through `add_order_by_ascending` and
+`add_order_by_descending`, ordinary/parent/nested paging and exact HAVING.
+The seven scenarios include rejecting an unknown layered sort result. A
+read-only oracle confirms the original ranks 1 and 2 remain in the database.
+
 Regenerate library, current Assist and workspace guidance together from the
 model using `scripts/regenerate-rust-native-school.cjs` in the code-generator
 repository. Its `--runtime` option points to this checkout, and `--output` must

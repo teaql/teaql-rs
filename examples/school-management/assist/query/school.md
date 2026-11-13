@@ -37,7 +37,7 @@ unknown fields, unbounded reads, and trusted-context input must fail. Use genera
 relation loading rather than handwritten child-query loops; never guess a plural name.
 
 For field-specific predicates and projections, request
-`rust-assist-query/School.[field_name]`; boolean fields have distinct
+`rust-assist-query/school.[field_name]`; boolean fields have distinct
 true, false, known, and unknown predicates in that field-level help.
 
 ## Facet membership counts

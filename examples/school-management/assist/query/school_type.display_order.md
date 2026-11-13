@@ -19,6 +19,7 @@ Type: `number`
 | Group | `group_by_display_order()`, `group_by_display_order_as(alias)` |
 | Group expression | `group_by_display_order_with_function(alias, function)` |
 | Filter statistical results | `having(expr)`; repeated calls combine with AND |
+| Order statistical results | `add_order_by_ascending(result_key)`, `add_order_by_descending(result_key)` |
 | Count non-null values | `count_display_order()`, `count_display_order_as(alias)` |
 | Aggregate | `min_display_order()`, `min_display_order_as(alias)` |
 | Aggregate | `max_display_order()`, `max_display_order_as(alias)` |
@@ -54,6 +55,11 @@ Use `having(teaql_core::Expr::gt("selected_measure_alias", value))` for predicat
 on completed statistical cells, not a field filter on the source rows. A parent
 request's HAVING is applied to its own grouped cells before its ordering/page;
 configure it on the typed parent returned by roll-up.
+For a measure alias or nested result path, use `add_order_by_ascending(result_key)`
+or `add_order_by_descending(result_key)` before `limit(...)`. The key must be an
+already selected statistical result, not a physical column or SQL fragment.
+These methods preserve the live parent configuration and match Java's
+`addOrderByAscending` / `addOrderByDescending`, with Rust builder ownership.
 
 
 ---
