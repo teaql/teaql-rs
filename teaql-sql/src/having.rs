@@ -107,7 +107,7 @@ pub(crate) fn bind(query: &SelectQuery, expr: &Expr) -> Result<Expr, SqlCompileE
             }
         }
         Expr::Function { function, args } => {
-            if matches!(function, F::Soundex | F::Gbk) {
+            if matches!(function, F::Identity | F::Soundex | F::Gbk) {
                 Expr::function(
                     *function,
                     args.iter()
@@ -160,7 +160,7 @@ pub(crate) fn bind(query: &SelectQuery, expr: &Expr) -> Result<Expr, SqlCompileE
     })
 }
 
-fn aggregate_expr(aggregate: &Aggregate) -> Expr {
+pub(crate) fn aggregate_expr(aggregate: &Aggregate) -> Expr {
     let function = match aggregate.function {
         A::Count => F::Count,
         A::CountDistinct => F::CountDistinct,
@@ -265,6 +265,51 @@ mod tests {
         assert!(compiled.sql.contains(
             "HAVING ((SUM(\"Legacy Capacity\") IS NULL) OR (COUNT(*) BETWEEN $1 AND $2))"
         ));
+    }
+
+    #[test]
+    fn identity_unwraps_measure_alias_without_losing_bindings_or_mask_policy() {
+        let query = SelectQuery::new("School")
+            .sum("capacity", "total")
+            .having(Expr::binary(
+                Expr::identity(Expr::column("total")),
+                BinaryOp::Gt,
+                Expr::value(9_007_199_254_740_993_i64),
+            ));
+        let compiled = Dialect.compile_select(&entity(), &query).unwrap();
+        assert!(
+            compiled
+                .sql
+                .ends_with("HAVING (SUM(\"Legacy Capacity\") > $1)")
+        );
+        assert!(!compiled.sql.contains("IDENTITY("));
+        assert_eq!(compiled.params, [Value::I64(9_007_199_254_740_993)]);
+        assert_eq!(
+            compiled.log_context.parameter_policies,
+            [SqlParameterLogPolicy::Masked]
+        );
+    }
+
+    #[test]
+    fn identity_rejects_wrong_arity_without_disclosing_operands() {
+        for args in [
+            vec![],
+            vec![Expr::value("secret-a"), Expr::value("secret-b")],
+        ] {
+            let query = SelectQuery::new("School").project_expr(
+                "invalid",
+                Expr::function(teaql_core::ExprFunction::Identity, args),
+            );
+            let error = Dialect
+                .compile_select(&entity(), &query)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("IDENTITY expects exactly one argument"),
+                "{error}"
+            );
+            assert!(!error.contains("secret"));
+        }
     }
 
     #[test]

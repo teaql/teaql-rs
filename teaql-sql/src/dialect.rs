@@ -1367,6 +1367,14 @@ pub trait SqlDialect {
         params: &mut crate::SqlBindings,
     ) -> Result<String, SqlCompileError> {
         match function {
+            ExprFunction::Identity => {
+                let [argument] = args else {
+                    return Err(SqlCompileError::InvalidFunctionArguments(
+                        "IDENTITY expects exactly one argument".into(),
+                    ));
+                };
+                self.compile_expr(entity, argument, params)
+            }
             ExprFunction::Soundex => {
                 let [arg] = args else {
                     return Err(SqlCompileError::InvalidFunctionArguments(

@@ -272,6 +272,10 @@ impl ExprEvaluator {
             // SubQuery is not supported for in-memory evaluation; always false.
             Expr::SubQuery { .. } => false,
             // Function expressions are not boolean predicates in general.
+            Expr::Function {
+                function: teaql_core::ExprFunction::Identity,
+                args,
+            } if args.len() == 1 => Self::eval(&args[0], row),
             Expr::Function { .. } => false,
             // A bare column or value is truthy if it is a Bool(true).
             Expr::Column(_) | Expr::Value(_) | Expr::LikePattern { .. } => {
@@ -310,6 +314,10 @@ impl ExprEvaluator {
                 )
             }
             Expr::SubQuery { .. } => Value::Null,
+            Expr::Function {
+                function: teaql_core::ExprFunction::Identity,
+                args,
+            } if args.len() == 1 => Self::resolve(&args[0], row),
             Expr::Function { .. } => Value::Null,
         }
     }

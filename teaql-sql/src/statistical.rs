@@ -313,7 +313,7 @@ pub fn compile_statistical_plan(
             .map(|property| property.name.clone())
             .collect();
         outer.filter = root.request.having.clone();
-        outer.order_by = root.request.order_by.clone();
+        outer.order_by = result_orders(plan, 0, &descriptor)?;
         outer.slice = root.request.slice;
         let outer_sql = dialect.compile_select_sql(&descriptor, &outer, &mut params)?;
         sql = format!(
@@ -438,12 +438,91 @@ fn compile_parent_cells(
         query = query.project("__teaql_unit");
     }
     query.filter = layer.request.having.clone();
-    query.order_by = layer.request.order_by.clone();
+    query.order_by = result_orders(plan, owner, &descriptor)?;
     query.slice = layer.request.slice;
     let sql = dialect.compile_select_sql(&descriptor, &query, params)?;
     let eligible = format!("__teaql_eligible{owner}");
     ctes.push(format!("{} AS ({sql})", q(&eligible)));
     Ok((eligible, labels))
+}
+
+// Java also accepts an exact selected expression in ORDER BY, not only its
+// output alias. Resolve against this layer's completed cells, never raw rows.
+fn result_orders(
+    plan: &StatisticalPlan,
+    owner: usize,
+    descriptor: &EntityDescriptor,
+) -> Result<Vec<teaql_core::OrderBy>, SqlCompileError> {
+    fn identity_operand(mut expr: &Expr) -> &Expr {
+        while let Expr::Function {
+            function: teaql_core::ExprFunction::Identity,
+            args,
+        } = expr
+        {
+            if let [arg] = args.as_slice() {
+                expr = arg;
+            } else {
+                break;
+            }
+        }
+        expr
+    }
+    let layer = &plan.layers[owner];
+    layer
+        .request
+        .order_by
+        .iter()
+        .map(|order| {
+            let expression = order
+                .expr
+                .clone()
+                .unwrap_or_else(|| Expr::column(&order.field));
+            let mut matches = Vec::new();
+            let mut consider = |binding_owner: usize, path: &[String], selected: Expr| {
+                if !path.starts_with(&layer.output_path) {
+                    return;
+                }
+                let relative = path[layer.output_path.len()..].join(".");
+                if descriptor.property_by_name(&relative).is_some()
+                    && (*identity_operand(&expression) == Expr::column(&relative)
+                        || binding_owner == owner
+                            && identity_operand(&expression) == identity_operand(&selected))
+                {
+                    matches.push(relative);
+                }
+            };
+            for binding in &plan.dimensions {
+                consider(
+                    binding.owner_layer,
+                    &binding.output_path,
+                    binding
+                        .expression
+                        .clone()
+                        .unwrap_or_else(|| Expr::column(&binding.field)),
+                );
+            }
+            for binding in &plan.measures {
+                consider(
+                    binding.owner_layer,
+                    &binding.output_path,
+                    crate::having::aggregate_expr(&binding.aggregate),
+                );
+            }
+            if matches.len() != 1 {
+                return Err(SqlCompileError::InvalidFunctionArguments(
+                    if matches.is_empty() {
+                        "order expression is not a selected statistical result".into()
+                    } else {
+                        "ambiguous statistical order expression".into()
+                    },
+                ));
+            }
+            let mut bound = order.clone();
+            bound.field = matches.pop().unwrap();
+            bound.expr = None;
+            Ok(bound)
+        })
+        .collect()
 }
 
 fn match_dimensions(

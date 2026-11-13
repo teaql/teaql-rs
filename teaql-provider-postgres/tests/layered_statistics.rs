@@ -110,6 +110,69 @@ fn source(parent: SelectQuery) -> SelectQuery {
 }
 
 #[tokio::test]
+async fn live_identity_grouping_keeps_values_aliases_and_owner_grain() {
+    let Some((context, pool)) = fixture().await else {
+        return;
+    };
+    let ordinary = SelectQuery::new("School")
+        .filter(Expr::lte("id", 5_i64))
+        .group_by_expr("bucket", Expr::identity(Expr::column("capacity")))
+        .count("schools")
+        .having(Expr::gte("bucket", 100_i64))
+        .order_desc("bucket")
+        .offset(1)
+        .limit(1)
+        .comment("Group legacy capacity using the Java SELF equivalent")
+        .purpose("Verify identity grouping without value conversion");
+    let rows = fetch(&context, ordinary).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("bucket"), Some(&Value::I64(100)));
+    assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(1));
+    assert!(!rows[0].contains_key("capacity"));
+    observe("identity-ordinary-group", &rows);
+    let parent = SelectQuery::new("Kind")
+        .group_by_expr("rank", Expr::identity(Expr::column("ordinal")))
+        .count("kinds")
+        .sum("ordinal", "ordinalTotal")
+        .having(Expr::gte("rank", 1_i64))
+        .order_desc("ordinal")
+        .limit(1)
+        .comment("Page completed identity groups");
+    let rows = fetch(&context, source(parent)).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("n").and_then(Value::try_i64), Some(1));
+    assert_eq!(object(&rows[0], "kind").get("rank"), Some(&Value::I64(2)));
+    assert!(!object(&rows[0], "kind").contains_key("ordinal"));
+    observe("identity-parent-group", &rows);
+    let platform = SelectQuery::new("Platform")
+        .group_by_expr("caption", Expr::identity(Expr::column("name")))
+        .count("platforms")
+        .order_asc("name")
+        .comment("Retain the platform name without transformation");
+    let parent = SelectQuery::new("Kind")
+        .count("kinds")
+        .sum("ordinal", "ordinalTotal")
+        .group_by("platform_id")
+        .object_group_by("platform", "platform_id", platform);
+    let rows = fetch(&context, source(parent)).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("n").and_then(Value::try_i64), Some(5));
+    let kind = object(&rows[0], "kind");
+    assert_eq!(kind.get("kinds").and_then(Value::try_i64), Some(2));
+    assert_eq!(kind.get("ordinalTotal").and_then(Value::try_i64), Some(3));
+    let Some(Value::Object(platform)) = kind.get("platform") else {
+        panic!("missing platform")
+    };
+    assert_eq!(platform.get("caption"), Some(&Value::from("Campus")));
+    assert_eq!(platform.get("platforms").and_then(Value::try_i64), Some(1));
+    observe("identity-multihop-group", &rows);
+    let oracle=pool.get().await.unwrap().query_one(
+        "SELECT \"Legacy Capacity\",COUNT(*) FROM legacy_school WHERE id<=5 GROUP BY \"Legacy Capacity\" HAVING \"Legacy Capacity\">=100 ORDER BY \"Legacy Capacity\" DESC OFFSET 1 LIMIT 1",&[]).await.unwrap();
+    assert_eq!(oracle.get::<_, i64>(0), 100);
+    assert_eq!(oracle.get::<_, i64>(1), 1);
+}
+
+#[tokio::test]
 async fn live_computed_grouping_merges_keys_and_preserves_owner_grain() {
     let Some((_context, pool)) = fixture().await else {
         return;

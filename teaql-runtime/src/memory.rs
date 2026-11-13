@@ -543,6 +543,14 @@ fn eval_function(
     row: &CompactRow,
 ) -> Result<Value, MemoryDataServiceError> {
     match function {
+        ExprFunction::Identity => {
+            let [argument] = args else {
+                return Err(MemoryDataServiceError::UnsupportedExpression(
+                    "IDENTITY expects exactly one argument".into(),
+                ));
+            };
+            eval_value(argument, row)
+        }
         ExprFunction::Soundex => {
             let [arg] = args else {
                 return Err(MemoryDataServiceError::UnsupportedExpression(
@@ -1357,6 +1365,52 @@ mod empty_aggregate_tests {
 #[cfg(test)]
 mod like_provenance_tests {
     use super::*;
+
+    #[test]
+    fn identity_keeps_exact_values_in_both_memory_evaluators() {
+        let decimal: teaql_core::Decimal = "12345678901234567890.12345678".parse().unwrap();
+        for value in [
+            Value::I64(9_007_199_254_740_993),
+            Value::U64(u64::MAX),
+            Value::Decimal(decimal),
+            Value::Bool(true),
+            Value::from("unmodified"),
+            Value::Null,
+            Value::TypedNull(teaql_core::DataType::Text),
+        ] {
+            let row = CompactRow::from_map(BTreeMap::from([("value".into(), value.clone())]));
+            let expression = Expr::identity(Expr::column("value"));
+            assert_eq!(eval_value(&expression, &row).unwrap(), value);
+            assert_eq!(
+                crate::inmemory_engine::ExprEvaluator::resolve(&expression, &row),
+                value
+            );
+        }
+        let empty = CompactRow::from_map(BTreeMap::new());
+        for value in [false, true] {
+            let expression = Expr::identity(Expr::value(value));
+            assert_eq!(eval_filter(&expression, &empty).unwrap(), value);
+            assert_eq!(
+                crate::inmemory_engine::ExprEvaluator::eval(&expression, &empty),
+                value
+            );
+        }
+    }
+
+    #[test]
+    fn identity_rejects_wrong_arity_without_echoing_values() {
+        let row = CompactRow::from_map(BTreeMap::new());
+        for args in [
+            vec![],
+            vec![Expr::value("secret-a"), Expr::value("secret-b")],
+        ] {
+            let error = eval_value(&Expr::function(ExprFunction::Identity, args), &row)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("IDENTITY expects exactly one argument"));
+            assert!(!error.contains("secret"));
+        }
+    }
 
     #[test]
     fn both_memory_evaluators_use_unchanged_typed_like_patterns() {

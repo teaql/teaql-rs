@@ -72,6 +72,10 @@ pub fn grouping_expression_source(
             ));
         }
         match expression {
+            Expr::Function {
+                function: ExprFunction::Identity,
+                args,
+            } if args.len() == 1 => bind(descriptor, &args[0], depth + 1),
             Expr::Column(field) => descriptor
                 .property_by_name(field)
                 .map(|property| (field.clone(), property.data_type))
@@ -688,6 +692,54 @@ mod tests {
                 .iter()
                 .find(|descriptor| descriptor.name == name))
             .is_err()
+        );
+    }
+    #[test]
+    fn identity_grouping_retains_every_scalar_metadata_type() {
+        for data_type in [
+            DataType::I64,
+            DataType::U64,
+            DataType::F64,
+            DataType::Decimal,
+            DataType::Bool,
+            DataType::Text,
+            DataType::LargeText,
+            DataType::Date,
+            DataType::Timestamp,
+        ] {
+            let descriptor = EntityDescriptor::new("Scalar").property(P::new("value", data_type));
+            assert_eq!(
+                grouping_expression_source(&descriptor, &Expr::identity(Expr::column("value")))
+                    .unwrap(),
+                ("value".to_owned(), data_type)
+            );
+        }
+    }
+
+    #[test]
+    fn identity_grouping_does_not_hide_invalid_arguments_or_nested_aggregates() {
+        let descriptor = EntityDescriptor::new("Scalar").property(P::new("value", DataType::I64));
+        for expression in [
+            Expr::function(ExprFunction::Identity, []),
+            Expr::function(
+                ExprFunction::Identity,
+                [Expr::column("value"), Expr::column("value")],
+            ),
+            Expr::identity(Expr::column("unknown")),
+            Expr::identity(Expr::sum_expr(Expr::column("value"))),
+            Expr::identity(Expr::gbk(Expr::column("value"))),
+        ] {
+            assert!(grouping_expression_source(&descriptor, &expression).is_err());
+        }
+        let mut expression = Expr::column("value");
+        for _ in 0..70 {
+            expression = Expr::identity(expression);
+        }
+        assert!(
+            grouping_expression_source(&descriptor, &expression)
+                .unwrap_err()
+                .to_string()
+                .contains("64")
         );
     }
 }

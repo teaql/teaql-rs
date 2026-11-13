@@ -18,6 +18,8 @@ pub enum BinaryOp {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExprFunction {
+    /// Java SELF: return one scalar operand without converting its value.
+    Identity,
     Soundex,
     Gbk,
     Count,
@@ -96,6 +98,10 @@ impl Expr {
 
     pub fn soundex(expr: Expr) -> Self {
         Self::function(ExprFunction::Soundex, [expr])
+    }
+
+    pub fn identity(expr: Expr) -> Self {
+        Self::function(ExprFunction::Identity, [expr])
     }
 
     pub fn gbk(expr: Expr) -> Self {

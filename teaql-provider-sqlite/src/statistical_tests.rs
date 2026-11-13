@@ -241,6 +241,152 @@ fn ordinary_function_grouping_uses_the_transformed_key_and_having() {
 }
 
 #[test]
+fn identity_grouping_preserves_legacy_values_aliases_having_and_cell_page() {
+    let context = runtime_context(executor(), policy(false, false));
+    let ordinary = SelectQuery::new("School")
+        .group_by_expr("bucket", Expr::identity(Expr::column("capacity")))
+        .count("schools")
+        .having(Expr::gte("bucket", 100))
+        .order_desc("bucket")
+        .offset(1)
+        .limit(1)
+        .comment("Group mapped capacity without converting its value")
+        .purpose("Verify Java SELF equivalent on ordinary statistics");
+    let parent = SelectQuery::new("Kind")
+        .group_by_expr("rank", Expr::identity(Expr::column("ordinal")))
+        .count("kinds")
+        .sum("ordinal", "ordinalTotal")
+        .having(Expr::gte("rank", 1))
+        .order_desc("ordinal")
+        .limit(1)
+        .comment("Page completed identity groups, not school rows");
+    let multi = SelectQuery::new("Kind")
+        .count("kinds")
+        .sum("ordinal", "ordinalTotal")
+        .group_by("platform_id")
+        .object_group_by(
+            "platform",
+            "platform_id",
+            SelectQuery::new("Platform")
+                .group_by_expr("caption", Expr::identity(Expr::column("name")))
+                .count("platforms")
+                .order_asc("name")
+                .comment("Keep the platform name unchanged"),
+        );
+    for _ in 0..2 {
+        let rows = fetch(&context, ordinary.clone()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("bucket"), Some(&Value::I64(100)));
+        assert_eq!(rows[0].get("schools"), Some(&Value::I64(1)));
+        assert!(!rows[0].contains_key("capacity"));
+        let rows = fetch(&context, source(parent.clone())).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("schools"), Some(&Value::I64(1)));
+        let Some(Value::Object(kind)) = rows[0].get("kind") else {
+            panic!("missing parent")
+        };
+        assert_eq!(kind.get("rank"), Some(&Value::I64(2)));
+        assert_eq!(kind.get("kinds"), Some(&Value::I64(1)));
+        assert!(!kind.contains_key("ordinal"));
+        let rows = fetch(&context, source(multi.clone())).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("schools"), Some(&Value::I64(5)));
+        let Some(Value::Object(kind)) = rows[0].get("kind") else {
+            panic!("missing parent")
+        };
+        assert_eq!(kind.get("kinds"), Some(&Value::I64(2)));
+        assert_eq!(kind.get("ordinalTotal"), Some(&Value::I64(3)));
+        let Some(Value::Object(platform)) = kind.get("platform") else {
+            panic!("missing grandparent")
+        };
+        assert_eq!(platform.get("caption"), Some(&Value::from("Campus")));
+        assert_eq!(platform.get("platforms"), Some(&Value::I64(1)));
+    }
+}
+
+#[test]
+fn identity_grouping_retains_null_and_large_integer_cells() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "UPDATE legacy_school SET \"Legacy Capacity\"=9007199254740993 WHERE id<=4;
+         UPDATE legacy_school SET \"Legacy Capacity\"=NULL WHERE id=5;",
+        )
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let base = SelectQuery::new("School")
+        .group_by_expr("bucket", Expr::identity(Expr::column("capacity")))
+        .count("schools")
+        .order_desc("capacity")
+        .comment("Keep null and large integer identity groups")
+        .purpose("Reject lossy floating point coercion");
+    for request in [
+        base.clone(),
+        base.object_group_by("kind", "kind_id", SelectQuery::new("Kind").count("kinds")),
+    ] {
+        let rows = fetch(&context, request).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].get("bucket"),
+            Some(&Value::I64(9_007_199_254_740_993))
+        );
+        assert_eq!(rows[0].get("schools"), Some(&Value::I64(4)));
+        assert_eq!(rows[1].get("bucket"), Some(&Value::Null));
+        assert_eq!(rows[1].get("schools"), Some(&Value::I64(1)));
+    }
+}
+
+#[test]
+fn layered_order_matches_selected_expressions_not_source_population() {
+    let context = runtime_context(executor(), policy(false, false));
+    let parent = SelectQuery::new("Kind").group_by("ordinal").count("kinds");
+    let request = source(parent)
+        .order_by(teaql_core::OrderBy::desc_expr(Expr::sum_expr(
+            Expr::column("capacity"),
+        )))
+        .limit(1);
+    let result = fetch(&context, request).unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].get("schools"), Some(&Value::I64(4)));
+    assert_eq!(result[0].get("total"), Some(&Value::I64(3200)));
+}
+
+#[test]
+fn layered_order_rejects_ambiguous_and_unselected_expressions_before_sql() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute("DROP TABLE legacy_school", [])
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let ambiguous = SelectQuery::new("Kind")
+        .group_by_expr("a", Expr::identity(Expr::column("ordinal")))
+        .group_by_expr("b", Expr::identity(Expr::column("ordinal")))
+        .order_desc("ordinal")
+        .limit(1);
+    let unselected = SelectQuery::new("Kind")
+        .group_by("label")
+        .order_desc("ordinal")
+        .limit(1);
+    for (parent, expected) in [
+        (ambiguous, "ambiguous statistical order"),
+        (unselected, "not a selected statistical result"),
+    ] {
+        let error = fetch(&context, source(parent)).unwrap_err();
+        assert!(error.contains(expected), "{error}");
+        assert!(
+            !error.contains("no such table"),
+            "SQL ran before order validation: {error}"
+        );
+    }
+}
+
+#[test]
 fn layered_rollup_parent_filter_restricts_source_population() {
     let rows = execute(
         &executor(),
