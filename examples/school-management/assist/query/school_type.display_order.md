@@ -2,8 +2,10 @@
 
 # Rust Query Field Assist — `school_type.display_order`
 
-KSML entity: `school_type`  
-KSML field: `display_order`  
+KSML entity: `school_type`
+
+KSML field: `display_order`
+
 Type: `number`
 
 | Capability | Generated API |

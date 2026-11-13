@@ -2,8 +2,10 @@
 
 # Rust Query Field Assist — `platform.name`
 
-KSML entity: `platform`  
-KSML field: `name`  
+KSML entity: `platform`
+
+KSML field: `name`
+
 Type: `string`
 
 | Capability | Generated API |

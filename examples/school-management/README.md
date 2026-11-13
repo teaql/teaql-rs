@@ -53,7 +53,8 @@ Logical fields and physical database columns are separate metadata. For example,
 School's logical FK key is `school_type_id`, while its SQLite column is
 `school_type`. A grouped row must expose `school_type_id`; selecting grouped
 details adds a `school_type` object without replacing the scalar FK. An explicit
-`kindKey` projection is an additional result alias, not a renamed database column.
+`group_by_school_type_as("kindKey")` replaces the default grouping result key;
+it does not rename the database column or return an extra `school_type_id` key.
 
 From the repository root, run:
 
@@ -68,11 +69,29 @@ COUNT, grouped relation details through both row and SmartList execution, and
 grouping without aggregate functions. The original table definitions must remain
 unchanged. Physical column names are not accepted as logical query fields.
 
-The application-owned `grouped_mapping_probe` exercises the unchanged generated
+The model explicitly selects runtime 7.1. The application-owned
+`grouped_mapping_probe` exercises the regenerated, unmodified generated
 Q API: `group_by_school_type`, explicit aliases, `group_by_school_type_with_details`,
 and `roll_up_to_school_type`. It runs twice on one SQLite file, and an independent
 read-only query checks the stored FK values. Grouping without an aggregate returns
 only dimensions, not arbitrary fields from one member of the group. The verifier
 checks generated-library hashes and removes its disposable compilation output.
+Cargo metadata must resolve all six runtime components to this checkout at 7.1;
+old versions, registry artifacts and unrelated source directories fail the gate.
+The accompanying `native-verification.test.cjs` covers those rejection cases.
+
+The same gate runs the 26-case `rollup_statistics_probe` twice, including
+parent-local measures, two-hop navigation, HAVING, statistical paging, aliases,
+distinct counts, Identity and SOUNDEX grouping. It also runs the main application,
+deletion/environment probes twice and bootstrap reconciliation with SQL logging
+on/off twice. Default distinct-count aliases use KSML names, not display labels
+such as `School Type`.
 The optional `--native` flag also runs all targets of the core, SQL, runtime and
 SQLite crates. This is local-source verification, not release acceptance.
+
+Regenerate library, current Assist and workspace guidance together from the
+model using `scripts/regenerate-rust-native-school.cjs` in the code-generator
+repository. Its `--runtime` option points to this checkout, and `--output` must
+be a fresh absolute evidence directory. Generated destinations must be clean;
+unknown emitted paths are rejected before installation. Application-owned probes
+are not overwritten. Do not repair generated library source manually.
