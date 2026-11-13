@@ -7,6 +7,7 @@
 use std::io::{Error as IoError, ErrorKind};
 use std::str::FromStr;
 
+use num_bigint::BigInt;
 use rusqlite::functions::{Aggregate, Context, FunctionFlags};
 use rusqlite::{Connection, Error, Result};
 use rust_decimal::Decimal;
@@ -35,29 +36,78 @@ pub(crate) fn register(connection: &Connection) -> Result<()> {
 
 struct DecimalSum;
 
-impl Aggregate<Option<Decimal>, Option<String>> for DecimalSum {
-    fn init(&self, _ctx: &mut Context<'_>) -> Result<Option<Decimal>> {
+struct DecimalTotal {
+    coefficient: BigInt,
+    scale: u32,
+}
+
+impl DecimalTotal {
+    fn add(&mut self, value: Decimal) {
+        if value.scale() > self.scale {
+            self.coefficient *= BigInt::from(10).pow(value.scale() - self.scale);
+            self.scale = value.scale();
+        }
+        self.coefficient +=
+            BigInt::from(value.mantissa()) * BigInt::from(10).pow(self.scale - value.scale());
+    }
+
+    fn finish(self) -> Result<String> {
+        let mut text = self.coefficient.to_string();
+        if self.scale > 0 {
+            let sign = usize::from(text.starts_with('-'));
+            let digits = text.len() - sign;
+            if digits <= self.scale as usize {
+                text.insert_str(
+                    sign,
+                    &format!("0.{}", "0".repeat(self.scale as usize - digits)),
+                );
+            } else {
+                text.insert(text.len() - self.scale as usize, '.');
+            }
+        }
+        // Keep the observed scale when representable. Removing only trailing
+        // fractional zeroes is exact; rounding a nonzero digit is never allowed.
+        let result = Decimal::from_str_exact(&text).or_else(|error| {
+            if text.contains('.') {
+                Decimal::from_str_exact(text.trim_end_matches('0').trim_end_matches('.'))
+            } else {
+                Err(error)
+            }
+        });
+        result
+            .map(|value| value.to_string())
+            .map_err(|_| decimal_overflow())
+    }
+}
+
+impl Aggregate<Option<DecimalTotal>, Option<String>> for DecimalSum {
+    fn init(&self, _ctx: &mut Context<'_>) -> Result<Option<DecimalTotal>> {
         Ok(None)
     }
 
-    fn step(&self, ctx: &mut Context<'_>, sum: &mut Option<Decimal>) -> Result<()> {
+    fn step(&self, ctx: &mut Context<'_>, sum: &mut Option<DecimalTotal>) -> Result<()> {
         let Some(text) = ctx.get::<Option<String>>(0)? else {
             return Ok(());
         };
-        let value = Decimal::from_str(&text).map_err(|_| invalid_decimal())?;
-        *sum = Some(match sum {
-            Some(current) => current.checked_add(value).ok_or_else(decimal_overflow)?,
-            None => value,
-        });
+        let value = Decimal::from_str_exact(&text).map_err(|_| invalid_decimal())?;
+        match sum {
+            Some(current) => current.add(value),
+            None => {
+                *sum = Some(DecimalTotal {
+                    coefficient: BigInt::from(value.mantissa()),
+                    scale: value.scale(),
+                })
+            }
+        }
         Ok(())
     }
 
     fn finalize(
         &self,
         _ctx: &mut Context<'_>,
-        sum: Option<Option<Decimal>>,
+        sum: Option<Option<DecimalTotal>>,
     ) -> Result<Option<String>> {
-        Ok(sum.flatten().map(|value| value.to_string()))
+        sum.flatten().map(DecimalTotal::finish).transpose()
     }
 }
 
@@ -151,5 +201,61 @@ mod tests {
             })
             .unwrap();
         assert_eq!(unchanged_sum, exact_sum);
+    }
+
+    fn sum(values: &[&str]) -> rusqlite::Result<String> {
+        let connection = Connection::open_in_memory()?;
+        register(&connection)?;
+        connection.execute_batch("CREATE TABLE exact_sum(value TEXT)")?;
+        for value in values {
+            connection.execute("INSERT INTO exact_sum VALUES(?1)", [value])?;
+        }
+        connection.query_row(
+            "SELECT teaql_decimal_sum(value) FROM exact_sum",
+            [],
+            |row| row.get(0),
+        )
+    }
+
+    #[test]
+    fn sum_preserves_nonzero_fractional_units_at_the_representation_boundary() {
+        let max = rust_decimal::Decimal::MAX.to_string();
+        assert!(sum(&[&max, "0.1"]).is_err());
+        let min = rust_decimal::Decimal::MIN.to_string();
+        assert!(sum(&[&min, "-0.1"]).is_err());
+        let result = sum(&[
+            "792281625142643375935439503.35",
+            "792281625142643375935439503.35",
+        ])
+        .unwrap();
+        assert_eq!(
+            result.parse::<rust_decimal::Decimal>().unwrap(),
+            "1584563250285286751870879006.7"
+                .parse::<rust_decimal::Decimal>()
+                .unwrap()
+        );
+        assert_eq!(sum(&["-0.05", "0.01"]).unwrap(), "-0.04");
+    }
+
+    #[test]
+    fn exact_final_sum_does_not_depend_on_intermediate_overflow_or_input_order() {
+        let max = rust_decimal::Decimal::MAX.to_string();
+        let negative = rust_decimal::Decimal::MIN.to_string();
+        for values in [
+            [max.as_str(), "1", negative.as_str()],
+            [max.as_str(), negative.as_str(), "1"],
+            ["1", max.as_str(), negative.as_str()],
+        ] {
+            assert_eq!(sum(&values).unwrap(), "1");
+        }
+    }
+
+    #[test]
+    fn inexact_legacy_decimal_text_is_rejected_instead_of_rounded() {
+        let error = sum(&["0.00000000000000000000000000001"])
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("00000000000000000000000000001"));
+        assert!(error.contains("invalid decimal text"), "{error}");
     }
 }

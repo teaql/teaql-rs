@@ -3736,6 +3736,7 @@ dependencies = [
  "futures-core",
  "futures-executor",
  "futures-util",
+ "num-bigint",
  "rusqlite",
  "rust_decimal",
  "serde_json",

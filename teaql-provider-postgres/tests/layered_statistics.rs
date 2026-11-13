@@ -110,6 +110,106 @@ fn source(parent: SelectQuery) -> SelectQuery {
 }
 
 #[tokio::test]
+async fn live_exact_decimal_ordering_pages_completed_numeric_cells() {
+    let Some((_, pool)) = fixture().await else {
+        return;
+    };
+    {
+        let client = pool.get().await.unwrap();
+        client.batch_execute(
+            "CREATE TABLE IF NOT EXISTS numeric_kind_326(id BIGINT PRIMARY KEY, \"Legacy Kind Label\" TEXT, ordinal NUMERIC, platform_id BIGINT);
+             CREATE TABLE IF NOT EXISTS numeric_school_326(id BIGINT PRIMARY KEY, \"Legacy Capacity\" BIGINT, \"Legacy Kind Key\" BIGINT);
+             INSERT INTO numeric_kind_326 VALUES(1001,'shared',2,1),(1002,'shared',10,1)
+                ON CONFLICT(id) DO UPDATE SET ordinal=EXCLUDED.ordinal;
+             INSERT INTO numeric_school_326 VALUES(1,800,1001),(2,800,1001),(3,800,1001),(4,800,1001),(5,100,1002)
+                ON CONFLICT DO NOTHING;"
+        ).await.unwrap();
+    }
+    let mut entities = descriptors();
+    for entity in &mut entities {
+        if entity.name == "School" {
+            entity.table_name = "numeric_school_326".into();
+        }
+        if entity.name == "Kind" {
+            entity.table_name = "numeric_kind_326".into();
+            entity
+                .properties
+                .iter_mut()
+                .find(|property| property.name == "ordinal")
+                .unwrap()
+                .data_type = DataType::Decimal;
+        }
+    }
+    let metadata = entities
+        .into_iter()
+        .fold(InMemoryMetadataStore::new(), |m, entity| {
+            m.with_entity(entity)
+        });
+    let executor = SqlDataServiceExecutor::new(
+        PostgresDialect,
+        PgMutationExecutor::new(pool.clone()),
+        metadata.clone(),
+    );
+    let mut context = UserContext::new().with_metadata(metadata);
+    context.register_executor(executor);
+    for (case, first, second, larger) in [
+        ("positive", "2", "10", 1002_i64),
+        ("negative", "-2", "-10", 1001),
+        (
+            "neighboring",
+            "9007199254740992.000000001",
+            "9007199254740992.000000002",
+            1002,
+        ),
+    ] {
+        pool.get().await.unwrap().execute(
+            "UPDATE numeric_kind_326 SET ordinal=CASE id WHEN 1001 THEN $1::text::numeric ELSE $2::text::numeric END", &[&first, &second]
+        ).await.unwrap();
+        let parent = SelectQuery::new("Kind")
+            .group_by("id")
+            .sum("ordinal", "total");
+        let rows = fetch(
+            &context,
+            parent
+                .clone()
+                .order_desc("total")
+                .limit(1)
+                .comment("Page completed exact Decimal totals numerically"),
+        )
+        .await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("id").and_then(Value::try_i64), Some(larger));
+        observe(&format!("numeric-ordinary-{case}"), &rows);
+        let rows = fetch(
+            &context,
+            source(parent.clone().order_desc("total").limit(1)),
+        )
+        .await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("n").and_then(Value::try_i64),
+            Some(if larger == 1001 { 4 } else { 1 })
+        );
+        assert_eq!(
+            object(&rows[0], "kind").get("id").and_then(Value::try_i64),
+            Some(larger)
+        );
+        observe(&format!("numeric-parent-{case}"), &rows);
+        let rows = fetch(&context, source(parent).order_desc("kind.total").limit(1)).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("n").and_then(Value::try_i64),
+            Some(if larger == 1001 { 4 } else { 1 })
+        );
+        assert_eq!(
+            object(&rows[0], "kind").get("id").and_then(Value::try_i64),
+            Some(larger)
+        );
+        observe(&format!("numeric-nested-{case}"), &rows);
+    }
+}
+
+#[tokio::test]
 async fn live_multilayer_membership_retains_nested_cells_and_ordinary_query_policy() {
     let Some((context, _pool)) = fixture().await else {
         return;
@@ -623,9 +723,10 @@ async fn live_nullable_and_orphan_membership_is_distinct_from_a_null_dimension()
 }
 
 async fn fetch(context: &UserContext, query: SelectQuery) -> Vec<CompactRow> {
+    let entity = query.entity.clone();
     let request = PurposedSelectQuery::new(query, "Verify live PostgreSQL roll-up statistics");
     context
-        .entity_data_service::<Executor>("School")
+        .entity_data_service::<Executor>(&entity)
         .unwrap()
         .fetch_all(&request)
         .await

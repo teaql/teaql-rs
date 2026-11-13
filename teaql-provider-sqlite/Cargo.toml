@@ -12,6 +12,7 @@ readme = "README.md"
 chrono = { workspace = true }
 rusqlite = { workspace = true }
 rust_decimal = { workspace = true }
+num-bigint = "0.4"
 serde_json = { workspace = true }
 teaql-core = { workspace = true }
 teaql-data-service = { workspace = true }

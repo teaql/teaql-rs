@@ -1066,13 +1066,142 @@ fn decimal_statistical_comparison_preserves_neighboring_exact_values_and_rejects
     assert!(!error.contains("Transport error"));
 }
 
+#[test]
+fn decimal_measure_ordering_and_paging_uses_numeric_not_text_order() {
+    for (first, second, larger) in [
+        ("2", "10", 1002_i64),
+        ("-2", "-10", 1001),
+        (
+            "9007199254740992.000000001",
+            "9007199254740992.000000002",
+            1002,
+        ),
+    ] {
+        let (context, _) = decimal_membership_context(first, second);
+        for order in [
+            teaql_core::OrderBy::desc("total"),
+            teaql_core::OrderBy::desc_expr(Expr::sum_expr(Expr::column("ordinal"))),
+        ] {
+            let query = SelectQuery::new("Kind")
+                .group_by("id")
+                .sum("ordinal", "total")
+                .order_by(order)
+                .limit(1)
+                .comment("Select the numerically largest exact total");
+            let original = query.clone();
+            let rows = fetch(&context, query.clone()).unwrap();
+            assert_eq!(rows[0].get("id").and_then(Value::try_i64), Some(larger));
+            assert_eq!(query, original);
+        }
+    }
+}
+
+#[test]
+fn decimal_parent_cell_page_uses_numeric_measure_order() {
+    let (context, _) = decimal_membership_context("2", "10");
+    let parent = SelectQuery::new("Kind")
+        .group_by("id")
+        .sum("ordinal", "total")
+        .order_desc("total")
+        .limit(1);
+    let query = source(parent);
+    for _ in 0..2 {
+        let rows = fetch(&context, query.clone()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(1));
+        let Some(Value::Object(parent)) = rows[0].get("kind") else {
+            panic!("missing kind")
+        };
+        assert_eq!(parent.get("id").and_then(Value::try_i64), Some(1002));
+        assert_eq!(
+            parent.get("total"),
+            Some(&Value::Decimal(Decimal::from(10)))
+        );
+    }
+}
+
+#[test]
+fn decimal_final_nested_measure_page_uses_numeric_order() {
+    let (context, _) = decimal_membership_context("2", "10");
+    let parent = SelectQuery::new("Kind")
+        .group_by("id")
+        .sum("ordinal", "total");
+    let query = source(parent).order_desc("kind.total").limit(1);
+    let rows = fetch(&context, query).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(1));
+    let Some(Value::Object(parent)) = rows[0].get("kind") else {
+        panic!("missing kind")
+    };
+    assert_eq!(parent.get("id").and_then(Value::try_i64), Some(1002));
+}
+
+#[test]
+fn decimal_sum_overflow_is_rejected_without_echoing_values() {
+    let largest = Decimal::MAX.to_string();
+    for increment in ["1", "0.1"] {
+        let (context, _) = decimal_membership_context(&largest, increment);
+        let parent = SelectQuery::new("Kind")
+            .group_by("label")
+            .sum("ordinal", "total");
+        let error = fetch(&context, source(parent)).unwrap_err();
+        assert!(
+            error.contains("precision") || error.contains("overflow"),
+            "{error}"
+        );
+        assert!(
+            !error.contains(&largest),
+            "overflow disclosed an observation"
+        );
+    }
+}
+
+#[test]
+fn integer_sum_overflow_is_not_silently_converted_to_float() {
+    let transport = executor();
+    transport.connection().lock().unwrap().execute(
+        "UPDATE legacy_school SET \"Legacy Capacity\" = CASE id WHEN 1 THEN ?1 WHEN 2 THEN 1 ELSE 0 END",
+        [i64::MAX],
+    ).unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let error = fetch(&context, source(SelectQuery::new("Kind").group_by("label"))).unwrap_err();
+    assert!(error.contains("overflow"), "{error}");
+    assert!(!error.contains(&i64::MAX.to_string()));
+}
+
+#[test]
+fn unsupported_exact_decimal_functions_fail_before_provider_execution() {
+    let (context, _) = decimal_membership_context("2", "10");
+    for function in [
+        AggregateFunction::Avg,
+        AggregateFunction::Stddev,
+        AggregateFunction::StddevPop,
+        AggregateFunction::VarSamp,
+        AggregateFunction::VarPop,
+        AggregateFunction::BitAnd,
+        AggregateFunction::BitOr,
+        AggregateFunction::BitXor,
+    ] {
+        let parent = SelectQuery::new("Kind")
+            .group_by("label")
+            .aggregate(Aggregate::new(function, "ordinal", "result"));
+        let error = fetch(&context, source(parent)).unwrap_err();
+        assert!(error.contains("SQLite exact Decimal aggregate"), "{error}");
+        assert!(
+            !error.contains("Transport error"),
+            "unsupported function reached SQLite"
+        );
+    }
+}
+
 fn fetch(context: &UserContext, query: SelectQuery) -> Result<Vec<CompactRow>, String> {
+    let entity = query.entity.clone();
     let request = teaql_runtime::PurposedSelectQuery::new(
         query,
         "Validate Context-scoped layered statistics",
     );
     let service = context
-        .entity_data_service::<StatisticalExecutor>("School")
+        .entity_data_service::<StatisticalExecutor>(&entity)
         .unwrap();
     futures_executor::block_on(service.fetch_all(&request)).map_err(|error| error.to_string())
 }

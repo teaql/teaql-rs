@@ -46,7 +46,8 @@ async function main() {
     for (const file of ['Cargo.toml','Cargo.lock','teaql-core/src/query.rs','teaql-core/src/expr.rs','teaql-core/src/value.rs','teaql-core/src/aggregation_plan.rs',
       'teaql-runtime/src/inmemory_engine.rs','teaql-runtime/src/memory.rs','teaql-runtime/src/data_service/helpers.rs',
       'teaql-sql/src/dialect.rs','teaql-sql/src/having.rs','teaql-sql/src/statistical.rs','teaql-sql/src/executor.rs','teaql-sql/src/bindings.rs',
-      'teaql-provider-sqlite/src/lib.rs','teaql-provider-sqlite/src/decimal_functions.rs',
+      'teaql-provider-sqlite/Cargo.toml','teaql-provider-sqlite/src/lib.rs','teaql-provider-sqlite/src/decimal_functions.rs',
+      'teaql-provider-sqlite/src/statistical_tests.rs',
       'teaql-runtime/src/data_service/resolved.rs','teaql-runtime/src/data_service/statistics.rs',
       'teaql-provider-postgres/Cargo.toml','teaql-provider-postgres/src/lib.rs','teaql-provider-postgres/src/statistical_binding_tests.rs',
       'teaql-provider-postgres/tests/layered_statistics.rs',
@@ -92,8 +93,9 @@ async function main() {
         'independent-grouped-membership','independent-grouped-empty','independent-grouped-alias-page',
         'independent-grouped-null','independent-grouped-policy',
         'multilayer-membership-positive','multilayer-membership-negative',
-        'multilayer-membership-page-and-parameters','multilayer-membership-ordinary-policy'].sort());
-      assert.equal(receipt.commands.at(-1).testsPassed,9);
+        'multilayer-membership-page-and-parameters','multilayer-membership-ordinary-policy',
+        ...['positive','negative','neighboring'].flatMap(kind=>['ordinary','parent','nested'].map(layer=>'numeric-'+layer+'-'+kind))].sort());
+      assert.equal(receipt.commands.at(-1).testsPassed,10);
       receipt.rounds.push({round,observations});
     }
     const oracleSql = "SELECT json_build_object('schools',COUNT(*),'nonnull',COUNT(\"Legacy Capacity\"),'capacity',SUM(\"Legacy Capacity\"),'types',(SELECT COUNT(*) FROM legacy_kind),'platforms',(SELECT COUNT(*) FROM legacy_platform)) FROM legacy_school;";
@@ -103,6 +105,11 @@ async function main() {
     assert.deepEqual(receipt.independentOracle,{schools:7,nonnull:6,capacity:4100,types:2,platforms:1});
     fs.writeFileSync(path.join(output,'oracle.sql'),oracleSql+'\n');
     fs.writeFileSync(path.join(output,'oracle.json'),oracle+'\n');
+    const numericSql="SELECT jsonb_build_object('schools',(SELECT COUNT(*) FROM numeric_school_326),'ranks',jsonb_agg(ordinal::text ORDER BY id)) FROM numeric_kind_326;";
+    receipt.numericOracle=JSON.parse(fixtureSql(numericSql));
+    assert.deepEqual(receipt.numericOracle,{schools:5,ranks:['9007199254740992.000000001','9007199254740992.000000002']});
+    fs.writeFileSync(path.join(output,'numeric-oracle.sql'),numericSql+'\n');
+    fs.writeFileSync(path.join(output,'numeric-oracle.json'),JSON.stringify(receipt.numericOracle,null,2)+'\n');
     const nativeEnv = {...env}; delete nativeEnv.TEAQL_TEST_POSTGRES_URL; delete nativeEnv.TEAQL_REQUIRE_LIVE_DB;
     await run([process.env.CARGO || 'cargo','test','--offline','--locked','-p','teaql-core','-p','teaql-sql','-p','teaql-runtime','-p','teaql-provider-sqlite','--all-targets'],
       'native-regression.log', nativeEnv);

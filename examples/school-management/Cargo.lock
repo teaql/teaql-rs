@@ -1096,6 +1096,7 @@ dependencies = [
  "chrono",
  "futures-core",
  "futures-util",
+ "num-bigint",
  "rusqlite",
  "rust_decimal",
  "serde_json",

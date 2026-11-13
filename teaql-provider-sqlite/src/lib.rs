@@ -16,7 +16,7 @@ use teaql_core::business_id::{
 };
 use teaql_core::{
     Aggregate, AggregateFunction, CompactRow, CompactRowLayout, DataType, EntityDescriptor, Expr,
-    PropertyDescriptor, Value,
+    OrderBy, PropertyDescriptor, SortDirection, Value,
 };
 use teaql_runtime::{
     InternalIdGenerator, RawAuditEvent, RuntimeError, SchemaProvider, UserContext,
@@ -58,6 +58,28 @@ impl SqlDialect for SqliteDialect {
 
     fn prefers_small_parent_relation_probes(&self) -> bool {
         true
+    }
+
+    fn order_by_sql(
+        &self,
+        entity: &EntityDescriptor,
+        order: &OrderBy,
+        params: &mut teaql_sql::SqlBindings,
+    ) -> Result<String, SqlCompileError> {
+        let sql = self.resolve_order_field(entity, order, params)?;
+        let expression = order
+            .expr
+            .clone()
+            .unwrap_or_else(|| Expr::column(&order.field));
+        // Exact SUM returns TEXT. A completed result/CTE does not inherit the
+        // input column's collation, so ordering must restore its numeric domain.
+        // Use the same metadata-bound domain as comparisons, never a REAL cast.
+        let sql = self.comparison_operand_sql(entity, &expression, &[], sql)?;
+        let direction = match order.direction {
+            SortDirection::Asc => "ASC",
+            SortDirection::Desc => "DESC",
+        };
+        Ok(format!("{sql} {direction}"))
     }
 
     fn comparison_operand_sql(
