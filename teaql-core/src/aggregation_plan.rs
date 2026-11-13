@@ -14,6 +14,8 @@ use crate::{
     Aggregate, AggregateFunction, DataType, EntityDescriptor, Expr, ExprFunction, SelectQuery,
 };
 
+mod measure_expression;
+
 const MAX_LAYERS: usize = 64;
 
 /// The requests embedded in one statistical SQL statement, including independent
@@ -156,6 +158,7 @@ pub fn has_nested_statistics(query: &SelectQuery) -> Result<bool, StatisticalPla
         .any(|child| {
             !child.group_by.is_empty()
                 || !child.aggregates.is_empty()
+                || child.has_aggregate_projection()
                 || child.has_layered_statistics()
         }))
 }
@@ -257,11 +260,23 @@ pub fn grouping_expression_source(
     bind(descriptor, expression, 0)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MeasureBinding {
     pub owner_layer: usize,
     pub aggregate: Aggregate,
     pub output_path: Vec<String>,
+    /// Scalar input evaluated at the owner's row grain, never at child grain.
+    /// None retains the ordinary field/all-rows aggregate representation.
+    pub operand: Option<Expr>,
+    /// Logical source field, absent for a scalar parameter or COUNT(*).
+    pub input_field: Option<String>,
+    pub input_type: DataType,
+}
+
+impl MeasureBinding {
+    pub fn all_rows(&self) -> bool {
+        self.operand.is_none() && self.input_field.is_none()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -413,6 +428,16 @@ impl StatisticalPlan {
             if query.group_by.contains(&projection.alias) {
                 continue;
             }
+            if let Some(measure) = measure_expression::bind(
+                descriptor,
+                owner,
+                result_path(&projection.alias),
+                &projection.alias,
+                &projection.expr,
+            )? {
+                self.measures.push(measure);
+                continue;
+            }
             let Expr::Column(field) = &projection.expr else {
                 return Err(StatisticalPlanError(
                     "statistical expression projection requires further lowering".into(),
@@ -457,6 +482,11 @@ impl StatisticalPlan {
                 owner_layer: owner,
                 aggregate: aggregate.clone(),
                 output_path: result_path(&aggregate.alias),
+                operand: None,
+                input_field: (aggregate.field != "*").then(|| aggregate.field.clone()),
+                input_type: descriptor
+                    .property_by_name(&aggregate.field)
+                    .map_or(DataType::I64, |property| property.data_type),
             });
         }
         // Ordinary parent selection keeps entity-ID grain. An explicitly
@@ -465,6 +495,10 @@ impl StatisticalPlan {
             && query.group_by.is_empty()
             && query.object_group_bys.is_empty()
             && query.aggregates.is_empty()
+            && !self
+                .measures
+                .iter()
+                .any(|measure| measure.owner_layer == owner)
         {
             self.dimensions.push(DimensionBinding {
                 owner_layer: owner,

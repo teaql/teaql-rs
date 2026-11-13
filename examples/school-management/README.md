@@ -133,9 +133,24 @@ Boolean, Decimal, floating-point, JSON and temporal field domains are not
 implicitly converted to integers. Native compiler/provider tests separately
 exercise integer expression operands, nested Identity wrappers, signed boundaries
 and real nulls. PostgreSQL binds scalar integer parameters with an explicit BIGINT
-cast, preserving values and masking policies. These native cases do not add
-generated literal-parameter helpers or establish general layered expression
-projection support; the nine generated-Q scenarios above remain unchanged.
+cast, preserving values and masking policies. The nine generated-Q scenarios
+above remain unchanged.
+
+Six additional expression scenarios use the generated
+`add_aggregate(NamedExpr)` API documented by current field Assist. They verify
+ordinary scalar measures, parent-owner deduplication (`SUM(3)` over five schools
+is 15; `SUM(SELF(7))` over two types is 14), all 13 aggregate operators on integer
+inputs, SOUNDEX distinct count, exact Decimal SUM, null/empty results and a parent
+declaring only an expression measure. Repeating an aggregate alias keeps its
+first expression, matching Java `addAggregate`. The tests use generated Q
+builders, not application SQL or manually edited generated source.
+
+Supported scalar inputs are logical fields, Identity/SELF, text SOUNDEX and
+typed scalar/null parameters. Nested aggregate inputs and subqueries are not
+scalar operands. This example does not establish arbitrary post-aggregation
+expressions, GBK grouping or complete TraceChain parity. Native provider tests
+separately compare ordering by the exact selected aggregate AST with ordering
+by its alias, and reject ambiguous or unselected expressions before SQL.
 
 Regenerate library, current Assist and workspace guidance together from the
 model using `scripts/regenerate-rust-native-school.cjs` in the code-generator

@@ -82,7 +82,7 @@ pub(crate) fn compile_statistical_plan_sql(
         for projection in &request.expr_projection {
             let mut path = layer.output_path.clone();
             path.push(projection.alias.clone());
-            if !plan.dimensions.iter().any(|dimension| {
+            let dimension = plan.dimensions.iter().any(|dimension| {
                 dimension.owner_layer == index
                     && dimension.output_path == path
                     && dimension
@@ -90,7 +90,12 @@ pub(crate) fn compile_statistical_plan_sql(
                         .clone()
                         .unwrap_or_else(|| Expr::column(&dimension.field))
                         == projection.expr
-            }) {
+            });
+            let measure = plan
+                .measures
+                .iter()
+                .any(|measure| measure.owner_layer == index && measure.output_path == path);
+            if !dimension && !measure {
                 return Err(invalid(
                     "statistical alias is not bound to a final grouping dimension",
                 ));
@@ -114,8 +119,8 @@ pub(crate) fn compile_statistical_plan_sql(
         fields.extend(
             plan.measures
                 .iter()
-                .filter(|measure| measure.owner_layer == index && measure.aggregate.field != "*")
-                .map(|measure| measure.aggregate.field.clone()),
+                .filter(|measure| measure.owner_layer == index)
+                .filter_map(|measure| measure.input_field.clone()),
         );
         for child in &plan.layers {
             if let Some(edge) = &child.incoming {
@@ -137,7 +142,42 @@ pub(crate) fn compile_statistical_plan_sql(
             }
         }
         let sql = dialect.compile_select_sql(&layer.descriptor, &population, params)?;
-        ctes.push(format!("{} AS ({sql})", q(&format!("__teaql_q{index}"))));
+        let expressions = plan
+            .measures
+            .iter()
+            .enumerate()
+            .filter(|(_, measure)| measure.owner_layer == index && measure.operand.is_some())
+            .collect::<Vec<_>>();
+        if expressions.is_empty() {
+            ctes.push(format!("{} AS ({sql})", q(&format!("__teaql_q{index}"))));
+        } else {
+            let raw = format!("__teaql_raw{index}");
+            ctes.push(format!("{} AS ({sql})", q(&raw)));
+            let mut logical = layer.descriptor.clone();
+            logical.table_name = raw.clone();
+            for property in &mut logical.properties {
+                property.column_name = property.name.clone();
+            }
+            let mut selected = vec!["*".to_owned()];
+            for (measure_index, measure) in expressions {
+                let operand = dialect.compile_statistical_operand(
+                    &logical,
+                    measure.operand.as_ref().unwrap(),
+                    measure.input_type,
+                    params,
+                )?;
+                selected.push(format!(
+                    "{operand} AS {}",
+                    q(&measure_input(plan, measure_index))
+                ));
+            }
+            ctes.push(format!(
+                "{} AS (SELECT {} FROM {})",
+                q(&format!("__teaql_q{index}")),
+                selected.join(", "),
+                q(&raw)
+            ));
+        }
     }
     let field = |layer: usize, name: &str| -> Result<String, SqlCompileError> {
         let descriptor = &plan
@@ -193,12 +233,17 @@ pub(crate) fn compile_statistical_plan_sql(
         ));
     }
     for (index, measure) in plan.measures.iter().enumerate() {
-        if measure.aggregate.field != "*" {
-            selected.push(format!(
-                "{} AS {}",
-                field(measure.owner_layer, &measure.aggregate.field)?,
-                q(&format!("__teaql_v{index}"))
-            ));
+        if !measure.all_rows() {
+            let input = if measure.operand.is_some() {
+                format!(
+                    "{}.{}",
+                    q(&format!("l{}", measure.owner_layer)),
+                    q(&measure_input(plan, index))
+                )
+            } else {
+                field(measure.owner_layer, measure.input_field.as_deref().unwrap())?
+            };
+            selected.push(format!("{} AS {}", input, q(&format!("__teaql_v{index}"))));
         }
     }
     ctes.push(format!(
@@ -276,7 +321,7 @@ pub(crate) fn compile_statistical_plan_sql(
         grain_fields.extend(
             measures
                 .iter()
-                .filter(|(_, measure)| measure.aggregate.field != "*")
+                .filter(|(_, measure)| !measure.all_rows())
                 .map(|(index, _)| q(&format!("__teaql_v{index}"))),
         );
         ctes.push(format!(
@@ -286,13 +331,12 @@ pub(crate) fn compile_statistical_plan_sql(
         ));
         let mut calls = Vec::new();
         for (index, measure) in measures {
-            let operand = if measure.aggregate.field == "*" {
+            let operand = if measure.all_rows() {
                 "*".to_owned()
             } else {
                 q(&format!("__teaql_v{index}"))
             };
-            let call =
-                dialect.aggregate_call_sql_for(&layer.descriptor, &measure.aggregate, &operand)?;
+            let call = measure_call(dialect, &layer.descriptor, measure, &operand)?;
             let label = q(&format!("__teaql_m{index}"));
             calls.push(format!("{call} AS {label}"));
             let value = format!("{}.{}", q(&format!("m{owner}")), label);
@@ -400,7 +444,7 @@ fn compile_parent_cells(
         fields.extend(
             measures
                 .iter()
-                .filter(|(_, binding)| binding.aggregate.field != "*")
+                .filter(|(_, binding)| !binding.all_rows())
                 .map(|(index, _)| q(&format!("__teaql_v{index}"))),
         );
         ctes.push(format!(
@@ -410,13 +454,12 @@ fn compile_parent_cells(
         ));
         let mut selections = labels.clone();
         for (index, binding) in &measures {
-            let operand = if binding.aggregate.field == "*" {
+            let operand = if binding.all_rows() {
                 "*".into()
             } else {
                 q(&format!("__teaql_v{index}"))
             };
-            let call =
-                dialect.aggregate_call_sql_for(&layer.descriptor, &binding.aggregate, &operand)?;
+            let call = measure_call(dialect, &layer.descriptor, binding, &operand)?;
             selections.push(format!("{call} AS {}", q(&format!("__teaql_m{index}"))));
         }
         format!(
@@ -545,11 +588,19 @@ fn result_orders(
                 );
             }
             for binding in &plan.measures {
-                consider(
-                    binding.owner_layer,
-                    &binding.output_path,
-                    crate::having::aggregate_expr(&binding.aggregate),
-                );
+                // Expression measures retain their exact selected AST. Rebuilding
+                // SUM from the discovered field loses SELF/scalar operands (and
+                // invents SUM(*) for a literal), so it cannot identify a result.
+                let selected = plan.layers[binding.owner_layer]
+                    .request
+                    .expr_projection
+                    .iter()
+                    .find(|projection| {
+                        projection.alias == binding.aggregate.alias && projection.is_aggregate()
+                    })
+                    .map(|projection| projection.expr.clone())
+                    .unwrap_or_else(|| crate::having::aggregate_expr(&binding.aggregate));
+                consider(binding.owner_layer, &binding.output_path, selected);
             }
             if matches.len() != 1 {
                 return Err(SqlCompileError::InvalidFunctionArguments(
@@ -605,11 +656,7 @@ fn result_descriptor(plan: &StatisticalPlan) -> Result<EntityDescriptor, SqlComp
         ) {
             DataType::I64
         } else {
-            plan.layers[measure.owner_layer]
-                .descriptor
-                .property_by_name(&measure.aggregate.field)
-                .ok_or_else(|| SqlCompileError::UnknownField(measure.aggregate.field.clone()))?
-                .data_type
+            measure.input_type
         };
         descriptor = descriptor.property(
             PropertyDescriptor::new(measure.output_path.join("."), data_type)
@@ -627,6 +674,34 @@ fn computed_input(plan: &StatisticalPlan, index: usize) -> String {
         name.push('_');
     }
     name
+}
+
+fn measure_input(plan: &StatisticalPlan, index: usize) -> String {
+    let descriptor = &plan.layers[plan.measures[index].owner_layer].descriptor;
+    let mut name = format!("__teaql_measure_expr{index}");
+    while descriptor.property_by_name(&name).is_some() {
+        name.push('_');
+    }
+    name
+}
+
+fn measure_call(
+    dialect: &(impl SqlDialect + ?Sized),
+    descriptor: &EntityDescriptor,
+    measure: &teaql_core::aggregation_plan::MeasureBinding,
+    operand: &str,
+) -> Result<String, SqlCompileError> {
+    if measure.operand.is_none() {
+        return dialect.aggregate_call_sql_for(descriptor, &measure.aggregate, operand);
+    }
+    let input = EntityDescriptor::new("__teaql_scalar_operand")
+        .property(PropertyDescriptor::new("value", measure.input_type));
+    let aggregate = teaql_core::Aggregate::new(
+        measure.aggregate.function,
+        "value",
+        &measure.aggregate.alias,
+    );
+    dialect.aggregate_call_sql_for(&input, &aggregate, operand)
 }
 
 /// Restore logical result paths after a driver returns the compiler's neutral

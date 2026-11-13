@@ -14,7 +14,8 @@ async function main() {
         commit: cp.execFileSync('git', ['rev-parse', 'HEAD'], {cwd: repo, encoding: 'utf8'}).trim()};
     try {
         receipt.sourceHashes = {};
-        for (const name of ['Cargo.toml', 'Cargo.lock', 'teaql-core/src/aggregation_plan.rs', 'teaql-core/src/lib.rs',
+        for (const name of ['Cargo.toml', 'Cargo.lock', 'teaql-core/src/aggregation_plan.rs',
+            'teaql-core/src/aggregation_plan/measure_expression.rs', 'teaql-core/src/lib.rs',
             'teaql-core/src/query.rs', 'teaql-core/src/expr.rs',
             'teaql-core/src/request.rs', 'teaql-core/tests/rollup_navigation.rs',
             'teaql-runtime/src/inmemory_engine.rs', 'teaql-runtime/src/memory.rs',
@@ -36,17 +37,21 @@ async function main() {
             CARGO_BUILD_JOBS: '4', CARGO_PROFILE_TEST_DEBUG: '0', CARGO_PROFILE_DEV_DEBUG: '0'};
         receipt.commands = [];
         for (const [crate, filter, minimum] of [['teaql-core', 'aggregation_plan::tests::', 19],
-            ['teaql-provider-sqlite', 'statistical_tests::', 62],
+            ['teaql-core', 'aggregation_plan::measure_expression::tests::', 5],
+            ['teaql-core', 'query::aggregate_expression_tests::', 3],
+            ['teaql-provider-sqlite', 'statistical_tests::', 69],
             ['teaql-provider-sqlite', 'decimal_functions::tests::', 4],
             ['teaql-provider-sqlite', 'statistical_functions::tests::', 7]]) {
             const command = [process.env.CARGO || 'cargo', 'test', '--offline', '--locked', '-p', crate, filter];
-            const suffix = filter.startsWith('statistical_functions::') ? '-functions'
+            const suffix = filter.startsWith('query::aggregate_expression_tests::') ? '-named-expressions'
+                : filter.startsWith('aggregation_plan::measure_expression::') ? '-measure-expressions'
+                : filter.startsWith('statistical_functions::') ? '-functions'
                 : filter.startsWith('decimal_functions::') ? '-decimal-functions' : '';
             const logPath = path.join(output, crate + suffix + '.log'), fd = fs.openSync(logPath, 'wx'); let result;
             try { result = await runner.run(command, {cwd: repo, env, timeout: 900000, stdio: ['ignore', fd, fd]}); }
             finally { fs.closeSync(fd); }
             const log = fs.readFileSync(logPath);
-            const testsPassed = (log.toString().match(/test (?:aggregation_plan::tests::|statistical_tests::|statistical_functions::tests::|decimal_functions::tests::)[^\n]+ \.\.\. ok/g) || []).length;
+            const testsPassed = (log.toString().match(/test (?:aggregation_plan::tests::|aggregation_plan::measure_expression::tests::|query::aggregate_expression_tests::|statistical_tests::|statistical_functions::tests::|decimal_functions::tests::)[^\n]+ \.\.\. ok/g) || []).length;
             receipt.commands.push({command, result, testsPassed, logSha256: hash(log)});
             assert(result.status === 0 && testsPassed >= minimum, log.toString().slice(-6000));
         }

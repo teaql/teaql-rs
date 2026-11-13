@@ -1201,7 +1201,7 @@ where
             .clone()
             .prepare_for_list()
             .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
-        if query.has_layered_statistics() {
+        if query.requires_statistical_plan() {
             if !relation_aggregates.is_empty()
                 || !query.relations.is_empty()
                 || !query.child_enhancements.is_empty()

@@ -44,6 +44,7 @@ async function main() {
     connectionUrl = 'postgresql://postgres:' + encodeURIComponent(secret) + '@127.0.0.1:' + port + '/' + database;
     receipt.sourceHashes = {};
     for (const file of ['Cargo.toml','Cargo.lock','teaql-core/src/query.rs','teaql-core/src/expr.rs','teaql-core/src/value.rs','teaql-core/src/aggregation_plan.rs',
+      'teaql-core/src/aggregation_plan/measure_expression.rs',
       'teaql-runtime/src/inmemory_engine.rs','teaql-runtime/src/memory.rs','teaql-runtime/src/data_service/helpers.rs',
       'teaql-sql/src/dialect.rs','teaql-sql/src/having.rs','teaql-sql/src/statistical.rs','teaql-sql/src/executor.rs','teaql-sql/src/bindings.rs',
       'teaql-provider-sqlite/Cargo.toml','teaql-provider-sqlite/src/lib.rs','teaql-provider-sqlite/src/decimal_functions.rs',
@@ -54,6 +55,7 @@ async function main() {
       'teaql-provider-postgres/tests/layered_statistics.rs',
       'teaql-provider-postgres/tests/layered_statistics/gbk_order.rs',
       'teaql-provider-postgres/tests/layered_statistics/integer_operand.rs',
+      'teaql-provider-postgres/tests/layered_statistics/measure_expression.rs',
       'examples/fix-e-alignment/verify-rollup-postgres.cjs']) {
       const bytes = fs.readFileSync(path.join(repo,file)); receipt.sourceHashes[file] = hash(bytes);
       const target = path.join(output,'sources',file); fs.mkdirSync(path.dirname(target),{recursive:true}); fs.writeFileSync(target,bytes);
@@ -98,8 +100,9 @@ async function main() {
         'multilayer-membership-positive','multilayer-membership-negative',
         'multilayer-membership-page-and-parameters','multilayer-membership-ordinary-policy',
         ...['positive','negative','neighboring'].flatMap(kind=>['ordinary','parent','nested'].map(layer=>'numeric-'+layer+'-'+kind)),
-        'gbk-ordinary','gbk-parent','gbk-nested','bitwise-expression-fields','bitwise-expression-parameters'].sort());
-      assert.equal(receipt.commands.at(-1).testsPassed,12);
+        'gbk-ordinary','gbk-parent','gbk-nested','bitwise-expression-fields','bitwise-expression-parameters',
+        'expression-measure-owner-grain','expression-measure-transforms','expression-measure-order'].sort());
+      assert.equal(receipt.commands.at(-1).testsPassed,14);
       receipt.rounds.push({round,observations});
     }
     const oracleSql = "SELECT json_build_object('schools',COUNT(*),'nonnull',COUNT(\"Legacy Capacity\"),'capacity',SUM(\"Legacy Capacity\"),'types',(SELECT COUNT(*) FROM legacy_kind),'platforms',(SELECT COUNT(*) FROM legacy_platform)) FROM legacy_school;";

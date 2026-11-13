@@ -183,6 +183,21 @@ impl SqlDialect for SqliteDialect {
         Ok(self.aggregate_call_sql(aggregate.function, field))
     }
 
+    fn compile_statistical_operand(
+        &self,
+        entity: &EntityDescriptor,
+        operand: &Expr,
+        data_type: DataType,
+        params: &mut teaql_sql::SqlBindings,
+    ) -> Result<String, SqlCompileError> {
+        let sql = self.compile_expr(entity, operand, params)?;
+        Ok(if data_type == DataType::Decimal {
+            format!("(CAST({sql} AS TEXT) COLLATE TEAQL_DECIMAL)")
+        } else {
+            sql
+        })
+    }
+
     fn compile_single_arg_function(
         &self,
         entity: &EntityDescriptor,

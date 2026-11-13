@@ -162,7 +162,7 @@ where
         entity: &EntityDescriptor,
         query: &SelectQuery,
     ) -> Result<CompiledQuery, SqlCompileError> {
-        if query.has_layered_statistics() {
+        if query.requires_statistical_plan() {
             return compile_layered_statistics(&self.dialect, &self.schema_provider, query)
                 .map(|(_, compiled)| compiled);
         }
@@ -1650,7 +1650,7 @@ impl<
                 }
             }
 
-            if request.query.has_layered_statistics() {
+            if request.query.requires_statistical_plan() {
                 return Box::pin(execute_layered_query(
                     &self.dialect,
                     &self.schema_provider,
@@ -2164,7 +2164,7 @@ where
     where
         D: SqlDialect,
     {
-        if query.has_layered_statistics() {
+        if query.requires_statistical_plan() {
             return compile_layered_statistics(self.dialect, self.schema_provider, query)
                 .map(|(_, compiled)| compiled);
         }
@@ -2286,7 +2286,7 @@ impl<
                     ))
                 })?;
 
-            if request.query.has_layered_statistics() {
+            if request.query.requires_statistical_plan() {
                 return Box::pin(execute_layered_query(
                     self.dialect,
                     self.schema_provider,
@@ -2545,7 +2545,7 @@ impl<
             .entity_descriptor(&request.query.entity)
             .ok_or_else(|| SqlCompileError::UnknownEntity(request.query.entity.clone()))
             .and_then(|entity| {
-                if request.query.has_layered_statistics() {
+                if request.query.requires_statistical_plan() {
                     compile_layered_statistics(&self.dialect, &self.schema_provider, &request.query)
                         .map(|(plan, compiled)| (Some(plan), compiled))
                 } else {
@@ -2588,7 +2588,7 @@ impl<
                 }));
             }
         };
-        let compiled = if request.query.has_layered_statistics() {
+        let compiled = if request.query.requires_statistical_plan() {
             compile_layered_statistics(&self.dialect, &self.schema_provider, &request.query)
                 .map(|(plan, compiled)| (Some(plan), compiled))
         } else {

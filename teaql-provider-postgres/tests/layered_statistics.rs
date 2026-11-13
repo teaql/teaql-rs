@@ -4,6 +4,8 @@
 mod gbk_order;
 #[path = "layered_statistics/integer_operand.rs"]
 mod integer_operand;
+#[path = "layered_statistics/measure_expression.rs"]
+mod measure_expression;
 use deadpool_postgres::{Pool, Runtime};
 use serde_json::json;
 use teaql_core::{

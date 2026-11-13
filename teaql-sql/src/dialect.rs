@@ -1302,6 +1302,18 @@ pub trait SqlDialect {
         }
     }
 
+    /// Compile a row-grain scalar for a statistical input projection. Providers
+    /// may add a typed cast or exact-value collation without changing bindings.
+    fn compile_statistical_operand(
+        &self,
+        entity: &EntityDescriptor,
+        operand: &Expr,
+        _data_type: DataType,
+        params: &mut crate::SqlBindings,
+    ) -> Result<String, SqlCompileError> {
+        self.compile_expr(entity, operand, params)
+    }
+
     fn compile_expr(
         &self,
         entity: &EntityDescriptor,
@@ -1587,7 +1599,9 @@ pub trait SqlDialect {
             BinaryOp::NotIn | BinaryOp::NotInLarge => "NOT IN",
             _ => return Err(SqlCompileError::InvalidSubQueryOperator(format!("{op:?}"))),
         };
-        let statistical = !query.group_by.is_empty() || !query.aggregates.is_empty();
+        let statistical = !query.group_by.is_empty()
+            || !query.aggregates.is_empty()
+            || query.has_aggregate_projection();
         if let Some(metadata) = &params.metadata {
             let descriptor = metadata
                 .get(&query.entity)
@@ -1598,32 +1612,50 @@ pub trait SqlDialect {
                 ));
             }
         }
-        if query.has_layered_statistics() {
-            let metadata = params.metadata.clone().ok_or_else(|| {
-                SqlCompileError::InvalidFunctionArguments(
-                    "layered statistical membership requires registered metadata".into(),
-                )
-            })?;
+        if query.requires_statistical_plan() {
+            let metadata = match &params.metadata {
+                Some(metadata) => metadata.clone(),
+                None if query.object_group_bys.is_empty() => {
+                    std::sync::Arc::new(std::collections::BTreeMap::from([(
+                        sub_entity.name.clone(),
+                        std::sync::Arc::new(sub_entity.clone()),
+                    )]))
+                }
+                None => {
+                    return Err(SqlCompileError::InvalidFunctionArguments(
+                        "layered statistical membership requires registered metadata".into(),
+                    ));
+                }
+            };
             let plan = teaql_core::aggregation_plan::StatisticalPlan::build(query, |name| {
                 metadata.get(name).map(AsRef::as_ref)
             })
             .map_err(|error| SqlCompileError::InvalidFunctionArguments(error.to_string()))?;
-            let [key] = query.projection.as_slice() else {
-                return Err(SqlCompileError::InvalidFunctionArguments(
-                    "statistical membership requires exactly one selected result key".into(),
-                ));
+            let key = match query.projection.as_slice() {
+                [key] => key.clone(),
+                [] if plan.layers.len() == 1
+                    && plan.dimensions.is_empty()
+                    && plan.measures.len() == 1 =>
+                {
+                    plan.measures[0].output_path.join(".")
+                }
+                _ => {
+                    return Err(SqlCompileError::InvalidFunctionArguments(
+                        "statistical membership requires exactly one selected result key".into(),
+                    ));
+                }
             };
             let candidates = plan
                 .dimensions
                 .iter()
                 .enumerate()
-                .filter(|(_, binding)| binding.output_path.join(".") == *key)
+                .filter(|(_, binding)| binding.output_path.join(".") == key)
                 .map(|(index, _)| format!("__teaql_d{index}"))
                 .chain(
                     plan.measures
                         .iter()
                         .enumerate()
-                        .filter(|(_, binding)| binding.output_path.join(".") == *key)
+                        .filter(|(_, binding)| binding.output_path.join(".") == key)
                         .map(|(index, _)| format!("__teaql_m{index}")),
                 )
                 .collect::<Vec<_>>();

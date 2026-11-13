@@ -70,6 +70,7 @@ impl Resolver {
                 return Err(RuntimeError::Graph("roll-up target entity does not match its relation".into()));
             }
             let statistical = !parent.query.group_by.is_empty() || !parent.query.aggregates.is_empty()
+                || parent.query.has_aggregate_projection()
                 || !parent.query_options.object_group_bys.is_empty();
             if !statistical {
                 source.query = source.query.and_filter(teaql_core::request::rollup_navigation_membership(
@@ -136,6 +137,11 @@ mod tests {
         let selection = result.unwrap();
         assert!(selection.query.filter.is_none());
         assert!(selection.relation_filters.is_empty());
+        assert_eq!(selection.query_options.object_group_bys.len(), 1);
+        target.lock().unwrap().selection.query = SelectQuery::new("Parent")
+            .project_expr("count", teaql_core::Expr::count_all());
+        let selection = resolve_rollup_links(QuerySelection::new(SelectQuery::new("Child")), &[link(&target)]).unwrap();
+        assert!(selection.query.filter.is_none());
         assert_eq!(selection.query_options.object_group_bys.len(), 1);
     }
 

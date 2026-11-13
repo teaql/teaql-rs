@@ -110,6 +110,29 @@ impl NamedExpr {
             expr,
         }
     }
+
+    /// Classification only; the statistical binder validates arity and types.
+    pub fn is_aggregate(&self) -> bool {
+        let mut expression = &self.expr;
+        for _ in 0..=64 {
+            match expression {
+                Expr::Function {
+                    function: crate::ExprFunction::Identity,
+                    args,
+                } if args.len() == 1 => expression = &args[0],
+                Expr::Function { function, .. } => {
+                    return !matches!(
+                        function,
+                        crate::ExprFunction::Identity
+                            | crate::ExprFunction::Soundex
+                            | crate::ExprFunction::Gbk
+                    );
+                }
+                _ => return false,
+            }
+        }
+        true
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -117,6 +140,56 @@ pub struct OrderBy {
     pub field: String,
     pub expr: Option<Expr>,
     pub direction: SortDirection,
+}
+
+#[cfg(test)]
+mod aggregate_expression_tests {
+    use super::*;
+    #[test]
+    fn repeated_named_measure_keeps_the_first_expression_like_java() {
+        let query = SelectQuery::new("Owner")
+            .aggregate_expression(NamedExpr::new("total", Expr::sum_expr(Expr::value(3_i64))));
+        assert!(query.requires_statistical_plan());
+        let duplicate = query
+            .clone()
+            .aggregate_expression(NamedExpr::new("total", Expr::sum_expr(Expr::value(9_i64))));
+        assert_eq!(duplicate, query);
+        let field = SelectQuery::new("Owner").sum("amount", "total");
+        assert_eq!(
+            field
+                .clone()
+                .aggregate_expression(NamedExpr::new("total", Expr::sum_expr(Expr::value(9_i64)))),
+            field
+        );
+    }
+    #[test]
+    fn grouping_aliases_do_not_hide_conflicting_measure_aliases() {
+        let query = SelectQuery::new("Owner")
+            .group_by_expr("same", Expr::column("id"))
+            .aggregate_expression(NamedExpr::new("same", Expr::count_all()));
+        assert_eq!(query.expr_projection.len(), 2);
+        let owner = crate::EntityDescriptor::new("Owner")
+            .property(crate::PropertyDescriptor::new("id", crate::DataType::I64).id());
+        assert!(crate::aggregation_plan::StatisticalPlan::build(&query, |_| Some(&owner)).is_err());
+    }
+    #[test]
+    fn aggregate_classification_does_not_misclassify_scalar_grouping() {
+        for expr in [
+            Expr::column("id"),
+            Expr::identity(Expr::column("id")),
+            Expr::soundex(Expr::column("name")),
+        ] {
+            assert!(!NamedExpr::new("scalar", expr).is_aggregate());
+        }
+        assert!(NamedExpr::new("measure", Expr::identity(Expr::count_all())).is_aggregate());
+        let parent = SelectQuery::new("Parent")
+            .aggregate_expression(NamedExpr::new("owners", Expr::count_all()));
+        assert!(
+            SelectQuery::new("Child")
+                .object_group_by("parent", "parent_id", parent)
+                .has_layered_statistics()
+        );
+    }
 }
 
 impl OrderBy {
@@ -511,12 +584,41 @@ pub struct SelectQuery {
 }
 
 impl SelectQuery {
+    /// Aggregate expression projections use the same typed owner-grain plan as
+    /// field aggregates inside a roll-up. Scalar projections are not aggregates.
+    pub fn has_aggregate_projection(&self) -> bool {
+        self.expr_projection.iter().any(NamedExpr::is_aggregate)
+    }
+
+    /// Java addAggregate: an existing aggregate alias keeps its first value.
+    /// Dimensions are a separate namespace; their collisions remain errors.
+    pub fn aggregate_expression(mut self, aggregate: NamedExpr) -> Self {
+        if self
+            .aggregates
+            .iter()
+            .any(|existing| existing.alias == aggregate.alias)
+            || self
+                .expr_projection
+                .iter()
+                .any(|existing| existing.alias == aggregate.alias && existing.is_aggregate())
+        {
+            return self;
+        }
+        self.expr_projection.push(aggregate);
+        self
+    }
+
+    pub fn requires_statistical_plan(&self) -> bool {
+        self.has_aggregate_projection() || self.has_layered_statistics()
+    }
+
     /// A grouped parent changes the final statistical grain. It cannot be
     /// hydrated through the ordinary entity-ID detail enhancement path.
     pub fn has_layered_statistics(&self) -> bool {
         self.object_group_bys.iter().any(|group| {
             !group.query.group_by.is_empty()
                 || !group.query.aggregates.is_empty()
+                || group.query.has_aggregate_projection()
                 || !group.query.object_group_bys.is_empty()
         })
     }

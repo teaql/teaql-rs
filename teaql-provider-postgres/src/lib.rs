@@ -121,6 +121,27 @@ impl SqlDialect for PostgresDialect {
         format!("CAST({sql} AS BIGINT)")
     }
 
+    fn compile_statistical_operand(
+        &self,
+        entity: &EntityDescriptor,
+        operand: &Expr,
+        data_type: DataType,
+        params: &mut teaql_sql::SqlBindings,
+    ) -> Result<String, SqlCompileError> {
+        let sql = self.compile_expr(entity, operand, params)?;
+        let kind = match data_type {
+            DataType::I64 | DataType::U64 => "BIGINT",
+            DataType::F64 => "DOUBLE PRECISION",
+            DataType::Decimal => "NUMERIC",
+            DataType::Text | DataType::LargeText => "TEXT",
+            DataType::Bool => "BOOLEAN",
+            DataType::Json => "JSONB",
+            DataType::Date => "DATE",
+            DataType::Timestamp => "TIMESTAMPTZ",
+        };
+        Ok(format!("CAST({sql} AS {kind})"))
+    }
+
     fn quote_ident(&self, ident: &str) -> String {
         quote_ident(ident)
     }

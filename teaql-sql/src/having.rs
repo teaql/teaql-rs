@@ -454,11 +454,12 @@ mod tests {
         });
         assert!(requires_fresh_compilation(&outer).unwrap());
         let compiled = Dialect.compile_select(&entity(), &outer).unwrap();
-        assert_eq!(
-            compiled.params,
-            [Value::I64(7), Value::I64(7), Value::I64(2)]
+        assert_eq!(compiled.params, [Value::I64(7), Value::I64(2)]);
+        assert!(
+            compiled.sql.contains("WHERE (\"__teaql_m0\" > $2)"),
+            "{}",
+            compiled.sql
         );
-        assert!(compiled.sql.contains("HAVING (SUM($2) > $3)"));
     }
 
     #[test]

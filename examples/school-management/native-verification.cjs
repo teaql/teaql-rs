@@ -29,11 +29,19 @@ async function runAdditionalProbes(run,cargo,repo,example,target,output,env){
   assert(unit.includes('6 passed; 0 failed'),'Generated navigation/copy guards must execute');
   assert(unit.includes('independent_relation_filter_metadata_survives_navigation ... ok'));
   await run([cargo,'build','--offline','--locked','--manifest-path',manifest,'--bins'],'all-binaries.log');
-  const statistics=[];
+  const statistics=[],expressionMeasures=[];
   for(const round of [1,2]){
     const log=await run([path.join(target,'debug/rollup_statistics_probe')],'statistics-round-'+round+'.log',example);
     const lines=log.split('\n').filter(l=>l.startsWith('LAYERED_ROLLUP='));assert.equal(lines.length,1);
     const proof=JSON.parse(lines[0].slice('LAYERED_ROLLUP='.length));assert(proof.passed&&proof.javaShaped);assert.equal(proof.caseCount,36);
+    const expressionLines=log.split('\n').filter(line=>line.startsWith('GENERATED_EXPRESSION_MEASURES='));assert.equal(expressionLines.length,1);
+    const expression=JSON.parse(expressionLines[0].slice('GENERATED_EXPRESSION_MEASURES='.length));
+    assert(expression.passed&&expression.generatedQ);assert.equal(expression.caseCount,6);
+    assert.deepEqual(expression.observations.map(x=>x.case),['expression-ordinary','expression-owner-grain','expression-operators',
+      'expression-transforms','expression-empty-null','expression-parent-only']);
+    assert.equal(expression.observations[1].row.perSchool,15);assert.equal(expression.observations[1].row.school_type.perType,14);
+    assert.equal(expression.observations[2].checked,13);assert.equal(expression.observations[4].checked,13);
+    assert.equal(expression.observations[5].row.school_type.owners,2);expressionMeasures.push(expression);
     assert.equal(proof.observations[0].row.schools,5);assert.equal(Number(proof.observations[0].row.capacity),3300);
     const aliases=proof.observations.filter(item=>item.case.startsWith('alias-'));assert.equal(aliases.length,5);
     assert.deepEqual(aliases[0].rows.map(row=>row.kindKey),[1001,1002]);
@@ -90,6 +98,6 @@ async function runAdditionalProbes(run,cargo,repo,example,target,output,env){
     const log=await run([path.join(target,'debug/bootstrap_trace_probe')],'bootstrap-'+logging+'-'+round+'.log',example);
     assert(log.includes('PASS Rust generated bootstrap trace logging='+(logging==='on')));runs.push('bootstrap-'+logging+'-'+round);
   }
-  return {statistics,numeric,gbk,bitwise,runs,allTargets:true,mainSmoke:true,generatedHelperTests:6};
+  return {statistics,expressionMeasures,numeric,gbk,bitwise,runs,allTargets:true,mainSmoke:true,generatedHelperTests:6};
 }
 module.exports={verifySources,runAdditionalProbes};

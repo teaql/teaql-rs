@@ -18,6 +18,7 @@ Type: `number`
 | Order | `order_by_display_order_asc()`, `order_by_display_order_desc()` |
 | Group | `group_by_display_order()`, `group_by_display_order_as(alias)` |
 | Group expression | `group_by_display_order_with_function(alias, function)` |
+| Aggregate expression | `add_aggregate(named_expression)` |
 | Filter statistical results | `having(expr)`; repeated calls combine with AND |
 | Order statistical results | `add_order_by_ascending(result_key)`, `add_order_by_descending(result_key)` |
 | Count non-null values | `count_display_order()`, `count_display_order_as(alias)` |
@@ -41,6 +42,18 @@ logical query fields.
 `group_by_display_order_as(alias)` replaces the default result key with
 the supplied alias, matching Java. The raw field is not returned as an additional
 key unless it is also explicitly grouped. Read the value with `row.get(alias)`.
+Use `add_aggregate(teaql_core::NamedExpr::new(alias, expression))` for an aggregate
+AST, matching Java `addAggregate(SimpleNamedExpression)`. An existing aggregate
+alias retains its first expression, just as in Java; use a different alias for
+another measure. For this field, an
+unchanged distinct input is
+`teaql_core::Expr::count_distinct(teaql_core::Expr::identity(teaql_core::Expr::column("display_order")))`.
+Scalar inputs are bound by metadata before SQL and evaluated at the request's
+own object grain; parent values are not repeated for every source child.
+Numeric SUM/AVG/statistical inputs must be numeric; bitwise inputs must be
+integers. Nested aggregates and subqueries are not scalar inputs. Parameters,
+nulls and exact Decimal values retain their domains. Execute the original source
+request for roll-up, using `execute_for_rows`, and keep its typed parent live.
 The generated field ordering methods still order this selected grouping key.
 Pass `teaql_core::ExprFunction::Identity` to
 `group_by_display_order_with_function(alias, function)` to group by this

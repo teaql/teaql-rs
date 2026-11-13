@@ -773,6 +773,11 @@ impl<R> SchoolTypeRequest<R> {
         self.query = self.query.count(alias);
         self.__synced()
     }
+    /// Java addAggregate(SimpleNamedExpression): bind a typed aggregate AST.
+    pub fn add_aggregate(mut self, aggregate: teaql_core::NamedExpr) -> Self {
+        self.query = self.query.aggregate_expression(aggregate);
+        self.__synced()
+    }
 
     /// Filter selected statistical results. Repeated conditions compose with AND.
     pub fn having(mut self, condition: Expr) -> Self {
