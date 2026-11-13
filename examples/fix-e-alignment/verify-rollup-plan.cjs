@@ -56,7 +56,7 @@ async function main() {
             ['teaql-runtime', 'log_privacy::tests::request_tree_', 3],
             ['teaql-core', 'aggregation_plan::measure_expression::tests::', 5],
             ['teaql-core', 'query::aggregate_expression_tests::', 3],
-            ['teaql-provider-sqlite', 'statistical_tests::', 76],
+            ['teaql-provider-sqlite', 'statistical_tests::', 78],
             ['teaql-provider-sqlite', 'decimal_functions::tests::', 4],
             ['teaql-provider-sqlite', 'gbk_functions::tests::', 3],
             ['teaql-provider-sqlite', 'statistical_functions::tests::', 7]]) {

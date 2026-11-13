@@ -2626,6 +2626,112 @@ fn layered_rollup_observed_stream_reports_final_logical_rows() {
 }
 
 #[test]
+fn context_entity_stream_prepares_statistical_membership_for_success_cancel_and_denial() {
+    use futures_util::StreamExt;
+    use teaql_data_service::SqlExecutionOutcome;
+    for (complete, deny) in [(true, false), (false, false), (true, true)] {
+        let policy = policy(false, deny);
+        let scopes = policy.scopes.clone();
+        let context = runtime_context(executor(), policy);
+        let kind = descriptors()
+            .into_iter()
+            .find(|entity| entity.name == "Kind")
+            .unwrap();
+        let platform = descriptors()
+            .into_iter()
+            .find(|entity| entity.name == "Platform")
+            .unwrap();
+        let totals = SelectQuery::new("Platform")
+            .group_by("id")
+            .count("eligible")
+            .limit(10)
+            .comment("Read platform statistical eligibility");
+        let wrapper = SelectQuery::new("Kind")
+            .project("id")
+            .limit(10)
+            .filter(Expr::in_subquery("platform_id", platform, totals, "id"))
+            .comment("Route through ordinary type identities");
+        let query = SelectQuery::new("School")
+            .projects(["id", "capacity"])
+            .filter(Expr::in_subquery("kind_id", kind, wrapper, "id"))
+            .limit(20)
+            .stream(1)
+            .comment("Stream eligible school observations");
+        let query = teaql_runtime::PurposedSelectQuery::new(
+            query,
+            "Verify statistical membership at the entity stream boundary",
+        );
+        let service = context
+            .entity_data_service::<StatisticalExecutor>("School")
+            .unwrap();
+        let result = futures_executor::block_on(service.fetch_stream(&query));
+        if deny {
+            match result {
+                Err(error) => assert!(error.to_string().contains("STATISTICS_PLATFORM_DENIED")),
+                Ok(_) => panic!("entity stream bypassed nested statistical policy"),
+            }
+            assert!(
+                context.sql_logs().is_empty(),
+                "denied child must stop before SQL"
+            );
+            assert!(
+                scopes
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|scope| scope.comment() == "Read platform statistical eligibility")
+            );
+            continue;
+        }
+        let mut stream = result.unwrap();
+        let count = futures_executor::block_on(async {
+            let first = stream.next().await.unwrap().unwrap();
+            assert_eq!(first.rows.len(), 1);
+            let mut count = first.rows.len();
+            if complete {
+                while let Some(chunk) = stream.next().await {
+                    count += chunk.unwrap().rows.len();
+                }
+            }
+            count
+        });
+        assert_eq!(count, if complete { 5 } else { 1 });
+        drop(stream);
+        let logs = context.sql_logs();
+        assert_eq!(logs.len(), 1, "one physical stream diagnostic");
+        assert_eq!(
+            logs[0].log_context.execution_outcome,
+            Some(if complete {
+                SqlExecutionOutcome::Success
+            } else {
+                SqlExecutionOutcome::Cancelled
+            })
+        );
+        let nodes = logs[0]
+            .log_context
+            .request_tree
+            .as_deref()
+            .expect("stream retains nested request tree");
+        let wrapper = nodes
+            .iter()
+            .find(|node| node.detail == "Route through ordinary type identities")
+            .unwrap();
+        let leaf = nodes
+            .iter()
+            .find(|node| node.detail == "Read platform statistical eligibility")
+            .unwrap();
+        assert_eq!(wrapper.parent_id, Some(1));
+        assert_eq!(nodes[leaf.parent_id.unwrap()].parent_id, Some(wrapper.id));
+        println!(
+            "CONTEXT_STATISTICAL_MEMBERSHIP_STREAM={}",
+            serde_json::json!({"complete":complete,
+            "rowsConsumed":count,"physicalStatements":logs.len(),"outcome":logs[0].log_context.execution_outcome.unwrap().as_str(),
+            "requestTree":teaql_core::QueryRequestTraceNode::to_json_value(nodes)})
+        );
+    }
+}
+
+#[test]
 fn layered_rollup_decoder_preserves_dots_in_a_measure_alias() {
     let executor = direct_executor();
     let query = SelectQuery::new("School")
@@ -2646,6 +2752,68 @@ fn layered_rollup_decoder_preserves_dots_in_a_measure_alias() {
     .unwrap();
     assert_eq!(result.rows[0].get("school.count"), Some(&Value::I64(5)));
     assert!(!result.rows[0].contains_key("school"));
+}
+
+#[test]
+fn context_failed_statistics_retains_masked_request_tree_and_failure_outcome() {
+    use teaql_runtime::log_formatter::{HumanReaderFormatter, LogFormatter};
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        // The connection is this test's fresh in-memory fixture. A missing
+        // table is deterministic; SQLite can treat an unknown double-quoted
+        // column as a string literal instead of reporting a column error.
+        .execute_batch("DROP TABLE legacy_school")
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let canary = "PRIVATE-LABEL-CANARY";
+    let parent = SelectQuery::new("Kind")
+        .group_by("label")
+        .filter(Expr::eq("label", canary))
+        .comment(format!("Group types {canary}"));
+    let mut query = source(parent);
+    query.object_group_bys[0].operation = Some(teaql_core::QueryOperation::new(
+        teaql_core::QueryOperationKind::Aggregate,
+        "roll_up_to_kind",
+    ));
+    for round in 1..=2 {
+        context.clear_sql_logs();
+        let error = fetch(&context, query.clone()).unwrap_err();
+        assert!(
+            error.to_lowercase().contains("no such table"),
+            "must exercise the real SQLite driver failure"
+        );
+        let logs = context.sql_logs();
+        assert_eq!(logs.len(), 1);
+        let log = &logs[0];
+        assert_eq!(
+            log.log_context.execution_outcome,
+            Some(teaql_data_service::SqlExecutionOutcome::Failure)
+        );
+        assert_eq!(log.result_count, None);
+        let nodes = log
+            .log_context
+            .request_tree
+            .as_deref()
+            .expect("failed statement retains actual request tree");
+        assert_eq!(nodes.len(), 4);
+        assert!(
+            nodes
+                .iter()
+                .any(|node| node.method.as_deref() == Some("roll_up_to_kind"))
+        );
+        let text = HumanReaderFormatter.format_sql_log(&log.trace_path, log);
+        assert!(!text.contains(canary));
+        assert!(text.contains("/* masked */"));
+        println!(
+            "FAILED_STATISTICAL_QUERY_LOG={}",
+            serde_json::json!({"round":round,
+            "physicalStatements":logs.len(),"outcome":log.log_context.execution_outcome.unwrap().as_str(),
+            "requestTree":teaql_core::QueryRequestTraceNode::to_json_value(nodes),"text":text})
+        );
+    }
 }
 
 #[test]

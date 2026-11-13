@@ -47,7 +47,11 @@ async function runAdditionalProbes(run,cargo,repo,example,target,output,env){
       'automatic-identity-projection','managed-field-grouping','version-row-visibility']);
     assert.deepEqual(managed.observations.map(x=>x.count),[1,1,2,2,0]);managedFields.push(managed);
     const trace=JSON.parse(traceLines[0].slice('GENERATED_ROLLUP_TRACE_SCOPES='.length));
-    assert(trace.passed&&trace.generatedQ);assert.equal(trace.caseCount,5);
+    assert(trace.passed&&trace.generatedQ&&trace.runtimeLogsVerified);assert.equal(trace.caseCount,5);
+    for(const[index,observation]of trace.observations.entries()){
+      assert.equal(observation.physicalStatements,1);assert.equal(observation.requestTree.length,index===4?6:4);
+      assert(observation.text.includes('requestTree=')&&observation.text.includes('SQL:'));
+    }
     assert.deepEqual(trace.observations.map(x=>x.method),['roll_up_to_school_type','roll_up_to_school_type_with',
       'group_by_school_type_with','group_by_school_type_with_details_from','roll_up_to_school_type']);
     assert.equal(trace.observations[4].requests,3);rollupTraceScopes.push(trace);

@@ -1092,6 +1092,13 @@ where
             )));
         }
 
+        // An entity stream can still contain statistical eligibility operands.
+        // Give those children the same ownership and policy preparation as
+        // entity lists before opening the physical cursor.
+        let query = scoped
+            .prepare_nested_statistical_layers(query)
+            .map_err(DataServiceError::Runtime)?;
+
         let chunk_size = query
             .stream_config
             .as_ref()

@@ -2,6 +2,7 @@
 use school_management_service_core::Q;
 use std::sync::{Arc, Mutex};
 use teaql_core::{QueryRequestScope, SelectQuery};
+use teaql_runtime::log_formatter::{HumanReaderFormatter, LogFormatter};
 use teaql_runtime::{RequestPolicy, RuntimeError, UserContext};
 
 #[derive(Clone, Default)]
@@ -26,6 +27,7 @@ pub async fn verify(context: &mut UserContext) -> Result<(), Box<dyn std::error:
     let mut observations = Vec::new();
     for variant in 0..5 {
         capture.0.lock().unwrap().clear();
+        context.clear_sql_logs();
         let mut request = Q::schools_minimal().count_as("schools");
         let (method, local) = match variant {
             0 => {
@@ -102,6 +104,30 @@ pub async fn verify(context: &mut UserContext) -> Result<(), Box<dyn std::error:
                 local.to_owned()
             ]
         );
+        let logs = context.sql_logs();
+        assert_eq!(logs.len(), 1, "one actual SQL log per combined execution");
+        let log = &logs[0];
+        let nodes = log
+            .log_context
+            .request_tree
+            .as_deref()
+            .expect("actual inline request tree");
+        assert_eq!(nodes.len(), if variant == 4 { 6 } else { 4 });
+        let native_node = nodes
+            .iter()
+            .find(|node| node.method.as_deref() == Some(method))
+            .unwrap();
+        let local_node = nodes.iter().find(|node| node.detail == local).unwrap();
+        assert_eq!(local_node.parent_id, Some(native_node.id));
+        assert_eq!(native_node.parent_id, Some(1));
+        for (index, node) in nodes.iter().enumerate() {
+            assert_eq!(node.id, index);
+            assert!(node.parent_id.is_none_or(|parent| parent < index));
+        }
+        let text = HumanReaderFormatter.format_sql_log(&log.trace_path, log);
+        assert!(text.contains(&format!("{method}()")));
+        assert!(text.contains(local));
+        assert!(text.contains("SQL:"));
         if variant == 4 {
             let campus = &scopes[2];
             assert_eq!(campus.root_request(), root);
@@ -119,13 +145,24 @@ pub async fn verify(context: &mut UserContext) -> Result<(), Box<dyn std::error:
                 Some("roll_up_to_platform")
             );
             assert_eq!(campus.comment(), "Group campus");
+            let campus_node = nodes
+                .iter()
+                .find(|node| node.detail == "Group campus")
+                .unwrap();
+            let campus_operation = &nodes[campus_node.parent_id.unwrap()];
+            assert_eq!(
+                campus_operation.method.as_deref(),
+                Some("roll_up_to_platform")
+            );
+            assert_eq!(campus_operation.parent_id, Some(local_node.id));
         }
         observations
-            .push(serde_json::json!({"method":method,"chain":chain,"requests":scopes.len()}));
+            .push(serde_json::json!({"method":method,"chain":chain,"requests":scopes.len(),
+                "physicalStatements":logs.len(),"requestTree":teaql_core::QueryRequestTraceNode::to_json_value(nodes),"text":text}));
     }
     println!(
         "GENERATED_ROLLUP_TRACE_SCOPES={}",
-        serde_json::json!({"passed":true,"generatedQ":true,"caseCount":observations.len(),"observations":observations})
+        serde_json::json!({"passed":true,"generatedQ":true,"runtimeLogsVerified":true,"caseCount":observations.len(),"observations":observations})
     );
     Ok(())
 }
