@@ -96,6 +96,7 @@ pub struct ServiceRuntimeExecutor {
         DataServiceMutationExecutor,
         LocalSchemaProvider
     >,
+    query_metadata_observer: Option<std::sync::Arc<dyn Fn(&teaql_data_service::ExecutionMetadata) + Send + Sync>>,
 }
 
 impl ServiceRuntimeExecutor {
@@ -106,6 +107,37 @@ impl ServiceRuntimeExecutor {
                 inner,
                 LocalSchemaProvider
             ),
+            query_metadata_observer: None,
+        }
+    }
+
+    /// Trusted provider/test SPI, disabled by default. Metadata can contain raw
+    /// binds: never send it to operator logs or an untrusted transport. Normal
+    /// SQL/audit sinks retain their runtime-owned safe projections.
+    #[doc(hidden)]
+    pub fn with_query_metadata_observer(mut self, observer: std::sync::Arc<dyn Fn(&teaql_data_service::ExecutionMetadata) + Send + Sync>) -> Self {
+        self.query_metadata_observer = Some(observer);
+        self
+    }
+
+    fn notify_query_metadata(&self, metadata: &teaql_data_service::ExecutionMetadata) {
+        if let Some(observer) = &self.query_metadata_observer {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer(metadata)));
+        }
+    }
+
+    fn query_metadata_observer<'a>(
+        &self, upstream: Option<teaql_data_service::ExecutionObserver<'a>>,
+    ) -> Option<teaql_data_service::ExecutionObserver<'a>> {
+        match &self.query_metadata_observer {
+            Some(callback) => {
+                let callback = callback.clone();
+                Some(std::sync::Arc::new(move |metadata| {
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(&metadata)));
+                    if let Some(upstream) = &upstream { upstream(metadata); }
+                }))
+            }
+            None => upstream,
         }
     }
 
@@ -119,12 +151,29 @@ impl teaql_data_service::DataServiceExecutor for ServiceRuntimeExecutor {
 }
 
 impl teaql_data_service::QueryExecutor for ServiceRuntimeExecutor {
+    fn query_log_intent(&self, query: &teaql_core::SelectQuery) -> teaql_data_service::SqlIntentRedactions {
+        teaql_data_service::QueryExecutor::query_log_intent(&self.inner, query)
+    }
+
     fn dynamic_field_store(&self) -> Option<&dyn teaql_data_service::dynamic_fields::DynamicFieldStore> {
         teaql_data_service::QueryExecutor::dynamic_field_store(&self.inner)
     }
 
     async fn query(&self, request: teaql_data_service::QueryRequest) -> Result<teaql_data_service::QueryResult, Self::Error> {
-        teaql_data_service::QueryExecutor::query(&self.inner, request).await
+        teaql_data_service::QueryExecutor::query_observed(self, request, None).await
+    }
+
+    fn query_observed<'a>(
+        &'a self,
+        request: teaql_data_service::QueryRequest,
+        observer: Option<teaql_data_service::ExecutionObserver<'a>>,
+    ) -> impl std::future::Future<Output = Result<teaql_data_service::QueryResult, Self::Error>> + Send + 'a {
+        async move {
+        let observer = self.query_metadata_observer(observer);
+        let result = teaql_data_service::QueryExecutor::query_observed(&self.inner, request, observer).await?;
+        self.notify_query_metadata(&result.metadata);
+        Ok(result)
+        }
     }
 }
 
@@ -136,6 +185,7 @@ impl teaql_data_service::StreamQueryExecutor for ServiceRuntimeExecutor {
         plan: teaql_data_service::dynamic_fields::DynamicFieldStreamPlan,
         observer: Option<teaql_data_service::ExecutionObserver<'a>>,
     ) -> Result<teaql_data_service::QueryStream<'a, Self::Error>, teaql_core::dynamic_fields::DynamicFieldError> {
+        let observer = self.query_metadata_observer(observer);
         teaql_data_service::StreamQueryExecutor::query_stream_with_dynamic_fields(
             &self.inner, request, chunk_size, plan, observer,
         )
@@ -147,11 +197,16 @@ impl teaql_data_service::StreamQueryExecutor for ServiceRuntimeExecutor {
         chunk_size: usize,
         observer: teaql_data_service::ExecutionObserver<'a>,
     ) -> teaql_data_service::QueryStream<'a, Self::Error> {
+        let observer = self.query_metadata_observer(Some(observer)).expect("caller supplied stream observer");
         teaql_data_service::StreamQueryExecutor::query_stream_observed(&self.inner, request, chunk_size, observer)
     }
 
     fn query_stream(&self, request: teaql_data_service::QueryRequest, chunk_size: usize) -> teaql_data_service::QueryStream<'_, Self::Error> {
-        teaql_data_service::StreamQueryExecutor::query_stream(&self.inner, request, chunk_size)
+        if let Some(observer) = self.query_metadata_observer(None) {
+            teaql_data_service::StreamQueryExecutor::query_stream_observed(&self.inner, request, chunk_size, observer)
+        } else {
+            teaql_data_service::StreamQueryExecutor::query_stream(&self.inner, request, chunk_size)
+        }
     }
 }
 
@@ -343,16 +398,71 @@ pub fn generated_wire_field_aliases() -> std::collections::BTreeMap<String, std:
     std::collections::BTreeMap::new()
 }
 
+/// One immutable model schema shared across contexts, never across row values.
+pub fn generated_entity_json_model() -> &'static teaql_runtime::entity_json::Model {
+    use teaql_runtime::entity_json::{Definition, Field, Kind};
+    static MODEL: std::sync::OnceLock<teaql_runtime::entity_json::Model> = std::sync::OnceLock::new();
+    MODEL.get_or_init(|| teaql_runtime::entity_json::Model::new(vec![
+        Definition::new("Platform", vec![
+            Field::new("id", "id", Kind::Id).nullable(false),
+            Field::new("name", "name", Kind::Text).nullable(false),
+            Field::new("base_url", "base_url", Kind::Text).nullable(false),
+            Field::new("create_time", "create_time", Kind::DateTime).nullable(false),
+            Field::new("update_time", "update_time", Kind::DateTime).nullable(false),
+            Field::new("version", "version", Kind::Version).nullable(false),
+            Field::new("school_type_list", "school_type_list", Kind::Many { target: "SchoolType".to_owned() }),
+            Field::new("school_list", "school_list", Kind::Many { target: "School".to_owned() }),
+        ]),
+        Definition::new("SchoolType", vec![
+            Field::new("platform", "platform_id", Kind::Reference { target: "Platform".to_owned(), detail_key: "platform".to_owned() }).nullable(false),
+            Field::new("id", "id", Kind::Id).nullable(false),
+            Field::new("name", "name", Kind::Text).nullable(false),
+            Field::new("code", "code", Kind::Text).nullable(false),
+            Field::new("display_order", "display_order", Kind::Decimal).nullable(false),
+            Field::new("version", "version", Kind::Version).nullable(false),
+            Field::new("school_list", "school_list", Kind::Many { target: "School".to_owned() }),
+        ]),
+        Definition::new("School", vec![
+            Field::new("id", "id", Kind::Id).nullable(false),
+            Field::new("platform", "platform_id", Kind::Reference { target: "Platform".to_owned(), detail_key: "platform".to_owned() }).nullable(false),
+            Field::new("school_type", "school_type_id", Kind::Reference { target: "SchoolType".to_owned(), detail_key: "school_type".to_owned() }).nullable(false),
+            Field::new("name", "name", Kind::Text).nullable(false),
+            Field::new("address", "address", Kind::Text).nullable(false),
+            Field::new("established_date", "established_date", Kind::Date).nullable(false),
+            Field::new("student_capacity", "student_capacity", Kind::Integer).nullable(false),
+            Field::new("active", "active", Kind::Boolean).nullable(false),
+            Field::new("create_time", "create_time", Kind::DateTime).nullable(false),
+            Field::new("update_time", "update_time", Kind::DateTime).nullable(false),
+            Field::new("version", "version", Kind::Version).nullable(false),
+        ])
+    ]).expect("invalid generated entity JSON metadata"))
+}
+
+pub fn generated_json_field_naming_profile() -> teaql_runtime::JsonFieldNamingProfile {
+    teaql_runtime::JsonFieldNamingProfile::CamelCase
+}
+
+fn generated_checker_presentation() -> std::sync::Arc<teaql_runtime::checker_messages::CheckerPresentationModel> {
+    static MODEL: std::sync::OnceLock<std::sync::Arc<teaql_runtime::checker_messages::CheckerPresentationModel>> = std::sync::OnceLock::new();
+    MODEL.get_or_init(|| std::sync::Arc::new(
+        teaql_runtime::checker_messages::CheckerPresentationModel::from_json("{\"schema\":\"teaql.checker-model/v1\",\"revision\":\"sha256:71ba9da7267282a87034f786438f6f60442609b86ca42c3ef288e51c43107ce1\",\"entities\":{\"Platform\":{\"labels\":{\"en\":\"Platform\"},\"fields\":[{\"name\":\"base_url\",\"labels\":{\"en\":\"base url\"},\"aliases\":[\"BaseUrl\",\"baseUrl\"]},{\"name\":\"create_time\",\"labels\":{\"en\":\"create time\"},\"aliases\":[\"CreateTime\",\"createTime\"]},{\"name\":\"id\",\"labels\":{\"en\":\"id\"},\"aliases\":[\"Id\"]},{\"name\":\"name\",\"labels\":{\"en\":\"name\"},\"aliases\":[\"Name\"]},{\"name\":\"school_list\",\"targetType\":\"School\",\"labels\":{\"en\":\"School\"},\"aliases\":[\"SchoolList\",\"schoolList\"]},{\"name\":\"school_type_list\",\"targetType\":\"SchoolType\",\"labels\":{\"en\":\"School Type\"},\"aliases\":[\"SchoolTypeList\",\"schoolTypeList\"]},{\"name\":\"update_time\",\"labels\":{\"en\":\"update time\"},\"aliases\":[\"UpdateTime\",\"updateTime\"]},{\"name\":\"version\",\"labels\":{\"en\":\"version\"},\"aliases\":[\"Version\"]}]},\"School\":{\"labels\":{\"en\":\"School\"},\"fields\":[{\"name\":\"active\",\"labels\":{\"en\":\"active\"},\"aliases\":[\"Active\"]},{\"name\":\"address\",\"labels\":{\"en\":\"address\"},\"aliases\":[\"Address\"]},{\"name\":\"create_time\",\"labels\":{\"en\":\"create time\"},\"aliases\":[\"CreateTime\",\"createTime\"]},{\"name\":\"established_date\",\"labels\":{\"en\":\"established date\"},\"aliases\":[\"EstablishedDate\",\"establishedDate\"]},{\"name\":\"id\",\"labels\":{\"en\":\"id\"},\"aliases\":[\"Id\"]},{\"name\":\"name\",\"labels\":{\"en\":\"name\"},\"aliases\":[\"Name\"]},{\"name\":\"platform\",\"targetType\":\"Platform\",\"labels\":{\"en\":\"Platform\"},\"aliases\":[\"Platform\"]},{\"name\":\"school_type\",\"targetType\":\"SchoolType\",\"labels\":{\"en\":\"School Type\"},\"aliases\":[\"SchoolType\",\"schoolType\"]},{\"name\":\"student_capacity\",\"labels\":{\"en\":\"student capacity\"},\"aliases\":[\"StudentCapacity\",\"studentCapacity\"]},{\"name\":\"update_time\",\"labels\":{\"en\":\"update time\"},\"aliases\":[\"UpdateTime\",\"updateTime\"]},{\"name\":\"version\",\"labels\":{\"en\":\"version\"},\"aliases\":[\"Version\"]}]},\"SchoolType\":{\"labels\":{\"en\":\"School Type\"},\"fields\":[{\"name\":\"code\",\"labels\":{\"en\":\"code\"},\"aliases\":[\"Code\"]},{\"name\":\"display_order\",\"labels\":{\"en\":\"display order\"},\"aliases\":[\"DisplayOrder\",\"displayOrder\"]},{\"name\":\"id\",\"labels\":{\"en\":\"id\"},\"aliases\":[\"Id\"]},{\"name\":\"name\",\"labels\":{\"en\":\"name\"},\"aliases\":[\"Name\"]},{\"name\":\"platform\",\"targetType\":\"Platform\",\"labels\":{\"en\":\"Platform\"},\"aliases\":[\"Platform\"]},{\"name\":\"school_list\",\"targetType\":\"School\",\"labels\":{\"en\":\"School\"},\"aliases\":[\"SchoolList\",\"schoolList\"]},{\"name\":\"version\",\"labels\":{\"en\":\"version\"},\"aliases\":[\"Version\"]}]}}}")
+            .expect("Invalid generated Checker presentation metadata")
+    )).clone()
+}
+
 pub fn module() -> teaql_runtime::RuntimeModule {
     teaql_runtime::RuntimeModule::new()
-        .entity::<Platform>()
+        .entity_json_model(generated_entity_json_model().clone())
+        .checker_presentation_model(generated_checker_presentation())        .entity::<Platform>()
         .entity::<SchoolType>()
         .entity::<School>()
         .generated_schema_bootstrap(ensure_generated_bootstrap)
 }
 
 pub fn module_with_checkers() -> teaql_runtime::RuntimeModule {
-    let mut module = teaql_runtime::RuntimeModule::new();
+    let mut module = teaql_runtime::RuntimeModule::new()
+        .entity_json_model(generated_entity_json_model().clone())
+        .checker_presentation_model(generated_checker_presentation());
     module = module.entity::<Platform>();
     module = module.checker(teaql_runtime::TypedEntityChecker::<Platform, _>::new(PlatformChecker::default()));
     module = module.entity::<SchoolType>();
@@ -364,7 +474,9 @@ pub fn module_with_checkers() -> teaql_runtime::RuntimeModule {
 }
 
 pub fn module_with_behaviors() -> teaql_runtime::RuntimeModule {
-    let mut module = teaql_runtime::RuntimeModule::new();
+    let mut module = teaql_runtime::RuntimeModule::new()
+        .entity_json_model(generated_entity_json_model().clone())
+        .checker_presentation_model(generated_checker_presentation());
     module = module.entity_with_behavior::<Platform, _>(PlatformBehavior::default());
     module = module.entity_with_behavior::<SchoolType, _>(SchoolTypeBehavior::default());
     module = module.entity_with_behavior::<School, _>(SchoolBehavior::default());
@@ -373,7 +485,9 @@ pub fn module_with_behaviors() -> teaql_runtime::RuntimeModule {
 }
 
 pub fn module_with_behaviors_and_checkers() -> teaql_runtime::RuntimeModule {
-    let mut module = teaql_runtime::RuntimeModule::new();
+    let mut module = teaql_runtime::RuntimeModule::new()
+        .entity_json_model(generated_entity_json_model().clone())
+        .checker_presentation_model(generated_checker_presentation());
     module = module.entity_with_behavior::<Platform, _>(PlatformBehavior::default());
     module = module.checker(teaql_runtime::TypedEntityChecker::<Platform, _>::new(PlatformChecker::default()));
     module = module.entity_with_behavior::<SchoolType, _>(SchoolTypeBehavior::default());

@@ -2,6 +2,8 @@
 use teaql_runtime::{CheckObjectStatus, CheckResults, ObjectLocation, TypedChecker, UserContext};
 
 pub trait SchoolTypeCheckerLogic: Send + Sync {
+    /// Trusted application-owned declarations, never accepted from mutation JSON.
+    fn custom_context_fields(&self) -> &'static [&'static str] { &[] }
     fn check_and_fix_school_type(
         &self,
         _context: &UserContext,
@@ -11,6 +13,20 @@ pub trait SchoolTypeCheckerLogic: Send + Sync {
         _results: &mut CheckResults,
     ) {
     }
+
+    /// Context/state defaults run only for create or an independent business mutation.
+    fn fix_school_type(
+        &self, context: &UserContext, entity: &mut crate::SchoolType,
+        status: CheckObjectStatus, location: &ObjectLocation, results: &mut CheckResults,
+    ) {
+        self.check_and_fix_school_type(context, entity, status, location, results);
+    }
+
+    /// Readonly validation is independent of automatic Context eligibility.
+    fn check_school_type(
+        &self, _context: &UserContext, _entity: &crate::SchoolType,
+        _status: CheckObjectStatus, _location: &ObjectLocation, _results: &mut CheckResults,
+    ) {}
 
     fn required(
         &self,
@@ -114,7 +130,15 @@ impl<L> TypedChecker<crate::SchoolType> for SchoolTypeChecker<L>
 where
     L: SchoolTypeCheckerLogic,
 {
-    fn check_and_fix_typed(
+    fn separate_fix_and_check(&self) -> bool { true }
+
+    fn managed_context_fields(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    fn custom_context_fields(&self) -> &'static [&'static str] { self.logic.custom_context_fields() }
+
+    fn fix_typed(
         &self,
         context: &UserContext,
         entity: &mut crate::SchoolType,
@@ -122,6 +146,14 @@ where
         location: &ObjectLocation,
         results: &mut CheckResults,
     ) {
+        self.logic.fix_school_type(context, entity, status, location, results);
+    }
+
+    fn check_typed(
+        &self, context: &UserContext, entity: &crate::SchoolType,
+        status: CheckObjectStatus, location: &ObjectLocation, results: &mut CheckResults, has_mutation: bool,
+    ) {
+        if has_mutation {
         if status.is_update() && !entity.is_loaded("platform_id") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -182,7 +214,43 @@ where
             );
         }
 
-        self.logic
-            .check_and_fix_school_type(context, entity, status, location, results);
+        }
+        self.logic.check_school_type(context, entity, status, location, results);
+    }
+
+    fn check_and_fix_typed(
+        &self, context: &UserContext, entity: &mut crate::SchoolType,
+        status: CheckObjectStatus, location: &ObjectLocation, results: &mut CheckResults,
+    ) {
+        let eligible = status.is_create() || teaql_core::Entity::dirty_fields(entity).is_some_and(|fields|
+            fields.iter().any(|field| !field.starts_with('_') && field != "id" && field != "version"
+                && !self.managed_context_fields().contains(&field.as_str())));
+        if eligible { self.fix_typed(context, entity, status, location, results); }
+        self.check_typed(context, entity, status, location, results, eligible);
+    }
+
+    fn check_fixed_values(
+        &self,
+        _context: &UserContext,
+        values: &teaql_runtime::EntityValues,
+        location: &ObjectLocation,
+        results: &mut CheckResults,
+    ) {
+        if let Some(teaql_core::Value::Text(value)) = values.get("name") {
+            let length = value.chars().count() as u64;
+            if length > 100_u64 {
+                results.push(teaql_runtime::CheckResult::max_str(location.clone().member("name"), 100_u64, value.clone()));
+            }
+        }
+
+        if let Some(teaql_core::Value::Text(value)) = values.get("code") {
+            let length = value.chars().count() as u64;
+            if length > 100_u64 {
+                results.push(teaql_runtime::CheckResult::max_str(location.clone().member("code"), 100_u64, value.clone()));
+            }
+        }
+
+
+
     }
 }

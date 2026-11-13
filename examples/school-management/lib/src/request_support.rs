@@ -10,6 +10,7 @@ use teaql_core::{
 };
 pub use teaql_core::{QueryOperation, QueryOperationKind};
 use teaql_runtime::{ContextError, GraphNode, EntityDataServiceBehavior, DataServiceError, PurposedSelectQuery, RuntimeError, UserContext};
+pub(crate) use crate::rollup_support::{RollupLink, RollupState, RollupTarget, resolve_rollup_links};
 
 pub type TeaqlEntityStream<'a, T, E> = std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<T, E>> + 'a>>;
 
@@ -167,6 +168,16 @@ pub(crate) fn authorize_query(mut query: SelectQuery) -> Result<PurposedSelectQu
         ));
     }
     Ok(PurposedSelectQuery::new(query, purpose))
+}
+
+// A precise list count is neither a rounded decimal nor a multi-row projection.
+pub(crate) fn exact_list_count(rows: &[CompactRow], alias: &str) -> Result<u64, RuntimeError> {
+    let value = if rows.len() == 1 { rows[0].get(alias) } else { None };
+    value.filter(|value| match value {
+        teaql_core::Value::Decimal(number) => number.fract().is_zero(),
+        _ => true,
+    }).and_then(teaql_core::Value::try_u64)
+        .ok_or_else(|| RuntimeError::Graph("list count must be one exact non-negative integer".into()))
 }
 
 pub trait TeaqlRuntime: Sync {

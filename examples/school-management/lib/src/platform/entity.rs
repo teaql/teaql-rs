@@ -21,18 +21,18 @@ pub struct Platform {
 #[teaql(id)]
     id: u64,
 
-// @source school-model.xml:13
+// @source school-model.xml:14
 #[teaql(max_length = 100)]
     name: String,
 
-// @source school-model.xml:13
+// @source school-model.xml:14
 #[teaql(max_length = 100)]
     base_url: String,
 
-// @source school-model.xml:13
+// @source school-model.xml:14
     create_time: teaql_core::time::Timestamp,
 
-// @source school-model.xml:13
+// @source school-model.xml:14
     update_time: teaql_core::time::Timestamp,
 #[teaql(version)]
     version: i64,
@@ -73,8 +73,8 @@ impl Platform {
             id: 0_u64,
             name: String::new(),
             base_url: String::new(),
-            create_time: teaql_core::time::Timestamp::now(),
-            update_time: teaql_core::time::Timestamp::now(),
+            create_time: Default::default(),
+            update_time: Default::default(),
             version: 0_i64,
             dynamic: BTreeMap::new(),
             __teaql_runtime_state: root,

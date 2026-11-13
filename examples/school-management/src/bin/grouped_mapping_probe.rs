@@ -4,7 +4,7 @@ use school_management_service_core::{
 };
 use teaql_core::{Entity as _, Value};
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database = std::env::var("TEAQL_GROUPED_MAPPING_DATABASE")?;
     let round = std::env::var("TEAQL_GROUPED_MAPPING_ROUND")?.parse::<u32>()?;
@@ -18,6 +18,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         format!("Grouped mapping {round} B"),
     ];
     for name in &names {
+        if Q::schools_minimal()
+            .with_name_is(name.clone())
+            .limit(1)
+            .comment("Reuse the named mapping fixture on repeated verification")
+            .purpose("Keep native example seeding idempotent")
+            .execute_for_first(&context)
+            .await?
+            .is_some()
+        {
+            continue;
+        }
         let mut school = Q::schools()
             .comment("Prepare grouped mapping example")
             .purpose("Verify generated Q mapping against SQLite")
@@ -67,11 +78,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .group_by_school_type_as("kindKey")
             .count_as("n")
     );
-    assert_eq!(
-        alias.get("school_type_id").and_then(Value::try_u64),
-        Some(1001)
-    );
+    assert!(!alias.contains_key("school_type_id"));
     assert_eq!(alias.get("kindKey").and_then(Value::try_u64), Some(1001));
+    let mut rolled_up_request = Q::schools();
+    rolled_up_request.roll_up_to_school_type();
     for row in [
         query!(
             "grouped-details",
@@ -79,10 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .group_by_school_type_with_details()
                 .count_as("n")
         ),
-        query!(
-            "roll-up-details",
-            Q::schools().roll_up_to_school_type().count_as("n")
-        ),
+        query!("roll-up-details", rolled_up_request.count_as("n")),
     ] {
         assert_eq!(
             row.get("school_type_id").and_then(Value::try_u64),

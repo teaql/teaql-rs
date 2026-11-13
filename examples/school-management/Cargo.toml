@@ -14,6 +14,7 @@ teaql-sql = { path = "../../teaql-sql" }
 teaql-data-service = { path = "../../teaql-data-service" }
 teaql-provider-sqlite = { path = "../../teaql-provider-sqlite" }
 serde_json = "1"
+tempfile = "3"
 
 [workspace]
 
