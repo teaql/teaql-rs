@@ -29,7 +29,7 @@ async function runAdditionalProbes(run,cargo,repo,example,target,output,env){
   assert(unit.includes('6 passed; 0 failed'),'Generated navigation/copy guards must execute');
   assert(unit.includes('independent_relation_filter_metadata_survives_navigation ... ok'));
   await run([cargo,'build','--offline','--locked','--manifest-path',manifest,'--bins'],'all-binaries.log');
-  const statistics=[],expressionMeasures=[],rollupTraceScopes=[],matchingCriteria=[];
+  const statistics=[],expressionMeasures=[],rollupTraceScopes=[],matchingCriteria=[],managedFields=[];
   for(const round of [1,2]){
     const log=await run([path.join(target,'debug/rollup_statistics_probe')],'statistics-round-'+round+'.log',example);
     const traceLines=log.split('\n').filter(line=>line.startsWith('GENERATED_ROLLUP_TRACE_SCOPES='));assert.equal(traceLines.length,1);
@@ -40,6 +40,12 @@ async function runAdditionalProbes(run,cargo,repo,example,target,output,env){
       'matching-empty-no-op','matching-ignores-result-configuration','matching-ignores-source-version',
       'matching-receiver-without-guard','matching-ids-statistical','matching-ids-layered','matching-nested-request-branch']);
     assert.deepEqual(matching.observations.map(x=>x.types),[2,1,1,1,1,1,2,0,0,1]);matchingCriteria.push(matching);
+    const managedLines=log.split('\n').filter(line=>line.startsWith('GENERATED_MANAGED_FIELDS='));assert.equal(managedLines.length,1);
+    const managed=JSON.parse(managedLines[0].slice('GENERATED_MANAGED_FIELDS='.length));
+    assert(managed.passed&&managed.generatedQ);assert.equal(managed.caseCount,5);
+    assert.deepEqual(managed.observations.map(x=>x.case),['id-operator-comparisons','id-set-filters',
+      'automatic-identity-projection','managed-field-grouping','version-row-visibility']);
+    assert.deepEqual(managed.observations.map(x=>x.count),[1,1,2,2,0]);managedFields.push(managed);
     const trace=JSON.parse(traceLines[0].slice('GENERATED_ROLLUP_TRACE_SCOPES='.length));
     assert(trace.passed&&trace.generatedQ);assert.equal(trace.caseCount,5);
     assert.deepEqual(trace.observations.map(x=>x.method),['roll_up_to_school_type','roll_up_to_school_type_with',
@@ -111,6 +117,6 @@ async function runAdditionalProbes(run,cargo,repo,example,target,output,env){
     const log=await run([path.join(target,'debug/bootstrap_trace_probe')],'bootstrap-'+logging+'-'+round+'.log',example);
     assert(log.includes('PASS Rust generated bootstrap trace logging='+(logging==='on')));runs.push('bootstrap-'+logging+'-'+round);
   }
-  return {statistics,expressionMeasures,rollupTraceScopes,matchingCriteria,numeric,gbk,bitwise,runs,allTargets:true,mainSmoke:true,generatedHelperTests:6};
+  return {statistics,expressionMeasures,rollupTraceScopes,matchingCriteria,managedFields,numeric,gbk,bitwise,runs,allTargets:true,mainSmoke:true,generatedHelperTests:6};
 }
 module.exports={verifySources,runAdditionalProbes};

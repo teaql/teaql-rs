@@ -26,6 +26,7 @@ async function main(){
       'examples/school-management/src/bin/expression_measure_cases/mod.rs',
       'examples/school-management/src/bin/rollup_trace_cases/mod.rs',
       'examples/school-management/src/bin/matching_criteria_cases/mod.rs',
+      'examples/school-management/src/bin/managed_field_cases/mod.rs',
       'examples/school-management/models/school-model.xml','examples/school-management/Cargo.toml','examples/school-management/Cargo.lock',
       'Cargo.toml','Cargo.lock','teaql-core/src/aggregation_plan.rs','teaql-core/src/aggregation_plan/measure_expression.rs','teaql-sql/src/statistical.rs',
       'teaql-core/src/query.rs','teaql-core/src/request.rs','teaql-core/tests/rollup_navigation.rs'];

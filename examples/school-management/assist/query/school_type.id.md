@@ -10,12 +10,11 @@ Type: `id`
 
 | Capability | Generated API |
 | --- | --- |
-| Select | `select_id()` |
+| Select | Automatically included in entity-shaped queries; no select or unselect helper |
 | Entity accessor | `id()` |
 | Independent ID membership | `matching_ids_of(other_request)` |
 | Equality/set | `with_id_is(value)`, `with_id_is_not(value)`, `with_id_in(values)`, `with_id_not_in(values)` |
-| Comparison | `with_id_greater_than(value)`, `with_id_greater_than_or_equal_to(value)`, `with_id_less_than(value)`, `with_id_less_than_or_equal_to(value)`, `with_id_between(lower, upper)` |
-| Null state | `with_id_is_known()`, `with_id_is_unknown()` |
+| Operator filter | `with_id(operator, values)`; use `teaql_core::request::FieldOperator` for comparisons |
 | Order | `order_by_id_asc()`, `order_by_id_desc()` |
 | Group | `group_by_id()`, `group_by_id_as(alias)` |
 | Group expression | `group_by_id_with_function(alias, function)` |
