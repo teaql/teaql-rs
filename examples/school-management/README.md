@@ -152,6 +152,14 @@ expressions, GBK grouping or complete TraceChain parity. Native provider tests
 separately compare ordering by the exact selected aggregate AST with ordering
 by its alias, and reject ambiguous or unselected expressions before SQL.
 
+Five request-ancestry scenarios also run twice through generated Q builders.
+They check plain roll-up, roll-up with a supplied request, parent grouping,
+grouped details and two-hop navigation. A test-owned RequestPolicy observes
+the actual prepared scopes: root purpose/comment, native Q operation, then the
+parent's explicit comment or its `load SchoolType` default. The grandparent
+retains the same root and its direct parent. This scope evidence does not
+establish complete branch rendering in the combined SQL log.
+
 Regenerate library, current Assist and workspace guidance together from the
 model using `scripts/regenerate-rust-native-school.cjs` in the code-generator
 repository. Its `--runtime` option points to this checkout, and `--output` must

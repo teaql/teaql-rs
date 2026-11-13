@@ -17,6 +17,7 @@ pub(crate) struct RollupLink {
     pub property: String,
     pub storage: String,
     pub descriptor: EntityDescriptor,
+    pub operation: teaql_core::QueryOperation,
     pub target: RollupTarget,
 }
 
@@ -81,7 +82,7 @@ impl Resolver {
             }
             source.query_options.object_group_bys.retain(|group| group.property_name != link.property);
             source.query_options.object_group_bys.push(ObjectGroupBy::new(
-                &link.property, &link.storage, parent));
+                &link.property, &link.storage, parent).with_operation(link.operation.clone()));
         }
         Ok(source)
     }
@@ -100,6 +101,7 @@ mod tests {
 
     fn link(target: &RollupTarget) -> RollupLink {
         RollupLink { property: "parent".into(), storage: "parent_id".into(),
+            operation: teaql_core::QueryOperation::new(teaql_core::QueryOperationKind::Aggregate, "roll_up_to_parent").with_relation("parent"),
             descriptor: EntityDescriptor::new("Parent"), target: target.clone() }
     }
 

@@ -1,6 +1,7 @@
 //! Use current field Assist and generated Q APIs; never patch generated source.
 mod expression_measure_cases;
 mod reverse_rollup_cases;
+mod rollup_trace_cases;
 use school_management_service_core::{E, request_support::AuditedSave as _};
 use school_management_service_core::{
     Q, SchoolRequest, ServiceRuntimeConfig, TeaqlRuntime, service_runtime,
@@ -44,7 +45,7 @@ fn record(label: &str, row: &CompactRow) -> serde_json::Value {
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let context = service_runtime(ServiceRuntimeConfig {
+    let mut context = service_runtime(ServiceRuntimeConfig {
         database_url: std::env::var("TEAQL_GROUPED_MAPPING_DATABASE")?,
     })
     .await?;
@@ -82,6 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(E::school(school).get_school_type_id().eval(), Some(1002));
         assert_eq!(school.version(), 1);
     }
+    rollup_trace_cases::verify(&mut context).await?;
     let mut evidence = Vec::new();
 
     let mut request = source();

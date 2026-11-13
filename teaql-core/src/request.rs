@@ -431,6 +431,7 @@ pub struct ObjectGroupBy {
     pub property_name: String,
     pub storage_field: String,
     pub query: QuerySelection,
+    pub operation: Option<crate::QueryOperation>,
 }
 
 impl ObjectGroupBy {
@@ -443,7 +444,13 @@ impl ObjectGroupBy {
             property_name: property_name.into(),
             storage_field: storage_field.into(),
             query: query.into(),
+            operation: None,
         }
+    }
+
+    pub fn with_operation(mut self, operation: crate::QueryOperation) -> Self {
+        self.operation = Some(operation);
+        self
     }
 }
 
@@ -501,11 +508,13 @@ pub fn apply_runtime_metadata(
         .object_group_bys
         .iter()
         .map(|group_by| {
-            CoreObjectGroupBy::new(
+            let mut group = CoreObjectGroupBy::new(
                 group_by.property_name.clone(),
                 group_by.storage_field.clone(),
                 group_by.query.clone().into_query(),
-            )
+            );
+            group.operation = group_by.operation.clone();
+            group
         })
         .collect();
     query.child_enhancements = child_enhancements

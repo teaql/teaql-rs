@@ -39,7 +39,7 @@ async function main() {
         for (const [crate, filter, minimum] of [['teaql-core', 'aggregation_plan::tests::', 19],
             ['teaql-core', 'aggregation_plan::measure_expression::tests::', 5],
             ['teaql-core', 'query::aggregate_expression_tests::', 3],
-            ['teaql-provider-sqlite', 'statistical_tests::', 69],
+            ['teaql-provider-sqlite', 'statistical_tests::', 70],
             ['teaql-provider-sqlite', 'decimal_functions::tests::', 4],
             ['teaql-provider-sqlite', 'statistical_functions::tests::', 7]]) {
             const command = [process.env.CARGO || 'cargo', 'test', '--offline', '--locked', '-p', crate, filter];

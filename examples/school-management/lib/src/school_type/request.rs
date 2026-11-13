@@ -2101,29 +2101,43 @@ impl<R> SchoolTypeRequest<R> {
     }
 
     pub fn group_by_platform_with(mut self, request: impl Into<QuerySelection>) -> Self {
+        self.__group_by_platform_with_operation(request, "group_by_platform_with")
+    }
+
+    fn __group_by_platform_with_operation(mut self, request: impl Into<QuerySelection>, method: &str) -> Self {
         self.query = self.query.group_by("platform_id");
         self.query_options.object_group_bys.push(ObjectGroupBy::new(
             "platform",
             "platform_id",
             request,
-        ));
+        ).with_operation(
+            QueryOperation::new(QueryOperationKind::Aggregate, method)
+                .with_relation("platform")));
         self.__synced()
     }
 
     pub fn group_by_platform_with_details(self) -> Self {
-        self.group_by_platform_with_details_from(crate::Q::platforms().unlimited())
+        self.__group_by_platform_with_operation(crate::Q::platforms().unlimited(), "group_by_platform_with_details")
     }
 
     pub fn group_by_platform_with_details_from(self, request: impl Into<QuerySelection>) -> Self {
-        self.group_by_platform_with(request)
+        self.__group_by_platform_with_operation(request, "group_by_platform_with_details_from")
     }
 
 
     pub fn roll_up_to_platform(&mut self) -> crate::PlatformRequest {
-        self.roll_up_to_platform_with(crate::Q::platforms().unlimited())
+        self.__bind_roll_up_to_platform(crate::Q::platforms().unlimited(),
+            QueryOperation::new(QueryOperationKind::Aggregate, "roll_up_to_platform")
+                .with_relation("platform"))
     }
 
-    pub fn roll_up_to_platform_with<T>(&mut self, mut request: crate::PlatformRequest<T>) -> crate::PlatformRequest<T> {
+    pub fn roll_up_to_platform_with<T>(&mut self, request: crate::PlatformRequest<T>) -> crate::PlatformRequest<T> {
+        self.__bind_roll_up_to_platform(request,
+            QueryOperation::new(QueryOperationKind::Aggregate, "roll_up_to_platform_with")
+                .with_relation("platform"))
+    }
+
+    fn __bind_roll_up_to_platform<T>(&mut self, mut request: crate::PlatformRequest<T>, operation: QueryOperation) -> crate::PlatformRequest<T> {
         let target = request.__roll_up_target();
         if let Some(source) = &self.roll_up_publication {
             assert!(!crate::rollup_support::reaches(&target, source).expect("invalid roll-up configuration"),
@@ -2136,6 +2150,7 @@ impl<R> SchoolTypeRequest<R> {
             property: "platform".into(),
             storage: "platform_id".into(),
             descriptor: <crate::Platform as teaql_core::TeaqlEntity>::entity_descriptor(),
+            operation,
             target,
         });
         if !self.query.group_by.iter().any(|field| field == "platform_id") {

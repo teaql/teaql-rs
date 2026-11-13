@@ -74,11 +74,11 @@ where
                     "statistical SQL populations must use the same data service".into(),
                 ));
             }
-            let operation = parent_scope.derive_operation(
-                &target.name,
+            let descriptor = group.operation.clone().unwrap_or_else(|| {
                 QueryOperation::framework(QueryOperationKind::Aggregate)
-                    .with_relation(&group.property_name),
-            );
+                    .with_relation(&group.property_name)
+            });
+            let operation = parent_scope.derive_operation(&target.name, descriptor);
             let scope = operation.derive_child(&target.name, group.query.comment.as_deref())?;
             let mut service = self
                 .scoped_data_service_internal(target.name.clone())

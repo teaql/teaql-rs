@@ -22,6 +22,7 @@ Type: `reference to school_type`
 | Filter statistical results | `having(expr)`; repeated calls combine with AND |
 | Order statistical results | `add_order_by_ascending(result_key)`, `add_order_by_descending(result_key)` |
 | Count non-null references | `count_school_type()`, `count_school_type_as(alias)` |
+| Group parent request | `group_by_school_type_with(request)` |
 | Group with details | `group_by_school_type_with_details()`, `group_by_school_type_with_details_from(request)` |
 | Configure parent for roll-up | `roll_up_to_school_type()`, `roll_up_to_school_type_with(request)` |
 | Count distinct non-null references | `count_distinct_school_type()`, `count_distinct_school_type_as(alias)` |

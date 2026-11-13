@@ -29,9 +29,15 @@ async function runAdditionalProbes(run,cargo,repo,example,target,output,env){
   assert(unit.includes('6 passed; 0 failed'),'Generated navigation/copy guards must execute');
   assert(unit.includes('independent_relation_filter_metadata_survives_navigation ... ok'));
   await run([cargo,'build','--offline','--locked','--manifest-path',manifest,'--bins'],'all-binaries.log');
-  const statistics=[],expressionMeasures=[];
+  const statistics=[],expressionMeasures=[],rollupTraceScopes=[];
   for(const round of [1,2]){
     const log=await run([path.join(target,'debug/rollup_statistics_probe')],'statistics-round-'+round+'.log',example);
+    const traceLines=log.split('\n').filter(line=>line.startsWith('GENERATED_ROLLUP_TRACE_SCOPES='));assert.equal(traceLines.length,1);
+    const trace=JSON.parse(traceLines[0].slice('GENERATED_ROLLUP_TRACE_SCOPES='.length));
+    assert(trace.passed&&trace.generatedQ);assert.equal(trace.caseCount,5);
+    assert.deepEqual(trace.observations.map(x=>x.method),['roll_up_to_school_type','roll_up_to_school_type_with',
+      'group_by_school_type_with','group_by_school_type_with_details_from','roll_up_to_school_type']);
+    assert.equal(trace.observations[4].requests,3);rollupTraceScopes.push(trace);
     const lines=log.split('\n').filter(l=>l.startsWith('LAYERED_ROLLUP='));assert.equal(lines.length,1);
     const proof=JSON.parse(lines[0].slice('LAYERED_ROLLUP='.length));assert(proof.passed&&proof.javaShaped);assert.equal(proof.caseCount,36);
     const expressionLines=log.split('\n').filter(line=>line.startsWith('GENERATED_EXPRESSION_MEASURES='));assert.equal(expressionLines.length,1);
@@ -98,6 +104,6 @@ async function runAdditionalProbes(run,cargo,repo,example,target,output,env){
     const log=await run([path.join(target,'debug/bootstrap_trace_probe')],'bootstrap-'+logging+'-'+round+'.log',example);
     assert(log.includes('PASS Rust generated bootstrap trace logging='+(logging==='on')));runs.push('bootstrap-'+logging+'-'+round);
   }
-  return {statistics,expressionMeasures,numeric,gbk,bitwise,runs,allTargets:true,mainSmoke:true,generatedHelperTests:6};
+  return {statistics,expressionMeasures,rollupTraceScopes,numeric,gbk,bitwise,runs,allTargets:true,mainSmoke:true,generatedHelperTests:6};
 }
 module.exports={verifySources,runAdditionalProbes};

@@ -1167,6 +1167,7 @@ struct LayerPolicy {
     restrict_kind: bool,
     deny_platform: bool,
     seen: Arc<Mutex<Vec<(String, String)>>>,
+    scopes: Arc<Mutex<Vec<teaql_core::QueryRequestScope>>>,
 }
 
 impl teaql_runtime::RequestPolicy for LayerPolicy {
@@ -1175,6 +1176,10 @@ impl teaql_runtime::RequestPolicy for LayerPolicy {
         _context: &UserContext,
         query: &mut SelectQuery,
     ) -> Result<(), RuntimeError> {
+        self.scopes
+            .lock()
+            .unwrap()
+            .push(query.request_scope().unwrap().clone());
         self.seen.lock().unwrap().push((
             query.entity.clone(),
             query.request_scope().unwrap().comment().to_owned(),
@@ -1211,6 +1216,62 @@ fn policy(restrict_kind: bool, deny_platform: bool) -> LayerPolicy {
         restrict_kind,
         deny_platform,
         seen: Arc::new(Mutex::new(Vec::new())),
+        scopes: Arc::new(Mutex::new(Vec::new())),
+    }
+}
+
+#[test]
+fn layered_rollup_native_operation_and_local_comment_reach_each_policy_scope() {
+    for comment in [None, Some("Group visible kinds")] {
+        let policy = policy(false, false);
+        let scopes = policy.scopes.clone();
+        let context = runtime_context(executor(), policy);
+        let mut parent = SelectQuery::new("Kind").group_by("ordinal");
+        parent.comment = comment.map(str::to_owned);
+        let mut request = source(parent);
+        request.object_group_bys[0].operation = Some(
+            teaql_core::QueryOperation::new(
+                teaql_core::QueryOperationKind::Aggregate,
+                "roll_up_to_kind",
+            )
+            .with_relation("kind"),
+        );
+        let original = request.clone();
+        let executable = teaql_runtime::PurposedSelectQuery::new(
+            request.clone(),
+            original.purpose.as_deref().unwrap(),
+        );
+        let service = context
+            .entity_data_service::<StatisticalExecutor>("School")
+            .unwrap();
+        let rows = futures_executor::block_on(service.fetch_all(&executable)).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(request, original);
+        let scopes = scopes.lock().unwrap();
+        assert_eq!(scopes.len(), 2);
+        let child = &scopes[1];
+        let operation = child.parent_request().unwrap();
+        assert_eq!(
+            operation.operation().unwrap().method(),
+            Some("roll_up_to_kind")
+        );
+        assert_eq!(operation.operation().unwrap().relation(), Some("kind"));
+        assert_eq!(operation.parent_request(), Some(&scopes[0]));
+        assert_eq!(child.root_request(), &scopes[0]);
+        assert_eq!(
+            child
+                .trace_chain()
+                .iter()
+                .map(|n| n.comment.as_str())
+                .collect::<Vec<_>>(),
+            [
+                original.purpose.as_deref().unwrap(),
+                original.comment.as_deref().unwrap(),
+                "roll_up_to_kind()",
+                comment.unwrap_or("load Kind")
+            ]
+        );
+        assert!(original.object_group_bys[0].query.request_scope().is_none());
     }
 }
 

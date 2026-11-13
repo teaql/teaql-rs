@@ -20,6 +20,7 @@ Type: `reference to platform`
 | Filter statistical results | `having(expr)`; repeated calls combine with AND |
 | Order statistical results | `add_order_by_ascending(result_key)`, `add_order_by_descending(result_key)` |
 | Count non-null references | `count_platform()`, `count_platform_as(alias)` |
+| Group parent request | `group_by_platform_with(request)` |
 | Group with details | `group_by_platform_with_details()`, `group_by_platform_with_details_from(request)` |
 | Configure parent for roll-up | `roll_up_to_platform()`, `roll_up_to_platform_with(request)` |
 | Count distinct non-null references | `count_distinct_platform()`, `count_distinct_platform_as(alias)` |

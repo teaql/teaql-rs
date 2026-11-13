@@ -24,19 +24,15 @@ mod hard_limit_tests {
                 .limit,
             Some(10_000)
         );
-        assert!(
-            SelectQuery::new("Order")
-                .limit(10_001)
-                .prepare_for_list()
-                .is_err()
-        );
-        assert!(
-            SelectQuery::new("Order")
-                .limit(10_001)
-                .hard_limit(20_000)
-                .prepare_for_list()
-                .is_ok()
-        );
+        assert!(SelectQuery::new("Order")
+            .limit(10_001)
+            .prepare_for_list()
+            .is_err());
+        assert!(SelectQuery::new("Order")
+            .limit(10_001)
+            .hard_limit(20_000)
+            .prepare_for_list()
+            .is_ok());
     }
 
     #[test]
@@ -77,11 +73,9 @@ mod hard_limit_tests {
 
     #[test]
     fn topn_001_002_003_probe_threshold_is_explicit_and_bounded() {
-        assert!(
-            SelectQuery::new("Trip")
-                .top_n_probe_parent_threshold
-                .is_none()
-        );
+        assert!(SelectQuery::new("Trip")
+            .top_n_probe_parent_threshold
+            .is_none());
         assert_eq!(
             SelectQuery::new("Trip")
                 .top_n_probe_parent_threshold(32)
@@ -184,11 +178,9 @@ mod aggregate_expression_tests {
         assert!(NamedExpr::new("measure", Expr::identity(Expr::count_all())).is_aggregate());
         let parent = SelectQuery::new("Parent")
             .aggregate_expression(NamedExpr::new("owners", Expr::count_all()));
-        assert!(
-            SelectQuery::new("Child")
-                .object_group_by("parent", "parent_id", parent)
-                .has_layered_statistics()
-        );
+        assert!(SelectQuery::new("Child")
+            .object_group_by("parent", "parent_id", parent)
+            .has_layered_statistics());
     }
 }
 
@@ -413,6 +405,8 @@ pub struct ObjectGroupBy {
     pub property_name: String,
     pub storage_field: String,
     pub query: SelectQuery,
+    /// Trusted generator-supplied Q spelling, not caller-provided query JSON.
+    pub operation: Option<crate::QueryOperation>,
 }
 
 impl ObjectGroupBy {
@@ -425,7 +419,13 @@ impl ObjectGroupBy {
             property_name: property_name.into(),
             storage_field: storage_field.into(),
             query,
+            operation: None,
         }
+    }
+
+    pub fn with_operation(mut self, operation: crate::QueryOperation) -> Self {
+        self.operation = Some(operation);
+        self
     }
 }
 
