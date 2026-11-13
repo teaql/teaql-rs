@@ -105,6 +105,14 @@ keeps both FK result keys, orders by the unique explicit alias, and rejects
 the ambiguous source expression. A read-only oracle confirms the original
 ranks 1 and 2 remain in the database.
 
+The same numeric probe runs four GBK guard scenarios twice: ordinary ascending
+and descending ordering, a parent-cell page and a nested final-result page.
+Names change through audited Mutation and Q/E readback, then return to Primary
+and Secondary. This SQLite example requires an explicit unsupported-operation
+error; it does not demonstrate working GBK sorting. The PostgreSQL generated
+consumer gate verifies those four scenarios with real GBK ordering. GBK grouping
+and binary projections are separate capabilities and are not enabled by sorting.
+
 Regenerate library, current Assist and workspace guidance together from the
 model using `scripts/regenerate-rust-native-school.cjs` in the code-generator
 repository. Its `--runtime` option points to this checkout, and `--output` must

@@ -747,6 +747,16 @@ impl<R> PlatformRequest<R> {
         self.__synced()
     }
 
+    pub fn add_order_by_ascending_using_gbk(mut self, result_key: impl Into<String>) -> Self {
+        self.query = self.query.order_gbk_asc(result_key);
+        self.__synced()
+    }
+
+    pub fn add_order_by_descending_using_gbk(mut self, result_key: impl Into<String>) -> Self {
+        self.query = self.query.order_gbk_desc(result_key);
+        self.__synced()
+    }
+
     pub fn count(mut self) -> Self {
         self.query_options.page_count_operation = Some(QueryOperation::new(QueryOperationKind::NamedCount, "count"));
         self.aggregate_count("count")

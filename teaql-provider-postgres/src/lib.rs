@@ -107,6 +107,16 @@ impl SqlDialect for PostgresDialect {
         true
     }
 
+    fn compile_gbk_function(
+        &self,
+        entity: &EntityDescriptor,
+        args: &[Expr],
+        params: &mut teaql_sql::SqlBindings,
+    ) -> Result<String, SqlCompileError> {
+        let operand = self.compile_gbk_text_operand(entity, args, params)?;
+        Ok(format!("convert_to({operand}, 'GBK')"))
+    }
+
     fn quote_ident(&self, ident: &str) -> String {
         quote_ident(ident)
     }

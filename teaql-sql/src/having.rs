@@ -571,6 +571,20 @@ mod tests {
     }
 
     #[test]
+    fn default_dialect_cannot_claim_gbk_by_returning_the_same_field() {
+        let entity = entity().property(PropertyDescriptor::new("name", DataType::Text));
+        let query = SelectQuery::new("School")
+            .group_by("name")
+            .count("schools")
+            .order_gbk_asc("name");
+        let error = Dialect
+            .compile_select(&entity, &query)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("GBK is unsupported"), "{error}");
+    }
+
+    #[test]
     fn duplicate_grouping_alias_fails_without_having_or_ordering() {
         let query = SelectQuery::new("School")
             .group_by_expr("band", Expr::column("capacity"))

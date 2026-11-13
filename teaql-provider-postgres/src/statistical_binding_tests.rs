@@ -2,6 +2,67 @@ use super::*;
 use tokio_postgres::types::{FromSql, ToSql, Type};
 
 #[test]
+fn actual_postgres_gbk_compiler_preserves_mapping_and_parameter_privacy() {
+    let entity = EntityDescriptor::new("GbkKind")
+        .property(PropertyDescriptor::new("label", DataType::Text).column_name("Legacy GBK Label"))
+        .audit_mask_fields(vec!["label".into()]);
+    let query = SelectQuery::new("GbkKind")
+        .group_by_expr("caption", Expr::identity(Expr::column("label")))
+        .count("types")
+        .filter(Expr::eq("label", "PRIVATE-GBK-CANARY"))
+        .order_gbk_asc("caption");
+    let original = query.clone();
+    let result = PostgresDialect.compile_select(&entity, &query).unwrap();
+    assert!(
+        result
+            .sql
+            .ends_with("ORDER BY convert_to(\"Legacy GBK Label\", 'GBK') ASC"),
+        "{}",
+        result.sql
+    );
+    assert_eq!(result.params, [Value::from("PRIVATE-GBK-CANARY")]);
+    assert_eq!(
+        result.log_context.parameter_policies,
+        [teaql_data_service::SqlParameterLogPolicy::Masked]
+    );
+    assert_eq!(query, original);
+}
+
+#[test]
+fn actual_postgres_gbk_compiler_rejects_non_text_and_invalid_arity() {
+    let entity = EntityDescriptor::new("GbkKind")
+        .property(PropertyDescriptor::new("id", DataType::I64).id());
+    for query in [
+        SelectQuery::new("GbkKind")
+            .group_by("id")
+            .count("types")
+            .order_gbk_asc("id"),
+        SelectQuery::new("GbkKind")
+            .count("types")
+            .order_gbk_asc("types"),
+    ] {
+        let error = PostgresDialect
+            .compile_select(&entity, &query)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("GBK requires a text operand"), "{error}");
+    }
+    let query = SelectQuery::new("GbkKind").project_expr(
+        "bad",
+        Expr::function(
+            teaql_core::ExprFunction::Gbk,
+            [Expr::value("PRIVATE-GBK-CANARY"), Expr::value("another")],
+        ),
+    );
+    let error = PostgresDialect
+        .compile_select(&entity, &query)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("exactly one"), "{error}");
+    assert!(!error.contains("CANARY"));
+}
+
+#[test]
 fn integer_threshold_encodes_exact_postgres_numeric_without_a_float_round_trip() {
     for value in [i64::MIN, -1, 0, 50, 9_007_199_254_740_993, i64::MAX] {
         let mut bytes = bytes::BytesMut::new();

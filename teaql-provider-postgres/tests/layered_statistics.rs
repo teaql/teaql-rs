@@ -1,5 +1,7 @@
 //! Real PostgreSQL execution for the small #326 roll-up fixture. The local
 //! verifier supplies an isolated, owned database and requires these tests.
+#[path = "layered_statistics/gbk_order.rs"]
+mod gbk_order;
 use deadpool_postgres::{Pool, Runtime};
 use serde_json::json;
 use teaql_core::{

@@ -35,7 +35,7 @@ async function main() {
             CARGO_BUILD_JOBS: '4', CARGO_PROFILE_TEST_DEBUG: '0', CARGO_PROFILE_DEV_DEBUG: '0'};
         receipt.commands = [];
         for (const [crate, filter, minimum] of [['teaql-core', 'aggregation_plan::tests::', 19],
-            ['teaql-provider-sqlite', 'statistical_tests::', 58],
+            ['teaql-provider-sqlite', 'statistical_tests::', 59],
             ['teaql-provider-sqlite', 'decimal_functions::tests::', 4],
             ['teaql-provider-sqlite', 'statistical_functions::tests::', 7]]) {
             const command = [process.env.CARGO || 'cargo', 'test', '--offline', '--locked', '-p', crate, filter];

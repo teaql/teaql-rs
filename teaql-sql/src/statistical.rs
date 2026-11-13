@@ -503,18 +503,35 @@ fn result_orders(
                 .expr
                 .clone()
                 .unwrap_or_else(|| Expr::column(&order.field));
+            let key = identity_operand(&expression);
+            let gbk_key = if let Expr::Function {
+                function: teaql_core::ExprFunction::Gbk,
+                args,
+            } = key
+            {
+                let [arg] = args.as_slice() else {
+                    return Err(SqlCompileError::InvalidFunctionArguments(
+                        "GBK expects exactly one argument".into(),
+                    ));
+                };
+                Some(identity_operand(arg))
+            } else {
+                None
+            };
             let mut matches = Vec::new();
             let mut consider = |binding_owner: usize, path: &[String], selected: Expr| {
                 if !path.starts_with(&layer.output_path) {
                     return;
                 }
                 let relative = path[layer.output_path.len()..].join(".");
-                if descriptor.property_by_name(&relative).is_some()
-                    && (*identity_operand(&expression) == Expr::column(&relative)
-                        || binding_owner == owner
-                            && identity_operand(&expression) == identity_operand(&selected))
-                {
-                    matches.push(relative);
+                let direct = *key == Expr::column(&relative)
+                    || binding_owner == owner && key == identity_operand(&selected);
+                let modifier = gbk_key.is_some_and(|key| {
+                    *key == Expr::column(&relative)
+                        || binding_owner == owner && key == identity_operand(&selected)
+                });
+                if descriptor.property_by_name(&relative).is_some() && (direct || modifier) {
+                    matches.push((relative, !direct && modifier));
                 }
             };
             for binding in &plan.dimensions {
@@ -544,8 +561,9 @@ fn result_orders(
                 ));
             }
             let mut bound = order.clone();
-            bound.field = matches.pop().unwrap();
-            bound.expr = None;
+            let (field, modifier) = matches.pop().unwrap();
+            bound.expr = modifier.then(|| Expr::gbk(Expr::column(&field)));
+            bound.field = field;
             Ok(bound)
         })
         .collect()

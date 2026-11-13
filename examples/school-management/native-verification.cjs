@@ -45,7 +45,7 @@ async function runAdditionalProbes(run,cargo,repo,example,target,output,env){
     assert.equal(proof.observations.find(item=>item.case==='renavigate-keeps-independent-filter')?.rows,0);
     statistics.push(proof);
   }
-  const numeric=[];
+  const numeric=[],gbk=[];
   for(const round of [1,2]){
     const log=await run([path.join(target,'debug/numeric_rollup_probe')],'numeric-round-'+round+'.log',example);
     const lines=log.split('\n').filter(l=>l.startsWith('GENERATED_NUMERIC_ROLLUP='));assert.equal(lines.length,1);
@@ -55,6 +55,13 @@ async function runAdditionalProbes(run,cargo,repo,example,target,output,env){
       'numeric-nested-page','numeric-parent-having','numeric-nested-having','numeric-unselected-order-rejected',
       'numeric-ordinary-order-rejected']);
     assert.deepEqual(proof.numericRanks,['2','10']);assert.deepEqual(proof.restoredRanks,['1','2']);numeric.push(proof);
+    const gbkLines=log.split('\n').filter(l=>l.startsWith('GENERATED_GBK_ROLLUP='));assert.equal(gbkLines.length,1);
+    const capability=JSON.parse(gbkLines[0].slice('GENERATED_GBK_ROLLUP='.length));
+    assert(capability.passed&&capability.generatedQAndE&&capability.auditedMutation);
+    assert.equal(capability.supported,false);assert.equal(capability.caseCount,4);
+    assert.deepEqual(capability.restoredNames,['Primary','Secondary']);
+    assert.deepEqual(capability.observations.map(x=>x.case),['gbk-ordinary-asc','gbk-ordinary-desc','gbk-parent','gbk-nested']);
+    assert(capability.observations.every(x=>x.supported===false));gbk.push(capability);
   }
   env.TEAQL_SCHOOL_EXAMPLE_DATABASE=path.join(output,'main.sqlite');
   assert((await run([path.join(target,'debug/school-management-bootstrap-example')],'main-smoke.log',example)).includes('PASS Rust School bootstrap'));
@@ -70,6 +77,6 @@ async function runAdditionalProbes(run,cargo,repo,example,target,output,env){
     const log=await run([path.join(target,'debug/bootstrap_trace_probe')],'bootstrap-'+logging+'-'+round+'.log',example);
     assert(log.includes('PASS Rust generated bootstrap trace logging='+(logging==='on')));runs.push('bootstrap-'+logging+'-'+round);
   }
-  return {statistics,numeric,runs,allTargets:true,mainSmoke:true,generatedHelperTests:6};
+  return {statistics,numeric,gbk,runs,allTargets:true,mainSmoke:true,generatedHelperTests:6};
 }
 module.exports={verifySources,runAdditionalProbes};

@@ -51,6 +51,7 @@ async function main() {
       'teaql-runtime/src/data_service/resolved.rs','teaql-runtime/src/data_service/statistics.rs',
       'teaql-provider-postgres/Cargo.toml','teaql-provider-postgres/src/lib.rs','teaql-provider-postgres/src/statistical_binding_tests.rs',
       'teaql-provider-postgres/tests/layered_statistics.rs',
+      'teaql-provider-postgres/tests/layered_statistics/gbk_order.rs',
       'examples/fix-e-alignment/verify-rollup-postgres.cjs']) {
       const bytes = fs.readFileSync(path.join(repo,file)); receipt.sourceHashes[file] = hash(bytes);
       const target = path.join(output,'sources',file); fs.mkdirSync(path.dirname(target),{recursive:true}); fs.writeFileSync(target,bytes);
@@ -69,7 +70,7 @@ async function main() {
     }
     await run([process.env.CARGO || 'cargo','test','--offline','--locked','-p','teaql-provider-postgres','--lib','statistical_binding_tests::'],
       'statistical-bindings.log');
-    assert.equal(receipt.commands.at(-1).testsPassed,4);
+    assert.equal(receipt.commands.at(-1).testsPassed,6);
     const unitLog = await run([process.env.CARGO || 'cargo','test','--offline','--locked','-p','teaql-provider-postgres','--lib','--','--skip','streaming_tests::'],
       'postgres-unit-regression.log');
     for (const name of ['postgres_relation_index_name_is_stable_and_within_identifier_limit',
@@ -94,8 +95,9 @@ async function main() {
         'independent-grouped-null','independent-grouped-policy',
         'multilayer-membership-positive','multilayer-membership-negative',
         'multilayer-membership-page-and-parameters','multilayer-membership-ordinary-policy',
-        ...['positive','negative','neighboring'].flatMap(kind=>['ordinary','parent','nested'].map(layer=>'numeric-'+layer+'-'+kind))].sort());
-      assert.equal(receipt.commands.at(-1).testsPassed,10);
+        ...['positive','negative','neighboring'].flatMap(kind=>['ordinary','parent','nested'].map(layer=>'numeric-'+layer+'-'+kind)),
+        'gbk-ordinary','gbk-parent','gbk-nested'].sort());
+      assert.equal(receipt.commands.at(-1).testsPassed,11);
       receipt.rounds.push({round,observations});
     }
     const oracleSql = "SELECT json_build_object('schools',COUNT(*),'nonnull',COUNT(\"Legacy Capacity\"),'capacity',SUM(\"Legacy Capacity\"),'types',(SELECT COUNT(*) FROM legacy_kind),'platforms',(SELECT COUNT(*) FROM legacy_platform)) FROM legacy_school;";

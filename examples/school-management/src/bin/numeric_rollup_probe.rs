@@ -1,4 +1,5 @@
 //! Application-owned Q/E/Mutation acceptance; no SQL or generated-source edits.
+mod gbk_rollup_cases;
 use school_management_service_core::{
     E, Q, SchoolRequest, SchoolTypeRequest, ServiceRuntimeConfig, TeaqlRuntime,
     request_support::AuditedSave as _, service_runtime,
@@ -286,6 +287,7 @@ async fn main() -> Result<(), Error> {
 
     set_rank(&context, 1001, first).await?;
     set_rank(&context, 1002, second).await?;
+    gbk_rollup_cases::verify(&context, false).await?;
     println!(
         "GENERATED_NUMERIC_ROLLUP={}",
         serde_json::json!({

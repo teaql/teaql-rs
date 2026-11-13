@@ -1473,19 +1473,63 @@ pub trait SqlDialect {
     /// should override this to use `convert_to(arg, 'GBK')`.
     fn compile_gbk_function(
         &self,
-        entity: &EntityDescriptor,
+        _entity: &EntityDescriptor,
         args: &[Expr],
-        params: &mut crate::SqlBindings,
+        _params: &mut crate::SqlBindings,
     ) -> Result<String, SqlCompileError> {
-        let [arg] = args else {
+        let [_] = args else {
             return Err(SqlCompileError::InvalidFunctionArguments(
                 "GBK expects exactly one argument".to_owned(),
             ));
         };
-        // Default: pass through the column as-is (no GBK conversion).
-        // Dialects with GBK support (e.g. PostgreSQL) should override this method.
-        let arg = self.compile_expr(entity, arg, params)?;
-        Ok(arg)
+        Err(SqlCompileError::InvalidFunctionArguments(
+            "GBK is unsupported by this SQL dialect".into(),
+        ))
+    }
+
+    /// Validate the text domain before a provider encodes a GBK operand. No
+    /// implicit numeric-to-text casts or approximate fallback are permitted.
+    fn compile_gbk_text_operand(
+        &self,
+        entity: &EntityDescriptor,
+        args: &[Expr],
+        params: &mut crate::SqlBindings,
+    ) -> Result<String, SqlCompileError> {
+        fn text(entity: &EntityDescriptor, expression: &Expr, depth: usize) -> bool {
+            if depth > 64 {
+                return false;
+            }
+            match expression {
+                Expr::Column(name) => entity
+                    .property_by_name(name)
+                    .is_some_and(|p| matches!(p.data_type, DataType::Text | DataType::LargeText)),
+                Expr::Value(
+                    Value::Text(_)
+                    | Value::Null
+                    | Value::TypedNull(DataType::Text | DataType::LargeText),
+                ) => true,
+                Expr::Function {
+                    function:
+                        ExprFunction::Identity
+                        | ExprFunction::Soundex
+                        | ExprFunction::Min
+                        | ExprFunction::Max,
+                    args,
+                } => matches!(args.as_slice(), [arg] if text(entity,arg,depth+1)),
+                _ => false,
+            }
+        }
+        let [argument] = args else {
+            return Err(SqlCompileError::InvalidFunctionArguments(
+                "GBK expects exactly one argument".into(),
+            ));
+        };
+        if !text(entity, argument, 0) {
+            return Err(SqlCompileError::InvalidFunctionArguments(
+                "GBK requires a text operand".into(),
+            ));
+        }
+        self.compile_expr(entity, argument, params)
     }
 
     fn compile_subquery(

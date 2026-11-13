@@ -355,6 +355,28 @@ fn layered_order_matches_selected_expressions_not_source_population() {
 }
 
 #[test]
+fn unavailable_gbk_is_rejected_before_sql_not_silently_sorted_as_utf8() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute("DROP TABLE legacy_kind", [])
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let query = SelectQuery::new("Kind")
+        .group_by("label")
+        .count("types")
+        .order_gbk_asc("label")
+        .limit(1)
+        .comment("Reject unavailable GBK encoding rather than silently sorting UTF8")
+        .purpose("Prove unsupported provider capability fails before the missing table");
+    let error = fetch(&context, query).unwrap_err();
+    assert!(error.contains("GBK is unsupported"), "{error}");
+    assert!(!error.contains("no such table"), "{error}");
+}
+
+#[test]
 fn ordinary_statistics_reject_unselected_order_before_sql() {
     let transport = executor();
     transport
