@@ -49,7 +49,8 @@ Empty or version-only input is a no-op. Nested Boolean groups remain grouped.
 The source request's projection, grouping, HAVING, ordering and page are not
 copied; this method is not an ID subquery.
 
-Use `matching_ids_of(other_request)` for independent same-entity ID membership.
+Use `matching_ids_of(other_request)` for independent
+same-entity ID membership.
 The supplied request retains its complete
 roll-up configuration, filters, HAVING and statistical cell page. A statistical
 request must select `id` as a final result key; grouping it away is not an entity
