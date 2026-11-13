@@ -343,7 +343,11 @@ impl Expr {
         // SQL `NOT IN` becomes UNKNOWN for every outer row when the projected
         // set contains NULL. Relation non-existence and negative matching must
         // ignore orphan child rows instead of poisoning the entire predicate.
-        if matches!(op, BinaryOp::NotIn | BinaryOp::NotInLarge) {
+        if matches!(op, BinaryOp::NotIn | BinaryOp::NotInLarge)
+            && query.group_by.is_empty()
+            && query.aggregates.is_empty()
+            && !query.has_layered_statistics()
+        {
             query = query.and_filter(Self::is_not_null(field.clone()));
         }
         query.projection = vec![field];

@@ -87,8 +87,10 @@ async function main() {
         'empty-scalar','all-null-source-and-singleton-parent','distinct-overlap','distinct-empty','distinct-null','ordinary-distinct-having',
         'computed-parent-group','computed-multihop-group','computed-ordinary-group',
         'identity-ordinary-group','identity-parent-group','identity-multihop-group',
-        'nullable-raw-foreign-keys','nullable-parent-membership','nullable-grandparent-membership','nullable-empty-scalar'].sort());
-      assert.equal(receipt.commands.at(-1).testsPassed,7);
+        'nullable-raw-foreign-keys','nullable-parent-membership','nullable-grandparent-membership','nullable-empty-scalar',
+        'independent-grouped-membership','independent-grouped-empty','independent-grouped-alias-page',
+        'independent-grouped-null','independent-grouped-policy'].sort());
+      assert.equal(receipt.commands.at(-1).testsPassed,8);
       receipt.rounds.push({round,observations});
     }
     const oracleSql = "SELECT json_build_object('schools',COUNT(*),'nonnull',COUNT(\"Legacy Capacity\"),'capacity',SUM(\"Legacy Capacity\"),'types',(SELECT COUNT(*) FROM legacy_kind),'platforms',(SELECT COUNT(*) FROM legacy_platform)) FROM legacy_school;";

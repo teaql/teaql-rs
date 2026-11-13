@@ -703,6 +703,151 @@ fn policy(restrict_kind: bool, deny_platform: bool) -> LayerPolicy {
     }
 }
 
+#[test]
+fn independent_grouped_membership_preserves_having_and_one_selected_column() {
+    let context = runtime_context(executor(), policy(false, false));
+    let kind = descriptors()
+        .into_iter()
+        .find(|entity| entity.name == "Kind")
+        .unwrap();
+    for (threshold, expected) in [(2, 1), (3, 0)] {
+        let independent = SelectQuery::new("Kind")
+            .group_by("id")
+            .sum("ordinal", "ordinalTotal")
+            .having(Expr::eq("ordinalTotal", threshold))
+            .comment("Select independent type statistics by their completed total");
+        let query = source(SelectQuery::new("Kind").group_by("label")).and_filter(
+            Expr::in_subquery("kind_id", kind.clone(), independent.clone(), "id"),
+        );
+        let rows = fetch(&context, query).unwrap();
+        assert_eq!(rows.len(), expected);
+        if expected == 1 {
+            assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(1));
+            assert_eq!(rows[0].get("total").and_then(Value::try_i64), Some(100));
+        }
+        let query = source(SelectQuery::new("Kind").group_by("label")).and_filter(
+            Expr::not_in_subquery("kind_id", kind.clone(), independent, "id"),
+        );
+        let rows = fetch(&context, query).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("schools").and_then(Value::try_i64),
+            Some(if threshold == 2 { 4 } else { 5 })
+        );
+    }
+}
+
+#[test]
+fn independent_grouped_membership_receives_its_own_context_policy() {
+    let policy = policy(true, false);
+    let seen = policy.seen.clone();
+    let context = runtime_context(executor(), policy);
+    let kind = descriptors()
+        .into_iter()
+        .find(|entity| entity.name == "Kind")
+        .unwrap();
+    let independent = SelectQuery::new("Kind")
+        .group_by("id")
+        .sum("ordinal", "ordinalTotal")
+        .having(Expr::eq("ordinalTotal", 2))
+        .comment("Authorize the independent statistical business filter");
+    let query = source(SelectQuery::new("Kind").group_by("label")).and_filter(Expr::in_subquery(
+        "kind_id",
+        kind,
+        independent,
+        "id",
+    ));
+    assert!(fetch(&context, query).unwrap().is_empty());
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|(entity, comment)| entity == "Kind"
+                && comment == "Authorize the independent statistical business filter")
+    );
+}
+
+#[test]
+fn independent_grouped_membership_retains_aliases_and_cell_paging() {
+    let context = runtime_context(executor(), policy(false, false));
+    let kind = descriptors()
+        .into_iter()
+        .find(|entity| entity.name == "Kind")
+        .unwrap();
+    let independent = SelectQuery::new("Kind")
+        .group_by_expr("kindKey", Expr::column("id"))
+        .sum("ordinal", "ordinalTotal")
+        .order_desc("ordinalTotal")
+        .limit(1)
+        .comment("Page completed independent cells before projecting the alias");
+    for negative in [false, true] {
+        let membership = if negative {
+            Expr::not_in_subquery("kind_id", kind.clone(), independent.clone(), "kindKey")
+        } else {
+            Expr::in_subquery("kind_id", kind.clone(), independent.clone(), "kindKey")
+        };
+        let rows = fetch(
+            &context,
+            source(SelectQuery::new("Kind").group_by("label")).and_filter(membership),
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("schools").and_then(Value::try_i64),
+            Some(if negative { 4 } else { 1 })
+        );
+    }
+}
+
+#[test]
+fn independent_scalar_null_membership_is_removed_after_aggregation() {
+    let context = runtime_context(executor(), policy(false, false));
+    let kind = descriptors()
+        .into_iter()
+        .find(|entity| entity.name == "Kind")
+        .unwrap();
+    let independent = SelectQuery::new("Kind")
+        .filter(Expr::gt("ordinal", 2))
+        .sum("ordinal", "total")
+        .comment("An empty scalar SUM is a null result, not a source field");
+    for negative in [false, true] {
+        let membership = if negative {
+            Expr::not_in_subquery("kind_id", kind.clone(), independent.clone(), "total")
+        } else {
+            Expr::in_subquery("kind_id", kind.clone(), independent.clone(), "total")
+        };
+        let rows = fetch(
+            &context,
+            source(SelectQuery::new("Kind").group_by("label")).and_filter(membership),
+        )
+        .unwrap();
+        if negative {
+            assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(5));
+        } else {
+            assert!(rows.is_empty());
+        }
+    }
+}
+
+#[test]
+fn independent_grouped_membership_rejects_unselected_identity() {
+    let context = runtime_context(executor(), policy(false, false));
+    let kind = descriptors()
+        .into_iter()
+        .find(|entity| entity.name == "Kind")
+        .unwrap();
+    let independent = SelectQuery::new("Kind").group_by("label").count("types");
+    let query = source(SelectQuery::new("Kind").group_by("label")).and_filter(Expr::in_subquery(
+        "kind_id",
+        kind,
+        independent,
+        "id",
+    ));
+    let error = fetch(&context, query).unwrap_err();
+    assert!(error.contains("selected statistical result"), "{error}");
+    assert!(!error.contains("Transport error"));
+}
+
 fn fetch(context: &UserContext, query: SelectQuery) -> Result<Vec<CompactRow>, String> {
     let request = teaql_runtime::PurposedSelectQuery::new(
         query,

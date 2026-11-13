@@ -110,6 +110,113 @@ fn source(parent: SelectQuery) -> SelectQuery {
 }
 
 #[tokio::test]
+async fn live_independent_grouped_membership_keeps_cells_and_context_policy() {
+    let Some((context, _pool)) = fixture().await else {
+        return;
+    };
+    let kind = descriptors()
+        .into_iter()
+        .find(|entity| entity.name == "Kind")
+        .unwrap();
+    for (threshold, expected, label) in [
+        (2, 1, "independent-grouped-membership"),
+        (3, 0, "independent-grouped-empty"),
+    ] {
+        let independent = SelectQuery::new("Kind")
+            .group_by("id")
+            .sum("ordinal", "ordinalTotal")
+            .having(Expr::eq("ordinalTotal", threshold))
+            .comment("Filter independent completed type cells");
+        let query = source(SelectQuery::new("Kind").group_by("label")).and_filter(
+            Expr::in_subquery("kind_id", kind.clone(), independent.clone(), "id"),
+        );
+        let rows = fetch(&context, query).await;
+        assert_eq!(rows.len(), expected);
+        if expected == 1 {
+            assert_eq!(rows[0].get("n").and_then(Value::try_i64), Some(1));
+        }
+        observe(label, &rows);
+        let query = source(SelectQuery::new("Kind").group_by("label")).and_filter(
+            Expr::not_in_subquery("kind_id", kind.clone(), independent, "id"),
+        );
+        let rows = fetch(&context, query).await;
+        assert_eq!(
+            rows[0].get("n").and_then(Value::try_i64),
+            Some(if threshold == 2 { 4 } else { 5 })
+        );
+    }
+    let independent = SelectQuery::new("Kind")
+        .group_by_expr("kindKey", Expr::column("id"))
+        .sum("ordinal", "ordinalTotal")
+        .order_desc("ordinalTotal")
+        .limit(1)
+        .comment("Page independent aliased cells before selecting one membership column");
+    let query = source(SelectQuery::new("Kind").group_by("label")).and_filter(
+        Expr::not_in_subquery("kind_id", kind.clone(), independent, "kindKey"),
+    );
+    let rows = fetch(&context, query).await;
+    assert_eq!(rows[0].get("n").and_then(Value::try_i64), Some(4));
+    observe("independent-grouped-alias-page", &rows);
+    let independent = SelectQuery::new("Kind")
+        .filter(Expr::gt("ordinal", 2))
+        .sum("ordinal", "total")
+        .comment("Remove null scalar membership after aggregation");
+    let query = source(SelectQuery::new("Kind").group_by("label")).and_filter(
+        Expr::not_in_subquery("kind_id", kind.clone(), independent, "total"),
+    );
+    let rows = fetch(&context, query).await;
+    assert_eq!(rows[0].get("n").and_then(Value::try_i64), Some(5));
+    observe("independent-grouped-null", &rows);
+
+    #[derive(Clone)]
+    struct PredicatePolicy(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+    impl teaql_runtime::RequestPolicy for PredicatePolicy {
+        fn enforce_select(
+            &self,
+            _context: &UserContext,
+            query: &mut SelectQuery,
+        ) -> Result<(), teaql_runtime::RuntimeError> {
+            if query.entity == "Kind" {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(query.request_scope().unwrap().comment().to_owned());
+                query.filter = Some(
+                    query
+                        .filter
+                        .take()
+                        .map(|filter| filter.and_expr(Expr::eq("ordinal", 1)))
+                        .unwrap_or_else(|| Expr::eq("ordinal", 1)),
+                );
+            }
+            Ok(())
+        }
+    }
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let context = context.with_request_policy(PredicatePolicy(seen.clone()));
+    let independent = SelectQuery::new("Kind")
+        .group_by("id")
+        .sum("ordinal", "ordinalTotal")
+        .having(Expr::eq("ordinalTotal", 2))
+        .comment("Authorize independent PostgreSQL statistics");
+    let query = source(SelectQuery::new("Kind").group_by("label")).and_filter(Expr::in_subquery(
+        "kind_id",
+        kind,
+        independent,
+        "id",
+    ));
+    let rows = fetch(&context, query).await;
+    assert!(rows.is_empty());
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|comment| comment == "Authorize independent PostgreSQL statistics")
+    );
+    observe("independent-grouped-policy", &rows);
+}
+
+#[tokio::test]
 async fn live_identity_grouping_keeps_values_aliases_and_owner_grain() {
     let Some((context, pool)) = fixture().await else {
         return;

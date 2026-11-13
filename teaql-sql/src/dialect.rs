@@ -1473,10 +1473,44 @@ pub trait SqlDialect {
             BinaryOp::NotIn | BinaryOp::NotInLarge => "NOT IN",
             _ => return Err(SqlCompileError::InvalidSubQueryOperator(format!("{op:?}"))),
         };
+        let statistical = !query.group_by.is_empty() || !query.aggregates.is_empty();
+        if query.has_layered_statistics() {
+            return Err(SqlCompileError::InvalidFunctionArguments(
+                "layered statistical membership requires metadata-bound result lowering".into(),
+            ));
+        }
+        let key = if statistical {
+            let [key] = query.projection.as_slice() else {
+                return Err(SqlCompileError::InvalidFunctionArguments(
+                    "statistical membership requires exactly one selected result key".into(),
+                ));
+            };
+            let matches = usize::from(query.group_by.contains(key))
+                + query
+                    .aggregates
+                    .iter()
+                    .filter(|aggregate| &aggregate.alias == key)
+                    .count();
+            if matches != 1 {
+                return Err(SqlCompileError::InvalidFunctionArguments(
+                    "membership key is not an unambiguous selected statistical result".into(),
+                ));
+            }
+            Some(key)
+        } else {
+            None
+        };
         let outer_scope = params.scope.take();
         let subquery = self.compile_select_sql(sub_entity, query, params);
         params.scope = outer_scope;
-        let subquery = subquery?;
+        let mut subquery = subquery?;
+        if let Some(key) = key {
+            // Project from completed cells: HAVING/order/page must run before
+            // NULL removal, and aggregate columns must not become IN operands.
+            let alias = self.quote_ident("__teaql_membership");
+            let key = format!("{alias}.{}", self.quote_result_alias(key));
+            subquery = format!("SELECT {key} FROM ({subquery}) AS {alias} WHERE {key} IS NOT NULL");
+        }
         Ok(format!("({lhs} {operator} ({subquery}))"))
     }
 
