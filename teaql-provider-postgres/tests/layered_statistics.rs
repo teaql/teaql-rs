@@ -2,6 +2,8 @@
 //! verifier supplies an isolated, owned database and requires these tests.
 #[path = "layered_statistics/gbk_order.rs"]
 mod gbk_order;
+#[path = "layered_statistics/integer_operand.rs"]
+mod integer_operand;
 use deadpool_postgres::{Pool, Runtime};
 use serde_json::json;
 use teaql_core::{

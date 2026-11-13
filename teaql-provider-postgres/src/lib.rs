@@ -117,6 +117,10 @@ impl SqlDialect for PostgresDialect {
         Ok(format!("convert_to({operand}, 'GBK')"))
     }
 
+    fn bitwise_parameter_sql(&self, sql: &str) -> String {
+        format!("CAST({sql} AS BIGINT)")
+    }
+
     fn quote_ident(&self, ident: &str) -> String {
         quote_ident(ident)
     }

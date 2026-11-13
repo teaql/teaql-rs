@@ -23,6 +23,7 @@ async function main() {
             'teaql-sql/src/dialect.rs', 'teaql-sql/src/having.rs', 'teaql-sql/src/bindings.rs',
             'teaql-runtime/src/data_service/mod.rs', 'teaql-runtime/src/data_service/resolved.rs',
             'teaql-runtime/src/data_service/statistics.rs',
+            'teaql-sql/src/integer_operand.rs',
             'teaql-sql/src/statistical.rs', 'teaql-sql/src/lib.rs', 'teaql-provider-sqlite/src/statistical_tests.rs',
             'teaql-provider-sqlite/src/lib.rs', 'teaql-provider-sqlite/src/statistical_functions.rs',
             'teaql-provider-sqlite/src/decimal_functions.rs', 'teaql-provider-sqlite/Cargo.toml',
@@ -35,7 +36,7 @@ async function main() {
             CARGO_BUILD_JOBS: '4', CARGO_PROFILE_TEST_DEBUG: '0', CARGO_PROFILE_DEV_DEBUG: '0'};
         receipt.commands = [];
         for (const [crate, filter, minimum] of [['teaql-core', 'aggregation_plan::tests::', 19],
-            ['teaql-provider-sqlite', 'statistical_tests::', 60],
+            ['teaql-provider-sqlite', 'statistical_tests::', 62],
             ['teaql-provider-sqlite', 'decimal_functions::tests::', 4],
             ['teaql-provider-sqlite', 'statistical_functions::tests::', 7]]) {
             const command = [process.env.CARGO || 'cargo', 'test', '--offline', '--locked', '-p', crate, filter];

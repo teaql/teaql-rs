@@ -2,6 +2,62 @@ use super::*;
 use tokio_postgres::types::{FromSql, ToSql, Type};
 
 #[test]
+fn postgres_bitwise_parameters_have_a_signed_type_without_losing_policies_or_values() {
+    let descriptor = EntityDescriptor::new("BitParam")
+        .property(
+            PropertyDescriptor::new("label", DataType::Text).column_name("Legacy Private Label"),
+        )
+        .audit_mask_fields(vec!["label".into()]);
+    for function in [
+        teaql_core::ExprFunction::BitAnd,
+        teaql_core::ExprFunction::BitOr,
+        teaql_core::ExprFunction::BitXor,
+    ] {
+        for value in [Value::I64(i64::MIN), Value::I64(i64::MAX), Value::Null] {
+            let query = SelectQuery::new("BitParam")
+                .project_expr(
+                    "bits",
+                    Expr::function(function, [Expr::identity(Expr::value(value.clone()))]),
+                )
+                .filter(Expr::eq("label", "PRIVATE-BITWISE-CANARY"));
+            let original = query.clone();
+            let compiled = PostgresDialect.compile_select(&descriptor, &query).unwrap();
+            assert!(
+                compiled.sql.contains("CAST($1 AS BIGINT)"),
+                "{}",
+                compiled.sql
+            );
+            assert_eq!(
+                compiled.params,
+                [value, Value::from("PRIVATE-BITWISE-CANARY")]
+            );
+            assert_eq!(
+                compiled.log_context.parameter_policies,
+                [
+                    teaql_data_service::SqlParameterLogPolicy::Unknown,
+                    teaql_data_service::SqlParameterLogPolicy::Masked
+                ]
+            );
+            assert_eq!(query, original);
+        }
+        for value in [
+            Value::F64(1.0),
+            Value::from("PRIVATE-BITWISE-CANARY"),
+            Value::U64(i64::MAX as u64 + 1),
+        ] {
+            let mut bindings = teaql_sql::SqlBindings::new();
+            let error = PostgresDialect
+                .compile_function(&descriptor, function, &[Expr::value(value)], &mut bindings)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("signed 64-bit integer operand"));
+            assert!(!error.contains("CANARY"));
+            assert!(bindings.into_values().is_empty());
+        }
+    }
+}
+
+#[test]
 fn actual_postgres_bitwise_fields_are_integer_typed_in_ordinary_and_layered_plans() {
     use teaql_core::aggregation_plan::StatisticalPlan;
     use teaql_core::{Aggregate, AggregateFunction, RelationDescriptor};

@@ -1278,13 +1278,8 @@ pub trait SqlDialect {
         if matches!(
             aggregate.function,
             AggregateFunction::BitAnd | AggregateFunction::BitOr | AggregateFunction::BitXor
-        ) && !entity
-            .property_by_name(&aggregate.field)
-            .is_some_and(|property| matches!(property.data_type, DataType::I64 | DataType::U64))
-        {
-            return Err(SqlCompileError::InvalidFunctionArguments(
-                "bitwise aggregate requires an integer field".into(),
-            ));
+        ) {
+            crate::integer_operand::field(entity, &aggregate.field)?;
         }
         Ok(())
     }
@@ -1464,14 +1459,37 @@ pub trait SqlDialect {
             ExprFunction::VarPop => {
                 self.compile_single_arg_function(entity, "VAR_POP", args, params)
             }
-            ExprFunction::BitAnd => {
-                self.compile_single_arg_function(entity, "BIT_AND", args, params)
-            }
-            ExprFunction::BitOr => self.compile_single_arg_function(entity, "BIT_OR", args, params),
-            ExprFunction::BitXor => {
-                self.compile_single_arg_function(entity, "BIT_XOR", args, params)
-            }
+            ExprFunction::BitAnd => self.compile_bitwise_function(entity, "BIT_AND", args, params),
+            ExprFunction::BitOr => self.compile_bitwise_function(entity, "BIT_OR", args, params),
+            ExprFunction::BitXor => self.compile_bitwise_function(entity, "BIT_XOR", args, params),
         }
+    }
+
+    fn compile_bitwise_function(
+        &self,
+        entity: &EntityDescriptor,
+        function: &str,
+        args: &[Expr],
+        params: &mut crate::SqlBindings,
+    ) -> Result<String, SqlCompileError> {
+        let [argument] = args else {
+            return Err(SqlCompileError::InvalidFunctionArguments(
+                "bitwise aggregate expects one operand".into(),
+            ));
+        };
+        let parameter = crate::integer_operand::expression(entity, argument)?;
+        let sql = self.compile_expr(entity, argument, params)?;
+        let sql = if parameter {
+            self.bitwise_parameter_sql(&sql)
+        } else {
+            sql
+        };
+        Ok(format!("{function}({sql})"))
+    }
+
+    /// Providers with overloaded integer aggregates may need a typed parameter.
+    fn bitwise_parameter_sql(&self, sql: &str) -> String {
+        sql.to_owned()
     }
 
     fn compile_single_arg_function(

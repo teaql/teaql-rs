@@ -125,8 +125,12 @@ The ninth scenario rejects all three bitwise operations over a string field,
 both on the source and on its roll-up parent. The metadata-bound aggregate
 compiler reports `bitwise aggregate requires an integer field` before SQL;
 Boolean, Decimal, floating-point, JSON and temporal field domains are not
-implicitly converted to integers. Arbitrary expression operands are a separate
-validation scope from these aggregate-field calls.
+implicitly converted to integers. Native compiler/provider tests separately
+exercise integer expression operands, nested Identity wrappers, signed boundaries
+and real nulls. PostgreSQL binds scalar integer parameters with an explicit BIGINT
+cast, preserving values and masking policies. These native cases do not add
+generated literal-parameter helpers or establish general layered expression
+projection support; the nine generated-Q scenarios above remain unchanged.
 
 Regenerate library, current Assist and workspace guidance together from the
 model using `scripts/regenerate-rust-native-school.cjs` in the code-generator

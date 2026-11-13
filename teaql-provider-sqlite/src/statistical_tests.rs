@@ -97,6 +97,75 @@ fn bitwise_field_types_fail_before_sql_for_ordinary_and_layered_statistics() {
     }
 }
 
+#[test]
+fn bitwise_expression_fields_and_identity_wrappers_fail_before_sql() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute_batch("DROP TABLE legacy_kind")
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    for function in [
+        teaql_core::ExprFunction::BitAnd,
+        teaql_core::ExprFunction::BitOr,
+        teaql_core::ExprFunction::BitXor,
+    ] {
+        for depth in [0, 1, 2, 16] {
+            let mut operand = Expr::column("label");
+            for _ in 0..depth {
+                operand = Expr::identity(operand);
+            }
+            let query = SelectQuery::new("Kind")
+                .project_expr("bits", Expr::function(function, [operand]))
+                .comment("Reject invalid bitwise expression operands before SQL");
+            let error = fetch(&context, query).unwrap_err();
+            assert!(
+                error.contains("bitwise aggregate requires an integer field"),
+                "{error}"
+            );
+            assert!(!error.contains("no such table"), "{error}");
+        }
+    }
+}
+
+#[test]
+fn bitwise_expression_parameters_keep_exact_bounds_and_typed_nulls() {
+    let context = runtime_context(executor(), policy(false, false));
+    for function in [
+        teaql_core::ExprFunction::BitAnd,
+        teaql_core::ExprFunction::BitOr,
+        teaql_core::ExprFunction::BitXor,
+    ] {
+        for value in [
+            Value::I64(i64::MIN),
+            Value::I64(i64::MAX),
+            Value::U64(9_007_199_254_740_993),
+            Value::Null,
+            Value::TypedNull(DataType::I64),
+        ] {
+            let expected = match value.try_i64() {
+                Some(_) if function == teaql_core::ExprFunction::BitXor => Value::I64(0),
+                Some(value) => Value::I64(value),
+                None => Value::Null,
+            };
+            let query = SelectQuery::new("Kind")
+                .project_expr(
+                    "bits",
+                    Expr::function(
+                        function,
+                        [Expr::identity(Expr::identity(Expr::value(value)))],
+                    ),
+                )
+                .comment("Compute exact integer parameter aggregates without coercion");
+            let rows = fetch(&context, query).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].get("bits"), Some(&expected));
+        }
+    }
+}
+
 fn execute(executor: &SqliteMutationExecutor, query: SelectQuery) -> Vec<CompactRow> {
     let descriptors = descriptors();
     let plan = StatisticalPlan::build(&query, |name| {
