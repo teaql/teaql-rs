@@ -157,6 +157,38 @@ pub async fn verify(context: &impl TeaqlRuntime) -> Result<(), Error> {
     let result = rows(empty().group_by_school_type(), context).await?;
     assert!(result.is_empty());
     observations.push(serde_json::json!({"case":"bitwise-empty-grouped","rows":snapshot(&result)}));
+    let mut and_parent = source();
+    and_parent
+        .roll_up_to_school_type()
+        .group_by_platform()
+        .aggregate_bit_and("name", "invalid");
+    let mut or_parent = source();
+    or_parent
+        .roll_up_to_school_type()
+        .group_by_platform()
+        .aggregate_bit_or("name", "invalid");
+    let mut xor_parent = source();
+    xor_parent
+        .roll_up_to_school_type()
+        .group_by_platform()
+        .aggregate_bit_xor("name", "invalid");
+    for query in [
+        source().aggregate_bit_and("name", "invalid"),
+        source().aggregate_bit_or("name", "invalid"),
+        source().aggregate_bit_xor("name", "invalid"),
+        and_parent,
+        or_parent,
+        xor_parent,
+    ] {
+        let error = rows(query, context).await.unwrap_err().to_string();
+        assert!(
+            error.contains("bitwise aggregate requires an integer field"),
+            "{error}"
+        );
+    }
+    observations.push(
+        serde_json::json!({"case":"bitwise-invalid-field-rejected","rejected":true,"checks":6}),
+    );
     println!(
         "GENERATED_BITWISE_ROLLUP={}",
         serde_json::json!({"passed":true,"caseCount":observations.len(),

@@ -113,7 +113,7 @@ error; it does not demonstrate working GBK sorting. The PostgreSQL generated
 consumer gate verifies those four scenarios with real GBK ordering. GBK grouping
 and binary projections are separate capabilities and are not enabled by sorting.
 
-Eight bitwise scenarios also run twice through the generated Q API and its
+Nine bitwise scenarios also run twice through the generated Q API and its
 existing generic integer aggregate methods. They cover ordinary and grouped
 results, parent-local and two-hop measures, HAVING/paging, and empty scalar,
 layered and grouped populations. Parent XOR must be 3 from IDs 1001 and 1002,
@@ -121,6 +121,12 @@ not 1002 from repeating those parents for five schools. The grandparent
 contributes once. Bitwise result values remain integers; empty scalar measures
 are null, and empty grouped queries return no cells. Current integer field
 Assist supplies the exact logical keys and methods.
+The ninth scenario rejects all three bitwise operations over a string field,
+both on the source and on its roll-up parent. The metadata-bound aggregate
+compiler reports `bitwise aggregate requires an integer field` before SQL;
+Boolean, Decimal, floating-point, JSON and temporal field domains are not
+implicitly converted to integers. Arbitrary expression operands are a separate
+validation scope from these aggregate-field calls.
 
 Regenerate library, current Assist and workspace guidance together from the
 model using `scripts/regenerate-rust-native-school.cjs` in the code-generator

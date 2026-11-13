@@ -64,9 +64,11 @@ async function runAdditionalProbes(run,cargo,repo,example,target,output,env){
     assert(capability.observations.every(x=>x.supported===false));gbk.push(capability);
     const bitLines=log.split('\n').filter(l=>l.startsWith('GENERATED_BITWISE_ROLLUP='));assert.equal(bitLines.length,1);
     const bits=JSON.parse(bitLines[0].slice('GENERATED_BITWISE_ROLLUP='.length));
-    assert(bits.passed&&bits.generatedQ&&bits.integerResults);assert.equal(bits.caseCount,8);
+    assert(bits.passed&&bits.generatedQ&&bits.integerResults);assert.equal(bits.caseCount,9);
     assert.deepEqual(bits.observations.map(x=>x.case),['bitwise-ordinary','bitwise-grouped','bitwise-parent',
-      'bitwise-two-hop','bitwise-having-page','bitwise-empty-scalar','bitwise-empty-layered','bitwise-empty-grouped']);
+      'bitwise-two-hop','bitwise-having-page','bitwise-empty-scalar','bitwise-empty-layered','bitwise-empty-grouped',
+      'bitwise-invalid-field-rejected']);
+    assert.equal(bits.observations[8].rejected,true);assert.equal(bits.observations[8].checks,6);
     bitwise.push(bits);
   }
   env.TEAQL_SCHOOL_EXAMPLE_DATABASE=path.join(output,'main.sqlite');

@@ -162,6 +162,7 @@ impl SqlDialect for SqliteDialect {
         aggregate: &Aggregate,
         field: &str,
     ) -> Result<String, SqlCompileError> {
+        self.validate_aggregate_field_type(entity, aggregate)?;
         if !matches!(
             aggregate.function,
             AggregateFunction::Count | AggregateFunction::CountDistinct

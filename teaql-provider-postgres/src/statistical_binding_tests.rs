@@ -2,6 +2,69 @@ use super::*;
 use tokio_postgres::types::{FromSql, ToSql, Type};
 
 #[test]
+fn actual_postgres_bitwise_fields_are_integer_typed_in_ordinary_and_layered_plans() {
+    use teaql_core::aggregation_plan::StatisticalPlan;
+    use teaql_core::{Aggregate, AggregateFunction, RelationDescriptor};
+    let root = EntityDescriptor::new("BitRoot")
+        .property(PropertyDescriptor::new("id", DataType::I64).id())
+        .property(PropertyDescriptor::new("kind", DataType::I64))
+        .relation(RelationDescriptor::new("kind", "BitParent").local_key("kind"));
+    for data_type in [
+        DataType::Bool,
+        DataType::F64,
+        DataType::Decimal,
+        DataType::Text,
+        DataType::LargeText,
+        DataType::Json,
+        DataType::Date,
+        DataType::Timestamp,
+        DataType::I64,
+        DataType::U64,
+    ] {
+        let descriptor = EntityDescriptor::new("BitParent")
+            .property(PropertyDescriptor::new("id", DataType::I64).id())
+            .property(
+                PropertyDescriptor::new("value", data_type).column_name("Private Physical Field"),
+            );
+        for function in [
+            AggregateFunction::BitAnd,
+            AggregateFunction::BitOr,
+            AggregateFunction::BitXor,
+        ] {
+            let parent =
+                SelectQuery::new("BitParent").aggregate(Aggregate::new(function, "value", "bits"));
+            let original = parent.clone();
+            let ordinary = PostgresDialect.compile_select(&descriptor, &parent);
+            let layered = SelectQuery::new("BitRoot")
+                .count("roots")
+                .group_by("kind")
+                .object_group_by("kind", "kind", parent.clone());
+            let plan = StatisticalPlan::build(&layered, |name| match name {
+                "BitRoot" => Some(&root),
+                "BitParent" => Some(&descriptor),
+                _ => None,
+            })
+            .unwrap();
+            let result = teaql_sql::compile_statistical_plan(&PostgresDialect, &plan);
+            if matches!(data_type, DataType::I64 | DataType::U64) {
+                assert!(ordinary.is_ok(), "{ordinary:?}");
+                assert!(result.is_ok(), "{result:?}");
+            } else {
+                for error in [ordinary.unwrap_err(), result.unwrap_err()] {
+                    let message = error.to_string();
+                    assert!(
+                        message.contains("bitwise aggregate requires an integer field"),
+                        "{message}"
+                    );
+                    assert!(!message.contains("Private Physical Field"), "{message}");
+                }
+            }
+            assert_eq!(parent, original);
+        }
+    }
+}
+
+#[test]
 fn actual_postgres_gbk_compiler_preserves_mapping_and_parameter_privacy() {
     let entity = EntityDescriptor::new("GbkKind")
         .property(PropertyDescriptor::new("label", DataType::Text).column_name("Legacy GBK Label"))

@@ -1260,11 +1260,33 @@ pub trait SqlDialect {
     /// type before a driver can silently coerce an exact value.
     fn aggregate_call_sql_for(
         &self,
-        _entity: &EntityDescriptor,
+        entity: &EntityDescriptor,
         aggregate: &Aggregate,
         field: &str,
     ) -> Result<String, SqlCompileError> {
+        self.validate_aggregate_field_type(entity, aggregate)?;
         Ok(self.aggregate_call_sql(aggregate.function, field))
+    }
+
+    /// Validate modeled input types independently of storage coercions and
+    /// provider-specific aggregate spelling. Diagnostics never include values.
+    fn validate_aggregate_field_type(
+        &self,
+        entity: &EntityDescriptor,
+        aggregate: &Aggregate,
+    ) -> Result<(), SqlCompileError> {
+        if matches!(
+            aggregate.function,
+            AggregateFunction::BitAnd | AggregateFunction::BitOr | AggregateFunction::BitXor
+        ) && !entity
+            .property_by_name(&aggregate.field)
+            .is_some_and(|property| matches!(property.data_type, DataType::I64 | DataType::U64))
+        {
+            return Err(SqlCompileError::InvalidFunctionArguments(
+                "bitwise aggregate requires an integer field".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn aggregate_function_sql(&self, function: AggregateFunction) -> &'static str {

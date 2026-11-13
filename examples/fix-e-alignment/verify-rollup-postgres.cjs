@@ -70,7 +70,7 @@ async function main() {
     }
     await run([process.env.CARGO || 'cargo','test','--offline','--locked','-p','teaql-provider-postgres','--lib','statistical_binding_tests::'],
       'statistical-bindings.log');
-    assert.equal(receipt.commands.at(-1).testsPassed,6);
+    assert.equal(receipt.commands.at(-1).testsPassed,7);
     const unitLog = await run([process.env.CARGO || 'cargo','test','--offline','--locked','-p','teaql-provider-postgres','--lib','--','--skip','streaming_tests::'],
       'postgres-unit-regression.log');
     for (const name of ['postgres_relation_index_name_is_stable_and_within_identifier_limit',

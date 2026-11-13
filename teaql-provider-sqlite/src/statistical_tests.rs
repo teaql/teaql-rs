@@ -37,6 +37,66 @@ fn executor() -> SqliteMutationExecutor {
     SqliteMutationExecutor::from_connection(connection)
 }
 
+#[test]
+fn bitwise_field_types_fail_before_sql_for_ordinary_and_layered_statistics() {
+    for data_type in [
+        DataType::Bool,
+        DataType::F64,
+        DataType::Decimal,
+        DataType::Text,
+        DataType::LargeText,
+        DataType::Json,
+        DataType::Date,
+        DataType::Timestamp,
+    ] {
+        let transport = executor();
+        transport
+            .connection()
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TABLE legacy_kind")
+            .unwrap();
+        let mut entities = descriptors();
+        entities
+            .iter_mut()
+            .find(|d| d.name == "Kind")
+            .unwrap()
+            .properties
+            .iter_mut()
+            .find(|p| p.name == "label")
+            .unwrap()
+            .data_type = data_type;
+        let metadata = entities.into_iter().fold(
+            teaql_runtime::InMemoryMetadataStore::new(),
+            |store, descriptor| store.with_entity(descriptor),
+        );
+        let service =
+            teaql_sql::SqlDataServiceExecutor::new(SqliteDialect, transport, metadata.clone());
+        let mut context = UserContext::new()
+            .with_metadata(metadata)
+            .with_request_policy(policy(false, false));
+        context.register_executor(service);
+        for function in [
+            AggregateFunction::BitAnd,
+            AggregateFunction::BitOr,
+            AggregateFunction::BitXor,
+        ] {
+            let parent = SelectQuery::new("Kind")
+                .aggregate(Aggregate::new(function, "label", "bits"))
+                .comment("Reject invalid modeled bitwise operands");
+            for query in [parent.clone(), source(parent)] {
+                let error = fetch(&context, query).unwrap_err();
+                assert!(
+                    error.contains("bitwise aggregate requires an integer field"),
+                    "{data_type:?}: {error}"
+                );
+                assert!(!error.contains("no such table"), "{error}");
+                assert!(!error.contains("Legacy Kind Label"), "{error}");
+            }
+        }
+    }
+}
+
 fn execute(executor: &SqliteMutationExecutor, query: SelectQuery) -> Vec<CompactRow> {
     let descriptors = descriptors();
     let plan = StatisticalPlan::build(&query, |name| {
@@ -1274,7 +1334,15 @@ fn unsupported_exact_decimal_functions_fail_before_provider_execution() {
             .group_by("label")
             .aggregate(Aggregate::new(function, "ordinal", "result"));
         let error = fetch(&context, source(parent)).unwrap_err();
-        assert!(error.contains("SQLite exact Decimal aggregate"), "{error}");
+        let expected = if matches!(
+            function,
+            AggregateFunction::BitAnd | AggregateFunction::BitOr | AggregateFunction::BitXor
+        ) {
+            "bitwise aggregate requires an integer field"
+        } else {
+            "SQLite exact Decimal aggregate"
+        };
+        assert!(error.contains(expected), "{error}");
         assert!(
             !error.contains("Transport error"),
             "unsupported function reached SQLite"
