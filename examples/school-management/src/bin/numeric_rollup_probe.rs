@@ -251,6 +251,39 @@ async fn main() -> Result<(), Error> {
     );
     cases.push("numeric-unselected-order-rejected");
 
+    for key in ["name", "code"] {
+        let error = kind_rows(
+            Q::school_types_minimal()
+                .group_by_id()
+                .sum_display_order_as("rankTotal")
+                .add_order_by_descending(key),
+            &context,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("not a selected statistical result"),
+            "{error}"
+        );
+    }
+    let error = kind_rows(
+        Q::school_types_minimal()
+            .group_by_display_order_as("a")
+            .group_by_display_order_as("b")
+            .count_as("types")
+            .order_by_display_order_desc(),
+        &context,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("ambiguous statistical order"),
+        "{error}"
+    );
+    cases.push("numeric-ordinary-order-rejected");
+
     set_rank(&context, 1001, first).await?;
     set_rank(&context, 1002, second).await?;
     println!(

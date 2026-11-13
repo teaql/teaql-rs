@@ -50,9 +50,10 @@ async function runAdditionalProbes(run,cargo,repo,example,target,output,env){
     const log=await run([path.join(target,'debug/numeric_rollup_probe')],'numeric-round-'+round+'.log',example);
     const lines=log.split('\n').filter(l=>l.startsWith('GENERATED_NUMERIC_ROLLUP='));assert.equal(lines.length,1);
     const proof=JSON.parse(lines[0].slice('GENERATED_NUMERIC_ROLLUP='.length));
-    assert(proof.passed&&proof.generatedQAndE&&proof.auditedMutation);assert.equal(proof.caseCount,7);
+    assert(proof.passed&&proof.generatedQAndE&&proof.auditedMutation);assert.equal(proof.caseCount,8);
     assert.deepEqual(proof.cases,['numeric-ordinary-order','numeric-ordinary-having','numeric-parent-page',
-      'numeric-nested-page','numeric-parent-having','numeric-nested-having','numeric-unselected-order-rejected']);
+      'numeric-nested-page','numeric-parent-having','numeric-nested-having','numeric-unselected-order-rejected',
+      'numeric-ordinary-order-rejected']);
     assert.deepEqual(proof.numericRanks,['2','10']);assert.deepEqual(proof.restoredRanks,['1','2']);numeric.push(proof);
   }
   env.TEAQL_SCHOOL_EXAMPLE_DATABASE=path.join(output,'main.sqlite');

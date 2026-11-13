@@ -141,16 +141,31 @@ async fn rows(context: &UserContext, query: SelectQuery) -> Vec<CompactRow> {
 #[tokio::test]
 async fn grouped_legacy_foreign_keys_preserve_logical_names_and_aliases() {
     let (context, pool, original) = setup().await;
-    let result = rows(
-        &context,
-        SelectQuery::new("LegacyRecord")
-            .group_by("kind_id")
-            .project_expr("kindKey", Expr::column("kind_id"))
-            .count("n")
-            .sum("quantity", "total")
-            .order_by(OrderBy::asc("kind_id")),
-    )
-    .await;
+    let base = SelectQuery::new("LegacyRecord")
+        .group_by("kind_id")
+        .project_expr("kindKey", Expr::column("kind_id"))
+        .count("n")
+        .sum("quantity", "total");
+    // The source expression has two selected result keys. Match Java: use
+    // an explicit unique alias instead of silently choosing one binding.
+    let ambiguous = PurposedSelectQuery::new(
+        base.clone()
+            .order_by(OrderBy::asc("kind_id"))
+            .limit(10)
+            .comment("Reject two results competing for one source sort expression"),
+        "Verify ambiguous result bindings fail before SQL",
+    );
+    let error = context
+        .entity_data_service::<Executor>("LegacyRecord")
+        .unwrap()
+        .fetch_all(&ambiguous)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("ambiguous statistical order"),
+        "{error}"
+    );
+    let result = rows(&context, base.order_by(OrderBy::asc("kindKey"))).await;
     assert_eq!(result.len(), 2);
     for (row, id, count, total) in [(&result[0], 1001, 2, 30), (&result[1], 1002, 1, 40)] {
         assert_eq!(row.get("kind_id").and_then(Value::try_i64), Some(id));

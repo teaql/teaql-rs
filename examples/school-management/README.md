@@ -99,8 +99,11 @@ SchoolType presentation ranks through audited Mutation, checks persistence with
 Q/E, and restores them after each run. Totals of 2 and 10 exercise numeric rather
 than lexical ordering through `add_order_by_ascending` and
 `add_order_by_descending`, ordinary/parent/nested paging and exact HAVING.
-The seven scenarios include rejecting an unknown layered sort result. A
-read-only oracle confirms the original ranks 1 and 2 remain in the database.
+The eight scenarios include rejecting an unknown layered sort result and
+unselected or ambiguous ordinary sort operands. The legacy mapping fixture
+keeps both FK result keys, orders by the unique explicit alias, and rejects
+the ambiguous source expression. A read-only oracle confirms the original
+ranks 1 and 2 remain in the database.
 
 Regenerate library, current Assist and workspace guidance together from the
 model using `scripts/regenerate-rust-native-school.cjs` in the code-generator
