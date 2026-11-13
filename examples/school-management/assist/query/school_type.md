@@ -40,6 +40,15 @@ For field-specific predicates and projections, request
 `rust-assist-query/school_type.[field_name]`; boolean fields have distinct
 true, false, known, and unknown predicates in that field-level help.
 
+## Independent request membership
+
+Use `matching_any_of(other_request)` (or its `match_any_of` alias) for
+independent same-entity membership. The supplied request retains its complete
+roll-up configuration, filters, HAVING and statistical cell page. A statistical
+request must select `id` as a final result key; grouping it away is not an entity
+ID lookup and fails before SQL. Relation membership uses the exact forward or
+reverse field Assist method and selects that relation's logical linking key.
+
 ## Facet membership counts
 
 Use the target object's reverse-relation field Assist to find its exact related

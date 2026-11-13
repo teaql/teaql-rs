@@ -395,8 +395,8 @@ impl<R> SchoolTypeRequest<R> {
 
     pub fn matching_any_of(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        let entity = EntityDescriptor::new(selection.query.entity.clone());
-        self.query = self.query.and_filter(Expr::in_subquery("id", entity, selection.query.clone(), "id"));
+        let entity = <crate::SchoolType as teaql_core::TeaqlEntity>::entity_descriptor();
+        self.query = self.query.and_filter(Expr::in_subquery("id", entity, selection.into_query(), "id"));
         self.__synced()
     }
 
@@ -2211,7 +2211,7 @@ impl<R> SchoolTypeRequest<R> {
         self.query = self.query.and_filter(Expr::in_subquery(
             "id",
             <crate::School as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.query.clone(),
+            selection.clone().into_query(),
             "school_type_id",
         ));
         self.relation_filters.push(RelationFilter::new("school_list", selection));
@@ -2223,7 +2223,7 @@ impl<R> SchoolTypeRequest<R> {
         self.query = self.query.and_filter(Expr::not_in_subquery(
             "id",
             <crate::School as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.query.clone(),
+            selection.clone().into_query(),
             "school_type_id",
         ));
         self.relation_filters.push(RelationFilter::new("school_list", selection));

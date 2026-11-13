@@ -1,4 +1,5 @@
 //! Use current field Assist and generated Q APIs; never patch generated source.
+mod reverse_rollup_cases;
 use school_management_service_core::{E, request_support::AuditedSave as _};
 use school_management_service_core::{
     Q, SchoolRequest, ServiceRuntimeConfig, TeaqlRuntime, service_runtime,
@@ -891,6 +892,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "{error}"
     );
 
+    evidence.extend(reverse_rollup_cases::verify(&context).await?);
     println!(
         "LAYERED_ROLLUP={}",
         serde_json::json!({"passed":true,"runtimeAbi":"7.1","javaShaped":true,

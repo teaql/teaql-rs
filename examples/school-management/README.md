@@ -80,13 +80,18 @@ Cargo metadata must resolve all six runtime components to this checkout at 7.1;
 old versions, registry artifacts and unrelated source directories fail the gate.
 The accompanying `native-verification.test.cjs` covers those rejection cases.
 
-The same gate runs the 31-case `rollup_statistics_probe` twice, including
+The same gate runs the 36-case `rollup_statistics_probe` twice, including
 parent-local measures, two-hop navigation, HAVING, statistical paging, aliases,
 distinct counts, Identity and SOUNDEX grouping. Independent relation predicates
 retain their nested statistics and cell paging. Repeating navigation on a cloned
 request replaces its old navigation target without changing the original or
 discarding an independent business filter. Six generated helper tests cover
 snapshot/cycle guards and preservation of independent relation-filter metadata.
+Five additional cases verify reverse-list IN/NOT IN and same-entity membership:
+an excluded parent cell cannot leak child identities, child HAVING and cell
+paging remain active, and negative membership retains the complementary types.
+The child request is converted with its complete runtime metadata, not only its
+base query body. Current object and reverse-field Assist identify these APIs.
 The gate also runs the main application,
 deletion/environment probes twice and bootstrap reconciliation with SQL logging
 on/off twice. Default distinct-count aliases use KSML names, not display labels

@@ -33,7 +33,7 @@ async function runAdditionalProbes(run,cargo,repo,example,target,output,env){
   for(const round of [1,2]){
     const log=await run([path.join(target,'debug/rollup_statistics_probe')],'statistics-round-'+round+'.log',example);
     const lines=log.split('\n').filter(l=>l.startsWith('LAYERED_ROLLUP='));assert.equal(lines.length,1);
-    const proof=JSON.parse(lines[0].slice('LAYERED_ROLLUP='.length));assert(proof.passed&&proof.javaShaped);assert.equal(proof.caseCount,31);
+    const proof=JSON.parse(lines[0].slice('LAYERED_ROLLUP='.length));assert(proof.passed&&proof.javaShaped);assert.equal(proof.caseCount,36);
     assert.equal(proof.observations[0].row.schools,5);assert.equal(Number(proof.observations[0].row.capacity),3300);
     const aliases=proof.observations.filter(item=>item.case.startsWith('alias-'));assert.equal(aliases.length,5);
     assert.deepEqual(aliases[0].rows.map(row=>row.kindKey),[1001,1002]);
@@ -43,6 +43,11 @@ async function runAdditionalProbes(run,cargo,repo,example,target,output,env){
       assert.equal(item.row.schools,1);assert.equal(Number(item.row.capacity),100);
     }
     assert.equal(proof.observations.find(item=>item.case==='renavigate-keeps-independent-filter')?.rows,0);
+    const reverse=proof.observations.slice(-5);
+    assert.deepEqual(reverse.map(x=>x.case),['reverse-layered-empty-membership','reverse-layered-empty-exclusion',
+      'reverse-layered-having','reverse-layered-cell-page','same-entity-layered-membership']);
+    assert.equal(reverse[0].types,0);assert.equal(reverse[1].types,2);assert.equal(reverse[4].types,0);
+    for(const cell of reverse.slice(2,4)){assert.equal(cell.primary,1);assert.equal(cell.secondary,1);}
     statistics.push(proof);
   }
   const numeric=[],gbk=[],bitwise=[];

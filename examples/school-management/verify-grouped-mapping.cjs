@@ -22,6 +22,7 @@ async function main(){
       'examples/school-management/src/bin/numeric_rollup_probe.rs',
       'examples/school-management/src/bin/gbk_rollup_cases/mod.rs',
       'examples/school-management/src/bin/bitwise_rollup_cases/mod.rs',
+      'examples/school-management/src/bin/reverse_rollup_cases/mod.rs',
       'examples/school-management/models/school-model.xml','examples/school-management/Cargo.toml','examples/school-management/Cargo.lock',
       'Cargo.toml','Cargo.lock','teaql-core/src/aggregation_plan.rs','teaql-sql/src/statistical.rs',
       'teaql-core/src/query.rs','teaql-core/src/request.rs','teaql-core/tests/rollup_navigation.rs'];
