@@ -1,0 +1,11 @@
+{
+  "schema": "teaql.generated-inheritance-example/v1",
+  "generatorCommit": "abcbde80b75e34aa917d18cf4ad278192c198e27",
+  "sourceReceipt": "teaql-conformance/evidence/2026-11-14-rust-inherited-generated-sqlite-second/receipt.json",
+  "sourceReceiptSha256": "8b63cfa3b815d3371b5aef1c78e7f5c9e85c6aa2e7d32166ed1c8c20db4a59c4",
+  "generatedManifestSha256": "4eb1d1acf76ced3d189933f80c3a23a7ce81270e79cd25ed64a8edb572f28da0",
+  "applicationSource": "generator/src/test/resources/rust-grouped-mapping/inheritance_natural_parent_probe.rs",
+  "applicationSourceSha256": "a9ff65d98bf05c5348219700b9c30b9d3e1cd72d5a31b046fb778cf572bb1b98",
+  "runtimeDependencies": "local repository source via Cargo patches; origin verified at execution",
+  "note": "Generation predates the final runtime privacy repair; execution acceptance must use current source."
+}

@@ -60,6 +60,11 @@ async function main() {
       'teaql-provider-postgres/tests/layered_statistics/integer_operand.rs',
       'teaql-provider-postgres/tests/layered_statistics/measure_expression.rs',
       'teaql-provider-postgres/tests/layered_statistics/request_tree.rs',
+      'teaql-provider-postgres/tests/inherited_lifecycle.rs',
+      'teaql-core/src/meta.rs', 'teaql-core/src/entity.rs', 'teaql-macros/src/attr.rs', 'teaql-macros/src/derive_impl.rs',
+      'teaql-data-service/src/sql_log.rs', 'teaql-data-service/tests/inheritance_log_policy.rs',
+      'teaql-sql/src/inheritance.rs', 'teaql-sql/src/mutation_execution.rs',
+      'teaql-provider-sqlite/src/inheritance_tests.rs', 'teaql-runtime/src/context.rs', 'teaql-runtime/tests/inheritance_id_space.rs',
       'examples/fix-e-alignment/verify-rollup-postgres.cjs']) {
       const bytes = fs.readFileSync(path.join(repo,file)); receipt.sourceHashes[file] = hash(bytes);
       const target = path.join(output,'sources',file); fs.mkdirSync(path.dirname(target),{recursive:true}); fs.writeFileSync(target,bytes);
@@ -79,6 +84,12 @@ async function main() {
     await run([process.env.CARGO || 'cargo','test','--offline','--locked','-p','teaql-provider-postgres','--lib','statistical_binding_tests::'],
       'statistical-bindings.log');
     assert.equal(receipt.commands.at(-1).testsPassed,8);
+    for (const round of [1,2]) {
+      const log = await run([process.env.CARGO || 'cargo','test','--offline','--locked','-p','teaql-provider-postgres',
+        '--test','inherited_lifecycle','--','--ignored','--nocapture'], 'inherited-lifecycle-'+round+'.log');
+      assert.equal(receipt.commands.at(-1).testsPassed,3);
+      for (const name of ['guards','rollback','migration']) assert(log.includes('INHERITED_POSTGRES_CASE='+name+'; rounds=2; schemaRemoved=true'));
+    }
     const unitLog = await run([process.env.CARGO || 'cargo','test','--offline','--locked','-p','teaql-provider-postgres','--lib','--','--skip','streaming_tests::'],
       'postgres-unit-regression.log');
     for (const name of ['postgres_relation_index_name_is_stable_and_within_identifier_limit',

@@ -1,0 +1,26 @@
+
+[package]
+name = "inheritance-matching-service-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+description = "Generated TeaQL service crate for inheritance-matching-service"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+log = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+rust_decimal = { version = "1", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-stream = "0.3"
+async-trait = "0.1"
+futures-util = "0.3"
+teaql-core = "7.1.0"
+teaql-macros = "7.1.0"
+teaql-runtime = "7.1.0"
+teaql-sql = "7.1.0"
+teaql-data-service = "7.1.0"
+teaql-provider-sqlite = "7.1.0"
+rusqlite = { version = "0.41.1", features = ["bundled", "chrono", "column_decltype"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

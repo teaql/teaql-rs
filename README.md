@@ -326,6 +326,7 @@ Request JSON is not allowed to replace those trusted capabilities.
 - [Runtime guide: modules, SPI and advanced verification](RUNTIME_GUIDE.md)
 - [Workspace and provider details](RUNTIME_GUIDE.md#workspace-layout)
 - [SQLite transactions](teaql-provider-sqlite/README.md)
+- [Inherited saves through generated Q and E APIs](examples/inheritance-save/README.md)
 - [Shared load state](examples/shared-load-state/README.md)
 - [Binary object storage and temporary S3 URLs](examples/object-storage/README.md)
 - [Context-owned HTTP with bounded retries and safe diagnostics](examples/http-resilience/README.md)

@@ -1,0 +1,23 @@
+[package]
+name = "inheritance-save-example"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+inheritance-matching-service-core = { path = "lib" }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+tempfile = "3"
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+
+[workspace]
+
+[patch.crates-io]
+teaql-core = { path = "../../teaql-core" }
+teaql-macros = { path = "../../teaql-macros" }
+teaql-runtime = { path = "../../teaql-runtime" }
+teaql-sql = { path = "../../teaql-sql" }
+teaql-data-service = { path = "../../teaql-data-service" }
+teaql-provider-sqlite = { path = "../../teaql-provider-sqlite" }

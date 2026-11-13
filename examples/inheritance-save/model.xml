@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root name="inheritance-matching-service" org="example" data_service="sqlite" teaql_rs_version="7.1.0">
+  <platform _name="Platform" _module="Organization" _module_key="organization"
+            name="Inheritance Campus" base_url="https://inheritance.example.com"/>
+  <school_type _name="School Type" _module="Academics" _module_key="academics"
+               platform="platform()" id="id()" name="string()" code="string()"
+               _constant="true" _identifier="code">
+    <_value id="1001" name="Primary" code="PRIMARY"/>
+    <_value id="1002" name="Secondary" code="SECONDARY"/>
+  </school_type>
+  <school _name="School" _module="Academics" _module_key="academics"
+          platform="platform()" school_type="school_type()" name="Riverside School"
+          student_capacity="800"/>
+  <academy _name="Academy" _module="Academics" _module_key="academics"
+           _parent="school" campus_code="NORTH"/>
+  <training_academy _name="Training Academy" _module="Academics" _module_key="academics"
+                    _parent="academy" specialty="robotics"/>
+  <college _name="College" _module="Academics" _module_key="academics"
+           _parent="school" degree_level="bachelor"/>
+</root>
