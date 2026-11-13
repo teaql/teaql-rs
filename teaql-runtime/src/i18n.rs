@@ -325,6 +325,7 @@ fn format_value(value: &Value) -> String {
         Value::F64(value) => value.to_string(),
         Value::Decimal(value) => value.to_string(),
         Value::Text(value) => value.clone(),
+        Value::Binary(_) => "<binary>".to_owned(),
         Value::Json(value) => value.to_string(),
         Value::Date(value) => value.to_string(),
         Value::Timestamp(value) => value.0.to_string(),

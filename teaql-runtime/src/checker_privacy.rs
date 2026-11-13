@@ -55,7 +55,11 @@ pub(crate) fn translate(
                     || (credential
                         && matches!(
                             value,
-                            Value::Text(_) | Value::List(_) | Value::Object(_) | Value::Json(_)
+                            Value::Text(_)
+                                | Value::Binary(_)
+                                | Value::List(_)
+                                | Value::Object(_)
+                                | Value::Json(_)
                         )),
                 false,
                 &mut secrets,

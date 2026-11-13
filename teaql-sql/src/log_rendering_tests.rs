@@ -2,6 +2,17 @@ use crate::{CompiledQuery, DatabaseKind as Db, render_sql_value, render_sql_with
 use teaql_core::Value;
 
 #[test]
+fn binary_debug_literals_are_executable_without_utf8_or_json_coercion() {
+    let value = Value::Binary(vec![0, 0xff, 0x27]);
+    assert_eq!(render_sql_value(&value, Db::Sqlite).unwrap(), "X'00ff27'");
+    assert_eq!(
+        render_sql_value(&value, Db::PostgreSql).unwrap(),
+        "decode('00ff27', 'hex')"
+    );
+    assert_eq!(render_sql_value(&value, Db::MySql).unwrap(), "X'00ff27'");
+}
+
+#[test]
 fn projected_values_share_the_debug_renderer() {
     for kind in [Db::Sqlite, Db::MySql, Db::PostgreSql] {
         let query = CompiledQuery {

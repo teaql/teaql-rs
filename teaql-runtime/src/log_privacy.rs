@@ -56,6 +56,28 @@ pub(crate) fn collect_strings(value: &Value, output: &mut Vec<String>) {
                 output.push(value.clone());
             }
         }
+        Value::Binary(bytes) => {
+            if let Ok(text) = std::str::from_utf8(bytes) {
+                if !text.is_empty() {
+                    output.push(text.to_owned());
+                }
+            }
+            let hex = bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            if !hex.is_empty() {
+                output.push(hex);
+            }
+            output.push(format!("{bytes:?}"));
+            output.push(
+                value
+                    .to_json_value()
+                    .as_str()
+                    .expect("base64 string")
+                    .to_owned(),
+            );
+        }
         Value::Object(fields) => fields.values().for_each(|v| collect_strings(v, output)),
         Value::List(values) => values.iter().for_each(|v| collect_strings(v, output)),
         Value::Json(value) => collect_json_strings(value, output),
@@ -104,7 +126,7 @@ pub(crate) fn mask_business_value(value: &Value) -> Value {
     match value {
         Value::Null | Value::TypedNull(_) => value.clone(),
         Value::List(values) => Value::List(values.iter().map(mask_business_value).collect()),
-        Value::Object(_) | Value::Json(_) => Value::Text(REDACTED.into()),
+        Value::Object(_) | Value::Json(_) | Value::Binary(_) => Value::Text(REDACTED.into()),
         _ => {
             let mut text = Vec::new();
             collect_strings(value, &mut text);
@@ -439,6 +461,23 @@ pub(crate) fn audit_event(event: &RawAuditEvent, allow: bool) -> RawAuditEvent {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn binary_secrets_are_fully_masked_and_all_representations_are_scrubbed() {
+        let value = Value::Binary(b"BINARY-SECRET".to_vec());
+        assert_eq!(mask_business_value(&value), Value::Text(REDACTED.into()));
+        let mut strings = Vec::new();
+        collect_strings(&value, &mut strings);
+        for text in [
+            "BINARY-SECRET",
+            "QklOQVJZLVNFQ1JFVA==",
+            "42494e4152592d534543524554",
+        ] {
+            assert!(
+                strings.iter().any(|s| s == text),
+                "missing binary representation"
+            );
+        }
+    }
     use super::*;
     #[test]
     fn sibling_provenance_masks_audit_without_rewriting_trusted_intent() {

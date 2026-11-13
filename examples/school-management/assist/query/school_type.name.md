@@ -58,8 +58,13 @@ For text grouping, pass `teaql_core::ExprFunction::Soundex` to
 `group_by_name_with_function(alias, function)`. This groups by
 the transformed value and returns the supplied alias, not the raw field plus a
 measure.
-Aggregate functions are not scalar grouping transforms and are rejected;
-GBK grouping is not yet supported by this runtime's result-value representation.
+For binary GBK grouping, pass `teaql_core::ExprFunction::Gbk` to the same
+field helper. The matching 7.1 runtime candidate returns `Value::Binary`, not
+UTF8 text or an integer list; JSON projects these bytes as canonical base64.
+Use `Value::try_binary()` to read them. NULL remains NULL and empty text yields
+empty bytes. Order this selected binary alias with ordinary result ordering;
+do not apply another text-only GBK modifier to an already encoded result.
+Aggregate functions are not scalar grouping transforms and are rejected.
 
 Use `having(teaql_core::Expr::gt("selected_measure_alias", value))` for predicates
 on completed statistical cells, not a field filter on the source rows. A parent
@@ -75,7 +80,8 @@ PostgreSQL and the current SQLite provider support GBK ordering, including
 parent and nested result paths. SQLite uses a connection-local encoder qualified
 against PostgreSQL's profile. Numeric results and unmappable text are rejected;
 there is no unchanged-UTF8 fallback.
-This sort modifier does not add a binary projection or enable GBK grouping.
+This sort modifier does not add a binary projection; grouping is configured
+separately with the field's grouping-function helper.
 
 
 ---

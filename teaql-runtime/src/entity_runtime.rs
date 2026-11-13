@@ -127,6 +127,7 @@ fn entity_identity_key(value: &Value) -> EntityIdentityKey {
         Value::F64(value) => EntityIdentityKey::F64(value.to_bits()),
         Value::Decimal(value) => EntityIdentityKey::Decimal(*value),
         Value::Text(value) => EntityIdentityKey::Text(value.clone()),
+        Value::Binary(value) => EntityIdentityKey::Other(format!("binary:{value:02x?}")),
         Value::Json(value) => EntityIdentityKey::Other(format!("json:{value}")),
         Value::Date(value) => EntityIdentityKey::Date(*value),
         Value::Timestamp(value) => EntityIdentityKey::Timestamp(value.0),

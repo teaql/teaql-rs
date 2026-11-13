@@ -138,6 +138,7 @@ impl SqlDialect for PostgresDialect {
             DataType::Json => "JSONB",
             DataType::Date => "DATE",
             DataType::Timestamp => "TIMESTAMPTZ",
+            DataType::Binary => "BYTEA",
         };
         Ok(format!("CAST({sql} AS {kind})"))
     }
@@ -207,6 +208,7 @@ impl SqlDialect for PostgresDialect {
             DataType::Json => Ok("JSONB".to_owned()),
             DataType::Date => Ok("DATE".to_owned()),
             DataType::Timestamp => Ok("TIMESTAMPTZ".to_owned()),
+            DataType::Binary => Ok("BYTEA".to_owned()),
         }
     }
 
@@ -1128,6 +1130,7 @@ fn ensure_postgres_column_compatibility(
         DataType::Json => matches!(actual.as_str(), "jsonb" | "json"),
         DataType::Date => actual == "date",
         DataType::Timestamp => actual == "timestamp with time zone",
+        DataType::Binary => actual == "bytea",
     };
     if !compatible {
         return Err(MutationExecutorError::Bind(format!(
@@ -3284,6 +3287,7 @@ fn bind_pg(args: &mut PgArgs, value: &Value) -> Result<(), MutationExecutorError
             Some(dt) => args.add(dt),
             None => args.add(v.clone()),
         },
+        Value::Binary(v) => args.add(v.clone()),
         Value::Json(v) => {
             let j_val: serde_json::Value =
                 serde_json::to_value(v).map_err(|e| MutationExecutorError::Bind(e.to_string()))?;
@@ -3302,6 +3306,7 @@ fn bind_pg(args: &mut PgArgs, value: &Value) -> Result<(), MutationExecutorError
             DataType::Json => args.add(Option::<serde_json::Value>::None),
             DataType::Date => args.add(Option::<NaiveDate>::None),
             DataType::Timestamp => args.add(PgNull),
+            DataType::Binary => args.add(Option::<Vec<u8>>::None),
         },
     }
     Ok(())
@@ -3399,6 +3404,16 @@ fn bind_pg_list(args: &mut PgArgs, values: &[Value]) -> Result<(), MutationExecu
             args.add(values);
         }
         Value::Null => return Err(MutationExecutorError::UnsupportedValue("null list")),
+        Value::Binary(_) => {
+            let values = values
+                .iter()
+                .map(|value| match value {
+                    Value::Binary(bytes) => Ok(bytes.clone()),
+                    _ => Err(MutationExecutorError::UnsupportedValue("mixed binary list")),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            args.add(values);
+        }
         Value::Json(_) => return Err(MutationExecutorError::UnsupportedValue("json list")),
         Value::Object(_) => return Err(MutationExecutorError::UnsupportedValue("object list")),
         Value::List(_) => return Err(MutationExecutorError::UnsupportedValue("nested list")),
@@ -3413,6 +3428,10 @@ fn decode_pg_values(row: &tokio_postgres::Row) -> Result<Vec<Value>, MutationExe
         let type_name = column.type_().name();
 
         let value = match type_name {
+            "bytea" => {
+                let v: Option<Vec<u8>> = row.try_get(index)?;
+                v.map(Value::Binary).unwrap_or(Value::Null)
+            }
             "bool" | "boolean" => {
                 let v: Option<bool> = row.try_get(index)?;
                 match v {

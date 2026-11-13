@@ -152,6 +152,9 @@ fn decode(
         DataType::Text | DataType::LargeText => {
             Value::Text(json.as_str().ok_or_else(invalid)?.to_owned())
         }
+        DataType::Binary => {
+            Value::binary_from_base64(json.as_str().ok_or_else(invalid)?).ok_or_else(invalid)?
+        }
         DataType::Json => Value::Json(json),
         DataType::Date => Value::Date(
             json.as_str()

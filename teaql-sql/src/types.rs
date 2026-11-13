@@ -226,6 +226,17 @@ fn sql_literal(value: &Value, kind: DatabaseKind) -> String {
         Value::F64(value) => value.to_string(),
         Value::Decimal(value) => value.to_string(),
         Value::Text(value) => quoted_sql_string(value),
+        Value::Binary(value) => {
+            use std::fmt::Write;
+            let mut hex = String::with_capacity(value.len() * 2);
+            for byte in value {
+                write!(&mut hex, "{byte:02x}").expect("write into String");
+            }
+            match kind {
+                DatabaseKind::PostgreSql => format!("decode('{hex}', 'hex')"),
+                DatabaseKind::Sqlite | DatabaseKind::MySql => format!("X'{hex}'"),
+            }
+        }
         Value::Json(value) => quoted_sql_string(&value.to_string()),
         Value::Date(value) => match kind {
             DatabaseKind::PostgreSql => format!("DATE '{}'", value),

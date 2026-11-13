@@ -100,9 +100,9 @@ async function main() {
         'multilayer-membership-positive','multilayer-membership-negative',
         'multilayer-membership-page-and-parameters','multilayer-membership-ordinary-policy',
         ...['positive','negative','neighboring'].flatMap(kind=>['ordinary','parent','nested'].map(layer=>'numeric-'+layer+'-'+kind)),
-        'gbk-ordinary','gbk-parent','gbk-nested','bitwise-expression-fields','bitwise-expression-parameters',
+        'gbk-ordinary','gbk-parent','gbk-nested','gbk-binary-ordinary','gbk-binary-parent','bitwise-expression-fields','bitwise-expression-parameters',
         'expression-measure-owner-grain','expression-measure-transforms','expression-measure-order'].sort());
-      assert.equal(receipt.commands.at(-1).testsPassed,14);
+      assert.equal(receipt.commands.at(-1).testsPassed,15);
       receipt.rounds.push({round,observations});
     }
     const oracleSql = "SELECT json_build_object('schools',COUNT(*),'nonnull',COUNT(\"Legacy Capacity\"),'capacity',SUM(\"Legacy Capacity\"),'types',(SELECT COUNT(*) FROM legacy_kind),'platforms',(SELECT COUNT(*) FROM legacy_platform)) FROM legacy_school;";

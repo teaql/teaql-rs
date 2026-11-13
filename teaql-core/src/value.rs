@@ -17,6 +17,8 @@ pub enum DataType {
     Json,
     Date,
     Timestamp,
+    /// Opaque bytes, distinct from text, JSON and a list of integers.
+    Binary,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -28,6 +30,7 @@ pub enum Value {
     F64(f64),
     Decimal(Decimal),
     Text(String),
+    Binary(Vec<u8>),
     Json(serde_json::Value),
     Date(NaiveDate),
     Timestamp(crate::time::Timestamp),
@@ -148,6 +151,23 @@ impl From<DateTime<Utc>> for Value {
 }
 
 impl Value {
+    pub fn try_binary(&self) -> Option<&[u8]> {
+        match self {
+            Self::Binary(bytes) => Some(bytes),
+            _ => None,
+        }
+    }
+
+    /// Canonical base64 matches Java's byte[] JSON representation. A text
+    /// value is never implicitly decoded; callers need declared binary metadata.
+    pub fn binary_from_base64(text: &str) -> Option<Self> {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD
+            .decode(text)
+            .ok()
+            .map(Self::Binary)
+    }
+
     pub fn object(values: std::collections::BTreeMap<String, Value>) -> Self {
         Self::Object(values)
     }
@@ -280,6 +300,10 @@ impl Value {
                 .unwrap_or(serde_json::Value::Null),
             Self::Decimal(value) => serde_json::Value::String(value.to_string()),
             Self::Text(value) => serde_json::Value::String(value.clone()),
+            Self::Binary(value) => {
+                use base64::Engine;
+                serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(value))
+            }
             Self::Json(value) => value.clone(),
             Self::Date(value) => serde_json::Value::String(value.to_string()),
             Self::Timestamp(value) => serde_json::Value::from(value.0),

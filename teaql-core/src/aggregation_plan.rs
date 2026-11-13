@@ -202,7 +202,7 @@ pub struct DimensionBinding {
 }
 
 /// Bind one scalar grouping expression without interpreting strings as code.
-/// Aggregate functions, subqueries, literals and unsupported binary results are
+/// Aggregate functions, subqueries and literals are
 /// not grouping transforms. Keep this validation shared by ordinary/layered SQL.
 pub fn grouping_expression_source(
     descriptor: &EntityDescriptor,
@@ -246,11 +246,16 @@ pub fn grouping_expression_source(
             }
             Expr::Function {
                 function: ExprFunction::Gbk,
-                ..
-            } => Err(StatisticalPlanError(
-                "GBK grouping requires binary result support; it cannot be an identity fallback"
-                    .into(),
-            )),
+                args,
+            } if args.len() == 1 => {
+                let (field, input) = bind(descriptor, &args[0], depth + 1)?;
+                if !matches!(input, DataType::Text | DataType::LargeText) {
+                    return Err(StatisticalPlanError(
+                        "GBK grouping requires a text field".into(),
+                    ));
+                }
+                Ok((field, DataType::Binary))
+            }
             _ => Err(StatisticalPlanError(
                 "unsupported statistical grouping expression; a scalar field transform is required"
                     .into(),
@@ -713,7 +718,7 @@ mod tests {
             Expr::count_all(),
             Expr::soundex(Expr::column("ordinal")),
             Expr::soundex(Expr::column("missing")),
-            Expr::gbk(Expr::column("name")),
+            Expr::gbk(Expr::column("ordinal")),
         ] {
             assert!(
                 build(
@@ -960,6 +965,7 @@ mod tests {
             DataType::LargeText,
             DataType::Date,
             DataType::Timestamp,
+            DataType::Binary,
         ] {
             let descriptor = EntityDescriptor::new("Scalar").property(P::new("value", data_type));
             assert_eq!(

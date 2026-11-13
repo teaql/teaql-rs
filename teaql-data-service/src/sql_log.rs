@@ -300,6 +300,25 @@ impl SqlIntentRedactions {
                         continue;
                     }
                     Value::Text(text) => text.clone(),
+                    Value::Binary(bytes) => {
+                        if let Ok(text) = std::str::from_utf8(bytes) {
+                            if !text.is_empty() {
+                                strings.push(text.to_owned());
+                            }
+                        }
+                        let hex = bytes
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<String>();
+                        if !hex.is_empty() {
+                            strings.push(hex);
+                        }
+                        strings.push(format!("{bytes:?}"));
+                        item.to_json_value()
+                            .as_str()
+                            .expect("base64 string")
+                            .to_owned()
+                    }
                     Value::Bool(value) => value.to_string(),
                     Value::I64(value) => value.to_string(),
                     Value::U64(value) => value.to_string(),

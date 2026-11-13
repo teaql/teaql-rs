@@ -90,9 +90,9 @@ async function runAdditionalProbes(run,cargo,repo,example,target,output,env){
     const gbkLines=log.split('\n').filter(l=>l.startsWith('GENERATED_GBK_ROLLUP='));assert.equal(gbkLines.length,1);
     const capability=JSON.parse(gbkLines[0].slice('GENERATED_GBK_ROLLUP='.length));
     assert(capability.passed&&capability.generatedQAndE&&capability.auditedMutation);
-    assert.equal(capability.supported,true);assert.equal(capability.caseCount,4);
+    assert.equal(capability.supported,true);assert.equal(capability.caseCount,6);
     assert.deepEqual(capability.restoredNames,['Primary','Secondary']);
-    assert.deepEqual(capability.observations.map(x=>x.case),['gbk-ordinary-asc','gbk-ordinary-desc','gbk-parent','gbk-nested']);
+    assert.deepEqual(capability.observations.map(x=>x.case),['gbk-ordinary-asc','gbk-ordinary-desc','gbk-parent','gbk-nested','gbk-binary-ordinary','gbk-binary-parent']);
     assert(capability.observations.every(x=>x.supported===true));gbk.push(capability);
     const bitLines=log.split('\n').filter(l=>l.startsWith('GENERATED_BITWISE_ROLLUP='));assert.equal(bitLines.length,1);
     const bits=JSON.parse(bitLines[0].slice('GENERATED_BITWISE_ROLLUP='.length));

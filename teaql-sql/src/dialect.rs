@@ -252,6 +252,7 @@ pub trait SqlDialect {
     ) -> Result<String, SqlCompileError> {
         match data_type {
             DataType::Bool => Ok("BOOLEAN".to_owned()),
+            DataType::Binary => Ok("BLOB".to_owned()),
             DataType::I64 | DataType::U64 => Ok("INTEGER".to_owned()),
             DataType::F64 => Ok("REAL".to_owned()),
             DataType::Decimal => match (property.numeric_precision, property.numeric_scale) {
@@ -334,6 +335,10 @@ pub trait SqlDialect {
             DataType::Json => "'{}'",
             DataType::Date => "'1970-01-01'",
             DataType::Timestamp => "'1970-01-01 00:00:00Z'",
+            DataType::Binary => match self.kind() {
+                DatabaseKind::PostgreSql => "decode('', 'hex')",
+                DatabaseKind::Sqlite | DatabaseKind::MySql => "X''",
+            },
         }
     }
 

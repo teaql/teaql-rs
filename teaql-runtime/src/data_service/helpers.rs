@@ -90,6 +90,7 @@ pub(super) fn relation_bucket_key(value: &Value) -> String {
         Value::F64(v) => format!("f:{v}"),
         Value::Decimal(v) => format!("d:{v}"),
         Value::Text(v) => format!("t:{v}"),
+        Value::Binary(v) => format!("binary:{v:02x?}"),
         Value::Json(v) => format!("j:{v}"),
         Value::Date(v) => format!("d:{v}"),
         Value::Timestamp(v) => format!("ts:{}", v.0),

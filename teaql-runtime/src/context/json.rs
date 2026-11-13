@@ -220,6 +220,9 @@ fn scalar(
         DataType::Text | DataType::LargeText => {
             Value::Text(value.as_str().ok_or_else(invalid)?.to_owned())
         }
+        DataType::Binary => {
+            Value::binary_from_base64(value.as_str().ok_or_else(invalid)?).ok_or_else(invalid)?
+        }
         DataType::Json => {
             if value.is_null() {
                 return Err(invalid());

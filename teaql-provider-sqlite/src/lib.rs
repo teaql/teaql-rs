@@ -270,6 +270,7 @@ impl SqlDialect for SqliteDialect {
             DataType::Json => Ok("JSON".to_owned()),
             DataType::Date => Ok("DATE".to_owned()),
             DataType::Timestamp => Ok("TIMESTAMP".to_owned()),
+            DataType::Binary => Ok("BLOB".to_owned()),
         }
     }
 
@@ -871,6 +872,7 @@ fn ensure_sqlite_column_compatibility(
         DataType::Json => matches!(actual_family.as_str(), "json" | "text"),
         DataType::Date => matches!(actual_family.as_str(), "date" | "text"),
         DataType::Timestamp => matches!(actual_family.as_str(), "timestamp" | "integer"),
+        DataType::Binary => actual_family == "blob",
     };
     if !compatible {
         return Err(MutationExecutorError::Bind(format!(
@@ -2016,6 +2018,7 @@ fn bind_sqlite_value(value: &Value) -> Result<SqliteValue, MutationExecutorError
         // makes range comparisons silently return the wrong result.
         Value::Decimal(v) => Ok(SqliteValue::Text(v.to_string())),
         Value::Text(v) => Ok(SqliteValue::Text(v.clone())),
+        Value::Binary(v) => Ok(SqliteValue::Blob(v.clone())),
         Value::Json(v) => Ok(SqliteValue::Text(v.to_string())),
         Value::Date(v) => Ok(SqliteValue::Text(v.format("%Y-%m-%d").to_string())),
         Value::Timestamp(v) => Ok(SqliteValue::Integer(v.0)),
@@ -2137,11 +2140,7 @@ fn decode_sqlite_values(
                     )));
                 }
                 ValueRef::Text(value) => decode_sqlite_text(value, column)?,
-                ValueRef::Blob(_) => {
-                    return Err(MutationExecutorError::UnsupportedColumnType(
-                        "BLOB".to_owned(),
-                    ));
-                }
+                ValueRef::Blob(value) => Value::Binary(value.to_owned()),
             }
         };
         values.push(value);

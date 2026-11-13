@@ -38,6 +38,105 @@ fn executor() -> SqliteMutationExecutor {
 }
 
 #[test]
+fn binary_results_sqlite_bind_decode_preserves_null_empty_and_arbitrary_bytes() {
+    use teaql_sql::SqlTransport;
+    let transport = executor();
+    for value in [
+        Value::Null,
+        Value::Binary(vec![]),
+        Value::Binary(vec![0, 0xff, 0x27]),
+        Value::Binary(vec![0xb0, 0xa2]),
+    ] {
+        let query = teaql_sql::CompiledQuery {
+            sql: "SELECT ? AS encoded".into(),
+            params: vec![value.clone()],
+            comment: None,
+            log_context: Default::default(),
+        };
+        for _ in 0..2 {
+            let rows = futures_executor::block_on(transport.fetch_all_compact_sql(&query)).unwrap();
+            assert_eq!(rows[0].get("encoded"), Some(&value));
+        }
+    }
+}
+
+#[test]
+fn binary_results_gbk_grouping_ordinary_and_parent_cells_keep_bytes_and_grains() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "UPDATE legacy_kind SET \"Legacy Kind Label\"='中' WHERE id=1001;
+         UPDATE legacy_kind SET \"Legacy Kind Label\"='阿' WHERE id=1002;",
+        )
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let ordinary = SelectQuery::new("Kind")
+        .group_by_expr("encoded", Expr::gbk(Expr::column("label")))
+        .count("types")
+        .order_asc("encoded")
+        .limit(10)
+        .comment("Read binary GBK grouping cells without UTF8 coercion");
+    let parent = SelectQuery::new("Kind")
+        .group_by_expr("encoded", Expr::gbk(Expr::column("label")))
+        .count("types")
+        .having(Expr::eq("encoded", Value::Binary(vec![0xb0, 0xa2])))
+        .order_asc("encoded")
+        .limit(1);
+    for _ in 0..2 {
+        let rows = fetch(&context, ordinary.clone()).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].get("encoded"),
+            Some(&Value::Binary(vec![0xb0, 0xa2]))
+        );
+        assert_eq!(
+            rows[1].get("encoded"),
+            Some(&Value::Binary(vec![0xd6, 0xd0]))
+        );
+        let rows = fetch(&context, source(parent.clone())).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rollup_object(&rows[0], "kind").get("encoded"),
+            Some(&Value::Binary(vec![0xb0, 0xa2]))
+        );
+        assert_eq!(rows[0].get("schools"), Some(&Value::I64(1)));
+        assert_eq!(rows[0].get("total"), Some(&Value::I64(100)));
+    }
+}
+
+#[test]
+fn binary_results_gbk_null_and_empty_grouping_keys_are_distinct() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "UPDATE legacy_kind SET \"Legacy Kind Label\"=NULL WHERE id=1001;
+         UPDATE legacy_kind SET \"Legacy Kind Label\"='' WHERE id=1002;",
+        )
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let query = SelectQuery::new("Kind")
+        .group_by_expr("encoded", Expr::gbk(Expr::column("label")))
+        .count("types")
+        .order_asc("encoded")
+        .limit(10)
+        .comment("Distinguish NULL from empty binary grouping keys");
+    for _ in 0..2 {
+        let rows = fetch(&context, query.clone()).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].get("encoded"), Some(&Value::Null));
+        assert_eq!(rows[1].get("encoded"), Some(&Value::Binary(vec![])));
+        assert_eq!(rows[0].get("types"), Some(&Value::I64(1)));
+        assert_eq!(rows[1].get("types"), Some(&Value::I64(1)));
+    }
+}
+
+#[test]
 fn layered_expression_measures_keep_owner_grain_and_parent_result_bounds() {
     let context = runtime_context(executor(), policy(false, false));
     let parent = SelectQuery::new("Kind")

@@ -54,8 +54,8 @@ field's unchanged value under the supplied alias (Java `AggrFunction.SELF`).
 This preserves the field's metadata type and null grouping key; it does not
 convert numeric, date, Boolean or reference values to text.
 SOUNDEX requires text; use Identity or ordinary grouping for this field.
-Aggregate functions are not scalar grouping transforms and are rejected;
-GBK grouping is not yet supported by this runtime's result-value representation.
+GBK also requires text input.
+Aggregate functions are not scalar grouping transforms and are rejected.
 
 Use `having(teaql_core::Expr::gt("selected_measure_alias", value))` for predicates
 on completed statistical cells, not a field filter on the source rows. A parent

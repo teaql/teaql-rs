@@ -1071,6 +1071,7 @@ dependencies = [
 name = "teaql-core"
 version = "7.1.0"
 dependencies = [
+ "base64",
  "bytes",
  "chrono",
  "futures-core",

@@ -440,6 +440,7 @@ fn compare_values(a: &Value, b: &Value) -> Ordering {
         (Value::Decimal(a), Value::U64(b)) => a.cmp(&teaql_core::Decimal::from(*b)),
         (Value::U64(a), Value::Decimal(b)) => teaql_core::Decimal::from(*a).cmp(b),
         (Value::Text(a), Value::Text(b)) => a.cmp(b),
+        (Value::Binary(a), Value::Binary(b)) => a.cmp(b),
         (Value::Date(a), Value::Date(b)) => a.cmp(b),
         (Value::Timestamp(a), Value::Timestamp(b)) => a.cmp(b),
         // Cross-type numeric comparisons via f64.

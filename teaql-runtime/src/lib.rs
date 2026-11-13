@@ -8,10 +8,10 @@ pub const CONTEXT_ROOT_SAVE_ADMISSION_REVISION: u32 = 1;
 mod business_id;
 mod checker;
 pub mod checker_messages;
-mod context_fix;
 mod checker_privacy;
 mod commit_audit;
 mod context;
+mod context_fix;
 mod data_service;
 mod document_round_trip;
 pub mod dynamic_fields;
@@ -244,6 +244,7 @@ mod tests {
                 DataType::Json => Ok("JSONB".to_owned()),
                 DataType::Date => Ok("DATE".to_owned()),
                 DataType::Timestamp => Ok("TIMESTAMPTZ".to_owned()),
+                DataType::Binary => Ok("BYTEA".to_owned()),
             }
         }
     }
@@ -2279,7 +2280,10 @@ mod tests {
                 assert_eq!(results.len(), 1);
                 assert_eq!(results[0].rule, CheckRule::Required);
                 assert_eq!(results[0].location.instance_path(), "/name");
-                assert_eq!(results[0].message.as_deref(), Some("请填写name。\n位置：当前对象"));
+                assert_eq!(
+                    results[0].message.as_deref(),
+                    Some("请填写name。\n位置：当前对象")
+                );
             }
             other => panic!("unexpected checker error: {other:?}"),
         }

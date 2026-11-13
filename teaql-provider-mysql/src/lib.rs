@@ -104,6 +104,7 @@ impl SqlDialect for MysqlDialect {
             DataType::Json => Ok("JSON".to_owned()),
             DataType::Date => Ok("DATE".to_owned()),
             DataType::Timestamp => Ok("DATETIME(6)".to_owned()),
+            DataType::Binary => Ok("BLOB".to_owned()),
         }
     }
 
@@ -638,6 +639,10 @@ fn ensure_mysql_column_compatibility(
         DataType::Json => actual == "json",
         DataType::Date => actual == "date",
         DataType::Timestamp => matches!(actual.as_str(), "datetime" | "timestamp"),
+        DataType::Binary => matches!(
+            actual.as_str(),
+            "blob" | "binary" | "varbinary" | "tinyblob" | "mediumblob" | "longblob"
+        ),
     };
     if !compatible {
         return Err(MutationExecutorError::Bind(format!(
@@ -2714,6 +2719,7 @@ fn bind_mysql(value: &Value) -> Result<mysql_async::Value, MutationExecutorError
         Value::F64(v) => Ok(mysql_async::Value::Double(*v)),
         Value::Decimal(v) => Ok(mysql_async::Value::Bytes(v.to_string().into_bytes())),
         Value::Text(v) => Ok(mysql_async::Value::Bytes(v.clone().into_bytes())),
+        Value::Binary(v) => Ok(mysql_async::Value::Bytes(v.clone())),
         Value::Json(v) => Ok(mysql_async::Value::Bytes(
             serde_json::to_string(v).unwrap_or_default().into_bytes(),
         )),
@@ -2858,6 +2864,16 @@ fn decode_mysql_values(row: mysql_async::Row) -> Result<Vec<Value>, MutationExec
             | ColumnType::MYSQL_TYPE_TINY_BLOB
             | ColumnType::MYSQL_TYPE_MEDIUM_BLOB
             | ColumnType::MYSQL_TYPE_LONG_BLOB => {
+                // BLOB protocol types also carry text; only binary charset
+                // values are opaque bytes, never lossy UTF8 conversions.
+                if column.character_set() == 63 {
+                    let bytes: Vec<u8> = row
+                        .get_opt(index)
+                        .unwrap()
+                        .map_err(|e| MutationExecutorError::Bind(e.to_string()))?;
+                    values.push(Value::Binary(bytes));
+                    continue;
+                }
                 let s: String = row
                     .get_opt(index)
                     .unwrap()

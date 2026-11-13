@@ -170,6 +170,28 @@ pub async fn verify(context: &impl TeaqlRuntime, supported: bool) -> Result<(), 
         "阿类",
         true,
     )?);
+    if supported {
+        let request = Q::school_types_minimal()
+            .group_by_name_with_function("encoded", teaql_core::ExprFunction::Gbk)
+            .count_as("types").add_order_by_ascending("encoded");
+        let rows = kind_rows(request, context).await?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("encoded").and_then(Value::try_binary), Some([0xb0, 0xa2, 0xc0, 0xe0].as_slice()));
+        observations.push(serde_json::json!({"case":"gbk-binary-ordinary","supported":true,
+            "row":rows[0].iter().map(|(key,value)|(key.clone(),value.to_json_value())).collect::<std::collections::BTreeMap<_,_>>()}));
+        let mut request = source();
+        request.roll_up_to_school_type()
+            .group_by_name_with_function("encoded", teaql_core::ExprFunction::Gbk)
+            .count_as("types").add_order_by_ascending("encoded").limit(1);
+        let rows = school_rows(request, context).await?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(1));
+        assert_eq!(rows[0].get("capacity").and_then(Value::try_i64), Some(100));
+        let Some(Value::Object(parent)) = rows[0].get("school_type") else { panic!("missing parent"); };
+        assert_eq!(parent.get("encoded").and_then(Value::try_binary), Some([0xb0, 0xa2, 0xc0, 0xe0].as_slice()));
+        observations.push(serde_json::json!({"case":"gbk-binary-parent","supported":true,
+            "row":rows[0].iter().map(|(key,value)|(key.clone(),value.to_json_value())).collect::<std::collections::BTreeMap<_,_>>()}));
+    }
     rename(context, 1001, &first).await?;
     rename(context, 1002, &second).await?;
     println!(
