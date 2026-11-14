@@ -28,8 +28,6 @@ jobs:
           cargo fetch --locked --manifest-path examples/trace-chain/Cargo.toml
           cargo fetch --locked --manifest-path examples/school-management/Cargo.toml
           cargo fetch --locked --manifest-path examples/inheritance-save/Cargo.toml
-          cargo fetch --locked --manifest-path examples/conformance/Cargo.toml
-          cargo fetch --locked --manifest-path examples/order-management/rust-app-console/Cargo.toml
       - name: Start dedicated S3 example fixture
         run: |
           docker run -d --name teaql-rust-example-s3 \
