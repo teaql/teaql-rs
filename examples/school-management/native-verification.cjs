@@ -4,7 +4,9 @@ const fs=require('node:fs'),path=require('node:path'),assert=require('node:asser
 async function verifySources(run,cargo,repo,example){
   const root=JSON.parse(await run([cargo,'metadata','--offline','--locked','--no-deps','--format-version=1','--manifest-path',path.join(repo,'Cargo.toml')],'runtime-metadata.json'));
   const version=root.packages.find(p=>p.name==='teaql-runtime').version;
-  assert.equal(version,'7.1.0','This statistics example targets the 7.1 candidate');
+  const selected=fs.readFileSync(path.join(example,'models/school-model.xml'),'utf8').match(/teaql_rs_version="(\d+\.\d+\.\d+)"/);
+  assert(selected,'The statistics model must explicitly select its runtime version');
+  assert.equal(version,selected[1],'The statistics example must use its model-selected runtime');
   const metadata=JSON.parse(await run([cargo,'metadata','--offline','--locked','--format-version=1','--manifest-path',path.join(example,'Cargo.toml')],'consumer-metadata.json'));
   const origins={};
   for(const name of ['teaql-core','teaql-macros','teaql-data-service','teaql-runtime','teaql-sql','teaql-provider-sqlite']){

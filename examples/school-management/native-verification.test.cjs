@@ -1,15 +1,16 @@
 'use strict';
-const test=require('node:test'),assert=require('node:assert/strict'),path=require('node:path');
+const test=require('node:test'),assert=require('node:assert/strict'),path=require('node:path'),fs=require('node:fs');
 const {verifySources}=require('./native-verification.cjs');
 const example=__dirname,repo=path.resolve(example,'../..');
 const names=['teaql-core','teaql-macros','teaql-data-service','teaql-runtime','teaql-sql','teaql-provider-sqlite'];
-function fixture(){return {packages:[...names.map(name=>({name,version:'7.1.0',source:null,manifest_path:path.join(repo,name,'Cargo.toml')})),
+const selected=fs.readFileSync(path.join(example,'models/school-model.xml'),'utf8').match(/teaql_rs_version="(\d+\.\d+\.\d+)"/)[1];
+function fixture(){return {packages:[...names.map(name=>({name,version:selected,source:null,manifest_path:path.join(repo,name,'Cargo.toml')})),
   {name:'school-management-service-core',source:null,manifest_path:path.join(example,'lib/Cargo.toml')}]};}
-function runner(metadata,version='7.1.0'){return async(_command,log)=>JSON.stringify(log==='runtime-metadata.json'
+function runner(metadata,version=selected){return async(_command,log)=>JSON.stringify(log==='runtime-metadata.json'
   ?{packages:[{name:'teaql-runtime',version}]}:metadata);}
 test('all six runtime components and the generated library must resolve to this checkout',async()=>{
   const origins=await verifySources(runner(fixture()),'cargo',repo,example);
-  assert.deepEqual(Object.keys(origins),names);assert(Object.values(origins).every(p=>p.source===null&&p.version==='7.1.0'));
+  assert.deepEqual(Object.keys(origins),names);assert(Object.values(origins).every(p=>p.source===null&&p.version===selected));
 });
 test('an old runtime dependency cannot be accepted just because its source is local',async()=>{
   const metadata=fixture();metadata.packages[0].version='7.0.0';
@@ -32,5 +33,5 @@ test('the generated domain library must not resolve to an unrelated manifest',as
   await assert.rejects(verifySources(runner(metadata),'cargo',repo,example));
 });
 test('the candidate baseline itself must be explicit',async()=>{
-  await assert.rejects(verifySources(runner(fixture(),'7.0.0'),'cargo',repo,example),/7.1 candidate/);
+  await assert.rejects(verifySources(runner(fixture(),'7.0.0'),'cargo',repo,example),/model-selected runtime/);
 });

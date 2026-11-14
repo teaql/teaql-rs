@@ -161,10 +161,10 @@ pub fn clear_rollup_navigation(
         if depth > 64 {
             return Err("roll-up navigation expression exceeds 64 levels".into());
         }
-        if let Expr::SubQuery { query, .. } = expr {
-            if query.navigation_origin() == Some(relation) {
-                return Ok(None);
-            }
+        if let Expr::SubQuery { query, .. } = expr
+            && query.navigation_origin() == Some(relation)
+        {
+            return Ok(None);
         }
         let operand = |expr: &Expr| -> Result<Expr, String> {
             Ok(rewrite(expr, relation, identity, depth + 1)?
