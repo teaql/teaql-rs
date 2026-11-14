@@ -71,7 +71,18 @@ run_expected_suite() {
 # Inventory includes the existing opt-in matched-driver test and the added
 # trace/privacy regressions. Execute the benchmark's correctness assertions too;
 # do not silently accept an ignored test or publish CI timings as benchmarks.
-run_expected_suite teaql-provider-sqlite '52,10,1,27,5,1,18,1,15,5,2,4,13,12,3,3' --lib --tests -- --include-ignored
-run_expected_suite teaql-provider-postgres '30,1' --lib --tests
+run_expected_suite teaql-provider-sqlite '153,10,1,27,5,1,18,1,15,5,2,4,15,12,3,3' --lib --tests -- --include-ignored
+# Ordinary provider tests use their dedicated provider database. The new
+# statistics/inheritance binaries require a separate, ownership-marked fixture;
+# execute every binary explicitly rather than silently skipping live coverage.
+run_expected_suite teaql-provider-postgres '38,1' --lib --test guarded_mutation
+if [[ ! "${TEAQL_ROLLUP_TEST_POSTGRES_URL:-}" =~ ^postgres(ql)?://[^/]+/teaql_rollup_326$ ]]; then
+  printf 'TEAQL_ROLLUP_TEST_POSTGRES_URL must name the ownership-checked teaql_rollup_326 fixture\n' >&2
+  exit 1
+fi
+TEAQL_TEST_POSTGRES_URL="$TEAQL_ROLLUP_TEST_POSTGRES_URL" TEAQL_REQUIRE_LIVE_DB=true \
+  run_expected_suite teaql-provider-postgres '3' --test inherited_lifecycle -- --include-ignored --test-threads=1
+TEAQL_TEST_POSTGRES_URL="$TEAQL_ROLLUP_TEST_POSTGRES_URL" TEAQL_REQUIRE_LIVE_DB=true \
+  run_expected_suite teaql-provider-postgres '16' --test layered_statistics -- --test-threads=1
 run_expected_suite teaql-provider-mysql '24,1' --lib --tests
 printf 'PASS live SQLite/PostgreSQL/MySQL provider suites (isolated database URLs supplied)\n'
