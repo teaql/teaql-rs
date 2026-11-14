@@ -1423,9 +1423,18 @@ fn ensure_joined_storage_layout(
     for entity in entities {
         let mut current = *entity;
         while let Some(parent) = &current.joined_parent {
-            if SqliteMutationExecutor::table_exists_with_connection(connection, &current.table_name)? {
-                let columns = SqliteMutationExecutor::table_columns_with_connection(connection, &current.table_name)?;
-                teaql_sql::validate_inherited_storage_columns(current, columns.keys().map(String::as_str))?;
+            if SqliteMutationExecutor::table_exists_with_connection(
+                connection,
+                &current.table_name,
+            )? {
+                let columns = SqliteMutationExecutor::table_columns_with_connection(
+                    connection,
+                    &current.table_name,
+                )?;
+                teaql_sql::validate_inherited_storage_columns(
+                    current,
+                    columns.keys().map(String::as_str),
+                )?;
             }
             current = parent;
         }

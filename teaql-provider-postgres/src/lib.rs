@@ -591,14 +591,20 @@ impl PgMutationExecutor {
                 let mut current = *entity;
                 while let Some(parent) = &current.joined_parent {
                     if Self::table_exists(&transaction, &current.table_name).await? {
-                        let columns = Self::table_columns(&transaction, &current.table_name).await?;
-                        teaql_sql::validate_inherited_storage_columns(current, columns.keys().map(String::as_str))?;
+                        let columns =
+                            Self::table_columns(&transaction, &current.table_name).await?;
+                        teaql_sql::validate_inherited_storage_columns(
+                            current,
+                            columns.keys().map(String::as_str),
+                        )?;
                     }
                     current = parent;
                 }
             }
-            self.ensure_schema_with_client(&transaction, dialect, &entities).await
-        }.await;
+            self.ensure_schema_with_client(&transaction, dialect, &entities)
+                .await
+        }
+        .await;
         match result {
             Ok(()) => transaction.commit().await?,
             Err(error) => {

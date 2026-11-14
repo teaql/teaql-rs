@@ -565,9 +565,9 @@ where
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         let query = self
             .prepare_select_query_owned(query)
-            .map_err(DataServiceError::Runtime)?
-            .prepare_for_list()
-            .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
+            .map_err(DataServiceError::Runtime)?;
+        // Framework-owned relation/statistical populations are not outer pages.
+        // Keep an explicit business slice, but never invent a 10,000-row cutoff.
         // Relation probes build a fresh, runtime-owned query for every foreign key.
         // Keep that ownership all the way into the provider when no runtime
         // enhancement needs to retain the query. Going through
@@ -584,7 +584,8 @@ where
                 .map_err(DataServiceError::Runtime)?;
             return self.fetch_prepared_query_owned(query).await;
         }
-        self.fetch_prepared_all(&query).await
+        self.fetch_prepared_all_with_aggregates(&query, &[], false)
+            .await
     }
 
     async fn prepare_continuous_page(
@@ -1176,13 +1177,15 @@ where
         &self,
         query: &SelectQuery,
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
-        self.fetch_prepared_all_with_aggregates(query, &[]).await
+        self.fetch_prepared_all_with_aggregates(query, &[], true)
+            .await
     }
 
     async fn fetch_prepared_all_with_aggregates(
         &self,
         query: &SelectQuery,
         relation_aggregates: &[RelationAggregate],
+        outer_materialization: bool,
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         if !query.relation_aggregates.is_empty() {
             let mut execution = query.clone();
@@ -1194,20 +1197,39 @@ where
                     combined.push(aggregate.clone());
                 }
             }
-            return Box::pin(self.fetch_prepared_all_with_aggregates(&execution, &combined)).await;
+            return Box::pin(self.fetch_prepared_all_with_aggregates(
+                &execution,
+                &combined,
+                outer_materialization,
+            ))
+            .await;
         }
         if self.request_intent.is_none() {
             return Box::pin(
                 self.query_scoped_service_with_aggregates(query, relation_aggregates)
                     .map_err(DataServiceError::Runtime)?
-                    .fetch_prepared_all_with_aggregates(query, relation_aggregates),
+                    .fetch_prepared_all_with_aggregates(
+                        query,
+                        relation_aggregates,
+                        outer_materialization,
+                    ),
             )
             .await;
         }
-        let query = query
-            .clone()
-            .prepare_for_list()
-            .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
+        // Facet result queries enter through the ordinary list facade but retain
+        // an execution-owned child request scope. They are nested populations,
+        // not a fresh user page. No caller-supplied wire flag controls this.
+        let nested_scope = query
+            .request_scope()
+            .is_some_and(|scope| scope.parent_request().is_some());
+        let query = if outer_materialization && !nested_scope {
+            query
+                .clone()
+                .prepare_for_list()
+                .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?
+        } else {
+            query.clone()
+        };
         if query.requires_statistical_plan() {
             if !relation_aggregates.is_empty()
                 || !query.relations.is_empty()
@@ -1513,7 +1535,7 @@ where
             .prepare_select_query(query)
             .map_err(DataServiceError::Runtime)?;
 
-        self.fetch_prepared_all_with_aggregates(&query, relation_aggregates)
+        self.fetch_prepared_all_with_aggregates(&query, relation_aggregates, true)
             .await
     }
 
@@ -1805,7 +1827,7 @@ where
                     .map(|list| with_total_count(list, id_set_total_count));
             }
             let mut rows = self
-                .fetch_prepared_all_with_aggregates(&root_query, relation_aggregates)
+                .fetch_prepared_all_with_aggregates(&root_query, relation_aggregates, true)
                 .await?;
             let root = if let Some((query_plans, behavior_plans)) = flat_plans {
                 let root = crate::EntityRuntimeState::default();
@@ -2184,7 +2206,9 @@ where
         crate::mutation_version::recovered(&command.entity, command.expected_version)
             .map_err(DataServiceError::Runtime)?;
         let mut command = command.clone();
-        command.trace_chain = self.trace_context.clone();
+        if command.trace_chain.is_empty() {
+            command.trace_chain = self.trace_context.clone();
+        }
         if let Some(behavior) = self.behavior() {
             behavior
                 .before_recover(self.data_service.metadata.context, &mut command)
@@ -2202,15 +2226,17 @@ where
             command.trace_chain.clone(),
         )?;
         let affected = self.data_service.recover(&command).await?;
-        let event = RawAuditEvent::recovered_with_old_values(
+        let mut event = RawAuditEvent::recovered_with_changes(
             command.entity,
             command.id,
             command.expected_version,
             old_values,
+            command.values.into(),
         )
         .map_err(|cause| {
             DataServiceError::Runtime(crate::mutation_version::error(&self.entity, cause))
         })?;
+        event.trace_chain = command.trace_chain;
         self.emit_event(event).map_err(DataServiceError::Runtime)?;
         Ok(affected)
     }

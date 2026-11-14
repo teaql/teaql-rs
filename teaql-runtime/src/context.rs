@@ -785,7 +785,8 @@ impl UserContext {
         let generator = self.internal_id_generator.as_ref().ok_or_else(|| {
             RuntimeError::IdGeneration("missing internal ID generator".to_owned())
         })?;
-        let id_space = self.entity(entity_name)
+        let id_space = self
+            .entity(entity_name)
             .map(|descriptor| descriptor.inheritance_root().name.as_str())
             .unwrap_or(entity_name);
         generator.ensure_floor(id_space, fixed_id)?;
@@ -857,7 +858,8 @@ impl UserContext {
     }
 
     pub fn generate_id(&self, entity: &str) -> Result<Option<u64>, RuntimeError> {
-        let entity = self.entity(entity)
+        let entity = self
+            .entity(entity)
             .map(|descriptor| descriptor.inheritance_root().name.as_str())
             .unwrap_or(entity);
         self.internal_id_generator

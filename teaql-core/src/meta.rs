@@ -181,6 +181,16 @@ pub struct EntityDescriptor {
     /// logical mutation participant. Inherited values and optimistic version
     /// belong to their declaring table; identity belongs to the whole family.
     pub joined_parent: Option<std::sync::Arc<EntityDescriptor>>,
+    /// Direct child storage hints, not recursively embedded child descriptors.
+    /// They identify a typed view's next subtype without changing its Rust type.
+    pub inheritance_children: Vec<InheritanceChild>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InheritanceChild {
+    pub name: String,
+    pub table_name: String,
+    pub id_column: String,
 }
 
 impl EntityDescriptor {
@@ -196,6 +206,7 @@ impl EntityDescriptor {
             audit_mask_fields_declared: false,
             audit_value_max_len: None,
             joined_parent: None,
+            inheritance_children: Vec::new(),
         }
     }
 
@@ -226,6 +237,20 @@ impl EntityDescriptor {
         self
     }
 
+    pub fn inheritance_child(
+        mut self,
+        name: impl Into<String>,
+        table_name: impl Into<String>,
+        id_column: impl Into<String>,
+    ) -> Self {
+        self.inheritance_children.push(InheritanceChild {
+            name: name.into(),
+            table_name: table_name.into(),
+            id_column: id_column.into(),
+        });
+        self
+    }
+
     /// Root table owns the family-wide identity allocator and version.
     pub fn inheritance_root(&self) -> &EntityDescriptor {
         let mut root = self;
@@ -252,6 +277,7 @@ impl EntityDescriptor {
             });
         }
         storage.joined_parent = None;
+        storage.inheritance_children.clear();
         storage
     }
 

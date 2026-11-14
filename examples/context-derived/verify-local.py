@@ -41,11 +41,36 @@ def fixture(root=None):
 
 
 def sources():
-    paths = [EXAMPLE / "Cargo.toml", EXAMPLE / "Cargo.lock", EXAMPLE / "src/main.rs", Path(__file__).resolve()]
+    paths = [EXAMPLE / "Cargo.toml", EXAMPLE / "Cargo.lock", EXAMPLE / "src/main.rs", Path(__file__).resolve(), REPO / "scripts/pin-local-example-library.cjs"]
     for crate in CRATES:
         paths.append(REPO / crate / "Cargo.toml")
         paths.extend((REPO / crate / "src").rglob("*.rs"))
     return {path.relative_to(REPO).as_posix(): sha(path) for path in sorted(paths)}
+
+
+def stage(scratch, output, env):
+    """Adapt only owned dependency metadata; preserve the sealed source fixture."""
+    library, consumer = scratch / "generated-lib", scratch / "consumer"
+    shutil.copytree(EXAMPLE / "fixture/lib", library)
+    consumer.mkdir()
+    shutil.copytree(EXAMPLE / "src", consumer / "src")
+    shutil.copyfile(EXAMPLE / "Cargo.lock", consumer / "Cargo.lock")
+    manifest = (EXAMPLE / "Cargo.toml").read_text()
+    assert manifest.count('path = "fixture/lib"') == 1
+    manifest = manifest.replace('path = "fixture/lib"', 'path = "../generated-lib"')
+    for crate in CRATES:
+        original = f'{crate} = {{ path = "../../{crate}" }}'
+        assert manifest.count(original) == 1, crate
+        manifest = manifest.replace(original, f'{crate} = {{ path = {json.dumps(str(REPO / crate))} }}')
+    (consumer / "Cargo.toml").write_text(manifest)
+    command = [shutil.which("node") or "/home/philip/.nvm/versions/node/v24.19.0/bin/node",
+               str(REPO / "scripts/pin-local-example-library.cjs"), str(library), str(REPO), str(scratch)]
+    log = output / "pin-metadata.log"
+    assert run(command, env, log) == 0, "local metadata pin failed"
+    pin = json.loads(log.read_text())
+    assert pin["implementationFilesUnchanged"] and not pin["sourceFixtureEdited"]
+    assert not pin["sqliteDriverChanged"], "fresh fixture must use the selected SQLite ABI"
+    return consumer, pin
 
 
 def run(command, env, log):
@@ -67,6 +92,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path)
     parser.add_argument("--unit-tests", action="store_true", help="Also run core/runtime/macro all-target tests with disposable outputs")
+    parser.add_argument("--prepare-lock", action="store_true", help="Prepare only the selected-version consumer lock; does not qualify tests")
     args = parser.parse_args()
     output = args.output.resolve() if args.output else Path(tempfile.mkdtemp(prefix="teaql-context-evidence-"))
     output.mkdir(parents=True, exist_ok=True)
@@ -79,16 +105,27 @@ def main():
         cargo = shutil.which("cargo") or str(Path.home() / ".cargo/bin/cargo")
         env = dict(os.environ, CARGO_TARGET_DIR=str(scratch / "target"), CARGO_INCREMENTAL="0", CARGO_BUILD_JOBS="4", CARGO_PROFILE_DEV_DEBUG="0", CARGO_PROFILE_TEST_DEBUG="0", TEAQL_CONTEXT_FIX_DB=str(output / "fixture.sqlite"))
         report["buildOutput"] = str(scratch)
+        consumer, report["metadataOverride"] = stage(scratch, output, env)
+        manifest = consumer / "Cargo.toml"
+        if args.prepare_lock:
+            command = [cargo, "generate-lockfile", "--offline", "--manifest-path", str(manifest)]
+            report["prepareLockCommand"] = command
+            assert run(command, env, output / "prepare-lock.log") == 0, "lock preparation failed"
+            assert sources() == report["sourceHashes"] and fixture() == report["fixture"]
+            shutil.copyfile(consumer / "Cargo.lock", EXAMPLE / "Cargo.lock")
+            report.update(prepared=True, sourceQualification=False, lockSha256=sha(EXAMPLE / "Cargo.lock"))
+            return 0
         if args.unit_tests:
             command = [cargo, "test", "--locked", "--manifest-path", str(REPO / "Cargo.toml"), "-p", "teaql-runtime", "-p", "teaql-core", "-p", "teaql-macros", "--all-targets"]
             code = run(command, env, output / "unit.log")
             summaries = re.findall(r"test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored", (output / "unit.log").read_text())
             report["unit"] = dict(command=command, exitCode=code, passed=sum(int(s[0]) for s in summaries), failed=sum(int(s[1]) for s in summaries), ignored=sum(int(s[2]) for s in summaries), targets=len(summaries))
             assert code == 0 and report["unit"]["passed"] >= 750 and report["unit"]["failed"] == 0, "unit tests failed; see unit.log"
-        command = [cargo, "build", "--locked", "--manifest-path", str(EXAMPLE / "Cargo.toml")]
+        command = [cargo, "build", "--offline", "--locked", "--manifest-path", str(manifest)]
         report["buildCommand"] = command
         assert run(command, env, output / "build.log") == 0, "build failed; see build.log"
-        metadata = json.loads(subprocess.check_output([cargo, "metadata", "--locked", "--format-version", "1"], cwd=EXAMPLE, env=env, text=True))
+        metadata = json.loads(subprocess.check_output([cargo, "metadata", "--offline", "--locked", "--format-version", "1", "--manifest-path", str(manifest)], cwd=EXAMPLE, env=env, text=True))
+        assert (consumer / "Cargo.lock").read_bytes() == (EXAMPLE / "Cargo.lock").read_bytes()
         report["dependencies"] = {}
         for crate in CRATES:
             packages = [p for p in metadata["packages"] if p["name"] == crate]

@@ -652,7 +652,9 @@ pub fn criteria_alternatives_excluding_version(filter: Option<Expr>) -> Option<E
     fn version(criterion: &Expr) -> bool {
         let operand = match criterion {
             Expr::Binary { left, .. } => left.as_ref(),
-            Expr::Between { expr, .. } | Expr::IsNull(expr) | Expr::IsNotNull(expr) => expr.as_ref(),
+            Expr::Between { expr, .. } | Expr::IsNull(expr) | Expr::IsNotNull(expr) => {
+                expr.as_ref()
+            }
             _ => return false,
         };
         matches!(operand, Expr::Column(name) if name == "version")
@@ -661,7 +663,10 @@ pub fn criteria_alternatives_excluding_version(filter: Option<Expr>) -> Option<E
         Expr::And(parts) => parts,
         other => vec![other],
     };
-    let mut alternatives = parts.into_iter().filter(|part| !version(part)).collect::<Vec<_>>();
+    let mut alternatives = parts
+        .into_iter()
+        .filter(|part| !version(part))
+        .collect::<Vec<_>>();
     match alternatives.len() {
         0 => None,
         1 => alternatives.pop(),

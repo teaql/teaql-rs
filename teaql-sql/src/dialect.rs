@@ -393,6 +393,14 @@ pub trait SqlDialect {
         }
 
         let mut projection = self.compile_projection(entity, query, params)?;
+        if query.aggregates.is_empty()
+            && query.group_by.is_empty()
+            && !query.has_aggregate_projection()
+            && let Some(subtype) = crate::inheritance::runtime_type_projection(self, entity)?
+        {
+            projection.push_str(", ");
+            projection.push_str(&subtype);
+        }
         let partitioned_slice = query.partition_by.as_deref().zip(query.slice);
         if let Some((partition_by, _)) = partitioned_slice {
             let partition_column = self.column_sql(entity, partition_by)?;
@@ -1068,7 +1076,29 @@ pub trait SqlDialect {
             &version_property.name,
             Value::I64(recovered_version),
         );
+        let mut assignments = vec![format!(
+            "{} = {}",
+            self.quote_ident(&version_property.column_name),
+            self.placeholder(1)
+        )];
+        for (field, value) in &command.values {
+            let property = entity
+                .property_by_name(field)
+                .ok_or_else(|| SqlCompileError::UnknownField(field.clone()))?;
+            if property.is_id || property.is_version {
+                return Err(SqlCompileError::InvalidFunctionArguments(
+                    "recovery cannot change identity or supply its successor version".into(),
+                ));
+            }
+            params.push_field(entity, field, value.clone());
+            assignments.push(format!(
+                "{} = {}",
+                self.quote_ident(&property.column_name),
+                self.placeholder(params.len())
+            ));
+        }
         params.push_field(entity, &id_property.name, command.id.clone());
+        let id_index = params.len();
         params.push_field(
             entity,
             &version_property.name,
@@ -1079,12 +1109,12 @@ pub trait SqlDialect {
             format!(
                 "{} = {}",
                 self.quote_ident(&id_property.column_name),
-                self.placeholder(2)
+                self.placeholder(id_index)
             ),
             format!(
                 "{} = {}",
                 self.quote_ident(&version_property.column_name),
-                self.placeholder(3)
+                self.placeholder(id_index + 1)
             ),
         ];
         if let Some(guard) = guard {
@@ -1094,10 +1124,9 @@ pub trait SqlDialect {
         Ok(CompiledQuery {
             log_context: params.log_context(self.kind()),
             sql: format!(
-                "UPDATE {} SET {} = {} WHERE {}",
+                "UPDATE {} SET {} WHERE {}",
                 self.quote_ident(&entity.table_name),
-                self.quote_ident(&version_property.column_name),
-                self.placeholder(1),
+                assignments.join(", "),
                 predicates.join(" AND "),
             ),
             params: params.into_values(),
@@ -1711,6 +1740,19 @@ pub trait SqlDialect {
             let alias = self.quote_ident("__teaql_membership");
             let key = format!("{alias}.{}", self.quote_result_alias(key));
             subquery = format!("SELECT {key} FROM ({subquery}) AS {alias} WHERE {key} IS NOT NULL");
+        } else if !sub_entity.inheritance_children.is_empty() {
+            let [key] = query.projection.as_slice() else {
+                return Err(SqlCompileError::InvalidFunctionArguments(
+                    "entity membership requires one selected key".into(),
+                ));
+            };
+            // Readonly subtype metadata is never a second IN operand. Retain
+            // ordinary NULL semantics; statistical NULL handling stays above.
+            let alias = self.quote_ident("__teaql_membership");
+            subquery = format!(
+                "SELECT {alias}.{} FROM ({subquery}) AS {alias}",
+                self.quote_result_alias(key)
+            );
         }
         Ok(format!("({lhs} {operator} ({subquery}))"))
     }

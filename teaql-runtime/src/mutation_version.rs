@@ -55,6 +55,16 @@ pub(crate) fn graph_input(
             deleted(&node.entity, version)?;
             continue;
         }
+        if node.operation == crate::GraphOperation::Recover {
+            let version = version.ok_or_else(|| {
+                RuntimeError::Graph("recovery requires a loaded original tombstone version".into())
+            })?;
+            recovered(&node.entity, version)?;
+            for children in node.relations.values().rev() {
+                pending.extend(children.iter().rev().map(|child| (child, false)));
+            }
+            continue;
+        }
         let is_create = node.operation == crate::GraphOperation::Create
             || (parent_is_create && node.operation == crate::GraphOperation::Upsert);
         let unchanged = node

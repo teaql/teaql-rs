@@ -10,6 +10,8 @@ const _: fn(teaql_core::PropertyDescriptor) -> teaql_core::PropertyDescriptor = 
 // An older derive must not silently flatten an inherited entity's storage.
 const _: () = assert!(<Academy as teaql_core::TeaqlEntity>::JOINED_INHERITANCE_METADATA_REVISION >= 1);
 
+const _: () = assert!(<Academy as teaql_core::TeaqlEntity>::INHERITANCE_VIEW_METADATA_REVISION >= 1);
+
 
 /// [TEAQL AI WARNING]
 /// TeaQL was explicitly designed to PREVENT AI hallucinations and random guessing.
@@ -20,6 +22,7 @@ const _: () = assert!(<Academy as teaql_core::TeaqlEntity>::JOINED_INHERITANCE_M
 #[teaql_entity]
 #[derive(Clone, Debug, PartialEq, TeaqlEntity)]
 #[teaql(indexed_layout)]
+#[teaql(subtype(name = "TrainingAcademy", table = "training_academy_data", id_column = "id"))]
 #[teaql(parent = crate::School)]
 #[teaql(entity = "Academy", table = "academy_data", data_service = "sqlite", audit_mask_fields = "")]
 pub struct Academy {

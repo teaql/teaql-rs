@@ -85,6 +85,7 @@ pub enum GraphOperation {
     Create,
     Reference,
     Remove,
+    Recover,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -92,6 +93,7 @@ pub enum GraphMutationKind {
     Create,
     Update,
     Delete,
+    Recover,
     Reference,
 }
 
@@ -196,7 +198,9 @@ impl GraphMutationPlan {
         self.batches.clear();
         for item in &self.items {
             let update_fields = match item.kind {
-                GraphMutationKind::Update => item.update_fields.clone(),
+                GraphMutationKind::Update | GraphMutationKind::Recover => {
+                    item.update_fields.clone()
+                }
                 _ => Vec::new(),
             };
             if let Some(batch) = self.batches.last_mut()

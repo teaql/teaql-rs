@@ -264,6 +264,35 @@ impl RawAuditEvent {
         Ok(event)
     }
 
+    /// Recovery may carry reviewed scalar corrections without becoming a
+    /// second update or losing the original recovery audit kind.
+    pub fn recovered_with_changes(
+        entity: impl Into<String>,
+        id: Value,
+        expected_version: i64,
+        old_values: Option<Record>,
+        values: Record,
+    ) -> Result<Self, teaql_core::mutation_version::MutationVersionError> {
+        let mut event = Self::recovered_with_old_values(entity, id, expected_version, old_values)?;
+        if values.is_empty() {
+            return Ok(event);
+        }
+        event.updated_fields = values.keys().cloned().collect();
+        event.updated_fields.push("version".into());
+        event.values.extend(values.clone());
+        event
+            .new_values
+            .as_mut()
+            .expect("recovery snapshot")
+            .extend(values);
+        event.changes = Self::changes_for_fields(
+            event.old_values.as_ref(),
+            event.new_values.as_ref(),
+            &event.updated_fields,
+        );
+        Ok(event)
+    }
+
     /// A new table was created during schema bootstrap.
     pub fn schema_created(
         entity: impl Into<String>,
@@ -661,6 +690,33 @@ mod field_name_tests {
     use super::RawAuditEvent;
     use std::collections::BTreeMap;
     use teaql_core::Value;
+
+    #[test]
+    fn recovery_with_corrections_has_one_version_and_complete_audit_changes() {
+        let old = BTreeMap::from([
+            ("id".into(), Value::U64(1)),
+            ("version".into(), Value::I64(-6)),
+            ("name".into(), Value::from("Old")),
+        ]);
+        let event = RawAuditEvent::recovered_with_changes(
+            "School",
+            Value::U64(1),
+            -6,
+            Some(old),
+            BTreeMap::from([("name".into(), Value::from("Corrected"))]),
+        )
+        .unwrap();
+        assert_eq!(event.kind, super::RawAuditEventKind::Recovered);
+        assert_eq!(
+            event.new_values.as_ref().unwrap().get("version"),
+            Some(&Value::I64(7))
+        );
+        assert_eq!(
+            event.new_values.as_ref().unwrap().get("name"),
+            Some(&Value::from("Corrected"))
+        );
+        assert_eq!(event.changes.len(), 2);
+    }
 
     #[test]
     fn version_lifecycle_recovery_audit_is_fallible_before_event_emission() {

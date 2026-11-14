@@ -3,10 +3,10 @@ mod statistical;
 pub use statistical::{compile_statistical_plan, decode_statistical_rows};
 mod dialect;
 mod having;
-mod integer_operand;
 mod inheritance;
-pub use inheritance::{physical_entity_descriptors, validate_inherited_storage_columns};
+mod integer_operand;
 pub use bindings::SqlBindings;
+pub use inheritance::{physical_entity_descriptors, validate_inherited_storage_columns};
 #[cfg(test)]
 mod binding_tests;
 mod diagnostic_execution;

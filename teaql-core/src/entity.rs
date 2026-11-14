@@ -75,6 +75,10 @@ pub trait TeaqlEntity {
     #[doc(hidden)]
     const JOINED_INHERITANCE_METADATA_REVISION: u32 = 0;
 
+    /// The derive retains shallow direct-subtype metadata for typed views.
+    #[doc(hidden)]
+    const INHERITANCE_VIEW_METADATA_REVISION: u32 = 0;
+
     fn entity_descriptor() -> EntityDescriptor;
 
     /// Fixed metadata supplied by generation; hand-written adapters may remain unindexed.
@@ -84,6 +88,24 @@ pub trait TeaqlEntity {
 
     fn register_into(store: &mut impl EntityDescriptorStore) {
         store.register_descriptor(Self::entity_descriptor());
+    }
+}
+
+/// Shared, immutable presentation metadata. Generated views keep only one
+/// optional pointer, not a per-row dictionary or a copy of the subtype name.
+#[doc(hidden)]
+#[derive(Debug, PartialEq, Eq)]
+pub struct RuntimeSubtypeIdentity {
+    owner: &'static str,
+    name: &'static str,
+}
+
+impl RuntimeSubtypeIdentity {
+    pub const fn new(owner: &'static str, name: &'static str) -> Self {
+        Self { owner, name }
+    }
+    pub fn for_view(&self, owner: &str) -> Option<&'static str> {
+        (self.owner == owner).then_some(self.name)
     }
 }
 
@@ -111,6 +133,15 @@ impl std::fmt::Display for EntityError {
 impl std::error::Error for EntityError {}
 
 pub trait Entity: TeaqlEntity + Sized {
+    /// Read-only next-subtype identity. A parent query still returns its parent
+    /// Rust type; this hint never selects a checker, repository, or mutation key.
+    fn runtime_type(&self) -> &str {
+        match self.dynamic_property("_type_") {
+            Some(Value::Text(name)) => name,
+            _ => Self::ENTITY_NAME,
+        }
+    }
+
     /// Optional readonly schema: a known type does not make a missing property present.
     fn dynamic_property_type(&self, key: &str) -> Option<crate::DataType> {
         let state = self.loaded_state_snapshot()?;
@@ -270,6 +301,11 @@ pub trait Entity: TeaqlEntity + Sized {
 
     /// Returns true if this entity has been marked for deletion.
     fn is_marked_as_delete(&self) -> bool {
+        false
+    }
+
+    /// A pending recovery is persisted only through audited graph save.
+    fn is_marked_as_recover(&self) -> bool {
         false
     }
 

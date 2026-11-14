@@ -324,6 +324,34 @@ where
                         self.delete_scoped_internal(&cmd, trace_chain).await?;
                     }
                 }
+                GraphMutationKind::Recover => {
+                    for item in batch.items {
+                        let id = item.values.get("id").cloned().ok_or_else(|| {
+                            DataServiceError::Runtime(RuntimeError::Graph(
+                                "recover item missing identity".into(),
+                            ))
+                        })?;
+                        let version = item
+                            .values
+                            .get("version")
+                            .and_then(Value::try_i64)
+                            .ok_or_else(|| {
+                                DataServiceError::Runtime(RuntimeError::Graph(
+                                    "recover item missing original version".into(),
+                                ))
+                            })?;
+                        let mut cmd = teaql_core::RecoverCommand::new(&batch.entity, id, version);
+                        for field in &item.update_fields {
+                            if let Some(value) = item.values.get(field) {
+                                cmd.values.insert(field.clone(), value.clone());
+                            }
+                        }
+                        cmd.trace_chain = recover_trace_or_default(&item.scope_token);
+                        self.scoped_data_service_internal(batch.entity.clone())
+                            .recover_internal(&cmd)
+                            .await?;
+                    }
+                }
                 GraphMutationKind::Reference => {
                     // References are skipped in execution, they only validate during traversal
                 }
@@ -395,6 +423,7 @@ where
         let dirty_fields = entity.dirty_fields();
         let original_values = entity.original_values();
         let is_deleted = entity.is_marked_as_delete();
+        let is_recovered = entity.is_marked_as_recover();
         let comment = entity.get_comment();
         let mut node = self.graph_node_from_values(&descriptor.name, entity.into_values())?;
         node.dirty_fields = dirty_fields;
@@ -402,6 +431,9 @@ where
         if is_deleted {
             node.operation = GraphOperation::Remove;
             node.relations.clear();
+        }
+        if is_recovered {
+            node.operation = GraphOperation::Recover;
         }
         if let Some(c) = comment {
             node.set_comment(c);
@@ -442,6 +474,37 @@ where
                         scope,
                         node.original_values.clone(),
                     );
+                    return Ok(());
+                }
+                GraphOperation::Recover => {
+                    let fields = node
+                        .dirty_fields
+                        .clone()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|field| field != "id" && field != "version")
+                        .collect();
+                    let scope = node.trace_scope(parent_token, plan.next_item_index);
+                    plan.push(
+                        node.entity.clone(),
+                        GraphMutationKind::Recover,
+                        node.values.clone().into(),
+                        fields,
+                        scope.clone(),
+                        node.original_values.clone(),
+                    );
+                    for children in node.relations.values_mut() {
+                        for child in children {
+                            self.collect_graph_plan(
+                                child,
+                                plan,
+                                parent_scope,
+                                scope.clone(),
+                                false,
+                            )
+                            .await?;
+                        }
+                    }
                     return Ok(());
                 }
                 GraphOperation::Upsert | GraphOperation::Create => {}
@@ -604,7 +667,7 @@ where
                         )
                         .await;
                 }
-                GraphOperation::Remove => {
+                GraphOperation::Remove | GraphOperation::Recover => {
                     return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
                         "create graph cannot remove node {}",
                         node.entity
@@ -794,6 +857,44 @@ where
                     )
                     .await?;
                     self.delete_graph_node(&node, parent_scope).await?;
+                    return Ok(node);
+                }
+                GraphOperation::Recover => {
+                    let id = node.values.get("id").cloned().ok_or_else(|| {
+                        DataServiceError::Runtime(RuntimeError::Graph(
+                            "recover node missing identity".into(),
+                        ))
+                    })?;
+                    let version = node
+                        .values
+                        .get("version")
+                        .and_then(Value::try_i64)
+                        .ok_or_else(|| {
+                            DataServiceError::Runtime(RuntimeError::Graph(
+                                "recover node missing original version".into(),
+                            ))
+                        })?;
+                    let mut cmd = teaql_core::RecoverCommand::new(&node.entity, id, version);
+                    if let Some(fields) = &node.dirty_fields {
+                        for field in fields {
+                            if let Some(value) = node.values.get(field) {
+                                cmd.values.insert(field.clone(), value.clone());
+                            }
+                        }
+                    }
+                    cmd.trace_chain = active_scope
+                        .map(|scope| scope.to_trace_chain())
+                        .unwrap_or_default();
+                    self.scoped_data_service_internal(node.entity.clone())
+                        .recover_internal(&cmd)
+                        .await?;
+                    node.values.insert(
+                        "version".into(),
+                        Value::I64(
+                            crate::mutation_version::recovered(&node.entity, version)
+                                .map_err(DataServiceError::Runtime)?,
+                        ),
+                    );
                     return Ok(node);
                 }
             }
@@ -1183,6 +1284,12 @@ where
             if field == "_is_deleted" {
                 if matches!(value, Value::Bool(true)) {
                     node.operation = GraphOperation::Remove;
+                }
+                continue;
+            }
+            if field == "_is_recovered" {
+                if matches!(value, Value::Bool(true)) {
+                    node.operation = GraphOperation::Recover;
                 }
                 continue;
             }
@@ -1604,8 +1711,23 @@ where
             .unwrap_or_default();
 
         let deleted_keys = root.deleted_keys();
+        let recovered_keys = root.recovered_keys();
         let new_keys = root.new_keys();
         let change_set = root.current_change_set();
+        for key in &recovered_keys {
+            if new_keys.contains(key) || deleted_keys.contains(key) {
+                return Err(DataServiceError::Runtime(RuntimeError::Graph(
+                    "cannot recover a new entity or conflicting lifecycle intentions".into(),
+                )));
+            }
+            let version = root.get_original_version(key).ok_or_else(|| {
+                DataServiceError::Runtime(RuntimeError::Graph(
+                    "recovery requires a loaded original tombstone version".into(),
+                ))
+            })?;
+            crate::mutation_version::recovered(&key.entity, version)
+                .map_err(DataServiceError::Runtime)?;
+        }
 
         // Deletion of an existing versioned entity must carry the version
         // obtained by loading that entity. A newly created entity deleted
@@ -1672,7 +1794,7 @@ where
             std::collections::BTreeMap::new();
 
         for (key, record) in &checked_changes {
-            if deleted_keys.contains(key) {
+            if deleted_keys.contains(key) || recovered_keys.contains(key) {
                 continue;
             }
             let mut is_new = new_keys.contains(key);
@@ -1891,6 +2013,25 @@ where
 
         for cmd in prepared_insert_batches {
             self.execute_prepared_batch_insert(cmd).await?;
+        }
+
+        for key in &recovered_keys {
+            let version = root
+                .get_original_version(key)
+                .expect("recovery versions preflighted");
+            let mut cmd =
+                teaql_core::RecoverCommand::new(key.entity.as_ref(), key.id.clone(), version);
+            if let Some(values) = checked_changes.get(key) {
+                for (field, value) in values {
+                    if field != "id" && field != "version" {
+                        cmd.values.insert(field.clone(), value.clone());
+                    }
+                }
+            }
+            cmd.trace_chain = resolve_trace_chain(root.get_trace_chain(key), &trace_chain);
+            self.scoped_data_service_internal(key.entity.to_string())
+                .recover_internal(&cmd)
+                .await?;
         }
 
         let mut update_order: Vec<(String, String)> = update_batches.keys().cloned().collect();

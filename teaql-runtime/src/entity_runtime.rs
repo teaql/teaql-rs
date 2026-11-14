@@ -711,6 +711,7 @@ struct EntityMutationLedger {
     /// Entity keys that have been marked for deletion.
     /// When the entity is saved, the graph save pipeline will treat these as Remove operations.
     deleted_keys: std::collections::BTreeSet<EntityKey>,
+    recovered_keys: std::collections::BTreeSet<EntityKey>,
     /// Entity keys that have been marked as newly inserted.
     new_keys: std::collections::BTreeSet<EntityKey>,
     /// The original loaded snapshot, used to avoid redundant fetching during save.
@@ -742,6 +743,7 @@ pub struct EntityRuntimeState {
     loaded_snapshot: LoadedSnapshotCarrier,
     // View-owned payload; no allocation on the ordinary fixed-field path.
     dynamic_fields: Option<Box<teaql_core::dynamic_fields::DynamicFieldValues>>,
+    view_subtype: Option<&'static teaql_core::RuntimeSubtypeIdentity>,
 }
 
 /// A never-cloned readonly view needs no heap-allocated mutation binding.
@@ -911,6 +913,7 @@ impl Default for EntityRuntimeState {
             json_view: 0,
             loaded_snapshot: LoadedSnapshotCarrier::default(),
             dynamic_fields: None,
+            view_subtype: None,
         }
     }
 }
@@ -923,6 +926,7 @@ impl Clone for EntityRuntimeState {
             json_view: self.json_view,
             loaded_snapshot: self.loaded_snapshot.clone(),
             dynamic_fields: self.dynamic_fields.clone(),
+            view_subtype: self.view_subtype,
         }
     }
 }
@@ -939,7 +943,7 @@ enum OriginalSnapshot {
 
 impl PartialEq for EntityRuntimeState {
     fn eq(&self, other: &Self) -> bool {
-        if self.dynamic_fields != other.dynamic_fields {
+        if self.dynamic_fields != other.dynamic_fields || self.view_subtype != other.view_subtype {
             return false;
         }
         if self.inner.shares_slot(&other.inner) {
@@ -954,6 +958,20 @@ impl PartialEq for EntityRuntimeState {
 }
 
 impl EntityRuntimeState {
+    #[doc(hidden)]
+    pub fn set_loaded_runtime_type(
+        &mut self,
+        identity: &'static teaql_core::RuntimeSubtypeIdentity,
+    ) {
+        self.view_subtype = Some(identity);
+    }
+
+    #[doc(hidden)]
+    pub fn loaded_runtime_type(&self, view: &str) -> Option<&'static str> {
+        self.view_subtype
+            .and_then(|identity| identity.for_view(view))
+    }
+
     pub(crate) fn with_json_view(mut self, view_id: u64) -> Self {
         self.json_view = view_id;
         self
@@ -982,6 +1000,7 @@ impl EntityRuntimeState {
         self.json_view = source.json_view;
         self.loaded_snapshot = source.loaded_snapshot.clone();
         self.dynamic_fields = source.dynamic_fields.clone();
+        self.view_subtype = source.view_subtype;
         self
     }
     #[cfg(test)]
@@ -1027,6 +1046,7 @@ impl EntityRuntimeState {
             json_view: source.json_view,
             loaded_snapshot: LoadedSnapshotCarrier::default(),
             dynamic_fields: None,
+            view_subtype: None,
         }
     }
 
@@ -1039,6 +1059,7 @@ impl EntityRuntimeState {
             json_view: source.json_view,
             loaded_snapshot: LoadedSnapshotCarrier::default(),
             dynamic_fields: None,
+            view_subtype: None,
         }
     }
 
@@ -1051,6 +1072,7 @@ impl EntityRuntimeState {
             json_view: source.json_view,
             loaded_snapshot: self.loaded_snapshot.clone(),
             dynamic_fields: self.dynamic_fields.clone(),
+            view_subtype: self.view_subtype,
         }
     }
 
@@ -1184,6 +1206,7 @@ impl EntityRuntimeState {
                 }
             }
             target.deleted_keys.extend(snapshot.deleted_keys);
+            target.recovered_keys.extend(snapshot.recovered_keys);
             target.new_keys.extend(snapshot.new_keys);
             target
                 .original_versions
@@ -1484,6 +1507,7 @@ impl EntityRuntimeState {
             self.write_context(|context| {
                 context.change_sets = ChangeSetStack::default();
                 context.deleted_keys.clear();
+                context.recovered_keys.clear();
                 context.new_keys.clear();
                 context.original_versions.clear();
                 context.trace_chains.clear();
@@ -1727,6 +1751,7 @@ impl EntityRuntimeState {
     pub fn mark_as_delete(&self, key: EntityKey) {
         self.write_context(|context| {
             context.change_sets.clear_entity(&key);
+            context.recovered_keys.remove(&key);
             context.deleted_keys.insert(key);
         });
     }
@@ -1734,6 +1759,23 @@ impl EntityRuntimeState {
     /// Check whether an entity has been marked for deletion.
     pub fn is_marked_as_delete(&self, key: &EntityKey) -> bool {
         self.read_context(false, |context| context.deleted_keys.contains(key))
+    }
+
+    /// Recovery preserves pending field edits and uses the loaded tombstone
+    /// version. Marking is local intent, never an immediate database action.
+    pub fn mark_as_recover(&self, key: EntityKey) {
+        self.write_context(|context| {
+            context.deleted_keys.remove(&key);
+            context.recovered_keys.insert(key);
+        });
+    }
+
+    pub fn is_marked_as_recover(&self, key: &EntityKey) -> bool {
+        self.read_context(false, |context| context.recovered_keys.contains(key))
+    }
+
+    pub fn recovered_keys(&self) -> BTreeSet<EntityKey> {
+        self.read_context(BTreeSet::new(), |context| context.recovered_keys.clone())
     }
 
     /// Get the set of field names that have been modified for the given entity key.

@@ -7,6 +7,8 @@ use teaql_macros::{teaql_entity, TeaqlEntity};
 // Fail to compile against a runtime without modeled Integer-width support.
 const _: fn(teaql_core::PropertyDescriptor) -> teaql_core::PropertyDescriptor = teaql_core::PropertyDescriptor::int32;
 
+const _: () = assert!(<School as teaql_core::TeaqlEntity>::INHERITANCE_VIEW_METADATA_REVISION >= 1);
+
 
 /// [TEAQL AI WARNING]
 /// TeaQL was explicitly designed to PREVENT AI hallucinations and random guessing.
@@ -17,6 +19,8 @@ const _: fn(teaql_core::PropertyDescriptor) -> teaql_core::PropertyDescriptor = 
 #[teaql_entity]
 #[derive(Clone, Debug, PartialEq, TeaqlEntity)]
 #[teaql(indexed_layout)]
+#[teaql(subtype(name = "Academy", table = "academy_data", id_column = "id"))]
+#[teaql(subtype(name = "College", table = "college_data", id_column = "id"))]
 #[teaql(entity = "School", table = "school_data", data_service = "sqlite", audit_mask_fields = "")]
 pub struct School {
 #[teaql(id)]

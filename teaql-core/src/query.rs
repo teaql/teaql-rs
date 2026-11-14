@@ -14,6 +14,35 @@ mod hard_limit_tests {
     use super::*;
 
     #[test]
+    fn root_list_ceiling_must_not_invent_nested_pages() {
+        let mut query = SelectQuery::new("Parent")
+            .relation_query("children", SelectQuery::new("Child"))
+            .relation_query("recent", SelectQuery::new("Child").limit(3));
+        query.child_enhancements.push(SelectQuery::new("Subtype"));
+        let prepared = query.prepare_for_list().unwrap();
+        assert_eq!(prepared.slice.unwrap().limit, Some(10_000));
+        assert!(
+            prepared.relations[0]
+                .query
+                .as_ref()
+                .unwrap()
+                .slice
+                .is_none()
+        );
+        assert_eq!(
+            prepared.relations[1]
+                .query
+                .as_ref()
+                .unwrap()
+                .slice
+                .unwrap()
+                .limit,
+            Some(3)
+        );
+        assert!(prepared.child_enhancements[0].slice.is_none());
+    }
+
+    #[test]
     fn list_limit_defaults_rejects_and_allows_explicit_override() {
         assert_eq!(
             SelectQuery::new("Order")
@@ -24,15 +53,19 @@ mod hard_limit_tests {
                 .limit,
             Some(10_000)
         );
-        assert!(SelectQuery::new("Order")
-            .limit(10_001)
-            .prepare_for_list()
-            .is_err());
-        assert!(SelectQuery::new("Order")
-            .limit(10_001)
-            .hard_limit(20_000)
-            .prepare_for_list()
-            .is_ok());
+        assert!(
+            SelectQuery::new("Order")
+                .limit(10_001)
+                .prepare_for_list()
+                .is_err()
+        );
+        assert!(
+            SelectQuery::new("Order")
+                .limit(10_001)
+                .hard_limit(20_000)
+                .prepare_for_list()
+                .is_ok()
+        );
     }
 
     #[test]
@@ -73,9 +106,11 @@ mod hard_limit_tests {
 
     #[test]
     fn topn_001_002_003_probe_threshold_is_explicit_and_bounded() {
-        assert!(SelectQuery::new("Trip")
-            .top_n_probe_parent_threshold
-            .is_none());
+        assert!(
+            SelectQuery::new("Trip")
+                .top_n_probe_parent_threshold
+                .is_none()
+        );
         assert_eq!(
             SelectQuery::new("Trip")
                 .top_n_probe_parent_threshold(32)
@@ -178,9 +213,11 @@ mod aggregate_expression_tests {
         assert!(NamedExpr::new("measure", Expr::identity(Expr::count_all())).is_aggregate());
         let parent = SelectQuery::new("Parent")
             .aggregate_expression(NamedExpr::new("owners", Expr::count_all()));
-        assert!(SelectQuery::new("Child")
-            .object_group_by("parent", "parent_id", parent)
-            .has_layered_statistics());
+        assert!(
+            SelectQuery::new("Child")
+                .object_group_by("parent", "parent_id", parent)
+                .has_layered_statistics()
+        );
     }
 }
 
@@ -981,14 +1018,14 @@ impl SelectQuery {
         self
     }
 
-    /// Apply and validate list-materialization limits. This is intentionally not
-    /// used by streaming execution.
+    /// Bound this materialized result, never its contributing nested populations.
+    /// An explicit nested Top-N remains part of that query's business semantics.
     pub fn prepare_for_list(mut self) -> Result<Self, String> {
-        self.apply_list_limit(self.hard_limit, true)?;
+        self.apply_list_limit(self.hard_limit)?;
         Ok(self)
     }
 
-    fn apply_list_limit(&mut self, ceiling: u64, outer: bool) -> Result<(), String> {
+    fn apply_list_limit(&mut self, ceiling: u64) -> Result<(), String> {
         let slice = self.slice.get_or_insert(Slice {
             limit: None,
             offset: 0,
@@ -1002,15 +1039,6 @@ impl SelectQuery {
             None => slice.limit = Some(ceiling),
             _ => {}
         }
-        for relation in &mut self.relations {
-            if let Some(query) = relation.query.as_mut() {
-                query.apply_list_limit(10_000, false)?;
-            }
-        }
-        for query in &mut self.child_enhancements {
-            query.apply_list_limit(10_000, false)?;
-        }
-        let _ = outer;
         Ok(())
     }
 

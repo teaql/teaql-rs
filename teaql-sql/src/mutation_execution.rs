@@ -113,7 +113,10 @@ where
         MutationCommand::Batch(_) => None,
     };
     if !matches!(request.command, MutationCommand::Batch(_))
-        && !single_entity.and_then(lookup).is_some_and(|entity| entity.joined_parent.is_some()) {
+        && !single_entity
+            .and_then(lookup)
+            .is_some_and(|entity| entity.joined_parent.is_some())
+    {
         return redactions;
     }
     let mut pending = vec![request];
@@ -143,7 +146,11 @@ where
                 redactions.capture_target_id(&command.id);
             }
             MutationCommand::Delete(command) => redactions.capture_target_id(&command.id),
-            MutationCommand::Recover(command) => redactions.capture_target_id(&command.id),
+            MutationCommand::Recover(command) => {
+                let entity = lookup(&command.entity);
+                capture_values(&mut redactions, entity.as_deref(), command.values.iter());
+                redactions.capture_target_id(&command.id);
+            }
         }
     }
     redactions
@@ -435,7 +442,10 @@ where
         }
         return execute_inherited(dialect, transport, cache, request, &entity, scope).await;
     }
-    execute_one(dialect, transport, cache, request, &entity, &entity, readback, scope).await
+    execute_one(
+        dialect, transport, cache, request, &entity, &entity, readback, scope,
+    )
+    .await
 }
 
 async fn execute_inherited<D: SqlDialect + Sync, T: SqlTransport>(
@@ -461,6 +471,20 @@ async fn execute_inherited<D: SqlDialect + Sync, T: SqlTransport>(
         ));
     }
     let mut physical = Vec::new();
+    if let MutationCommand::Recover(command) = &request.command {
+        for field in command.values.keys() {
+            let property = entity.property_by_name(field).ok_or_else(|| {
+                SqlExecutorError::Compile(SqlCompileError::UnknownField(field.clone()))
+            })?;
+            if property.is_id || property.is_version {
+                return Err(SqlExecutorError::Compile(
+                    SqlCompileError::InvalidFunctionArguments(
+                        "recovery cannot change identity or supply its successor version".into(),
+                    ),
+                ));
+            }
+        }
+    }
     for (index, descriptor) in chain.iter().enumerate() {
         let mut storage = descriptor.storage_descriptor();
         // Table ownership must not relax the logical subtype's disclosure
@@ -472,28 +496,53 @@ async fn execute_inherited<D: SqlDialect + Sync, T: SqlTransport>(
             use teaql_data_service::SqlParameterLogPolicy as Policy;
             match SqlIntentRedactions::field_policy(entity, &property.name) {
                 Policy::Unknown => storage.audit_mask_fields_declared = false,
-                Policy::Masked | Policy::Credential => storage.audit_mask_fields.push(property.name.clone()),
-                Policy::Plain => {},
+                Policy::Masked | Policy::Credential => {
+                    storage.audit_mask_fields.push(property.name.clone())
+                }
+                Policy::Plain => {}
             }
         }
         let mut part = request.clone();
         match &mut part.command {
             MutationCommand::Insert(command) => {
-                command.values.retain(|field, _| storage.property_by_name(field).is_some());
+                command
+                    .values
+                    .retain(|field, _| storage.property_by_name(field).is_some());
             }
             MutationCommand::Update(command) => {
-                command.values.retain(|field, _| storage.property_by_name(field).is_some());
+                command
+                    .values
+                    .retain(|field, _| storage.property_by_name(field).is_some());
                 if index != 0 {
                     command.expected_version = None;
-                    if command.values.is_empty() { continue; }
+                    if command.values.is_empty() {
+                        continue;
+                    }
                 }
             }
             MutationCommand::Delete(command) => {
-                if command.soft_delete && index != 0 { continue; }
-                if index != 0 { command.expected_version = None; }
+                if command.soft_delete && index != 0 {
+                    continue;
+                }
+                if index != 0 {
+                    command.expected_version = None;
+                }
             }
-            MutationCommand::Recover(_) if index != 0 => continue,
-            MutationCommand::Recover(_) => {},
+            MutationCommand::Recover(command) => {
+                command
+                    .values
+                    .retain(|field, _| storage.property_by_name(field).is_some());
+                if index != 0 {
+                    if command.values.is_empty() {
+                        continue;
+                    }
+                    let mut update =
+                        teaql_core::UpdateCommand::new(&command.entity, command.id.clone());
+                    update.values = command.values.clone();
+                    update.trace_chain = command.trace_chain.clone();
+                    part.command = MutationCommand::Update(update);
+                }
+            }
             MutationCommand::Batch(_) => unreachable!("batch expanded before inheritance"),
         }
         physical.push((storage, part));
@@ -506,8 +555,20 @@ async fn execute_inherited<D: SqlDialect + Sync, T: SqlTransport>(
     let count = physical.len();
     for (index, (storage, part)) in physical.into_iter().enumerate() {
         let mut statement_scope = scope.clone();
-        if index != 0 { statement_scope.write_guard = None; }
-        let result = execute_one(dialect, transport, cache, part, &storage, entity, index + 1 == count, statement_scope).await?;
+        if index != 0 {
+            statement_scope.write_guard = None;
+        }
+        let result = execute_one(
+            dialect,
+            transport,
+            cache,
+            part,
+            &storage,
+            entity,
+            index + 1 == count,
+            statement_scope,
+        )
+        .await?;
         if index == 0 && scope.write_guard.is_some() && result.affected_rows == 0 {
             // The atomic guard rejected the first write, so no descendant or
             // ancestor has been modified. Preserve ordinary guard semantics.
@@ -526,6 +587,9 @@ async fn execute_inherited<D: SqlDialect + Sync, T: SqlTransport>(
     result.affected_rows = 1;
     result.metadata.affected_rows = Some(1);
     result.metadata.statements = statements;
+    if matches!(&request.command, MutationCommand::Recover(_)) {
+        result.metadata.operation = DataServiceOperation::Recover;
+    }
     Ok(result)
 }
 
@@ -609,8 +673,9 @@ async fn execute_one<D: SqlDialect + Sync, T: SqlTransport>(
                 None => target,
             };
             let query = SelectQuery::new(entity_name.clone()).filter(target);
-            let compiled_readback = compile_select_with_cache(dialect, cache, readback_entity, &query)
-                .map_err(SqlExecutorError::Compile)?;
+            let compiled_readback =
+                compile_select_with_cache(dialect, cache, readback_entity, &query)
+                    .map_err(SqlExecutorError::Compile)?;
             let mut rows = observed
                 .fetch_all_compact_sql(&compiled_readback)
                 .await
@@ -659,28 +724,40 @@ pub(super) async fn guarded<D: SqlDialect + Sync, T: SqlTransport>(
             teaql_data_service::MutationCommand::Delete(command) => command.expected_version,
             teaql_data_service::MutationCommand::Recover(command) => Some(command.expected_version),
             _ => unreachable!("guarded mutation kind validated"),
-        }.ok_or_else(|| SqlExecutorError::PersistedRecord(
-            "joined inheritance mutations require an optimistic version".into(),
-        ))?;
+        }
+        .ok_or_else(|| {
+            SqlExecutorError::PersistedRecord(
+                "joined inheritance mutations require an optimistic version".into(),
+            )
+        })?;
         // Authorization is part of the FIRST physical mutation, not a separate
         // read-before-write check. Hard deletes run leaf-first; their final root
         // version check detects any concurrent parent change and forces rollback.
-        let guarded_population = SelectQuery::new(&entity.name).project(&id.name)
-            .filter(Expr::and([request.guard.clone(), Expr::eq(&version.name, expected)]));
+        let guarded_population =
+            SelectQuery::new(&entity.name)
+                .project(&id.name)
+                .filter(Expr::and([
+                    request.guard.clone(),
+                    Expr::eq(&version.name, expected),
+                ]));
         let write_guard = Expr::in_subquery(&id.name, entity.clone(), guarded_population, &id.name);
         let mut journal = FailureJournal::new(observer);
         let scope = MutationExecutionScope {
             root_intent: request.mutation.intent().clone(),
             batch: None,
-            redactions: Some(Arc::new(batch_intent_redactions(&request.mutation, &|name| {
-                (name == entity.name).then(|| Arc::new(entity.clone()))
-            }))),
+            redactions: Some(Arc::new(batch_intent_redactions(
+                &request.mutation,
+                &|name| (name == entity.name).then(|| Arc::new(entity.clone())),
+            ))),
             observer: journal.recorder(),
             write_guard: Some(Arc::new(write_guard)),
             readback_guard: Some(Arc::new(request.guard)),
         };
-        let result = execute_inherited(dialect, transport, cache, request.mutation, entity, scope).await;
-        if result.is_ok() { journal.disarm(); }
+        let result =
+            execute_inherited(dialect, transport, cache, request.mutation, entity, scope).await;
+        if result.is_ok() {
+            journal.disarm();
+        }
         return result;
     }
     let operation = match &request.mutation.command {

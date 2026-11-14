@@ -114,12 +114,20 @@ impl SqlIntentRedactions {
     ) -> SqlParameterLogPolicy {
         use SqlParameterLogPolicy as Policy;
         fn local(entity: &teaql_core::EntityDescriptor, field: &str) -> Policy {
-            let Some(property) = entity.property_by_name(field) else { return Policy::Unknown };
-            if is_credential_log_name(&property.name) || is_credential_log_name(&property.column_name) {
+            let Some(property) = entity.property_by_name(field) else {
+                return Policy::Unknown;
+            };
+            if is_credential_log_name(&property.name)
+                || is_credential_log_name(&property.column_name)
+            {
                 Policy::Credential
             } else if !entity.audit_mask_fields_declared {
                 Policy::Unknown
-            } else if entity.audit_mask_fields.iter().any(|name| name == &property.name) {
+            } else if entity
+                .audit_mask_fields
+                .iter()
+                .any(|name| name == &property.name)
+            {
                 Policy::Masked
             } else {
                 Policy::Plain
@@ -129,8 +137,16 @@ impl SqlIntentRedactions {
         let mut parent = entity.joined_parent.as_deref();
         let mut depth = 0;
         while let Some(entity) = parent {
-            if entity.property_by_name(field).is_none() { break; }
-            if depth == 64 { return if policy == Policy::Credential { policy } else { Policy::Unknown }; }
+            if entity.property_by_name(field).is_none() {
+                break;
+            }
+            if depth == 64 {
+                return if policy == Policy::Credential {
+                    policy
+                } else {
+                    Policy::Unknown
+                };
+            }
             policy = match (policy, local(entity, field)) {
                 (Policy::Credential, _) | (_, Policy::Credential) => Policy::Credential,
                 (Policy::Unknown, _) | (_, Policy::Unknown) => Policy::Unknown,

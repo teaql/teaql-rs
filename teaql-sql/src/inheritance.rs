@@ -61,6 +61,71 @@ fn invalid(message: &str) -> SqlCompileError {
     SqlCompileError::InvalidFunctionArguments(format!("joined inheritance: {message}"))
 }
 
+/// A readonly next-subtype hint derived from joined storage, not a discriminator
+/// which can select application code. No extra query or schema migration is needed.
+pub(crate) fn runtime_type_projection<D: SqlDialect + ?Sized>(
+    dialect: &D,
+    entity: &EntityDescriptor,
+) -> Result<Option<String>, SqlCompileError> {
+    if entity.inheritance_children.is_empty() {
+        return Ok(None);
+    }
+    let id = entity
+        .id_property()
+        .ok_or_else(|| invalid("subtype view requires identity"))?;
+    let q = |name: &str| dialect.quote_ident(name);
+    let text = |name: &str| format!("'{}'", name.replace('\'', "''"));
+    let outer = if entity.joined_parent.is_some() {
+        "__teaql_inherited"
+    } else {
+        &entity.table_name
+    };
+    let mut names = std::collections::HashSet::new();
+    let mut tables = std::collections::HashSet::new();
+    let mut predicates = Vec::new();
+    for child in &entity.inheritance_children {
+        if child.name.is_empty()
+            || child.table_name.is_empty()
+            || child.id_column.is_empty()
+            || child.name == entity.name
+            || child.table_name == entity.table_name
+            || !names.insert(&child.name)
+            || !tables.insert(&child.table_name)
+        {
+            return Err(invalid("invalid or repeated direct-subtype storage hint"));
+        }
+        predicates.push(format!(
+            "EXISTS (SELECT 1 FROM {} AS {} WHERE {}.{} = {}.{})",
+            q(&child.table_name),
+            q("__teaql_subtype"),
+            q("__teaql_subtype"),
+            q(&child.id_column),
+            q(outer),
+            q(&id.column_name)
+        ));
+    }
+    let mut branch = String::from("CASE ");
+    if predicates.len() > 1 {
+        let count = predicates
+            .iter()
+            .map(|predicate| format!("CASE WHEN {predicate} THEN 1 ELSE 0 END"))
+            .collect::<Vec<_>>()
+            .join(" + ");
+        branch.push_str(&format!(
+            "WHEN ({count}) > 1 THEN '__teaql_ambiguous_subtype__' "
+        ));
+    }
+    for (child, predicate) in entity.inheritance_children.iter().zip(predicates) {
+        branch.push_str(&format!("WHEN {predicate} THEN {} ", text(&child.name)));
+    }
+    branch.push_str(&format!(
+        "ELSE {} END AS {}",
+        text(&entity.name),
+        dialect.quote_result_alias("_type_")
+    ));
+    Ok(Some(branch))
+}
+
 /// Existing flattened child tables need an explicit migration. Merely adding
 /// ancestor tables would leave old rows invisible and duplicated values stale.
 pub fn validate_inherited_storage_columns<'a>(
@@ -199,6 +264,20 @@ mod tests {
         assert!(sql.contains("\"__teaql_inherit_1\".\"campus\" AS \"campus\""));
         assert!(sql.contains("\"__teaql_inherit_2\".\"specialty\" AS \"specialty\""));
         assert_eq!(sql.matches(" JOIN ").count(), 2);
+    }
+
+    #[test]
+    fn subtype_hints_bind_legacy_identifiers_and_remain_single_statement_metadata() {
+        let parent = root()
+            .inheritance_child("Academy", "Legacy Academy", "Legacy ID")
+            .inheritance_child("College", "Legacy College", "id");
+        let sql = runtime_type_projection(&Dialect, &parent).unwrap().unwrap();
+        assert!(sql.contains("\"__teaql_subtype\".\"Legacy ID\" = \"school_data\".\"id\""));
+        assert!(sql.contains("'Academy'"));
+        assert!(sql.contains("__teaql_ambiguous_subtype__"));
+        assert!(sql.ends_with("AS \"_type_\""));
+        let repeated = parent.inheritance_child("Academy", "another_table", "id");
+        assert!(runtime_type_projection(&Dialect, &repeated).is_err());
     }
     #[test]
     fn invalid_inheritance_never_reaches_sql_execution() {

@@ -20,6 +20,7 @@ type Executor = SqlDataServiceExecutor<PostgresDialect, PgMutationExecutor, InMe
 
 fn metadata() -> InMemoryMetadataStore {
     let root = EntityDescriptor::new("School")
+        .inheritance_child("Academy", "academy_data", "id")
         .property(P::new("id", DataType::I64).id().not_null())
         .property(P::new("version", DataType::I64).version().not_null())
         .property(
@@ -29,6 +30,7 @@ fn metadata() -> InMemoryMetadataStore {
         )
         .audit_mask_fields(vec![]);
     let middle = EntityDescriptor::new("Academy")
+        .inheritance_child("TrainingAcademy", "training_academy_data", "id")
         .inherits(root.clone())
         .property(P::new("campus", DataType::Text).not_null())
         .audit_mask_fields(vec!["campus".into()]);
@@ -176,6 +178,14 @@ async fn guards_versions_and_same_id_unrelated_records() {
                 1
             );
             assert_eq!(
+                executor.query(query("School", id)).await.unwrap().rows[0].get("_type_"),
+                Some(&Value::from("Academy"))
+            );
+            assert_eq!(
+                executor.query(query("Academy", id)).await.unwrap().rows[0].get("_type_"),
+                Some(&Value::from("TrainingAcademy"))
+            );
+            assert_eq!(
                 executor.query(query("Unrelated", id)).await.unwrap().rows[0].get("version"),
                 Some(&Value::I64(99))
             );
@@ -187,13 +197,15 @@ async fn guards_versions_and_same_id_unrelated_records() {
                         .value("specialty", "engineering"),
                 ))
             };
-            assert!(executor
-                .mutate_guarded(GuardedMutationRequest::new(
-                    update(),
-                    Expr::eq("campus", "NORTH")
-                ))
-                .await
-                .is_err());
+            assert!(
+                executor
+                    .mutate_guarded(GuardedMutationRequest::new(
+                        update(),
+                        Expr::eq("campus", "NORTH")
+                    ))
+                    .await
+                    .is_err()
+            );
             let tx = executor.begin().await.unwrap();
             assert_eq!(
                 tx.mutate_guarded(GuardedMutationRequest::new(
@@ -219,8 +231,8 @@ async fn guards_versions_and_same_id_unrelated_records() {
             );
             tx.commit().await.unwrap();
             let tx = executor.begin().await.unwrap();
-            assert!(tx
-                .mutate_guarded(GuardedMutationRequest::new(
+            assert!(
+                tx.mutate_guarded(GuardedMutationRequest::new(
                     mutation(MutationCommand::Update(
                         UpdateCommand::new("TrainingAcademy", id)
                             .expected_version(2)
@@ -229,7 +241,8 @@ async fn guards_versions_and_same_id_unrelated_records() {
                     Expr::eq("campus", "NORTH")
                 ))
                 .await
-                .is_err());
+                .is_err()
+            );
             tx.rollback().await.unwrap();
             let tx = executor.begin().await.unwrap();
             tx.mutate_guarded(GuardedMutationRequest::new(
@@ -280,12 +293,14 @@ async fn guards_versions_and_same_id_unrelated_records() {
             .unwrap();
             tx.commit().await.unwrap();
             for entity in ["School", "Academy", "TrainingAcademy"] {
-                assert!(executor
-                    .query(query(entity, id))
-                    .await
-                    .unwrap()
-                    .rows
-                    .is_empty());
+                assert!(
+                    executor
+                        .query(query(entity, id))
+                        .await
+                        .unwrap()
+                        .rows
+                        .is_empty()
+                );
             }
             assert_eq!(
                 executor.query(query("Unrelated", id)).await.unwrap().rows[0].get("version"),

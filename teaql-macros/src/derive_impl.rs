@@ -13,6 +13,13 @@ use crate::types::{
 pub fn expand_teaql_entity_attribute(mut input: ItemStruct) -> proc_macro2::TokenStream {
     let struct_name = input.ident.clone();
     let attrs = parse_container_attrs(&input.attrs, &struct_name.to_string());
+    if !attrs.parse_errors.is_empty() {
+        let errors = attrs
+            .parse_errors
+            .into_iter()
+            .map(|error| error.to_compile_error());
+        return quote! { #(#errors)* };
+    }
     let entity_name = attrs.entity_name;
     let Fields::Named(fields) = &mut input.fields else {
         return syn::Error::new(
@@ -78,6 +85,11 @@ pub fn expand_teaql_entity_attribute(mut input: ItemStruct) -> proc_macro2::Toke
                 self
             }
 
+            pub fn mark_to_recover(&mut self) -> &mut Self {
+                self.__teaql_runtime_state.mark_as_recover(self.entity_key());
+                self
+            }
+
             pub fn set_comment(&mut self, comment: impl Into<String>) -> &mut Self {
                 self.__teaql_runtime_state.set_entity_comment(self.entity_key(), comment);
                 self
@@ -94,6 +106,16 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     let data_service = attrs.data_service;
     let indexed_layout = attrs.indexed_layout;
     let joined_inheritance_revision = u32::from(attrs.joined_parent.is_some());
+    let inheritance_view_tokens = attrs.inheritance_children.iter().map(|(name, table, id)| {
+        quote! {
+            descriptor = descriptor.inheritance_child(#name, #table, #id);
+        }
+    });
+    let subtype_names: Vec<_> = attrs
+        .inheritance_children
+        .iter()
+        .map(|(name, _, _)| name)
+        .collect();
     let joined_parent_token = attrs.joined_parent.map(|parent| quote! {
         descriptor = descriptor.inherits(<#parent as ::teaql_core::TeaqlEntity>::entity_descriptor());
     });
@@ -203,6 +225,13 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
     let mut id_field_ident: Option<syn::Ident> = None;
     let mut unknown_record_field_arm = quote! { _ => {} };
     let mut has_dynamic_properties = false;
+    let runtime_view_carrier = named_fields.iter().any(|field| {
+        parse_field_attrs(&field.attrs).skip
+            && field
+                .ident
+                .as_ref()
+                .is_some_and(|name| name == "__teaql_runtime_state" || name == "root")
+    });
     let mut dynamic_property_impl = quote! {};
 
     for field in named_fields.iter().cloned() {
@@ -248,7 +277,9 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             });
             unknown_record_field_arm = quote! {
                 _ => {
-                    __teaql_dynamic_values.insert(key.clone(), value.clone());
+                    if !#runtime_view_carrier || key != "_type_" {
+                        __teaql_dynamic_values.insert(key.clone(), value.clone());
+                    }
                 }
             };
             from_record_fields.push(quote! {
@@ -256,10 +287,12 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             });
             into_record_fields.push(quote! {
                 for (key, value) in self.#field_ident {
-                    record.insert(key, value);
+                    if key != "_type_" { record.insert(key, value); }
                 }
             });
-            into_json_fields.push(into_record_fields.last().unwrap().clone());
+            into_json_fields.push(quote! {
+                for (key, value) in self.#field_ident { record.insert(key, value); }
+            });
             continue;
         }
 
@@ -655,6 +688,9 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                     if traversal.failure().is_some() { return None; }
                     let mut record = ::std::collections::BTreeMap::new();
                     #(#values)*
+                    if expand && let Some(name) = self.#state_ident.loaded_runtime_type(#entity_name) {
+                        record.insert("_type_".into(), ::teaql_core::Value::from(name));
+                    }
                     if expand { #(#relations)* }
                     for key in ["_comment", "_dirty_fields", "_original_values", "_is_new", "_is_deleted"] { record.remove(key); }
                     if expand && let Some(fields) = ::teaql_core::Entity::dynamic_field_values(self) {
@@ -712,6 +748,11 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                         self.#state_ident.is_marked_as_delete(&key)
                     }
 
+                    fn is_marked_as_recover(&self) -> bool {
+                        let key = teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
+                        self.#state_ident.is_marked_as_recover(&key)
+                    }
+
                     fn is_new(&self) -> bool {
                         let key = teaql_runtime::EntityKey::new(#entity_name, self.#id_ident);
                         self.#state_ident.is_new(&key)
@@ -759,6 +800,10 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
 
                 fn original_values(&self) -> Option<::teaql_core::EntitySnapshot> {
                     self.#state_ident.original_snapshot()
+                }
+
+                fn runtime_type(&self) -> &str {
+                    self.#state_ident.loaded_runtime_type(#entity_name).unwrap_or(#entity_name)
                 }
             }
         }
@@ -956,7 +1001,32 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
         unknown_record_field_arm
     };
 
+    let install_subtype = runtime_state_field_ident.as_ref().map(|state| quote! {
+        if let Some(identity) = __teaql_view_subtype { entity.#state.set_loaded_runtime_type(identity); }
+    });
+    let subtype_json = runtime_state_field_ident.as_ref().map(|state| {
+        quote! {
+            if let Some(name) = self.#state.loaded_runtime_type(#entity_name) {
+                record.insert("_type_".into(), ::teaql_core::Value::from(name));
+            }
+        }
+    });
     let from_compact_body = quote! {
+            let __teaql_view_subtype: Option<&'static ::teaql_core::RuntimeSubtypeIdentity> = match record.get("_type_") {
+                None | Some(::teaql_core::Value::Null) => None,
+                Some(::teaql_core::Value::Text(name)) => match name.as_str() {
+                    #entity_name => Some({
+                        static IDENTITY: ::teaql_core::RuntimeSubtypeIdentity = ::teaql_core::RuntimeSubtypeIdentity::new(#entity_name, #entity_name);
+                        &IDENTITY
+                    }),
+                    #(#subtype_names => Some({
+                        static IDENTITY: ::teaql_core::RuntimeSubtypeIdentity = ::teaql_core::RuntimeSubtypeIdentity::new(#entity_name, #subtype_names);
+                        &IDENTITY
+                    }),)*
+                    _ => return Err(::teaql_core::EntityError::new(#entity_name, "invalid or ambiguous subtype metadata for typed view")),
+                },
+                _ => return Err(::teaql_core::EntityError::new(#entity_name, "invalid or ambiguous subtype metadata for typed view")),
+            };
             record.validate_dynamic_properties()
                 .map_err(|message| ::teaql_core::EntityError::new(#entity_name, message))?;
             #(#record_value_slots)*
@@ -970,6 +1040,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             let mut entity = Self {
                 #(#from_record_fields),*
             };
+            #install_subtype
             #set_load_state_impl
             #(#alias_state_tokens)*
             #set_original_compact_impl
@@ -1002,6 +1073,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
             const ENTITY_NAME: &'static str = #entity_name;
             const CONTEXT_ROOT_METADATA_REVISION: u32 = #context_root_metadata_revision;
             const JOINED_INHERITANCE_METADATA_REVISION: u32 = #joined_inheritance_revision;
+            const INHERITANCE_VIEW_METADATA_REVISION: u32 = 1;
 
             #field_layout_impl
 
@@ -1018,6 +1090,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 #(#relation_tokens)*
                 #(#container_relation_tokens)*
                 #joined_parent_token
+                #(#inheritance_view_tokens)*
                 descriptor
             }
         }
@@ -1030,6 +1103,7 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
 
             fn into_json_values(self) -> ::std::collections::BTreeMap<String, ::teaql_core::Value> {
                 let mut record = ::std::collections::BTreeMap::new();
+                #subtype_json
                 #(#into_json_fields)*
                 record
             }
@@ -1052,6 +1126,9 @@ pub fn expand_teaql_entity(input: DeriveInput) -> proc_macro2::TokenStream {
                 }
                 if self.is_marked_as_delete() {
                     record.insert("_is_deleted".to_owned(), ::teaql_core::Value::Bool(true));
+                }
+                if self.is_marked_as_recover() {
+                    record.insert("_is_recovered".to_owned(), ::teaql_core::Value::Bool(true));
                 }
                 #(#into_record_fields)*
                 record.into()

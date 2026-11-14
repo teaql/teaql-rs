@@ -30,6 +30,7 @@ pub(super) fn validate(
                     .flat_map(|fields| fields.keys().cloned()),
             )
             .chain(root.deleted_keys())
+            .chain(root.recovered_keys())
             .chain(root.new_keys())
             .collect();
         let mut locations = ledger_object_locations(node);

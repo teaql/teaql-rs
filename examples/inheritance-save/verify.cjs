@@ -30,8 +30,10 @@ async function main() {
     const env = {...process.env,CARGO_TARGET_DIR:target,CARGO_INCREMENTAL:'0',CARGO_BUILD_JOBS:'4',
       CARGO_PROFILE_DEV_DEBUG:'0',CARGO_PROFILE_TEST_DEBUG:'0',TEAQL_TELEMETRY_ENABLED:'false',
       INHERITANCE_MATCHING_SERVICE_CORE_DATABASE_URL:path.join(output,'inheritance.sqlite')};
+    env.TEAQL_INHERITANCE_ROLLBACK_TEST='true';
     receipt.sourceCommit = cp.execFileSync('git',['rev-parse','HEAD'],{cwd:repo,encoding:'utf8'}).trim();
     const sourceNames = ['Cargo.toml','Cargo.lock','examples/fix-e-alignment/owned-command.cjs'];
+    sourceNames.push('teaql-tfp-endpoint/Cargo.toml','teaql-tfp-endpoint/src/models.rs');
     const crates = ['core','macros','data-service','sql','runtime','provider-sqlite','provider-postgres'];
     for (const name of crates) {
       sourceNames.push('teaql-'+name+'/Cargo.toml');
@@ -70,23 +72,35 @@ async function main() {
     }
     const library = metadata.packages.find(pkg=>pkg.name==='inheritance-matching-service-core');
     assert(library && library.source===null);assert.equal(fs.realpathSync(library.manifest_path),path.join(__dirname,'lib/Cargo.toml'));
+    await run([cargo,'build','--offline','--locked','--manifest-path',manifest],'build.log');
+    // The recovery command gained reviewed scalar values. Verify the existing
+    // endpoint adapter still compiles; this gate adds no federation behavior.
+    await run([cargo,'check','--offline','--locked','-p','teaql-tfp-endpoint','--all-targets'],'adapter-compile.log');
+    const binary=path.join(target,'debug/inheritance-save-example');
+    await run([binary,'--schema-only'],'schema.log');
+    const trigger="import sqlite3,sys,pathlib; c=sqlite3.connect(pathlib.Path(sys.argv[1]).resolve().as_uri()+'?mode=rw',uri=True); c.execute(\"CREATE TRIGGER owned_reject_late_school BEFORE UPDATE ON school_data WHEN NEW.name='ROLLBACK_REJECT' BEGIN SELECT CASE WHEN (SELECT name FROM platform_data WHERE id=1)=('Graph root '||NEW.id) THEN RAISE(ABORT,'owned late school fault') ELSE RAISE(ABORT,'owned fault before earlier root write') END; END;\"); c.commit(); c.close(); print('OWNED_REJECT_ONLY_TRIGGER_INSTALLED')";
+    await run(['python3','-B','-c',trigger,env.INHERITANCE_MATCHING_SERVICE_CORE_DATABASE_URL],'fault-fixture.log');
     for(const round of [1,2]) {
       const log = await run([cargo,'test','--offline','--locked','--manifest-path',manifest,'--all-targets'],'tests-'+round+'.log');
       assert(log.includes('test generated_lifecycle_twice_with_one_root_version_and_no_manual_parent_seed ... ok'));
+      assert(log.includes('test pending_recovery_survives_an_unloaded_list_without_a_dummy_scalar_edit ... ok'));
     }
-    await run([cargo,'build','--offline','--locked','--manifest-path',manifest],'build.log');
     for(const round of [1,2]) {
       const log = await run([path.join(target,'debug/inheritance-save-example')],'round-'+round+'.log');
       const lines = log.split('\n').filter(line=>line.startsWith('NATURAL_INHERITANCE_LIFECYCLE='));assert.equal(lines.length,1);
       const proof = JSON.parse(lines[0].slice('NATURAL_INHERITANCE_LIFECYCLE='.length));
-      for(const key of ['passed','generatedQAndE','auditedMutation','partialWriteRejected','staleWriteRejected','parentAndChildHidden','retainedDeletedRow']) assert.equal(proof[key],true,key);
-      assert.equal(proof.manualParentSeed,false);assert.equal(proof.caseCount,8);assert.equal(proof.noopVersion,1);assert.deepEqual(proof.versions,[1,2,3,-4]);
+      for(const key of ['passed','generatedQAndE','auditedMutation','partialWriteRejected','staleWriteRejected','parentAndChildHidden','retainedDeletedRow','genericSavePreservesType','typedViewSubtypeMetadata','parentNoopSubtypeRetained','recoveryWithoutScalarEdit','recoveryWithEdits','staleRecoveryRejected']) assert.equal(proof[key],true,key);
+      for(const key of ['partialRecoveryRejected','liveRecoveryRejected','recoveryAuditLineage','mixedGraphRollback','retrySameGraph'])assert.equal(proof[key],true,key);
+      assert.equal(proof.manualParentSeed,false);assert.equal(proof.caseCount,15);assert.equal(proof.noopVersion,1);assert.deepEqual(proof.versions,[1,2,3,-4,5,-6,7,8]);
+      const rollbackLines=log.split('\n').filter(line=>line.startsWith('MIXED_GRAPH_ROLLBACK='));assert.equal(rollbackLines.length,1);
+      const rollback=JSON.parse(rollbackLines[0].slice('MIXED_GRAPH_ROLLBACK='.length));assert.equal(rollback.passed,true);assert.equal(rollback.retrySameGraph,true);assert.equal(rollback.failedAudits,0);assert.equal(rollback.retryAudits,2);
+      assert.equal(rollback.rootVersionAfter,rollback.rootVersionBefore+1);assert.equal(rollback.childVersionAfter,8);proof.rollback=rollback;
       receipt.rounds.push(proof);
     }
     assert.notEqual(receipt.rounds[0].id,receipt.rounds[1].id);
     const sqlOracle = "import sqlite3,sys,pathlib,json; c=sqlite3.connect(pathlib.Path(sys.argv[1]).resolve().as_uri()+'?mode=ro',uri=True); r={'rows':c.execute('SELECT s.id,s.version,a.\"Legacy Campus Code\" FROM school_data s JOIN academy_data a ON a.id=s.id ORDER BY s.id').fetchall(),'columns':[r[1] for r in c.execute('PRAGMA table_info(academy_data)')],'rootCount':c.execute('SELECT count(*) FROM school_data').fetchone()[0],'platformCount':c.execute('SELECT count(*) FROM platform_data').fetchone()[0],'constantCount':c.execute('SELECT count(*) FROM school_type_data WHERE id IN (1001,1002)').fetchone()[0]};c.close();print(json.dumps(r))";
     receipt.oracle = JSON.parse(await run(['python3','-B','-c',sqlOracle,env.INHERITANCE_MATCHING_SERVICE_CORE_DATABASE_URL],'oracle.json'));
-    assert.deepEqual(receipt.oracle.rows,receipt.rounds.map(p=>[p.id,-4,'SOUTH']).sort((a,b)=>a[0]-b[0]));
+    assert.deepEqual(receipt.oracle.rows,receipt.rounds.map(p=>[p.id,8,'WEST']).sort((a,b)=>a[0]-b[0]));
     assert.deepEqual(receipt.oracle.columns,['id','Legacy Campus Code']);assert.equal(receipt.oracle.rootCount,2);assert.equal(receipt.oracle.platformCount,1);assert.equal(receipt.oracle.constantCount,2);
     assert.deepEqual(generated(),expected);receipt.generatedLibraryUnchanged=true;
     assert.deepEqual(sources(),receipt.sourceHashes);receipt.sameDatabase=true;receipt.passed=true;

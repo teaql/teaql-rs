@@ -31,14 +31,14 @@ mod xls;
 
 pub use entity::{
     Audited, BaseEntity, BaseEntityData, Entity, EntityDescriptorStore, EntityError,
-    EntityJsonTraversal, EntityJsonTraversalError, IdentifiableEntity, TeaqlBoxedRelations,
-    TeaqlEntity, VersionedEntity,
+    EntityJsonTraversal, EntityJsonTraversalError, IdentifiableEntity, RuntimeSubtypeIdentity,
+    TeaqlBoxedRelations, TeaqlEntity, VersionedEntity,
 };
 pub use entity_graph::{EntityGraph, EntityGraphBuilder, EntityGraphNode, EntityGraphOperation};
 pub use expr::{BinaryOp, Expr, ExprFunction};
 pub use list::SmartList;
 pub use load_state::{FieldLayout, LoadedSnapshot};
-pub use meta::{EntityDescriptor, PropertyDescriptor, RelationDescriptor};
+pub use meta::{EntityDescriptor, InheritanceChild, PropertyDescriptor, RelationDescriptor};
 pub use mutation::{
     BatchInsertCommand, BatchUpdateCommand, DeleteCommand, EntitySnapshot, GeneratedValues,
     InsertCommand, MutationKind, MutationValues, RecoverCommand, UpdateCommand,
@@ -54,7 +54,9 @@ pub use query::{
     record_to_json_value,
 };
 pub use request_intent::{MutationIntent, QueryIntent, RequestIntentError, RequestKind};
-pub use request_tree::{QueryOperation, QueryOperationKind, QueryRequestScope, QueryRequestTraceNode};
+pub use request_tree::{
+    QueryOperation, QueryOperationKind, QueryRequestScope, QueryRequestTraceNode,
+};
 pub use safe_expression::{SafeExpression, TeaqlEmpty};
 #[doc(hidden)]
 pub use serde_json;

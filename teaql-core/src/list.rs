@@ -31,6 +31,7 @@ impl<T> SmartList<T> {
             if Entity::is_new(&entity)
                 || Entity::dirty_fields(&entity).is_some()
                 || Entity::is_marked_as_delete(&entity)
+                || Entity::is_marked_as_recover(&entity)
             {
                 has_changes = true;
             }

@@ -7,6 +7,8 @@
 - Queries must be bounded and carry non-empty comment and purpose. Writes use
   the generated audited-save contract, including mark-for-deletion plus save.
 - No manual parent inserts, direct application SQL writes or generated-source
-  edits may make this lifecycle pass. SQL is limited to read-only test oracles.
+  edits may make this lifecycle pass. SQL is limited to read-only test oracles,
+  plus maintainer-approved, test-fixture-only DDL fault-injection triggers.
+  Triggers may reject a named test value; never repair or seed business rows.
 - All runtime dependencies are local repository source. Run `node verify.cjs
   --output /absolute/new/evidence-directory` before claiming acceptance.

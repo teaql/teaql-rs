@@ -408,6 +408,14 @@ where
             ));
         }
 
+        for field in command.values.keys() {
+            if field == id_property || field == version_property {
+                return Err(DataServiceError::Runtime(RuntimeError::Graph(
+                    "recovery cannot change identity or supply its successor version".into(),
+                )));
+            }
+        }
+        row.extend(CompactRow::from_map(command.values.clone().into()));
         row.insert(version_property.to_owned(), Value::I64(next_version));
         Ok(1)
     }

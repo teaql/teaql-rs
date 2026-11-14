@@ -42,6 +42,18 @@ true, false, known, and unknown predicates in that field-level help.
 
 ## Criteria alternatives and independent membership
 
+The request returns the native `School` view, not a child Rust
+type. Import `inheritance_matching_service_core::teaql_core::Entity` to call
+`row.runtime_type()` for its readonly next-subtype identifier. A multilevel
+object may identify the next child rather than the final leaf. This hint does
+not load child fields, select a child checker, or become a mutation value.
+
+Lazy typed reads use `request.execute_for_stream(context).await?`. Consume the
+returned stream with `futures_util::StreamExt::next` and close/drop it when done;
+add `futures-util = "0.3"` to application dependencies. Bounds, comment and
+purpose are still required. Subtype identity remains the same as for list reads.
+
+
 This inheritance-root request uses
 `matching_any_of([child_request.into(), other_child_request.into()])` for a union
 of independent ID subqueries, following Java's inheritance-specific varargs

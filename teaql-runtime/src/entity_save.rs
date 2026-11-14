@@ -467,6 +467,11 @@ fn decode_unchanged_ledger_entity<T: Entity>(
     original_relation_fields: &[String],
 ) -> Result<T, RuntimeError> {
     node.values.remove("_loaded_fields");
+    // No SQL readback is available for a no-op. Rehydrate the input view's
+    // readonly subtype tag without recording a business field or mutation.
+    if let Some(name) = root.loaded_runtime_type(T::ENTITY_NAME) {
+        node.values.insert("_type_".into(), Value::from(name));
+    }
     let mut entity = decode_saved_ledger_entity::<T>(node, root, true, original_relation_fields)?;
     if let Some(state) = original_state {
         // No SQL readback occurred: the complete original view geometry remains
@@ -499,7 +504,10 @@ fn can_preserve_loaded_relations(
     root_key: &crate::EntityKey,
     descriptor: &teaql_core::EntityDescriptor,
 ) -> bool {
-    if !root.new_keys().is_empty() || !root.deleted_keys().is_empty() {
+    if !root.new_keys().is_empty()
+        || !root.deleted_keys().is_empty()
+        || !root.recovered_keys().is_empty()
+    {
         return false;
     }
     if root
@@ -1392,6 +1400,7 @@ fn extract_graph_node<T: Entity>(
     let original_values = entity.original_values();
     let is_new = entity.is_new();
     let is_deleted = entity.is_marked_as_delete();
+    let is_recovered = entity.is_marked_as_recover();
     let comment = entity.get_comment();
     let dynamic_fields = entity.dynamic_field_values().cloned().map(Box::new);
     let mut node = graph_node_from_values(context, &descriptor.name, entity.into_values())?;
@@ -1406,6 +1415,9 @@ fn extract_graph_node<T: Entity>(
     if is_deleted {
         node.operation = GraphOperation::Remove;
         node.relations.clear();
+    }
+    if is_recovered {
+        node.operation = GraphOperation::Recover;
     }
     if let Some(c) = comment {
         node.set_comment(c);
@@ -1458,6 +1470,12 @@ fn graph_node_from_values(
         if field == "_is_deleted" {
             if matches!(value, Value::Bool(true)) {
                 node.operation = GraphOperation::Remove;
+            }
+            continue;
+        }
+        if field == "_is_recovered" {
+            if matches!(value, Value::Bool(true)) {
+                node.operation = GraphOperation::Recover;
             }
             continue;
         }
@@ -1528,7 +1546,10 @@ fn merge_relation_mutations_into_root(
                         merge_graph_value_into_ledger(root, &key, descriptor, field, value)?;
                     }
                 }
-                GraphOperation::Upsert => {
+                GraphOperation::Upsert | GraphOperation::Recover => {
+                    if child.operation == GraphOperation::Recover {
+                        root.mark_as_recover(key.clone());
+                    }
                     if let Some(fields) = &child.dirty_fields {
                         for field in fields {
                             if let Some(value) = child.values.get(field) {
@@ -1724,6 +1745,7 @@ fn capture_ledger_trace_scopes(
         .cloned()
         .collect::<BTreeSet<_>>();
     pending.extend(root.deleted_keys());
+    pending.extend(root.recovered_keys());
     pending.extend(root.new_keys());
     if let Some(dynamic) = root.current_change_set().dynamic_changes() {
         pending.extend(dynamic.keys().cloned());
@@ -2180,6 +2202,7 @@ fn hydrate_ledger_relations(
             pending.extend(dynamic.keys().cloned());
         }
         pending.extend(root.deleted_keys());
+        pending.extend(root.recovered_keys());
         pending.extend(root.new_keys());
         for key in &pending {
             if key.entity.as_ref() != relation.target_entity || existing_keys.contains(key) {
@@ -2218,6 +2241,8 @@ fn hydrate_ledger_relations(
                 .or_insert_with(|| key.id.clone());
             let operation = if root.deleted_keys().contains(key) {
                 GraphOperation::Remove
+            } else if root.is_marked_as_recover(key) {
+                GraphOperation::Recover
             } else if root.new_keys().contains(key) || root.get_original_version(key).is_none() {
                 GraphOperation::Create
             } else {
@@ -2303,7 +2328,7 @@ fn preflight_graph_inner(
         let before = node.values.clone();
         let status = match node.operation {
             GraphOperation::Create => crate::CheckObjectStatus::Create,
-            GraphOperation::Upsert => crate::CheckObjectStatus::Update,
+            GraphOperation::Upsert | GraphOperation::Recover => crate::CheckObjectStatus::Update,
             GraphOperation::Remove | GraphOperation::Reference => unreachable!(),
         };
         crate::mark_entity_status(&mut node.values, status);
@@ -2625,6 +2650,7 @@ where
         capture_ledger_trace_scopes(&root, &node)?;
         let has_ledger_changes = !root.current_change_set().is_empty()
             || !root.deleted_keys().is_empty()
+            || !root.recovered_keys().is_empty()
             || !root.new_keys().is_empty();
         if has_ledger_changes {
             let entity_name = node.entity.clone();
@@ -2786,6 +2812,7 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
         capture_ledger_trace_scopes(&root, &node)?;
         let has_ledger_changes = !root.current_change_set().is_empty()
             || !root.deleted_keys().is_empty()
+            || !root.recovered_keys().is_empty()
             || !root.new_keys().is_empty();
         if has_ledger_changes {
             let descriptor = context.require_entity(&node.entity)?;

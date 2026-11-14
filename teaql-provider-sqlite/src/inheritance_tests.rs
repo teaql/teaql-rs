@@ -299,6 +299,7 @@ fn fixture() -> (Executor, Arc<Mutex<Connection>>) {
 
 fn fixture_with_log_policies(explicit: bool) -> (Executor, Arc<Mutex<Connection>>) {
     let mut school = EntityDescriptor::new("School")
+        .inheritance_child("Academy", "academy_data", "id")
         .property(P::new("id", DataType::I64).id().not_null())
         .property(P::new("version", DataType::I64).version().not_null())
         .property(
@@ -310,6 +311,7 @@ fn fixture_with_log_policies(explicit: bool) -> (Executor, Arc<Mutex<Connection>
         school = school.audit_mask_fields(vec![]);
     }
     let mut academy = EntityDescriptor::new("Academy")
+        .inheritance_child("TrainingAcademy", "training_academy_data", "id")
         .inherits(school.clone())
         .property(P::new("campus", DataType::Text).not_null());
     if explicit {
@@ -376,6 +378,35 @@ fn inherited_physical_statements_keep_the_logical_subtypes_stricter_mask_policy(
             .intent_redactions
             .extend_secrets(false, &mut secrets);
         assert!(secrets.contains(&"MIDDLE-PRIVATE-CAMPUS".to_owned()));
+    });
+}
+
+#[test]
+fn typed_parent_and_middle_views_keep_next_subtype_identity_without_schema_changes() {
+    futures_executor::block_on(async {
+        let (executor, _) = fixture();
+        let tx = executor.begin().await.unwrap();
+        tx.mutate(mutation(MutationCommand::Insert(
+            InsertCommand::new("School")
+                .value("id", 1_i64)
+                .value("version", 1_i64)
+                .value("name", "Base"),
+        )))
+        .await
+        .unwrap();
+        tx.mutate(insert(2)).await.unwrap();
+        tx.commit().await.unwrap();
+        let base = executor.query(query("School", 1)).await.unwrap();
+        assert_eq!(base.rows[0].get("_type_"), Some(&Value::from("School")));
+        let parent = executor.query(query("School", 2)).await.unwrap();
+        assert_eq!(parent.rows[0].get("_type_"), Some(&Value::from("Academy")));
+        let middle = executor.query(query("Academy", 2)).await.unwrap();
+        assert_eq!(
+            middle.rows[0].get("_type_"),
+            Some(&Value::from("TrainingAcademy"))
+        );
+        let leaf = executor.query(query("TrainingAcademy", 2)).await.unwrap();
+        assert!(leaf.rows[0].get("_type_").is_none());
     });
 }
 
@@ -556,5 +587,61 @@ fn inherited_delete_and_recovery_change_only_the_shared_version() {
                 Some(&Value::from("robotics"))
             );
         }
+    });
+}
+
+#[test]
+fn inherited_recovery_can_correct_declaring_fields_with_one_root_version() {
+    futures_executor::block_on(async {
+        let (executor, _) = fixture();
+        let tx = executor.begin().await.unwrap();
+        tx.mutate(insert(41)).await.unwrap();
+        tx.mutate(mutation(MutationCommand::Delete(
+            DeleteCommand::new("TrainingAcademy", 41_i64).expected_version(1),
+        )))
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let command = RecoverCommand::new("TrainingAcademy", 41_i64, -2)
+            .value("name", "Recovered school")
+            .value("campus", "WEST")
+            .value("specialty", "mechanics");
+        let tx = executor.begin().await.unwrap();
+        let denied = tx
+            .mutate_guarded(GuardedMutationRequest::new(
+                mutation(MutationCommand::Recover(command.clone())),
+                Expr::eq("campus", "forbidden"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(denied.affected_rows, 0);
+        tx.commit().await.unwrap();
+        let tx = executor.begin().await.unwrap();
+        let recovered = tx
+            .mutate(mutation(MutationCommand::Recover(command.clone())))
+            .await
+            .unwrap();
+        assert_eq!(recovered.affected_rows, 1);
+        let row = recovered.persisted_snapshot.unwrap();
+        for (field, value) in [
+            ("name", Value::from("Recovered school")),
+            ("campus", Value::from("WEST")),
+            ("specialty", Value::from("mechanics")),
+            ("version", Value::I64(3)),
+        ] {
+            assert_eq!(row.get(field), Some(&value));
+        }
+        tx.commit().await.unwrap();
+        let tx = executor.begin().await.unwrap();
+        assert!(
+            tx.mutate(mutation(MutationCommand::Recover(command)))
+                .await
+                .is_err()
+        );
+        tx.rollback().await.unwrap();
+        assert_eq!(
+            executor.query(query("School", 41)).await.unwrap().rows[0].get("version"),
+            Some(&Value::I64(3))
+        );
     });
 }

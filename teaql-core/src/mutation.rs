@@ -276,6 +276,8 @@ pub struct RecoverCommand {
     pub entity: String,
     pub id: Value,
     pub expected_version: i64,
+    /// Optional model-admitted edits committed with the one recovery version.
+    pub values: MutationValues,
     pub trace_chain: Vec<crate::TraceNode>,
 }
 
@@ -285,7 +287,13 @@ impl RecoverCommand {
             entity: entity.into(),
             id: id.into(),
             expected_version,
+            values: MutationValues::new(),
             trace_chain: Vec::new(),
         }
+    }
+
+    pub fn value(mut self, field: impl Into<String>, value: impl Into<Value>) -> Self {
+        self.values.insert(field.into(), value.into());
+        self
     }
 }

@@ -8,9 +8,9 @@ publish = false
 
 [dependencies]
 context-fix-service-core = { path = "fixture/lib" }
-teaql-core = "7.0.0"
-teaql-runtime = "7.0.0"
-teaql-data-service = "7.0.0"
+teaql-core = "8.0.0"
+teaql-runtime = "8.0.0"
+teaql-data-service = "8.0.0"
 chrono = "0.4"
 rusqlite = { version = "0.41.1", features = ["bundled", "chrono", "column_decltype"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

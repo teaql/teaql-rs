@@ -21,6 +21,158 @@ impl SchemaProvider for Schema {
 type Executor = SqlDataServiceExecutor<SqliteDialect, SqliteMutationExecutor, Schema>;
 const PRIVATE_NAME: &str = "MEMBERSHIP-PRIVATE-NAME";
 
+#[test]
+fn nested_population_over_ten_thousand_keeps_detail_and_grouped_statistics() {
+    futures_executor::block_on(async {
+        let mut context = setup(false).await;
+        context.disable_sql_log();
+        context
+            .execute_in_transaction::<Executor, _, _>(|transaction| {
+                Box::pin(async move {
+                    for id in 1000_i64..11001 {
+                        transaction
+                            .mutate(
+                                MutationCommand::Insert(
+                                    InsertCommand::new("MembershipChild")
+                                        .value("id", id)
+                                        .value("version", 1_i64)
+                                        .value("name", "contributor")
+                                        .value("parent_id", 100_i64),
+                                )
+                                .request("seed large nested population")?,
+                            )
+                            .await?;
+                    }
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap();
+        let repo = context
+            .entity_data_service::<Executor>("MembershipParent")
+            .unwrap();
+        let root_page = PurposedSelectQuery::new(
+            SelectQuery::new("MembershipChild").comment("bounded outer result"),
+            "the outer safety ceiling remains independent of nested populations",
+        );
+        assert_eq!(
+            context
+                .entity_data_service::<Executor>("MembershipChild")
+                .unwrap()
+                .fetch_all(&root_page)
+                .await
+                .unwrap()
+                .len(),
+            10000
+        );
+        let query = PurposedSelectQuery::new(
+            SelectQuery::new("MembershipParent")
+                .limit(1)
+                .relation_query("children", SelectQuery::new("MembershipChild"))
+                .comment("load complete nested population"),
+            "verify no hidden ten-thousand-row cutoff",
+        );
+        let rows = repo.fetch_all(&query).await.unwrap();
+        let Some(Value::List(children)) = rows[0].get("children") else {
+            panic!("missing detail")
+        };
+        assert_eq!(
+            children.len(),
+            10003,
+            "unbounded nested details must not be truncated"
+        );
+        let query = PurposedSelectQuery::new(
+            SelectQuery::new("MembershipParent")
+                .limit(1)
+                .comment("collect all statistical groups"),
+            "verify grouped contribution completeness beyond ten thousand groups",
+        );
+        let aggregates = [teaql_core::RelationAggregate::new(
+            "children",
+            "groups",
+            SelectQuery::new("MembershipChild")
+                .group_by("id")
+                .count("n"),
+            false,
+        )];
+        let rows = repo
+            .fetch_smart_list_with_relation_aggregates(&query, &aggregates)
+            .await
+            .unwrap();
+        let Some(Value::List(groups)) = rows[0].get("groups") else {
+            panic!("missing statistics")
+        };
+        assert_eq!(
+            groups.len(),
+            10003,
+            "internal statistics must include every group"
+        );
+        let count: i64 = groups
+            .iter()
+            .map(|group| {
+                let Value::Object(group) = group else {
+                    panic!("missing group")
+                };
+                group.get("n").and_then(Value::try_i64).unwrap()
+            })
+            .sum();
+        assert_eq!(count, 10003);
+    });
+}
+
+#[test]
+fn nested_facet_domain_does_not_acquire_an_outer_list_ceiling() {
+    futures_executor::block_on(async {
+        let mut context = setup(false).await;
+        context.disable_sql_log();
+        context
+            .execute_in_transaction::<Executor, _, _>(|transaction| {
+                Box::pin(async move {
+                    for id in 1000_i64..11001 {
+                        transaction
+                            .mutate(
+                                MutationCommand::Insert(
+                                    InsertCommand::new("MembershipParent")
+                                        .value("id", id)
+                                        .value("version", 1_i64)
+                                        .value("name", "unused option"),
+                                )
+                                .request("seed complete facet domain")?,
+                            )
+                            .await?;
+                    }
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap();
+        let query = PurposedSelectQuery::new(
+            SelectQuery::new("MembershipChild")
+                .limit(1)
+                .comment("load bounded root with complete options"),
+            "facet options are not limited by an implicit outer page",
+        );
+        let options = teaql_core::request::QueryOptions {
+            facets: vec![teaql_core::request::FacetRequest::new(
+                "parents",
+                "parent",
+                SelectQuery::new("MembershipParent")
+                    .project("id")
+                    .comment("all available options"),
+                true,
+            )],
+            ..Default::default()
+        };
+        let repo = context
+            .entity_data_service::<Executor>("MembershipChild")
+            .unwrap();
+        let facets = teaql_runtime::execute_facets(&repo, query.as_query(), &options)
+            .await
+            .unwrap();
+        assert_eq!(facets["parents"].len(), 10002);
+    });
+}
+
 // Handwritten native adapters exercise the same typed hydration boundary without
 // reading or changing any generated library.
 macro_rules! graph_entity {

@@ -11,6 +11,8 @@ pub struct ContainerAttrs {
     pub reverse_relations: Vec<ParsedContainerRelation>,
     pub indexed_layout: bool,
     pub joined_parent: Option<syn::Path>,
+    pub inheritance_children: Vec<(String, String, String)>,
+    pub parse_errors: Vec<syn::Error>,
 }
 
 #[derive(Default)]
@@ -34,13 +36,15 @@ pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> Co
         reverse_relations: Vec::new(),
         indexed_layout: false,
         joined_parent: None,
+        inheritance_children: Vec::new(),
+        parse_errors: Vec::new(),
     };
 
     for attr in attrs {
         if !attr.path().is_ident("teaql") {
             continue;
         }
-        let _ = attr.parse_nested_meta(|meta| {
+        let result = attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("indexed_layout") {
                 attrs_out.indexed_layout = true;
             } else if meta.path.is_ident("entity") {
@@ -48,6 +52,26 @@ pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> Co
                 attrs_out.entity_name = parse_string_expr(&value.parse::<Expr>()?);
             } else if meta.path.is_ident("parent") {
                 attrs_out.joined_parent = Some(meta.value()?.parse::<syn::Path>()?);
+            } else if meta.path.is_ident("subtype") {
+                let (mut name, mut table, mut id_column) = (None, None, None);
+                meta.parse_nested_meta(|entry| {
+                    if entry.path.is_ident("name") {
+                        name = Some(parse_string_expr(&entry.value()?.parse::<Expr>()?));
+                    } else if entry.path.is_ident("table") {
+                        table = Some(parse_string_expr(&entry.value()?.parse::<Expr>()?));
+                    } else if entry.path.is_ident("id_column") {
+                        id_column = Some(parse_string_expr(&entry.value()?.parse::<Expr>()?));
+                    } else {
+                        return Err(entry.error("unknown subtype metadata"));
+                    }
+                    Ok(())
+                })?;
+                match (name, table, id_column) {
+                    (Some(name), Some(table), Some(id_column)) => attrs_out
+                        .inheritance_children
+                        .push((name, table, id_column)),
+                    _ => return Err(meta.error("subtype requires name, table and id_column")),
+                }
             } else if meta.path.is_ident("table") {
                 let value = meta.value()?;
                 attrs_out.table_name = parse_string_expr(&value.parse::<Expr>()?);
@@ -115,6 +139,9 @@ pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> Co
             }
             Ok(())
         });
+        if let Err(error) = result {
+            attrs_out.parse_errors.push(error);
+        }
     }
 
     attrs_out
@@ -268,6 +295,27 @@ fn parse_u32_expr(expr: &Expr) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::parse_container_attrs;
+
+    #[test]
+    fn subtype_storage_hints_are_shallow_and_incomplete_hints_fail() {
+        let valid = syn::parse_quote!(#[teaql(subtype(name = "Academy", table = "Legacy Academy", id_column = "Legacy ID"))]);
+        let valid = parse_container_attrs(&[valid], "School");
+        assert!(valid.parse_errors.is_empty());
+        assert_eq!(
+            valid.inheritance_children,
+            [(
+                "Academy".into(),
+                "Legacy Academy".into(),
+                "Legacy ID".into()
+            )]
+        );
+        let invalid = syn::parse_quote!(#[teaql(subtype(name = "Academy"))]);
+        assert!(
+            !parse_container_attrs(&[invalid], "School")
+                .parse_errors
+                .is_empty()
+        );
+    }
 
     #[test]
     fn empty_mask_attribute_is_distinct_from_absent_attribute() {
