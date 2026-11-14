@@ -246,15 +246,26 @@ impl PurposedSelectQuery {
             return None;
         }
         let alias = alias.to_owned();
-        let count = self
-            .clone()
-            .with_facet_diagnostics(options)
-            .for_exact_count_with_operation(&alias, operation);
-        self.query.aggregates.retain(|aggregate| {
-            !(aggregate.function == teaql_core::AggregateFunction::Count
-                && aggregate.field == "*"
-                && aggregate.alias == alias)
-        });
+        let remove_list_count = |query: &mut SelectQuery| {
+            query.aggregates.retain(|aggregate| {
+                !(aggregate.function == teaql_core::AggregateFunction::Count
+                    && aggregate.field == "*"
+                    && aggregate.alias == alias)
+            });
+        };
+        let mut count_source = self.clone().with_facet_diagnostics(options);
+        // This marker requests an additional list total; it is not a selected
+        // statistical result in the original entity query. Leaving it in the
+        // diagnostic source makes an ordinary ID sort look like an invalid
+        // statistical sort and needlessly classifies all literals as unknown.
+        // Remove only this marker: keep filters, order expressions, relations,
+        // other measures and future Facet provenance for precise safe logging.
+        remove_list_count(&mut count_source.query);
+        if let Some(source) = &mut count_source.diagnostic_source {
+            remove_list_count(source);
+        }
+        let count = count_source.for_exact_count_with_operation(&alias, operation);
+        remove_list_count(&mut self.query);
         Some((alias, count))
     }
 
