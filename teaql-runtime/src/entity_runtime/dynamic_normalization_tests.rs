@@ -130,3 +130,18 @@ fn representation_sensitive_or_nonfinite_numbers_are_not_cancelled() {
     ));
     assert!(same_dynamic_baseline(&Value::F64(1.0), &Value::F64(1.0)));
 }
+
+#[test]
+fn json_signed_zero_is_not_cancelled_as_a_semantically_equal_baseline() {
+    let positive = serde_json::json!({"amount": 0.0});
+    let negative = serde_json::json!({"amount": -0.0});
+    assert_ne!(positive.to_string(), negative.to_string());
+    assert!(!same_dynamic_baseline(
+        &Value::Json(positive.clone()),
+        &Value::Json(negative)
+    ));
+    assert!(same_dynamic_baseline(
+        &Value::Json(positive.clone()),
+        &Value::Json(positive)
+    ));
+}

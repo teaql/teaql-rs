@@ -22,10 +22,10 @@ impl SqlBindings {
         Self::default()
     }
     pub(crate) fn capture_query_scope(&mut self, query: &teaql_core::SelectQuery) {
-        if let Some(scope) = query.request_scope() {
-            if !self.request_scopes.iter().any(|previous| previous == scope) {
-                self.request_scopes.push(scope.clone());
-            }
+        if let Some(scope) = query.request_scope()
+            && !self.request_scopes.iter().any(|previous| previous == scope)
+        {
+            self.request_scopes.push(scope.clone());
         }
     }
     pub fn push(&mut self, value: Value) {
@@ -94,57 +94,6 @@ impl std::ops::Deref for SqlBindings {
     }
 }
 
-#[cfg(test)]
-mod request_tree_tests {
-    use super::*;
-    use teaql_core::{QueryIntent, QueryRequestScope, SelectQuery};
-
-    #[test]
-    fn rebind_replaces_cached_request_text_with_current_scope_identity() {
-        fn bindings(comment: &str) -> SqlBindings {
-            let root = QueryRequestScope::root(
-                "School",
-                QueryIntent::new(comment, "Render dashboard").unwrap(),
-            );
-            let child = root.derive_child("Kind", Some(comment)).unwrap();
-            let mut bindings = SqlBindings::new();
-            bindings.capture_query_scope(&SelectQuery::new("School").with_request_scope(root));
-            bindings.capture_query_scope(&SelectQuery::new("Kind").with_request_scope(child));
-            bindings
-        }
-        let source = bindings("OLD-INVOCATION").log_context(DatabaseKind::Sqlite);
-        let current = bindings("CURRENT-INVOCATION").rebind_log_context(&source);
-        let nodes = current.request_tree.as_deref().unwrap();
-        assert_eq!(nodes.len(), 3);
-        assert!(nodes.iter().any(|node| node.detail == "CURRENT-INVOCATION"));
-        assert!(
-            nodes
-                .iter()
-                .all(|node| !node.detail.contains("OLD-INVOCATION"))
-        );
-        assert_eq!(nodes[2].parent_id, Some(1));
-        assert!(
-            source
-                .request_tree
-                .unwrap()
-                .iter()
-                .any(|node| node.detail == "OLD-INVOCATION")
-        );
-    }
-
-    #[test]
-    fn ordinary_query_rebinding_drops_any_previous_tree() {
-        let mut source = SqlLogContext::default();
-        source.request_tree = Some(Vec::<teaql_core::QueryRequestTraceNode>::new().into());
-        assert!(
-            SqlBindings::new()
-                .rebind_log_context(&source)
-                .request_tree
-                .is_none()
-        );
-    }
-}
-
 pub(crate) fn field_policy(entity: &EntityDescriptor, field: &str) -> Policy {
     teaql_data_service::SqlIntentRedactions::field_policy(entity, field)
 }
@@ -198,5 +147,58 @@ pub(crate) fn expression_policy(entity: &EntityDescriptor, expr: &Expr) -> Optio
         Expr::Value(_) | Expr::LikePattern { .. } | Expr::And(_) | Expr::Or(_) | Expr::Not(_) => {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod request_tree_tests {
+    use super::*;
+    use teaql_core::{QueryIntent, QueryRequestScope, SelectQuery};
+
+    #[test]
+    fn rebind_replaces_cached_request_text_with_current_scope_identity() {
+        fn bindings(comment: &str) -> SqlBindings {
+            let root = QueryRequestScope::root(
+                "School",
+                QueryIntent::new(comment, "Render dashboard").unwrap(),
+            );
+            let child = root.derive_child("Kind", Some(comment)).unwrap();
+            let mut bindings = SqlBindings::new();
+            bindings.capture_query_scope(&SelectQuery::new("School").with_request_scope(root));
+            bindings.capture_query_scope(&SelectQuery::new("Kind").with_request_scope(child));
+            bindings
+        }
+        let source = bindings("OLD-INVOCATION").log_context(DatabaseKind::Sqlite);
+        let current = bindings("CURRENT-INVOCATION").rebind_log_context(&source);
+        let nodes = current.request_tree.as_deref().unwrap();
+        assert_eq!(nodes.len(), 3);
+        assert!(nodes.iter().any(|node| node.detail == "CURRENT-INVOCATION"));
+        assert!(
+            nodes
+                .iter()
+                .all(|node| !node.detail.contains("OLD-INVOCATION"))
+        );
+        assert_eq!(nodes[2].parent_id, Some(1));
+        assert!(
+            source
+                .request_tree
+                .unwrap()
+                .iter()
+                .any(|node| node.detail == "OLD-INVOCATION")
+        );
+    }
+
+    #[test]
+    fn ordinary_query_rebinding_drops_any_previous_tree() {
+        let source = SqlLogContext {
+            request_tree: Some(Vec::<teaql_core::QueryRequestTraceNode>::new().into()),
+            ..SqlLogContext::default()
+        };
+        assert!(
+            SqlBindings::new()
+                .rebind_log_context(&source)
+                .request_tree
+                .is_none()
+        );
     }
 }

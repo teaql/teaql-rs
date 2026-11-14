@@ -123,10 +123,10 @@ pub(crate) fn compile_statistical_plan_sql(
                 .filter_map(|measure| measure.input_field.clone()),
         );
         for child in &plan.layers {
-            if let Some(edge) = &child.incoming {
-                if edge.source_layer == index {
-                    fields.insert(edge.source_field.clone());
-                }
+            if let Some(edge) = &child.incoming
+                && edge.source_layer == index
+            {
+                fields.insert(edge.source_field.clone());
             }
         }
         if let Some(edge) = &layer.incoming {
@@ -134,11 +134,11 @@ pub(crate) fn compile_statistical_plan_sql(
         }
         population.projection = fields.into_iter().collect();
         for (dimension_index, dimension) in plan.dimensions.iter().enumerate() {
-            if dimension.owner_layer == index {
-                if let Some(expression) = &dimension.expression {
-                    population = population
-                        .project_expr(computed_input(plan, dimension_index), expression.clone());
-                }
+            if dimension.owner_layer == index
+                && let Some(expression) = &dimension.expression
+            {
+                population = population
+                    .project_expr(computed_input(plan, dimension_index), expression.clone());
             }
         }
         let sql = dialect.compile_select_sql(&layer.descriptor, &population, params)?;

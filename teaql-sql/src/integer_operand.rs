@@ -79,7 +79,7 @@ mod tests {
                 let original = operand.clone();
                 let result = expression(&entity, &operand);
                 if matches!(data_type, DataType::I64 | DataType::U64) {
-                    assert_eq!(result.unwrap(), false);
+                    assert!(!result.unwrap());
                 } else {
                     assert!(
                         result

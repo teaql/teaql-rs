@@ -593,6 +593,10 @@ async fn execute_inherited<D: SqlDialect + Sync, T: SqlTransport>(
     Ok(result)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Execution keeps physical storage, typed readback and per-mutation scope separate"
+)]
 async fn execute_one<D: SqlDialect + Sync, T: SqlTransport>(
     dialect: &D,
     transport: &T,
@@ -606,7 +610,7 @@ async fn execute_one<D: SqlDialect + Sync, T: SqlTransport>(
     let entity_name = &readback_entity.name;
     let (compiled, operation, persisted_id) = match &request.command {
         teaql_data_service::MutationCommand::Insert(cmd) => (
-            dialect.compile_insert(&entity, cmd),
+            dialect.compile_insert(entity, cmd),
             DataServiceOperation::Insert,
             cmd.values.get("id").cloned(),
         ),

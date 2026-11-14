@@ -286,10 +286,10 @@ fn input_digest(value: &Option<Value>) -> Option<[u8; 32]> {
 }
 
 pub(crate) fn original_input_length(result: &CheckResult) -> Option<usize> {
-    if let Some(previous) = &result.presentation {
-        if previous.input_digest == input_digest(&result.input_value) {
-            return previous.input_len;
-        }
+    if let Some(previous) = &result.presentation
+        && previous.input_digest == input_digest(&result.input_value)
+    {
+        return previous.input_len;
     }
     result.input_value.as_ref().and_then(|value| match value {
         Value::Text(text) => Some(text.chars().count()),

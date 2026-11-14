@@ -110,17 +110,14 @@ impl SqlDialect for SqliteDialect {
                 Expr::Value(Value::List(values)) => values
                     .iter()
                     .any(|value| matches!(value, Value::Decimal(_))),
-                Expr::Function { function, args }
-                    if matches!(
-                        function,
+                Expr::Function {
+                    function:
                         teaql_core::ExprFunction::Identity
-                            | teaql_core::ExprFunction::Sum
-                            | teaql_core::ExprFunction::Min
-                            | teaql_core::ExprFunction::Max
-                    ) =>
-                {
-                    args.iter().any(|arg| decimal(entity, arg))
-                }
+                        | teaql_core::ExprFunction::Sum
+                        | teaql_core::ExprFunction::Min
+                        | teaql_core::ExprFunction::Max,
+                    args,
+                } => args.iter().any(|arg| decimal(entity, arg)),
                 _ => false,
             }
         }

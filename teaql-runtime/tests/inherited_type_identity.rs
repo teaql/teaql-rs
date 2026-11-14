@@ -3,6 +3,10 @@ use teaql_core::{CompactRow, Entity, Value};
 
 #[teaql_macros::teaql_entity]
 #[derive(Clone, Debug, teaql_macros::TeaqlEntity)]
+#[allow(
+    clippy::duplicated_attributes,
+    reason = "Each distinct subtype descriptor must retain its own explicit id_column"
+)]
 #[teaql(
     entity = "School",
     subtype(name = "Academy", table = "academy_data", id_column = "id"),

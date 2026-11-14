@@ -57,10 +57,10 @@ pub(crate) fn collect_strings(value: &Value, output: &mut Vec<String>) {
             }
         }
         Value::Binary(bytes) => {
-            if let Ok(text) = std::str::from_utf8(bytes) {
-                if !text.is_empty() {
-                    output.push(text.to_owned());
-                }
+            if let Ok(text) = std::str::from_utf8(bytes)
+                && !text.is_empty()
+            {
+                output.push(text.to_owned());
             }
             let hex = bytes
                 .iter()

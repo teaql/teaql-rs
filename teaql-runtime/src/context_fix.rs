@@ -43,6 +43,10 @@ impl UserContext {
 
     /// Use only inside an eligible automatic Fix hook. HTTP/async results must
     /// be prepared before Save; this interface cannot await external work.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Generated Fix calls carry independent model, lifecycle and diagnostic inputs; retain their typed contract"
+    )]
     pub fn context_fix_value<T: DeserializeOwned>(
         &self,
         entity: &str,

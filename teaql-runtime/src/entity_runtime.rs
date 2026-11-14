@@ -577,21 +577,21 @@ impl EntityChangeSet {
     }
 
     fn clear_dynamic_field(&mut self, key: &EntityKey, code: &str) {
-        if let Some(changes) = self.dynamic_changes.as_mut() {
-            if let Some(fields) = changes.get_mut(key) {
-                fields.remove(code);
-                if fields.is_empty() {
-                    changes.remove(key);
-                }
+        if let Some(changes) = self.dynamic_changes.as_mut()
+            && let Some(fields) = changes.get_mut(key)
+        {
+            fields.remove(code);
+            if fields.is_empty() {
+                changes.remove(key);
             }
         }
-        if let Some(metadata) = self.dynamic_metadata.as_mut() {
-            if let Some(originals) = metadata.originals.get_mut(key) {
-                originals.remove(code);
-                if originals.is_empty() {
-                    metadata.originals.remove(key);
-                    metadata.definitions.remove(key);
-                }
+        if let Some(metadata) = self.dynamic_metadata.as_mut()
+            && let Some(originals) = metadata.originals.get_mut(key)
+        {
+            originals.remove(code);
+            if originals.is_empty() {
+                metadata.originals.remove(key);
+                metadata.definitions.remove(key);
             }
         }
     }
@@ -1957,6 +1957,10 @@ fn same_dynamic_baseline(before: &Value, current: &Value) -> bool {
             a.is_finite() && b.is_finite() && a.to_bits() == b.to_bits()
         }
         (Value::Decimal(a), Value::Decimal(b)) => a.serialize() == b.serialize(),
+        #[allow(
+            clippy::cmp_owned,
+            reason = "Mutation baselines preserve serialized JSON representation, including signed zero"
+        )]
         (Value::Json(a), Value::Json(b)) => a.to_string() == b.to_string(),
         _ => before == current,
     }

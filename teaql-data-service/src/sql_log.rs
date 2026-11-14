@@ -331,10 +331,10 @@ impl SqlIntentRedactions {
                     }
                     Value::Text(text) => text.clone(),
                     Value::Binary(bytes) => {
-                        if let Ok(text) = std::str::from_utf8(bytes) {
-                            if !text.is_empty() {
-                                strings.push(text.to_owned());
-                            }
+                        if let Ok(text) = std::str::from_utf8(bytes)
+                            && !text.is_empty()
+                        {
+                            strings.push(text.to_owned());
                         }
                         let hex = bytes
                             .iter()
